@@ -49,11 +49,11 @@ describe("StormBreaker", () => {
     // ToolRegistry's readOnly flag; tests fake it with a name set.
     const mutators = new Set(["edit_file", "write_file"]);
     const sb = new StormBreaker(6, 3, (c) => mutators.has(c.function?.name ?? ""));
-    const args = '{"path":"src/env.ts"}';
+    const args = '{"path":"src/config.ts"}';
     expect(sb.inspect(call("read_file", args)).suppress).toBe(false);
-    expect(sb.inspect(call("edit_file", '{"path":"src/env.ts","..."}')).suppress).toBe(false);
+    expect(sb.inspect(call("edit_file", '{"path":"src/config.ts","..."}')).suppress).toBe(false);
     expect(sb.inspect(call("read_file", args)).suppress).toBe(false);
-    expect(sb.inspect(call("edit_file", '{"path":"src/env.ts","..."}')).suppress).toBe(false);
+    expect(sb.inspect(call("edit_file", '{"path":"src/config.ts","..."}')).suppress).toBe(false);
     // 3rd read_file with identical args — would trip the breaker pre-fix,
     // but each edit_file legitimately changed the file in between.
     expect(sb.inspect(call("read_file", args)).suppress).toBe(false);

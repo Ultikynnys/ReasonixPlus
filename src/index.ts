@@ -242,8 +242,6 @@ export {
 } from "./memory/session.js";
 export type { SessionInfo } from "./memory/session.js";
 
-export { loadDotenv } from "./env.js";
-
 export { McpClient } from "./mcp/client.js";
 export type { McpClientOptions } from "./mcp/client.js";
 export { StdioTransport } from "./mcp/stdio.js";

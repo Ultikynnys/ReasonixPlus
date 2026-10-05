@@ -252,7 +252,6 @@ import {
   resolveGeminiAuth,
   signOutAntigravity,
 } from "../../antigravity-oauth.js";
-import { loadDotenv } from "../../env.js";
 import { type ResolvedHook, formatHookOutcomeMessage, loadHooks, runHooks } from "../../hooks.js";
 import { t } from "../../i18n/index.js";
 import {
@@ -4166,7 +4165,6 @@ export function installDesktopCrashGuards(
 
 export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   markPhase("desktop_command_entered");
-  loadDotenv();
   const log = createLogger("desktop");
   log.info(`Reasonix+ desktop daemon starting (${opts.model ?? "default model"})`);
   // Tauri spawns the bundled Node from the GUI process, which never runs the

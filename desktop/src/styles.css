@@ -806,17 +806,11 @@ html[data-platform="macos"] .app {
 .setup-mark {
   width: 16px;
   height: 16px;
-  border-radius: 5px;
-  background: linear-gradient(135deg, var(--accent), var(--violet));
-  position: relative;
-}
-
-.setup-mark::after {
-  content: "";
-  position: absolute;
-  inset: 3px;
-  border-radius: 2px;
-  background: var(--bg);
+  flex-shrink: 0;
+  /* The transparent Reasonix glyph, tinted with the active theme colour. */
+  background-color: var(--accent);
+  -webkit-mask: url("/reasonix-mark.png") center / contain no-repeat;
+  mask: url("/reasonix-mark.png") center / contain no-repeat;
 }
 
 .setup-title {
@@ -1039,17 +1033,11 @@ html[data-platform="macos"] .titlebar .tb-left {
 .titlebar .brand .mark {
   width: 15px;
   height: 15px;
-  border-radius: 4px;
-  background: linear-gradient(135deg, var(--accent), var(--violet));
   flex-shrink: 0;
-  position: relative;
-}
-.titlebar .brand .mark::after {
-  content: "";
-  position: absolute;
-  inset: 3px;
-  border-radius: 2px;
-  background: var(--bg-2);
+  /* The transparent Reasonix glyph, tinted with the active theme colour. */
+  background-color: var(--accent);
+  -webkit-mask: url("/reasonix-mark.png") center / contain no-repeat;
+  mask: url("/reasonix-mark.png") center / contain no-repeat;
 }
 .titlebar .brand .brand-name {
   font-size: 13.5px;
@@ -8701,18 +8689,12 @@ html[data-platform="macos"] .splash {
 .splash-mark {
   width: 58px;
   height: 58px;
-  border-radius: 15px;
-  background: linear-gradient(140deg, var(--accent), var(--violet));
-  position: relative;
-  box-shadow: 0 12px 38px -10px oklch(60% 0.19 38 / 0.45);
   margin-bottom: 22px;
-}
-.splash-mark::after {
-  content: "";
-  position: absolute;
-  inset: 12px;
-  border-radius: 7px;
-  background: var(--bg);
+  /* The transparent Reasonix glyph, tinted with the active theme colour. */
+  background-color: var(--accent);
+  -webkit-mask: url("/reasonix-mark.png") center / contain no-repeat;
+  mask: url("/reasonix-mark.png") center / contain no-repeat;
+  filter: drop-shadow(0 12px 18px color-mix(in oklch, var(--accent) 42%, transparent));
 }
 
 .splash-name {

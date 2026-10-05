@@ -308,7 +308,6 @@ const PUBLIC_API: readonly string[] = [
   "loadApiKey",
   "loadBaseUrl",
   "loadBraveApiKey",
-  "loadDotenv",
   "loadExaApiKey",
   "loadHooks",
   "loadMetasoApiKey",

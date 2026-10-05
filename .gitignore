@@ -2,8 +2,6 @@ node_modules/
 dist/
 coverage/
 .stryker-tmp/
-.env
-.env.local
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -37,6 +35,9 @@ desktop/src-tauri/binaries/
 # Design mock-up reference (local, not part of repo)
 .design-ref/
 *.cpuprofile
+
+# Krita artwork files (project files and autosaves), not part of the repo.
+*.kra
 
 .probe-snapshots/
 .reasonix-harness-inspect/
