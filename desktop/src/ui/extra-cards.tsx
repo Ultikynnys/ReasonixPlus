@@ -130,7 +130,7 @@ export function TaskCard({
               {st.label}
               {st.hint ? <div className="h">{st.hint}</div> : null}
             </div>
-            <span className="t">{st.durationLabel ?? "—"}</span>
+            <span className="t">{st.durationLabel ?? "-"}</span>
           </div>
         ))}
       </div>

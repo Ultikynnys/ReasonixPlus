@@ -388,7 +388,7 @@ export class Eventizer {
       ts: new Date().toISOString(),
       turn,
       type: EventType.modelFinal,
-      content: "[aborted by user — no response produced.]",
+      content: "[aborted by user: no response produced.]",
       toolCalls: [],
       usage: {},
       costUsd: 0,

@@ -450,7 +450,7 @@ export function ShellCard({
         {state === "await" && onApprove ? (
           <div className="approve-row">
             <div className="why">
-              <b>{t("cards.shellAwaiting")}</b> — {t("cards.shellExecuteHint")}
+              <b>{t("cards.shellAwaiting")}</b>: {t("cards.shellExecuteHint")}
             </div>
             <div className="actions">
               {onAlwaysAllow ? (
@@ -472,7 +472,7 @@ export function ShellCard({
         {state === "running" && onStop ? (
           <div className="approve-row">
             <div className="why">
-              {runningLabel} — {t("cards.shellStopHint")}
+              {runningLabel}: {t("cards.shellStopHint")}
             </div>
             <div className="actions">
               <button type="button" className="btn stop" onClick={onStop}>
@@ -581,7 +581,7 @@ export function CompactionCard({
   ) : failed ? (
     <div className="compaction-body">
       {t("cards.compactionFailedBody")}
-      {error ? ` — ${error}` : ""}
+      {error ? `: ${error}` : ""}
     </div>
   ) : idle ? (
     <div className="compaction-body">{t("cards.compactionNothingToFold")}</div>

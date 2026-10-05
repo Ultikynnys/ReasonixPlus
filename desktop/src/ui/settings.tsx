@@ -1,11 +1,15 @@
 import { DEFAULT_MODEL, modelDisplayName } from "@reasonix/core-utils";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { type ChangeEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { Settings as SettingsType } from "../App";
 import { formatBytes } from "../format";
 import { t, type TKey } from "../i18n";
 import { I } from "../icons";
-import { MODEL_CATALOG_GROUP_LABELS, deriveModelCatalog, type ModelCatalogGroupKey } from "../model-catalog";
+import {
+  MODEL_CATALOG_GROUP_LABELS,
+  deriveModelCatalog,
+  type ModelCatalogGroupKey,
+} from "../model-catalog";
 import type {
   McpExtensionCheck,
   McpExtensionStatus,
@@ -16,8 +20,6 @@ import type {
   PlaywrightManagedBrowser,
   PlaywrightMcpConnectionMode,
   PlaywrightExtensionBrowser,
-  MemoryDetail,
-  MemoryEntryInfo,
   SettingsPatch,
 } from "../protocol";
 import {
@@ -72,14 +74,12 @@ function keyStatusText(prefix: string | undefined): string {
   return prefix ? t("settings.apiKeySet", { prefix }) : t("settings.apiKeyNotSet");
 }
 
-export type PageId = "general" | "models" | "mcp" | "memory" | "rules" | "shortcuts";
+export type PageId = "general" | "models" | "mcp" | "shortcuts";
 
 const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
   { id: "general", icon: "cog" },
   { id: "models", icon: "brain" },
   { id: "mcp", icon: "wrench" },
-  { id: "memory", icon: "bookmark" },
-  { id: "rules", icon: "shield" },
   { id: "shortcuts", icon: "cpu" },
 ];
 
@@ -94,9 +94,6 @@ export function SettingsModal({
   initialPage,
   mcpSpecs,
   mcpBridged,
-  memory,
-  memoryDetail,
-  memoryResult,
   onClose,
   onSave,
   onSaveApiKey,
@@ -140,14 +137,6 @@ export function SettingsModal({
   onConnectMail,
   onCancelMail,
   onSignOutMail,
-  onReadMemory,
-  onWriteMemory,
-  onDeleteMemory,
-  onExportMemories,
-  onImportMemories,
-  onDismissMemoryResult,
-  onAddRule,
-  onRemoveRule,
 }: {
   settings: SettingsType;
   fontScale: FontScale;
@@ -159,11 +148,6 @@ export function SettingsModal({
   initialPage?: PageId;
   mcpSpecs: McpSpecInfo[];
   mcpBridged: boolean;
-  memory: MemoryEntryInfo[];
-  memoryDetail: MemoryDetail | null;
-  memoryResult: { ok: boolean; message: string } | null;
-  onAddRule?: (ruleType: "shell" | "path", pattern: string) => void;
-  onRemoveRule?: (ruleType: "shell" | "path", pattern: string) => void;
   onClose: () => void;
   onSave: (patch: SettingsPatch) => void;
   onSaveApiKey: (key: string) => void;
@@ -219,17 +203,6 @@ export function SettingsModal({
   onConnectMail: (provider: MailProvider) => void;
   onCancelMail: (provider: MailProvider) => void;
   onSignOutMail: (provider: MailProvider) => void;
-  onReadMemory: (path: string) => void;
-  onWriteMemory: (
-    scope: "global" | "project",
-    name: string,
-    description: string,
-    body: string,
-  ) => void;
-  onDeleteMemory: (path: string) => void;
-  onExportMemories: () => void;
-  onImportMemories: (json: string) => void;
-  onDismissMemoryResult: () => void;
 }) {
   const [page, setPage] = useState<PageId>(initialPage ?? "general");
   useEffect(() => {
@@ -362,22 +335,6 @@ export function SettingsModal({
                 onCancelMail={onCancelMail}
                 onSignOutMail={onSignOutMail}
               />
-            )}
-            {page === "memory" && (
-              <PageMemory
-                entries={memory}
-                detail={memoryDetail}
-                result={memoryResult}
-                onRead={onReadMemory}
-                onWrite={onWriteMemory}
-                onDelete={onDeleteMemory}
-                onExport={onExportMemories}
-                onImport={onImportMemories}
-                onDismissResult={onDismissMemoryResult}
-              />
-            )}
-            {page === "rules" && (
-              <PageRules settings={settings} onAddRule={onAddRule} onRemoveRule={onRemoveRule} />
             )}
             {page === "shortcuts" && <PageShortcuts />}
           </div>
@@ -659,6 +616,9 @@ function PageGeneral({
           </div>
         </form>
       </section>
+
+      <AudioInputDeviceSettings />
+      <VoiceModelSettings />
     </>
   );
 }
@@ -748,42 +708,46 @@ export function AudioInputDeviceSettings() {
   };
 
   return (
-    <ProviderCard title={t("settings.voiceInputDevice")} settings={<div className="voice-device-settings">
-      <div className="voice-section-hint">{t("settings.voiceInputDeviceHint")}</div>
+    <ProviderCard
+      title={t("settings.voiceInputDevice")}
+      settings={
+        <div className="voice-device-settings">
+          <div className="voice-section-hint">{t("settings.voiceInputDeviceHint")}</div>
 
-      {error && (
-        <div className="voice-error-banner" role="alert">
-          <span>{error}</span>
-        </div>
-      )}
+          {error && (
+            <div className="voice-error-banner" role="alert">
+              <span>{error}</span>
+            </div>
+          )}
 
-      {phase === "consent" ? (
-        <div className="voice-consent">
-          <button type="button" className="btn" onClick={handleAllow} disabled={granting}>
-            <I.mic size={13} />
-            <span>{t("settings.voiceInputDeviceAllow")}</span>
-          </button>
-          <div className="voice-section-hint">{t("settings.voiceInputDeviceAllowHint")}</div>
+          {phase === "consent" ? (
+            <div className="voice-consent">
+              <button type="button" className="btn" onClick={handleAllow} disabled={granting}>
+                <I.mic size={13} />
+                <span>{t("settings.voiceInputDeviceAllow")}</span>
+              </button>
+              <div className="voice-section-hint">{t("settings.voiceInputDeviceAllowHint")}</div>
+            </div>
+          ) : (
+            <>
+              <select
+                className="voice-device-select"
+                value={selected}
+                onChange={(e) => handleChange(e.target.value)}
+                aria-label={t("settings.voiceInputDevice")}
+              >
+                <option value="">{t("settings.voiceInputDeviceDefault")}</option>
+                {devices.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+              <AudioInputDeviceTest deviceId={selected} />
+            </>
+          )}
         </div>
-      ) : (
-        <>
-          <select
-            className="voice-device-select"
-            value={selected}
-            onChange={(e) => handleChange(e.target.value)}
-            aria-label={t("settings.voiceInputDevice")}
-          >
-            <option value="">{t("settings.voiceInputDeviceDefault")}</option>
-            {devices.map((d) => (
-              <option key={d.deviceId} value={d.deviceId}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-          <AudioInputDeviceTest deviceId={selected} />
-        </>
-      )}
-    </div>}
+      }
     />
   );
 }
@@ -1034,91 +998,98 @@ export function VoiceModelSettings() {
       models={
         <div className="provider-models-scroll">
           <div className="voice-card-grid">
-        {VOICE_MODELS.map((model) => {
-          const isActive = activeModel === model.id;
-          const isDownloaded = Boolean(downloadedMap[model.id]);
-          const isDownloading = downloadingModel === model.id;
+            {VOICE_MODELS.map((model) => {
+              const isActive = activeModel === model.id;
+              const isDownloaded = Boolean(downloadedMap[model.id]);
+              const isDownloading = downloadingModel === model.id;
 
-          return (
-            <div
-              key={model.id}
-              className={`voice-card ${isActive ? "active" : ""}`}
-              data-active={isActive}
-            >
-              <div className="voice-card-header">
-                <div className="voice-card-title">{model.name}</div>
-                <span className="voice-badge">{model.badge ?? "Balanced"}</span>
-              </div>
-
-              <div className="voice-card-meta">
-                {model.parameters && (
-                  <>
-                    <span>{model.parameters} params</span>
-                    <span>•</span>
-                  </>
-                )}
-                <span>{model.size}</span>
-                {model.engine === "cactus" && (
-                  <>
-                    <span>•</span>
-                    <span>Cactus engine</span>
-                  </>
-                )}
-              </div>
-
-              <div className="voice-card-desc">{model.description}</div>
-
-              {isDownloading && (
-                <div className="voice-download-box">
-                  <div className="voice-progress-meta">
-                    <span className="voice-file-name">
-                      {downloadFile || t("settings.voiceDownloading")}
-                    </span>
-                    <span className="voice-pct">{downloadProgress}%</span>
+              return (
+                <div
+                  key={model.id}
+                  className={`voice-card ${isActive ? "active" : ""}`}
+                  data-active={isActive}
+                >
+                  <div className="voice-card-header">
+                    <div className="voice-card-title">{model.name}</div>
+                    <span className="voice-badge">{model.badge ?? "Balanced"}</span>
                   </div>
-                  <div className="voice-progress-track">
-                    <div className="voice-progress-bar" style={{ width: `${downloadProgress}%` }} />
-                  </div>
-                </div>
-              )}
 
-              <div className="voice-card-actions">
-                {isDownloading ? (
-                  <button type="button" className="btn" disabled>
-                    {t("settings.voiceDownloading")}
-                  </button>
-                ) : isDownloaded ? (
-                  <>
-                    {isActive ? (
-                      <span className="voice-active-label">✓ {t("settings.voiceActive")}</span>
+                  <div className="voice-card-meta">
+                    {model.parameters && (
+                      <>
+                        <span>{model.parameters} params</span>
+                        <span>•</span>
+                      </>
+                    )}
+                    <span>{model.size}</span>
+                    {model.engine === "cactus" && (
+                      <>
+                        <span>•</span>
+                        <span>Cactus engine</span>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="voice-card-desc">{model.description}</div>
+
+                  {isDownloading && (
+                    <div className="voice-download-box">
+                      <div className="voice-progress-meta">
+                        <span className="voice-file-name">
+                          {downloadFile || t("settings.voiceDownloading")}
+                        </span>
+                        <span className="voice-pct">{downloadProgress}%</span>
+                      </div>
+                      <div className="voice-progress-track">
+                        <div
+                          className="voice-progress-bar"
+                          style={{ width: `${downloadProgress}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="voice-card-actions">
+                    {isDownloading ? (
+                      <button type="button" className="btn" disabled>
+                        {t("settings.voiceDownloading")}
+                      </button>
+                    ) : isDownloaded ? (
+                      <>
+                        {isActive ? (
+                          <span className="voice-active-label">✓ {t("settings.voiceActive")}</span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => handleSelect(model.id)}
+                          >
+                            {t("settings.voiceSelect")}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn btn-subtle"
+                          title="Delete downloaded files to free space"
+                          onClick={() => handleDelete(model.id)}
+                        >
+                          {t("settings.voiceDelete")}
+                        </button>
+                      </>
                     ) : (
-                      <button type="button" className="btn" onClick={() => handleSelect(model.id)}>
-                        {t("settings.voiceSelect")}
+                      <button
+                        type="button"
+                        className="btn btn-download"
+                        disabled={downloadingModel !== null}
+                        onClick={() => handleDownload(model.id)}
+                      >
+                        {t("settings.voiceDownload")}
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="btn btn-subtle"
-                      title="Delete downloaded files to free space"
-                      onClick={() => handleDelete(model.id)}
-                    >
-                      {t("settings.voiceDelete")}
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn btn-download"
-                    disabled={downloadingModel !== null}
-                    onClick={() => handleDownload(model.id)}
-                  >
-                    {t("settings.voiceDownload")}
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       }
@@ -1606,6 +1577,41 @@ function ProviderCard({
   );
 }
 
+/** Collapsible card for a single MCP server. Mirrors the Models page's provider
+ *  card (same `.provider-card` chrome) so each server's settings sit under its
+ *  own header, dropdown-style. */
+function McpServerCard({
+  title,
+  defaultOpen = true,
+  children,
+}: {
+  title: ReactNode;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="provider-card">
+      <button
+        type="button"
+        className="provider-head"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="provider-caret" aria-hidden="true">
+          {open ? "\u25be" : "\u25b8"}
+        </span>
+        <span className="provider-title">{title}</span>
+      </button>
+      {open ? (
+        <div className="provider-body" data-has-models="false">
+          <div className="provider-col">{children}</div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 /** The left column of a provider card: a scrollable list of that provider's
  *  models, each toggleable in/out of `enabledModels` via the corner button.
  *  `onSelect` (chat models only) makes a card clickable to set the default
@@ -1685,7 +1691,6 @@ function ModelList({
     </>
   );
 }
-
 
 /** Base-URL override row shared by the OpenCode and Ollama provider cards. */
 function ProviderBaseUrlRow({
@@ -1842,6 +1847,14 @@ function PageModels({
   const ollamaList = (ollamaModels ?? []).map((id) => `ollama/${id}`);
   const isKnown = catalog.knownModelIds.has(settings.model);
   const enabledSet = new Set(settings.enabledModels ?? []);
+  // Options for the top "Default model" enum: the enabled allow-list, plus the
+  // active model when it isn't enabled yet (mirrors the composer picker) so the
+  // select never renders blank.
+  const enabledChoices = settings.enabledModels ?? [];
+  const defaultModelOptions =
+    enabledChoices.length > 0 && !enabledChoices.includes(settings.model)
+      ? [settings.model, ...enabledChoices]
+      : enabledChoices;
 
   const toggleEnabled = (id: string): void => {
     const next = new Set(settings.enabledModels ?? []);
@@ -1872,7 +1885,29 @@ function PageModels({
   return (
     <>
       <div className="provider-default-line">
-        <div className="h">{t("settings.defaultModelCurrent", { model: settings.model })}</div>
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.defaultModel")}</div>
+            <div className="h">{t("settings.defaultModelHint")}</div>
+          </div>
+          <select
+            className="field"
+            aria-label={t("settings.defaultModel")}
+            disabled={enabledChoices.length === 0}
+            value={enabledChoices.length === 0 ? "" : settings.model}
+            onChange={(e) => onSave({ model: e.target.value, subagentModel: e.target.value })}
+          >
+            {enabledChoices.length === 0 ? (
+              <option value="">{t("settings.defaultModelNone")}</option>
+            ) : (
+              defaultModelOptions.map((id) => (
+                <option key={id} value={id}>
+                  {modelDisplayName(id)}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
         <div className="h">{t("settings.modelVisibilityHint")}</div>
       </div>
 
@@ -2085,13 +2120,9 @@ function PageModels({
           </>
         }
       />
-
-      <AudioInputDeviceSettings />
-      <VoiceModelSettings />
     </>
   );
 }
-
 
 /** Per-provider mail-card knobs: the phases that swap the primary action for Cancel,
  *  whether the card owns an inline Configure step (Outlook) or a credentials form
@@ -2233,7 +2264,7 @@ function MailStatusLine({
           ? t("settings.outlookMailConnected", {
               account: mail.account ?? t(ui.accountUnknown),
             })
-          : mail?.message ?? t(ui.statusUnknown)}
+          : (mail?.message ?? t(ui.statusUnknown))}
     </div>
   );
 }
@@ -2359,340 +2390,334 @@ export function PageMCP({
       connection = { text: t("settings.mcpConnIdle"), color: "var(--muted)" };
     }
   }
+  const playwrightSettings = (
+    <div className="scard">
+      <div className="desc" style={{ marginBottom: 10 }}>
+        {t("settings.mcpBrowserDesc")}
+      </div>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <select
+          className="field"
+          aria-label={t("settings.mcpModeLabel")}
+          value={mode}
+          onChange={(event) => setMode(event.target.value as PlaywrightMcpConnectionMode)}
+        >
+          <option value="chrome">{t("settings.mcpModeChrome")}</option>
+          <option value="firefox">{t("settings.mcpModeFirefox")}</option>
+          <option value="webkit">{t("settings.mcpModeWebkit")}</option>
+          <option value="msedge">{t("settings.mcpModeEdge")}</option>
+          <option value="extension">{t("settings.mcpModeExtension")}</option>
+          <option value="cdp">{t("settings.mcpModeCdp")}</option>
+        </select>
+        {mode === "cdp" ? (
+          <input
+            className="field"
+            aria-label={t("settings.mcpCdpEndpoint")}
+            value={cdpEndpoint}
+            onChange={(event) => setCdpEndpoint(event.target.value)}
+            placeholder="http://localhost:9222"
+            style={{ minWidth: 240 }}
+          />
+        ) : null}
+        {mode === "extension" ? (
+          <select
+            className="field"
+            aria-label={t("settings.mcpExtensionBrowserLabel")}
+            value={extensionBrowser}
+            onChange={(event) =>
+              setExtensionBrowser(event.target.value as PlaywrightExtensionBrowser)
+            }
+          >
+            <option value="chrome">{t("settings.mcpExtensionBrowserChrome")}</option>
+            <option value="msedge">{t("settings.mcpExtensionBrowserEdge")}</option>
+          </select>
+        ) : null}
+        {extensionMode ? (
+          <>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => {
+                if (!extensionStatus) return;
+                // Open in the browser picked above, not the OS default, so the
+                // extension installs into the browser the relay will attach to.
+                const program = extensionBrowser === "msedge" ? "msedge.exe" : "chrome.exe";
+                void openUrl(extensionStatus.storeUrl, program).catch(() => undefined);
+              }}
+            >
+              {t("settings.mcpOpenExtensionStore")}
+            </button>
+            <input
+              className="field"
+              type="password"
+              value={tokenDraft}
+              onChange={(event) => setTokenDraft(event.target.value)}
+              placeholder={extensionStatus?.server.tokenPrefix ?? t("settings.mcpTokenPlaceholder")}
+              style={{ maxWidth: 240 }}
+            />
+          </>
+        ) : null}
+        <button
+          type="button"
+          className="btn"
+          onClick={() => {
+            onConfigureExtension(
+              mode,
+              extensionMode ? tokenDraft.trim() || undefined : undefined,
+              mode === "cdp" ? cdpEndpoint.trim() : undefined,
+              mode === "extension" ? extensionBrowser : undefined,
+            );
+            setTokenDraft("");
+          }}
+        >
+          {configuredMode === mode ? t("settings.mcpReconfigure") : t("settings.mcpConfigure")}
+        </button>
+        {extensionMode ? (
+          <button type="button" className="btn" onClick={onCheckExtension}>
+            {t("settings.mcpTestConn")}
+          </button>
+        ) : null}
+        {managedMode ? (
+          installRunning ? (
+            <button
+              type="button"
+              className="btn danger"
+              onClick={() => onCancelBrowserInstall(mode)}
+            >
+              {t("settings.mcpBrowserInstallCancel")}
+            </button>
+          ) : (
+            <button type="button" className="btn primary" onClick={() => onInstallBrowser(mode)}>
+              {t("settings.mcpBrowserInstall", { browser: mode })}
+            </button>
+          )
+        ) : null}
+      </div>
+      <div style={{ marginTop: 8, fontSize: 11, color: "var(--muted)" }}>
+        {extensionStatus
+          ? extensionStatus.server.configured
+            ? `✓ ${t("settings.mcpConfiguredMode", { mode: configuredMode ?? "chrome" })}${
+                extensionMode && extensionStatus.server.tokenPrefix
+                  ? ` · ${t("settings.mcpTokenSaved")}`
+                  : ""
+              }`
+            : t("settings.mcpConfiguredNo")
+          : "…"}
+      </div>
+      {connection ? (
+        <div style={{ marginTop: 4, fontSize: 11, color: connection.color }}>
+          {connection.text}
+          {playwrightSpec?.status === "failed" &&
+          /Node\.js is outdated/i.test(playwrightSpec.statusReason ?? "") ? (
+            <div style={{ marginTop: 6 }}>
+              <button
+                type="button"
+                className="btn secondary sm"
+                onClick={() => void openUrl("https://nodejs.org").catch(() => undefined)}
+              >
+                {t("settings.mcpOutdatedNodeUpdateBtn")}
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {installRunning ? (
+        <div className="playwright-download-box">
+          <output style={{ marginBottom: 4, fontSize: 11, color: "var(--muted)" }}>
+            {browserInstall.source === "backup"
+              ? t("settings.mcpBrowserDownloadBackup")
+              : t("settings.mcpBrowserDownloadOfficial")}
+          </output>
+          <div className="playwright-download-meta">
+            <span>
+              {browserInstall.downloadedBytes !== undefined &&
+              browserInstall.totalBytes !== undefined
+                ? t("settings.mcpBrowserDownloadProgress", {
+                    downloaded: formatBytes(browserInstall.downloadedBytes),
+                    total: formatBytes(browserInstall.totalBytes),
+                    percent: browserInstall.percent ?? 0,
+                  })
+                : t("settings.mcpBrowserDownloadStarting")}
+            </span>
+            {browserInstall.bytesPerSecond !== undefined ? (
+              <span>
+                {t("settings.mcpBrowserDownloadSpeed", {
+                  speed: formatBytes(browserInstall.bytesPerSecond),
+                })}
+              </span>
+            ) : null}
+          </div>
+          <div
+            className="playwright-download-track"
+            role="progressbar"
+            aria-label={t("settings.mcpBrowserDownloadAria")}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={browserInstall.percent}
+            tabIndex={0}
+          >
+            <div
+              className={`playwright-download-bar${
+                browserInstall.percent === undefined ? " indeterminate" : ""
+              }`}
+              style={
+                browserInstall.percent === undefined
+                  ? undefined
+                  : { width: `${browserInstall.percent}%` }
+              }
+            />
+          </div>
+        </div>
+      ) : null}
+      {managedMode && browserInstall?.phase === "done" && browserInstall.browser === mode ? (
+        <div
+          style={{
+            marginTop: 4,
+            fontSize: 11,
+            color: browserInstall.ok ? "var(--accent)" : "var(--danger)",
+          }}
+        >
+          {browserInstall.ok
+            ? t("settings.mcpBrowserInstallOk", { browser: mode })
+            : `✗ ${browserInstall.reason ?? t("settings.mcpBrowserInstallFailed")}`}
+        </div>
+      ) : null}
+      {extensionMode && extensionCheck?.phase === "running" ? (
+        <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+          {t("settings.mcpTestRunning")}
+        </div>
+      ) : extensionCheck?.phase === "done" ? (
+        <div
+          style={{
+            marginTop: 4,
+            fontSize: 11,
+            color: extensionCheck.ok ? "var(--accent)" : "var(--danger)",
+          }}
+        >
+          {extensionCheck.ok
+            ? t("settings.mcpTestOk", { ms: extensionCheck.elapsedMs })
+            : `✗ ${extensionCheck.reason ?? t("settings.mcpTestFailed")}`}
+        </div>
+      ) : null}
+      <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+        {t(
+          extensionMode
+            ? "settings.mcpTokenHint"
+            : mode === "cdp"
+              ? "settings.mcpCdpHint"
+              : "settings.mcpManagedHint",
+        )}
+      </div>
+    </div>
+  );
+  const mailSettings = (
+    <div className="scard">
+      <div className="desc" style={{ marginBottom: 10 }}>
+        {t("settings.mailDesc")}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        <button
+          type="button"
+          className={mailProvider === MailProvider.Outlook ? "btn primary" : "btn"}
+          onClick={() => onSetMailProvider(MailProvider.Outlook)}
+        >
+          {t("settings.mailProviderOutlook")}
+        </button>
+        <button
+          type="button"
+          className={mailProvider === MailProvider.Gmail ? "btn primary" : "btn"}
+          onClick={() => onSetMailProvider(MailProvider.Gmail)}
+        >
+          {t("settings.mailProviderGmail")}
+        </button>
+      </div>
+      {mailProvider === MailProvider.Gmail ? (
+        <div>
+          <div className="desc" style={{ marginBottom: 10 }}>
+            {t("settings.gmailMailDesc")}
+          </div>
+          <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
+            <label style={{ fontSize: 11, color: "var(--muted)" }}>
+              {t("settings.gmailClientIdLabel")}
+              <input
+                type="text"
+                className="field mono"
+                style={{ marginTop: 4 }}
+                value={gmailClientId}
+                placeholder={
+                  mail?.hasClientId ? t("settings.gmailSaved") : "…apps.googleusercontent.com"
+                }
+                onChange={(event) => setGmailClientId(event.target.value)}
+              />
+            </label>
+            <label style={{ fontSize: 11, color: "var(--muted)" }}>
+              {t("settings.gmailClientSecretLabel")}
+              <input
+                type="password"
+                className="field mono"
+                style={{ marginTop: 4 }}
+                value={gmailClientSecret}
+                placeholder={mail?.hasClientSecret ? t("settings.gmailSaved") : ""}
+                onChange={(event) => setGmailClientSecret(event.target.value)}
+              />
+            </label>
+          </div>
+          <MailActions
+            provider={MailProvider.Gmail}
+            mail={mail}
+            onConfigureMail={onConfigureMail}
+            onConnectMail={onConnectMail}
+            onCancelMail={onCancelMail}
+            onSignOutMail={onSignOutMail}
+            onRequestMailStatus={onRequestMailStatus}
+            leading={
+              <button
+                type="button"
+                className="btn"
+                disabled={!gmailClientId.trim() || !gmailClientSecret.trim()}
+                onClick={() => {
+                  onConfigureMail(MailProvider.Gmail, gmailClientId, gmailClientSecret);
+                  setGmailClientSecret("");
+                }}
+              >
+                {t("settings.gmailSave")}
+              </button>
+            }
+          />
+          <MailStatusLine provider={MailProvider.Gmail} mail={mail} />
+          <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+            {t("settings.gmailCallbackHint", { url: mail?.callbackUrl ?? "" })}
+          </div>
+        </div>
+      ) : (
+        <div>
+          <MailActions
+            provider={MailProvider.Outlook}
+            mail={mail}
+            onConfigureMail={onConfigureMail}
+            onConnectMail={onConnectMail}
+            onCancelMail={onCancelMail}
+            onSignOutMail={onSignOutMail}
+            onRequestMailStatus={onRequestMailStatus}
+          />
+          {mail?.userCode ? (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
+                {t("settings.outlookMailCodeLabel")}
+              </div>
+              <code style={{ fontSize: 18, userSelect: "all" }}>{mail.userCode}</code>
+            </div>
+          ) : null}
+          <MailStatusLine provider={MailProvider.Outlook} mail={mail} />
+          <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+            {t("settings.outlookMailPrivacy")}
+          </div>
+        </div>
+      )}
+    </div>
+  );
   return (
     <>
-      <section className="section">
-        <div className="stitle">{t("settings.mcpBrowserTitle")}</div>
-        <div className="scard">
-          <div className="desc" style={{ marginBottom: 10 }}>
-            {t("settings.mcpBrowserDesc")}
-          </div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            <select
-              className="field"
-              aria-label={t("settings.mcpModeLabel")}
-              value={mode}
-              onChange={(event) => setMode(event.target.value as PlaywrightMcpConnectionMode)}
-            >
-              <option value="chrome">{t("settings.mcpModeChrome")}</option>
-              <option value="firefox">{t("settings.mcpModeFirefox")}</option>
-              <option value="webkit">{t("settings.mcpModeWebkit")}</option>
-              <option value="msedge">{t("settings.mcpModeEdge")}</option>
-              <option value="extension">{t("settings.mcpModeExtension")}</option>
-              <option value="cdp">{t("settings.mcpModeCdp")}</option>
-            </select>
-            {mode === "cdp" ? (
-              <input
-                className="field"
-                aria-label={t("settings.mcpCdpEndpoint")}
-                value={cdpEndpoint}
-                onChange={(event) => setCdpEndpoint(event.target.value)}
-                placeholder="http://localhost:9222"
-                style={{ minWidth: 240 }}
-              />
-            ) : null}
-            {mode === "extension" ? (
-              <select
-                className="field"
-                aria-label={t("settings.mcpExtensionBrowserLabel")}
-                value={extensionBrowser}
-                onChange={(event) =>
-                  setExtensionBrowser(event.target.value as PlaywrightExtensionBrowser)
-                }
-              >
-                <option value="chrome">{t("settings.mcpExtensionBrowserChrome")}</option>
-                <option value="msedge">{t("settings.mcpExtensionBrowserEdge")}</option>
-              </select>
-            ) : null}
-            {extensionMode ? (
-              <>
-                <button
-                  type="button"
-                  className="btn primary"
-                  onClick={() => {
-                    if (!extensionStatus) return;
-                    // Open in the browser picked above, not the OS default, so the
-                    // extension installs into the browser the relay will attach to.
-                    const program = extensionBrowser === "msedge" ? "msedge.exe" : "chrome.exe";
-                    void openUrl(extensionStatus.storeUrl, program).catch(() => undefined);
-                  }}
-                >
-                  {t("settings.mcpOpenExtensionStore")}
-                </button>
-                <input
-                  className="field"
-                  type="password"
-                  value={tokenDraft}
-                  onChange={(event) => setTokenDraft(event.target.value)}
-                  placeholder={
-                    extensionStatus?.server.tokenPrefix ?? t("settings.mcpTokenPlaceholder")
-                  }
-                  style={{ maxWidth: 240 }}
-                />
-              </>
-            ) : null}
-            <button
-              type="button"
-              className="btn"
-              onClick={() => {
-                onConfigureExtension(
-                  mode,
-                  extensionMode ? tokenDraft.trim() || undefined : undefined,
-                  mode === "cdp" ? cdpEndpoint.trim() : undefined,
-                  mode === "extension" ? extensionBrowser : undefined,
-                );
-                setTokenDraft("");
-              }}
-            >
-              {configuredMode === mode ? t("settings.mcpReconfigure") : t("settings.mcpConfigure")}
-            </button>
-            {extensionMode ? (
-              <button type="button" className="btn" onClick={onCheckExtension}>
-                {t("settings.mcpTestConn")}
-              </button>
-            ) : null}
-            {managedMode ? (
-              installRunning ? (
-                <button
-                  type="button"
-                  className="btn danger"
-                  onClick={() => onCancelBrowserInstall(mode)}
-                >
-                  {t("settings.mcpBrowserInstallCancel")}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn primary"
-                  onClick={() => onInstallBrowser(mode)}
-                >
-                  {t("settings.mcpBrowserInstall", { browser: mode })}
-                </button>
-              )
-            ) : null}
-          </div>
-          <div style={{ marginTop: 8, fontSize: 11, color: "var(--muted)" }}>
-            {extensionStatus
-              ? extensionStatus.server.configured
-                ? `✓ ${t("settings.mcpConfiguredMode", { mode: configuredMode ?? "chrome" })}${
-                    extensionMode && extensionStatus.server.tokenPrefix
-                      ? ` · ${t("settings.mcpTokenSaved")}`
-                      : ""
-                  }`
-                : t("settings.mcpConfiguredNo")
-              : "…"}
-          </div>
-          {connection ? (
-            <div style={{ marginTop: 4, fontSize: 11, color: connection.color }}>
-              {connection.text}
-              {playwrightSpec?.status === "failed" &&
-              /Node\.js is outdated/i.test(playwrightSpec.statusReason ?? "") ? (
-                <div style={{ marginTop: 6 }}>
-                  <button
-                    type="button"
-                    className="btn secondary sm"
-                    onClick={() => void openUrl("https://nodejs.org").catch(() => undefined)}
-                  >
-                    {t("settings.mcpOutdatedNodeUpdateBtn")}
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-          {installRunning ? (
-            <div className="playwright-download-box">
-              <output style={{ marginBottom: 4, fontSize: 11, color: "var(--muted)" }}>
-                {browserInstall.source === "backup"
-                  ? t("settings.mcpBrowserDownloadBackup")
-                  : t("settings.mcpBrowserDownloadOfficial")}
-              </output>
-              <div className="playwright-download-meta">
-                <span>
-                  {browserInstall.downloadedBytes !== undefined &&
-                  browserInstall.totalBytes !== undefined
-                    ? t("settings.mcpBrowserDownloadProgress", {
-                        downloaded: formatBytes(browserInstall.downloadedBytes),
-                        total: formatBytes(browserInstall.totalBytes),
-                        percent: browserInstall.percent ?? 0,
-                      })
-                    : t("settings.mcpBrowserDownloadStarting")}
-                </span>
-                {browserInstall.bytesPerSecond !== undefined ? (
-                  <span>
-                    {t("settings.mcpBrowserDownloadSpeed", {
-                      speed: formatBytes(browserInstall.bytesPerSecond),
-                    })}
-                  </span>
-                ) : null}
-              </div>
-              <div
-                className="playwright-download-track"
-                role="progressbar"
-                aria-label={t("settings.mcpBrowserDownloadAria")}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={browserInstall.percent}
-                tabIndex={0}
-              >
-                <div
-                  className={`playwright-download-bar${
-                    browserInstall.percent === undefined ? " indeterminate" : ""
-                  }`}
-                  style={
-                    browserInstall.percent === undefined
-                      ? undefined
-                      : { width: `${browserInstall.percent}%` }
-                  }
-                />
-              </div>
-            </div>
-          ) : null}
-          {managedMode && browserInstall?.phase === "done" && browserInstall.browser === mode ? (
-            <div
-              style={{
-                marginTop: 4,
-                fontSize: 11,
-                color: browserInstall.ok ? "var(--accent)" : "var(--danger)",
-              }}
-            >
-              {browserInstall.ok
-                ? t("settings.mcpBrowserInstallOk", { browser: mode })
-                : `✗ ${browserInstall.reason ?? t("settings.mcpBrowserInstallFailed")}`}
-            </div>
-          ) : null}
-          {extensionMode && extensionCheck?.phase === "running" ? (
-            <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
-              {t("settings.mcpTestRunning")}
-            </div>
-          ) : extensionCheck?.phase === "done" ? (
-            <div
-              style={{
-                marginTop: 4,
-                fontSize: 11,
-                color: extensionCheck.ok ? "var(--accent)" : "var(--danger)",
-              }}
-            >
-              {extensionCheck.ok
-                ? t("settings.mcpTestOk", { ms: extensionCheck.elapsedMs })
-                : `✗ ${extensionCheck.reason ?? t("settings.mcpTestFailed")}`}
-            </div>
-          ) : null}
-          <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
-            {t(
-              extensionMode
-                ? "settings.mcpTokenHint"
-                : mode === "cdp"
-                  ? "settings.mcpCdpHint"
-                  : "settings.mcpManagedHint",
-            )}
-          </div>
-        </div>
-      </section>
-      <section className="section">
-        <div className="stitle">{t("settings.mailTitle")}</div>
-        <div className="scard">
-          <div className="desc" style={{ marginBottom: 10 }}>
-            {t("settings.mailDesc")}
-          </div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-            <button
-              type="button"
-              className={mailProvider === MailProvider.Outlook ? "btn primary" : "btn"}
-              onClick={() => onSetMailProvider(MailProvider.Outlook)}
-            >
-              {t("settings.mailProviderOutlook")}
-            </button>
-            <button
-              type="button"
-              className={mailProvider === MailProvider.Gmail ? "btn primary" : "btn"}
-              onClick={() => onSetMailProvider(MailProvider.Gmail)}
-            >
-              {t("settings.mailProviderGmail")}
-            </button>
-          </div>
-          {mailProvider === MailProvider.Gmail ? (
-            <div>
-              <div className="desc" style={{ marginBottom: 10 }}>
-                {t("settings.gmailMailDesc")}
-              </div>
-              <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
-                <label style={{ fontSize: 11, color: "var(--muted)" }}>
-                  {t("settings.gmailClientIdLabel")}
-                  <input
-                    type="text"
-                    className="field mono"
-                    style={{ marginTop: 4 }}
-                    value={gmailClientId}
-                    placeholder={mail?.hasClientId ? t("settings.gmailSaved") : "…apps.googleusercontent.com"}
-                    onChange={(event) => setGmailClientId(event.target.value)}
-                  />
-                </label>
-                <label style={{ fontSize: 11, color: "var(--muted)" }}>
-                  {t("settings.gmailClientSecretLabel")}
-                  <input
-                    type="password"
-                    className="field mono"
-                    style={{ marginTop: 4 }}
-                    value={gmailClientSecret}
-                    placeholder={mail?.hasClientSecret ? t("settings.gmailSaved") : ""}
-                    onChange={(event) => setGmailClientSecret(event.target.value)}
-                  />
-                </label>
-              </div>
-              <MailActions
-                provider={MailProvider.Gmail}
-                mail={mail}
-                onConfigureMail={onConfigureMail}
-                onConnectMail={onConnectMail}
-                onCancelMail={onCancelMail}
-                onSignOutMail={onSignOutMail}
-                onRequestMailStatus={onRequestMailStatus}
-                leading={
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={!gmailClientId.trim() || !gmailClientSecret.trim()}
-                    onClick={() => {
-                      onConfigureMail(MailProvider.Gmail, gmailClientId, gmailClientSecret);
-                      setGmailClientSecret("");
-                    }}
-                  >
-                    {t("settings.gmailSave")}
-                  </button>
-                }
-              />
-              <MailStatusLine provider={MailProvider.Gmail} mail={mail} />
-              <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
-                {t("settings.gmailCallbackHint", { url: mail?.callbackUrl ?? "" })}
-              </div>
-            </div>
-          ) : (
-            <div>
-              <MailActions
-                provider={MailProvider.Outlook}
-                mail={mail}
-                onConfigureMail={onConfigureMail}
-                onConnectMail={onConnectMail}
-                onCancelMail={onCancelMail}
-                onSignOutMail={onSignOutMail}
-                onRequestMailStatus={onRequestMailStatus}
-              />
-              {mail?.userCode ? (
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
-                    {t("settings.outlookMailCodeLabel")}
-                  </div>
-                  <code style={{ fontSize: 18, userSelect: "all" }}>{mail.userCode}</code>
-                </div>
-              ) : null}
-              <MailStatusLine provider={MailProvider.Outlook} mail={mail} />
-              <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
-                {t("settings.outlookMailPrivacy")}
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
       <section className="section">
         <div className="stitle">
           {t("settings.mcpConfigured", { count: specs.length })}
@@ -2719,40 +2744,40 @@ export function PageMCP({
           >
             {t("settings.mcpEmpty")}
           </div>
-        ) : (
-          specs.map((s) => {
-            const canToggle = s.name !== null;
-            const tools = s.tools ?? [];
-            const isExpanded = expandedTools.has(s.raw);
-            const disabledCount = s.disabledTools?.length ?? 0;
-            return (
-              <div className="scard" key={s.raw}>
-                <div className="top">
-                  <span className="ico">
-                    <I.wrench size={14} />
-                  </span>
-                  <div className="mcp-spec-body">
-                    <div className="nm">
-                      {s.name ?? "(anonymous)"}
-                      {s.builtin ? (
-                        <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
-                          · {t("settings.mcpBuiltinBadge")}
-                        </span>
-                      ) : null}
-                      {s.disabled ? (
-                        <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
-                          · {t("settings.mcpDisabledBadge")}
-                        </span>
-                      ) : disabledCount > 0 ? (
-                        <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
-                          · {t("settings.mcpToolsDisabledNote", { count: disabledCount })}
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="sub mcp-spec-summary" title={s.summary}>
-                      {s.summary}
-                    </div>
-                  </div>
+        ) : null}
+        {specs.map((s) => {
+          const canToggle = s.name !== null;
+          const tools = s.tools ?? [];
+          const isExpanded = expandedTools.has(s.raw);
+          const disabledCount = s.disabledTools?.length ?? 0;
+          return (
+            <McpServerCard
+              key={s.raw}
+              title={
+                <>
+                  {s.name ?? "(anonymous)"}
+                  {s.builtin ? (
+                    <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
+                      · {t("settings.mcpBuiltinBadge")}
+                    </span>
+                  ) : null}
+                  {s.disabled ? (
+                    <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
+                      · {t("settings.mcpDisabledBadge")}
+                    </span>
+                  ) : disabledCount > 0 ? (
+                    <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
+                      · {t("settings.mcpToolsDisabledNote", { count: disabledCount })}
+                    </span>
+                  ) : null}
+                </>
+              }
+            >
+              <div className="sub mcp-spec-summary" title={s.summary}>
+                {s.summary}
+              </div>
+              {canToggle || !s.builtin ? (
+                <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                   {canToggle ? (
                     <button
                       type="button"
@@ -2774,82 +2799,92 @@ export function PageMCP({
                     </button>
                   )}
                 </div>
-                {s.parseError ? (
-                  <div className="desc" style={{ color: "var(--danger)" }}>
-                    {t("settings.parseError", { error: s.parseError })}
-                  </div>
-                ) : null}
-                {canToggle && tools.length > 0 ? (
-                  <div
-                    style={{
-                      marginTop: 8,
-                      borderTop: "1px solid var(--border)",
-                      paddingTop: 8,
-                    }}
+              ) : null}
+              {s.parseError ? (
+                <div className="desc" style={{ color: "var(--danger)" }}>
+                  {t("settings.parseError", { error: s.parseError })}
+                </div>
+              ) : null}
+              {canToggle && tools.length > 0 ? (
+                <div
+                  style={{
+                    marginTop: 8,
+                    borderTop: "1px solid var(--border)",
+                    paddingTop: 8,
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    style={{ fontSize: 11 }}
+                    onClick={() => toggleToolsExpanded(s.raw)}
                   >
-                    <button
-                      type="button"
-                      className="btn ghost"
-                      style={{ fontSize: 11 }}
-                      onClick={() => toggleToolsExpanded(s.raw)}
+                    {isExpanded ? "▾" : "▸"} {t("settings.mcpToolsLabel", { count: tools.length })}
+                  </button>
+                  {isExpanded ? (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 2,
+                      }}
                     >
-                      {isExpanded ? "▾" : "▸"} {t("settings.mcpToolsLabel", { count: tools.length })}
-                    </button>
-                    {isExpanded ? (
-                      <div
-                        style={{
-                          marginTop: 6,
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 2,
-                        }}
-                      >
-                        {tools.map((tool) => {
-                          const off = s.disabledTools?.includes(tool) ?? false;
-                          return (
-                            <div
-                              key={tool}
+                      {tools.map((tool) => {
+                        const off = s.disabledTools?.includes(tool) ?? false;
+                        return (
+                          <div
+                            key={tool}
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              padding: "3px 8px",
+                              borderRadius: 6,
+                              background: off ? "var(--card)" : undefined,
+                            }}
+                          >
+                            <span
+                              className="mono"
                               style={{
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                padding: "3px 8px",
-                                borderRadius: 6,
-                                background: off ? "var(--card)" : undefined,
+                                fontSize: 11,
+                                color: off ? "var(--muted)" : undefined,
+                                textDecoration: off ? "line-through" : undefined,
                               }}
                             >
-                              <span
-                                className="mono"
-                                style={{
-                                  fontSize: 11,
-                                  color: off ? "var(--muted)" : undefined,
-                                  textDecoration: off ? "line-through" : undefined,
-                                }}
-                              >
-                                {tool}
-                              </span>
-                              <button
-                                type="button"
-                                className="btn ghost"
-                                style={{ fontSize: 11, color: off ? "var(--accent)" : undefined }}
-                                onClick={() => onToggleTool(s.name as string, tool, !off)}
-                              >
-                                {off ? t("settings.mcpEnable") : t("settings.mcpDisable")}
-                              </button>
-                            </div>
-                          );
-                        })}
-                        <div style={{ fontSize: 10, color: "var(--muted)", padding: "2px 8px" }}>
-                          {t("settings.mcpToolToggleHint")}
-                        </div>
+                              {tool}
+                            </span>
+                            <button
+                              type="button"
+                              className="btn ghost"
+                              style={{ fontSize: 11, color: off ? "var(--accent)" : undefined }}
+                              onClick={() => onToggleTool(s.name as string, tool, !off)}
+                            >
+                              {off ? t("settings.mcpEnable") : t("settings.mcpDisable")}
+                            </button>
+                          </div>
+                        );
+                      })}
+                      <div style={{ fontSize: 10, color: "var(--muted)", padding: "2px 8px" }}>
+                        {t("settings.mcpToolToggleHint")}
                       </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })
-        )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {s.name === "playwright" ? playwrightSettings : null}
+              {s.name !== null && /mail/i.test(s.name) ? (
+                <div style={{ marginTop: 12 }}>{mailSettings}</div>
+              ) : null}
+            </McpServerCard>
+          );
+        })}
+        {!specs.some((s) => s.name === "playwright") ? (
+          <McpServerCard title={t("settings.mcpBrowserTitle")}>{playwrightSettings}</McpServerCard>
+        ) : null}
+        {!specs.some((s) => s.name !== null && /mail/i.test(s.name)) ? (
+          <McpServerCard title={t("settings.mailTitle")}>{mailSettings}</McpServerCard>
+        ) : null}
       </section>
       <section className="section">
         <div className="stitle">{t("settings.mcpAddSection")}</div>
@@ -2877,300 +2912,6 @@ export function PageMCP({
     </>
   );
 }
-
-function PageMemory({
-  entries,
-  detail,
-  result,
-  onRead,
-  onWrite,
-  onDelete,
-  onExport,
-  onImport,
-  onDismissResult,
-}: {
-  entries: MemoryEntryInfo[];
-  detail: MemoryDetail | null;
-  result: { ok: boolean; message: string } | null;
-  onRead: (path: string) => void;
-  onWrite: (scope: "global" | "project", name: string, description: string, body: string) => void;
-  onDelete: (path: string) => void;
-  onExport: () => void;
-  onImport: (json: string) => void;
-  onDismissResult: () => void;
-}) {
-  const [composing, setComposing] = useState(false);
-  const [name, setName] = useState("");
-  const [scope, setScope] = useState<"global" | "project">("project");
-  const [body, setBody] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  const submit = (): void => {
-    const trimmedName = name.trim();
-    const trimmedBody = body.trim();
-    if (!trimmedName || !trimmedBody) return;
-    onWrite(scope, trimmedName, trimmedBody.slice(0, 150), trimmedBody);
-    setName("");
-    setBody("");
-    setComposing(false);
-  };
-
-  const onFile = (e: ChangeEvent<HTMLInputElement>): void => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => onImport(String(reader.result ?? ""));
-    reader.readAsText(file);
-  };
-
-  return (
-    <section className="section">
-      <div className="stitle">
-        {t("settings.memorySection")}
-        <span className="mem-actions">
-          <button type="button" className="btn small" onClick={onExport}>
-            ⇪ {t("contextPanel.saveLabel")}
-          </button>
-          <button type="button" className="btn small" onClick={() => fileRef.current?.click()}>
-            ⇓ {t("contextPanel.loadLabel")}
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".json,application/json"
-            style={{ display: "none" }}
-            onChange={onFile}
-          />
-        </span>
-      </div>
-
-      {result ? (
-        <div className={`mem-result ${result.ok ? "" : "err"}`}>
-          <span>{result.message}</span>
-          <button type="button" className="mem-result-x" onClick={onDismissResult}>
-            ✕
-          </button>
-        </div>
-      ) : null}
-
-      {entries.length === 0 ? (
-        <div className="muted-card">{t("settings.memoryDesc")}</div>
-      ) : (
-        <div className="memory-browser">
-          <div className="memory-list">
-            {entries.map((m) => (
-              <div
-                className="memory-item"
-                data-active={detail?.path === m.path}
-                key={m.path}
-                onClick={() => onRead(m.path)}
-                onKeyDown={activationHandler(() => onRead(m.path))}
-              >
-                <span className="memory-kind">{m.kind.replace("_", " ")}</span>
-                <span className="memory-name">{m.description || m.name}</span>
-                <span className="memory-path">{m.path}</span>
-                <button
-                  type="button"
-                  className="mem-del"
-                  title={t("contextPanel.deleteMemory")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete(m.path);
-                  }}
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-          </div>
-          <pre className="memory-detail">{detail ? detail.body : t("settings.memoryDesc")}</pre>
-        </div>
-      )}
-
-      {composing ? (
-        <div className="mem-composer">
-          <div className="mem-composer-row">
-            <input
-              className="mem-input"
-              placeholder={t("contextPanel.newNamePh")}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              spellCheck={false}
-            />
-            <select
-              className="mem-scope"
-              value={scope}
-              onChange={(e) => setScope(e.target.value as "global" | "project")}
-            >
-              <option value="project">{t("contextPanel.scopeProject")}</option>
-              <option value="global">{t("contextPanel.scopeGlobal")}</option>
-            </select>
-          </div>
-          <textarea
-            className="mem-textarea"
-            placeholder={t("contextPanel.newBodyPh")}
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-          />
-          <div className="mem-composer-actions">
-            <button
-              type="button"
-              className="btn small"
-              disabled={!name.trim() || !body.trim()}
-              onClick={submit}
-            >
-              {t("contextPanel.saveMemory")}
-            </button>
-            <button type="button" className="btn small ghost" onClick={() => setComposing(false)}>
-              {t("contextPanel.cancelMemory")}
-            </button>
-          </div>
-        </div>
-      ) : (
-        <button type="button" className="btn small" onClick={() => setComposing(true)}>
-          ＋ {t("contextPanel.newMemory")}
-        </button>
-      )}
-    </section>
-  );
-}
-
-function PageRules({
-  settings,
-  onAddRule,
-  onRemoveRule,
-}: {
-  settings: SettingsType;
-  onAddRule?: (ruleType: "shell" | "path", pattern: string) => void;
-  onRemoveRule?: (ruleType: "shell" | "path", pattern: string) => void;
-}) {
-  const [ruleType, setRuleType] = useState<"shell" | "path">("shell");
-  const [pattern, setPattern] = useState("");
-
-  const shellRules = settings.shellAllowed ?? [];
-  const pathRules = settings.pathAllowed ?? [];
-  const totalCustom = shellRules.length + pathRules.length;
-
-  const handleAdd = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = pattern.trim();
-    if (!trimmed || !onAddRule) return;
-    onAddRule(ruleType, trimmed);
-    setPattern("");
-  };
-
-  return (
-    <>
-      <section className="section">
-        <div className="stitle">{t("settings.ruleAutoApprovalSection")}</div>
-        <div
-          style={{
-            padding: 12,
-            background: "var(--card)",
-            border: "1px solid var(--border)",
-            borderRadius: 10,
-            fontSize: 12,
-            color: "var(--muted)",
-            marginBottom: 12,
-          }}
-        >
-          {t("settings.ruleAutoApprovalHint")}
-        </div>
-
-        {totalCustom > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
-            {shellRules.map((r) => (
-              <div className="rule" key={`shell-${r}`}>
-                <div className="top">
-                  <span className="pat">{r}</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span className="sw">{t("contextPanel.allow")}</span>
-                    {onRemoveRule && (
-                      <button
-                        type="button"
-                        className="mini-btn"
-                        title={t("settings.deleteRuleTooltip")}
-                        aria-label={`Remove rule: ${r}`}
-                        onClick={() => onRemoveRule("shell", r)}
-                      >
-                        <I.trash size={12} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="desc">{t("settings.ruleTypeShell")}</div>
-              </div>
-            ))}
-            {pathRules.map((r) => (
-              <div className="rule" key={`path-${r}`}>
-                <div className="top">
-                  <span className="pat">{r}</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span className="sw">{t("contextPanel.allow")}</span>
-                    {onRemoveRule && (
-                      <button
-                        type="button"
-                        className="mini-btn"
-                        title={t("settings.deleteRuleTooltip")}
-                        aria-label={`Remove rule: ${r}`}
-                        onClick={() => onRemoveRule("path", r)}
-                      >
-                        <I.trash size={12} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="desc">{t("settings.ruleTypePath")}</div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {totalCustom === 0 && (
-          <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
-            {t("settings.noCustomRules")}
-          </div>
-        )}
-
-        {onAddRule && (
-          <form className="rule-composer" onSubmit={handleAdd}>
-            <div className="rule-composer-row">
-              <select
-                className="rule-select"
-                value={ruleType}
-                onChange={(e) => setRuleType(e.target.value as "shell" | "path")}
-                aria-label="Rule type"
-              >
-                <option value="shell">{t("settings.ruleTypeShell")}</option>
-                <option value="path">{t("settings.ruleTypePath")}</option>
-              </select>
-              <input
-                type="text"
-                className="rule-input"
-                placeholder={t("settings.rulePatternPlaceholder")}
-                value={pattern}
-                onChange={(e) => setPattern(e.target.value)}
-                aria-label="Rule pattern"
-              />
-              <button
-                type="submit"
-                className="btn small"
-                disabled={!pattern.trim()}
-                title={t("settings.addRule")}
-                aria-label={t("settings.addRule")}
-              >
-                <I.plus size={12} />
-                <span style={{ marginLeft: 4 }}>{t("settings.addRule")}</span>
-              </button>
-            </div>
-          </form>
-        )}
-      </section>
-    </>
-  );
-}
-
 
 function PageShortcuts() {
   const rows: { nm: string; keys: ShortcutKey[] }[] = [

@@ -387,7 +387,7 @@ describe("PageMCP — playwright connection status", () => {
 
   it("shows the failure reason when the bridge failed", () => {
     renderCard([spec({ status: "failed", toolCount: 0, statusReason: "spawn crashed" })]);
-    expect(screen.getByText(/server failed — spawn crashed/)).toBeTruthy();
+    expect(screen.getByText(/server failed: spawn crashed/)).toBeTruthy();
     expect(screen.queryByText(/tools live/)).toBeNull();
   });
 
@@ -398,7 +398,7 @@ describe("PageMCP — playwright connection status", () => {
 
   it("shows the disabled state for a toggled-off server", () => {
     renderCard([spec({ status: "disabled", disabled: true, toolCount: 0 })]);
-    expect(screen.getByText(/server disabled — enable it to bridge/)).toBeTruthy();
+    expect(screen.getByText(/server disabled: enable it to bridge/)).toBeTruthy();
   });
 
   it("shows no connection line when no playwright spec exists", () => {
@@ -419,7 +419,7 @@ describe("PageMCP — playwright connection status", () => {
       reason: null,
       elapsedMs: 1400,
     });
-    expect(screen.getByText(/token works — browser attached in 1400 ms/)).toBeTruthy();
+    expect(screen.getByText(/token works: browser attached in 1400 ms/)).toBeTruthy();
   });
 
   it("shows the failed check verdict with the reason", () => {

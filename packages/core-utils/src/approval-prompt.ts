@@ -155,7 +155,7 @@ function shellPrompt(
           },
           {
             id: "always_allow",
-            label: `Always allow — ${prefix}`,
+            label: `Always allow: ${prefix}`,
             kind: "allow_always",
           },
           denyAction(),
@@ -211,7 +211,7 @@ function pathPrompt(id: number, payload: Record<string, unknown>): ApprovalPromp
     id,
     kind: "path",
     tone: "warn",
-    title: `Access path — ${intent}`,
+    title: `Access path: ${intent}`,
     subtitle: path,
     preview: `${toolName} → ${path}`,
     meta: Object.keys(meta).length > 0 ? meta : undefined,
@@ -223,7 +223,7 @@ function pathPrompt(id: number, payload: Record<string, unknown>): ApprovalPromp
       },
       {
         id: "always_allow",
-        label: `Always allow — ${allowPrefix}`,
+        label: `Always allow: ${allowPrefix}`,
         kind: "allow_always",
       },
       denyAction(),

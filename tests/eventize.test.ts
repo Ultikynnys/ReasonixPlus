@@ -457,7 +457,7 @@ describe("Eventizer.consume", () => {
     expect(ev).toMatchObject({
       type: "model.final",
       turn: 3,
-      content: "[aborted by user — no response produced.]",
+      content: "[aborted by user: no response produced.]",
       toolCalls: [],
       usage: {},
       costUsd: 0,

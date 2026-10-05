@@ -2027,7 +2027,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         ...state,
         messages: insertNotice(
           state.messages,
-          `Session "${ev.name}" loaded with no messages (${sizeNote}). The file ~/.reasonix/sessions/${ev.name}/messages.jsonl exists but couldn't be parsed — start a new chat or restore from messages.jsonl.bak if you have one.`,
+          `Session "${ev.name}" loaded with no messages (${sizeNote}). The file ~/.reasonix/sessions/${ev.name}/messages.jsonl exists but couldn't be parsed: start a new chat or restore from messages.jsonl.bak if you have one.`,
           "error",
         ),
       };
@@ -2436,7 +2436,7 @@ function formatConversationMarkdown(
             }
             if (s.kind === "compaction") {
               if (s.state !== "done" || s.beforeMessages === undefined) return "";
-              return `> **${t("cards.compactionName")}** — ${s.beforeMessages} → ${s.afterMessages} messages`;
+              return `> **${t("cards.compactionName")}**: ${s.beforeMessages} → ${s.afterMessages} messages`;
             }
             if (s.kind === "warning") {
               return `> **${t("cards.warningName")}** · ${s.text}`;
@@ -2873,7 +2873,7 @@ function TabRuntime({
       console.error("new_chat failed", err);
       dispatch({
         t: "push_notice",
-        text: `Couldn't start a new chat: ${messageOf(err)} — your current conversation is untouched.`,
+        text: `Couldn't start a new chat: ${messageOf(err)}. Your current conversation is untouched.`,
         severity: "error",
       });
     });
@@ -4051,9 +4051,6 @@ function TabRuntime({
             initialPage={settingsPage}
             mcpSpecs={state.mcpSpecs}
             mcpBridged={state.mcpBridged}
-            memory={state.memory}
-            memoryDetail={state.memoryDetail}
-            memoryResult={state.memoryResult}
             onClose={() => setSettingsOpen(false)}
             onSave={saveSettings}
             onSaveApiKey={saveApiKey}
@@ -4103,16 +4100,6 @@ function TabRuntime({
             onConnectMail={connectMail}
             onCancelMail={cancelMail}
             onSignOutMail={signOutMail}
-            onReadMemory={(path) => sendRpc({ cmd: "memory_read", path })}
-            onWriteMemory={(scope, name, description, body) =>
-              sendRpc({ cmd: "memory_write", scope, name, description, body })
-            }
-            onDeleteMemory={(path) => sendRpc({ cmd: "memory_delete", path })}
-            onExportMemories={() => sendRpc({ cmd: "memory_export" })}
-            onImportMemories={(json) => sendRpc({ cmd: "memory_import", json })}
-            onDismissMemoryResult={() => dispatch({ t: "dismiss_memory_result" })}
-            onAddRule={addRule}
-            onRemoveRule={removeRule}
           />
         ) : null}
 
@@ -4375,7 +4362,7 @@ function TitleBar({
           {session && (
             <div className="crumbs" data-tauri-drag-region>
               <span className="sep">/</span>
-              <span className="cur">{model ?? "—"}</span>
+              <span className="cur">{model ?? "-"}</span>
             </div>
           )}
         </div>

@@ -267,7 +267,7 @@ describe("StatusBar quota display", () => {
   it("keeps the GLM usage chip (em dash + retry) without data — never the DeepSeek balance", () => {
     renderBar({ settings: { model: "glm-5.3-flash" } as Settings, zaiQuota: null });
     expect(screen.getByText("GLM usage")).toBeTruthy();
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("balance")).toBeNull();
     expect(screen.getByTitle(/set a Z\.AI API key/)).toBeTruthy();
   });
@@ -325,7 +325,7 @@ describe("StatusBar quota display", () => {
       codexQuota: { ...GPT_QUOTA, turnUsedPct: null },
     });
     expect(screen.getByText(/58%\s*left/)).toBeTruthy();
-    expect(screen.getByText("—")).toBeTruthy();
+    expect(screen.getByText("-")).toBeTruthy();
   });
 
   it("keeps the quota chips (em dash + retry) for gpt tabs when quota data is missing — never the DeepSeek balance", () => {
@@ -333,8 +333,8 @@ describe("StatusBar quota display", () => {
       settings: { model: "gpt-5.6-sol" } as Settings,
       codexQuota: null,
     });
-    // The codex chip and this-turn chip both render an em dash.
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    // The codex chip and this-turn chip both render a dash.
+    expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("codex")).toBeTruthy();
     expect(screen.queryByText("balance")).toBeNull();
     expect(screen.queryByText(/\$ 0\.0000/)).toBeNull();
@@ -354,7 +354,7 @@ describe("StatusBar quota display", () => {
       } as Settings,
       codexQuota: null,
     });
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByTitle(/sign in with ChatGPT/)).toBeTruthy();
   });
 
@@ -496,7 +496,7 @@ describe("StatusBar quota display", () => {
       ollamaQuota: { ...OLLAMA_QUOTA, turnUsedPct: null },
     });
     expect(screen.getByText(/88%\s*left/)).toBeTruthy();
-    expect(screen.getByText("—")).toBeTruthy();
+    expect(screen.getByText("-")).toBeTruthy();
   });
 
   it("keeps the quota chips for ollama tabs when usage data is missing — never the DeepSeek balance", () => {
@@ -504,7 +504,7 @@ describe("StatusBar quota display", () => {
       settings: { model: "ollama/gpt-oss:20b" } as Settings,
       ollamaQuota: null,
     });
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("plan usage")).toBeTruthy();
     expect(screen.queryByText("balance")).toBeNull();
     expect(screen.queryByText(/\$ 0\.0000/)).toBeNull();
@@ -540,7 +540,7 @@ describe("StatusBar quota display", () => {
       antigravityQuota: null,
     });
     expect(screen.getByText("plan usage")).toBeTruthy();
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByTitle(/sign in to Google Antigravity/)).toBeTruthy();
     expect(screen.queryByText("balance")).toBeNull();
   });

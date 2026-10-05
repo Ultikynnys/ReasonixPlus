@@ -47,9 +47,6 @@ describe("VoiceModelSettings", () => {
     onSetCustomFontFamily: vi.fn(),
     mcpSpecs: [],
     mcpBridged: false,
-    memory: [],
-    memoryDetail: null,
-    memoryResult: null,
     onClose: vi.fn(),
     onSave: vi.fn(),
     onSaveApiKey: vi.fn(),
@@ -82,12 +79,6 @@ describe("VoiceModelSettings", () => {
     onConnectMail: vi.fn(),
     onCancelMail: vi.fn(),
     onSignOutMail: vi.fn(),
-    onReadMemory: vi.fn(),
-    onWriteMemory: vi.fn(),
-    onDeleteMemory: vi.fn(),
-    onExportMemories: vi.fn(),
-    onImportMemories: vi.fn(),
-    onDismissMemoryResult: vi.fn(),
   };
 
   it("renders the model options with correct initial state", async () => {
@@ -189,13 +180,15 @@ describe("VoiceModelSettings", () => {
     expect(downloadBtns.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("renders voice model settings in models tab and not in general tab", () => {
+  it("renders voice settings in the general tab and not in models", () => {
     const { unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);
-    expect(screen.queryByText("Voice processing model")).toBeNull();
+    expect(screen.getByText("Voice processing model")).toBeTruthy();
+    expect(screen.getByText("Audio input device")).toBeTruthy();
     unmount();
 
     render(<SettingsModal {...baseProps} initialPage="models" />);
-    expect(screen.getByText("Voice processing model")).toBeTruthy();
+    expect(screen.queryByText("Voice processing model")).toBeNull();
+    expect(screen.queryByText("Audio input device")).toBeNull();
   });
 
   it("renders the quick-send selector with built-ins and saves the active choice", () => {

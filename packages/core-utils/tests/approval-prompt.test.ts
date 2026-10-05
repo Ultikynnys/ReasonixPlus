@@ -24,7 +24,7 @@ describe("toApprovalPrompt", () => {
         payload: { command: "npm install" },
       });
       const always = p.actions.find((a) => a.id === "always_allow")!;
-      expect(always.label).toBe("Always allow — npm install");
+      expect(always.label).toBe("Always allow: npm install");
       expect(p.data?.prefix).toBe("npm install");
     });
 
@@ -35,7 +35,7 @@ describe("toApprovalPrompt", () => {
         payload: { command: "ls -la" },
       });
       expect(p.data?.prefix).toBe("ls");
-      expect(p.actions.find((a) => a.id === "always_allow")!.label).toBe("Always allow — ls");
+      expect(p.actions.find((a) => a.id === "always_allow")!.label).toBe("Always allow: ls");
     });
 
     it("includes secondaryInput on deny action", () => {
@@ -87,7 +87,7 @@ describe("toApprovalPrompt", () => {
         },
       });
       expect(p.kind).toBe("path");
-      expect(p.title).toBe("Access path — read");
+      expect(p.title).toBe("Access path: read");
       expect(p.actions.find((a) => a.id === "run_once")!.label).toBe("Allow read");
     });
 
@@ -103,7 +103,7 @@ describe("toApprovalPrompt", () => {
           allowPrefix: "/tmp",
         },
       });
-      expect(p.title).toBe("Access path — write");
+      expect(p.title).toBe("Access path: write");
       expect(p.actions.find((a) => a.id === "run_once")!.label).toBe("Allow write");
     });
 

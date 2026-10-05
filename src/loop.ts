@@ -1212,8 +1212,8 @@ export class CacheFirstLoop {
         try {
           const discardTurn = this._discardAbortRequested;
           const stoppedMsg = discardTurn
-            ? "[aborted by user (Esc) — interrupted turn discarded. Ask again when ready.]"
-            : "[aborted by user (Esc) — no summary produced. Ask again or /retry when ready; prior tool output is still in the log.]";
+            ? "[aborted by user (Esc): interrupted turn discarded. Ask again when ready.]"
+            : "[aborted by user (Esc): no summary produced. Ask again or /retry when ready; prior tool output is still in the log.]";
           if (discardTurn) {
             const beforeDiscard = this.log.length;
             this.discardLogFrom(turnStartLogIndex);

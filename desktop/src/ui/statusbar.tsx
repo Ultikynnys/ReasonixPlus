@@ -20,7 +20,7 @@ import { localizeShortcutText } from "./shortcut";
 /** "in 2h 15m" relative time until a quota window resets. */
 function formatReset(d: Date): string {
   const diffMs = d.getTime() - Date.now();
-  if (!Number.isFinite(diffMs) || diffMs <= 0) return "—";
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return "-";
   const mins = Math.ceil(diffMs / 60_000);
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
@@ -166,7 +166,7 @@ export function StatusBar({
   const sessionQuotaPct = sessionQuotaCost?.quotaUsedPct ?? null;
   const balanceLabel = balance
     ? `${balance.currency === "USD" ? "$" : "¥"} ${balance.total.toFixed(2)}`
-    : "—";
+    : "-";
   const connState = !ready ? "off" : busy ? "running" : "online";
   const apiHost =
     ep?.baseUrl?.replace(/^https?:\/\//, "") ??
@@ -225,7 +225,7 @@ export function StatusBar({
     ollamaQuotaData && ollamaWeekly
       ? t("statusbar.ollamaQuotaTitle", {
           left: Math.round(ollamaWeekly.remainingPct),
-          session: ollamaSession ? Math.round(ollamaSession.remainingPct) : "—",
+          session: ollamaSession ? Math.round(ollamaSession.remainingPct) : "-",
         })
       : t("statusbar.ollamaNoData");
   // Antigravity (Gemini Code Assist): plan + the active model's used fraction.
@@ -262,7 +262,7 @@ export function StatusBar({
             antigravityQuotaData.plan?.name ??
             antigravityQuotaData.plan?.tierId ??
             "Antigravity",
-          resets: agActive.resetTime ? formatReset(new Date(agActive.resetTime)) : "—",
+          resets: agActive.resetTime ? formatReset(new Date(agActive.resetTime)) : "-",
         })
       : t("statusbar.antigravityNoData");
   const antigravityQuotaTitleWithReason =
@@ -282,7 +282,7 @@ export function StatusBar({
         ? t("statusbar.zaiQuotaDualTitle", {
             fiveHour: Math.round(zaiFiveHour.remainingPct),
             weekly: Math.round(zaiWeekly.remainingPct),
-            resets: zaiWeekly.resetsAt ? new Date(zaiWeekly.resetsAt).toLocaleString() : "—",
+            resets: zaiWeekly.resetsAt ? new Date(zaiWeekly.resetsAt).toLocaleString() : "-",
             plan: zaiQuotaData.plan ?? "GLM Coding Plan",
           })
         : t("statusbar.zaiQuotaTitle", {
@@ -302,7 +302,7 @@ export function StatusBar({
   const quotaTitle = quotaWeekly
     ? t("statusbar.codexQuotaTitle", {
         left: quotaLeftPct,
-        resets: quotaWeekly.resetsAt ? new Date(quotaWeekly.resetsAt).toLocaleString() : "—",
+        resets: quotaWeekly.resetsAt ? new Date(quotaWeekly.resetsAt).toLocaleString() : "-",
         plan: quota?.plan ?? "ChatGPT",
       }) +
       (quotaFiveHour
@@ -457,25 +457,25 @@ export function StatusBar({
             quotaTurnPct != null ? (
               <span className="v ok">{quotaTurnPct.toFixed(1)}%</span>
             ) : (
-              <span className="v ok">—</span>
+              <span className="v ok">-</span>
             )
           ) : ollamaQuotaBilling ? (
             ollamaTurnPct != null ? (
               <span className="v ok">{ollamaTurnPct.toFixed(1)}%</span>
             ) : (
-              <span className="v ok">—</span>
+              <span className="v ok">-</span>
             )
           ) : geminiTab ? (
             agTurnPct != null ? (
               <span className="v ok">{agTurnPct.toFixed(1)}%</span>
             ) : (
-              <span className="v ok">—</span>
+              <span className="v ok">-</span>
             )
           ) : zaiQuotaBilling ? (
             zaiTurnPct != null ? (
               <span className="v ok">{zaiTurnPct.toFixed(1)}%</span>
             ) : (
-              <span className="v ok">—</span>
+              <span className="v ok">-</span>
             )
           ) : (
             <span className="v ok">
@@ -558,7 +558,7 @@ export function StatusBar({
         onKeyDown={activationHandler(onOpenSettings)}
       >
         <I.brain size={11} style={{ color: "var(--violet)" }} />
-        <span className="v vio">{settings?.model ? modelDisplayName(settings.model) : "—"}</span>
+        <span className="v vio">{settings?.model ? modelDisplayName(settings.model) : "-"}</span>
         <span className="v">{settings?.reasoningEffort ?? "high"}</span>
       </span>
       {showBalance ? (
@@ -582,7 +582,7 @@ export function StatusBar({
             ) : codexQuotaRefreshing ? (
               <span className="v acc">{t("statusbar.codexRefreshing")}</span>
             ) : (
-              <span className="v acc">—</span>
+              <span className="v acc">-</span>
             )}
           </span>
         ) : geminiTab ? (
@@ -611,7 +611,7 @@ export function StatusBar({
             ) : antigravityQuotaRefreshing ? (
               <span className="v acc">{t("statusbar.codexRefreshing")}</span>
             ) : (
-              <span className="v acc">—</span>
+              <span className="v acc">-</span>
             )}
           </span>
         ) : ollamaQuotaBilling ? (
@@ -634,7 +634,7 @@ export function StatusBar({
             ) : ollamaQuotaRefreshing ? (
               <span className="v acc">{t("statusbar.codexRefreshing")}</span>
             ) : (
-              <span className="v acc">—</span>
+              <span className="v acc">-</span>
             )}
           </span>
         ) : zaiQuotaBilling ? (
@@ -663,7 +663,7 @@ export function StatusBar({
             ) : zaiQuotaRefreshing ? (
               <span className="v acc">{t("statusbar.codexRefreshing")}</span>
             ) : (
-              <span className="v acc">—</span>
+              <span className="v acc">-</span>
             )}
           </span>
         ) : (

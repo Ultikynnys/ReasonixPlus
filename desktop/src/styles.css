@@ -4848,17 +4848,20 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .ctx-tabs {
   display: flex;
+  flex-wrap: wrap;
   padding: 6px 8px 0;
   border-bottom: 1px solid var(--border);
   gap: 2px;
 }
 .ctx-tab {
-  padding: 6px 10px;
-  font-size: 14px;
+  padding: 5px 8px;
+  font-size: 13px;
   color: var(--muted);
   border-radius: 5px 5px 0 0;
   font-family: inherit;
   cursor: pointer;
+  white-space: nowrap;
+  max-width: 100%;
 }
 .ctx-tab:hover {
   color: var(--fg);
@@ -6265,15 +6268,41 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--fg);
 }
 .setting-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 16px;
   padding: 10px 0;
   border-bottom: 1px dashed var(--border);
 }
 .setting-row:last-child {
   border-bottom: none;
+}
+.setting-row .l {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* Keep each row's controls inside the row. A provider card's settings column is
+   much narrower than a full-width page row, so the right-hand controls (and the
+   inputs inside them) shrink and their labels wrap instead of overflowing the
+   card. Buttons keep their intrinsic width so their text never wraps. */
+.setting-row > :not(.l):not(button) {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.setting-row .field {
+  min-width: 0;
+  max-width: 100%;
+}
+.setting-row > div:not(.l) {
+  flex-wrap: wrap;
+}
+.setting-row > div:not(.l) .field {
+  flex: 0 1 200px;
+  width: auto;
+}
+.setting-row button {
+  flex-shrink: 0;
 }
 .setting-row .l .n {
   font-size: 14px;
@@ -6284,6 +6313,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--muted);
   margin-top: 2px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 /* form controls */
@@ -6688,6 +6718,10 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
  * left = scrollable per-provider model list, right = settings + auth. */
 .provider-default-line {
   margin-bottom: 12px;
+}
+.provider-default-line .setting-row {
+  border-bottom: none;
+  padding-top: 0;
 }
 .provider-card {
   border: 1px solid var(--border);

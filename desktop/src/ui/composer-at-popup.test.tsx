@@ -181,7 +181,7 @@ describe("desktop Composer model catalog", () => {
     // Active model escapes the filter so a hidden-but-selected tab never strands.
     expect(mainText).toContain("glm-4.5");
     expect(mainText).not.toContain("qwen3:32b");
-    expect(mainText).toContain("No models enabled — enable them in Settings");
+    expect(mainText).toContain("No models enabled. Enable them in Settings");
   });
 
   it("subagent menu shares the backend-generated Ollama and Gemini models with the main agent", () => {

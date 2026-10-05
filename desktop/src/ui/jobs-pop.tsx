@@ -189,7 +189,7 @@ function JobRow({
               title={job.persistent ? t("jobs.closeOne") : t("jobs.stopOne")}
             />
           ) : (
-            <span className="jr-exit" title={`exit ${job.exitCode ?? "—"}`}>
+            <span className="jr-exit" title={`exit ${job.exitCode ?? "-"}`}>
               {job.exitCode === 0 ? "ok" : `exit ${job.exitCode ?? "?"}`}
             </span>
           )}
@@ -204,7 +204,7 @@ function JobRow({
             </div>
             <div>
               <span className="k">pid</span>
-              <span className="v">{job.pid ?? "—"}</span>
+              <span className="v">{job.pid ?? "-"}</span>
             </div>
             <div>
               <span className="k">elapsed</span>

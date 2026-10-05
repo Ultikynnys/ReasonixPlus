@@ -481,7 +481,7 @@ function CtxFiles({ files, settings }: { files: SessionFile[]; settings: Setting
       <div className="h">
         <span>{t("contextPanel.filesTitle")}</span>
         <span className="right">
-          {files.length === 0 ? "—" : t("contextPanel.filesCount", { count: files.length })}
+          {files.length === 0 ? "-" : t("contextPanel.filesCount", { count: files.length })}
         </span>
       </div>
       <div className="tree">
@@ -1348,7 +1348,7 @@ function CtxTools({
           <span>{t("contextPanel.mcpTitle")}</span>
           <span className="right">
             {specs.length === 0
-              ? "—"
+              ? "-"
               : bridged
                 ? t("contextPanel.mcpReadyAll", { count: specs.length })
                 : t("contextPanel.mcpReadySome", { ready: readyCount, count: specs.length })}
