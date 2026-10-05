@@ -1,0 +1,220 @@
+<h1 align="center">Reasonix+</h1>
+
+<p align="center">
+  <a href="https://github.com/Ultikynnys/ReasonixPlus/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/Ultikynnys/ReasonixPlus/release.yml?style=flat-square&label=release&labelColor=161b22&logo=githubactions&logoColor=white" alt="Release"/></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/Ultikynnys/ReasonixPlus.svg?style=flat-square&color=8b949e&labelColor=161b22" alt="license"/></a>
+  <img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&labelColor=161b22" alt="Node >= 22"/>
+</p>
+
+<br/>
+
+<h3 align="center">A multi-provider coding agent for Windows, engineered around prefix-cache stability.</h3>
+<p align="center">Token costs stay low across long sessions, so it is a tool you can leave running.</p>
+
+> [!NOTE]
+> **This is a standalone project.** It is based on v0.53 of
+> [DeepSeek Reasonix](https://github.com/esengine/DeepSeek-Reasonix), but it has diverged enough to
+> stand on its own: it is no longer a DeepSeek-native agent but a **multi-provider** one (DeepSeek,
+> OpenAI, Ollama, Z.AI, and Gemini/Antigravity), the Ink TUI and the interactive CLI chat modes are
+> gone, the only product surface is the Tauri 2 Windows app backed by a headless JSON-RPC daemon, and
+> the cache-first loop from the v0.53 line was ported forward. It is maintained here only and is
+> never intended to be pushed or merged back upstream; treat the two codebases as unrelated. The
+> concrete differences are listed in [Divergence from upstream](#divergence-from-upstream).
+
+> [!TIP]
+> **Cache stability is not a feature you turn on; it is an invariant the loop is designed around.**
+> DeepSeek bills cached input at a small fraction of the miss rate, and the cache only hits when the
+> exact byte prefix of the previous request is preserved. Every layer of the loop is tuned to keep
+> that prefix byte-stable. DeepSeek remains the default backend; OpenAI, Ollama, Z.AI, and Gemini
+> are supported as options (see [Backends and models](#backends-and-models)).
+
+<br/>
+
+## Install
+
+### Windows desktop app (recommended)
+
+Download the latest Windows installer from
+[GitHub Releases](https://github.com/Ultikynnys/ReasonixPlus/releases) and run
+`Reasonix+_x.y.z_x64-setup.exe`. The installer is built and published by the
+[release workflow](https://github.com/Ultikynnys/ReasonixPlus/actions/workflows/release.yml) on
+every push to `main`, and the app auto-updates from the same releases. The app bundles its own Node
+runtime, so no `npm install` or Node installation is needed.
+
+- First run asks for a [DeepSeek API key](https://platform.deepseek.com/api_keys). The key is stored
+  in the app's config; `DEEPSEEK_API_KEY` in `.env` is read as a fallback.
+- SmartScreen may warn "Unknown publisher" while installers are unsigned: click **More info → Run
+  anyway**. See [desktop/SIGNING.md](desktop/SIGNING.md) for the signing setup.
+- **Windows only, by design.** Supported devices were deliberately simplified to a single
+  platform: this project is maintained by one person who runs Reasonix+ on Windows only, and removing
+  the macOS/Linux and CLI code (platform-specific Tauri configs, the bundled-Node platform
+  branches, the Ink TUI, the interactive CLI commands) was the obvious way to keep the project
+  lightweight and stable. There are no plans to bring other platforms back.
+- User data lives in `~/.reasonix` (config, sessions, memory, skills).
+
+## Backends and models
+
+| Backend | Models | Auth |
+| --- | --- | --- |
+| DeepSeek (default) | `deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp` (experimental vision line) | `DEEPSEEK_API_KEY` |
+| OpenAI-compatible | GPT-6 family (`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`), GPT-5.6 family (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) | `OPENAI_API_KEY`, optional `OPENAI_BASE_URL` for proxies / Azure-compatible gateways |
+| Ollama | any local model via `ollama/<name>`; cloud Ollama is also supported | local daemon is keyless; cloud needs `OLLAMA_API_KEY` |
+| Z.AI | GLM family, including `glm-5.3-flash` with vision and a 1M-token context window | `ZAI_API_KEY`; optional `ZAI_BASE_URL` |
+
+- Models are picked in Settings → Models or from the composer. The Ollama catalog is fetched once at
+  launch, cached for 60 s, and shared by every tab; refresh buttons force a refetch.
+- `gpt-*` ids route to `https://api.openai.com/v1` automatically; `glm-*` ids route to
+  `https://api.z.ai/api/paas/v4`; DeepSeek ids route to `https://api.deepseek.com`.
+  Each endpoint has a corresponding optional base URL override.
+- Reasoning effort (`low | medium | high | xhigh | max`) is set per model via the `/effort` command
+  or Settings.
+- Image attachments (paste or drop) are enabled for vision-capable models: the GPT-6 and GPT-5.6
+  families, `deepseek-v4-flash-vision-exp`, `glm-5.3-flash`, and GLM `v` models. DeepSeek bills image tokens
+  as input tokens.
+- See [.env.example](.env.example) for the full list of supported environment variables.
+
+## What makes Reasonix+ different
+
+The loop is organized around three pillars, each one a response to DeepSeek's exact-prefix cache
+billing:
+
+1. **Cache-first loop.** Context is partitioned into an immutable prefix (system + tool specs,
+   computed and pinned once per session), an append-only event log, and a volatile scratch region
+   that never reaches the API. No rewrites, no injected timestamps: consecutive turns share a
+   byte-stable prefix, so the cache hits turn after turn.
+2. **Tool-call repair.** Malformed, truncated, or redundant tool calls are repaired (flatten,
+   scavenge, storm, truncation) and re-dispatched instead of failing the turn.
+3. **Cost control.** Flash-first defaults for the main loop and for every auxiliary call
+   (subagents, summaries, compaction), turn-end auto-compaction of oversized tool results, a
+   per-turn iteration cap with a grace window, an optional USD budget, and live cost/cache metering
+   with off-peak/peak rate awareness (peak hours bill at 2x; off-peak applies all day on weekends,
+   Beijing time).
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full writeup.
+
+## Features
+
+**Desktop app (Tauri 2, React)**
+
+- Multi-tab sessions with persistent per-workspace state, a session list, and session titles.
+- Composer with `@`-mentions for workspace files, image paste/drop for vision models, slash
+  commands (`/new`, `/clear`, `/abort`, `/copy`, `/model`, `/search-engine`, `/skill`, `/theme`,
+  `/currency`, `/lang`, `/plan <mode>`, `/effort <level>`), and queued sends.
+- Edit modes `plan`, `review`, `auto`, `yolo` (Shift+Tab or `/model <mode>`): SEARCH/REPLACE edits
+  are shown for approval in review mode; yolo mode skips approval and never pauses a productive turn
+  at the iteration cap.
+- Context panel listing files the agent read or edited; jobs panel for background processes.
+- Status bar: live cache-hit %, context tokens, this-turn cost (USD/CNY), the current off-peak/peak
+  rate period, account balance (DeepSeek) or weekly quota (GPT-5.6 Codex, Ollama plan), workspace,
+  model + effort.
+- Settings pages: general, models, MCP, skills, memory, rules, billing, shortcuts.
+- Themes (dark/light plus accent styles), keyboard shortcuts.
+
+**Agent runtime**
+
+- MCP client with stdio, SSE, and Streamable HTTP transports, a server catalog, `.mcp.json` project
+  config, and in-app server management.
+- Skills: markdown playbooks in `<project>/.reasonix/skills/` and `~/.reasonix/skills/`, run inline
+  or as isolated subagents; Claude-format skills under `.claude/skills/` load as-is.
+- Memory: project (`REASONIX.md`), session, user, and runtime stores; user memory pins preferences
+  into the prefix.
+- Hooks: shell commands on lifecycle events, `PreToolUse` (gating), `PostToolUse`,
+  `UserPromptSubmit`, `Stop`.
+- Web search: `bing` by default (works from CN without a proxy), switchable in Settings to
+  `bing-intl`, `searxng`, `metaso`, `baidu`, `tavily`, `perplexity`, `exa`, `brave`, Ollama
+  cloud search, or Z.AI `search-prime`.
+- Semantic index over the workspace via local Ollama embeddings (`nomic-embed-text` by default) or
+  any OpenAI-compatible embedding endpoint.
+- Plan mode with structured, reviewable plans.
+- Shell: allowlisted command execution with config-based permissions, command chains, background
+  jobs with streaming output.
+- Event log: every session is an append-only JSONL of typed kernel events, replayable through pure
+  projections.
+
+## Configuration
+
+- User config: `~/.reasonix/config.json` (model, reasoning effort, web search engine, pricing
+  overrides, rate limits, and more).
+- Per-project: `<project>/.reasonix/settings.json` (hooks), `<project>/.reasonix/skills/`, and
+  `<project>/REASONIX.md` (project memory).
+- Environment variables: see [.env.example](.env.example). `REASONIX_LOG_LEVEL=INFO` controls
+  console noise; durable diagnostics are always verbose and cannot be disabled.
+- Diagnostics: each launch writes correlated JSONL files to `~/.reasonix/diagnostics/`. Backend
+  files are capped at 10 MiB per segment and host files at 10 MiB per launch; the latest 10 are
+  retained. Records include boot phases, model/tool/MCP timing, process health, host lifecycle,
+  frontend performance entries, and errors. Content payloads and common credential forms are
+  excluded or redacted. Sink initialization or write failure is reported explicitly.
+- `REASONIX_TRANSCRIPT_DIR` relocates session transcripts; diagnostics remain separate.
+- Pricing overrides: `pricingOverride` in `config.json` sets per-model USD rates when a model's
+  published price is missing or wrong.
+- Model provider mapping: a model id's provider is resolved from positive evidence — an explicit
+  `models` entry, the signed-in Antigravity account's discovered ids, the built-in catalogs, or
+  the `ollama/` addressing scheme — never from the id's name shape. Custom gateway ids declare
+  their provider explicitly:
+
+  ```json
+  {
+    "models": {
+      "gpt-4o-custom": { "provider": "openai" },
+      "my-private-gateway-id": { "provider": "gemini" }
+    }
+  }
+  ```
+
+  Valid providers: `deepseek`, `openai`, `ollama`, `gemini`, `zai`. Unmapped ids that match no
+  catalog resolve to the default DeepSeek-compatible endpoint family.
+
+## Development
+
+Requires Node >= 22 and npm.
+
+| Command | What it does |
+| --- | --- |
+| `npm install` | install dependencies (runs `scripts/postinstall.mjs`) |
+| `npm run dev` | run the headless desktop backend (`tsx src/cli/index.ts desktop`) |
+| `npm run build` | tsup bundle into `dist/` |
+| `npm run build:desktop` | build the desktop UI (vite) |
+| `npm run test` | vitest |
+| `npm run lint` / `npm run format` | biome |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run typecheck:desktop` | desktop app typecheck |
+| `npm run verify` | build + lint + typecheck + typecheck:desktop + tests (full local gate) |
+
+- Desktop UI dev server: `npm --prefix desktop run dev`; the Tauri shell lives in
+  `desktop/src-tauri/`.
+- CI/release: `.github/workflows/release.yml` runs only when manually dispatched (Actions tab),
+  never on push. A run verifies on Windows, bumps the patch version from the latest commit, tags
+  `vX.Y.Z`, and publishes the NSIS installer to a GitHub Release (the app's updater reads
+  `latest.json` from the latest release).
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md): the three pillars, cache-first loop, tool-call repair,
+  and cost control
+- [Code of Conduct](CODE_OF_CONDUCT.md) · [Security policy](SECURITY.md)
+- [Installer signing](desktop/SIGNING.md)
+
+## Divergence from upstream
+
+This project is standalone: it keeps the MIT license and the cache-first core from v0.53 of
+DeepSeek Reasonix, but it is not a candidate for merging back into
+[esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix), and no PRs or pushes
+are aimed at it. Treat the two as unrelated. Everything else upstream was removed or changed:
+
+- **Removed**: the Ink TUI and the interactive CLI commands (`code`, `replay`, `diff`); the
+  embedded web dashboard server (config helpers remain, but nothing serves it); the QQ channel
+  integration and its docs; upstream's community pages (Discord, sponsors, acknowledgments wall).
+  All of it is scope: the project targets Windows only, so every cross-platform and CLI surface was
+  cut to keep the build and runtime lightweight and stable.
+- **Added / changed**: the Tauri 2 Windows app as the only product surface; Ollama support (local
+  and cloud) with a shared, cached model catalog; the GPT-5.6 family and
+  `deepseek-v4-flash-vision-exp` in the official model list; image attachments; edit modes including
+  `yolo`; the per-turn iteration cap with a grace window (yolo bypasses the pause); off-peak/peak
+  rate display and the current pricing table; Codex and Ollama quota chips in the status bar.
+- The CLI entry (`src/cli/index.ts`) exposes a single `desktop` command: headless JSON-RPC over
+  stdio, spawned by the Tauri shell.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Based on v0.53 of
+[DeepSeek Reasonix](https://github.com/esengine/DeepSeek-Reasonix).

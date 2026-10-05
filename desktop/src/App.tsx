@@ -1,0 +1,6193 @@
+import {
+  DEFAULT_MODEL,
+  clipText,
+  extractPathsFromArgs,
+  flattenText,
+  isFilePathTool,
+  messageOf,
+  modelAcceptsImages,
+  modelDisplayName,
+  parseFilesDroppedMarker,
+  redactDiagnosticText,
+  redactDiagnosticValue,
+  sanitizeFilename,
+  sortSessionsByCreationDescending,
+} from "@reasonix/core-utils";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import {
+  isPermissionGranted as isNotificationPermissionGranted,
+  requestPermission as requestNotificationPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { type Update, check } from "@tauri-apps/plugin-updater";
+import {
+  type ReactNode,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
+import { WorkspaceProvider } from "./Markdown";
+import { type AbortDraftSource, nextAbortDraftCandidate, restoreAbortedDraft } from "./abort-draft";
+import { formatBytes } from "./format";
+import { t, useLang } from "./i18n";
+import { I } from "./icons";
+import { downscaleImage, fileToDataUrl, isImagePath, typedMentionImages } from "./image-attach";
+import { MODEL_CATALOG_GROUP_LABELS, deriveModelCatalog } from "./model-catalog";
+import {
+  type ApprovalSnapshot,
+  deriveDesktopNotifications,
+  dispatchDesktopNotifications,
+  shouldAppendCompletionNotice,
+} from "./notifications";
+import {
+  type AntigravityQuota,
+  type CheckpointVerdict,
+  type ChoiceVerdict,
+  type CodexQuota,
+  type ConfirmationChoice,
+  type ContextRawEvent,
+  type DesktopDiagnosticEvent,
+  type IncomingEvent,
+  type JobInfo,
+  type LoadedMessage,
+  type MailAuthState,
+  MailProvider,
+  type McpExtensionCheck,
+  type McpExtensionStatus,
+  type McpSpecInfo,
+  type MemoryDetail,
+  type MemoryEntryInfo,
+  type ModelEndpointInfo,
+  type OllamaQuota,
+  type OutgoingCommand,
+  type PlanStep,
+  type PlanVerdict,
+  type PlaywrightBrowserInstall,
+  type PlaywrightExtensionBrowser,
+  type PlaywrightManagedBrowser,
+  type PlaywrightMcpConnectionMode,
+  type RevisionVerdict,
+  type SessionProviderCost,
+  type SettingsPatch,
+  type SettingsPayload,
+  type SkillInfo,
+  type SubagentProgressEvent,
+  type TurnOutcome,
+  type UserImageAttachment,
+  type ZaiQuota,
+  resolveActiveQuickSend,
+  rpcSend,
+} from "./protocol";
+import { StartupTimingTracker } from "./startup-timing";
+import { StreamRateTracker } from "./stream-rate";
+import {
+  DEFAULT_TAB_THEME,
+  type TabTheme,
+  clearTabTheme,
+  readTabTheme,
+  writeTabTheme,
+} from "./tab-theme";
+import {
+  FONT_FAMILY,
+  FONT_FAMILY_STACK,
+  FONT_SCALE,
+  FONT_SCALE_ZOOM,
+  type FontFamily,
+  type FontScale,
+  type Theme,
+  type ThemeStyle,
+  isFontFamily,
+  isFontScale,
+  themeForStyle,
+} from "./theme";
+import { AboutModal } from "./ui/about";
+import {
+  NoticeCard,
+  type NoticeSeverity,
+  isSubagentTool,
+  noticeName,
+  parseEditResult,
+} from "./ui/cards";
+import { Composer } from "./ui/composer";
+import { ContextPanel } from "./ui/context-panel";
+import { JobsPop } from "./ui/jobs-pop";
+import { JumpBar } from "./ui/jump-bar";
+import { activationHandler, escapeHandler } from "./ui/keyboard";
+import { SettingsModal, type PageId as SettingsPageId } from "./ui/settings";
+import { localizeShortcutText } from "./ui/shortcut";
+import { Sidebar } from "./ui/sidebar";
+import { Splash, shouldShowSplash } from "./ui/splash";
+import {
+  StartupFailure,
+  type StartupFailureState,
+  coerceStartupFailure,
+} from "./ui/startup-failure";
+import { StartupLoadingOverlay } from "./ui/startup-loading";
+import { StatusBar } from "./ui/statusbar";
+import { type ClearTabsScope, TabMenu, getTabsToClear } from "./ui/tab-menu";
+import {
+  AssistantMsg,
+  CheckpointApprovalCard,
+  ChoiceApprovalCard,
+  ConfirmApprovalCard,
+  PathAccessApprovalCard,
+  PlanApprovalCard,
+  RevisionApprovalCard,
+  TurnDivider,
+  UserMsg,
+} from "./ui/thread";
+import { getThreadMaxWidth } from "./ui/thread-layout";
+import { useAutoCollapse } from "./ui/useAutoCollapse";
+import { useAutoScroll } from "./ui/useAutoScroll";
+import { useDisableTextAssist } from "./ui/useDisableTextAssist";
+import { useResizable } from "./ui/useResizable";
+import { WorkdirPop } from "./ui/workdir-pop";
+import { anyVoiceModelDownloaded } from "./voice/models";
+import { areWorkspacesLoaded } from "./workspace-loading";
+import { toWorkspaceRelative } from "./workspace-path";
+
+const RIGHT_SIDEBAR_COLLAPSE_WIDTH = 1120;
+const LEFT_SIDEBAR_COLLAPSE_WIDTH = 760;
+
+const RESPONSIVE_STAGE = {
+  WIDE: "wide",
+  COMPACT: "compact",
+  NARROW: "narrow",
+} as const;
+
+/** Tail budget kept per running shell tool for the card's live output rows.
+ *  The authoritative output arrives on tool.result; this only feeds the
+ *  "show what's happening right now" window. */
+const LIVE_OUTPUT_MAX_CHARS = 8_000;
+
+type ResponsiveStage = (typeof RESPONSIVE_STAGE)[keyof typeof RESPONSIVE_STAGE];
+
+function responsiveStage(width: number): ResponsiveStage {
+  if (width < LEFT_SIDEBAR_COLLAPSE_WIDTH) return RESPONSIVE_STAGE.NARROW;
+  if (width < RIGHT_SIDEBAR_COLLAPSE_WIDTH) return RESPONSIVE_STAGE.COMPACT;
+  return RESPONSIVE_STAGE.WIDE;
+}
+
+export type SubagentToolActivity = {
+  callId: string;
+  name: string;
+  args?: string;
+  status: "running" | "done" | "failed";
+};
+
+export type SubagentActivityRow = {
+  id: string;
+  kind: "thinking" | "process";
+  text: string;
+  status?: "running" | "done" | "failed";
+};
+
+export type SubagentRunProgress = {
+  runId: string;
+  task: string;
+  skillName?: string;
+  model?: string;
+  phase?: "exploring" | "summarising";
+  status: "running" | "done" | "failed";
+  iter?: number;
+  elapsedMs?: number;
+  contextTokens?: number;
+  /** Child loop's enforced context cap — denominator for the ctx x/y meter. */
+  contextMax?: number;
+  outputChars?: number;
+  reasoningChars?: number;
+  toolReadChars?: number;
+  turns?: number;
+  costUsd?: number;
+  billingKind?: "usd" | "quota" | "none";
+  quotaUsedPct?: number;
+  maxToolIters?: number;
+  maxElapsedMs?: number;
+  budgetExhausted?: "tool-iters" | "elapsed";
+  error?: string;
+  thought?: string;
+  recentRows?: SubagentActivityRow[];
+  tools: SubagentToolActivity[];
+};
+
+export type AssistantSegment =
+  | { kind: "text"; text: string }
+  | { kind: "reasoning"; text: string; startedAt?: number; durationMs?: number }
+  | {
+      kind: "tool";
+      callId: string;
+      name: string;
+      args: string;
+      startedAt: number;
+      result?: string;
+      ok?: boolean;
+      durationMs?: number;
+      /** Transient mid-run stdout/stderr for blocking shell tools — streamed via
+       *  `tool.output` events and rendered as live rows until tool.result lands
+       *  (never persisted; a session reload shows only the final result). */
+      liveOutput?: string;
+      subagentRuns?: SubagentRunProgress[];
+    }
+  | {
+      kind: "compaction";
+      /** compactionId pairing the started event with its finished event. */
+      id: string;
+      /** running → spinner; done → folded result; failed → error; idle → nothing to fold. */
+      state: "running" | "done" | "failed" | "idle";
+      reason: "user" | "auto-context-pressure";
+      /** "fold" = head folded into a summary message; "force-summary" = context-guard / stuck trim + summarize in place. */
+      compactionKind?: "fold" | "force-summary";
+      aggressive?: boolean;
+      beforeMessages?: number;
+      afterMessages?: number;
+      summaryChars?: number;
+      summary?: string;
+      error?: string;
+      /** Advisory warning on a successful fold — e.g. file triage failed, nothing dropped. */
+      warn?: string;
+      /** Unique file paths whose read results were pruned by the fold's prune step. */
+      prunedFiles?: number;
+      /** Tokens saved by the prune step. */
+      prunedTokens?: number;
+      /** File paths the fold's triage step classified as no longer relevant. */
+      droppedFiles?: string[];
+    }
+  | { kind: "warning"; id: string; text: string; severity?: "low" | "high" }
+  | { kind: "image"; dataUrl: string; mimeType: string };
+
+export type SkillOrigin = {
+  name: string;
+  runAs: "inline" | "subagent";
+};
+
+export type ChatMessage =
+  | {
+      kind: "user";
+      text: string;
+      clientId: string;
+      turn: number;
+      skill?: SkillOrigin;
+      images?: string[];
+    }
+  | {
+      kind: "assistant";
+      turn: number;
+      segments: AssistantSegment[];
+      pending: boolean;
+    }
+  | { kind: "notice"; id: string; text: string; severity: NoticeSeverity; turn?: number };
+
+export type PendingConfirm = {
+  id: number;
+  kind: "run_command" | "run_background" | "outlook_send";
+  command: string;
+  prompt: import("@reasonix/core-utils").ApprovalPrompt;
+};
+
+export type PendingPathAccess = {
+  id: number;
+  path: string;
+  intent: "read" | "write";
+  toolName: string;
+  sandboxRoot: string;
+  allowPrefix: string;
+  prompt: import("@reasonix/core-utils").ApprovalPrompt;
+};
+
+export type PendingChoice = {
+  id: number;
+  question: string;
+  options: { id: string; title: string; summary?: string }[];
+  allowCustom: boolean;
+  /** YOLO auto-selection window (ms) — the card picks the first option at expiry. */
+  countdownMs?: number;
+};
+
+export type PendingPlan = {
+  id: number;
+  plan: string;
+  summary?: string;
+  steps?: PlanStep[];
+  /** Stable submit_plan tool call that anchors live progress in the chat timeline. */
+  callId?: string;
+  /** YOLO auto-approval window (ms) — the card auto-picks the first option at expiry. */
+  countdownMs?: number;
+};
+
+export type ActivePlan = {
+  plan: string;
+  summary?: string;
+  steps: PlanStep[];
+  completedStepIds: string[];
+  stepResults: Record<string, string>;
+  status?: "active" | "finished" | "cancelled";
+  /** Stable submit_plan tool call that anchors live progress in the chat timeline. */
+  callId?: string;
+};
+
+export type PendingCheckpoint = {
+  id: number;
+  stepId: string;
+  title?: string;
+  result: string;
+  notes?: string;
+  completed: number;
+  total: number;
+};
+
+export type PendingRevision = {
+  id: number;
+  reason: string;
+  remainingSteps: PlanStep[];
+  summary?: string;
+  /** YOLO auto-approval window (ms) — the card auto-picks accept rewrite at expiry. */
+  countdownMs?: number;
+};
+
+export type UsageStats = {
+  totalCostUsd: number;
+  /** Cost of the most recent model call — the statusbar "this turn" figure for
+   *  pay-per-token providers (DeepSeek). Distinct from the cumulative session total. */
+  lastCallCostUsd: number;
+  /** Per-provider cumulative costs in each provider's native unit (USD for
+   *  token-priced APIs, plan-window % for quota APIs). Never converted between
+   *  providers. Keyed by provider id ("deepseek" | "openai" | "ollama" | "gemini"). */
+  costByProvider?: Record<string, SessionProviderCost>;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  lastCallCacheHit: number | null;
+  lastCallCacheMiss: number | null;
+  /** System prompt + tool specs — constant for the session, sent on tab open. */
+  reservedTokens: number;
+  /** Current conversation log tokens, refreshed by the desktop sidecar. */
+  liveLogTokens: number;
+  /** Model context cap — meter denominator + compaction-limit ticks. */
+  ctxMax?: number;
+  /** Current-session shell-output filtering totals — the statusbar "saved"
+   *  chip's numerator source. Undefined = this session has no shell telemetry
+   *  yet, chip hidden. Resets on session switch. */
+  shellOutputRawTokens?: number;
+  shellOutputShownTokens?: number;
+};
+
+export type SessionInfo = {
+  name: string;
+  messageCount: number;
+  mtime: string;
+  /** Explicit last-activity epoch-ms from the session's meta — drives the
+   *  sidebar's relative-time label and wins over a stale filesystem mtime. */
+  updatedAt?: number;
+  /** Creation epoch-ms — the sidebar's primary sort key (newest-created
+   *  first). Falls back to the name-embedded timestamp, then mtime. */
+  createdAt?: number;
+  summary?: string;
+  workspaceStatus?: "matched" | "legacy_missing_meta";
+};
+
+export {
+  parseSessionTimestamp,
+  sessionCreationTime,
+  sessionRecency,
+  sortSessionsByCreationDescending,
+  sortSessionsDescending,
+} from "@reasonix/core-utils";
+
+export type Settings = SettingsPayload;
+
+export type BalanceInfoItem = {
+  currency: string;
+  total: number;
+  granted?: number;
+  toppedUp?: number;
+};
+
+export type Balance = {
+  currency: string;
+  total: number;
+  isAvailable: boolean;
+  infos: BalanceInfoItem[];
+};
+
+type MentionResults = { nonce: number; query: string; results: string[] };
+type MentionPreviewState = {
+  nonce: number;
+  path: string;
+  head: string;
+  totalLines: number;
+};
+
+export type QueuedSend = {
+  text: string;
+  /** Short form shown in the chat when `text` is long (quick sends). Defaults to text. */
+  echo?: string;
+  images?: { id: string; thumbnail: string; wire?: UserImageAttachment }[];
+};
+
+/** Raw-context debug payload ($context_raw minus the wire tag) held in state. */
+type ContextRaw = Omit<ContextRawEvent, "type">;
+
+type State = {
+  ready: boolean;
+  needsSetup: boolean;
+  busy: boolean;
+  model?: string;
+  currentSession?: string;
+  messages: ChatMessage[];
+  pendingConfirms: PendingConfirm[];
+  pendingPathAccess: PendingPathAccess[];
+  pendingChoices: PendingChoice[];
+  pendingPlans: PendingPlan[];
+  pendingCheckpoints: PendingCheckpoint[];
+  pendingRevisions: PendingRevision[];
+  activePlan: ActivePlan | null;
+  usage: UsageStats;
+  sessions: SessionInfo[];
+  sessionsEpoch: string;
+  sessionsRevision: number;
+  workspaceInitializationRevision: number;
+  pendingSessionDeletes: string[];
+  settings: Settings | null;
+  balance: Balance | null;
+  codexQuota: CodexQuota | null;
+  /** True between a statusbar chip click and the $codex_quota reply — the chip shows a refresh indicator. */
+  codexQuotaRefreshing: boolean;
+  /** Why the last quota fetch produced no data — shown in the chip tooltip. */
+  codexQuotaReason: string | null;
+  /** Cloud Ollama usage (session + weekly windows) for Ollama-provider tabs. */
+  ollamaQuota: OllamaQuota | null;
+  /** True between a statusbar chip click and the $ollama_quota reply. */
+  ollamaQuotaRefreshing: boolean;
+  /** Why the last Ollama usage fetch produced no data — shown in the chip tooltip. */
+  ollamaQuotaReason: string | null;
+  /** Google Antigravity (Gemini Code Assist) plan + per-model usage. */
+  antigravityQuota: AntigravityQuota | null;
+  /** True between a statusbar chip click and the $antigravity_quota reply. */
+  antigravityQuotaRefreshing: boolean;
+  /** Why the last Antigravity quota fetch produced no data — shown in the chip tooltip. */
+  antigravityQuotaReason: string | null;
+  /** Z.AI GLM Coding Plan usage (5-hour + weekly) for zai-provider tabs. */
+  zaiQuota: ZaiQuota | null;
+  /** True between a statusbar chip click and the $zai_quota reply. */
+  zaiQuotaRefreshing: boolean;
+  /** Why the last Z.AI usage fetch produced no data — shown in the chip tooltip. */
+  zaiQuotaReason: string | null;
+  mentionResults: MentionResults | null;
+  mentionPreview: MentionPreviewState | null;
+  mcpSpecs: McpSpecInfo[];
+  mcpBridged: boolean;
+  mcpExtensionStatus: McpExtensionStatus | null;
+  mcpExtensionCheck: McpExtensionCheck | null;
+  mailAuth: MailAuthState | null;
+  playwrightBrowserInstall: PlaywrightBrowserInstall | null;
+  skills: SkillInfo[];
+  /** Files the agent has read or modified this session — paths as the tool args provided them. */
+  sessionFiles: SessionFile[];
+  memory: MemoryEntryInfo[];
+  memoryDetail: MemoryDetail | null;
+  /** Outcome of the last memory write/delete/import RPC — shown as a transient banner in the memory panel. */
+  memoryResult: { ok: boolean; message: string } | null;
+  /** JSON bundle produced by memory_export — rendered in a copy modal. */
+  memoryExport: string | null;
+  /** Latest $context_raw payload — the Raw context debug panel's read side. */
+  contextRaw: ContextRaw | null;
+  jobs: JobInfo[];
+  /** Live "skill running" indicator — set when a `skill_run` RPC dispatches, cleared on `$turn_complete`. */
+  activeSkill: SkillOrigin | null;
+  /** Terminal outcome of the most recent turn — gates success feedback and stop cards. */
+  lastTurnOutcome: TurnOutcome | null;
+  /** Messages typed while busy=true — auto-sent FIFO once the current turn completes. Cleared on `clear`, `rpc_exit`, `session_loaded`. */
+  queuedSends: QueuedSend[];
+  /** Populated by $retry_result — component useEffect reads and sets composer draft. */
+  retryText?: string;
+  retryNonce: number;
+  /** True between oauth_begin_result and the flow's terminal state — settings card spinner. */
+  oauthWaiting: boolean;
+  /** True between gemini_oauth_begin_result and the flow's terminal state — settings card spinner. */
+  antigravityOAuthWaiting: boolean;
+  /** Current turn's activity status — shown as a live indicator below the streaming assistant message. */
+  turnStatus:
+    | "thinking"
+    | "reasoning"
+    | "calling_tool"
+    | "waiting_tool"
+    | "responding"
+    | "waiting_user"
+    | null;
+  /** Tool name currently being prepared/called — displayed in the turn status line. */
+  turnStatusTool: string | null;
+  /** Timestamp (ms) of the last model/tool event — used to detect "stuck" state. */
+  turnLastEventMs: number;
+  /** Elapsed ms since the turn started (computed from turnLastEventMs in the component). */
+  turnElapsedMs: number;
+};
+
+export type SessionFile = {
+  path: string;
+  /** "c": pulled into context (read_file). "m": modified by the agent (edit_file / write_file / multi_edit). */
+  status: "c" | "m";
+};
+
+type DeltaBatchItem = {
+  turn: number;
+  channel: "content" | "reasoning";
+  text: string;
+};
+
+type Action =
+  | { t: "send_user"; text: string; clientId: string; images?: string[] }
+  | { t: "start_skill"; skill: SkillOrigin; args?: string; clientId: string }
+  | { t: "incoming"; event: IncomingEvent }
+  | { t: "batch_delta"; items: DeltaBatchItem[] }
+  | { t: "rpc_exit"; code: number | null }
+  | { t: "clear" }
+  | { t: "resolve_confirm"; id: number }
+  | { t: "resolve_path_access"; id: number }
+  | { t: "resolve_choice"; id: number }
+  | { t: "resolve_plan"; id: number; verdict: PlanVerdict }
+  | { t: "resolve_checkpoint"; id: number; verdict: CheckpointVerdict }
+  | { t: "resolve_revision"; id: number; verdict: RevisionVerdict }
+  | { t: "dismiss_memory_result" }
+  | { t: "dismiss_memory_export" }
+  | { t: "mention_results"; results: MentionResults }
+  | { t: "mention_preview"; preview: MentionPreviewState }
+  | { t: "enqueue_send"; send?: QueuedSend | string; text?: string }
+  | { t: "dequeue_send"; index: number }
+  | { t: "shift_queued_send" }
+  | { t: "settings_patch"; patch: SettingsPatch }
+  | { t: "session_delete_requested"; name: string }
+  | { t: "session_clear_requested" }
+  | { t: "session_rename_requested"; name: string; title: string }
+  | { t: "session_bump_requested"; name: string; createdAt?: number }
+  | { t: "workspace_recent_removed"; path: string }
+  | { t: "oauth_waiting"; waiting: boolean }
+  | { t: "antigravity_oauth_waiting"; waiting: boolean }
+  | { t: "codex_quota_refreshing" }
+  | { t: "ollama_quota_refreshing" }
+  | { t: "antigravity_quota_refreshing" }
+  | { t: "zai_quota_refreshing" }
+  | { t: "push_notice"; text: string; severity?: NoticeSeverity };
+
+export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
+  const {
+    metasoApiKey: _metaso,
+    baiduApiKey: _baidu,
+    tavilyApiKey: _tavily,
+    perplexityApiKey: _perplexity,
+    exaApiKey: _exa,
+    braveApiKey: _brave,
+    ollamaApiKey: _ollama,
+    zaiApiKey: _zai,
+    opencodeApiKey: _opencode,
+    typesafeApiKey: _typesafe,
+    ollamaBaseUrl: _ollamaBaseUrl,
+    ollamaGeneration: _ollamaGeneration,
+    webSearchEndpoint,
+    opencodeBaseUrl,
+    ...rest
+  } = patch;
+  const sanitized: Partial<Settings> = { ...rest };
+  if (webSearchEndpoint !== undefined) {
+    sanitized.webSearchEndpoint = webSearchEndpoint ?? undefined;
+  }
+  if (_ollamaBaseUrl !== undefined) {
+    sanitized.ollamaBaseUrl = _ollamaBaseUrl ?? undefined;
+  }
+  if (opencodeBaseUrl !== undefined) {
+    sanitized.opencodeBaseUrl = opencodeBaseUrl ?? undefined;
+  }
+  return sanitized;
+}
+
+function nextMessageTurn(messages: ChatMessage[]): number {
+  const lastTurn = messages.reduce((max, m) => {
+    if (m.kind === "user" || m.kind === "assistant") return Math.max(max, m.turn);
+    return max;
+  }, 0);
+  return lastTurn + 1;
+}
+
+/** Events that render into a turn's assistant card. Ensured centrally so a
+ *  dropped `model.turn.started` cannot silently swallow them. */
+const ASSISTANT_CARD_EVENTS: ReadonlySet<IncomingEvent["type"]> = new Set([
+  "model.delta",
+  "model.final",
+  "tool.preparing",
+  "tool.intent",
+]);
+
+/** Append the event's assistant card when absent; a no-op otherwise. */
+function ensureAssistantTurn(state: State, ev: IncomingEvent): State {
+  if (!ASSISTANT_CARD_EVENTS.has(ev.type)) return state;
+  const turn = (ev as { turn: number }).turn;
+  if (state.messages.some((m) => m.kind === "assistant" && m.turn === turn)) return state;
+  return {
+    ...state,
+    messages: [...state.messages, { kind: "assistant", turn, segments: [], pending: true }],
+  };
+}
+
+let noticeSequence = 0;
+function nextNoticeId(): string {
+  noticeSequence += 1;
+  return `notice-${Date.now().toString(36)}-${noticeSequence}`;
+}
+
+export function hasPendingIntervention(state: {
+  pendingConfirms?: readonly unknown[];
+  pendingPathAccess?: readonly unknown[];
+  pendingChoices?: readonly unknown[];
+  pendingPlans?: readonly unknown[];
+  pendingCheckpoints?: readonly unknown[];
+  pendingRevisions?: readonly unknown[];
+}): boolean {
+  return Boolean(
+    (state.pendingChoices && state.pendingChoices.length > 0) ||
+      (state.pendingConfirms && state.pendingConfirms.length > 0) ||
+      (state.pendingPathAccess && state.pendingPathAccess.length > 0) ||
+      (state.pendingPlans && state.pendingPlans.length > 0) ||
+      (state.pendingCheckpoints && state.pendingCheckpoints.length > 0) ||
+      (state.pendingRevisions && state.pendingRevisions.length > 0),
+  );
+}
+
+function turnStatusAfterResolve(
+  nextState: Parameters<typeof hasPendingIntervention>[0],
+  currentBusy: boolean,
+): State["turnStatus"] {
+  if (hasPendingIntervention(nextState)) return "waiting_user";
+  return currentBusy ? "calling_tool" : null;
+}
+
+/** True when two $jobs snapshots are identical, so the reducer can keep the
+ *  prior array reference and avoid re-rendering every assistant row on each
+ *  poll tick. Background-job shell cards read this array, so a stable identity
+ *  when nothing changed is load-bearing. */
+function sameJobInfos(a: JobInfo[], b: JobInfo[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.id !== y.id ||
+      x.tabId !== y.tabId ||
+      x.command !== y.command ||
+      x.pid !== y.pid ||
+      x.running !== y.running ||
+      x.exitCode !== y.exitCode ||
+      x.startedAt !== y.startedAt ||
+      x.outputTail !== y.outputTail ||
+      x.spawnError !== y.spawnError
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function reduce(state: State, action: Action): State {
+  switch (action.t) {
+    case "send_user": {
+      return {
+        ...state,
+        busy: true,
+        messages: [
+          ...state.messages,
+          {
+            kind: "user",
+            text: action.text,
+            clientId: action.clientId,
+            turn: nextMessageTurn(state.messages),
+            ...(action.images ? { images: action.images } : {}),
+          },
+        ],
+      };
+    }
+    case "start_skill": {
+      const argsLine = action.args ? ` ${action.args}` : "";
+      return {
+        ...state,
+        busy: true,
+        activeSkill: action.skill,
+        messages: [
+          ...state.messages,
+          {
+            kind: "user",
+            text: `/${action.skill.name}${argsLine}`,
+            clientId: action.clientId,
+            turn: nextMessageTurn(state.messages),
+            skill: action.skill,
+          },
+        ],
+      };
+    }
+    case "rpc_exit":
+      return {
+        ...state,
+        ready: false,
+        busy: false,
+        activeSkill: null,
+        queuedSends: [],
+        messages: insertNotice(
+          state.messages,
+          `reasonix exited (code ${action.code ?? "?"})`,
+          "error",
+        ),
+      };
+    case "incoming":
+      return applyIncoming(state, action.event);
+    case "settings_patch": {
+      const modelChanged =
+        action.patch.model !== undefined &&
+        state.settings?.model !== undefined &&
+        action.patch.model !== state.settings.model;
+      return state.settings
+        ? {
+            ...state,
+            busy: modelChanged ? false : state.busy,
+            turnStatus: modelChanged ? null : state.turnStatus,
+            turnStatusTool: modelChanged ? null : state.turnStatusTool,
+            settings: { ...state.settings, ...sanitizeSettingsPatch(action.patch) },
+          }
+        : state;
+    }
+    case "session_delete_requested":
+      return {
+        ...state,
+        sessions: state.sessions.filter((session) => session.name !== action.name),
+        pendingSessionDeletes: [...new Set([...state.pendingSessionDeletes, action.name])],
+      };
+    case "session_clear_requested":
+      return {
+        ...state,
+        sessions: [],
+        pendingSessionDeletes: [
+          ...new Set([...state.pendingSessionDeletes, ...state.sessions.map((s) => s.name)]),
+        ],
+      };
+    case "session_rename_requested": {
+      const title = flattenText(action.title).slice(0, 200);
+      return {
+        ...state,
+        sessions: state.sessions.map((session) =>
+          session.name === action.name ? { ...session, summary: title || undefined } : session,
+        ),
+      };
+    }
+    case "session_bump_requested": {
+      const now = action.createdAt ?? Date.now();
+      const nextSessions = state.sessions.map((session) =>
+        session.name === action.name ? { ...session, createdAt: now } : session,
+      );
+      return {
+        ...state,
+        sessions: nextSessions.sort(sortSessionsByCreationDescending),
+      };
+    }
+    case "workspace_recent_removed":
+      return state.settings
+        ? {
+            ...state,
+            settings: {
+              ...state.settings,
+              recentWorkspaces: state.settings.recentWorkspaces.filter((p) => p !== action.path),
+            },
+          }
+        : state;
+    case "oauth_waiting":
+      return { ...state, oauthWaiting: action.waiting };
+    case "antigravity_oauth_waiting":
+      return { ...state, antigravityOAuthWaiting: action.waiting };
+    case "codex_quota_refreshing":
+      return { ...state, codexQuotaRefreshing: true };
+    case "ollama_quota_refreshing":
+      return { ...state, ollamaQuotaRefreshing: true };
+    case "antigravity_quota_refreshing":
+      return { ...state, antigravityQuotaRefreshing: true };
+    case "zai_quota_refreshing":
+      return { ...state, zaiQuotaRefreshing: true };
+    case "batch_delta": {
+      const collapsed: DeltaBatchItem[] = [];
+      for (const item of action.items) {
+        const last = collapsed[collapsed.length - 1];
+        if (last && last.turn === item.turn && last.channel === item.channel) {
+          last.text += item.text;
+        } else {
+          collapsed.push({ ...item });
+        }
+      }
+      if (collapsed.length === 0) return state;
+      // Group by turn once — the per-message filter below was O(n·k) per
+      // frame and ran for every message (even non-assistant) at transcript
+      // scale; a turn-keyed lookup is O(1) per message.
+      const byTurn = new Map<number, DeltaBatchItem[]>();
+      for (const it of collapsed) {
+        const bucket = byTurn.get(it.turn);
+        if (bucket) bucket.push(it);
+        else byTurn.set(it.turn, [it]);
+      }
+      // No missing-card synthesis: turn ordinals are monotonic daemon-side,
+      // so the card already exists (model.turn.started / ensureAssistantTurn).
+      const lastItem = collapsed[collapsed.length - 1];
+      return {
+        ...state,
+        turnStatus: lastItem?.channel === "reasoning" ? "reasoning" : "responding",
+        turnLastEventMs: Date.now(),
+        messages: state.messages.map((m) => {
+          if (m.kind !== "assistant") return m;
+          const relevant = byTurn.get(m.turn);
+          if (!relevant || relevant.length === 0) return m;
+          let segments = m.segments;
+          for (const it of relevant) {
+            segments = appendTextSegment(
+              segments,
+              it.channel === "content" ? "text" : "reasoning",
+              it.text,
+            );
+          }
+          return { ...m, segments };
+        }),
+      };
+    }
+    case "clear":
+      return {
+        ...state,
+        busy: false,
+        currentSession: undefined,
+        messages: [],
+        pendingConfirms: [],
+        pendingPathAccess: [],
+        pendingChoices: [],
+        pendingPlans: [],
+        pendingCheckpoints: [],
+        pendingRevisions: [],
+        activePlan: null,
+        usage: zeroUsage(),
+        sessionFiles: [],
+        activeSkill: null,
+        queuedSends: [],
+        retryNonce: 0,
+      };
+    case "resolve_confirm": {
+      const nextConfirms = state.pendingConfirms.filter((c) => c.id !== action.id);
+      return {
+        ...state,
+        pendingConfirms: nextConfirms,
+        turnStatus: turnStatusAfterResolve({ ...state, pendingConfirms: nextConfirms }, state.busy),
+      };
+    }
+    case "resolve_path_access": {
+      const nextPathAccess = state.pendingPathAccess.filter((p) => p.id !== action.id);
+      return {
+        ...state,
+        pendingPathAccess: nextPathAccess,
+        turnStatus: turnStatusAfterResolve(
+          { ...state, pendingPathAccess: nextPathAccess },
+          state.busy,
+        ),
+      };
+    }
+    case "resolve_choice": {
+      const nextChoices = state.pendingChoices.filter((c) => c.id !== action.id);
+      return {
+        ...state,
+        pendingChoices: nextChoices,
+        turnStatus: turnStatusAfterResolve({ ...state, pendingChoices: nextChoices }, state.busy),
+      };
+    }
+    case "resolve_plan": {
+      const removed = state.pendingPlans.find((p) => p.id === action.id);
+      let activePlan = state.activePlan;
+      if (removed && action.verdict.type === "approve") {
+        const pendingSteps = (removed as PendingPlan & { steps?: PlanStep[] }).steps;
+        activePlan = {
+          plan: removed.plan,
+          summary: removed.summary,
+          steps: pendingSteps ?? [],
+          completedStepIds: [],
+          stepResults: {},
+          status: "active",
+          callId: removed.callId,
+        };
+      }
+      const nextPlans = state.pendingPlans.filter((p) => p.id !== action.id);
+      return {
+        ...state,
+        pendingPlans: nextPlans,
+        activePlan,
+        turnStatus: turnStatusAfterResolve({ ...state, pendingPlans: nextPlans }, state.busy),
+      };
+    }
+    case "resolve_checkpoint": {
+      const nextCheckpoints = state.pendingCheckpoints.filter((c) => c.id !== action.id);
+      return {
+        ...state,
+        pendingCheckpoints: nextCheckpoints,
+        turnStatus: turnStatusAfterResolve(
+          { ...state, pendingCheckpoints: nextCheckpoints },
+          state.busy,
+        ),
+      };
+    }
+    case "resolve_revision": {
+      const removed = state.pendingRevisions.find((r) => r.id === action.id);
+      let activePlan = state.activePlan;
+      if (removed && action.verdict.type === "accepted" && activePlan) {
+        const doneIds = new Set(activePlan.completedStepIds);
+        const keptDone = activePlan.steps.filter((s) => doneIds.has(s.id));
+        activePlan = {
+          ...activePlan,
+          steps: [...keptDone, ...removed.remainingSteps],
+        };
+      }
+      const nextRevisions = state.pendingRevisions.filter((r) => r.id !== action.id);
+      return {
+        ...state,
+        pendingRevisions: nextRevisions,
+        activePlan,
+        turnStatus: turnStatusAfterResolve(
+          { ...state, pendingRevisions: nextRevisions },
+          state.busy,
+        ),
+      };
+    }
+    case "dismiss_memory_result":
+      return { ...state, memoryResult: null };
+    case "dismiss_memory_export":
+      return { ...state, memoryExport: null };
+    case "mention_results":
+      return { ...state, mentionResults: action.results };
+    case "mention_preview":
+      return { ...state, mentionPreview: action.preview };
+    case "enqueue_send": {
+      const item: QueuedSend =
+        action.send !== undefined
+          ? typeof action.send === "string"
+            ? { text: action.send }
+            : action.send
+          : { text: action.text ?? "" };
+      return { ...state, queuedSends: [...state.queuedSends, item] };
+    }
+    case "dequeue_send":
+      return {
+        ...state,
+        queuedSends: state.queuedSends.filter((_, i) => i !== action.index),
+      };
+    case "shift_queued_send":
+      return { ...state, queuedSends: state.queuedSends.slice(1) };
+    case "push_notice": {
+      return {
+        ...state,
+        messages: insertNotice(state.messages, action.text, action.severity ?? "info"),
+      };
+    }
+  }
+}
+
+type FileStat = { filename: string; added: number; removed: number };
+type FileStats = { entries: FileStat[]; totalAdded: number; totalRemoved: number };
+
+function countFileStats(segments: AssistantSegment[]): FileStats | null {
+  const entries: FileStat[] = [];
+  for (const s of segments) {
+    if (s.kind !== "tool" || !s.result || s.ok === false) continue;
+    if (s.name === "edit_file" || s.name === "multi_edit") {
+      for (const f of parseEditResult(s.result)) {
+        let added = 0;
+        let removed = 0;
+        for (const ln of f.lines) {
+          if (ln.t === "add") added++;
+          else if (ln.t === "rm") removed++;
+        }
+        entries.push({ filename: f.filename, added, removed });
+      }
+    } else if (s.name === "write_file") {
+      let lines = 0;
+      try {
+        const parsed = JSON.parse(s.args);
+        if (typeof parsed.content === "string") {
+          lines = parsed.content.split("\n").length;
+        }
+      } catch {
+        /* args unparseable */
+      }
+      let filename = "";
+      try {
+        filename = JSON.parse(s.args)?.path ?? "";
+      } catch {
+        /* ignore */
+      }
+      entries.push({ filename, added: lines, removed: 0 });
+    }
+  }
+  if (entries.length === 0) return null;
+  const totalAdded = entries.reduce((s, e) => s + e.added, 0);
+  const totalRemoved = entries.reduce((s, e) => s + e.removed, 0);
+  return { entries, totalAdded, totalRemoved };
+}
+
+function DiffStats({ stats }: { stats: FileStats }) {
+  const [open, setOpen] = useState(false);
+  const total = stats.entries.length;
+  return (
+    <div className="diff-stats">
+      <button type="button" className="diff-stats-head" onClick={() => setOpen((v) => !v)}>
+        <span className="ico">
+          <I.diff size={11} />
+        </span>
+        <span>
+          {total} {total === 1 ? "file" : "files"} changed · +{stats.totalAdded} / −
+          {stats.totalRemoved} {stats.totalRemoved === 1 ? "line" : "lines"}
+        </span>
+        <span className="chev">{open ? <I.chev size={10} /> : <I.chevR size={10} />}</span>
+      </button>
+      {open ? (
+        <div className="diff-stats-body">
+          {stats.entries.map((e) => (
+            <div key={e.filename} className="diff-stats-row">
+              <span className="fn">{e.filename}</span>
+              <span className="counts">
+                <span className="add">+{e.added}</span>
+                {e.removed > 0 ? <span className="rm"> / −{e.removed}</span> : null}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function activePlanForMessage(
+  message: ChatMessage,
+  activePlan: ActivePlan | null,
+): ActivePlan | undefined {
+  if (!activePlan?.callId || message.kind !== "assistant") return undefined;
+  return message.segments.some(
+    (segment) =>
+      segment.kind === "tool" &&
+      segment.name === "submit_plan" &&
+      segment.callId === activePlan.callId,
+  )
+    ? activePlan
+    : undefined;
+}
+
+/** Memoized assistant row — props are stable for unchanged messages, so a
+ *  streaming frame re-renders only the changed row; countFileStats runs for
+ *  that row alone, not the whole transcript. */
+const AssistantRow = memo(function AssistantRow({
+  m,
+  model,
+  pendingConfirms,
+  activePlan,
+  onApproveConfirm,
+  onRejectConfirm,
+  onAlwaysAllowConfirm,
+  onStopTool,
+  jobs,
+  tabId,
+  onStopJob,
+  isInterventionPending,
+}: {
+  m: Extract<ChatMessage, { kind: "assistant" }>;
+  model?: string;
+  pendingConfirms: PendingConfirm[];
+  activePlan?: ActivePlan;
+  onApproveConfirm: (id: number) => void;
+  onRejectConfirm: (id: number) => void;
+  onAlwaysAllowConfirm: (id: number, prefix: string) => void;
+  onStopTool: () => void;
+  /** Live background-job snapshots — background shell cards read their job's
+   *  status from here so a running job never renders as finished. */
+  jobs?: JobInfo[];
+  tabId?: string;
+  onStopJob?: (jobId: number) => void;
+  isInterventionPending?: boolean;
+}) {
+  const stats = !m.pending ? countFileStats(m.segments) : null;
+  return (
+    <>
+      <AssistantMsg
+        segments={m.segments}
+        pending={m.pending && !isInterventionPending}
+        model={model}
+        onApproveConfirm={onApproveConfirm}
+        onRejectConfirm={onRejectConfirm}
+        onAlwaysAllowConfirm={onAlwaysAllowConfirm}
+        onStopTool={onStopTool}
+        pendingConfirms={pendingConfirms}
+        activePlan={activePlan}
+        jobs={jobs}
+        tabId={tabId}
+        onStopJob={onStopJob}
+        isInterventionPending={isInterventionPending}
+      />
+      {stats ? <DiffStats stats={stats} /> : null}
+    </>
+  );
+});
+
+function extractToolFiles(name: string, args: string): SessionFile[] {
+  if (!isFilePathTool(name)) return [];
+  const paths = extractPathsFromArgs(args);
+  if (paths.length === 0) return [];
+  if (name !== "read_file") {
+    // multi_edit edits[] can repeat a path — the panel lists each file once.
+    return [...new Set(paths)].map((path) => ({ path, status: "m" }));
+  }
+  return paths.map((path) => ({ path, status: "c" }));
+}
+
+function mergeSessionFiles(existing: SessionFile[], adds: SessionFile[]): SessionFile[] {
+  if (adds.length === 0) return existing;
+  const next = [...existing];
+  const indexByPath = new Map<string, number>();
+  next.forEach((f, i) => indexByPath.set(f.path, i));
+  let changed = false;
+  for (const add of adds) {
+    const idx = indexByPath.get(add.path);
+    if (idx === undefined) {
+      indexByPath.set(add.path, next.length);
+      next.push(add);
+      changed = true;
+      continue;
+    }
+    const prev = next[idx];
+    if (!prev || prev.status === "m") continue; // never downgrade m → c
+    if (prev.status === add.status) continue;
+    next[idx] = add;
+    changed = true;
+  }
+  return changed ? next : existing;
+}
+
+/** Path-key used for context-file comparisons — Windows separators normalize to "/". */
+function contextPathKey(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
+/** Remove the paths the fold's triage step classified as no longer relevant. */
+function pruneSessionFiles(existing: SessionFile[], dropped: readonly string[]): SessionFile[] {
+  if (dropped.length === 0) return existing;
+  const droppedSet = new Set(dropped.map(contextPathKey));
+  return existing.filter((f) => !droppedSet.has(contextPathKey(f.path)));
+}
+
+/** Convert a server-sent conversation (LoadedMessage shape) into UI messages.
+ *  Shared by $session_loaded and session.compacted — both carry the same wire
+ *  shape, so the live fold replacement and a session reload render identically. */
+function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
+  // User turns are counted by user-message position (1-based), matching live
+  // numbering. List index i+1 would drift: the loaded list interleaves
+  // assistant messages, so the 2nd user message would render as turn 3 and
+  // rewind's index mapping (turn - 1) would point past the log's user entries.
+  let userTurn = 0;
+  return loaded.map((m, i) => {
+    if (m.kind === "user") {
+      userTurn += 1;
+      return {
+        kind: "user",
+        text: m.text,
+        clientId: `c-loaded-${i}`,
+        turn: userTurn,
+        ...(m.images ? { images: m.images } : {}),
+      };
+    }
+    const segments: AssistantSegment[] = m.segments.map((s, segIdx) => {
+      if (s.kind === "tool") {
+        return {
+          kind: "tool",
+          callId: s.callId,
+          name: s.name,
+          args: s.args,
+          startedAt: 0,
+          result: s.result,
+          ok: s.ok,
+          durationMs: 0,
+        };
+      }
+      if (s.kind === "warning") {
+        return {
+          kind: "warning",
+          id: s.id ?? `w-loaded-${i}-${segIdx}`,
+          text: s.text,
+          severity: s.severity ?? "high",
+        };
+      }
+      return s;
+    });
+    return { kind: "assistant", turn: m.turn, segments, pending: false };
+  });
+}
+
+/** Re-derive the "Files in context" list from a conversation: paths from tool
+ *  segments, minus paths the fold's triage dropped (persisted as a marker in
+ *  the folded summary message). Used by $session_loaded and session.compacted. */
+function deriveSessionFiles(loaded: ChatMessage[]): SessionFile[] {
+  let sessionFiles: SessionFile[] = [];
+  for (const m of loaded) {
+    if (m.kind !== "assistant") continue;
+    for (const s of m.segments) {
+      if (s.kind !== "tool") continue;
+      // For replayed sessions we don't have tool.result ok-status here, but
+      // segments only survive into history if the call completed. Trust it.
+      sessionFiles = mergeSessionFiles(sessionFiles, extractToolFiles(s.name, s.args));
+    }
+  }
+  // Files the fold's triage step dropped stay dropped across reloads: the
+  // decision is persisted as a marker in the folded summary message.
+  const droppedFromMarkers = new Set<string>();
+  for (const m of loaded) {
+    if (m.kind !== "assistant") continue;
+    for (const s of m.segments) {
+      if (s.kind !== "text") continue;
+      for (const p of parseFilesDroppedMarker(s.text)) {
+        droppedFromMarkers.add(contextPathKey(p));
+      }
+    }
+  }
+  if (droppedFromMarkers.size > 0) {
+    sessionFiles = sessionFiles.filter((f) => !droppedFromMarkers.has(contextPathKey(f.path)));
+  }
+  return sessionFiles;
+}
+
+function zeroUsage(): UsageStats {
+  return {
+    totalCostUsd: 0,
+    lastCallCostUsd: 0,
+    costByProvider: {},
+    totalPromptTokens: 0,
+    totalCompletionTokens: 0,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+    lastCallCacheHit: null,
+    lastCallCacheMiss: null,
+    reservedTokens: 0,
+    liveLogTokens: 0,
+  };
+}
+
+/** Fold a measured plan-window delta (percentage points) into the session's
+ *  per-provider quota usage. Native unit only — never converted to dollars. */
+function applyQuotaDelta(usage: UsageStats, provider: string, usedPct: number | null): UsageStats {
+  if (usedPct === null || usedPct <= 0) return usage;
+  const prev = usage.costByProvider?.[provider];
+  const prevPct = prev?.quotaUsedPct ?? 0;
+  const kind = prev?.totalCostUsd !== undefined ? "mixed" : "quota";
+  return {
+    ...usage,
+    costByProvider: {
+      ...(usage.costByProvider ?? {}),
+      [provider]: {
+        ...prev,
+        kind,
+        quotaUsedPct: prevPct + usedPct,
+      },
+    },
+  };
+}
+
+function appendTextSegment(
+  segments: AssistantSegment[],
+  kind: "text" | "reasoning",
+  text: string,
+): AssistantSegment[] {
+  const last = segments[segments.length - 1];
+  if (last && last.kind === kind) {
+    return [...segments.slice(0, -1), { ...last, text: last.text + text }];
+  }
+  const base = closeTrailingReasoning(segments);
+  return [...base, kind === "reasoning" ? { kind, text, startedAt: Date.now() } : { kind, text }];
+}
+
+// Stamp the wall-clock duration onto a trailing reasoning segment that's still
+// open (no `durationMs`) — called when the model moves on to text, a tool, or
+// the turn finalizes, so the reasoning card can show how long the thinking run
+// took. Idempotent: a closed or non-reasoning tail is returned unchanged.
+function closeTrailingReasoning(segments: AssistantSegment[]): AssistantSegment[] {
+  const last = segments[segments.length - 1];
+  if (last?.kind === "reasoning" && last.durationMs === undefined && last.startedAt !== undefined) {
+    return [
+      ...segments.slice(0, -1),
+      { ...last, durationMs: Math.max(0, Date.now() - last.startedAt) },
+    ];
+  }
+  return segments;
+}
+
+// Insert an assistant card at its owning turn's boundary: right before the first
+// message whose turn is strictly greater than `turn`, or at the end when no later
+// message exists. Only used to place a late assistant record for a turn whose card
+// was never created.
+function insertMessageAtTurn(
+  messages: ChatMessage[],
+  message: ChatMessage,
+  turn: number,
+): ChatMessage[] {
+  const insertAt = messages.findIndex(
+    (candidate) => "turn" in candidate && candidate.turn !== undefined && candidate.turn > turn,
+  );
+  const idx = insertAt < 0 ? messages.length : insertAt;
+  return [...messages.slice(0, idx), message, ...messages.slice(idx)];
+}
+
+// Append a notice/error card in CREATION order — the tail of the timeline, like
+// every other card — so a burst of errors reads in the order it happened and a
+// late event never re-anchors itself above newer content. Single guard: while a
+// still-streaming assistant card is the newest entry, the notice slots just
+// above it, so a status card never pushes the in-flight answer down and content
+// being written stays newest.
+function appendNoticeMessage(messages: ChatMessage[], notice: ChatMessage): ChatMessage[] {
+  const last = messages[messages.length - 1];
+  const idx = last?.kind === "assistant" && last.pending ? messages.length - 1 : messages.length;
+  return [...messages.slice(0, idx), notice, ...messages.slice(idx)];
+}
+
+// The turn a notice belongs to (the one in flight, else the last completed
+// turn). Stored on the notice only for turnHasTerminalExplanation's dedupe —
+// placement itself is creation-ordered (see appendNoticeMessage).
+function currentTurnForNotice(messages: ChatMessage[]): number {
+  const pending = messages.find((m) => m.kind === "assistant" && m.pending);
+  if (pending?.kind === "assistant") return pending.turn;
+  let last = 0;
+  for (const m of messages) {
+    if (m.kind === "user" || m.kind === "assistant") last = Math.max(last, m.turn);
+  }
+  return last;
+}
+
+// Build a notice and append it in creation order. Every notice path routes
+// through here so the streaming-card guard applies uniformly (btw / session-empty
+// / exit notices previously bypassed it and landed below the streaming card).
+function insertNotice(
+  messages: ChatMessage[],
+  text: string,
+  severity: NoticeSeverity = "info",
+  turn?: number,
+): ChatMessage[] {
+  return appendNoticeMessage(messages, {
+    kind: "notice",
+    id: nextNoticeId(),
+    text,
+    severity,
+    turn: turn ?? currentTurnForNotice(messages),
+  });
+}
+
+/** True when the given turn already carries a user-visible explanation (a warning
+ *  segment or a notice). Prevents $turn_complete from adding a duplicate stop card
+ *  when the loop already surfaced the reason. */
+function turnHasTerminalExplanation(messages: ChatMessage[], turn: number | undefined): boolean {
+  return messages.some(
+    (m) =>
+      (m.kind === "notice" && (turn === undefined || m.turn === turn)) ||
+      (m.kind === "assistant" &&
+        (turn === undefined || m.turn === turn) &&
+        m.segments.some((s) => s.kind === "warning")),
+  );
+}
+
+function appendAssistantSegment(
+  messages: ChatMessage[],
+  segment: AssistantSegment,
+  turn = 1,
+): ChatMessage[] {
+  const hostIndex = messages.findIndex((m) => m.kind === "assistant" && m.turn === turn);
+  const host = messages[hostIndex];
+  if (host?.kind === "assistant") {
+    const next = [...messages];
+    next[hostIndex] = { ...host, segments: [...host.segments, segment] };
+    return next;
+  }
+  return insertMessageAtTurn(
+    messages,
+    { kind: "assistant", turn, segments: [segment], pending: false },
+    turn,
+  );
+}
+
+export function applySubagentProgress(
+  runs: SubagentRunProgress[],
+  ev: SubagentProgressEvent,
+): SubagentRunProgress[] {
+  const result = [...runs];
+  const runIndex = result.findIndex((run) => run.runId === ev.runId);
+  const previous = runIndex >= 0 ? result[runIndex] : undefined;
+  const tools = [...(previous?.tools ?? [])];
+  const recentRows = [...(previous?.recentRows ?? [])];
+
+  if (ev.action === "start" && recentRows.length === 0) {
+    recentRows.push({
+      id: `${ev.runId}-start`,
+      kind: "process",
+      text: `Starting ${ev.skillName ?? "subagent"}...`,
+      status: "running",
+    });
+  } else if (ev.action === "tool-start") {
+    const callId = ev.childCallId ?? `${ev.runId}-tool-${tools.length}`;
+    const existing = tools.findIndex((tool) => tool.callId === callId);
+    const activity: SubagentToolActivity = {
+      callId,
+      name: ev.toolName ?? "tool",
+      ...(ev.toolArgs ? { args: ev.toolArgs } : {}),
+      status: "running",
+    };
+    if (existing >= 0) tools[existing] = activity;
+    else tools.push(activity);
+    const text = `↳ ${ev.toolName ?? "tool"}${ev.toolArgs ? ` ${ev.toolArgs}` : ""}`;
+    recentRows.push({
+      id: `${ev.runId}-tool-${Date.now()}-${recentRows.length}`,
+      kind: "process",
+      text,
+      status: "running",
+    });
+  } else if (ev.action === "tool-end") {
+    const existing = ev.childCallId
+      ? tools.findIndex((tool) => tool.callId === ev.childCallId)
+      : tools.findIndex((tool) => tool.status === "running");
+    if (existing >= 0 && tools[existing]) {
+      tools[existing] = {
+        ...tools[existing],
+        status: ev.toolOk === false ? "failed" : "done",
+      };
+    }
+    const lastProcess = [...recentRows]
+      .reverse()
+      .find((r) => r.kind === "process" && r.status === "running");
+    if (lastProcess) {
+      lastProcess.status = ev.toolOk === false ? "failed" : "done";
+    }
+  } else if (ev.action === "phase" && ev.phase) {
+    recentRows.push({
+      id: `${ev.runId}-phase-${Date.now()}-${recentRows.length}`,
+      kind: "process",
+      text: ev.phase === "summarising" ? "Summarising findings..." : "Exploring codebase...",
+      status: "running",
+    });
+  }
+
+  if (ev.thought) {
+    const lines = ev.thought
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .slice(-3);
+    if (lines.length > 0) {
+      while (recentRows.at(-1)?.kind === "thinking") recentRows.pop();
+      recentRows.push(
+        ...lines.map((text, index) => ({
+          id: `${ev.runId}-th-${ev.reasoningChars ?? ev.outputChars ?? Date.now()}-${index}`,
+          kind: "thinking" as const,
+          text,
+        })),
+      );
+    }
+  }
+  if (recentRows.length > 20) {
+    recentRows.splice(0, recentRows.length - 20);
+  }
+
+  const next: SubagentRunProgress = {
+    runId: ev.runId,
+    task: ev.task,
+    skillName: ev.skillName ?? previous?.skillName,
+    model: ev.model ?? previous?.model,
+    phase: ev.phase ?? previous?.phase,
+    status: ev.action === "end" ? (ev.error ? "failed" : "done") : (previous?.status ?? "running"),
+    iter: ev.iter ?? previous?.iter,
+    elapsedMs: ev.elapsedMs ?? previous?.elapsedMs,
+    contextTokens: ev.contextTokens ?? previous?.contextTokens,
+    contextMax: ev.contextMax ?? previous?.contextMax,
+    outputChars: ev.outputChars ?? previous?.outputChars,
+    reasoningChars: ev.reasoningChars ?? previous?.reasoningChars,
+    toolReadChars: ev.toolReadChars ?? previous?.toolReadChars,
+    turns: ev.turns ?? previous?.turns,
+    costUsd: ev.costUsd ?? previous?.costUsd,
+    billingKind: ev.billingKind ?? previous?.billingKind,
+    quotaUsedPct: ev.quotaUsedPct ?? previous?.quotaUsedPct,
+    maxToolIters: ev.maxToolIters ?? previous?.maxToolIters,
+    maxElapsedMs: ev.maxElapsedMs ?? previous?.maxElapsedMs,
+    budgetExhausted: ev.budgetExhausted ?? previous?.budgetExhausted,
+    error: ev.error ?? previous?.error,
+    thought: ev.thought ?? previous?.thought,
+    recentRows,
+    tools,
+  };
+
+  if (runIndex >= 0) result[runIndex] = next;
+  else result.push(next);
+  return result;
+}
+
+export function applyIncoming(state: State, ev: IncomingEvent): State {
+  return applyIncomingInner(ensureAssistantTurn(state, ev), ev);
+}
+
+function applyIncomingInner(state: State, ev: IncomingEvent): State {
+  switch (ev.type) {
+    case "user.message": {
+      // Daemon echo: renumber the optimistic bubble in place instead of
+      // appending a duplicate. Monotonic ordinals guarantee the daemon turn
+      // is unseen.
+      const existingIdx =
+        ev.clientId !== undefined
+          ? state.messages.findIndex((m) => m.kind === "user" && m.clientId === ev.clientId)
+          : -1;
+      if (existingIdx >= 0) {
+        const messages = [...state.messages];
+        const existing = messages[existingIdx];
+        if (existing?.kind === "user" && existing.turn === ev.turn) return state;
+        messages[existingIdx] =
+          existing?.kind === "user" ? { ...existing, turn: ev.turn } : existing;
+        return { ...state, busy: true, messages };
+      }
+      return {
+        ...state,
+        busy: true,
+        messages: [
+          ...state.messages,
+          {
+            kind: "user",
+            text: ev.text,
+            clientId: ev.clientId ?? `remote-${ev.id}`,
+            turn: ev.turn > 0 ? ev.turn : nextMessageTurn(state.messages),
+          },
+        ],
+      };
+    }
+    case "$ready":
+      return { ...state, ready: true, needsSetup: false };
+    case "$workspace_initialized":
+      return {
+        ...state,
+        workspaceInitializationRevision: Math.max(
+          state.workspaceInitializationRevision,
+          ev.revision,
+        ),
+      };
+    case "$needs_setup":
+      return { ...state, needsSetup: true, ready: false };
+    case "$turn_complete": {
+      // Clear pause-gate-tied modals too. By the time the loop emits
+      // $turn_complete, anything still in these arrays is orphaned — the
+      // tool call that opened it has either resolved (so it's gone already)
+      // or the turn was aborted (so the model isn't coming back for it).
+      // Without this, an Esc/abort during plan approval leaves the plan
+      // card rendered AFTER state.messages forever; the queued user input
+      // that drains next then appears above the zombie card (#1456).
+      const settled = state.messages.map((message) =>
+        message.kind === "assistant"
+          ? {
+              ...message,
+              segments: message.segments.map((segment) =>
+                segment.kind === "tool" && segment.result === undefined
+                  ? {
+                      ...segment,
+                      result:
+                        "Tool call cancelled because the conversation stopped. No result was produced.",
+                      ok: false,
+                    }
+                  : segment,
+              ),
+            }
+          : message,
+      );
+      const outcome = ev.outcome ?? "success";
+      // Never end a turn silently: when the model stopped without an answer and
+      // the loop did not already surface an explanation, add a terminal card.
+      const messages =
+        outcome === "stopped" && ev.reason && !turnHasTerminalExplanation(settled, ev.turn)
+          ? insertNotice(settled, ev.reason, "warning", ev.turn)
+          : settled;
+      return {
+        ...state,
+        busy: false,
+        lastTurnOutcome: outcome,
+        messages,
+        activeSkill: null,
+        turnStatus: null,
+        turnStatusTool: null,
+        pendingConfirms: [],
+        pendingPathAccess: [],
+        pendingChoices: [],
+        pendingPlans: [],
+        pendingCheckpoints: [],
+        pendingRevisions: [],
+      };
+    }
+    case "$confirm_required":
+      return {
+        ...state,
+        turnStatus: "waiting_user",
+        turnStatusTool: null,
+        pendingConfirms: [
+          ...state.pendingConfirms,
+          { id: ev.id, kind: ev.kind, command: ev.command, prompt: ev.prompt! },
+        ],
+      };
+    case "$path_access_required":
+      return {
+        ...state,
+        turnStatus: "waiting_user",
+        turnStatusTool: null,
+        pendingPathAccess: [
+          ...state.pendingPathAccess,
+          {
+            id: ev.id,
+            path: ev.path,
+            intent: ev.intent,
+            toolName: ev.toolName,
+            sandboxRoot: ev.sandboxRoot,
+            allowPrefix: ev.allowPrefix,
+            prompt: ev.prompt!,
+          },
+        ],
+      };
+    case "$choice_required":
+      return {
+        ...state,
+        turnStatus: "waiting_user",
+        turnStatusTool: null,
+        pendingChoices: [
+          ...state.pendingChoices,
+          {
+            id: ev.id,
+            question: ev.question,
+            options: ev.options,
+            allowCustom: ev.allowCustom,
+            countdownMs: ev.countdownMs,
+          },
+        ],
+      };
+    case "$plan_required": {
+      const steps = Array.isArray(ev.steps) ? (ev.steps as PlanStep[]) : undefined;
+      return {
+        ...state,
+        turnStatus: "waiting_user",
+        turnStatusTool: null,
+        pendingPlans: [
+          ...state.pendingPlans,
+          {
+            id: ev.id,
+            plan: ev.plan,
+            summary: ev.summary,
+            countdownMs: ev.countdownMs,
+            callId: ev.callId,
+            ...(steps ? { steps } : {}),
+          },
+        ],
+      };
+    }
+    case "$checkpoint_required":
+      return {
+        ...state,
+        turnStatus: "waiting_user",
+        turnStatusTool: null,
+        pendingCheckpoints: [
+          ...state.pendingCheckpoints,
+          {
+            id: ev.id,
+            stepId: ev.stepId,
+            title: ev.title,
+            result: ev.result,
+            notes: ev.notes,
+            completed: ev.completed,
+            total: ev.total,
+          },
+        ],
+      };
+    case "$revision_required":
+      return {
+        ...state,
+        turnStatus: "waiting_user",
+        turnStatusTool: null,
+        pendingRevisions: [
+          ...state.pendingRevisions,
+          {
+            id: ev.id,
+            reason: ev.reason,
+            remainingSteps: ev.remainingSteps,
+            summary: ev.summary,
+            countdownMs: ev.countdownMs,
+          },
+        ],
+      };
+    case "$step_completed": {
+      if (!state.activePlan) return state;
+      const stepIds = new Set(state.activePlan.completedStepIds);
+      stepIds.add(ev.stepId);
+      return {
+        ...state,
+        activePlan: {
+          ...state.activePlan,
+          completedStepIds: [...stepIds],
+          stepResults: { ...state.activePlan.stepResults, [ev.stepId]: ev.result },
+        },
+      };
+    }
+    case "$plan_cleared": {
+      if (!state.activePlan) return state;
+      const finished =
+        state.activePlan.steps.length > 0 &&
+        state.activePlan.completedStepIds.length >= state.activePlan.steps.length;
+      return {
+        ...state,
+        activePlan: {
+          ...state.activePlan,
+          status: finished ? "finished" : "cancelled",
+        },
+        pendingCheckpoints: [],
+        pendingRevisions: [],
+      };
+    }
+    case "$plan_restored": {
+      const steps = Array.isArray(ev.steps) ? (ev.steps as PlanStep[]) : [];
+      return {
+        ...state,
+        activePlan: {
+          plan: ev.plan,
+          summary: ev.summary,
+          steps,
+          completedStepIds: Array.isArray(ev.completedStepIds) ? ev.completedStepIds : [],
+          stepResults: ev.stepResults ?? {},
+          status: ev.status ?? "active",
+        },
+      };
+    }
+    case "$sessions": {
+      const sameEpoch = ev.epoch === state.sessionsEpoch;
+      if (sameEpoch && ev.revision < state.sessionsRevision) return state;
+      const settledNames = new Set(ev.settledDeletes?.map((result) => result.name) ?? []);
+      const pendingSessionDeletes = sameEpoch
+        ? state.pendingSessionDeletes.filter((name) => !settledNames.has(name))
+        : [];
+      const hidden = new Set(pendingSessionDeletes);
+      const unique = new Map<string, SessionInfo>();
+      for (const session of ev.items) {
+        // Every session the backend lists shows as-is — an empty session is a
+        // real session (New chat materializes it eagerly on disk), so there is
+        // no message-count visibility filter here anymore.
+        if (!hidden.has(session.name)) {
+          unique.set(session.name, session);
+        }
+      }
+      return {
+        ...state,
+        sessions: [...unique.values()].sort(sortSessionsByCreationDescending),
+        sessionsEpoch: ev.epoch,
+        sessionsRevision: ev.revision,
+        pendingSessionDeletes,
+      };
+    }
+    case "$mcp_specs":
+      return {
+        ...state,
+        mcpSpecs: Array.isArray(ev.specs) ? ev.specs : [],
+        mcpBridged: Boolean(ev.bridged),
+      };
+    case "$mcp_extension_status":
+      return { ...state, mcpExtensionStatus: ev.status };
+    case "$mcp_extension_check":
+      return { ...state, mcpExtensionCheck: ev.check };
+    case "$mail_auth":
+      return { ...state, mailAuth: ev.state };
+    case "$playwright_browser_install":
+      return { ...state, playwrightBrowserInstall: ev.install };
+    case "$skills":
+      return { ...state, skills: ev.items };
+    case "$ctx_breakdown": {
+      const next: UsageStats = { ...state.usage, reservedTokens: ev.reservedTokens };
+      if (typeof ev.logTokens === "number") {
+        next.liveLogTokens = ev.logTokens;
+      }
+      if (typeof ev.ctxMax === "number") {
+        next.ctxMax = ev.ctxMax;
+      }
+      // The shell-output totals arrive as a pair (or not at all — no telemetry).
+      if (typeof ev.shellOutputRawTokens === "number") {
+        next.shellOutputRawTokens = ev.shellOutputRawTokens;
+        next.shellOutputShownTokens = ev.shellOutputShownTokens ?? 0;
+      }
+      return { ...state, usage: next };
+    }
+    case "$memory":
+      return {
+        ...state,
+        memory: ev.entries,
+        memoryDetail:
+          state.memoryDetail && ev.entries.some((entry) => entry.path === state.memoryDetail?.path)
+            ? state.memoryDetail
+            : null,
+      };
+    case "$memory_detail":
+      return { ...state, memoryDetail: ev.detail };
+    case "$context_raw":
+      return {
+        ...state,
+        contextRaw: {
+          text: ev.text,
+          messageCount: ev.messageCount,
+          tokens: ev.tokens,
+          busy: ev.busy,
+          notice: ev.notice,
+        },
+      };
+    case "$memory_result":
+      return { ...state, memoryResult: { ok: ev.ok, message: ev.message } };
+    case "$memory_export":
+      return { ...state, memoryExport: ev.text };
+    case "$jobs": {
+      // Keep the prior array when the snapshot is unchanged so memoized rows
+      // (and their background-job shell cards) don't re-render on every poll.
+      if (sameJobInfos(state.jobs, ev.items)) return state;
+      return { ...state, jobs: ev.items };
+    }
+    case "$balance":
+      return {
+        ...state,
+        balance: {
+          currency: ev.currency,
+          total: ev.total,
+          isAvailable: ev.isAvailable,
+          infos: ev.balanceInfos ?? [],
+        },
+      };
+    case "$codex_quota":
+      return {
+        ...state,
+        codexQuota: ev.quota,
+        codexQuotaReason: ev.reason ?? null,
+        codexQuotaRefreshing: false,
+        // Native unit: the measured plan-window delta accumulates as quota % —
+        // never converted to a dollar figure.
+        usage: applyQuotaDelta(state.usage, "openai", ev.quota?.turnUsedPct ?? null),
+      };
+    case "$ollama_quota":
+      return {
+        ...state,
+        ollamaQuota: ev.quota,
+        ollamaQuotaReason: ev.reason ?? null,
+        ollamaQuotaRefreshing: false,
+        usage: applyQuotaDelta(state.usage, "ollama", ev.quota?.turnUsedPct ?? null),
+      };
+    case "$antigravity_quota":
+      return {
+        ...state,
+        antigravityQuota: ev.quota,
+        antigravityQuotaReason: ev.reason ?? null,
+        antigravityQuotaRefreshing: false,
+        usage: applyQuotaDelta(state.usage, "gemini", ev.quota?.turnUsedPct ?? null),
+      };
+    case "$zai_quota":
+      return {
+        ...state,
+        zaiQuota: ev.quota,
+        zaiQuotaReason: ev.reason ?? null,
+        zaiQuotaRefreshing: false,
+        usage: applyQuotaDelta(state.usage, "zai", ev.quota?.turnUsedPct ?? null),
+      };
+    case "$settings": {
+      const prevWs = state.settings?.workspaceDir;
+      const wsChanged = prevWs !== undefined && prevWs !== ev.workspaceDir;
+      // A model switch aborts the running turn daemon-side (the in-flight turn
+      // holds the previous loop/model) so it can't wedge the tab. Mirror that
+      // release here: any model change clears a busy/stuck turn so the FE
+      // unblocks and its queued sends drain, even if the abort's $turn_complete
+      // lands late — otherwise those queued messages inherit the same freeze.
+      const modelChanged = state.settings != null && state.settings.model !== ev.model;
+      const releaseTurn = wsChanged || modelChanged;
+      return {
+        ...state,
+        busy: releaseTurn ? false : state.busy,
+        turnStatus: releaseTurn ? null : state.turnStatus,
+        turnStatusTool: releaseTurn ? null : state.turnStatusTool,
+        messages: wsChanged ? [] : state.messages,
+        pendingConfirms: wsChanged ? [] : state.pendingConfirms,
+        pendingPathAccess: wsChanged ? [] : state.pendingPathAccess,
+        pendingChoices: wsChanged ? [] : state.pendingChoices,
+        pendingPlans: wsChanged ? [] : state.pendingPlans,
+        pendingCheckpoints: wsChanged ? [] : state.pendingCheckpoints,
+        pendingRevisions: wsChanged ? [] : state.pendingRevisions,
+        activePlan: wsChanged ? null : state.activePlan,
+        usage: wsChanged ? zeroUsage() : state.usage,
+        sessionFiles: wsChanged ? [] : state.sessionFiles,
+        retryNonce: wsChanged ? 0 : state.retryNonce,
+        settings: {
+          reasoningEffort: ev.reasoningEffort,
+          editMode: ev.editMode,
+          quickSendId: ev.quickSendId,
+          quickSends: ev.quickSends,
+          contextTokens: ev.contextTokens ?? null,
+          maxIterPerTurn: ev.maxIterPerTurn ?? null,
+          maxIterPerTurnOverride: ev.maxIterPerTurnOverride ?? null,
+          disableAutoCompaction: ev.disableAutoCompaction ?? false,
+          enableSubagents: ev.enableSubagents ?? true,
+          elevationEnabled: ev.elevationEnabled ?? false,
+          repetitionGuardEnabled: ev.repetitionGuardEnabled ?? false,
+          questionTimerEnabled: ev.questionTimerEnabled ?? false,
+          baseUrl: ev.baseUrl,
+          apiKeyPrefix: ev.apiKeyPrefix,
+          workspaceDir: ev.workspaceDir,
+          recentWorkspaces: ev.recentWorkspaces,
+          reasonixLocalDir: ev.reasonixLocalDir,
+          model: ev.model,
+          customModels: ev.customModels,
+          enabledModels: ev.enabledModels,
+          webSearchEngine: ev.webSearchEngine,
+          webSearchEndpoint: ev.webSearchEndpoint,
+          webSearchApiKeys: ev.webSearchApiKeys,
+          opencodeBaseUrl: ev.opencodeBaseUrl,
+          subagentModel: ev.subagentModel,
+          ollamaGeneration: ev.ollamaGeneration,
+          ollamaGenerationOverrides: ev.ollamaGenerationOverrides,
+          ollamaModelDefaults: ev.ollamaModelDefaults,
+          statusBar: ev.statusBar,
+          modelEndpoint: ev.modelEndpoint,
+          subagentModelEndpoint: ev.subagentModelEndpoint,
+          openaiOAuth: ev.openaiOAuth,
+          antigravityOAuth: ev.antigravityOAuth,
+          mailProvider: ev.mailProvider ?? MailProvider.Outlook,
+          version: ev.version,
+        },
+        oauthWaiting: ev.openaiOAuth?.signedIn ? false : state.oauthWaiting,
+        antigravityOAuthWaiting: ev.antigravityOAuth?.signedIn
+          ? false
+          : state.antigravityOAuthWaiting,
+        // Quota is only meaningful while its provider's models are active —
+        // drop stale numbers the moment the daemon-resolved provider changes.
+        // The provider comes from the resolved endpoint, never the model name.
+        codexQuota: ev.modelEndpoint?.provider === "openai" ? state.codexQuota : null,
+        ollamaQuota: ev.modelEndpoint?.provider === "ollama" ? state.ollamaQuota : null,
+        antigravityQuota: ev.modelEndpoint?.provider === "gemini" ? state.antigravityQuota : null,
+      };
+    }
+    case "$session_loaded": {
+      // A resync echo of the session we've ALREADY loaded must not clobber
+      // the live transcript — the on-disk snapshot is behind the deltas the
+      // backend keeps sending, and busy flags can't be trusted mid-stream.
+      // This also covers the common cold-start double-emit: bootstrapTab
+      // sends $session_loaded once, then desktop_resync echoes it again for
+      // the SAME session, which would otherwise re-render the whole
+      // transcript. Genuine `session_load` RPCs are never marked `resync`,
+      // so a real switch (different session) still applies.
+      if (ev.resync && ev.name === state.currentSession) return state;
+      const sessionName = ev.name;
+      const loaded = mapLoadedMessages(ev.messages);
+      const sessionFiles = deriveSessionFiles(loaded);
+      return {
+        ...state,
+        busy: false,
+        currentSession: sessionName,
+        messages: loaded,
+        pendingConfirms: [],
+        pendingPathAccess: [],
+        pendingChoices: [],
+        pendingPlans: [],
+        pendingCheckpoints: [],
+        pendingRevisions: [],
+        activePlan: null,
+        usage: {
+          ...zeroUsage(),
+          totalCostUsd: ev.carryover.totalCostUsd,
+          costByProvider: ev.carryover.costByProvider ?? {},
+          totalPromptTokens: ev.carryover.cacheHitTokens + ev.carryover.cacheMissTokens,
+          totalCompletionTokens: ev.carryover.totalCompletionTokens ?? 0,
+          cacheHitTokens: ev.carryover.cacheHitTokens,
+          cacheMissTokens: ev.carryover.cacheMissTokens,
+          // Filtering totals are per-session: zeroUsage() leaves them undefined
+          // so the old session's chip never bleeds into the new one. The chip
+          // reappears once the new session's first $ctx_breakdown carries fresh
+          // totals from the backend.
+        },
+        sessionFiles,
+        activeSkill: null,
+        queuedSends: [],
+        retryNonce: 0,
+      };
+    }
+    case "$session_empty": {
+      // The sidecar successfully ran loadSessionMessages but the jsonl is
+      // empty / all-malformed. Without this, the click looks like a no-op
+      // because the chat just re-renders empty. Issue #1179.
+      const sizeNote = ev.sizeBytes === 0 ? "0 bytes" : `${ev.sizeBytes} bytes, no valid entries`;
+      return {
+        ...state,
+        messages: insertNotice(
+          state.messages,
+          `Session "${ev.name}" loaded with no messages (${sizeNote}). The file ~/.reasonix/sessions/${ev.name}/messages.jsonl exists but couldn't be parsed — start a new chat or restore from messages.jsonl.bak if you have one.`,
+          "error",
+        ),
+      };
+    }
+    case "$error":
+    case "error": {
+      // Kernel-level errors carry a `recoverable` flag: true for
+      // storm-repair / repeat-loop warnings the loop already worked
+      // around, false for hard failures. The desktop keeps both in the
+      // timeline but uses a softer tone for recoverable errors so a session
+      // full of self-repaired loops does not look like everything failed.
+      const recoverable = ev.type === "error" ? ev.recoverable : false;
+      const turn = ev.type === "error" ? ev.turn : undefined;
+      // Loop has returned (any error path ends the turn); flip the still-
+      // streaming assistant message to settled so the UI doesn't keep
+      // showing a "thinking" spinner above the error card (#1660).
+      const settled = state.messages.map((m) =>
+        m.kind === "assistant" && m.pending ? { ...m, pending: false } : m,
+      );
+      const notice: ChatMessage = {
+        kind: "notice",
+        text: ev.message,
+        id: nextNoticeId(),
+        severity: recoverable ? "warning" : "error",
+        turn: turn ?? currentTurnForNotice(settled),
+      };
+      return {
+        ...state,
+        busy: false,
+        activeSkill: null,
+        turnStatus: null,
+        turnStatusTool: null,
+        oauthWaiting: ev.message.includes("OAuth") ? false : state.oauthWaiting,
+        messages: appendNoticeMessage(settled, notice),
+      };
+    }
+    case "oauth_begin_result":
+      return { ...state, oauthWaiting: true };
+    case "gemini_oauth_begin_result":
+      return { ...state, antigravityOAuthWaiting: true };
+    case "model.turn.started":
+      // Duplicate-delivery dedupe only: ordinals are monotonic daemon-side,
+      // so this can no longer swallow a post-compaction turn (fixed at source).
+      if (state.messages.some((m) => m.kind === "assistant" && m.turn === ev.turn)) {
+        return { ...state, model: ev.model, turnLastEventMs: Date.now() };
+      }
+      return {
+        ...state,
+        model: ev.model,
+        turnStatus: "thinking",
+        turnStatusTool: null,
+        turnLastEventMs: Date.now(),
+        messages: [
+          ...state.messages,
+          { kind: "assistant", turn: ev.turn, segments: [], pending: true },
+        ],
+      };
+    case "model.delta":
+      return {
+        ...state,
+        turnStatus: ev.channel === "reasoning" ? "reasoning" : "responding",
+        turnLastEventMs: Date.now(),
+        messages: state.messages.map((m) => {
+          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+          if (ev.channel === "content") {
+            return { ...m, segments: appendTextSegment(m.segments, "text", ev.text) };
+          }
+          if (ev.channel === "reasoning") {
+            return { ...m, segments: appendTextSegment(m.segments, "reasoning", ev.text) };
+          }
+          return m;
+        }),
+      };
+    case "model.final": {
+      const u = ev.usage;
+      const promptTokens =
+        u?.prompt_tokens ?? (u?.prompt_cache_hit_tokens ?? 0) + (u?.prompt_cache_miss_tokens ?? 0);
+      const callHit = u?.prompt_cache_hit_tokens ?? 0;
+      const callMiss = u?.prompt_cache_miss_tokens ?? Math.max(0, promptTokens - callHit);
+      const hasCall = promptTokens > 0 || callHit > 0 || callMiss > 0;
+      const usage: UsageStats = {
+        totalCostUsd: state.usage.totalCostUsd + (ev.costUsd ?? 0),
+        lastCallCostUsd: ev.costUsd ?? 0,
+        totalPromptTokens: state.usage.totalPromptTokens + promptTokens,
+        totalCompletionTokens: state.usage.totalCompletionTokens + (u?.completion_tokens ?? 0),
+        cacheHitTokens: state.usage.cacheHitTokens + callHit,
+        cacheMissTokens: state.usage.cacheMissTokens + callMiss,
+        lastCallCacheHit: hasCall ? callHit : state.usage.lastCallCacheHit,
+        lastCallCacheMiss: hasCall ? callMiss : state.usage.lastCallCacheMiss,
+        reservedTokens: state.usage.reservedTokens,
+        liveLogTokens: state.usage.liveLogTokens,
+        // Per-session totals are not per-turn — carry them through the rebuild
+        // (the rebuild happens within the same session).
+        shellOutputRawTokens: state.usage.shellOutputRawTokens,
+        shellOutputShownTokens: state.usage.shellOutputShownTokens,
+      };
+      return {
+        ...state,
+        usage,
+        messages: state.messages.map((m) => {
+          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+          // Abort-settled finals (emitAbortedFinal) carry the abort notice in
+          // `content`, but the deltas never streamed it — append it so the card
+          // isn't a silent empty bubble ("turn ended without any thinking").
+          // Skip when text already streamed (would duplicate) or the content
+          // belongs to a forced summary (the compaction card renders it).
+          const hasText = m.segments.some((s) => s.kind === "text");
+          let segments = ev.replaceStreamedOutput
+            ? [
+                ...(ev.reasoningContent
+                  ? [{ kind: "reasoning" as const, text: ev.reasoningContent }]
+                  : []),
+                ...(ev.content ? [{ kind: "text" as const, text: ev.content }] : []),
+              ]
+            : !ev.forcedSummary && !hasText && ev.content
+              ? appendTextSegment(m.segments, "text", ev.content)
+              : m.segments;
+          if (ev.image) {
+            segments = [
+              ...segments,
+              { kind: "image", dataUrl: ev.image.dataUrl, mimeType: ev.image.mimeType },
+            ];
+          }
+          return { ...m, segments: closeTrailingReasoning(segments), pending: false };
+        }),
+      };
+    }
+    case "tool.preparing":
+      return {
+        ...state,
+        turnStatus: "calling_tool",
+        turnStatusTool: ev.name,
+        turnLastEventMs: Date.now(),
+        messages: state.messages.map((m) => {
+          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+          if (m.segments.some((s) => s.kind === "tool" && s.callId === ev.callId)) return m;
+          return {
+            ...m,
+            segments: [
+              ...closeTrailingReasoning(m.segments),
+              {
+                kind: "tool",
+                callId: ev.callId,
+                name: ev.name,
+                args: "",
+                startedAt: Date.now(),
+              },
+            ],
+          };
+        }),
+      };
+    case "tool.intent": {
+      const adds = extractToolFiles(ev.name, ev.args);
+      return {
+        ...state,
+        turnStatus: "calling_tool",
+        turnStatusTool: ev.name,
+        turnLastEventMs: Date.now(),
+        sessionFiles: mergeSessionFiles(state.sessionFiles, adds),
+        messages: state.messages.map((m) => {
+          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+          const idx = m.segments.findIndex((s) => s.kind === "tool" && s.callId === ev.callId);
+          if (idx >= 0) {
+            const segs = [...m.segments];
+            const seg = segs[idx];
+            if (seg?.kind === "tool") {
+              segs[idx] = { ...seg, args: ev.args };
+            }
+            return { ...m, segments: segs };
+          }
+          return {
+            ...m,
+            segments: [
+              ...m.segments,
+              {
+                kind: "tool",
+                callId: ev.callId,
+                name: ev.name,
+                args: ev.args,
+                startedAt: Date.now(),
+              },
+            ],
+          };
+        }),
+      };
+    }
+    case "subagent.progress":
+      return {
+        ...state,
+        turnLastEventMs: Date.now(),
+        messages: state.messages.map((m) => {
+          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+          let host = ev.parentCallId
+            ? m.segments.findIndex(
+                (segment) => segment.kind === "tool" && segment.callId === ev.parentCallId,
+              )
+            : -1;
+          if (host < 0) {
+            const existingHost = m.segments.findIndex(
+              (segment) =>
+                segment.kind === "tool" &&
+                segment.subagentRuns?.some((run) => run.runId === ev.runId),
+            );
+            if (existingHost >= 0) {
+              host = existingHost;
+            } else {
+              const candidates = m.segments
+                .map((segment, index) => ({ segment, index }))
+                .filter(
+                  ({ segment }) =>
+                    segment.kind === "tool" && isSubagentTool(segment.name, segment.args),
+                );
+              if (candidates.length === 1) {
+                host = candidates[0]?.index ?? -1;
+              } else if (candidates.length > 1) {
+                const running = candidates.find(
+                  (c) => c.segment.kind === "tool" && c.segment.result === undefined,
+                );
+                host = running ? running.index : (candidates[candidates.length - 1]?.index ?? -1);
+              }
+            }
+          }
+          if (host < 0) return m;
+          const segments = [...m.segments];
+          const segment = segments[host];
+          if (!segment || segment.kind !== "tool") return m;
+          const runs = applySubagentProgress(segment.subagentRuns ?? [], ev);
+          segments[host] = { ...segment, subagentRuns: runs };
+          return { ...m, segments };
+        }),
+      };
+    case "tool.result":
+      return {
+        ...state,
+        turnStatus: "waiting_tool",
+        turnLastEventMs: Date.now(),
+        messages: state.messages.map((m) => {
+          if (m.kind !== "assistant") return m;
+          let mutated = false;
+          const segs = m.segments.map((s) => {
+            if (s.kind === "tool" && s.callId === ev.callId && s.result === undefined) {
+              mutated = true;
+              return {
+                ...s,
+                result: ev.output,
+                ok: ev.ok,
+                durationMs: Date.now() - s.startedAt,
+              };
+            }
+            return s;
+          });
+          return mutated ? { ...m, segments: segs } : m;
+        }),
+      };
+    case "tool.output": {
+      // Transient live stdout/stderr feed for a blocking shell tool. Only the
+      // running segment (no result yet) consumes it; once tool.result lands the
+      // authoritative output replaces the live view. The buffer keeps the TAIL
+      // so the shell card's live rows always reflect the most recent output.
+      if (!ev.text) return state;
+      return {
+        ...state,
+        turnLastEventMs: Date.now(),
+        messages: state.messages.map((m) => {
+          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+          let mutated = false;
+          const segs = m.segments.map((s) => {
+            if (s.kind !== "tool" || s.callId !== ev.callId || s.result !== undefined) return s;
+            mutated = true;
+            const prev = s.liveOutput ?? "";
+            const joined =
+              prev.length >= LIVE_OUTPUT_MAX_CHARS
+                ? prev.slice(prev.length - LIVE_OUTPUT_MAX_CHARS) + ev.text
+                : prev + ev.text;
+            const live =
+              joined.length > LIVE_OUTPUT_MAX_CHARS
+                ? joined.slice(joined.length - LIVE_OUTPUT_MAX_CHARS)
+                : joined;
+            return { ...s, liveOutput: live };
+          });
+          return mutated ? { ...m, segments: segs } : m;
+        }),
+      };
+    }
+    case "compaction.started": {
+      // Compaction card joins the assistant queue like a tool card: attached to
+      // the LAST assistant message (the running turn for auto folds; the previous
+      // turn for user-triggered /compact while idle).
+      const seg: AssistantSegment = {
+        kind: "compaction",
+        id: ev.compactionId,
+        state: "running",
+        reason: ev.reason,
+        ...(ev.kind ? { compactionKind: ev.kind } : {}),
+        ...(ev.aggressive ? { aggressive: true } : {}),
+      };
+      return {
+        ...state,
+        messages: appendAssistantSegment(state.messages, seg, ev.turn),
+      };
+    }
+    case "compaction.finished": {
+      const patch = (s: AssistantSegment): AssistantSegment => {
+        if (s.kind !== "compaction" || s.id !== ev.compactionId) return s;
+        return {
+          ...s,
+          // force-summary DID summarize (in place) — "idle" (nothing to fold)
+          // would be a lie, so it lands on "done" like a successful fold.
+          state: ev.error ? "failed" : ev.folded || ev.kind === "force-summary" ? "done" : "idle",
+          ...(ev.kind ? { compactionKind: ev.kind } : {}),
+          beforeMessages: ev.beforeMessages,
+          afterMessages: ev.afterMessages,
+          summaryChars: ev.summaryChars,
+          ...(ev.summary ? { summary: ev.summary } : {}),
+          ...(ev.error ? { error: ev.error } : {}),
+          ...(ev.warn ? { warn: ev.warn } : {}),
+          ...(ev.prunedFiles ? { prunedFiles: ev.prunedFiles } : {}),
+          ...(ev.prunedTokens ? { prunedTokens: ev.prunedTokens } : {}),
+          ...(ev.droppedFiles?.length ? { droppedFiles: ev.droppedFiles } : {}),
+        };
+      };
+      return {
+        ...state,
+        sessionFiles: pruneSessionFiles(state.sessionFiles, ev.droppedFiles ?? []),
+        messages: state.messages.map((m) =>
+          m.kind === "assistant" ? { ...m, segments: m.segments.map(patch) } : m,
+        ),
+      };
+    }
+    case "session.compacted": {
+      // The backend folded the conversation (summary message + preserved tail).
+      // Keep the live UI messages transcript intact so the compaction card
+      // stays at its chronological position in the chat. Re-derive sessionFiles
+      // from the post-fold replacement log.
+      const loaded = mapLoadedMessages(ev.replacementMessages);
+      return {
+        ...state,
+        sessionFiles: deriveSessionFiles(loaded),
+      };
+    }
+    case "session.retracted": {
+      const loaded = mapLoadedMessages(ev.replacementMessages);
+      return {
+        ...state,
+        messages: loaded,
+        sessionFiles: deriveSessionFiles(loaded),
+      };
+    }
+    case "$retry_result":
+      return { ...state, retryText: ev.text, retryNonce: state.retryNonce + 1 };
+    case "$btw_result":
+      return {
+        ...state,
+        busy: false,
+        messages: insertNotice(state.messages, `≫ btw\n${ev.answer}`, "info"),
+      };
+    case "status":
+      return state;
+    case "warning": {
+      // High-severity only — eventize already drops "low".
+      if (ev.severity !== "high") return state;
+      const seg: AssistantSegment = {
+        kind: "warning",
+        id: `w-${ev.id}`,
+        text: ev.text,
+        severity: ev.severity,
+      };
+      return {
+        ...state,
+        messages: appendAssistantSegment(state.messages, seg, ev.turn ?? 1),
+      };
+    }
+    default:
+      return state;
+  }
+}
+
+function truncateOutputLines(text: string, maxLines: number): string {
+  const lines = text.trimEnd().split("\n");
+  if (lines.length <= maxLines) return text;
+  return lines.slice(0, maxLines).join("\n");
+}
+
+function formatConversationMarkdown(
+  messages: ChatMessage[],
+  userLabel: string,
+  options?: { maxToolOutputLines?: number },
+): string {
+  return messages
+    .map((m) => {
+      if (m.kind === "user") return `### ${userLabel}\n\n${m.text}`;
+      if (m.kind === "assistant") {
+        const body = m.segments
+          .map((s) => {
+            if (s.kind === "text") return s.text;
+            if (s.kind === "reasoning")
+              return `<details>\n<summary>${t("app.exportReasoningSummary")}</summary>\n\n${s.text}\n\n</details>`;
+            if (s.kind === "tool") {
+              const arg = s.args ? `\n\n\`\`\`json\n${s.args}\n\`\`\`` : "";
+              let resText = s.result;
+              if (resText && options?.maxToolOutputLines !== undefined) {
+                resText = truncateOutputLines(resText, options.maxToolOutputLines);
+              }
+              const res = resText ? `\n\n\`\`\`\n${resText}\n\`\`\`` : "";
+              return `> **${t("app.exportToolLabel")} · \`${s.name}\`**${arg}${res}`;
+            }
+            if (s.kind === "compaction") {
+              if (s.state !== "done" || s.beforeMessages === undefined) return "";
+              return `> **${t("cards.compactionName")}** — ${s.beforeMessages} → ${s.afterMessages} messages`;
+            }
+            if (s.kind === "warning") {
+              return `> **${t("cards.warningName")}** · ${s.text}`;
+            }
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n\n");
+        return `### Reasonix+\n\n${body}`;
+      }
+      if (m.kind === "notice") return `### ${noticeName(m.severity)}\n\n${m.text}`;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n---\n\n");
+}
+
+function defaultExportFilename(session: string): string {
+  const safe = sanitizeFilename(session, { max: 200, fallback: "session", allowCjk: true });
+  return `${safe}.md`;
+}
+
+/** `<option>` / `<optgroup>` list shared by the two Duplicate-session selects.
+ *  Keeps the current selection visible even when it's off the enabled allow-list. */
+function duplicateModelOptions(
+  groups: { key: string; label: string; ids: string[] }[],
+  active: string,
+): ReactNode {
+  const listed = groups.some((g) => g.ids.includes(active));
+  return (
+    <>
+      {active && !listed ? <option value={active}>{modelDisplayName(active)}</option> : null}
+      {groups.map((g) => (
+        <optgroup key={g.key} label={g.label}>
+          {g.ids.map((id) => (
+            <option key={id} value={id}>
+              {modelDisplayName(id)}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </>
+  );
+}
+
+type TabAction = Action;
+type TabDispatcher = (action: TabAction) => void;
+
+interface TabRuntimeProps {
+  tabId: string;
+  active: boolean;
+  backendConnected: boolean;
+  currency: "CNY" | "USD";
+  registerDispatch: (tabId: string, d: TabDispatcher | null) => void;
+  onWorkspaceInitialized: (tabId: string) => void;
+  onNewTab: () => void;
+  /** Reports this channel's running-agent state so the tab dot can count them. */
+  onBusyChange: (tabId: string, busy: boolean) => void;
+  /** Live provider output rate (tokens/second) keyed by session name, for the
+   *  sidebar readout beside every running session. */
+  sessionRates: Map<string, number>;
+  theme: Theme;
+  themeStyle: ThemeStyle;
+  onSetThemeStyle: (style: ThemeStyle) => void;
+  fontScale: FontScale;
+  onSetFontScale: (scale: FontScale) => void;
+  fontFamily: FontFamily;
+  onSetFontFamily: (family: FontFamily) => void;
+  customFontFamily: string;
+  onSetCustomFontFamily: (family: string) => void;
+  sideCollapsed: boolean;
+  ctxCollapsed: boolean;
+  sideWidth: number;
+  ctxWidth: number;
+  threadMaxWidth: number;
+  onSideResizeDown: (e: React.MouseEvent) => void;
+  onCtxResizeDown: (e: React.MouseEvent) => void;
+  onToggleSide: () => void;
+  onToggleCtx: () => void;
+  onToggleCurrency: () => void;
+  /** App-global Ollama model catalog (raw ids, e.g. `llama3.1:latest`) — shared
+   *  across every tab; the catalog depends on global config, not on the tab. */
+  ollamaModels: string[];
+  /** Why the last Ollama model fetch failed — replaces the picker list. */
+  ollamaModelsError: string | null;
+  /** The account's Ollama plan (e.g. `free`) when the cloud reported it. */
+  ollamaPlan: string | null;
+  /** Models hidden because the account's plan doesn't cover them. */
+  ollamaHiddenCount: number;
+  /** Prefixed vision-capable Ollama model ids (`ollama/llava`) confirmed by the
+   *  daemon — lets image-capable Ollama models accept attachments. */
+  ollamaVisionModels: ReadonlySet<string>;
+  /** Re-fetch the app-global Ollama catalog (`force` bypasses the cache). */
+  onRefreshOllamaModels: (force?: boolean) => void;
+  /** Re-fetch the signed-in account's Antigravity quota model ids. */
+  onRefreshAntigravityModels: () => void;
+  /** App-global OpenCode free model catalog. */
+  opencodeModels: string[];
+  opencodeModelsError: string | null;
+  opencodeVisionModels: ReadonlySet<string>;
+  onRefreshOpencodeModels: (force?: boolean) => void;
+  tabsList: {
+    id: string;
+    workspaceDir?: string;
+    session?: string;
+    group?: string;
+    busy?: boolean;
+  }[];
+  activeTabId: string;
+  setActiveTabId: (id: string) => void;
+  onRemoveWorkspace: (path: string) => void;
+}
+
+function TabRuntime({
+  tabId,
+  active,
+  backendConnected,
+  currency,
+  registerDispatch,
+  onWorkspaceInitialized,
+  onNewTab,
+  onBusyChange,
+  sessionRates,
+  theme,
+  themeStyle,
+  onSetThemeStyle,
+  fontScale,
+  onSetFontScale,
+  fontFamily,
+  onSetFontFamily,
+  customFontFamily,
+  onSetCustomFontFamily,
+  sideCollapsed,
+  ctxCollapsed,
+  sideWidth,
+  ctxWidth,
+  threadMaxWidth,
+  onSideResizeDown,
+  onCtxResizeDown,
+  onToggleSide,
+  onToggleCtx,
+  onToggleCurrency,
+  ollamaModels,
+  ollamaModelsError,
+  ollamaPlan,
+  ollamaHiddenCount,
+  ollamaVisionModels,
+  onRefreshOllamaModels,
+  onRefreshAntigravityModels,
+  opencodeModels,
+  opencodeModelsError,
+  opencodeVisionModels,
+  onRefreshOpencodeModels,
+  tabsList,
+  activeTabId,
+  setActiveTabId,
+  onRemoveWorkspace,
+}: TabRuntimeProps) {
+  const [state, dispatch] = useReducer(reduce, {
+    ready: false,
+    needsSetup: false,
+    busy: false,
+    messages: [],
+    pendingConfirms: [],
+    pendingPathAccess: [],
+    pendingChoices: [],
+    pendingPlans: [],
+    pendingCheckpoints: [],
+    pendingRevisions: [],
+    activePlan: null,
+    usage: zeroUsage(),
+    sessions: [],
+    sessionsEpoch: "",
+    sessionsRevision: 0,
+    workspaceInitializationRevision: 0,
+    pendingSessionDeletes: [],
+    settings: null,
+    balance: null,
+    codexQuota: null,
+    codexQuotaRefreshing: false,
+    codexQuotaReason: null,
+    ollamaQuota: null,
+    ollamaQuotaRefreshing: false,
+    ollamaQuotaReason: null,
+    antigravityQuota: null,
+    antigravityQuotaRefreshing: false,
+    antigravityQuotaReason: null,
+    zaiQuota: null,
+    zaiQuotaRefreshing: false,
+    zaiQuotaReason: null,
+    mentionResults: null,
+    mentionPreview: null,
+    mcpSpecs: [],
+    mcpBridged: false,
+    mcpExtensionStatus: null,
+    mcpExtensionCheck: null,
+    mailAuth: null,
+    playwrightBrowserInstall: null,
+    skills: [],
+    sessionFiles: [],
+    memory: [],
+    memoryDetail: null,
+    memoryResult: null,
+    memoryExport: null,
+    contextRaw: null,
+    jobs: [],
+    activeSkill: null,
+    lastTurnOutcome: null,
+    queuedSends: [],
+    retryNonce: 0,
+    oauthWaiting: false,
+    antigravityOAuthWaiting: false,
+    turnStatus: null,
+    turnStatusTool: null,
+    turnLastEventMs: 0,
+    turnElapsedMs: 0,
+  });
+  useLang();
+  useDisableTextAssist();
+  const [draft, setDraft] = useState("");
+  // Vision attachments queued for the next send (ChatGPT models only).
+  const [pendingImages, setPendingImages] = useState<
+    Array<{ id: string; thumbnail: string; wire: UserImageAttachment }>
+  >([]);
+  const [splashOn, setSplashOn] = useState<boolean>(() => shouldShowSplash());
+  const [wdOpen, setWdOpen] = useState(false);
+  const [wdAnchor, setWdAnchor] = useState<
+    { top?: number; bottom?: number; left: number } | undefined
+  >(undefined);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const threadInnerRef = useRef<HTMLDivElement>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<SettingsPageId>("general");
+  const [voiceAvailable, setVoiceAvailable] = useState(false);
+  const [jobsOpen, setJobsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const previousApprovalSnapshotRef = useRef<ApprovalSnapshot>({
+    confirms: [],
+    pathAccess: [],
+    choices: [],
+    plans: [],
+    checkpoints: [],
+    revisions: [],
+  });
+  const wasBusyRef = useRef(false);
+  const busyStartedAtRef = useRef<number | null>(null);
+  const abortDraftRef = useRef<string | null>(null);
+  const clearAbortDraft = useCallback(() => {
+    abortDraftRef.current = nextAbortDraftCandidate(abortDraftRef.current, { type: "clear" });
+  }, []);
+  const recordAbortDraft = useCallback((source: AbortDraftSource, text: string) => {
+    abortDraftRef.current = nextAbortDraftCandidate(abortDraftRef.current, {
+      type: "record",
+      source,
+      text,
+    });
+  }, []);
+  const openSettingsAt = useCallback((page: SettingsPageId = "general") => {
+    setSettingsPage(page);
+    setSettingsOpen(true);
+  }, []);
+
+  useEffect(() => {
+    registerDispatch(tabId, dispatch);
+    return () => registerDispatch(tabId, null);
+  }, [tabId, registerDispatch]);
+
+  useEffect(() => {
+    if (state.workspaceInitializationRevision === 0) return;
+    onWorkspaceInitialized(tabId);
+  }, [onWorkspaceInitialized, state.workspaceInitializationRevision, tabId]);
+
+  // Voice input is only usable once at least one model is downloaded. Refresh
+  // on mount and whenever the settings modal closes (downloads happen there).
+  const prevSettingsOpenRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const prev = prevSettingsOpenRef.current;
+    prevSettingsOpenRef.current = settingsOpen;
+    // Refresh on mount (prev === null) and on the open→closed transition.
+    if (prev === null || (prev && !settingsOpen)) {
+      let cancelled = false;
+      anyVoiceModelDownloaded().then((ok) => {
+        if (!cancelled) setVoiceAvailable(ok);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [settingsOpen]);
+
+  const rpcQueue = useRef(Promise.resolve());
+  const sendRpc = useCallback(
+    (cmd: OutgoingCommand) => {
+      const queued = rpcQueue.current.then(() => rpcSend({ tabId, ...cmd }));
+      rpcQueue.current = queued.catch((err) => console.error(`${cmd.cmd} failed`, err));
+    },
+    [tabId],
+  );
+
+  const saveSettings = useCallback(
+    (patch: SettingsPatch) => sendRpc({ cmd: "settings_save", ...patch }),
+    [sendRpc],
+  );
+  const refreshCodexQuota = useCallback(() => {
+    dispatch({ t: "codex_quota_refreshing" });
+    sendRpc({ cmd: "codex_quota_get" });
+  }, [sendRpc]);
+  const refreshOllamaQuota = useCallback(() => {
+    dispatch({ t: "ollama_quota_refreshing" });
+    sendRpc({ cmd: "ollama_quota_get" });
+  }, [sendRpc]);
+  const refreshAntigravityQuota = useCallback(() => {
+    dispatch({ t: "antigravity_quota_refreshing" });
+    sendRpc({ cmd: "antigravity_quota_get" });
+  }, [sendRpc]);
+  const refreshZaiQuota = useCallback(() => {
+    dispatch({ t: "zai_quota_refreshing" });
+    sendRpc({ cmd: "zai_quota_get" });
+  }, [sendRpc]);
+  // Fetch the Ollama catalog whenever the tab's model is an Ollama model — the
+  // composer menu and the Models settings page render the fetched list. The
+  // list itself is app-global (backend cache + App-level state), so this only
+  // nudges a refresh; non-force calls reuse the backend's 60s cache.
+  const activeModel = state.settings?.model;
+  useEffect(() => {
+    if (typeof activeModel === "string" && activeModel.startsWith("ollama/")) {
+      onRefreshOllamaModels();
+    }
+  }, [activeModel, onRefreshOllamaModels]);
+  const applySettingsPatch = useCallback(
+    (patch: SettingsPatch) => {
+      dispatch({ t: "settings_patch", patch });
+      saveSettings(patch);
+    },
+    [saveSettings],
+  );
+  const saveApiKey = useCallback(
+    (key: string) => sendRpc({ cmd: "setup_save_key", key }),
+    [sendRpc],
+  );
+  const addMcpSpec = useCallback(
+    (spec: string) => sendRpc({ cmd: "mcp_specs_add", spec }),
+    [sendRpc],
+  );
+  const removeMcpSpec = useCallback(
+    (spec: string) => sendRpc({ cmd: "mcp_specs_remove", spec }),
+    [sendRpc],
+  );
+  const toggleMcpServer = useCallback(
+    (name: string, disabled: boolean) => sendRpc({ cmd: "mcp_specs_toggle", name, disabled }),
+    [sendRpc],
+  );
+  const toggleMcpTool = useCallback(
+    (name: string, tool: string, disabled: boolean) =>
+      sendRpc({ cmd: "mcp_specs_toggle", name, tool, disabled }),
+    [sendRpc],
+  );
+  // Per-session MCP toggle (Tools section) — edits the ACTIVE session's state,
+  // leaving the Settings default untouched.
+  const toggleSessionMcp = useCallback(
+    (name: string, disabled: boolean, tool?: string) =>
+      sendRpc({ cmd: "mcp_session_toggle", name, tool, disabled }),
+    [sendRpc],
+  );
+  const requestMcpExtensionStatus = useCallback(
+    () => sendRpc({ cmd: "mcp_extension_status" }),
+    [sendRpc],
+  );
+  const configureMcpExtension = useCallback(
+    (
+      mode: PlaywrightMcpConnectionMode,
+      token?: string,
+      cdpEndpoint?: string,
+      extensionBrowser?: PlaywrightExtensionBrowser,
+    ) => sendRpc({ cmd: "mcp_extension_configure", mode, token, cdpEndpoint, extensionBrowser }),
+    [sendRpc],
+  );
+  const checkMcpExtension = useCallback(() => sendRpc({ cmd: "mcp_extension_check" }), [sendRpc]);
+  const installPlaywrightBrowser = useCallback(
+    (browser: PlaywrightManagedBrowser) => sendRpc({ cmd: "playwright_browser_install", browser }),
+    [sendRpc],
+  );
+  const cancelPlaywrightBrowserInstall = useCallback(
+    (browser: PlaywrightManagedBrowser) =>
+      sendRpc({ cmd: "playwright_browser_install_cancel", browser }),
+    [sendRpc],
+  );
+  const setMailProvider = useCallback(
+    (provider: MailProvider) => sendRpc({ cmd: "mail_provider_set", provider }),
+    [sendRpc],
+  );
+  const requestMailStatus = useCallback(
+    (provider: MailProvider) => sendRpc({ cmd: "mail_status", provider }),
+    [sendRpc],
+  );
+  const configureMail = useCallback(
+    (provider: MailProvider, clientId?: string, clientSecret?: string) =>
+      sendRpc({ cmd: "mail_configure", provider, clientId, clientSecret }),
+    [sendRpc],
+  );
+  const connectMail = useCallback(
+    (provider: MailProvider) => sendRpc({ cmd: "mail_connect", provider }),
+    [sendRpc],
+  );
+  const cancelMail = useCallback(
+    (provider: MailProvider) => sendRpc({ cmd: "mail_cancel", provider }),
+    [sendRpc],
+  );
+  const signOutMail = useCallback(
+    (provider: MailProvider) => sendRpc({ cmd: "mail_signout", provider }),
+    [sendRpc],
+  );
+  const addRule = useCallback(
+    (ruleType: "shell" | "path", pattern: string) =>
+      sendRpc({ cmd: "rule_add", ruleType, pattern }),
+    [sendRpc],
+  );
+  const removeRule = useCallback(
+    (ruleType: "shell" | "path", pattern: string) =>
+      sendRpc({ cmd: "rule_remove", ruleType, pattern }),
+    [sendRpc],
+  );
+  const newChat = useCallback(() => {
+    clearAbortDraft();
+    // Composer state belongs to the old conversation — drop it now so a
+    // half-typed draft can't leak into the fresh session.
+    setDraft("");
+    setPendingImages([]);
+    // The transcript clear comes from the daemon's $session_loaded reply —
+    // clearing optimistically here orphans the UI on a blank screen when the
+    // RPC fails while the backend still points at the old session.
+    rpcSend({ tabId, cmd: "new_chat" }).catch((err) => {
+      console.error("new_chat failed", err);
+      dispatch({
+        t: "push_notice",
+        text: `Couldn't start a new chat: ${messageOf(err)} — your current conversation is untouched.`,
+        severity: "error",
+      });
+    });
+  }, [clearAbortDraft, tabId]);
+
+  const pickWorkspace = useCallback(async () => {
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: t("workdir.title"),
+        defaultPath: state.settings?.workspaceDir,
+      });
+      if (typeof picked === "string" && picked.length > 0) {
+        clearAbortDraft();
+        saveSettings({ workspaceDir: picked });
+      }
+    } catch (err) {
+      console.error("[reasonix frontend] pickWorkspace failed", err);
+    }
+  }, [clearAbortDraft, saveSettings, state.settings?.workspaceDir]);
+
+  const openTabWorkspaces = useMemo(() => {
+    return (tabsList ?? [])
+      .map((t) => t.workspaceDir)
+      .filter((ws): ws is string => typeof ws === "string" && ws.length > 0);
+  }, [tabsList]);
+
+  const mergedWorkspaces = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const ws of openTabWorkspaces) {
+      const key = ws.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        list.push(ws);
+      }
+    }
+    for (const ws of state.settings?.recentWorkspaces ?? []) {
+      const key = ws.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        list.push(ws);
+      }
+    }
+    return list;
+  }, [openTabWorkspaces, state.settings?.recentWorkspaces]);
+
+  const appendNotice = useCallback((text: string, severity: NoticeSeverity = "info") => {
+    dispatch({ t: "push_notice", text, severity });
+  }, []);
+
+  // Vision attachments (gpt-* + DeepSeek vision models): paste carries bytes
+  // from the webview; picked/dropped files ship a path the daemon reads.
+  // Pending images render as thumbnails above the composer until send.
+  // Capability follows the SELECTED model (settings.model, mirrored from the
+  // daemon's $settings): the top-level state.model only updates when a turn
+  // starts, so right after a switch to a vision model it still reports the
+  // previous model and would misroute pastes to the non-vision path.
+  const imageCapable = modelAcceptsImages(
+    state.settings?.model,
+    ollamaVisionModels,
+    opencodeVisionModels,
+  );
+  const attachPastedImage = useCallback(
+    async (file: File) => {
+      try {
+        const raw = await fileToDataUrl(file);
+        const dataUrl = await downscaleImage(raw);
+        setPendingImages((prev) => [
+          ...prev,
+          {
+            id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            thumbnail: dataUrl,
+            wire: { source: "clipboard", dataUrl },
+          },
+        ]);
+      } catch (err) {
+        console.error("[reasonix frontend] clipboard image attach failed", err);
+        appendNotice(t("composer.imageAttachFailed"), "error");
+      }
+    },
+    [appendNotice],
+  );
+  const attachPickedImage = useCallback((path: string) => {
+    setPendingImages((prev) => [
+      ...prev,
+      {
+        id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        thumbnail: convertFileSrc(path),
+        wire: { source: "file", path },
+      },
+    ]);
+  }, []);
+  const removePendingImage = useCallback((id: string) => {
+    setPendingImages((prev) => prev.filter((im) => im.id !== id));
+  }, []);
+
+  const applyReasoningEffort = useCallback(
+    (reasoningEffort: Settings["reasoningEffort"]) => {
+      applySettingsPatch({ reasoningEffort });
+      appendNotice(t("app.toast.effortSwitched", { effort: reasoningEffort }));
+    },
+    [applySettingsPatch, appendNotice],
+  );
+
+  const applyEditMode = useCallback(
+    (mode: Settings["editMode"]) => {
+      applySettingsPatch({ editMode: mode });
+      if (mode === "yolo") {
+        appendNotice(t("app.yolo.toast"), "warning");
+      } else {
+        appendNotice(t("app.toast.modeSwitched", { mode: mode.toUpperCase() }));
+      }
+    },
+    [applySettingsPatch, appendNotice],
+  );
+
+  const dropActiveRef = useRef(active);
+  useEffect(() => {
+    dropActiveRef.current = active;
+  }, [active]);
+  useEffect(() => {
+    const ws = state.settings?.workspaceDir;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const mod = await import("@tauri-apps/api/webview");
+        const webview = mod.getCurrentWebview();
+        const handle = await webview.onDragDropEvent((event) => {
+          if (!dropActiveRef.current) return;
+          if (event.payload.type === "enter") {
+            document.body.style.setProperty("--drop-overlay-label", `"${t("dragDrop.overlay")}"`);
+            document.body.dataset.dragOver = "1";
+            return;
+          }
+          if (event.payload.type === "leave") {
+            delete document.body.dataset.dragOver;
+            return;
+          }
+          if (event.payload.type !== "drop") return;
+          delete document.body.dataset.dragOver;
+          const paths = event.payload.paths ?? [];
+          if (paths.length === 0) return;
+          const imageCapable = modelAcceptsImages(
+            state.settings?.model,
+            ollamaVisionModels,
+            opencodeVisionModels,
+          );
+          const imagePaths = imageCapable ? paths.filter(isImagePath) : [];
+          const mentionPaths = imageCapable ? paths.filter((p) => !isImagePath(p)) : paths;
+          for (const p of imagePaths) attachPickedImage(p);
+          if (mentionPaths.length > 0) {
+            const mentions = mentionPaths.map((path) => toWorkspaceRelative(path, ws));
+            setDraft((d) => {
+              const prefix = d.trim() ? `${d.replace(/\s+$/, "")} ` : "";
+              return `${prefix}${mentions.join(" ")} `;
+            });
+          }
+          composerRef.current?.focus();
+        });
+        if (cancelled) handle();
+        else unlisten = handle;
+      } catch (err) {
+        console.error("[reasonix frontend] drag-drop listen failed", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      delete document.body.dataset.dragOver;
+    };
+  }, [
+    state.settings?.workspaceDir,
+    state.settings?.model,
+    attachPickedImage,
+    ollamaVisionModels,
+    opencodeVisionModels,
+  ]);
+
+  const send = useCallback(
+    (override?: string | QueuedSend) => {
+      let text = draft.trim();
+      let sendImages: UserImageAttachment[] = pendingImages.map((im) => im.wire);
+      let sendImageUrls: string[] = pendingImages.map((im) => im.thumbnail);
+
+      if (override !== undefined) {
+        if (typeof override === "string") {
+          text = override.trim();
+        } else {
+          text = override.text.trim();
+          if (override.images && override.images.length > 0) {
+            sendImages = override.images
+              .map((im) => im.wire)
+              .filter((w): w is UserImageAttachment => Boolean(w));
+            sendImageUrls = override.images.map((im) => im.thumbnail);
+          } else {
+            sendImages = [];
+            sendImageUrls = [];
+          }
+        }
+      }
+
+      if ((!text && sendImages.length === 0) || !state.ready || state.busy) return;
+
+      const clientId = `c-${Date.now()}`;
+      // ChatGPT models: typed `@path` image mentions get an optimistic echo —
+      // stripped tokens + asset-protocol icons — while the daemon still
+      // receives the original text and does the real conversion server-side.
+      // Without this the live chat shows the raw @path until session reload.
+      let echoText = text;
+      let echoImages = sendImageUrls;
+      if (override !== undefined && typeof override !== "string" && override.echo) {
+        echoText = override.echo;
+      } else if (imageCapable) {
+        const typed = typedMentionImages(text, state.settings?.workspaceDir);
+        echoText = typed.text;
+        if (typed.images.length > 0) echoImages = [...sendImageUrls, ...typed.images];
+      }
+      recordAbortDraft("user_input", text);
+      dispatch({
+        t: "send_user",
+        text: echoText,
+        clientId,
+        images: echoImages.length > 0 ? echoImages : undefined,
+      });
+      sendRpc({ cmd: "user_input", text, images: sendImages.length > 0 ? sendImages : undefined });
+      if (override === undefined) {
+        setPendingImages([]);
+        setDraft("");
+      }
+    },
+    [
+      draft,
+      pendingImages,
+      imageCapable,
+      state.ready,
+      state.busy,
+      state.settings?.workspaceDir,
+      sendRpc,
+      recordAbortDraft,
+    ],
+  );
+
+  const abort = useCallback(() => {
+    const restored = restoreAbortedDraft(draft, abortDraftRef.current);
+    clearAbortDraft();
+    if (restored !== null) {
+      setDraft(restored);
+      composerRef.current?.focus();
+    }
+    sendRpc({ cmd: "abort" });
+  }, [clearAbortDraft, draft, sendRpc]);
+
+  useEffect(() => {
+    if (!state.busy) clearAbortDraft();
+  }, [clearAbortDraft, state.busy]);
+
+  // When /retry returns the last user text, set it as the composer draft.
+  // Only fire when retryNonce changes — retryText alone would re-fire on re-renders.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: retryText deliberately left out (see above)
+  useEffect(() => {
+    if (state.retryNonce > 0 && state.retryText) {
+      setDraft(state.retryText);
+      composerRef.current?.focus();
+    }
+  }, [state.retryNonce]);
+
+  useEffect(() => {
+    if (state.busy || !state.ready || state.queuedSends.length === 0) return;
+    const next = state.queuedSends[0];
+    if (!next) return;
+    dispatch({ t: "shift_queued_send" });
+    send(next);
+  }, [state.busy, state.ready, state.queuedSends, send]);
+
+  useEffect(() => {
+    const currentSnapshot: ApprovalSnapshot = {
+      confirms: state.pendingConfirms.map((c) => ({ id: c.id, command: c.command })),
+      pathAccess: state.pendingPathAccess.map((p) => ({
+        id: p.id,
+        path: p.path,
+        intent: p.intent,
+      })),
+      choices: state.pendingChoices.map((c) => ({ id: c.id, question: c.question })),
+      plans: state.pendingPlans.map((p) => ({ id: p.id, summary: p.summary, plan: p.plan })),
+      checkpoints: state.pendingCheckpoints.map((c) => ({
+        id: c.id,
+        title: c.title,
+        result: c.result,
+      })),
+      revisions: state.pendingRevisions.map((r) => ({
+        id: r.id,
+        summary: r.summary,
+        reason: r.reason,
+      })),
+    };
+    const previousSnapshot = previousApprovalSnapshotRef.current;
+    const wasBusy = wasBusyRef.current;
+    const busyDurationMs =
+      wasBusy && !state.busy && busyStartedAtRef.current
+        ? Date.now() - busyStartedAtRef.current
+        : 0;
+
+    if (state.busy && busyStartedAtRef.current === null) {
+      busyStartedAtRef.current = Date.now();
+    } else if (!state.busy) {
+      busyStartedAtRef.current = null;
+    }
+
+    previousApprovalSnapshotRef.current = currentSnapshot;
+    wasBusyRef.current = state.busy;
+
+    void getCurrentWindow()
+      .isFocused()
+      .catch((err) => {
+        console.debug("[reasonix frontend] window focus query unavailable", err);
+        return true;
+      })
+      .then((focused) => {
+        if (
+          shouldAppendCompletionNotice({
+            wasBusy,
+            isBusy: state.busy,
+            busyDurationMs,
+            focused,
+            outcome: state.lastTurnOutcome,
+          })
+        ) {
+          appendNotice(t("app.toast.taskComplete"), "success");
+        }
+        const notifications = deriveDesktopNotifications({
+          previous: previousSnapshot,
+          current: currentSnapshot,
+          wasBusy,
+          isBusy: state.busy,
+          busyDurationMs,
+          focused,
+          outcome: state.lastTurnOutcome,
+        });
+        void dispatchDesktopNotifications(notifications, {
+          isFocused: async () => focused,
+          isPermissionGranted: isNotificationPermissionGranted,
+          requestPermission: requestNotificationPermission,
+          sendNotification,
+        });
+      });
+  }, [
+    appendNotice,
+    state.busy,
+    state.lastTurnOutcome,
+    state.pendingChoices,
+    state.pendingCheckpoints,
+    state.pendingConfirms,
+    state.pendingPathAccess,
+    state.pendingPlans,
+    state.pendingRevisions,
+  ]);
+
+  const resolveConfirm = useCallback(
+    (id: number, response: ConfirmationChoice) => {
+      sendRpc({ cmd: "confirm_response", id, response });
+      dispatch({ t: "resolve_confirm", id });
+    },
+    [sendRpc],
+  );
+  const onApproveConfirm = useCallback(
+    (id: number) => resolveConfirm(id, { type: "run_once" }),
+    [resolveConfirm],
+  );
+  const onRejectConfirm = useCallback(
+    (id: number) => resolveConfirm(id, { type: "deny" }),
+    [resolveConfirm],
+  );
+  const onAlwaysAllowConfirm = useCallback(
+    (id: number, prefix: string) => resolveConfirm(id, { type: "always_allow", prefix }),
+    [resolveConfirm],
+  );
+  /** Stable identity — passed to memoized AssistantMsg; an inline arrow would
+   *  defeat the memo and re-render the whole transcript on every frame. */
+  const onStopTool = useCallback(() => sendRpc({ cmd: "cancel_tool" }), [sendRpc]);
+  /** Stop a background job from its transcript shell card — distinct from
+   *  `cancel_tool` because the tool call has already returned; the process is
+   *  still alive and must be killed via `jobs_stop`. Stable for memoization. */
+  const onStopJob = useCallback((jobId: number) => sendRpc({ cmd: "jobs_stop", jobId }), [sendRpc]);
+  const resolvePathAccess = useCallback(
+    (id: number, response: ConfirmationChoice) => {
+      sendRpc({ cmd: "confirm_response", id, response });
+      dispatch({ t: "resolve_path_access", id });
+    },
+    [sendRpc],
+  );
+  const resolveChoice = useCallback(
+    (id: number, response: ChoiceVerdict) => {
+      sendRpc({ cmd: "choice_response", id, response });
+      dispatch({ t: "resolve_choice", id });
+    },
+    [sendRpc],
+  );
+  const resolvePlan = useCallback(
+    (id: number, response: PlanVerdict) => {
+      sendRpc({ cmd: "plan_response", id, response });
+      dispatch({ t: "resolve_plan", id, verdict: response });
+    },
+    [sendRpc],
+  );
+  const resolveCheckpoint = useCallback(
+    (id: number, response: CheckpointVerdict) => {
+      sendRpc({ cmd: "checkpoint_response", id, response });
+      dispatch({ t: "resolve_checkpoint", id, verdict: response });
+    },
+    [sendRpc],
+  );
+  const resolveRevision = useCallback(
+    (id: number, response: RevisionVerdict) => {
+      sendRpc({ cmd: "revision_response", id, response });
+      dispatch({ t: "resolve_revision", id, verdict: response });
+    },
+    [sendRpc],
+  );
+  /** Pause/resume a gate's backend auto-resolve countdown so it matches the
+   *  card's timer toggle — no front/back desync. */
+  const setGateTimer = useCallback(
+    (id: number, enabled: boolean) => sendRpc({ cmd: "gate_timer", id, enabled }),
+    [sendRpc],
+  );
+
+  // Read the latest session inside the stable restore callback below.
+  const currentSessionRef = useRef(state.currentSession);
+  currentSessionRef.current = state.currentSession;
+  const restoreScrollTop = useCallback(() => {
+    const session = currentSessionRef.current;
+    if (!session) return null;
+    const raw = localStorage.getItem(`reasonix.scroll.${session}`);
+    const n = raw ? Number(raw) : Number.NaN;
+    return Number.isFinite(n) ? n : null;
+  }, []);
+
+  const { showJumpButton, scrollToBottom } = useAutoScroll(
+    threadRef,
+    threadInnerRef,
+    state.busy,
+    restoreScrollTop,
+    active,
+  );
+
+  // Persist the transcript scroll offset per session so a restart reopens
+  // the conversation where the user left it (#1244).
+  useEffect(() => {
+    const el = threadRef.current;
+    const session = state.currentSession;
+    if (!el || !session) return;
+    const key = `reasonix.scroll.${session}`;
+    let timer: ReturnType<typeof setTimeout>;
+    const onScroll = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
+        if (atBottom) localStorage.removeItem(key);
+        else localStorage.setItem(key, String(Math.round(el.scrollTop)));
+      }, 250);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      clearTimeout(timer);
+    };
+  }, [state.currentSession]);
+
+  // A background job can exit on its own (a download finishing) with no push
+  // notification, so the transcript's background-job shell cards would stay
+  // stuck on "running". Poll while any job is alive — not only while the ⌘J
+  // popover is open — so a natural exit reaches the UI and the card settles.
+  const hasRunningJobs = useMemo(() => state.jobs.some((j) => j.running), [state.jobs]);
+  useEffect(() => {
+    if (!active) return;
+    if (!jobsOpen && !hasRunningJobs) return;
+    sendRpc({ cmd: "jobs_list" });
+    const id = window.setInterval(() => sendRpc({ cmd: "jobs_list" }), 1500);
+    return () => window.clearInterval(id);
+  }, [active, jobsOpen, hasRunningJobs, sendRpc]);
+
+  useEffect(() => {
+    if (!active) return;
+    if (state.busy) return;
+    sendRpc({ cmd: "jobs_list" });
+  }, [active, state.busy, sendRpc]);
+
+  useEffect(() => {
+    // Every TabRuntime stays mounted (display:none on inactive), so each registers its own keydown — without this gate Cmd+N would fire newChat() in every tab and wipe the inactive ones' sessions.
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && (e.key === "a" || e.key === "A")) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag !== "INPUT" && tag !== "TEXTAREA") e.preventDefault();
+        return;
+      }
+      if (mod && (e.key === "l" || e.key === "L")) {
+        e.preventDefault();
+        composerRef.current?.focus();
+      } else if (mod && (e.key === "n" || e.key === "N")) {
+        e.preventDefault();
+        newChat();
+      } else if (mod && (e.key === "o" || e.key === "O")) {
+        e.preventDefault();
+        setWdAnchor(undefined);
+        setWdOpen((v) => !v);
+      } else if (mod && e.key === ",") {
+        e.preventDefault();
+        if (settingsOpen) setSettingsOpen(false);
+        else openSettingsAt("general");
+      } else if (mod && (e.key === "j" || e.key === "J")) {
+        e.preventDefault();
+        setJobsOpen((v) => !v);
+      } else if (e.key === "Escape" && state.busy) {
+        const target = e.target as HTMLElement | null;
+        if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
+        // A modal is open — let its own Esc handler close it (#1670).
+        if (settingsOpen || aboutOpen || jobsOpen || wdOpen) return;
+        e.preventDefault();
+        abort();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    active,
+    state.busy,
+    abort,
+    newChat,
+    settingsOpen,
+    aboutOpen,
+    jobsOpen,
+    wdOpen,
+    openSettingsAt,
+  ]);
+
+  // Track how long the current turn has been stuck (no events received)
+  const [stuckSec, setStuckSec] = useState(0);
+  useEffect(() => {
+    if (!state.busy || !state.turnLastEventMs) {
+      setStuckSec(0);
+      return;
+    }
+    const id = window.setInterval(() => {
+      setStuckSec(Math.floor((Date.now() - state.turnLastEventMs) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [state.busy, state.turnLastEventMs]);
+  const workspaceLabel = state.settings?.workspaceDir
+    ? state.settings.workspaceDir.split(/[\\/]/).pop() || "workspace"
+    : "Reasonix+";
+  const session = (() => {
+    if (state.currentSession) {
+      const s = state.sessions.find((x) => x.name === state.currentSession);
+      if (s?.summary?.trim()) return s.summary.trim();
+    }
+    const firstUser = state.messages.find((m) => m.kind === "user");
+    if (firstUser && firstUser.kind === "user") {
+      const cleaned = flattenText(firstUser.text);
+      if (cleaned) return clipText(cleaned, 60, "…");
+    }
+    if (state.currentSession) {
+      const m = state.currentSession.match(/^desktop-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/);
+      if (m)
+        return t("app.session.format", {
+          month: m[2],
+          day: m[3],
+          hour: m[4],
+          minute: m[5],
+        });
+    }
+    return state.messages.length === 0
+      ? t("app.session.new", { workspace: workspaceLabel })
+      : workspaceLabel;
+  })();
+
+  const exportConversation = useCallback(async () => {
+    const userLabel = t("app.exportUserLabel");
+    const md = formatConversationMarkdown(state.messages, userLabel);
+    if (!md) {
+      appendNotice(t("app.toast.emptySession"));
+      return;
+    }
+    try {
+      const filename = defaultExportFilename(session);
+      const path = await saveDialog({
+        defaultPath: filename,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+        title: t("app.toast.exportDialogTitle"),
+      });
+      if (!path) return;
+      await invoke("write_text_file", { path, content: md });
+      appendNotice(t("app.toast.exportedMd"), "success");
+    } catch (err) {
+      console.error("[reasonix frontend] export failed", err);
+      appendNotice(t("app.toast.exportFailed", { error: String(err) }), "error");
+    }
+  }, [state.messages, session, appendNotice]);
+
+  // Enabled/visible models for the Duplicate-session picker, grouped the same
+  // way the composer groups them.
+  const dupModelGroups = useMemo(() => {
+    const enabled = new Set(state.settings?.enabledModels ?? []);
+    const visible = (id: string) => enabled.size === 0 || enabled.has(id);
+    const catalog = deriveModelCatalog({
+      discoveredAntigravityModels: state.settings?.antigravityOAuth?.models,
+      customModels: state.settings?.customModels,
+      opencodeModels,
+      includeAntigravity: Boolean(state.settings?.antigravityOAuth?.models),
+      ollamaVisionModels,
+      opencodeVisionModels,
+    });
+    const groups: { key: string; label: string; ids: string[] }[] = catalog.groups.map((g) => ({
+      key: g.key,
+      label: t(MODEL_CATALOG_GROUP_LABELS[g.key]),
+      ids: g.models.filter(visible),
+    }));
+    if (ollamaModels && ollamaModels.length > 0) {
+      groups.unshift({
+        key: "ollama",
+        label: t("composer.modelOllamaGroup"),
+        ids: ollamaModels.map((id) => `ollama/${id}`).filter(visible),
+      });
+    }
+    return groups.filter((g) => g.ids.length > 0);
+  }, [
+    state.settings?.enabledModels,
+    state.settings?.antigravityOAuth?.models,
+    state.settings?.customModels,
+    opencodeModels,
+    ollamaModels,
+    ollamaVisionModels,
+    opencodeVisionModels,
+  ]);
+
+  // Duplicate this conversation into a new trimmed session on the picked models:
+  // the daemon trims the export body to the configured token budget and opens
+  // the new session (auto-continuing only when that setting is enabled).
+  const duplicateSession = useCallback(
+    (mainModel: string, subagentModel: string) => {
+      const md = formatConversationMarkdown(state.messages, t("app.exportUserLabel"), {
+        maxToolOutputLines: 3,
+      });
+      if (!md) {
+        appendNotice(t("app.toast.emptySession"));
+        return;
+      }
+      sendRpc({ cmd: "duplicate_session", markdown: md, model: mainModel, subagentModel });
+      appendNotice(t("app.toast.duplicatedSession"), "success");
+    },
+    [state.messages, sendRpc, appendNotice],
+  );
+
+  // Sessions whose agent is ACTIVELY RUNNING (a turn in flight) in any tab on
+  // this tab's workspace — the sidebar dots one per running session. A merely
+  // open channel must NOT dot: the tab bar reserves the dot for running agents
+  // and the sidebar follows the same rule (issue: 3 dots for 1 working agent).
+  const runningSessions = useMemo(
+    () => runningSessionNames(tabsList, state.settings?.workspaceDir),
+    [tabsList, state.settings?.workspaceDir],
+  );
+
+  // Report this channel's running-agent state up so the tab dot can count the
+  // agents active in the tab (this channel plus its siblings).
+  useEffect(() => {
+    onBusyChange(tabId, state.busy);
+  }, [onBusyChange, tabId, state.busy]);
+
+  return (
+    <WorkspaceProvider value={{ dir: state.settings?.workspaceDir }}>
+      <div
+        className="app"
+        data-theme={theme}
+        data-theme-style={themeStyle}
+        data-side-collapsed={sideCollapsed}
+        data-ctx-collapsed={ctxCollapsed}
+        style={{
+          display: active ? undefined : "none",
+          ["--side-width" as string]: sideCollapsed ? "0px" : `${sideWidth}px`,
+          ["--ctx-width" as string]: ctxCollapsed ? "0px" : `${ctxWidth}px`,
+          ["--thread-max-width" as string]: `${threadMaxWidth}px`,
+        }}
+      >
+        <TitleBar
+          session={session}
+          model={state.settings?.model}
+          sideOn={!sideCollapsed}
+          ctxOn={!ctxCollapsed}
+          onToggleSide={onToggleSide}
+          onToggleCtx={onToggleCtx}
+        />
+
+        <TabBar
+          tabs={tabsList}
+          activeId={activeTabId}
+          setActive={setActiveTabId}
+          onClose={(id) => {
+            rpcSend({ cmd: "tab_close", tabId: id }).catch((err) =>
+              console.error("tab_close failed", err),
+            );
+          }}
+          onNew={onNewTab}
+          onClearTabs={(scope) => {
+            const workspaceTabs = workspaceTabRepresentatives(tabsList, activeTabId);
+            const activeWorkspace = workspaceTabs.find((representative) => {
+              const workspace = normalizeWorkspacePath(representative.workspaceDir);
+              return tabsList.some(
+                (tab) =>
+                  tab.id === activeTabId && normalizeWorkspacePath(tab.workspaceDir) === workspace,
+              );
+            });
+            const targets = getTabsToClear(
+              workspaceTabs,
+              activeWorkspace?.id ?? activeTabId,
+              scope,
+            );
+            for (const target of targets) {
+              rpcSend({ cmd: "tab_close", tabId: target.id }).catch((err) =>
+                console.error("tab_close failed", err),
+              );
+            }
+          }}
+          singleTab={groupTabsByWorkspace(tabsList).length <= 1}
+        />
+
+        <Sidebar
+          sessions={state.sessions}
+          activeName={state.currentSession}
+          workspaceDir={state.settings?.workspaceDir}
+          onNewChat={newChat}
+          runningSessions={runningSessions}
+          sessionRates={sessionRates}
+          onLoadSession={(name) => {
+            clearAbortDraft();
+            // Open the session as its own channel (a new tab in this group), or
+            // focus it if already open — never replace/abort the current one.
+            sendRpc({ cmd: "session_open", name });
+          }}
+          onDeleteSession={(name) => {
+            dispatch({ t: "session_delete_requested", name });
+            sendRpc({ cmd: "session_delete", name });
+          }}
+          onClearSessions={() => {
+            dispatch({ t: "session_clear_requested" });
+            sendRpc({ cmd: "session_clear" });
+          }}
+          onReorderSession={(name) => {
+            const now = Date.now();
+            dispatch({ t: "session_bump_requested", name, createdAt: now });
+            sendRpc({ cmd: "session_reorder", name, createdAt: now });
+          }}
+          onOpenWorkdir={(anchor) => {
+            setWdAnchor(anchor);
+            setWdOpen(true);
+          }}
+          onOpenSettings={() => openSettingsAt("general")}
+          onOpenAbout={() => setAboutOpen(true)}
+        />
+
+        {!sideCollapsed ? (
+          <div
+            className="resize-handle"
+            data-side="left"
+            data-dragging={undefined}
+            onMouseDown={onSideResizeDown}
+          />
+        ) : null}
+
+        <main className="main" style={{ position: "relative" }}>
+          <JumpBar messages={state.messages} threadEl={threadRef.current} />
+          {state.settings != null && !state.settings.workspaceDir ? (
+            <PendingWorkspaceView
+              local={state.settings.reasonixLocalDir}
+              recent={mergedWorkspaces}
+              onPick={(path) => {
+                clearAbortDraft();
+                saveSettings({ workspaceDir: path });
+              }}
+              onBrowse={pickWorkspace}
+            />
+          ) : state.needsSetup ? (
+            <NeedsSetupView
+              workspaceDir={state.settings?.workspaceDir}
+              onPickWorkspace={pickWorkspace}
+              model={state.settings?.model}
+              modelEndpoint={state.settings?.modelEndpoint}
+              oauthWaiting={state.oauthWaiting}
+              onOAuthBegin={() => sendRpc({ cmd: "oauth_begin" })}
+              onSubmit={(key) => sendRpc({ cmd: "setup_save_key", key })}
+              onSaveOpenAIApiKey={(key) => sendRpc({ cmd: "setup_save_openai_key", key })}
+              onSaveOllama={(modelId, baseUrl) =>
+                sendRpc({ cmd: "settings_save", model: modelId, ollamaBaseUrl: baseUrl ?? null })
+              }
+              ollamaBaseUrl={state.settings?.ollamaBaseUrl}
+            />
+          ) : (
+            <>
+              <MainHead
+                session={session}
+                model={state.settings?.model}
+                subagentModel={state.settings?.subagentModel}
+                modelGroups={dupModelGroups}
+                workspaceDir={state.settings?.workspaceDir}
+                busy={state.busy}
+                hasMessages={state.messages.length > 0}
+                onExport={exportConversation}
+                onDuplicate={duplicateSession}
+                onOpenWorkdir={(anchor) => {
+                  setWdAnchor(anchor);
+                  setWdOpen(true);
+                }}
+                onRename={(title) => {
+                  if (state.currentSession) {
+                    dispatch({
+                      t: "session_rename_requested",
+                      name: state.currentSession,
+                      title,
+                    });
+                    sendRpc({ cmd: "session_rename", name: state.currentSession, title });
+                  }
+                }}
+              />
+              <div className="thread" ref={threadRef}>
+                <div className="thread-inner" ref={threadInnerRef}>
+                  {active ? (
+                    <>
+                      {state.messages.length === 0 ? (
+                        <EmptyState
+                          onPick={(text) => send(text)}
+                          workspaceDir={state.settings?.workspaceDir}
+                        />
+                      ) : null}
+
+                      {state.messages.map((m, i) => {
+                        if (m.kind === "user") {
+                          const dividerLabel = `turn ${m.turn}`;
+                          const prev = state.messages[i - 1];
+                          const needsDivider = !prev || prev.kind === "user";
+                          return (
+                            <div key={`u-${m.turn}`} data-turn={m.turn}>
+                              {needsDivider ? <TurnDivider label={dividerLabel} /> : null}
+                              <UserMsg text={m.text} images={m.images} skill={m.skill} />
+                            </div>
+                          );
+                        }
+                        if (m.kind === "assistant") {
+                          return (
+                            // biome-ignore lint/suspicious/noArrayIndexKey: transcript order is append-only
+                            <div key={`a-${m.turn}-${i}`}>
+                              <AssistantRow
+                                m={m}
+                                model={state.model}
+                                pendingConfirms={state.pendingConfirms}
+                                activePlan={activePlanForMessage(m, state.activePlan)}
+                                onApproveConfirm={onApproveConfirm}
+                                onRejectConfirm={onRejectConfirm}
+                                onAlwaysAllowConfirm={onAlwaysAllowConfirm}
+                                onStopTool={onStopTool}
+                                jobs={state.jobs}
+                                tabId={tabId}
+                                onStopJob={onStopJob}
+                                isInterventionPending={hasPendingIntervention(state)}
+                              />
+                            </div>
+                          );
+                        }
+                        if (m.kind === "notice") {
+                          return <NoticeCard key={m.id} text={m.text} severity={m.severity} />;
+                        }
+                        return null;
+                      })}
+
+                      {/* Pending approvals */}
+                      {state.pendingPlans.map((p) => (
+                        <PlanApprovalCard
+                          key={`pp-${p.id}`}
+                          id={p.id}
+                          plan={p.plan}
+                          summary={p.summary}
+                          steps={p.steps}
+                          countdownMs={p.countdownMs}
+                          onApprove={() => resolvePlan(p.id, { type: "approve" })}
+                          onRefine={() => resolvePlan(p.id, { type: "refine" })}
+                          onCancel={() => resolvePlan(p.id, { type: "cancel" })}
+                          onTimerToggle={(enabled) => setGateTimer(p.id, enabled)}
+                        />
+                      ))}
+                      {state.pendingCheckpoints.map((c) => (
+                        <CheckpointApprovalCard
+                          key={`cp-${c.id}`}
+                          c={c}
+                          onContinue={() => resolveCheckpoint(c.id, { type: "continue" })}
+                          onRevise={() => resolveCheckpoint(c.id, { type: "revise" })}
+                          onStop={() => resolveCheckpoint(c.id, { type: "stop" })}
+                        />
+                      ))}
+                      {state.pendingRevisions.map((r) => (
+                        <RevisionApprovalCard
+                          key={`rv-${r.id}`}
+                          r={r}
+                          onAccept={() => resolveRevision(r.id, { type: "accepted" })}
+                          onReject={() => resolveRevision(r.id, { type: "rejected" })}
+                          onTimerToggle={(enabled) => setGateTimer(r.id, enabled)}
+                        />
+                      ))}
+                      {state.pendingConfirms.map((c) => (
+                        <ConfirmApprovalCard
+                          key={`cc-${c.id}`}
+                          prompt={c.prompt}
+                          onAllow={() => resolveConfirm(c.id, { type: "run_once" })}
+                          onAlwaysAllow={(prefix) =>
+                            resolveConfirm(c.id, { type: "always_allow", prefix })
+                          }
+                          onDeny={() => resolveConfirm(c.id, { type: "deny" })}
+                        />
+                      ))}
+                      {state.pendingPathAccess.map((p) => (
+                        <PathAccessApprovalCard
+                          key={`pa-${p.id}`}
+                          prompt={p.prompt}
+                          onAllow={() => resolvePathAccess(p.id, { type: "run_once" })}
+                          onAlwaysAllow={(prefix) =>
+                            resolvePathAccess(p.id, { type: "always_allow", prefix })
+                          }
+                          onDeny={() => resolvePathAccess(p.id, { type: "deny" })}
+                        />
+                      ))}
+                      {state.pendingChoices.map((c) => (
+                        <ChoiceApprovalCard
+                          key={`ch-${c.id}`}
+                          question={c.question}
+                          options={c.options}
+                          countdownMs={c.countdownMs}
+                          onPick={(optionId) => resolveChoice(c.id, { type: "pick", optionId })}
+                          onCancel={() => resolveChoice(c.id, { type: "cancel" })}
+                          onTimerToggle={(enabled) => setGateTimer(c.id, enabled)}
+                        />
+                      ))}
+
+                      {!backendConnected ? (
+                        <div
+                          style={{
+                            padding: 12,
+                            color: "var(--muted)",
+                            fontFamily: "Geist Mono, monospace",
+                            fontSize: 11,
+                          }}
+                        >
+                          {t("app.connecting")}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
+                {showJumpButton ? (
+                  <button
+                    type="button"
+                    className="thread-jump-bottom"
+                    onClick={() => scrollToBottom(true)}
+                    title={t("app.jumpToBottom") ?? "Jump to bottom"}
+                    aria-label={t("app.jumpToBottom") ?? "Jump to bottom"}
+                  >
+                    <I.chev size={16} />
+                  </button>
+                ) : null}
+              </div>
+
+              <Composer
+                draft={draft}
+                setDraft={setDraft}
+                onSend={(text) => send(text)}
+                quickSend={resolveActiveQuickSend(
+                  state.settings?.quickSendId,
+                  state.settings?.quickSends ?? [],
+                )}
+                onAbort={abort}
+                disabled={!state.ready}
+                busy={state.busy}
+                busyLabel={
+                  state.busy
+                    ? state.activeSkill
+                      ? `Skill · ${state.activeSkill.name}`
+                      : state.pendingChoices.length > 0
+                        ? t("app.status.waitingChoice")
+                        : state.pendingPlans.length > 0
+                          ? t("app.status.waitingPlan")
+                          : state.pendingCheckpoints.length > 0
+                            ? t("app.status.waitingCheckpoint")
+                            : state.pendingRevisions.length > 0
+                              ? t("app.status.waitingRevision")
+                              : state.pendingConfirms.length > 0 ||
+                                  state.pendingPathAccess.length > 0
+                                ? t("app.status.waitingConfirm")
+                                : state.turnStatus === "waiting_user"
+                                  ? t("app.status.waitingUser")
+                                  : state.turnStatus === "thinking"
+                                    ? t("app.status.thinking")
+                                    : state.turnStatus === "reasoning"
+                                      ? t("app.status.reasoning")
+                                      : state.turnStatus === "calling_tool" && state.turnStatusTool
+                                        ? `${t("app.status.callingTool")} ${state.turnStatusTool}`
+                                        : state.turnStatus === "waiting_tool"
+                                          ? t("app.status.waitingTool")
+                                          : state.turnStatus === "responding"
+                                            ? t("app.status.responding")
+                                            : stuckSec > 30
+                                              ? t("app.status.stuck", { sec: stuckSec })
+                                              : t("app.status.thinking")
+                    : undefined
+                }
+                textareaRef={composerRef}
+                modelLabel={state.settings?.model ?? DEFAULT_MODEL}
+                subagentModelLabel={
+                  state.settings?.subagentModel ?? state.settings?.model ?? DEFAULT_MODEL
+                }
+                reasoningEffort={state.settings?.reasoningEffort ?? "high"}
+                ollamaModels={ollamaModels}
+                ollamaModelsError={ollamaModelsError ?? undefined}
+                ollamaHiddenCount={ollamaHiddenCount}
+                ollamaVisionModels={ollamaVisionModels}
+                antigravityModels={state.settings?.antigravityOAuth?.models}
+                antigravityModelsError={state.settings?.antigravityOAuth?.flowError}
+                opencodeModels={opencodeModels}
+                opencodeModelsError={opencodeModelsError ?? undefined}
+                opencodeVisionModels={opencodeVisionModels}
+                customModels={state.settings?.customModels}
+                enabledModels={state.settings?.enabledModels}
+                onRefreshOllamaModels={onRefreshOllamaModels}
+                onRefreshAntigravityModels={onRefreshAntigravityModels}
+                onRefreshOpencodeModels={onRefreshOpencodeModels}
+                onModelChange={(model) => {
+                  applySettingsPatch({ model });
+                  appendNotice(t("app.toast.modelSwitched", { model }));
+                }}
+                onSubagentModelChange={(model) => {
+                  applySettingsPatch({ subagentModel: model });
+                  appendNotice(t("app.toast.subagentModelSwitched", { model }));
+                }}
+                onEffortChange={applyReasoningEffort}
+                editMode={state.settings?.editMode ?? "review"}
+                onEditModeChange={applyEditMode}
+                workspaceDir={state.settings?.workspaceDir}
+                queuedSends={state.queuedSends}
+                onQueueWhileBusy={(sendOrText, images) => {
+                  const send: QueuedSend =
+                    typeof sendOrText === "string"
+                      ? { text: sendOrText, images }
+                      : { ...sendOrText, ...(images ? { images } : {}) };
+                  dispatch({ t: "enqueue_send", send });
+                  setDraft("");
+                  setPendingImages([]);
+                }}
+                onDequeueSend={(index) => dispatch({ t: "dequeue_send", index })}
+                onSendNow={() => sendRpc({ cmd: "abort" })}
+                pendingImages={pendingImages}
+                onRemoveImage={removePendingImage}
+                imageCapable={imageCapable}
+                onPasteImage={attachPastedImage}
+                onImageRejected={() => appendNotice(t("composer.imageRequiresVision"), "warning")}
+                onPickImage={attachPickedImage}
+                onVoiceError={(message) => appendNotice(message, "error")}
+                voiceAvailable={voiceAvailable}
+              />
+            </>
+          )}
+        </main>
+
+        {!ctxCollapsed ? (
+          <div
+            className="resize-handle"
+            data-side="right"
+            data-dragging={undefined}
+            onMouseDown={onCtxResizeDown}
+          />
+        ) : null}
+        <ContextPanel
+          settings={state.settings}
+          usage={state.usage}
+          mcpSpecs={state.mcpSpecs}
+          mcpBridged={state.mcpBridged}
+          onToggleSessionMcp={toggleSessionMcp}
+          sessionFiles={state.sessionFiles}
+          memory={state.memory}
+          memoryDetail={state.memoryDetail}
+          memoryResult={state.memoryResult}
+          onReadMemory={(path) => sendRpc({ cmd: "memory_read", path })}
+          onWriteMemory={(scope, name, description, body) =>
+            sendRpc({ cmd: "memory_write", scope, name, description, body })
+          }
+          onDeleteMemory={(path) => sendRpc({ cmd: "memory_delete", path })}
+          onExportMemories={() => sendRpc({ cmd: "memory_export" })}
+          onImportMemories={(json) => sendRpc({ cmd: "memory_import", json })}
+          onDismissMemoryResult={() => dispatch({ t: "dismiss_memory_result" })}
+          onCompact={() => sendRpc({ cmd: "compact_history" })}
+          rawContext={state.contextRaw}
+          onReadContext={() => sendRpc({ cmd: "context_raw_get" })}
+          onWriteContext={(text) => sendRpc({ cmd: "context_raw_set", text })}
+          onAddRule={addRule}
+          onRemoveRule={removeRule}
+          onSaveSettings={saveSettings}
+          activePlan={state.activePlan}
+        />
+
+        <StatusBar
+          settings={state.settings}
+          balance={state.balance}
+          codexQuota={state.codexQuota}
+          codexQuotaRefreshing={state.codexQuotaRefreshing}
+          codexQuotaReason={state.codexQuotaReason}
+          onRefreshCodexQuota={refreshCodexQuota}
+          ollamaQuota={state.ollamaQuota}
+          ollamaQuotaRefreshing={state.ollamaQuotaRefreshing}
+          ollamaQuotaReason={state.ollamaQuotaReason}
+          onRefreshOllamaQuota={refreshOllamaQuota}
+          antigravityQuota={state.antigravityQuota}
+          antigravityQuotaRefreshing={state.antigravityQuotaRefreshing}
+          antigravityQuotaReason={state.antigravityQuotaReason}
+          onRefreshAntigravityQuota={refreshAntigravityQuota}
+          zaiQuota={state.zaiQuota}
+          zaiQuotaRefreshing={state.zaiQuotaRefreshing}
+          zaiQuotaReason={state.zaiQuotaReason}
+          onRefreshZaiQuota={refreshZaiQuota}
+          usage={state.usage}
+          busy={state.busy}
+          ready={state.ready}
+          currency={currency}
+          theme={theme}
+          themeStyle={themeStyle}
+          jobs={state.jobs}
+          jobsOpen={jobsOpen}
+          onToggleJobs={() => setJobsOpen((v) => !v)}
+          onSetThemeStyle={onSetThemeStyle}
+          onToggleCurrency={onToggleCurrency}
+          onOpenSettings={() => openSettingsAt("general")}
+          onOpenWorkdir={(anchor) => {
+            setWdAnchor(anchor);
+            setWdOpen(true);
+          }}
+        />
+
+        <WorkdirPop
+          open={wdOpen}
+          onClose={() => setWdOpen(false)}
+          recent={mergedWorkspaces}
+          local={state.settings?.reasonixLocalDir}
+          current={state.settings?.workspaceDir}
+          anchor={wdAnchor}
+          onPick={(path) => {
+            clearAbortDraft();
+            // Always apply the pick to THIS tab. A workspace is not unique
+            // app-wide: several tabs may target the same directory so each can
+            // drive the same project with its own agent. Redirecting focus to
+            // another tab that happens to share the workspace made a second tab
+            // on the same directory impossible — never switch tabs here.
+            saveSettings({ workspaceDir: path });
+          }}
+          onRemove={onRemoveWorkspace}
+          onBrowse={pickWorkspace}
+        />
+
+        {aboutOpen ? <AboutModal onClose={() => setAboutOpen(false)} /> : null}
+
+        {settingsOpen && state.settings ? (
+          <SettingsModal
+            settings={state.settings}
+            fontScale={fontScale}
+            onSetFontScale={onSetFontScale}
+            fontFamily={fontFamily}
+            onSetFontFamily={onSetFontFamily}
+            customFontFamily={customFontFamily}
+            onSetCustomFontFamily={onSetCustomFontFamily}
+            initialPage={settingsPage}
+            mcpSpecs={state.mcpSpecs}
+            mcpBridged={state.mcpBridged}
+            memory={state.memory}
+            memoryDetail={state.memoryDetail}
+            memoryResult={state.memoryResult}
+            onClose={() => setSettingsOpen(false)}
+            onSave={saveSettings}
+            onSaveApiKey={saveApiKey}
+            ollamaBaseUrl={state.settings?.ollamaBaseUrl}
+            ollamaModels={ollamaModels}
+            ollamaModelsError={ollamaModelsError ?? undefined}
+            ollamaPlan={ollamaPlan ?? undefined}
+            ollamaHiddenCount={ollamaHiddenCount}
+            ollamaVisionModels={ollamaVisionModels}
+            onRefreshOllamaModels={onRefreshOllamaModels}
+            opencodeModels={opencodeModels}
+            opencodeModelsError={opencodeModelsError ?? undefined}
+            opencodeVisionModels={opencodeVisionModels}
+            onRefreshOpencodeModels={onRefreshOpencodeModels}
+            oauthWaiting={state.oauthWaiting}
+            onOAuthBegin={() => sendRpc({ cmd: "oauth_begin" })}
+            onOAuthCancel={() => {
+              dispatch({ t: "oauth_waiting", waiting: false });
+              sendRpc({ cmd: "oauth_cancel" });
+            }}
+            onOAuthSignOut={() => sendRpc({ cmd: "oauth_signout" })}
+            onSaveOpenAIApiKey={(key) => sendRpc({ cmd: "setup_save_openai_key", key })}
+            antigravityOAuthWaiting={state.antigravityOAuthWaiting}
+            onAntigravityOAuthBegin={() => sendRpc({ cmd: "gemini_oauth_begin" })}
+            onAntigravityOAuthCancel={() => {
+              dispatch({ t: "antigravity_oauth_waiting", waiting: false });
+              sendRpc({ cmd: "gemini_oauth_cancel" });
+            }}
+            onAntigravityOAuthSignOut={() => sendRpc({ cmd: "gemini_oauth_signout" })}
+            onAddMcpSpec={addMcpSpec}
+            onRemoveMcpSpec={removeMcpSpec}
+            onToggleMcpServer={toggleMcpServer}
+            onToggleMcpTool={toggleMcpTool}
+            mcpExtensionStatus={state.mcpExtensionStatus}
+            mcpExtensionCheck={state.mcpExtensionCheck}
+            playwrightBrowserInstall={state.playwrightBrowserInstall}
+            onRequestMcpExtensionStatus={requestMcpExtensionStatus}
+            onConfigureMcpExtension={configureMcpExtension}
+            onCheckMcpExtension={checkMcpExtension}
+            onInstallPlaywrightBrowser={installPlaywrightBrowser}
+            onCancelPlaywrightBrowserInstall={cancelPlaywrightBrowserInstall}
+            mailProvider={state.settings?.mailProvider ?? MailProvider.Outlook}
+            mailAuth={state.mailAuth}
+            onSetMailProvider={setMailProvider}
+            onRequestMailStatus={requestMailStatus}
+            onConfigureMail={configureMail}
+            onConnectMail={connectMail}
+            onCancelMail={cancelMail}
+            onSignOutMail={signOutMail}
+            onReadMemory={(path) => sendRpc({ cmd: "memory_read", path })}
+            onWriteMemory={(scope, name, description, body) =>
+              sendRpc({ cmd: "memory_write", scope, name, description, body })
+            }
+            onDeleteMemory={(path) => sendRpc({ cmd: "memory_delete", path })}
+            onExportMemories={() => sendRpc({ cmd: "memory_export" })}
+            onImportMemories={(json) => sendRpc({ cmd: "memory_import", json })}
+            onDismissMemoryResult={() => dispatch({ t: "dismiss_memory_result" })}
+            onAddRule={addRule}
+            onRemoveRule={removeRule}
+          />
+        ) : null}
+
+        <JobsPop
+          open={jobsOpen}
+          onClose={() => setJobsOpen(false)}
+          jobs={state.jobs}
+          onStop={(jobId) => sendRpc({ cmd: "jobs_stop", jobId })}
+          onStopAll={() => sendRpc({ cmd: "jobs_stop_all" })}
+        />
+
+        {state.memoryExport !== null ? (
+          <MemoryExportModal
+            text={state.memoryExport}
+            onClose={() => dispatch({ t: "dismiss_memory_export" })}
+          />
+        ) : null}
+
+        {splashOn ? <Splash onDone={() => setSplashOn(false)} /> : null}
+      </div>
+    </WorkspaceProvider>
+  );
+}
+
+function WinMinimize() {
+  return (
+    <svg width="10" height="1" viewBox="0 0 10 1" aria-hidden="true" focusable="false">
+      <rect width="10" height="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Export-result modal: shows the memory bundle JSON with a copy button (clipboard + execCommand fallback). */
+function MemoryExportModal({
+  text,
+  onClose,
+}: {
+  text: string;
+  onClose: () => void;
+}): React.ReactElement {
+  const [copied, setCopied] = useState(false);
+  const copy = async (): Promise<void> => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard blocked — the textarea stays selectable so manual copy works */
+    }
+  };
+  return (
+    <div
+      className="modal-overlay"
+      onClick={onClose}
+      onKeyDown={escapeHandler(onClose)}
+      tabIndex={-1}
+    >
+      <div
+        className="modal memory-export-modal"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        <div className="modal-head">
+          <div className="modal-title">{t("memoryExport.title")}</div>
+          <button
+            type="button"
+            className="iconbtn"
+            onClick={onClose}
+            title={t("memoryExport.close")}
+          >
+            ✕
+          </button>
+        </div>
+        <p className="muted">{t("memoryExport.hint")}</p>
+        <textarea
+          className="memory-export-text"
+          readOnly
+          value={text}
+          spellCheck={false}
+          onFocus={(e) => e.currentTarget.select()}
+        />
+        <div className="modal-actions">
+          <button type="button" className="btn" onClick={copy}>
+            {copied ? t("memoryExport.copied") : t("memoryExport.copy")}
+          </button>
+          <button type="button" className="btn ghost" onClick={onClose}>
+            {t("memoryExport.close")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function WinMaximize() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
+      <rect
+        x="0.5"
+        y="0.5"
+        width="9"
+        height="9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1"
+      />
+    </svg>
+  );
+}
+function WinRestore() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
+      <rect
+        x="2.5"
+        y="0.5"
+        width="7"
+        height="7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1"
+      />
+      <rect
+        x="0.5"
+        y="2.5"
+        width="7"
+        height="7"
+        fill="var(--bg-2, #eee)"
+        stroke="currentColor"
+        strokeWidth="1"
+      />
+    </svg>
+  );
+}
+function WinClose() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
+      <line
+        x1="0.5"
+        y1="0.5"
+        x2="9.5"
+        y2="9.5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+      <line
+        x1="9.5"
+        y1="0.5"
+        x2="0.5"
+        y2="9.5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function TitleBar({
+  session,
+  model,
+  sideOn,
+  ctxOn,
+  onToggleSide,
+  onToggleCtx,
+}: {
+  session: string;
+  model?: string;
+  sideOn: boolean;
+  ctxOn: boolean;
+  onToggleSide: () => void;
+  onToggleCtx: () => void;
+}) {
+  useLang();
+  const [isMaximized, setIsMaximized] = useState(false);
+  const isMac = document.documentElement.dataset.platform === "macos";
+
+  useEffect(() => {
+    const win = getCurrentWindow();
+    win.isMaximized().then(setIsMaximized);
+    let unlisten: (() => void) | undefined;
+    win
+      .listen("tauri://resize", async () => {
+        setIsMaximized(await win.isMaximized());
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => unlisten?.();
+  }, []);
+
+  const win = getCurrentWindow();
+
+  return (
+    <header className="titlebar">
+      {/* left: sidebar toggle + brand */}
+      <div className="tb-left">
+        {isMac ? (
+          <div className="mac-controls" aria-label={t("app.titlebar.windowControls")}>
+            <button
+              type="button"
+              className="mac-ctrl close"
+              title={t("app.titlebar.close")}
+              aria-label={t("app.titlebar.close")}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                win.close();
+              }}
+            >
+              <WinClose />
+            </button>
+            <button
+              type="button"
+              className="mac-ctrl minimize"
+              title={t("app.titlebar.minimize")}
+              aria-label={t("app.titlebar.minimize")}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                win.minimize();
+              }}
+            >
+              <WinMinimize />
+            </button>
+            <button
+              type="button"
+              className="mac-ctrl zoom"
+              title={isMaximized ? t("app.titlebar.restore") : t("app.titlebar.maximize")}
+              aria-label={isMaximized ? t("app.titlebar.restore") : t("app.titlebar.maximize")}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                win.toggleMaximize();
+              }}
+            >
+              {isMaximized ? <WinRestore /> : <WinMaximize />}
+            </button>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className="iconbtn"
+          data-on={sideOn}
+          title={localizeShortcutText(t("app.titlebar.sidebar"))}
+          onClick={onToggleSide}
+        >
+          <I.panel_l size={14} />
+        </button>
+        <div className="tb-meta" data-tauri-drag-region>
+          <div className="brand" data-tauri-drag-region>
+            <span className="mark" />
+            <span className="brand-name">Reasonix+</span>
+          </div>
+          {session && (
+            <div className="crumbs" data-tauri-drag-region>
+              <span className="sep">/</span>
+              <span className="cur">{model ?? "—"}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* center: drag region */}
+      <span className="grow" data-tauri-drag-region />
+
+      {/* right: panel toggles + window controls */}
+      <div className="tb-right">
+        <button
+          type="button"
+          className="iconbtn"
+          data-on={ctxOn}
+          title={t("app.titlebar.contextPanel")}
+          onClick={onToggleCtx}
+        >
+          <I.panel_r size={14} />
+        </button>
+
+        {/* window controls — use onMouseDown+stopPropagation so the drag region doesn't swallow the event */}
+        {isMac ? null : (
+          <div className="win-controls">
+            <button
+              type="button"
+              className="win-ctrl"
+              title={t("app.titlebar.minimize")}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                win.minimize();
+              }}
+            >
+              <WinMinimize />
+            </button>
+            <button
+              type="button"
+              className="win-ctrl"
+              title={isMaximized ? t("app.titlebar.restore") : t("app.titlebar.maximize")}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                win.toggleMaximize();
+              }}
+            >
+              {isMaximized ? <WinRestore /> : <WinMaximize />}
+            </button>
+            <button
+              type="button"
+              className="win-ctrl close"
+              title={t("app.titlebar.close")}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                win.close();
+              }}
+            >
+              <WinClose />
+            </button>
+          </div>
+        )}
+      </div>
+    </header>
+  );
+}
+
+/** Session names whose agent is ACTIVELY running (turn in flight) in any tab on
+ *  `workspaceDir`. The ONLY input to the sidebar dot: a merely open channel
+ *  must not dot — the tab bar reserves the dot for running agents and the
+ *  sidebar follows the same rule (issue: 3 orange dots for 1 working agent). */
+/** The session name of a tab whose agent is actively running, or undefined.
+ *  The single source of the "is this tab running?" rule that both the sidebar
+ *  dot and its live tokens/second readout derive from. */
+function runningTabSession(t: { session?: string; busy?: boolean }): string | undefined {
+  return t.busy && t.session ? t.session : undefined;
+}
+
+export function runningSessionNames<
+  T extends { id: string; workspaceDir?: string; session?: string; busy?: boolean },
+>(tabs: readonly T[], workspaceDir?: string): Set<string> {
+  const target = normalizeWorkspacePath(workspaceDir);
+  const out = new Set<string>();
+  for (const t of tabs) {
+    const session = runningTabSession(t);
+    if (session && normalizeWorkspacePath(t.workspaceDir) === target) out.add(session);
+  }
+  return out;
+}
+
+/** Group independently running session channels into unique visual workspace
+ *  tabs. Workspace identity, not a historical backend group id, is the final
+ *  defensive boundary against duplicate ribbon entries. */
+export function groupTabsByWorkspace<
+  T extends { id: string; workspaceDir?: string; group?: string },
+>(tabs: readonly T[]): { key: string; items: T[] }[] {
+  const groups: { key: string; items: T[] }[] = [];
+  const byKey = new Map<string, { key: string; items: T[] }>();
+  for (const tab of tabs) {
+    const workspace = normalizeWorkspacePath(tab.workspaceDir);
+    const key = workspace ? `workspace:${workspace}` : `pending:${tab.group ?? tab.id}`;
+    let group = byKey.get(key);
+    if (!group) {
+      group = { key, items: [] };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    group.items.push(tab);
+  }
+  return groups;
+}
+
+/** One representative channel per visual workspace tab. The currently active
+ *  channel represents its workspace so keyboard navigation preserves focus. */
+export function workspaceTabRepresentatives<
+  T extends { id: string; workspaceDir?: string; group?: string },
+>(tabs: readonly T[], activeId: string): T[] {
+  return groupTabsByWorkspace(tabs).flatMap((group) => {
+    const representative = group.items.find((tab) => tab.id === activeId) ?? group.items[0];
+    return representative ? [representative] : [];
+  });
+}
+
+export function TabBar({
+  tabs,
+  activeId,
+  setActive,
+  onClose,
+  onNew,
+  onClearTabs,
+  singleTab,
+}: {
+  tabs: { id: string; workspaceDir?: string; session?: string; group?: string; busy?: boolean }[];
+  activeId: string;
+  setActive: (id: string) => void;
+  onClose: (id: string) => void;
+  onNew: () => void;
+  onClearTabs?: (scope: ClearTabsScope) => void;
+  singleTab?: boolean;
+}) {
+  useLang();
+  const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
+
+  const handleClear = (scope: ClearTabsScope) => {
+    if (onClearTabs) {
+      onClearTabs(scope);
+    } else {
+      const targets = getTabsToClear(tabs, activeId, scope);
+      if (scope === "all") onNew();
+      for (const t of targets) onClose(t.id);
+    }
+  };
+
+  // The ribbon is workspace-only. Session channels stay mounted and running,
+  // but are selected from the sidebar instead of duplicated as S1/S2 pills.
+  const groups = groupTabsByWorkspace(tabs);
+  const lastActiveByWorkspace = useRef(new Map<string, string>());
+  const activeGroup = groups.find((group) => group.items.some((tab) => tab.id === activeId));
+  if (activeGroup) lastActiveByWorkspace.current.set(activeGroup.key, activeId);
+  const visualTabs = groups.flatMap((group) => {
+    const active = group.items.find((tab) => tab.id === activeId);
+    const rememberedId = lastActiveByWorkspace.current.get(group.key);
+    const remembered = group.items.find((tab) => tab.id === rememberedId);
+    const representative = active ?? remembered ?? group.items[0];
+    return representative ? [representative] : [];
+  });
+  const activeVisualId =
+    visualTabs.find((tab) => activeGroup?.items.some((candidate) => candidate.id === tab.id))?.id ??
+    activeId;
+
+  return (
+    <div
+      className="tabbar"
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenuAnchor({ x: e.clientX, y: e.clientY });
+      }}
+    >
+      {groups.map((g) => {
+        const activeInGroup = g.items.find((t) => t.id === activeId);
+        const rememberedId = lastActiveByWorkspace.current.get(g.key);
+        const head = activeInGroup ?? g.items.find((t) => t.id === rememberedId) ?? g.items[0];
+        if (!head) return null;
+        const ws = head.workspaceDir ?? "";
+        const label = ws
+          ? ws
+              .replace(/[\\/]$/, "")
+              .split(/[\\/]/)
+              .pop() || "workspace"
+          : t("sidebarPanel.noWorkspace");
+        // Active agents = sessions in this tab with a running turn. No dot when
+        // nothing is running.
+        const activeAgents = g.items.filter((t) => t.busy).length;
+        return (
+          <div
+            key={g.key}
+            className="tab tab-group"
+            data-active={activeInGroup ? "true" : undefined}
+            onClick={() => setActive(head.id)}
+            onKeyDown={activationHandler(() => setActive(head.id))}
+            title={ws || label}
+          >
+            {activeAgents > 0 ? (
+              <span
+                className="tab-active"
+                title={`${activeAgents} active agent${activeAgents === 1 ? "" : "s"}`}
+              >
+                <span className="dot" data-state="running" />
+                <span className="tab-active-count">{activeAgents}</span>
+              </span>
+            ) : null}
+            <span className="label">{label}</span>
+            {!singleTab ? (
+              <span
+                className="close"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(head.id);
+                }}
+                onKeyDown={activationHandler((e) => {
+                  e.stopPropagation();
+                  onClose(head.id);
+                })}
+              >
+                <I.x size={11} />
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
+      <div
+        className="tab newtab"
+        title={localizeShortcutText(t("app.tab.newTabTitle"))}
+        onClick={onNew}
+        onKeyDown={activationHandler(onNew)}
+      >
+        <I.plus size={12} />
+        <span style={{ fontSize: 11, marginLeft: 4 }}>{t("app.tab.newTab")}</span>
+      </div>
+      {menuAnchor ? (
+        <TabMenu
+          anchor={menuAnchor}
+          tabs={visualTabs}
+          activeId={activeVisualId}
+          onClear={handleClear}
+          onClose={() => setMenuAnchor(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function MainHead({
+  session,
+  model,
+  subagentModel,
+  modelGroups,
+  workspaceDir,
+  busy,
+  hasMessages,
+  onExport,
+  onDuplicate,
+  onOpenWorkdir,
+  onRename,
+}: {
+  session: string;
+  model?: string;
+  subagentModel?: string;
+  /** Enabled/visible models for the Duplicate-session picker, grouped as the composer groups them. */
+  modelGroups: { key: string; label: string; ids: string[] }[];
+  workspaceDir?: string;
+  busy: boolean;
+  hasMessages: boolean;
+  onExport: () => void;
+  onDuplicate: (mainModel: string, subagentModel: string) => void;
+  onOpenWorkdir: (anchor: { top?: number; bottom?: number; left: number }) => void;
+  onRename?: (title: string) => void;
+}) {
+  useLang();
+  const [title, setTitle] = useState(session);
+  const [isEditing, setIsEditing] = useState(false);
+  const isEditingRef = useRef(false);
+  const [dupOpen, setDupOpen] = useState(false);
+  const [dupMain, setDupMain] = useState(model ?? DEFAULT_MODEL);
+  const [dupSub, setDupSub] = useState(subagentModel ?? model ?? DEFAULT_MODEL);
+  const dupWrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isEditingRef.current) {
+      setTitle(session);
+    }
+  }, [session]);
+
+  useEffect(() => {
+    if (!dupOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (dupWrapRef.current && !dupWrapRef.current.contains(e.target as Node)) setDupOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDupOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [dupOpen]);
+
+  const commit = useCallback(() => {
+    if (!isEditingRef.current) return;
+    isEditingRef.current = false;
+    setIsEditing(false);
+    const next = flattenText(title).slice(0, 200);
+    if (next && next !== session) {
+      onRename?.(next);
+    } else {
+      setTitle(session);
+    }
+  }, [title, session, onRename]);
+
+  const wsLabel = workspaceDir
+    ? workspaceDir.split(/[\\/]/).pop() || "workspace"
+    : t("app.header.noWorkspace");
+  return (
+    <div className="main-head">
+      <div className="title-wrap">
+        <h1>
+          <input
+            className="editable"
+            value={isEditing ? title : session}
+            onChange={(e) => setTitle(e.target.value)}
+            onFocus={() => {
+              isEditingRef.current = true;
+              setIsEditing(true);
+              setTitle(session);
+            }}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
+                e.currentTarget.blur();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                isEditingRef.current = false;
+                setIsEditing(false);
+                setTitle(session);
+                e.currentTarget.blur();
+              }
+            }}
+            size={Math.max(1, (isEditing ? title : session).length)}
+            maxLength={200}
+            title={t("sidebarPanel.renameSession")}
+            aria-label={t("sidebarPanel.renameSession")}
+            spellCheck={false}
+          />
+          {busy ? (
+            <span className="pill" style={{ color: "var(--accent)" }}>
+              <span className="dot" />
+              <span className="shimmer">{t("app.header.running")}</span>
+            </span>
+          ) : null}
+        </h1>
+        <div className="sub">
+          <span
+            className="ws-crumb"
+            onClick={(e) => {
+              const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              onOpenWorkdir({ top: r.bottom + 6, left: r.left });
+            }}
+            onKeyDown={activationHandler((e) => {
+              const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              onOpenWorkdir({ top: r.bottom + 6, left: r.left });
+            })}
+            style={{ cursor: "pointer" }}
+            title={workspaceDir ?? t("app.header.clickToSelect")}
+          >
+            <I.folder size={10} /> {wsLabel}
+          </span>
+          {model ? (
+            <span className="pill">
+              <I.brain size={10} /> {model}
+            </span>
+          ) : null}
+        </div>
+      </div>
+      <span className="grow" />
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div ref={dupWrapRef} style={{ position: "relative" }}>
+          <button
+            type="button"
+            className="h-btn"
+            disabled={!hasMessages}
+            title={t("app.titlebar.duplicateSession")}
+            onClick={() => {
+              if (dupOpen) {
+                setDupOpen(false);
+                return;
+              }
+              setDupMain(model ?? DEFAULT_MODEL);
+              setDupSub(subagentModel ?? model ?? DEFAULT_MODEL);
+              setDupOpen(true);
+            }}
+          >
+            <I.copy size={12} /> {t("app.header.duplicate")}
+          </button>
+          {dupOpen ? (
+            <div
+              className="popup"
+              style={{
+                top: "calc(100% + 6px)",
+                right: 0,
+                left: "auto",
+                bottom: "auto",
+                width: 300,
+              }}
+            >
+              <div className="dup-panel">
+                <div className="dup-title">{t("app.titlebar.duplicateSession")}</div>
+                <div className="dup-hint">{t("app.duplicate.hint")}</div>
+                <label className="dup-label" htmlFor="duplicate-main-model">
+                  {t("app.duplicate.mainModel")}
+                </label>
+                <select
+                  id="duplicate-main-model"
+                  className="field"
+                  value={dupMain}
+                  onChange={(e) => setDupMain(e.target.value)}
+                >
+                  {duplicateModelOptions(modelGroups, dupMain)}
+                </select>
+                <label className="dup-label" htmlFor="duplicate-subagent-model">
+                  {t("app.duplicate.subagentModel")}
+                </label>
+                <select
+                  id="duplicate-subagent-model"
+                  className="field"
+                  value={dupSub}
+                  onChange={(e) => setDupSub(e.target.value)}
+                >
+                  {duplicateModelOptions(modelGroups, dupSub)}
+                </select>
+                <div className="dup-actions">
+                  <button
+                    type="button"
+                    className="btn small"
+                    disabled={!dupMain || !dupSub}
+                    onClick={() => {
+                      onDuplicate(dupMain, dupSub);
+                      setDupOpen(false);
+                    }}
+                  >
+                    {t("app.duplicate.confirm")}
+                  </button>
+                  <button type="button" className="mini-btn" onClick={() => setDupOpen(false)}>
+                    {t("app.duplicate.back")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          className="h-btn"
+          onClick={onExport}
+          disabled={!hasMessages}
+          title={t("app.header.exportMd")}
+        >
+          <I.download size={12} /> {t("app.header.export")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PendingWorkspaceView({
+  local,
+  recent,
+  onPick,
+  onBrowse,
+}: {
+  local?: string;
+  recent: string[];
+  onPick: (path: string) => void;
+  onBrowse: () => void;
+}) {
+  useLang();
+  return (
+    <div className="pending-workspace">
+      <div className="pw-card">
+        <div className="pw-head">
+          <I.folder size={13} />
+          <span>{t("workdir.newTabHeading")}</span>
+        </div>
+        <p className="pw-sub">{t("workdir.newTabBody")}</p>
+        <div className="wd-list pw-list">
+          {local ? (
+            <div
+              className="wd-row"
+              onClick={() => onPick(local)}
+              onKeyDown={activationHandler(() => onPick(local))}
+              title={local}
+            >
+              <span className="ic">
+                <I.terminal size={12} />
+              </span>
+              <div className="b">
+                <div className="p">{t("workdir.reasonixLocal")}</div>
+                <div className="br">{local}</div>
+              </div>
+            </div>
+          ) : null}
+          {recent
+            .filter((p) => p !== local)
+            .map((p) => {
+              const name = p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+              return (
+                <div
+                  key={p}
+                  className="wd-row"
+                  onClick={() => onPick(p)}
+                  onKeyDown={activationHandler(() => onPick(p))}
+                  title={p}
+                >
+                  <span className="ic">
+                    <I.folder size={12} />
+                  </span>
+                  <div className="b">
+                    <div className="p">{name}</div>
+                    <div className="br">{p}</div>
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+        <div className="pw-foot">
+          <button type="button" className="btn" onClick={onBrowse}>
+            <I.plus size={11} /> {t("workdir.newTabBrowse")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({
+  onPick,
+  workspaceDir,
+}: {
+  onPick: (text: string) => void;
+  workspaceDir?: string;
+}) {
+  useLang();
+  const suggestions = [
+    t("app.empty.suggestion0"),
+    t("app.empty.suggestion1"),
+    t("app.empty.suggestion2"),
+    t("app.empty.suggestion3"),
+  ];
+  const wsLabel = workspaceDir ? workspaceDir.split(/[\\/]/).pop() : null;
+  return (
+    <div
+      style={{
+        padding: "48px 16px 24px",
+        textAlign: "center",
+        color: "var(--muted)",
+        fontFamily: "var(--font-sans, 'Geist', sans-serif)",
+      }}
+    >
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: 12,
+          margin: "0 auto 14px",
+          background: "linear-gradient(135deg, var(--accent), var(--violet))",
+          position: "relative",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            inset: 8,
+            borderRadius: 6,
+            background: "var(--bg)",
+          }}
+        />
+      </div>
+      <div style={{ fontSize: 18, fontWeight: 600, color: "var(--fg)", marginBottom: 4 }}>
+        {t("app.empty.welcome")}
+      </div>
+      <div style={{ fontSize: 12, marginBottom: 18 }}>
+        {wsLabel ? (
+          <>
+            {t("app.empty.currentWorkspace")}
+            <code style={{ fontFamily: "Geist Mono, monospace" }}>{wsLabel}</code>
+          </>
+        ) : (
+          t("app.empty.selectWorkspace")
+        )}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 8,
+          justifyContent: "center",
+          maxWidth: 540,
+          margin: "0 auto",
+        }}
+      >
+        {suggestions.map((s) => (
+          <button
+            key={s}
+            type="button"
+            className="btn"
+            style={{ fontSize: 11.5 }}
+            onClick={() => onPick(s)}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function NeedsSetupView({
+  workspaceDir,
+  onPickWorkspace,
+  model,
+  modelEndpoint,
+  oauthWaiting,
+  onOAuthBegin,
+  onSubmit,
+  onSaveOpenAIApiKey,
+  onSaveOllama,
+  ollamaBaseUrl,
+}: {
+  workspaceDir?: string;
+  onPickWorkspace: () => void;
+  model?: string;
+  /** Daemon-resolved endpoint info for the current model — the provider
+   *  authority for the wizard's preselected tab, never the model name. */
+  modelEndpoint?: ModelEndpointInfo;
+  oauthWaiting: boolean;
+  onOAuthBegin: () => void;
+  onSubmit: (key: string) => void;
+  onSaveOpenAIApiKey: (key: string) => void;
+  onSaveOllama: (modelId: string, baseUrl?: string) => void;
+  ollamaBaseUrl?: string;
+}) {
+  useLang();
+  const [key, setKey] = useState("");
+  const [ollamaModel, setOllamaModel] = useState("");
+  const [baseUrl, setBaseUrl] = useState(ollamaBaseUrl ?? "http://localhost:11434/v1");
+  // Preselect the tab for the daemon-RESOLVED provider (or the ollama/
+  // addressing scheme); a model name never implies its provider, so it never
+  // picks the tab. Unknown resolutions start on the neutral DeepSeek tab and
+  // the user chooses.
+  const [provider, setProvider] = useState<"deepseek" | "openai" | "ollama">(() =>
+    modelEndpoint?.provider === "openai"
+      ? "openai"
+      : modelEndpoint?.provider === "ollama" ||
+          (modelEndpoint === undefined && typeof model === "string" && model.startsWith("ollama/"))
+        ? "ollama"
+        : "deepseek",
+  );
+  const tabs: { id: "deepseek" | "openai" | "ollama"; label: string }[] = [
+    { id: "deepseek", label: t("app.setup.providerDeepSeek") },
+    { id: "openai", label: t("app.setup.providerOpenAI") },
+    { id: "ollama", label: t("app.setup.providerOllama") },
+  ];
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+        gap: 18,
+      }}
+    >
+      <div style={{ fontSize: 18, fontWeight: 600 }}>{t("app.setup.welcome")}</div>
+      <div style={{ fontSize: 12.5, color: "var(--muted)", maxWidth: 420, textAlign: "center" }}>
+        {provider === "openai"
+          ? t("app.setup.descriptionGpt")
+          : provider === "ollama"
+            ? t("app.setup.descriptionOllama")
+            : t("app.setup.description")}
+      </div>
+      <div className="setup-seg" style={{ width: "min(420px, 100%)" }}>
+        {tabs.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            data-on={provider === p.id}
+            onClick={() => setProvider(p.id)}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <div
+        style={{
+          width: "min(420px, 100%)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        <div className="setting-row" style={{ borderBottom: "none" }}>
+          <div className="l">
+            <div className="n">{t("app.setup.workspace")}</div>
+            <div className="h">{workspaceDir || t("app.setup.notSelected")}</div>
+          </div>
+          <button type="button" className="btn" onClick={onPickWorkspace}>
+            {t("app.setup.choose")}
+          </button>
+        </div>
+        {provider === "openai" && (
+          <button
+            type="button"
+            className="btn primary"
+            disabled={oauthWaiting}
+            onClick={onOAuthBegin}
+          >
+            {oauthWaiting ? t("settings.openaiWaiting") : t("settings.openaiSignIn")}
+          </button>
+        )}
+        {provider === "ollama" && (
+          <>
+            <input
+              className="field mono"
+              type="text"
+              value={ollamaModel}
+              onChange={(e) => setOllamaModel(e.target.value)}
+              placeholder={t("app.setup.ollamaModelPlaceholder")}
+              aria-label={t("app.setup.ollamaModelLabel")}
+              style={{ width: "100%" }}
+            />
+            <input
+              className="field mono"
+              type="text"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={t("app.setup.ollamaBaseUrlPlaceholder")}
+              aria-label={t("app.setup.ollamaBaseUrlLabel")}
+              style={{ width: "100%" }}
+            />
+            <button
+              type="button"
+              className="btn primary"
+              disabled={!ollamaModel.trim()}
+              onClick={() => onSaveOllama(ollamaModel.trim(), baseUrl.trim() || undefined)}
+            >
+              {t("app.setup.useOllama")}
+            </button>
+          </>
+        )}
+        {provider !== "ollama" && (
+          <input
+            className="field mono"
+            type="password"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder="sk-…"
+            style={{ width: "100%" }}
+          />
+        )}
+        {provider !== "ollama" && (
+          <button
+            type="button"
+            className="btn primary"
+            disabled={!key.trim()}
+            onClick={() =>
+              provider === "openai" ? onSaveOpenAIApiKey(key.trim()) : onSubmit(key.trim())
+            }
+          >
+            {provider === "openai" ? t("settings.apiKeySave") : t("app.setup.saveAndStart")}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function UpdateOverlay({
+  version,
+  currentVersion,
+  status,
+  progress,
+  onInstall,
+  onDismiss,
+}: {
+  version: string;
+  currentVersion: string;
+  status: "idle" | "installing" | "error";
+  progress: { downloaded: number; total: number | null } | null;
+  onInstall: () => void;
+  onDismiss: () => void;
+}) {
+  useLang();
+  const ratio =
+    progress?.total && progress.total > 0
+      ? Math.min(1, progress.downloaded / progress.total)
+      : null;
+  const statusText =
+    status === "error"
+      ? t("app.update.failed")
+      : status === "installing"
+        ? progress
+          ? ratio !== null
+            ? t("app.update.downloading", {
+                downloaded: formatBytes(progress.downloaded),
+                total: formatBytes(progress.total ?? 0),
+                pct: Math.round(ratio * 100),
+              })
+            : t("app.update.downloadingUnknown", {
+                downloaded: formatBytes(progress.downloaded),
+              })
+          : t("app.update.installing")
+        : t("app.update.clickToInstall");
+  return (
+    <div className="update-overlay" aria-live="polite">
+      <div className="plan-banner update-overlay-card">
+        <span className="ico">
+          <I.download size={14} />
+        </span>
+        <div className="body">
+          <div className="t">
+            {t("app.update.available", { current: currentVersion, latest: version })}
+          </div>
+          <div className="s">{statusText}</div>
+          {status === "installing" && ratio !== null ? (
+            <div className="meter-mini" aria-label="download progress">
+              <span style={{ width: `${Math.round(ratio * 100)}%` }} />
+            </div>
+          ) : null}
+        </div>
+        <div className="prog">
+          <button type="button" onClick={onInstall} disabled={status === "installing"}>
+            {t("app.update.install")}
+          </button>
+          <button type="button" onClick={onDismiss} disabled={status === "installing"}>
+            {t("app.update.later")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type TabMeta = {
+  /** Backend channel id for one independently running session agent. */
+  id: string;
+  workspaceDir?: string;
+  busy?: boolean;
+  session?: string;
+  /** Visual workspace-tab id shared by sibling session channels. */
+  group?: string;
+};
+
+/** Compare workspace dirs across separator flavor and trailing slashes.
+ *  Windows drive/UNC paths are case-insensitive; POSIX paths are not. */
+function normalizeWorkspacePath(p?: string): string {
+  const raw = p ?? "";
+  const normalized = raw.replace(/\\/g, "/").replace(/\/+$/, "");
+  const windowsPath =
+    raw.includes("\\") || /^[a-z]:\//i.test(normalized) || normalized.startsWith("//");
+  return windowsPath ? normalized.toLowerCase() : normalized;
+}
+
+export function App() {
+  const [tabs, setTabs] = useState<TabMeta[]>([]);
+  const [backendConnected, setBackendConnected] = useState(false);
+  const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
+  const timingTrackerRef = useRef<StartupTimingTracker>(new StartupTimingTracker());
+  const expectedTabsRef = useRef<Set<string> | null>(null);
+  const initializedTabsRef = useRef<Set<string>>(new Set());
+  const [activeTabId, setActiveTabId] = useState<string>("");
+  const [startupFailure, setStartupFailure] = useState<StartupFailureState | null>(null);
+  // App-global Ollama catalog — the backend fetches it once at launch and
+  // broadcasts it tabId-less, so every tab renders the same shared list
+  // instead of per-tab copies.
+  const [ollamaCatalog, setOllamaCatalog] = useState<{
+    models: string[];
+    /** Prefixed vision-capable ids (`ollama/llava`) confirmed by the daemon. */
+    visionModels: Set<string>;
+    error: string | null;
+    plan: string | null;
+    hiddenCount: number;
+  }>({ models: [], visionModels: new Set(), error: null, plan: null, hiddenCount: 0 });
+  const [opencodeCatalog, setOpencodeCatalog] = useState<{
+    models: string[];
+    visionModels: Set<string>;
+    error: string | null;
+  }>({ models: [], visionModels: new Set(), error: null });
+  const [startupRetryNonce, setStartupRetryNonce] = useState(0);
+  const dispatchersRef = useRef<Map<string, TabDispatcher>>(new Map());
+  const pendingEventsRef = useRef<Map<string, TabAction[]>>(new Map());
+  const pendingDeltasRef = useRef<Map<string, DeltaBatchItem[]>>(new Map());
+  // Per-tab sliding-window trackers for the sidebar's live tokens/second
+  // readout. Raw `model.delta` events feed these; a throttled tick snapshots
+  // them into `sessionRates` (keyed by session name) for the running rows.
+  const streamRatesRef = useRef<Map<string, StreamRateTracker>>(new Map());
+  const [sessionRates, setSessionRates] = useState<Map<string, number>>(new Map());
+  const rafScheduledRef = useRef(false);
+  const startupStderrRef = useRef<string[]>([]);
+  const tabsRef = useRef<TabMeta[]>([]);
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
+
+  // Mirror of activeTabId for listener closures — the startup effect must
+  // NOT re-run on every tab switch (it tears down and re-fires desktop_resync,
+  // which echoes $session_loaded and clobbers a live conversation). Listeners
+  // read the ref instead of the state value so they stay current without
+  // re-running the effect.
+  const activeTabIdRef = useRef(activeTabId);
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId;
+  }, [activeTabId]);
+
+  const requestOllamaModels = useCallback((force?: boolean) => {
+    rpcSend({ tabId: activeTabIdRef.current, cmd: "ollama_models_list", force }).catch((err) =>
+      console.error("ollama_models_list failed", err),
+    );
+  }, []);
+
+  const requestAntigravityModels = useCallback(() => {
+    rpcSend({
+      tabId: activeTabIdRef.current,
+      cmd: "antigravity_models_refresh",
+    }).catch((err) => console.error("antigravity_models_refresh failed", err));
+  }, []);
+
+  const requestOpencodeModels = useCallback((force?: boolean) => {
+    rpcSend({
+      tabId: activeTabIdRef.current,
+      cmd: "opencode_models_refresh",
+      force,
+    }).catch((err) => console.error("opencode_models_refresh failed", err));
+  }, []);
+
+  const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "installing" | "error">("idle");
+  const [updateProgress, setUpdateProgress] = useState<{
+    downloaded: number;
+    total: number | null;
+  } | null>(null);
+  const [currency, setCurrency] = useState<"CNY" | "USD">(() => {
+    const v = localStorage.getItem("reasonix.currency");
+    return v === "USD" ? "USD" : "CNY";
+  });
+  // Per-tab theme map — each tab keeps its own theme/style so switching tabs
+  // never mixes them up. Entries are seeded on $tab_opened and dropped on
+  // $tab_closed; the active tab's entry drives document.documentElement.
+  const [tabThemes, setTabThemes] = useState<Record<string, TabTheme>>({});
+  const [fontScale, setFontScale] = useState<FontScale>(() => {
+    const v = localStorage.getItem("reasonix.fontScale");
+    return isFontScale(v) ? v : FONT_SCALE.MEDIUM;
+  });
+  const [fontFamily, setFontFamily] = useState<FontFamily>(() => {
+    const v = localStorage.getItem("reasonix.fontFamily");
+    return isFontFamily(v) ? v : FONT_FAMILY.SANS;
+  });
+  const [customFontFamily, setCustomFontFamily] = useState<string>(() => {
+    return localStorage.getItem("reasonix.customFontFamily") ?? "";
+  });
+  const {
+    collapsed: sideCollapsed,
+    toggle: onToggleSide,
+    requireCollapsed: requireSideCollapsed,
+    releaseCollapsed: releaseSideCollapsed,
+  } = useAutoCollapse("reasonix.sideCollapsed");
+  const {
+    collapsed: ctxCollapsed,
+    toggle: onToggleCtx,
+    requireCollapsed: requireCtxCollapsed,
+    releaseCollapsed: releaseCtxCollapsed,
+  } = useAutoCollapse("reasonix.ctxCollapsed");
+
+  const { width: sideWidth, onMouseDown: onSideResizeDown } = useResizable("side", sideCollapsed);
+  const { width: ctxWidth, onMouseDown: onCtxResizeDown } = useResizable("ctx", ctxCollapsed);
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const visibleSide = sideCollapsed ? 0 : sideWidth;
+  const visibleCtx = ctxCollapsed ? 0 : ctxWidth;
+  const threadMaxWidth = getThreadMaxWidth({ viewportWidth, visibleSide, visibleCtx });
+
+  const activeTabTheme = activeTabId ? tabThemes[activeTabId] : undefined;
+
+  useEffect(() => {
+    // Chrome outside the per-tab .app subtree (update overlay, startup
+    // failure) follows the active tab's theme; each tab's own subtree is
+    // themed by its own data-theme attributes.
+    if (!activeTabTheme) return;
+    document.documentElement.dataset.theme = activeTabTheme.theme;
+    document.documentElement.dataset.themeStyle = activeTabTheme.themeStyle;
+  }, [activeTabTheme]);
+
+  // Sync --composer-max-width to .app (separate from inline style to avoid React override)
+  const composerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!composerRef.current) composerRef.current = document.querySelector(".app");
+    composerRef.current?.style.setProperty("--composer-max-width", `${threadMaxWidth}px`);
+  }, [threadMaxWidth]);
+
+  useEffect(() => {
+    let raf = 0;
+    let prevStage: ResponsiveStage | null = null;
+
+    const sync = () => {
+      raf = 0;
+      const width = window.innerWidth;
+      setViewportWidth(width);
+      const next = responsiveStage(width);
+      if (prevStage === next) return;
+      const prev = prevStage;
+      prevStage = next;
+
+      if (next === RESPONSIVE_STAGE.WIDE) {
+        releaseCtxCollapsed();
+        releaseSideCollapsed();
+      } else if (next === RESPONSIVE_STAGE.COMPACT) {
+        // Only force ctx collapse when entering compact from wider — coming
+        // from narrow, the user may have manually opened ctx and we keep that.
+        if (prev === null || prev === RESPONSIVE_STAGE.WIDE) requireCtxCollapsed();
+        releaseSideCollapsed();
+      } else {
+        requireCtxCollapsed();
+        requireSideCollapsed();
+      }
+    };
+
+    const onResize = () => {
+      if (raf) return;
+      raf = window.requestAnimationFrame(sync);
+    };
+
+    sync();
+    window.addEventListener("resize", onResize);
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [requireCtxCollapsed, releaseCtxCollapsed, requireSideCollapsed, releaseSideCollapsed]);
+
+  useEffect(() => {
+    // Chromium webview supports `zoom`; scales every px-based size without touching CSS rules.
+    document.documentElement.style.setProperty("zoom", String(FONT_SCALE_ZOOM[fontScale]));
+    localStorage.setItem("reasonix.fontScale", fontScale);
+  }, [fontScale]);
+
+  useEffect(() => {
+    const custom = customFontFamily.trim();
+    const stack =
+      fontFamily === FONT_FAMILY.CUSTOM && custom
+        ? custom
+        : (FONT_FAMILY_STACK[fontFamily] ?? FONT_FAMILY_STACK.sans);
+    document.documentElement.style.setProperty("--font-sans", stack);
+    localStorage.setItem("reasonix.fontFamily", fontFamily);
+    localStorage.setItem("reasonix.customFontFamily", customFontFamily);
+  }, [fontFamily, customFontFamily]);
+
+  useEffect(() => {
+    const onCur = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail === "CNY" || detail === "USD") setCurrency(detail);
+    };
+    window.addEventListener("reasonix:currency", onCur);
+    return () => window.removeEventListener("reasonix:currency", onCur);
+  }, []);
+
+  const deliverToTab = useCallback((tabId: string, action: TabAction) => {
+    const dispatch = dispatchersRef.current.get(tabId);
+    if (dispatch) {
+      dispatch(action);
+    } else {
+      const buf = pendingEventsRef.current.get(tabId) ?? [];
+      buf.push(action);
+      pendingEventsRef.current.set(tabId, buf);
+    }
+  }, []);
+
+  const registerDispatch = useCallback((tabId: string, d: TabDispatcher | null) => {
+    if (d) {
+      dispatchersRef.current.set(tabId, d);
+      const buf = pendingEventsRef.current.get(tabId);
+      if (buf && buf.length > 0) {
+        for (const action of buf) d(action);
+        pendingEventsRef.current.delete(tabId);
+      }
+    } else {
+      dispatchersRef.current.delete(tabId);
+    }
+  }, []);
+
+  const markWorkspaceInitialized = useCallback((tabId: string) => {
+    initializedTabsRef.current.add(tabId);
+    const expected = expectedTabsRef.current;
+    const remaining = expected
+      ? Array.from(expected).filter((id) => !initializedTabsRef.current.has(id))
+      : [];
+    timingTrackerRef.current.mark("workspace_initialized_ui_acknowledged", {
+      tabId,
+      details: {
+        totalExpected: expected?.size ?? null,
+        initializedCount: initializedTabsRef.current.size,
+        remainingTabs: remaining,
+      },
+    });
+    if (areWorkspacesLoaded(expectedTabsRef.current, initializedTabsRef.current)) {
+      timingTrackerRef.current.finish("all_workspaces_initialized", {
+        tabs: Array.from(initializedTabsRef.current),
+      });
+      setLoadingWorkspaces(false);
+    }
+  }, []);
+
+  const retryStartup = useCallback(() => {
+    setStartupRetryNonce((n) => n + 1);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const update = await check();
+        if (!cancelled && update) setPendingUpdate(update);
+      } catch (err) {
+        console.debug("[reasonix frontend] updater check unavailable", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const installUpdate = useCallback(async () => {
+    if (!pendingUpdate) return;
+    setUpdateStatus("installing");
+    setUpdateProgress(null);
+    try {
+      await pendingUpdate.downloadAndInstall((evt) => {
+        if (evt.event === "Started") {
+          setUpdateProgress({ downloaded: 0, total: evt.data.contentLength ?? null });
+        } else if (evt.event === "Progress") {
+          setUpdateProgress((p) =>
+            p ? { ...p, downloaded: p.downloaded + evt.data.chunkLength } : p,
+          );
+        } else if (evt.event === "Finished") {
+          setUpdateProgress((p) => (p ? { ...p, downloaded: p.total ?? p.downloaded } : p));
+        }
+      });
+      await relaunch();
+    } catch (err) {
+      console.error("update failed", err);
+      setUpdateStatus("error");
+    }
+  }, [pendingUpdate]);
+
+  // Startup setup: spawn the RPC daemon, wire tab/settings listeners, retry via nonce.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: startupRetryNonce is a nonce re-run trigger (retryStartup bumps it; never read in the body) — activeTabId is mirrored into activeTabIdRef so listeners stay current without re-running setup (and re-firing desktop_resync) on every tab switch
+  useEffect(() => {
+    let cancelled = false;
+    const cleanups: Array<() => void> = [];
+
+    const flushDeltas = () => {
+      rafScheduledRef.current = false;
+      for (const [tabId, items] of pendingDeltasRef.current) {
+        if (items.length === 0) continue;
+        deliverToTab(tabId, { t: "batch_delta", items });
+        pendingDeltasRef.current.set(tabId, []);
+      }
+    };
+    const scheduleFlush = () => {
+      if (rafScheduledRef.current || cancelled) return;
+      rafScheduledRef.current = true;
+      requestAnimationFrame(flushDeltas);
+    };
+    const flushTabDeltas = (tabId: string) => {
+      const bucket = pendingDeltasRef.current.get(tabId);
+      if (bucket && bucket.length > 0) {
+        deliverToTab(tabId, { t: "batch_delta", items: bucket });
+        pendingDeltasRef.current.set(tabId, []);
+      }
+    };
+    // Drop every per-tab ref for a tab that no longer exists — one place, so a
+    // newly-added per-tab map can't be forgotten in one of the two close paths.
+    const forgetTab = (tabId: string) => {
+      dispatchersRef.current.delete(tabId);
+      pendingEventsRef.current.delete(tabId);
+      pendingDeltasRef.current.delete(tabId);
+      streamRatesRef.current.delete(tabId);
+    };
+
+    const setup = async () => {
+      const tracker = new StartupTimingTracker();
+      timingTrackerRef.current = tracker;
+      tracker.mark("setup_started");
+      startupStderrRef.current = [];
+      setStartupFailure(null);
+      setLoadingWorkspaces(true);
+      expectedTabsRef.current = null;
+      initializedTabsRef.current.clear();
+      const subs = await Promise.all([
+        listen<{ data: string }>("rpc:event", (e) => {
+          try {
+            const ev = JSON.parse(e.payload.data) as IncomingEvent;
+            const tabId = ev.tabId;
+
+            if (ev.type === "$connected") {
+              tracker.mark("backend_connected");
+              setBackendConnected(true);
+              return;
+            }
+
+            if (ev.type === "$diagnostic") {
+              const diagnostic = ev as DesktopDiagnosticEvent & { tabId?: string };
+              tracker.mark(`diagnostic:${diagnostic.event}`, {
+                tabId: diagnostic.tabId,
+                details: {
+                  source: diagnostic.source,
+                  level: diagnostic.level,
+                  ...(diagnostic.details ?? {}),
+                },
+              });
+              const prefix = `[reasonix ${diagnostic.source}] ${diagnostic.event}`;
+              const safeMessage = diagnostic.message
+                ? redactDiagnosticText(diagnostic.message)
+                : undefined;
+              const payload = {
+                ...diagnostic,
+                ...(safeMessage ? { message: safeMessage } : {}),
+                ...(diagnostic.details
+                  ? {
+                      details: redactDiagnosticValue(diagnostic.details) as Record<string, unknown>,
+                    }
+                  : {}),
+                ...(diagnostic.tabId ? { tabId: diagnostic.tabId } : {}),
+              };
+              if (safeMessage) payload.message = safeMessage;
+              if (diagnostic.details) {
+                payload.details = redactDiagnosticValue(diagnostic.details) as Record<
+                  string,
+                  unknown
+                >;
+              }
+              if (diagnostic.level === "error") console.error(prefix, payload);
+              else if (diagnostic.level === "warn") console.warn(prefix, payload);
+              else if (diagnostic.level === "info") console.info(prefix, payload);
+              else console.debug(prefix, payload);
+              return;
+            }
+
+            if (ev.type === "$tab_opened" && tabId) {
+              expectedTabsRef.current?.add(tabId);
+              tracker.mark("tab_opened", {
+                tabId,
+                details: {
+                  workspaceDir: ev.workspaceDir,
+                  session: ev.activeSession ?? ev.sessions?.[0] ?? null,
+                  active: ev.active ?? false,
+                },
+              });
+              setTabs((prev) => {
+                const session = ev.activeSession ?? ev.sessions?.[0];
+                const idx = prev.findIndex((t) => t.id === tabId);
+                if (idx === -1) {
+                  return [
+                    ...prev,
+                    { id: tabId, workspaceDir: ev.workspaceDir, session, group: ev.groupId },
+                  ];
+                }
+                // Merge so a workspace switch / regroup updates the existing tab.
+                const merged: TabMeta = {
+                  ...prev[idx],
+                  workspaceDir: ev.workspaceDir,
+                  session: session ?? prev[idx]!.session,
+                  group: ev.groupId ?? prev[idx]!.group,
+                };
+                const copy = prev.slice();
+                copy[idx] = merged;
+                return copy;
+              });
+              // Seed the tab's own theme: its stored keys first, then the
+              // legacy global keys (migration), then inherit whatever the
+              // active tab was showing. Persist immediately so an inherited
+              // theme survives restarts.
+              setTabThemes((prev) => {
+                if (prev[tabId]) return prev;
+                const stored = readTabTheme(localStorage, tabId);
+                const inherit = prev[activeTabIdRef.current] ?? DEFAULT_TAB_THEME;
+                const next = stored ?? inherit;
+                writeTabTheme(localStorage, tabId, next);
+                return { ...prev, [tabId]: next };
+              });
+              // Focus the tab the backend marked active (user-opened, or the
+              // restored focused tab); otherwise keep focus, but make sure
+              // *some* tab is active during a multi-tab restore.
+              setActiveTabId((prev) => (ev.active || !prev ? tabId : prev));
+              return;
+            }
+            if (ev.type === "$tab_closed" && tabId) {
+              tracker.mark("tab_closed", { tabId });
+              const remaining = tabsRef.current.filter((t) => t.id !== tabId);
+              // Update the mirror synchronously: closing one visual workspace
+              // emits one event per child channel, often in a single React
+              // batch. A stale ref could otherwise re-focus an already-closed
+              // sibling between those events.
+              tabsRef.current = remaining;
+              setTabs(remaining);
+              setActiveTabId((prev) => (prev === tabId ? (remaining[0]?.id ?? "") : prev));
+              setTabThemes((prev) => {
+                if (!prev[tabId]) return prev;
+                const { [tabId]: _dropped, ...rest } = prev;
+                clearTabTheme(localStorage, tabId);
+                return rest;
+              });
+              forgetTab(tabId);
+              expectedTabsRef.current?.delete(tabId);
+              if (areWorkspacesLoaded(expectedTabsRef.current, initializedTabsRef.current)) {
+                setLoadingWorkspaces(false);
+              }
+              return;
+            }
+
+            if (ev.type === "$tabs_snapshot") {
+              // Authoritative tab set (backend emitted it at the END of a
+              // desktop_resync). Replace the tab list wholesale so tabs left
+              // over from an older backend generation (whose ids were
+              // re-minted after a restart) get pruned instead of living on
+              // as ghosts that route events to the wrong tab.
+              const ids = new Set(ev.tabs.map((t) => t.id));
+              expectedTabsRef.current = ids;
+              tracker.mark("tabs_snapshot_received", {
+                details: {
+                  tabCount: ids.size,
+                  tabIds: Array.from(ids),
+                  initializedCount: initializedTabsRef.current.size,
+                },
+              });
+              if (areWorkspacesLoaded(ids, initializedTabsRef.current)) {
+                tracker.finish("tabs_snapshot_already_initialized", {
+                  tabs: Array.from(ids),
+                });
+                setLoadingWorkspaces(false);
+              }
+              setTabs((prev) => {
+                const busyById = new Map(prev.map((t) => [t.id, t.busy]));
+                return ev.tabs.map((t) => ({
+                  id: t.id,
+                  workspaceDir: t.workspaceDir,
+                  busy: busyById.get(t.id),
+                  session: t.activeSession,
+                  group: t.groupId,
+                }));
+              });
+              for (const id of Array.from(dispatchersRef.current.keys())) {
+                if (!ids.has(id)) forgetTab(id);
+              }
+              setTabThemes((prev) => {
+                let next = prev;
+                for (const id of Object.keys(prev)) {
+                  if (!ids.has(id)) {
+                    const { [id]: _dropped, ...rest } = next;
+                    next = rest;
+                    clearTabTheme(localStorage, id);
+                  }
+                }
+                return next;
+              });
+              setActiveTabId((prev) =>
+                ids.has(prev) ? prev : (ev.tabs.find((t) => t.active)?.id ?? ""),
+              );
+              return;
+            }
+
+            if (ev.type === "model.delta" && tabId) {
+              // Feed every provider-output channel into the live rate tracker
+              // (content, reasoning, and tool-call arguments all consume tokens).
+              const rateTracker = streamRatesRef.current.get(tabId) ?? new StreamRateTracker();
+              rateTracker.record(ev.text.length);
+              streamRatesRef.current.set(tabId, rateTracker);
+              if (ev.channel === "content" || ev.channel === "reasoning") {
+                const bucket = pendingDeltasRef.current.get(tabId) ?? [];
+                bucket.push({ turn: ev.turn, channel: ev.channel, text: ev.text });
+                pendingDeltasRef.current.set(tabId, bucket);
+                scheduleFlush();
+                return;
+              }
+            }
+
+            // A completed model call closes its stream: drop the window so the
+            // next call's rate ramps from zero instead of averaging this one's
+            // tail across the tool-execution gap.
+            if (ev.type === "model.final" && tabId) {
+              streamRatesRef.current.get(tabId)?.reset();
+            }
+
+            if (ev.type === "$ready" && tabId) {
+              tracker.mark("tab_runtime_ready", { tabId });
+            }
+
+            if (ev.type === "$needs_setup" && tabId) {
+              tracker.mark("tab_needs_setup", { tabId, details: { reason: ev.reason } });
+            }
+
+            if (ev.type === "$settings" && tabId) {
+              tracker.mark("tab_settings_loaded", {
+                tabId,
+                details: { workspaceDir: ev.workspaceDir, model: ev.model },
+              });
+              setTabs((prev) =>
+                prev.map((t) => (t.id === tabId ? { ...t, workspaceDir: ev.workspaceDir } : t)),
+              );
+            }
+
+            // Track each channel's session so the sidebar can dot every session
+            // that has a live agent, across all tabs on a workspace.
+            if (ev.type === "$session_loaded" && tabId) {
+              tracker.mark("session_loaded", {
+                tabId,
+                details: {
+                  name: ev.name,
+                  messagesCount: ev.messages.length,
+                  resync: Boolean(ev.resync),
+                },
+              });
+              setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, session: ev.name } : t)));
+            }
+
+            // Side effect only — the reducer tracks oauthWaiting from the same
+            // event (and clears it on $error with an OAuth message / signed-in
+            // $settings), so the event still falls through to deliverToTab.
+            if (ev.type === "oauth_begin_result") {
+              void openUrl(ev.url).catch((err) => console.error("openUrl failed", err));
+            }
+
+            if (ev.type === "gemini_oauth_begin_result") {
+              void openUrl(ev.url).catch((err) => console.error("openUrl failed", err));
+            }
+
+            if (ev.type === "$jobs") {
+              for (const id of dispatchersRef.current.keys()) {
+                deliverToTab(id, { t: "incoming", event: ev });
+              }
+              return;
+            }
+
+            // App-global Ollama catalog — the backend broadcasts it tabId-less
+            // (it depends on global config, not on the tab), so it updates
+            // shared state here instead of any single tab's reducer.
+            if (ev.type === "$ollama_models") {
+              setOllamaCatalog((prev) => {
+                const keepPrevious = ev.models.length === 0 && Boolean(ev.error);
+                return {
+                  models: keepPrevious && prev.models.length > 0 ? prev.models : ev.models,
+                  visionModels:
+                    keepPrevious && prev.visionModels.size > 0
+                      ? prev.visionModels
+                      : new Set((ev.visionModels ?? []).map((id) => `ollama/${id}`)),
+                  error: ev.error ?? null,
+                  plan: keepPrevious ? (ev.plan ?? prev.plan) : (ev.plan ?? null),
+                  hiddenCount: keepPrevious
+                    ? (ev.hiddenCount ?? prev.hiddenCount)
+                    : (ev.hiddenCount ?? 0),
+                };
+              });
+              return;
+            }
+
+            if (ev.type === "$opencode_models") {
+              setOpencodeCatalog({
+                models: ev.models,
+                visionModels: new Set(ev.visionModels ?? []),
+                error: ev.error ?? null,
+              });
+              return;
+            }
+
+            if (ev.type === "$sessions" && tabId) {
+              tracker.mark("sessions_list_received", {
+                tabId,
+                details: { count: ev.items.length, epoch: ev.epoch, revision: ev.revision },
+              });
+            }
+
+            if (ev.type === "$workspace_initialized" && tabId) {
+              tracker.mark("backend_workspace_initialized", {
+                tabId,
+                details: { revision: ev.revision },
+              });
+            }
+
+            const target = tabId;
+            if (target) {
+              flushTabDeltas(target);
+              if (ev.type === "$mention_results") {
+                deliverToTab(target, {
+                  t: "mention_results",
+                  results: { nonce: ev.nonce, query: ev.query, results: ev.results },
+                });
+                return;
+              }
+              if (ev.type === "$mention_preview") {
+                deliverToTab(target, {
+                  t: "mention_preview",
+                  preview: {
+                    nonce: ev.nonce,
+                    path: ev.path,
+                    head: ev.head,
+                    totalLines: ev.totalLines,
+                  },
+                });
+                return;
+              }
+              deliverToTab(target, { t: "incoming", event: ev });
+            }
+          } catch (err) {
+            console.error("[reasonix frontend] bad rpc:event line", {
+              error: err,
+              payloadChars: e.payload.data.length,
+            });
+          }
+        }),
+        listen<{ data: string }>("rpc:stderr", (e) => {
+          startupStderrRef.current = [...startupStderrRef.current, e.payload.data].slice(-12);
+          setStartupFailure((prev) =>
+            prev
+              ? coerceStartupFailure(
+                  prev.details[0] ?? t("app.startupFailedUnknown"),
+                  startupStderrRef.current,
+                )
+              : prev,
+          );
+          console.warn("[reasonix frontend] daemon stderr", {
+            line: e.payload.data,
+            lineChars: e.payload.data.length,
+          });
+        }),
+        listen<{ code: number | null }>("rpc:exit", (e) => {
+          tracker.fail("rpc_exit", { code: e.payload.code });
+          setBackendConnected(false);
+          setLoadingWorkspaces(false);
+          for (const tabId of dispatchersRef.current.keys()) flushTabDeltas(tabId);
+          if (dispatchersRef.current.size === 0) {
+            const exitError = new Error(`reasonix exited (code ${e.payload.code ?? "?"})`);
+            console.error("[reasonix frontend] daemon exited", {
+              code: e.payload.code,
+              stderrLines: startupStderrRef.current.length,
+            });
+            setStartupFailure(coerceStartupFailure(exitError, startupStderrRef.current));
+          }
+          for (const dispatch of dispatchersRef.current.values()) {
+            dispatch({ t: "rpc_exit", code: e.payload.code });
+          }
+        }),
+      ]);
+      if (cancelled) {
+        for (const u of subs) u();
+        return;
+      }
+      cleanups.push(...subs);
+      try {
+        tracker.mark("rpc_spawn_invoked");
+        await invoke("rpc_spawn");
+        tracker.mark("rpc_spawn_resolved");
+        // WebView reload (DevTools F5, host respawn) keeps the Node child
+        // alive but loses every $tab_opened / $settings / $needs_setup that
+        // already fired. Ask the desktop server to re-emit them.
+        if (!cancelled) {
+          tracker.mark("desktop_resync_sent");
+          await rpcSend({ cmd: "desktop_resync" });
+          tracker.mark("desktop_resync_acknowledged");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          tracker.fail("rpc_spawn_failed", { error: String(err) });
+          setLoadingWorkspaces(false);
+          setStartupFailure(coerceStartupFailure(err, startupStderrRef.current));
+          console.error("rpc_spawn failed", err);
+        }
+      }
+    };
+    void setup();
+    return () => {
+      cancelled = true;
+      for (const c of cleanups) c();
+    };
+  }, [deliverToTab, startupRetryNonce]);
+
+  // Tell the backend which tab is focused so a restart can reopen on it (#1244).
+  useEffect(() => {
+    if (!activeTabId) return;
+    rpcSend({ cmd: "tab_activate", tabId: activeTabId }).catch((err) => {
+      console.error("[reasonix frontend] tab_activate failed", {
+        tabId: activeTabId,
+        error: err,
+      });
+    });
+  }, [activeTabId]);
+
+  // Tracks each tab's running-agent flag so the tab dot can show how many
+  // agents are active in it. Every mounted TabRuntime reports its own busy.
+  const reportTabBusy = useCallback((tabId: string, busy: boolean) => {
+    // A tab that stopped running has no live stream — drop its tracker so the
+    // next turn can't read a stale window.
+    if (!busy) streamRatesRef.current.delete(tabId);
+    setTabs((prev) => {
+      let changed = false;
+      const next = prev.map((t) => {
+        if (t.id !== tabId || t.busy === busy) return t;
+        changed = true;
+        return { ...t, busy };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
+  // Snapshot the per-tab rate trackers into `sessionRates` (keyed by session
+  // name) while any agent is running. Throttled to ~4Hz so the sidebar
+  // re-renders at a readable cadence instead of once per delta. When nothing is
+  // running the map clears, so the readout disappears along with the dot.
+  const anyBusy = tabs.some((t) => t.busy);
+  useEffect(() => {
+    if (!anyBusy) {
+      setSessionRates((prev) => (prev.size === 0 ? prev : new Map()));
+      return;
+    }
+    const tick = () => {
+      const now = Date.now();
+      const next = new Map<string, number>();
+      for (const t of tabsRef.current) {
+        const session = runningTabSession(t);
+        if (session) next.set(session, streamRatesRef.current.get(t.id)?.tokensPerSecond(now) ?? 0);
+      }
+      setSessionRates((prev) => {
+        if (prev.size !== next.size) return next;
+        for (const [k, v] of next) if (prev.get(k) !== v) return next;
+        return prev;
+      });
+    };
+    tick();
+    const id = setInterval(tick, 400);
+    return () => clearInterval(id);
+  }, [anyBusy]);
+
+  const openTab = useCallback(() => {
+    // New tab — defaults to the local Reasonix+ installation (a fresh group).
+    rpcSend({ tabId: activeTabIdRef.current, cmd: "tab_open" }).catch((err) => {
+      const target = activeTabIdRef.current || tabsRef.current[0]?.id;
+      if (target) {
+        deliverToTab(target, {
+          t: "push_notice",
+          text: `Failed to open new tab: ${messageOf(err)}`,
+          severity: "error",
+        });
+      }
+    });
+  }, [deliverToTab]);
+
+  const closeTab = useCallback(
+    (id: string) => {
+      if (groupTabsByWorkspace(tabs).length <= 1) return;
+      rpcSend({ cmd: "tab_close", tabId: id }).catch((err) => {
+        deliverToTab(id, {
+          t: "push_notice",
+          text: `Failed to close tab: ${messageOf(err)}`,
+          severity: "error",
+        });
+      });
+    },
+    [tabs, deliverToTab],
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (loadingWorkspaces) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && (e.key === "t" || e.key === "T")) {
+        e.preventDefault();
+        openTab();
+      } else if (mod && (e.key === "w" || e.key === "W") && activeTabId) {
+        if (groupTabsByWorkspace(tabs).length <= 1) return;
+        e.preventDefault();
+        closeTab(activeTabId);
+      } else if (mod && e.key === "Tab") {
+        const workspaceTabs = workspaceTabRepresentatives(tabs, activeTabId);
+        if (workspaceTabs.length <= 1) return;
+        e.preventDefault();
+        const idx = workspaceTabs.findIndex((tab) => tab.id === activeTabId);
+        const next = e.shiftKey
+          ? (idx - 1 + workspaceTabs.length) % workspaceTabs.length
+          : (idx + 1) % workspaceTabs.length;
+        const target = workspaceTabs[next];
+        if (target) setActiveTabId(target.id);
+      } else if (mod && (e.key === "b" || e.key === "B")) {
+        if (e.altKey) {
+          e.preventDefault();
+          onToggleCtx();
+        } else {
+          e.preventDefault();
+          onToggleSide();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [openTab, closeTab, activeTabId, tabs, onToggleCtx, onToggleSide, loadingWorkspaces]);
+
+  const onSetThemeStyle = useCallback(
+    (nextStyle: ThemeStyle) => {
+      setTabThemes((prev) => {
+        const cur = prev[activeTabId];
+        if (!cur) return prev;
+        const next: TabTheme = { theme: themeForStyle(nextStyle), themeStyle: nextStyle };
+        writeTabTheme(localStorage, activeTabId, next);
+        return { ...prev, [activeTabId]: next };
+      });
+    },
+    [activeTabId],
+  );
+
+  const onToggleCurrency = useCallback(() => {
+    setCurrency((c) => {
+      const next = c === "CNY" ? "USD" : "CNY";
+      localStorage.setItem("reasonix.currency", next);
+      window.dispatchEvent(new CustomEvent("reasonix:currency", { detail: next }));
+      return next;
+    });
+  }, []);
+
+  const onRemoveWorkspace = useCallback((path: string) => {
+    for (const d of dispatchersRef.current.values()) {
+      d({ t: "workspace_recent_removed", path });
+    }
+    rpcSend({ cmd: "workspace_recent_remove", path }).catch((err) =>
+      console.error("[reasonix frontend] workspace_recent_remove failed", err),
+    );
+  }, []);
+
+  if (startupFailure && tabs.length === 0) {
+    return <StartupFailure details={startupFailure.details} onRetry={retryStartup} />;
+  }
+
+  return (
+    <>
+      {loadingWorkspaces ? <StartupLoadingOverlay /> : null}
+      {tabs.map((t) => (
+        <TabRuntime
+          key={t.id}
+          tabId={t.id}
+          active={t.id === activeTabId}
+          backendConnected={backendConnected}
+          currency={currency}
+          registerDispatch={registerDispatch}
+          onWorkspaceInitialized={markWorkspaceInitialized}
+          onNewTab={openTab}
+          onBusyChange={reportTabBusy}
+          sessionRates={sessionRates}
+          theme={tabThemes[t.id]?.theme ?? DEFAULT_TAB_THEME.theme}
+          themeStyle={tabThemes[t.id]?.themeStyle ?? DEFAULT_TAB_THEME.themeStyle}
+          onSetThemeStyle={onSetThemeStyle}
+          fontScale={fontScale}
+          onSetFontScale={setFontScale}
+          fontFamily={fontFamily}
+          onSetFontFamily={setFontFamily}
+          customFontFamily={customFontFamily}
+          onSetCustomFontFamily={setCustomFontFamily}
+          sideCollapsed={sideCollapsed}
+          ctxCollapsed={ctxCollapsed}
+          sideWidth={sideWidth}
+          ctxWidth={ctxWidth}
+          threadMaxWidth={threadMaxWidth}
+          onSideResizeDown={onSideResizeDown}
+          onCtxResizeDown={onCtxResizeDown}
+          onToggleSide={onToggleSide}
+          onToggleCtx={onToggleCtx}
+          onToggleCurrency={onToggleCurrency}
+          ollamaModels={ollamaCatalog.models}
+          ollamaModelsError={ollamaCatalog.error}
+          ollamaPlan={ollamaCatalog.plan}
+          ollamaHiddenCount={ollamaCatalog.hiddenCount}
+          ollamaVisionModels={ollamaCatalog.visionModels}
+          onRefreshOllamaModels={requestOllamaModels}
+          onRefreshAntigravityModels={requestAntigravityModels}
+          opencodeModels={opencodeCatalog.models}
+          opencodeModelsError={opencodeCatalog.error}
+          opencodeVisionModels={opencodeCatalog.visionModels}
+          onRefreshOpencodeModels={requestOpencodeModels}
+          tabsList={tabs}
+          activeTabId={activeTabId}
+          setActiveTabId={setActiveTabId}
+          onRemoveWorkspace={onRemoveWorkspace}
+        />
+      ))}
+      {pendingUpdate ? (
+        <UpdateOverlay
+          version={pendingUpdate.version}
+          currentVersion={pendingUpdate.currentVersion}
+          status={updateStatus}
+          progress={updateProgress}
+          onInstall={installUpdate}
+          onDismiss={() => setPendingUpdate(null)}
+        />
+      ) : null}
+    </>
+  );
+}

@@ -1,0 +1,273 @@
+/** Configures Playwright MCP browser connections. The extension comes from the
+ *  Chrome Web Store; no bundled copy ships, so the base install stays lightweight. */
+
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type {
+  PlaywrightExtensionBrowser,
+  PlaywrightMcpConnectionMode,
+} from "@reasonix/core-utils/desktop-protocol";
+import type { McpServerSpec } from "./spec.js";
+
+/** Official Chrome Web Store listing — "Playwright Extension" (Microsoft, Apache-2.0). */
+export const PLAYWRIGHT_EXTENSION_STORE_URL =
+  "https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm";
+
+/** @playwright/mcp CLI flag enabling the extension-relay transport. */
+export const PLAYWRIGHT_EXTENSION_ARG = "--extension";
+/** Env var carrying the per-profile relay token — set it to skip the extension's
+ *  per-connection approval dialog (the token is shown in that dialog). */
+export const PLAYWRIGHT_EXTENSION_TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN";
+export const PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT_ENV = "PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT";
+export const DEFAULT_PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT_MS = 10 * 60 * 1000;
+export const PLAYWRIGHT_DOWNLOAD_HOST_ENV = "PLAYWRIGHT_DOWNLOAD_HOST";
+/** Official Playwright browser-build endpoint. */
+export const DEFAULT_PLAYWRIGHT_DOWNLOAD_HOST = "https://cdn.playwright.dev";
+/** Reasonix+-operated caching mirror used only after the official endpoint fails. */
+export const PLAYWRIGHT_BACKUP_DOWNLOAD_HOST = "https://tf2stats.r60d.xyz/playwright";
+export const PLAYWRIGHT_DOWNLOAD_SOURCES = [
+  { source: "official", host: DEFAULT_PLAYWRIGHT_DOWNLOAD_HOST },
+  { source: "backup", host: PLAYWRIGHT_BACKUP_DOWNLOAD_HOST },
+] as const;
+export type PlaywrightDownloadSource = (typeof PLAYWRIGHT_DOWNLOAD_SOURCES)[number];
+
+export async function installFromPlaywrightDownloadSources(
+  install: (download: PlaywrightDownloadSource) => Promise<string | null>,
+): Promise<{ ok: boolean; failures: string[] }> {
+  const failures: string[] = [];
+  for (const download of PLAYWRIGHT_DOWNLOAD_SOURCES) {
+    const failure = await install(download);
+    if (failure === null) return { ok: true, failures };
+    failures.push(`${download.source} source (${download.host}): ${failure}`);
+  }
+  return { ok: false, failures };
+}
+
+const CONNECTION_VALUE_ARGS = new Set([
+  "--browser",
+  "--cdp-endpoint",
+  "--profile-dir-name",
+  "--user-data-dir",
+]);
+export const PLAYWRIGHT_MANAGED_BROWSERS = ["chrome", "firefox", "webkit", "msedge"] as const;
+const MANAGED_MODES = new Set<PlaywrightMcpConnectionMode>(PLAYWRIGHT_MANAGED_BROWSERS);
+
+/** Relative to the MCP server cwd, which Reasonix+ pins to the active workspace. */
+export function playwrightWorkspaceProfileDir(
+  browser: (typeof PLAYWRIGHT_MANAGED_BROWSERS)[number],
+): string {
+  return `.reasonix/playwright/profiles/${browser}`;
+}
+
+export function isPlaywrightManagedBrowser(
+  value: unknown,
+): value is (typeof PLAYWRIGHT_MANAGED_BROWSERS)[number] {
+  return typeof value === "string" && MANAGED_MODES.has(value as PlaywrightMcpConnectionMode);
+}
+
+/** Compute the base directory where Playwright downloads and caches browser builds. */
+export function resolvePlaywrightBrowsersDir(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.PLAYWRIGHT_BROWSERS_PATH) {
+    return env.PLAYWRIGHT_BROWSERS_PATH;
+  }
+  if (process.platform === "win32") {
+    const localAppData = env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
+    return join(localAppData, "ms-playwright");
+  }
+  if (process.platform === "darwin") {
+    return join(homedir(), "Library", "Caches", "ms-playwright");
+  }
+  const xdgCache = env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
+  return join(xdgCache, "ms-playwright");
+}
+
+/** Check whether the required browser binary exists in Playwright's local store. */
+export function isPlaywrightBrowserInstalled(
+  browser: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!isPlaywrightManagedBrowser(browser)) return false;
+  // Chrome and Edge use system channels; no local Playwright build download required.
+  if (browser === "chrome" || browser === "msedge") return true;
+
+  const baseDir = resolvePlaywrightBrowsersDir(env);
+  if (!existsSync(baseDir)) return false;
+  try {
+    const entries = readdirSync(baseDir);
+    const prefix = `${browser}-`;
+    return entries.some((entry) => {
+      if (!entry.startsWith(prefix)) return false;
+      const full = join(baseDir, entry);
+      return existsSync(full);
+    });
+  } catch {
+    return false;
+  }
+}
+
+export function playwrightBrowserInstallArgs(
+  browser: unknown,
+  packageId = "@playwright/mcp",
+): string[] {
+  if (!isPlaywrightManagedBrowser(browser)) throw new Error("unsupported managed browser");
+  return ["-y", packageId, "install-browser", browser];
+}
+
+export function playwrightBrowserInstallEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  downloadHost = DEFAULT_PLAYWRIGHT_DOWNLOAD_HOST,
+): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    [PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT_ENV]: String(
+      DEFAULT_PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT_MS,
+    ),
+    [PLAYWRIGHT_DOWNLOAD_HOST_ENV]: downloadHost,
+  };
+}
+
+export interface PlaywrightDownloadProgress {
+  downloadedBytes: number;
+  totalBytes: number;
+  percent: number;
+}
+
+const PLAYWRIGHT_PROGRESS_LINE = /\|[^\r\n]*\|\s*(\d{1,3})%\s+of\s+([\d.]+)\s+MiB/i;
+
+export function parsePlaywrightDownloadProgress(line: string): PlaywrightDownloadProgress | null {
+  const match = line.match(PLAYWRIGHT_PROGRESS_LINE);
+  if (!match) return null;
+  const percent = Number(match[1]);
+  const totalMiB = Number(match[2]);
+  if (!Number.isFinite(percent) || percent < 0 || percent > 100 || !Number.isFinite(totalMiB)) {
+    return null;
+  }
+  const totalBytes = Math.round(totalMiB * 1024 * 1024);
+  return {
+    downloadedBytes: Math.round((totalBytes * percent) / 100),
+    totalBytes,
+    percent,
+  };
+}
+
+export function createPlaywrightProgressParser(
+  onProgress: (progress: PlaywrightDownloadProgress) => void,
+): { push: (chunk: Buffer | string) => void; flush: () => void } {
+  let buffered = "";
+  const processLine = (line: string) => {
+    const progress = parsePlaywrightDownloadProgress(line);
+    if (progress) onProgress(progress);
+  };
+  return {
+    push(chunk) {
+      buffered += String(chunk);
+      const lines = buffered.split(/\r?\n/);
+      buffered = lines.pop() ?? "";
+      for (const line of lines) processLine(line);
+    },
+    flush() {
+      if (buffered) processLine(buffered);
+      buffered = "";
+    },
+  };
+}
+
+/** Read the `--browser`/`--browser=` value from a Playwright MCP argv, if any. */
+function browserArg(args: string[]): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    const value = arg === "--browser" ? args[index + 1] : arg.match(/^--browser=(.+)$/)?.[1];
+    if (value) return value;
+  }
+  return undefined;
+}
+
+/** Parse Reasonix+'s supported connection modes from a Playwright MCP argv. */
+export function parsePlaywrightConnection(args: string[]): {
+  mode: PlaywrightMcpConnectionMode;
+  cdpEndpoint?: string;
+  extensionBrowser?: PlaywrightExtensionBrowser;
+} {
+  if (args.includes(PLAYWRIGHT_EXTENSION_ARG)) {
+    return {
+      mode: "extension",
+      extensionBrowser: browserArg(args) === "msedge" ? "msedge" : "chrome",
+    };
+  }
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    const cdpEndpoint =
+      arg === "--cdp-endpoint" ? args[index + 1] : arg.match(/^--cdp-endpoint=(.+)$/)?.[1];
+    if (cdpEndpoint) return { mode: "cdp", cdpEndpoint };
+    const browser = arg === "--browser" ? args[index + 1] : arg.match(/^--browser=(.+)$/)?.[1];
+    if (browser && MANAGED_MODES.has(browser as PlaywrightMcpConnectionMode)) {
+      return { mode: browser as PlaywrightMcpConnectionMode };
+    }
+  }
+  return { mode: "chrome" };
+}
+
+/** Replace connection-specific flags while preserving package pins and unrelated user options. */
+export function configurePlaywrightArgs(
+  args: string[],
+  mode: PlaywrightMcpConnectionMode,
+  cdpEndpoint?: string,
+  extensionBrowser: PlaywrightExtensionBrowser = "chrome",
+): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === PLAYWRIGHT_EXTENSION_ARG) continue;
+    if (CONNECTION_VALUE_ARGS.has(arg)) {
+      index += 1;
+      continue;
+    }
+    if (/^--(?:browser|cdp-endpoint|profile-dir-name|user-data-dir)=/.test(arg)) continue;
+    result.push(arg);
+  }
+  if (mode === "extension") {
+    // Chrome is @playwright/mcp's extension default; only Edge needs the flag.
+    return extensionBrowser === "msedge"
+      ? [...result, "--browser=msedge", PLAYWRIGHT_EXTENSION_ARG]
+      : [...result, PLAYWRIGHT_EXTENSION_ARG];
+  }
+  if (mode === "cdp") {
+    const endpoint = cdpEndpoint?.trim();
+    if (!endpoint) throw new Error("a Chromium CDP endpoint is required");
+    if (!/^https?:\/\/|^wss?:\/\//i.test(endpoint)) {
+      throw new Error("the Chromium CDP endpoint must use http, https, ws, or wss");
+    }
+    return [...result, `--cdp-endpoint=${endpoint}`];
+  }
+  return [...result, `--browser=${mode}`, `--user-data-dir=${playwrightWorkspaceProfileDir(mode)}`];
+}
+
+/** Ensure every managed launch uses the workspace-local persistent browser profile.
+ *  Extension/CDP connections already own their profile, so leave those specs unchanged. */
+export function withPlaywrightWorkspaceProfile(spec: McpServerSpec): McpServerSpec {
+  if (spec.transport !== "stdio") return spec;
+  const connection = parsePlaywrightConnection(spec.args);
+  if (!isPlaywrightManagedBrowser(connection.mode)) return spec;
+  return {
+    ...spec,
+    args: configurePlaywrightArgs(spec.args, connection.mode),
+  };
+}
+
+/** Normalize a user-pasted relay token. The extension's connection dialog copies
+ *  the whole `PLAYWRIGHT_MCP_EXTENSION_TOKEN=<token>` line, so strip that prefix
+ *  (case-insensitive) plus any wrapping quotes/whitespace — store the bare token. */
+export function normalizeExtensionToken(raw: string): string {
+  let token = raw.trim();
+  const prefix = `${PLAYWRIGHT_EXTENSION_TOKEN_ENV}=`;
+  if (token.toLowerCase().startsWith(prefix.toLowerCase())) token = token.slice(prefix.length);
+  token = token.trim();
+  if (
+    (token.startsWith('"') && token.endsWith('"') && token.length >= 2) ||
+    (token.startsWith("'") && token.endsWith("'") && token.length >= 2)
+  ) {
+    token = token.slice(1, -1);
+  }
+  return token.trim();
+}

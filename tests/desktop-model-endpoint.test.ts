@@ -1,0 +1,229 @@
+/** #1529 — the status bar's API chip is per tab and flips between DeepSeek
+ *  and OpenAI with the tab's current model. */
+
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { modelEndpointFor } from "../src/cli/commands/desktop.js";
+import { writeConfig } from "../src/config.js";
+
+const ENV_NAMES = [
+  "DEEPSEEK_API_KEY",
+  "DEEPSEEK_BASE_URL",
+  "DEEPSEEK_API_BASE_URL",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OLLAMA_API_KEY",
+  "OLLAMA_BASE_URL",
+] as const;
+
+describe("desktop modelEndpointFor (#1529)", () => {
+  let dir: string;
+  let path: string;
+  const originalEnv: Partial<Record<(typeof ENV_NAMES)[number], string | undefined>> = {};
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "reasonix-endpoint-"));
+    path = join(dir, "config.json");
+    for (const name of ENV_NAMES) {
+      originalEnv[name] = process.env[name];
+      delete process.env[name];
+    }
+  });
+
+  afterEach(() => {
+    for (const name of ENV_NAMES) {
+      const value = originalEnv[name];
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+      delete originalEnv[name];
+    }
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("deepseek model with nothing configured reports the client's default endpoint", () => {
+    expect(modelEndpointFor("deepseek-v4-flash", path)).toEqual({
+      provider: "deepseek",
+      baseUrl: "https://api.deepseek.com",
+    });
+  });
+
+  it("deepseek model follows a custom config baseUrl", () => {
+    writeConfig({ baseUrl: "https://gateway.example.com/v1" }, path);
+    expect(modelEndpointFor("deepseek-v4-flash", path)).toEqual({
+      provider: "deepseek",
+      baseUrl: "https://gateway.example.com/v1",
+    });
+  });
+
+  it("gpt model with nothing configured reports the OpenAI endpoint and no auth", () => {
+    expect(modelEndpointFor("gpt-6-astra", path)).toEqual({
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      billingKind: "usd",
+      openaiAuth: "none",
+    });
+    expect(modelEndpointFor("gpt-6-sol", path)).toEqual({
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      billingKind: "usd",
+      openaiAuth: "none",
+    });
+    expect(modelEndpointFor("gpt-6-luna", path)).toEqual({
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      billingKind: "usd",
+      openaiAuth: "none",
+    });
+    expect(modelEndpointFor("gpt-5.6-sol", path)).toEqual({
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      billingKind: "usd",
+      openaiAuth: "none",
+    });
+  });
+
+  it("gpt model with a static OPENAI_API_KEY reports apiKey auth", () => {
+    process.env.OPENAI_API_KEY = "sk-openai-1234567890";
+    expect(modelEndpointFor("gpt-5.6-sol", path)).toEqual({
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      billingKind: "usd",
+      openaiAuth: "apiKey",
+    });
+  });
+
+  it("gpt model with OAuth creds reports oauth auth and the masked account", () => {
+    writeConfig(
+      {
+        openaiOAuth: {
+          accessToken: "at-123",
+          refreshToken: "rt-123",
+          expiresAt: Date.now() + 60_000,
+          account: "u@example.com",
+        },
+      },
+      path,
+    );
+    expect(modelEndpointFor("gpt-5.6-sol", path)).toEqual({
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      billingKind: "quota",
+      openaiAuth: "oauth",
+      oauthAccount: "u@example.com",
+    });
+  });
+
+  it("oauth wins over a static key when both are present", () => {
+    process.env.OPENAI_API_KEY = "sk-openai-1234567890";
+    writeConfig(
+      {
+        openaiOAuth: {
+          accessToken: "at-123",
+          refreshToken: "rt-123",
+          expiresAt: Date.now() + 60_000,
+          account: "u@example.com",
+        },
+      },
+      path,
+    );
+    expect(modelEndpointFor("gpt-5.6-sol", path).openaiAuth).toBe("oauth");
+  });
+
+  it("gpt model follows OPENAI_BASE_URL (env owns the key tuple)", () => {
+    process.env.OPENAI_BASE_URL = "https://openai-proxy.example.com/v1";
+    process.env.OPENAI_API_KEY = "sk-proxy-1234567890";
+    expect(modelEndpointFor("gpt-5.6-terra", path)).toEqual({
+      provider: "openai",
+      baseUrl: "https://openai-proxy.example.com/v1",
+      billingKind: "usd",
+      openaiAuth: "apiKey",
+    });
+  });
+
+  it("gpt model follows a custom config baseUrl (gateway key from config)", () => {
+    writeConfig(
+      { baseUrl: "https://gateway.example.com/v1", openaiApiKey: "sk-gw-1234567890" },
+      path,
+    );
+    expect(modelEndpointFor("gpt-5.6-luna", path)).toEqual({
+      provider: "openai",
+      baseUrl: "https://gateway.example.com/v1",
+      billingKind: "usd",
+      openaiAuth: "apiKey",
+    });
+  });
+
+  it("ollama model reports the Ollama cloud endpoint by default", () => {
+    expect(modelEndpointFor("ollama/llama3.1:latest", path)).toEqual({
+      provider: "ollama",
+      baseUrl: "https://ollama.com/v1",
+      billingKind: "none",
+      deployment: "cloud",
+    });
+  });
+
+  it("reports quota billing for a keyed Ollama Cloud model", () => {
+    process.env.OLLAMA_API_KEY = "ollama-cloud-key";
+    expect(modelEndpointFor("ollama/deepseek-v4-flash:0731", path)).toEqual({
+      provider: "ollama",
+      baseUrl: "https://ollama.com/v1",
+      billingKind: "quota",
+      deployment: "cloud",
+    });
+  });
+
+  it("keeps a keyless Ollama deployment unpriced even for a DeepSeek-named model", () => {
+    // Regression: a local daemon (no OLLAMA_API_KEY) must never be USD/yuan
+    // priced just because the model is named `deepseek-v4-flash` (with a
+    // version tag) — provider/billing come from endpoint evidence, never the
+    // model name. A keyless default endpoint resolves to the cloud URL but is
+    // still not billable per token without a key.
+    expect(modelEndpointFor("ollama/deepseek-v4-flash:0731", path)).toEqual({
+      provider: "ollama",
+      baseUrl: "https://ollama.com/v1",
+      billingKind: "none",
+      deployment: "cloud",
+    });
+  });
+
+  it("uses an explicit Ollama provider mapping for an arbitrary model id", () => {
+    writeConfig(
+      {
+        models: { "private-coding-model": { provider: "ollama" } },
+        ollamaBaseUrl: "http://localhost:11434",
+      },
+      path,
+    );
+    expect(modelEndpointFor("private-coding-model", path)).toEqual({
+      provider: "ollama",
+      baseUrl: "http://localhost:11434",
+      billingKind: "none",
+      deployment: "local",
+    });
+  });
+
+  it("ollama model follows a custom ollamaBaseUrl", () => {
+    writeConfig({ ollamaBaseUrl: "https://ollama.example.com/v1" }, path);
+    expect(modelEndpointFor("ollama/qwen3:32b", path)).toEqual({
+      provider: "ollama",
+      baseUrl: "https://ollama.example.com/v1",
+      billingKind: "none",
+      deployment: "local",
+    });
+  });
+
+  it("ollama model follows OLLAMA_BASE_URL env", () => {
+    process.env.OLLAMA_BASE_URL = "https://env.ollama.example.com";
+    expect(modelEndpointFor("ollama/llama4-maverick", path)).toEqual({
+      provider: "ollama",
+      baseUrl: "https://env.ollama.example.com",
+      billingKind: "none",
+      deployment: "local",
+    });
+  });
+});

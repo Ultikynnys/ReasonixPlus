@@ -1,0 +1,438 @@
+// @vitest-environment jsdom
+
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Settings } from "../App";
+import { MailProvider } from "../protocol";
+import { AudioRecorder } from "../voice/audio-recorder";
+import { markVoiceModelDownloaded, setActiveVoiceModelId } from "../voice/models";
+import { speechTranscriber } from "../voice/transcriber";
+import {
+  AudioInputDeviceSettings,
+  AudioInputDeviceTest,
+  SettingsModal,
+  VoiceModelSettings,
+} from "./settings";
+
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
+
+describe("VoiceModelSettings", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    setActiveVoiceModelId("whisper-tiny.en");
+    speechTranscriber.setModel("whisper-tiny.en");
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const mockSettings: Settings = {
+    version: "1.0.0",
+    reasoningEffort: "high",
+    editMode: "review",
+    workspaceDir: "/test",
+    recentWorkspaces: [],
+    model: "deepseek-v4-flash",
+  };
+
+  const baseProps = {
+    settings: mockSettings,
+    fontScale: "medium" as const,
+    onSetFontScale: vi.fn(),
+    fontFamily: "sans" as const,
+    onSetFontFamily: vi.fn(),
+    customFontFamily: "",
+    onSetCustomFontFamily: vi.fn(),
+    mcpSpecs: [],
+    mcpBridged: false,
+    memory: [],
+    memoryDetail: null,
+    memoryResult: null,
+    onClose: vi.fn(),
+    onSave: vi.fn(),
+    onSaveApiKey: vi.fn(),
+    oauthWaiting: false,
+    onOAuthBegin: vi.fn(),
+    onOAuthCancel: vi.fn(),
+    onOAuthSignOut: vi.fn(),
+    onSaveOpenAIApiKey: vi.fn(),
+    antigravityOAuthWaiting: false,
+    onAntigravityOAuthBegin: vi.fn(),
+    onAntigravityOAuthCancel: vi.fn(),
+    onAntigravityOAuthSignOut: vi.fn(),
+    onAddMcpSpec: vi.fn(),
+    onRemoveMcpSpec: vi.fn(),
+    onToggleMcpServer: vi.fn(),
+    onToggleMcpTool: vi.fn(),
+    mcpExtensionStatus: null,
+    mcpExtensionCheck: null,
+    playwrightBrowserInstall: null,
+    onRequestMcpExtensionStatus: vi.fn(),
+    onConfigureMcpExtension: vi.fn(),
+    onCheckMcpExtension: vi.fn(),
+    onInstallPlaywrightBrowser: vi.fn(),
+    onCancelPlaywrightBrowserInstall: vi.fn(),
+    mailProvider: MailProvider.Outlook,
+    mailAuth: null,
+    onSetMailProvider: vi.fn(),
+    onRequestMailStatus: vi.fn(),
+    onConfigureMail: vi.fn(),
+    onConnectMail: vi.fn(),
+    onCancelMail: vi.fn(),
+    onSignOutMail: vi.fn(),
+    onReadMemory: vi.fn(),
+    onWriteMemory: vi.fn(),
+    onDeleteMemory: vi.fn(),
+    onExportMemories: vi.fn(),
+    onImportMemories: vi.fn(),
+    onDismissMemoryResult: vi.fn(),
+  };
+
+  it("renders the model options with correct initial state", async () => {
+    render(<VoiceModelSettings />);
+
+    expect(screen.getByText("Voice processing model")).toBeTruthy();
+    expect(screen.getByText("Whisper Tiny (English)")).toBeTruthy();
+    expect(screen.getByText("Whisper Base (English)")).toBeTruthy();
+    expect(screen.getByText("Whisper Small (English)")).toBeTruthy();
+    expect(screen.getByText("Whistle (Multilingual)")).toBeTruthy();
+
+    // No model is downloaded by default; all download on demand
+    expect(screen.queryByText(/✓ Active/)).toBeNull();
+
+    // Every model has a Download button
+    const downloadButtons = screen.getAllByRole("button", { name: "Download" });
+    expect(downloadButtons).toHaveLength(4);
+  });
+
+  it("renders the Whistle card with its size and engine label but no param count", () => {
+    render(<VoiceModelSettings />);
+
+    const card = screen
+      .getByText("Whistle (Multilingual)")
+      .closest(".voice-card") as HTMLElement;
+    expect(within(card).getByText("~17 MB")).toBeTruthy();
+    expect(within(card).getByText("Multilingual")).toBeTruthy();
+    expect(within(card).getByText("Cactus engine")).toBeTruthy();
+    // Whistle does not publish a parameter count, so no "params" cell renders.
+    expect(within(card).queryByText(/params/)).toBeNull();
+  });
+
+  it("handles successful in-app download and activates model", async () => {
+    vi.spyOn(speechTranscriber, "downloadModel").mockImplementation(async (_id, onProgress) => {
+      onProgress?.({
+        status: "progress",
+        file: "onnx/encoder_model_quantized.onnx",
+        progress: 50,
+      });
+      markVoiceModelDownloaded("Xenova/whisper-base.en", true);
+    });
+
+    render(<VoiceModelSettings />);
+
+    const baseCard = screen
+      .getByText("Whisper Base (English)")
+      .closest(".voice-card") as HTMLElement;
+    const baseDownloadBtn = within(baseCard).getByRole("button", { name: "Download" });
+
+    await act(async () => {
+      fireEvent.click(baseDownloadBtn);
+    });
+
+    expect(speechTranscriber.downloadModel).toHaveBeenCalledWith(
+      "Xenova/whisper-base.en",
+      expect.any(Function),
+    );
+    expect(speechTranscriber.activeModel).toBe("Xenova/whisper-base.en");
+  });
+
+  it("displays an error alert when download fails without silent failure", async () => {
+    vi.spyOn(speechTranscriber, "downloadModel").mockRejectedValue(
+      new Error("Network connection lost during download"),
+    );
+
+    render(<VoiceModelSettings />);
+
+    const baseCard = screen
+      .getByText("Whisper Base (English)")
+      .closest(".voice-card") as HTMLElement;
+    const baseDownloadBtn = within(baseCard).getByRole("button", { name: "Download" });
+
+    await act(async () => {
+      fireEvent.click(baseDownloadBtn);
+    });
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toBeTruthy();
+    expect(alert.textContent).toContain("Network connection lost during download");
+
+    // Active model was NOT silently changed:
+    expect(speechTranscriber.activeModel).toBe("whisper-tiny.en");
+  });
+
+  it("allows deleting a downloaded model to free space", async () => {
+    markVoiceModelDownloaded("Xenova/whisper-small.en", true);
+
+    render(<VoiceModelSettings />);
+
+    const deleteBtn = await screen.findByTitle("Delete downloaded files to free space");
+    expect(deleteBtn).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(deleteBtn);
+    });
+
+    // Model is no longer downloaded, Download button returns
+    const downloadBtns = screen.getAllByRole("button", { name: "Download" });
+    expect(downloadBtns.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders voice model settings in models tab and not in general tab", () => {
+    const { unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);
+    expect(screen.queryByText("Voice processing model")).toBeNull();
+    unmount();
+
+    render(<SettingsModal {...baseProps} initialPage="models" />);
+    expect(screen.getByText("Voice processing model")).toBeTruthy();
+  });
+
+  it("renders the quick-send selector with built-ins and saves the active choice", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="general" />);
+
+    expect(screen.getByText("Quick send action")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "proceed" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "commit and push" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "commit and push" }));
+    expect(onSave).toHaveBeenCalledWith({ quickSendId: "commit-and-push" });
+  });
+
+  it("adds a custom quick send from the general settings form", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="general" />);
+
+    fireEvent.change(screen.getByPlaceholderText("Shorthand (button label, max 20 chars)"), {
+      target: { value: "Deploy" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Message sent to the model"), {
+      target: { value: "deploy to production" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add quick send" }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      quickSends: [
+        expect.objectContaining({
+          id: expect.stringMatching(/^custom-/),
+          message: "deploy to production",
+          shorthand: "Deploy",
+        }),
+      ],
+    });
+  });
+
+  it("enforces max length on explicit shorthand in custom quick send", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="general" />);
+
+    fireEvent.change(screen.getByPlaceholderText("Shorthand (button label, max 20 chars)"), {
+      target: { value: "Deploy to production immediately" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Message sent to the model"), {
+      target: { value: "deploy to production" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add quick send" }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      quickSends: [
+        expect.objectContaining({
+          id: expect.stringMatching(/^custom-/),
+          message: "deploy to production",
+          shorthand: "Deploy to production",
+        }),
+      ],
+    });
+  });
+});
+
+describe("AudioInputDeviceSettings", () => {
+  const grantConsent = async () => {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /allow microphone recording/i }));
+    });
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    Object.defineProperty(navigator, "permissions", { value: undefined, configurable: true });
+    Object.defineProperty(navigator, "mediaDevices", {
+      value: {
+        enumerateDevices: vi.fn().mockResolvedValue([
+          { kind: "audioinput", deviceId: "mic-1", label: "Built-in Microphone" },
+          { kind: "audioinput", deviceId: "mic-2", label: "USB Headset" },
+        ]),
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+      configurable: true,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("gates the device list behind an explicit consent button", () => {
+    render(<AudioInputDeviceSettings />);
+
+    expect(screen.getByText("Audio input device")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /allow microphone recording/i })).toBeTruthy();
+    // No enumeration, no picker, and no audio test until consent is granted.
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByText("Test microphone")).toBeNull();
+  });
+
+  it("reveals the real device list and audio test after granting access", async () => {
+    render(<AudioInputDeviceSettings />);
+    await grantConsent();
+
+    const select = (await screen.findByRole("combobox")) as HTMLSelectElement;
+    await waitFor(() => {
+      const options = Array.from(select.options).map((o) => o.textContent);
+      expect(options).toContain("Built-in Microphone");
+      expect(options).toContain("USB Headset");
+      expect(options).toContain("System default");
+    });
+    expect(screen.getByText("Test microphone")).toBeTruthy();
+  });
+
+  it("selects a device and persists the choice", async () => {
+    render(<AudioInputDeviceSettings />);
+    await grantConsent();
+
+    const select = (await screen.findByRole("combobox")) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(Array.from(select.options).map((o) => o.textContent)).toContain("USB Headset");
+    });
+    fireEvent.change(select, { target: { value: "mic-2" } });
+
+    expect(localStorage.getItem("reasonix.voiceInputDevice")).toBe("mic-2");
+    expect(select.value).toBe("mic-2");
+  });
+
+  it("shows the list immediately when permission was already granted", async () => {
+    Object.defineProperty(navigator, "permissions", {
+      value: { query: vi.fn().mockResolvedValue({ state: "granted" }) },
+      configurable: true,
+    });
+    localStorage.setItem("reasonix.voiceInputDevice", "mic-1");
+    render(<AudioInputDeviceSettings />);
+
+    const select = (await screen.findByRole("combobox")) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(Array.from(select.options).map((o) => o.textContent)).toContain("Built-in Microphone");
+    });
+    expect(select.value).toBe("mic-1");
+    expect(screen.queryByRole("button", { name: /allow microphone recording/i })).toBeNull();
+  });
+
+  it("re-matches the selection by label when the device id rotates", async () => {
+    // First visit: pick the USB headset while the browser hands out one set of ids.
+    render(<AudioInputDeviceSettings />);
+    await grantConsent();
+    let select = (await screen.findByRole("combobox")) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(Array.from(select.options).map((o) => o.textContent)).toContain("USB Headset");
+    });
+    fireEvent.change(select, { target: { value: "mic-2" } });
+    expect(localStorage.getItem("reasonix.voiceInputDevice")).toBe("mic-2");
+    cleanup();
+
+    // Second visit: the same devices come back under fresh ids (WebView2 re-derives
+    // them from the current media-permission state).
+    Object.defineProperty(navigator, "permissions", {
+      value: { query: vi.fn().mockResolvedValue({ state: "granted" }) },
+      configurable: true,
+    });
+    Object.defineProperty(navigator, "mediaDevices", {
+      value: {
+        enumerateDevices: vi.fn().mockResolvedValue([
+          { kind: "audioinput", deviceId: "rotated-1", label: "Built-in Microphone" },
+          { kind: "audioinput", deviceId: "rotated-2", label: "USB Headset" },
+        ]),
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+      configurable: true,
+    });
+    render(<AudioInputDeviceSettings />);
+    select = (await screen.findByRole("combobox")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("rotated-2"));
+    // The healed id is persisted so the composer records from the right device.
+    expect(localStorage.getItem("reasonix.voiceInputDevice")).toBe("rotated-2");
+  });
+
+  it("surfaces a denial and keeps the picker gated when access is refused", async () => {
+    Object.defineProperty(navigator, "mediaDevices", {
+      value: {
+        enumerateDevices: vi.fn().mockResolvedValue([]),
+        getUserMedia: vi
+          .fn()
+          .mockRejectedValue(Object.assign(new Error("blocked"), { name: "NotAllowedError" })),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+      configurable: true,
+    });
+    render(<AudioInputDeviceSettings />);
+    await grantConsent();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/not allowed/i);
+    expect(screen.queryByRole("combobox")).toBeNull();
+  });
+});
+
+describe("AudioInputDeviceTest", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("records on start and stops on demand", async () => {
+    const start = vi.spyOn(AudioRecorder.prototype, "start").mockResolvedValue(undefined);
+    const stop = vi
+      .spyOn(AudioRecorder.prototype, "stop")
+      .mockResolvedValue({ audioData: new Float32Array(160), durationSeconds: 0.01 });
+
+    render(<AudioInputDeviceTest deviceId="" />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /test microphone/i }));
+    });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status").textContent).toMatch(/recording/i);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^stop$/i }));
+    });
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a recorder startup failure", async () => {
+    vi.spyOn(AudioRecorder.prototype, "start").mockRejectedValue(new Error("no microphone"));
+
+    render(<AudioInputDeviceTest deviceId="" />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /test microphone/i }));
+    });
+
+    expect(screen.getByRole("alert").textContent).toContain("no microphone");
+  });
+});

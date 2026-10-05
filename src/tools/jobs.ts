@@ -1,0 +1,693 @@
+/** Background process registry for never-exiting commands; ready-signal detection short-circuits the startup wait. */
+
+import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
+import * as pathMod from "node:path";
+import { killProcessTree } from "./process-tree.js";
+import { detectShellOperator, prepareSpawn, tokenizeCommand } from "./shell.js";
+import { type RunCommandResult, runCommand } from "./shell/exec.js";
+import { baseSpawnOptions } from "./shell/spawn-options.js";
+
+/** Per-job output ring. Capped so a chatty dev server doesn't OOM. */
+const DEFAULT_OUTPUT_CAP_BYTES = 64 * 1024; // 64 KB
+/** Persistent jobs keep far more history — a long-lived server's console stays readable. */
+const PERSISTENT_OUTPUT_CAP_BYTES = 1024 * 1024; // 1 MB
+
+/** Hard char ceiling for any single output read — the startup preview, job_output,
+ *  and wait_for_job's latestOutput. Keeps a dense console from saturating context;
+ *  page the full ring in bounded chunks with `since` / `tailLines`. */
+export const DEFAULT_READ_MAX_CHARS = 32_000;
+
+/** First match cuts startup wait short; conservative patterns — a false negative costs a real stall. */
+const READY_SIGNALS: ReadonlyArray<RegExp> = [
+  // HTTP server banners
+  /\blistening on\b/i,
+  /\blocal:\s+https?:\/\//i,
+  /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?\b/i,
+  /\b(?:ready|server started|started server|app listening)\b/i,
+  // Bundlers / compilers
+  /\bcompiled successfully\b/i,
+  /\bbuild complete(?:d)?\b/i,
+  /\bwatching for (?:file )?changes\b/i,
+  /\bready in \d+/i,
+  // Generic
+  /\bstartup (?:complete|finished)\b/i,
+];
+
+export interface JobStartOptions {
+  /** Absolute path to cwd for the spawned child. */
+  cwd: string;
+  /** Capped at 30; ready-signal match short-circuits. Default 3. */
+  waitSec?: number;
+  /** Turn abort signal — Esc/Stop ends the turn. Merged with cancelSignal in start(). */
+  signal?: AbortSignal;
+  /** Per-tool-call cancel signal — Ctrl+K / desktop Stop kills just this job without ending the turn. */
+  cancelSignal?: AbortSignal;
+  /** Total per-job output buffer cap (bytes). Default 64 KB. */
+  maxBufferBytes?: number;
+  /** Workspace-scoped instead of conversation-scoped: survives Stop / New-chat /
+   *  turn-abort / compaction. Killed only by explicit stop, a full workspace/app
+   *  shutdown, or the Jobs-panel Close button. Default false (session-scoped). */
+  persistent?: boolean;
+}
+
+export interface JobStartResult {
+  jobId: number;
+  pid: number | null;
+  /** True iff the child was still running at the point we returned. */
+  stillRunning: boolean;
+  /** True iff a READY_SIGNALS pattern matched during the wait window. */
+  readyMatched: boolean;
+  /** Preview of combined stdout+stderr accumulated during the wait. */
+  preview: string;
+  /** If the child exited during the wait, its exit code; else null. */
+  exitCode: number | null;
+}
+
+export interface JobRecord {
+  id: number;
+  command: string;
+  pid: number | null;
+  startedAt: number;
+  /** Exit code once the process terminates; null while running. */
+  exitCode: number | null;
+  /** Combined stdout+stderr, ring-trimmed. */
+  output: string;
+  /** Counts all bytes the child wrote, not just what's still buffered in `output`. */
+  totalBytesWritten: number;
+  /** True iff the child is still alive. */
+  running: boolean;
+  /** Error from spawn() itself (ENOENT, etc.) once surfaced. */
+  spawnError?: string;
+  /** True when spawned with `persistent: true` — session-scoped teardown spares it. */
+  persistent: boolean;
+}
+
+/** Returns an AbortSignal that fires when either of the two input signals
+ *  fires. If both are undefined, returns undefined. */
+export function mergeSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
+  if (!a && !b) return undefined;
+  if (!a) return b;
+  if (!b) return a;
+  return AbortSignal.any([a, b]);
+}
+
+export class JobRegistry {
+  private readonly jobs = new Map<number, InternalJob>();
+  private nextId = 1;
+  /** Max completed jobs to retain for list_jobs / job_output lookups. */
+  private static readonly MAX_COMPLETED_JOBS = 20;
+
+  /** Resolves on (a) ready signal, (b) early exit, or (c) waitSec deadline — child keeps running regardless. */
+  async start(command: string, opts: JobStartOptions): Promise<JobStartResult> {
+    const trimmed = command.trim();
+    if (!trimmed) throw new Error("run_background: empty command");
+    const op = detectShellOperator(trimmed);
+    if (op !== null) {
+      throw new Error(
+        `run_background: shell operator "${op}" is not supported: spawn one process per background job. Compose via your orchestration, not the shell.`,
+      );
+    }
+    const argv = tokenizeCommand(trimmed);
+    if (argv.length === 0) throw new Error("run_background: empty command");
+    const waitMs = Math.max(0, Math.min(30, opts.waitSec ?? 3)) * 1000;
+    const maxBytes =
+      opts.maxBufferBytes ??
+      (opts.persistent ? PERSISTENT_OUTPUT_CAP_BYTES : DEFAULT_OUTPUT_CAP_BYTES);
+
+    const { bin, args, spawnOverrides } = prepareSpawn(argv);
+    const spawnOpts: SpawnOptions = {
+      ...baseSpawnOptions(pathMod.resolve(opts.cwd)),
+      env: process.env,
+      ...spawnOverrides,
+    };
+
+    let child: ChildProcess;
+    try {
+      child = spawn(bin, args, spawnOpts);
+    } catch (err) {
+      // Can't even spawn — record a dead job so the model sees the
+      // failure in list_jobs, and return a synthetic result.
+      const id = this.nextId++;
+      const job: InternalJob = {
+        id,
+        command: trimmed,
+        pid: null,
+        startedAt: Date.now(),
+        exitCode: null,
+        output: `[spawn failed] ${(err as Error).message}`,
+        totalBytesWritten: 0,
+        running: false,
+        spawnError: (err as Error).message,
+        persistent: opts.persistent === true,
+        child: null,
+        readyPromise: Promise.resolve(),
+        signalReady: () => {},
+        closedPromise: Promise.resolve(),
+        signalClosed: () => {},
+        outputWaiters: new Set(),
+      };
+      this.jobs.set(id, job);
+      return {
+        jobId: id,
+        pid: null,
+        stillRunning: false,
+        readyMatched: false,
+        preview: job.output,
+        exitCode: null,
+      };
+    }
+
+    const id = this.nextId++;
+    let readyResolve: () => void = () => {};
+    const readyPromise = new Promise<void>((res) => {
+      readyResolve = res;
+    });
+    let closedResolve: () => void = () => {};
+    const closedPromise = new Promise<void>((res) => {
+      closedResolve = res;
+    });
+    const job: InternalJob = {
+      id,
+      command: trimmed,
+      pid: child.pid ?? null,
+      startedAt: Date.now(),
+      exitCode: null,
+      output: "",
+      totalBytesWritten: 0,
+      running: true,
+      persistent: opts.persistent === true,
+      child,
+      readyPromise,
+      signalReady: readyResolve,
+      closedPromise,
+      signalClosed: closedResolve,
+      outputWaiters: new Set(),
+    };
+    this.jobs.set(id, job);
+
+    let readyMatched = false;
+    // Sliding window for cross-chunk ready-signal matching. A banner
+    // line might land split across two reads — we want the regex to
+    // see it as one piece — but testing against the full `job.output`
+    // (which can be tens of KB by the time the server is up) is
+    // O(N²) when 9 regexes each run on a growing buffer per chunk.
+    // 1KB is comfortably bigger than any banner line we look for and
+    // bounds the per-chunk regex cost regardless of total output.
+    let recentForReady = "";
+    const READY_WINDOW = 1024;
+    const onData = (chunk: Buffer | string) => {
+      const s = chunk.toString();
+      job.totalBytesWritten += s.length;
+      job.output += s;
+      if (job.output.length > maxBytes) {
+        // Drop the oldest bytes, but keep a marker so the model can see
+        // output was truncated. Trim on a rough line boundary to avoid
+        // chopping a line mid-sentence.
+        const overflow = job.output.length - maxBytes;
+        const cut = job.output.indexOf("\n", overflow);
+        const start = cut >= 0 ? cut + 1 : overflow;
+        job.output = `[… older output dropped …]\n${job.output.slice(start)}`;
+      }
+      if (!readyMatched) {
+        recentForReady = (recentForReady + s).slice(-READY_WINDOW);
+        for (const re of READY_SIGNALS) {
+          if (re.test(recentForReady)) {
+            readyMatched = true;
+            job.signalReady();
+            break;
+          }
+        }
+      }
+      if (job.outputWaiters.size > 0) {
+        const waiters = [...job.outputWaiters];
+        job.outputWaiters.clear();
+        for (const wake of waiters) wake();
+      }
+    };
+    child.stdout?.on("data", onData);
+    child.stderr?.on("data", onData);
+    child.on("error", (err) => {
+      job.running = false;
+      job.spawnError = err.message;
+      job.signalReady();
+      job.signalClosed();
+    });
+    // `exit` fires when the process is dead; `close` waits for stdio drain too.
+    // On Windows + Node ≥ 24, drained stdio can lag 5–10s behind taskkill /T /F,
+    // so we settle `running`/`closedPromise` on the earlier event. `close` is
+    // still wired for the no-exit fallback (spawn error before any process exists).
+    const settleClosed = (code: number | null) => {
+      if (!job.running && job.exitCode !== null) return;
+      job.running = false;
+      job.exitCode = code;
+      job.signalReady();
+      job.signalClosed();
+      this.maybeCleanup();
+    };
+    child.on("exit", settleClosed);
+    child.on("close", settleClosed);
+
+    const onAbort = () => this.stop(id, { graceMs: 100 });
+    // Merge the turn abort signal with the per-tool-call cancel signal so
+    // Esc AND Ctrl+K / desktop Stop both kill the job during startup.
+    const merged = mergeSignals(opts.signal, opts.cancelSignal);
+    if (merged?.aborted) {
+      onAbort();
+    } else {
+      merged?.addEventListener("abort", onAbort, { once: true });
+    }
+
+    // Race: (a) ready signal, (b) child exit, (c) wait deadline.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    await Promise.race([
+      readyPromise,
+      new Promise<void>((res) => {
+        timer = setTimeout(res, waitMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+
+    return {
+      jobId: id,
+      pid: job.pid,
+      stillRunning: job.running,
+      readyMatched,
+      preview: capJobOutput(job.output, DEFAULT_READ_MAX_CHARS, "tail"),
+      exitCode: job.exitCode,
+    };
+  }
+
+  read(
+    id: number,
+    opts: { since?: number; tailLines?: number; maxChars?: number } = {},
+  ): JobReadResult | null {
+    const job = this.jobs.get(id);
+    if (!job) return null;
+    const full = job.output;
+    const maxChars = opts.maxChars ?? DEFAULT_READ_MAX_CHARS;
+    let slice = full;
+    let keep: "head" | "tail" = "tail";
+    let fromByte = 0;
+    if (typeof opts.since === "number" && opts.since >= 0 && opts.since < full.length) {
+      slice = full.slice(opts.since);
+      keep = "head";
+      fromByte = opts.since;
+    }
+    if (typeof opts.tailLines === "number" && opts.tailLines > 0) {
+      const lines = slice.split("\n");
+      slice = lines.slice(Math.max(0, lines.length - opts.tailLines)).join("\n");
+      keep = "tail";
+    }
+    const nextSince = keep === "head" ? fromByte + Math.min(slice.length, maxChars) : undefined;
+    return {
+      output: capJobOutput(slice, maxChars, keep, nextSince),
+      byteLength: full.length,
+      running: job.running,
+      exitCode: job.exitCode,
+      command: job.command,
+      pid: job.pid,
+      spawnError: job.spawnError,
+      persistent: job.persistent,
+    };
+  }
+
+  async waitForJob(
+    id: number,
+    opts: {
+      timeoutMs?: number;
+      waitFor?: "exit" | "output-or-exit";
+      /** Per-tool-call cancel — Ctrl+K / desktop Stop wakes the wait immediately so the cancelled result reaches the model without waiting out the timeout. */
+      cancelSignal?: AbortSignal;
+    } = {},
+  ): Promise<JobWaitResult | null> {
+    const job = this.jobs.get(id);
+    if (!job) return null;
+    if (!job.running) {
+      return {
+        exited: true,
+        exitCode: job.exitCode,
+        latestOutput: capJobOutput(job.output, DEFAULT_READ_MAX_CHARS, "tail"),
+      };
+    }
+
+    const timeoutMs = Math.max(0, Math.min(300_000, opts.timeoutMs ?? 5_000));
+    const waitFor = opts.waitFor ?? "exit";
+    const startOutput = job.output;
+
+    const racers: Promise<void>[] = [job.closedPromise];
+    let wakeOutput: (() => void) | null = null;
+    if (waitFor === "output-or-exit") {
+      racers.push(
+        new Promise<void>((resolve) => {
+          wakeOutput = resolve;
+          job.outputWaiters.add(resolve);
+        }),
+      );
+    }
+    if (opts.cancelSignal) {
+      racers.push(
+        new Promise<void>((resolve) => {
+          const onCancel = () => resolve();
+          if (opts.cancelSignal!.aborted) onCancel();
+          else opts.cancelSignal!.addEventListener("abort", onCancel, { once: true });
+        }),
+      );
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    racers.push(
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    );
+    await Promise.race(racers);
+    if (timer) clearTimeout(timer);
+    if (wakeOutput) job.outputWaiters.delete(wakeOutput);
+
+    return {
+      exited: !job.running,
+      exitCode: job.exitCode,
+      latestOutput: capJobOutput(
+        latestOutputSince(startOutput, job.output),
+        DEFAULT_READ_MAX_CHARS,
+        "tail",
+      ),
+    };
+  }
+
+  /** Run a foreground-compatible shell command while registering it as a job.
+   * The command keeps runCommand's chain/filter/recovery semantics; the registry
+   * owns visibility, output snapshots, cancellation, and retention. */
+  async runForeground(
+    command: string,
+    opts: {
+      cwd: string;
+      timeoutSec: number;
+      maxOutputChars?: number;
+      signal?: AbortSignal;
+      onOutput?: (text: string) => void;
+      outputRecovery?: import("./output-recovery.js").OutputRecoveryLimits;
+      preserveOutput?: boolean;
+      /** Optional alternate executor for elevated commands. */
+      run?: (signal: AbortSignal) => Promise<RunCommandResult>;
+      onJobsChanged?: () => void;
+    },
+  ): Promise<{ jobId: number; result: RunCommandResult }> {
+    const id = this.nextId++;
+    const cancel = new AbortController();
+    const job: InternalJob = {
+      id,
+      command: command.trim(),
+      pid: null,
+      startedAt: Date.now(),
+      exitCode: null,
+      output: "",
+      totalBytesWritten: 0,
+      running: true,
+      persistent: false,
+      child: null,
+      cancel,
+      readyPromise: Promise.resolve(),
+      signalReady: () => {},
+      closedPromise: Promise.resolve(),
+      signalClosed: () => {},
+      outputWaiters: new Set(),
+    };
+    this.jobs.set(id, job);
+    opts.onJobsChanged?.();
+    const signal = mergeSignals(opts.signal, cancel.signal);
+    try {
+      const result = opts.run
+        ? await opts.run(signal ?? cancel.signal)
+        : await runCommand(command, {
+            cwd: opts.cwd,
+            timeoutSec: opts.timeoutSec,
+            maxOutputChars: opts.maxOutputChars,
+            signal,
+            outputRecovery: opts.outputRecovery,
+            preserveOutput: opts.preserveOutput,
+            onOutput: (text) => {
+              job.output += text;
+              job.totalBytesWritten += text.length;
+              if (job.output.length > 1024 * 1024) job.output = job.output.slice(-1024 * 1024);
+              opts.onOutput?.(text);
+            },
+          });
+      if (opts.run) {
+        job.output = result.output;
+        job.totalBytesWritten = result.totalOutputBytes ?? result.output.length;
+      }
+      job.exitCode = result.exitCode;
+      job.running = false;
+      opts.onJobsChanged?.();
+      this.maybeCleanup();
+      return { jobId: id, result };
+    } catch (error) {
+      job.running = false;
+      job.spawnError = (error as Error).message;
+      opts.onJobsChanged?.();
+      this.maybeCleanup();
+      throw error;
+    }
+  }
+
+  /** SIGTERM, wait graceMs, then SIGKILL. Idempotent on already-exited jobs. */
+  async stop(id: number, opts: { graceMs?: number } = {}): Promise<JobRecord | null> {
+    const job = this.jobs.get(id);
+    if (!job) return null;
+    if (!job.running) return snapshot(job);
+    if (job.cancel) {
+      job.cancel.abort();
+      job.running = false;
+      job.signalClosed();
+      this.maybeCleanup();
+      return snapshot(job);
+    }
+    if (!job.child) return snapshot(job);
+    const graceMs = Math.max(0, opts.graceMs ?? 2000);
+    // Tree kill — reaches grandchildren (vite, esbuild, etc.) instead
+    // of just the npm/cmd.exe wrapper that our direct child represents.
+    // Falls back to child.kill() only when we somehow don't have a pid.
+    if (job.pid !== null) {
+      killProcessTree(job.pid, "SIGTERM");
+    } else {
+      try {
+        job.child.kill("SIGTERM");
+      } catch {
+        /* already dead — fall through */
+      }
+    }
+    // closedPromise (not readyPromise) — readyPromise can have fired at
+    // startup on a ready-signal regex match, which would short-circuit
+    // this race even though the process is still alive.
+    await Promise.race([job.closedPromise, new Promise<void>((res) => setTimeout(res, graceMs))]);
+    if (job.running) {
+      if (job.pid !== null) {
+        killProcessTree(job.pid, "SIGKILL");
+      } else {
+        try {
+          job.child.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
+      }
+      // Wait for the actual close handler — a fixed timer can return
+      // before Node's `close` event fires under load (Windows taskkill
+      // /T /F on a three-level tree can take ~1s to propagate).
+      await Promise.race([job.closedPromise, new Promise<void>((res) => setTimeout(res, 5000))]);
+      // Node ≥ 24 on Windows sometimes never fires `close` after taskkill /T /F
+      // (the OS handle lingers even though the process is dead). We issued the
+      // kill; trust it and settle the record so callers don't see ghost-running.
+      if (job.running) {
+        job.running = false;
+        job.signalClosed();
+      }
+    }
+    return snapshot(job);
+  }
+
+  /** Force-cancel every running job immediately (SIGKILL tree kill, no grace).
+   *  Wired to the loop's pre-compaction hook so no background shell outlives a
+   *  fold; `keepPersistent` spares workspace-scoped persistent jobs. */
+  cancelAll(opts: { keepPersistent?: boolean } = {}): void {
+    for (const job of this.jobs.values()) {
+      if (!job.running) continue;
+      if (opts.keepPersistent && job.persistent) continue;
+      if (job.cancel) {
+        job.cancel.abort();
+        job.running = false;
+        job.signalReady();
+        job.signalClosed();
+        continue;
+      }
+      if (!job.child) continue;
+      if (job.pid !== null) killProcessTree(job.pid, "SIGKILL");
+      else {
+        try {
+          job.child.kill("SIGKILL");
+        } catch {
+          /* already dead — fall through */
+        }
+      }
+      // Settle the record synchronously — the SIGKILL is issued; the OS reap
+      // (Windows taskkill /T) completes asynchronously but must not keep the
+      // job looking "running" once compaction commits. The close handler still
+      // fires and backfills exitCode via settleClosed.
+      job.running = false;
+      job.signalReady();
+      job.signalClosed();
+    }
+    this.maybeCleanup();
+  }
+
+  list(): JobRecord[] {
+    return [...this.jobs.values()].map(snapshot);
+  }
+
+  async shutdown(deadlineMs = 5000, opts: { keepPersistent?: boolean } = {}): Promise<void> {
+    const start = Date.now();
+    const runningJobs = [...this.jobs.values()].filter(
+      (j) => j.running && !(opts.keepPersistent && j.persistent),
+    );
+    if (runningJobs.length === 0) return;
+
+    for (const job of runningJobs) {
+      if (job.cancel) {
+        job.cancel.abort();
+        job.running = false;
+        job.signalReady();
+        job.signalClosed();
+      } else if (job.pid !== null) killProcessTree(job.pid, "SIGTERM");
+      else
+        try {
+          job.child?.kill("SIGTERM");
+        } catch {
+          /* ignore */
+        }
+    }
+    const allClose = Promise.all(runningJobs.map((j) => j.readyPromise));
+    const elapsed = () => Date.now() - start;
+    // Grace window: give well-behaved apps time to clean up, capped at
+    // half the deadline so we always leave room for a SIGKILL pass +
+    // reap confirmation.
+    const graceMs = Math.min(1500, Math.max(0, deadlineMs / 2));
+    await Promise.race([allClose, new Promise<void>((res) => setTimeout(res, graceMs))]);
+    // Force-kill everything still alive.
+    for (const job of runningJobs) {
+      if (!job.running) continue;
+      if (job.pid !== null) killProcessTree(job.pid, "SIGKILL");
+      else
+        try {
+          job.child?.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
+    }
+    // Wait for close events post-SIGKILL. taskkill /T on Windows is
+    // async — without this final wait, shutdown() can return while
+    // grandchildren are still mid-teardown, which is what "runningCount
+    // non-zero after shutdown" looks like.
+    const remaining = Math.max(800, deadlineMs - elapsed());
+    await Promise.race([allClose, new Promise<void>((res) => setTimeout(res, remaining))]);
+    // Same Node ≥ 24 Windows fallback as `stop()`: settle any job whose `close`
+    // event never arrived after taskkill /T /F — the kill is synchronous, the
+    // notification isn't.
+    for (const job of runningJobs) {
+      if (job.running) {
+        job.running = false;
+        job.signalClosed();
+      }
+    }
+  }
+
+  /** Count of still-running jobs — drives the TUI status-bar indicator. */
+  runningCount(): number {
+    let n = 0;
+    for (const job of this.jobs.values()) if (job.running) n++;
+    return n;
+  }
+
+  /** Evict oldest completed jobs when the map exceeds MAX_COMPLETED_JOBS. */
+  private maybeCleanup(): void {
+    const completed: Array<{ id: number; startedAt: number }> = [];
+    for (const [id, job] of this.jobs) {
+      if (!job.running) completed.push({ id, startedAt: job.startedAt });
+    }
+    if (completed.length <= JobRegistry.MAX_COMPLETED_JOBS) return;
+    // Sort oldest first, drop the excess.
+    completed.sort((a, b) => a.startedAt - b.startedAt);
+    const toRemove = completed.length - JobRegistry.MAX_COMPLETED_JOBS;
+    for (let i = 0; i < toRemove; i++) {
+      this.jobs.delete(completed[i]!.id);
+    }
+  }
+}
+
+interface InternalJob extends JobRecord {
+  /** Underlying Node child process. Null for foreground runCommand jobs. */
+  child: ChildProcess | null;
+  /** Cancellation source for foreground runCommand jobs. */
+  cancel?: AbortController;
+  /** Resolved when ready-signal fires OR the child exits. */
+  readyPromise: Promise<void>;
+  /** Fires readyPromise — called by ready-signal OR close/error handlers. */
+  signalReady: () => void;
+  /** Resolves only on close/error — never on ready-signal. Used by stop() to wait for actual exit. */
+  closedPromise: Promise<void>;
+  signalClosed: () => void;
+  /** One-shot waiters for "some new output arrived". Cleared after every wake. */
+  outputWaiters: Set<() => void>;
+}
+
+export interface JobReadResult {
+  output: string;
+  /** Total bytes ever in the buffer (pre-slice). Caller passes back as `since`. */
+  byteLength: number;
+  running: boolean;
+  exitCode: number | null;
+  command: string;
+  pid: number | null;
+  spawnError?: string;
+  persistent: boolean;
+}
+
+export interface JobWaitResult {
+  exited: boolean;
+  exitCode: number | null;
+  latestOutput: string;
+}
+
+function snapshot(job: InternalJob): JobRecord {
+  return {
+    id: job.id,
+    command: job.command,
+    pid: job.pid,
+    startedAt: job.startedAt,
+    exitCode: job.exitCode,
+    output: job.output,
+    totalBytesWritten: job.totalBytesWritten,
+    running: job.running,
+    spawnError: job.spawnError,
+    persistent: job.persistent,
+  };
+}
+
+function capJobOutput(
+  text: string,
+  maxChars: number,
+  keep: "head" | "tail",
+  nextSince?: number,
+): string {
+  if (text.length <= maxChars) return text;
+  const elided = text.length - maxChars;
+  if (keep === "head") {
+    const cont = nextSince === undefined ? "" : `: continue with since=${nextSince}`;
+    return `${text.slice(0, maxChars)}\n[… ${elided} chars elided${cont} …]`;
+  }
+  return `[… ${elided} chars elided: narrow with since/tailLines …]\n${text.slice(-maxChars)}`;
+}
+
+function latestOutputSince(before: string, after: string): string {
+  if (!before) return after;
+  if (after.startsWith(before)) return after.slice(before.length);
+  return after;
+}

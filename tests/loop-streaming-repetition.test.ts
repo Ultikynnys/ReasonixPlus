@@ -1,0 +1,201 @@
+import { describe, expect, it } from "vitest";
+import type { DeepSeekClient, StreamChunk } from "../src/client.js";
+import type { ReasoningEffort } from "../src/config.js";
+import { streamModelResponse } from "../src/loop/streaming.js";
+import type { StreamModelResult } from "../src/loop/streaming.js";
+
+function fakeClient(chunks: StreamChunk[]): DeepSeekClient {
+  return {
+    stream: async function* () {
+      for (const chunk of chunks) yield chunk;
+    },
+  } as unknown as DeepSeekClient;
+}
+
+async function run(chunks: StreamChunk[]): Promise<StreamModelResult> {
+  const gen = streamModelResponse({
+    client: fakeClient(chunks),
+    model: "test-model",
+    messages: [],
+    toolSpecs: [],
+    signal: new AbortController().signal,
+    reasoningEffort: "low" as ReasoningEffort,
+    turn: 1,
+    repetitionGuardEnabled: true,
+  });
+  // Drain the async generator; the settled result is the generator's return value.
+  let next = await gen.next();
+  while (!next.done) next = await gen.next();
+  return next.value;
+}
+
+function argChunks(name: string, args: string, deltaSize = 20): StreamChunk[] {
+  const chunks: StreamChunk[] = [{ toolCallDelta: { index: 0, id: "call_1", name } }];
+  for (let i = 0; i < args.length; i += deltaSize) {
+    chunks.push({ toolCallDelta: { index: 0, argumentsDelta: args.slice(i, i + deltaSize) } });
+  }
+  return chunks;
+}
+
+describe("streamModelResponse — repetition stall false positives", () => {
+  it("does not stall a write_file whose content legitimately repeats lines", async () => {
+    const line = "server.listen(8080);\\n";
+    const args = JSON.stringify({ path: "src/index.js", content: line.repeat(20) });
+    const result = await run(argChunks("write_file", args));
+
+    expect(result.repetitionStall).toBeUndefined();
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]!.function.arguments).toBe(args);
+  });
+
+  it("does not stall edit_file arguments containing a repeated SEARCH block", async () => {
+    const repeated = "  return sameValue;\n";
+    const args = JSON.stringify({
+      path: "src/mod.ts",
+      search: repeated.repeat(10),
+      replace: repeated.repeat(10),
+    });
+    const result = await run(argChunks("edit_file", args));
+
+    expect(result.repetitionStall).toBeUndefined();
+    expect(result.toolCalls[0]!.function.arguments).toBe(args);
+  });
+
+  it("still stalls a non-exempt tool whose arguments degenerate", async () => {
+    const args = "a".repeat(400);
+    const result = await run(argChunks("web_search", args));
+
+    expect(result.repetitionStall).toMatchObject({ channel: "tool_call", period: 1 });
+  });
+
+  it("does not stall long-form reasoning after three exact deliberation cycles", async () => {
+    const healthy = Array.from(
+      { length: 36 },
+      (_, i) =>
+        `Finding ${i}: checked session deletion path ${i * 11}, compared backend event ${i * 13}, and preserved distinct evidence ${i * 17}.`,
+    ).join("\n\n");
+    const cycle = Array.from(
+      { length: 8 },
+      (_, i) =>
+        `Actually, let me reconsider option ${i}. The backend and frontend state need to remain synchronized, so I should verify ordering case ${i * 19} before choosing the cleanest fix.`,
+    ).join("\n\n");
+    const reasoning = `${healthy}\n\n${cycle}\n\n${cycle}\n\n${cycle}`;
+    const chunks: StreamChunk[] = [];
+    for (let i = 0; i < reasoning.length; i += 17) {
+      chunks.push({ reasoningDelta: reasoning.slice(i, i + 17) });
+    }
+
+    const result = await run(chunks);
+
+    expect(result.repetitionStall).toBeUndefined();
+    expect(result.reasoningContent).toBe(reasoning);
+  });
+
+  it("does not stall healthy reasoning that restates a hypothesis 3x", async () => {
+    const healthy = Array.from(
+      { length: 30 },
+      (_, i) =>
+        `Step ${i}: inspected the retry branch, confirmed the 5xx path retries once, and noted finding ${i * 7}.`,
+    ).join("\n\n");
+    const para =
+      "Let me reconsider the providerErrorRetryable check. For a 500 error it should be true, unless the error is being thrown as a 4xx by the parse path. But opencode uses chat-completions, not responses, so that is unlikely.";
+    const reasoning = `${healthy}\n\n${`${para}\n`.repeat(3)}`;
+    const chunks: StreamChunk[] = [];
+    for (let i = 0; i < reasoning.length; i += 17) {
+      chunks.push({ reasoningDelta: reasoning.slice(i, i + 17) });
+    }
+
+    const result = await run(chunks);
+
+    expect(result.repetitionStall).toBeUndefined();
+    expect(result.reasoningContent).toBe(reasoning);
+  });
+
+  it("does not stall reasoning that emits comment rules and a markdown table", async () => {
+    // Regression: the whitespace-stripped stream turns a divider banner and a
+    // separator row into long pipe/dash runs. While each is the stream tail it
+    // used to look like degeneration and aborted the channel.
+    const rule = "-".repeat(60);
+    const banner = Array.from({ length: 6 }, () => rule).join("\n");
+    const table = ["| Name | Value |", "|------|-------|", "| a | 1 |", "| b | 2 |"].join("\n");
+    const reasoning = `Findings:\n\n${banner}\n\n${table}\n\nDone.`;
+    const chunks: StreamChunk[] = [];
+    for (let i = 0; i < reasoning.length; i += 17) {
+      chunks.push({ reasoningDelta: reasoning.slice(i, i + 17) });
+    }
+
+    const result = await run(chunks);
+
+    expect(result.repetitionStall).toBeUndefined();
+    expect(result.reasoningContent).toBe(reasoning);
+  });
+});
+
+describe("streamModelResponse — Gemini thought signature", () => {
+  it("backfills a signature that arrives in a later frame onto an earlier call", async () => {
+    const chunks: StreamChunk[] = [
+      {
+        toolCallDelta: {
+          index: 0,
+          id: "call_1",
+          name: "todo_write",
+          argumentsDelta: '{"text":"x"}',
+        },
+      },
+      { thoughtSignature: "sig-late" },
+    ];
+
+    const result = await run(chunks);
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]!.thoughtSignature).toBe("sig-late");
+  });
+
+  it("leaves a call's own signature untouched when one is already present", async () => {
+    const chunks: StreamChunk[] = [
+      {
+        toolCallDelta: {
+          index: 0,
+          id: "call_1",
+          name: "todo_write",
+          argumentsDelta: '{"text":"x"}',
+          thoughtSignature: "sig-own",
+        },
+      },
+      { thoughtSignature: "sig-late" },
+    ];
+
+    const result = await run(chunks);
+
+    expect(result.toolCalls[0]!.thoughtSignature).toBe("sig-own");
+  });
+
+  it("backfills a signature from a sibling tool call when one tool call lacks it", async () => {
+    const chunks: StreamChunk[] = [
+      {
+        toolCallDelta: {
+          index: 0,
+          id: "call_1",
+          name: "web_search",
+          argumentsDelta: '{"query":"a"}',
+          thoughtSignature: "sig-call-1",
+        },
+      },
+      {
+        toolCallDelta: {
+          index: 1,
+          id: "call_2",
+          name: "read_file",
+          argumentsDelta: '{"path":"b"}',
+          // Lacks thoughtSignature
+        },
+      },
+    ];
+
+    const result = await run(chunks);
+
+    expect(result.toolCalls).toHaveLength(2);
+    expect(result.toolCalls[0]!.thoughtSignature).toBe("sig-call-1");
+    expect(result.toolCalls[1]!.thoughtSignature).toBe("sig-call-1");
+  });
+});

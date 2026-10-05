@@ -1,0 +1,103 @@
+// @vitest-environment jsdom
+
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  DEFAULT_VOICE_MODEL_ID,
+  VOICE_MODELS,
+  cacheRequestBelongsToModel,
+  deleteVoiceModelCache,
+  getActiveVoiceModelId,
+  getVoiceModelOption,
+  isVoiceModelDownloaded,
+  markVoiceModelDownloaded,
+  setActiveVoiceModelId,
+} from "./models";
+
+describe("Voice Models Registry", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("provides the 3 Whisper models plus Whistle", () => {
+    expect(VOICE_MODELS).toHaveLength(4);
+    expect(VOICE_MODELS.map((m) => m.id)).toEqual([
+      "whisper-tiny.en",
+      "Xenova/whisper-base.en",
+      "Xenova/whisper-small.en",
+      "whistle",
+    ]);
+  });
+
+  it("tags each model with its runtime engine", () => {
+    expect(VOICE_MODELS.filter((m) => m.engine === "transformers")).toHaveLength(3);
+    const whistle = getVoiceModelOption("whistle");
+    expect(whistle.engine).toBe("cactus");
+    expect(whistle.repoId).toBe("Cactus-Compute/whistle");
+    expect(whistle.weightsFile).toBe("whistle.cact");
+  });
+
+  it("defaults to the whisper-tiny.en model", () => {
+    expect(DEFAULT_VOICE_MODEL_ID).toBe("whisper-tiny.en");
+    expect(getActiveVoiceModelId()).toBe("whisper-tiny.en");
+  });
+
+  it("persists active voice model selection", () => {
+    setActiveVoiceModelId("Xenova/whisper-base.en");
+    expect(getActiveVoiceModelId()).toBe("Xenova/whisper-base.en");
+
+    setActiveVoiceModelId("Xenova/whisper-small.en");
+    expect(getActiveVoiceModelId()).toBe("Xenova/whisper-small.en");
+  });
+
+  it("looks up model options by id", () => {
+    const tiny = getVoiceModelOption("whisper-tiny.en");
+    expect(tiny.shortName).toBe("Tiny");
+
+    const base = getVoiceModelOption("Xenova/whisper-base.en");
+    expect(base.shortName).toBe("Base");
+
+    const small = getVoiceModelOption("Xenova/whisper-small.en");
+    expect(small.shortName).toBe("Small");
+
+    // Fallback for unknown id
+    const unknown = getVoiceModelOption("unknown-model");
+    expect(unknown.id).toBe("whisper-tiny.en");
+  });
+
+  it("uses one cache-request identity rule for repo and model ids", () => {
+    const model = getVoiceModelOption("Xenova/whisper-base.en");
+    expect(
+      cacheRequestBelongsToModel(
+        new Request(`https://huggingface.co/${model.repoId}/resolve/main/encoder_model.onnx`),
+        model,
+      ),
+    ).toBe(true);
+    expect(
+      cacheRequestBelongsToModel(
+        new Request(`https://cache.invalid/${model.id}/decoder_model.onnx`),
+        model,
+      ),
+    ).toBe(true);
+    expect(
+      cacheRequestBelongsToModel(
+        new Request("https://cache.invalid/another-model/encoder_model.onnx"),
+        model,
+      ),
+    ).toBe(false);
+  });
+
+  it("tracks and clears download state for remote models", async () => {
+    expect(await isVoiceModelDownloaded("Xenova/whisper-base.en")).toBe(false);
+
+    markVoiceModelDownloaded("Xenova/whisper-base.en", true);
+    expect(await isVoiceModelDownloaded("Xenova/whisper-base.en")).toBe(true);
+
+    setActiveVoiceModelId("Xenova/whisper-base.en");
+    expect(getActiveVoiceModelId()).toBe("Xenova/whisper-base.en");
+
+    await deleteVoiceModelCache("Xenova/whisper-base.en");
+    expect(await isVoiceModelDownloaded("Xenova/whisper-base.en")).toBe(false);
+    // Deleted active model resets to the default:
+    expect(getActiveVoiceModelId()).toBe("whisper-tiny.en");
+  });
+});

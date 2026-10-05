@@ -1,0 +1,1162 @@
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DeepSeekClient } from "../src/client.js";
+import { CacheFirstLoop } from "../src/loop.js";
+import { ImmutablePrefix } from "../src/memory/runtime.js";
+import {
+  appendSessionMessage,
+  archiveSession,
+  deleteSession,
+  ensureSessionDir,
+  findSessionsByPrefix,
+  firstFreeSessionName,
+  freshSessionName,
+  listSessions,
+  listSessionsForWorkspace,
+  loadSessionMessages,
+  loadSessionMeta,
+  migrateLegacyFlatSessions,
+  normalizeSessionMcpState,
+  normalizeWorkspace,
+  parseSessionTimestamp,
+  patchSessionMeta,
+  patchSessionWorkspaceIfMissing,
+  pruneStaleSessions,
+  renameSession,
+  resolveSession,
+  resolveSessionModelPrefs,
+  rewriteSession,
+  sanitizeName,
+  sessionDir,
+  sessionEventsPath,
+  sessionExists,
+  sessionMessagesPath,
+  sessionPath,
+  sessionRecency,
+  sessionsDir,
+  sortSessionsByCreationDescending,
+  sortSessionsDescending,
+  timestampSuffix,
+} from "../src/memory/session.js";
+
+describe("sanitizeName", () => {
+  it("keeps alphanumerics, CJK, dashes, underscores", () => {
+    expect(sanitizeName("hello-world_1")).toBe("hello-world_1");
+    expect(sanitizeName("我的对话")).toBe("我的对话");
+  });
+  it("replaces other characters with underscore", () => {
+    expect(sanitizeName("my/path:bad?")).toBe("my_path_bad_");
+  });
+  it("caps at 64 chars and defaults to 'default' when empty", () => {
+    expect(sanitizeName("")).toBe("default");
+    expect(sanitizeName("/:@!").length).toBeLessThanOrEqual(4);
+    expect(sanitizeName("a".repeat(200))).toHaveLength(64);
+  });
+});
+
+describe("session persistence", () => {
+  let tmp: string;
+  const realHome = homedir();
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "reasonix-session-"));
+    vi.stubEnv("USERPROFILE", tmp); // Windows
+    vi.stubEnv("HOME", tmp); // Unix
+    // os.homedir() is cached per-process on some platforms — override via spy.
+    vi.spyOn(require("node:os"), "homedir").mockReturnValue(tmp);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    if (existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("sessionPath lives inside the session's own folder", () => {
+    const p = sessionPath("demo");
+    expect(p).toContain(".reasonix");
+    expect(p).toContain("sessions");
+    expect(p.replace(/\\/g, "/")).toContain("sessions/demo/messages.jsonl");
+    expect(p.startsWith(tmp)).toBe(true);
+  });
+
+  it("loadSessionMessages returns [] when the file doesn't exist", () => {
+    expect(loadSessionMessages("ghost")).toEqual([]);
+  });
+
+  it("appendSessionMessage + loadSessionMessages round-trip", () => {
+    appendSessionMessage("foo", { role: "user", content: "hi" });
+    appendSessionMessage("foo", { role: "assistant", content: "hello" });
+    const msgs = loadSessionMessages("foo");
+    expect(msgs.length).toBe(2);
+    expect(msgs[0]).toEqual({ role: "user", content: "hi" });
+    expect(msgs[1]).toEqual({ role: "assistant", content: "hello" });
+  });
+
+  it("tolerates malformed lines (skips them)", () => {
+    appendSessionMessage("mix", { role: "user", content: "a" });
+    // inject a garbage line directly
+    const p = sessionPath("mix");
+    writeFileSync(p, `${readFileSync(p, "utf8")}not json\n`);
+    appendSessionMessage("mix", { role: "user", content: "b" });
+    const msgs = loadSessionMessages("mix");
+    expect(msgs.length).toBe(2);
+  });
+
+  it("rewriteSession snapshots a non-empty live transcript before replacing it", () => {
+    appendSessionMessage("safe-rewrite", { role: "user", content: "old" });
+
+    rewriteSession("safe-rewrite", [{ role: "user", content: "new" }]);
+
+    expect(loadSessionMessages("safe-rewrite")).toEqual([{ role: "user", content: "new" }]);
+    expect(readFileSync(`${sessionPath("safe-rewrite")}.bak`, "utf8")).toBe(
+      `${JSON.stringify({ role: "user", content: "old" })}\n`,
+    );
+  });
+
+  it("loadSessionMessages falls back to backup when the live transcript has no valid entries", () => {
+    appendSessionMessage("recover-corrupt", { role: "user", content: "saved" });
+    const p = sessionPath("recover-corrupt");
+    writeFileSync(`${p}.bak`, readFileSync(p, "utf8"));
+    writeFileSync(p, "not json\nalso not json\n");
+
+    expect(loadSessionMessages("recover-corrupt")).toEqual([{ role: "user", content: "saved" }]);
+  });
+
+  it("loadSessionMessages does not resurrect backup when the live transcript is empty", () => {
+    appendSessionMessage("empty-live", { role: "user", content: "old" });
+    const p = sessionPath("empty-live");
+    writeFileSync(`${p}.bak`, readFileSync(p, "utf8"));
+    writeFileSync(p, "");
+
+    expect(loadSessionMessages("empty-live")).toEqual([]);
+  });
+
+  it("listSessions ignores jsonl backup sidecars", () => {
+    appendSessionMessage("visible", { role: "user", content: "x" });
+    writeFileSync(`${sessionPath("visible")}.bak`, `${JSON.stringify({ role: "user" })}\n`);
+
+    expect(listSessions().map((s) => s.name)).toEqual(["visible"]);
+  });
+
+  it("listSessions returns metadata sorted by mtime desc", () => {
+    appendSessionMessage("alpha", { role: "user", content: "x" });
+    appendSessionMessage("beta", { role: "user", content: "y" });
+    appendSessionMessage("beta", { role: "user", content: "z" });
+    const items = listSessions();
+    expect(items.length).toBe(2);
+    const names = items.map((s) => s.name);
+    expect(names).toContain("alpha");
+    expect(names).toContain("beta");
+    const beta = items.find((s) => s.name === "beta")!;
+    expect(beta.messageCount).toBe(2);
+    expect(beta.size).toBeGreaterThan(0);
+  });
+
+  it("parseSessionTimestamp extracts UTC millisecond timestamp from compact session names", () => {
+    const ts = parseSessionTimestamp("desktop-20260905143000-1");
+    expect(ts).toBe(Date.UTC(2026, 8, 5, 14, 30, 0));
+    const ts12 = parseSessionTimestamp("desktop-202609051430-1");
+    expect(ts12).toBe(Date.UTC(2026, 8, 5, 14, 30, 0));
+    expect(parseSessionTimestamp("custom-session-no-timestamp")).toBe(0);
+  });
+
+  it("sessionRecency takes the maximum of mtime and embedded creation timestamp", () => {
+    const embeddedTime = Date.UTC(2026, 8, 5, 12, 0, 0);
+    const earlierMtime = new Date(Date.UTC(2026, 8, 5, 10, 0, 0));
+    expect(sessionRecency({ name: "desktop-20260905120000-1", mtime: earlierMtime })).toBe(
+      embeddedTime,
+    );
+
+    const laterMtime = new Date(Date.UTC(2026, 8, 5, 15, 0, 0));
+    expect(sessionRecency({ name: "desktop-20260905120000-1", mtime: laterMtime })).toBe(
+      laterMtime.getTime(),
+    );
+  });
+
+  it("sortSessionsDescending deterministically orders newest sessions first with name tie-breaking", () => {
+    const sameMtime = new Date(1700000000000);
+    const sessions = [
+      { name: "desktop-20260901100000-1", mtime: sameMtime },
+      { name: "desktop-20260905140000-1", mtime: sameMtime },
+      { name: "desktop-20260903120000-1", mtime: sameMtime },
+    ];
+    sessions.sort(sortSessionsDescending);
+    expect(sessions.map((s) => s.name)).toEqual([
+      "desktop-20260905140000-1",
+      "desktop-20260903120000-1",
+      "desktop-20260901100000-1",
+    ]);
+  });
+
+  it("sortSessionsByCreationDescending orders by creation date even when a stale session was active more recently", () => {
+    const sessions = [
+      {
+        name: "desktop-20260901100000-1",
+        mtime: new Date(Date.UTC(2026, 8, 7)),
+        meta: { updatedAt: Date.UTC(2026, 8, 7).valueOf() },
+      },
+      { name: "desktop-20260905140000-1", mtime: new Date(Date.UTC(2026, 8, 5)), meta: {} },
+      { name: "desktop-20260903120000-1", mtime: new Date(Date.UTC(2026, 8, 3)), meta: {} },
+    ];
+    sessions.sort(sortSessionsByCreationDescending);
+    // Sep 1 session was active on Sep 7 — recency would put it first, but
+    // creation order keeps the Sep 5 session on top.
+    expect(sessions.map((s) => s.name)).toEqual([
+      "desktop-20260905140000-1",
+      "desktop-20260903120000-1",
+      "desktop-20260901100000-1",
+    ]);
+  });
+
+  it("sortSessionsDescending breaks identical recency ties using descending session name", () => {
+    const fixedMtime = new Date(0);
+    const sessions = [
+      { name: "plain-alpha", mtime: fixedMtime },
+      { name: "plain-charlie", mtime: fixedMtime },
+      { name: "plain-bravo", mtime: fixedMtime },
+    ];
+    sessions.sort(sortSessionsDescending);
+    expect(sessions.map((s) => s.name)).toEqual(["plain-charlie", "plain-bravo", "plain-alpha"]);
+  });
+
+  it("listSessions excludes .events.jsonl sidecars", () => {
+    appendSessionMessage("real", { role: "user", content: "x" });
+    writeFileSync(sessionPath("real").replace(/\.jsonl$/, ".events.jsonl"), '{"id":1}\n');
+    const names = listSessions().map((s) => s.name);
+    expect(names).toEqual(["real"]);
+  });
+
+  it("sessions minted via appendSessionMessage carry a write-once createdAt stamp", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2026, 8, 5, 12, 0, 0));
+    try {
+      appendSessionMessage("stamped", { role: "user", content: "x" });
+      expect(loadSessionMeta("stamped").createdAt).toBe(Date.UTC(2026, 8, 5, 12, 0, 0));
+
+      // Later activity refreshes updatedAt but must NOT touch createdAt.
+      vi.setSystemTime(Date.UTC(2026, 8, 6, 9, 0, 0));
+      patchSessionMeta("stamped", { summary: "renamed" });
+      const meta = loadSessionMeta("stamped");
+      expect(meta.createdAt).toBe(Date.UTC(2026, 8, 5, 12, 0, 0));
+      expect(meta.updatedAt).toBe(Date.UTC(2026, 8, 6, 9, 0, 0));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("patchSessionMeta updates createdAt when explicitly passed (reordering to now)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2026, 8, 5, 12, 0, 0));
+    try {
+      appendSessionMessage("reorder-test", { role: "user", content: "x" });
+      expect(loadSessionMeta("reorder-test").createdAt).toBe(Date.UTC(2026, 8, 5, 12, 0, 0));
+
+      const now = Date.UTC(2026, 8, 7, 10, 0, 0);
+      vi.setSystemTime(now);
+      patchSessionMeta("reorder-test", { createdAt: now });
+      const meta = loadSessionMeta("reorder-test");
+      expect(meta.createdAt).toBe(now);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("listSessions exposes createdAt from meta, falling back to the name timestamp", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2026, 8, 5, 12, 0, 0));
+    try {
+      appendSessionMessage("created-20260905120000", { role: "user", content: "x" });
+      const mintTs = Date.UTC(2026, 8, 5, 12, 0, 0);
+      expect(loadSessionMeta("created-20260905120000").createdAt).toBe(mintTs);
+      expect(listSessions().find((s) => s.name === "created-20260905120000")?.createdAt).toBe(
+        mintTs,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Legacy session with no meta stamp: createdAt derives from the name.
+    mkdirSync(sessionDir("legacy-202605251200"), { recursive: true });
+    writeFileSync(sessionPath("legacy-202605251200"), "", "utf8");
+    const legacy = listSessions().find((s) => s.name === "legacy-202605251200")!;
+    expect(legacy.createdAt).toBe(parseSessionTimestamp("legacy-202605251200"));
+  });
+
+  it("touching a legacy timestamped session anchors createdAt to its name — not to now", () => {
+    // Pre-existing session (no meta yet) whose real mint time lives in the name.
+    mkdirSync(sessionDir("legacy-202605251200"), { recursive: true });
+    writeFileSync(sessionPath("legacy-202605251200"), "", "utf8");
+    const mintTs = parseSessionTimestamp("legacy-202605251200");
+    vi.useFakeTimers();
+    // "Much later": if first touch stamped now, the session would leap to the
+    // top of the creation-ordered sidebar — the exact instability to avoid.
+    vi.setSystemTime(Date.UTC(2027, 0, 1));
+    try {
+      appendSessionMessage("legacy-202605251200", { role: "user", content: "x" });
+      const meta = loadSessionMeta("legacy-202605251200");
+      expect(meta.createdAt).toBe(mintTs);
+      expect(meta.updatedAt).toBe(Date.UTC(2027, 0, 1));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renameSession anchors the creation stamp when the new name loses its embedded timestamp", () => {
+    // No meta.json — the name timestamp is the ONLY creation evidence, and the
+    // rename orphans it. The stamp must be written into meta before that.
+    mkdirSync(sessionDir("plain-202605251200"), { recursive: true });
+    writeFileSync(sessionPath("plain-202605251200"), "", "utf8");
+    const mintTs = parseSessionTimestamp("plain-202605251200");
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2027, 0, 1));
+    try {
+      expect(renameSession("plain-202605251200", "renamed-plain")).toBe(true);
+      // The new name parses to 0, so meta is now the only source of truth.
+      expect(parseSessionTimestamp("renamed-plain")).toBe(0);
+      expect(loadSessionMeta("renamed-plain").createdAt).toBe(mintTs);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("listSessionsForWorkspace matches meta.workspace and hides untagged sessions", () => {
+    appendSessionMessage("here", { role: "user", content: "x" });
+    appendSessionMessage("there", { role: "user", content: "x" });
+    appendSessionMessage("untagged", { role: "user", content: "x" });
+    patchSessionMeta("here", { workspace: "/proj/a" });
+    patchSessionMeta("there", { workspace: "/proj/b" });
+    const names = listSessionsForWorkspace("/proj/a").map((s) => s.name);
+    expect(names).toEqual(["here"]);
+  });
+
+  it("listSessionsForWorkspace includes legacy code-<workspace> sessions missing workspace meta", () => {
+    appendSessionMessage("code-a-202605251200", { role: "user", content: "x" });
+    appendSessionMessage("code-b-202605251200", { role: "user", content: "x" });
+    appendSessionMessage("untagged", { role: "user", content: "x" });
+
+    const matched = listSessionsForWorkspace("/proj/a");
+
+    expect(matched.map((s) => s.name)).toEqual(["code-a-202605251200"]);
+    expect(matched[0]!.workspaceStatus).toBe("legacy_missing_meta");
+    expect(matched[0]!.meta.workspace).toBeUndefined();
+  });
+
+  it("patchSessionWorkspaceIfMissing backfills workspace meta on first legacy load", () => {
+    appendSessionMessage("code-a-202605251200", { role: "user", content: "x" });
+
+    expect(patchSessionWorkspaceIfMissing("code-a-202605251200", "/proj/a")).toBe(true);
+    expect(listSessionsForWorkspace("/proj/a")[0]!.workspaceStatus).toBe("matched");
+  });
+
+  it("listSessionsForWorkspace tolerates trailing-slash drift", () => {
+    appendSessionMessage("a", { role: "user", content: "x" });
+    patchSessionMeta("a", { workspace: "/proj/a/" });
+    const names = listSessionsForWorkspace("/proj/a").map((s) => s.name);
+    expect(names).toEqual(["a"]);
+  });
+
+  it("listSessionsForWorkspace preserves messageCount + size for matched sessions (issue #1179)", () => {
+    // Workspace pre-filter must not strip the metadata downstream consumers rely on.
+    appendSessionMessage("here", { role: "user", content: "hello" });
+    appendSessionMessage("here", { role: "assistant", content: "world" });
+    appendSessionMessage("elsewhere", { role: "user", content: "skip" });
+    patchSessionMeta("here", { workspace: "/proj/a" });
+    patchSessionMeta("elsewhere", { workspace: "/proj/b" });
+    const matched = listSessionsForWorkspace("/proj/a");
+    expect(matched.map((s) => s.name)).toEqual(["here"]);
+    expect(matched[0]!.messageCount).toBe(2);
+    expect(matched[0]!.size).toBeGreaterThan(0);
+    expect(matched[0]!.meta.workspace).toBe("/proj/a");
+  });
+
+  it("listSessions messageCount counts a final line without trailing newline", () => {
+    appendSessionMessage("tail", { role: "user", content: "a" });
+    // Simulate a hand-edited / corrupted save: append a line WITHOUT the
+    // trailing \n that appendSessionMessage normally writes.
+    const p = sessionPath("tail");
+    appendFileSync(p, JSON.stringify({ role: "user", content: "b" }), "utf8");
+    const item = listSessions().find((s) => s.name === "tail")!;
+    expect(item.messageCount).toBe(2);
+  });
+
+  it("renameSession also moves the .events.jsonl sidecar", () => {
+    appendSessionMessage("orig", { role: "user", content: "x" });
+    const oldEvents = sessionPath("orig").replace(/\.jsonl$/, ".events.jsonl");
+    writeFileSync(oldEvents, '{"id":1}\n');
+    expect(renameSession("orig", "renamed")).toBe(true);
+    expect(existsSync(oldEvents)).toBe(false);
+    expect(existsSync(sessionPath("renamed").replace(/\.jsonl$/, ".events.jsonl"))).toBe(true);
+  });
+
+  it("renameSession also moves the .jsonl.bak recovery sidecar", () => {
+    appendSessionMessage("bak-orig", { role: "user", content: "x" });
+    const oldBackup = `${sessionPath("bak-orig")}.bak`;
+    writeFileSync(oldBackup, `${JSON.stringify({ role: "user", content: "backup" })}\n`);
+
+    expect(renameSession("bak-orig", "bak-renamed")).toBe(true);
+
+    expect(existsSync(oldBackup)).toBe(false);
+    expect(existsSync(`${sessionPath("bak-renamed")}.bak`)).toBe(true);
+  });
+
+  it("deleteSession removes the .events.jsonl sidecar too", () => {
+    appendSessionMessage("trash", { role: "user", content: "x" });
+    const events = sessionPath("trash").replace(/\.jsonl$/, ".events.jsonl");
+    writeFileSync(events, '{"id":1}\n');
+    deleteSession("trash");
+    expect(existsSync(events)).toBe(false);
+  });
+
+  it("deleteSession removes the .jsonl.bak recovery sidecar too", () => {
+    appendSessionMessage("backup-trash", { role: "user", content: "x" });
+    const backup = `${sessionPath("backup-trash")}.bak`;
+    writeFileSync(backup, `${JSON.stringify({ role: "user", content: "backup" })}\n`);
+
+    deleteSession("backup-trash");
+
+    expect(existsSync(backup)).toBe(false);
+  });
+
+  it("deleteSession removes the file", () => {
+    appendSessionMessage("gone", { role: "user", content: "x" });
+    expect(existsSync(sessionPath("gone"))).toBe(true);
+    expect(deleteSession("gone")).toBe(true);
+    expect(existsSync(sessionPath("gone"))).toBe(false);
+    expect(deleteSession("gone")).toBe(false);
+  });
+
+  it("deleteSession removes the plan-state sidecar too", () => {
+    appendSessionMessage("plan-sidecar", { role: "user", content: "hi" });
+    const planPath = sessionPath("plan-sidecar").replace(/\.jsonl$/, ".plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        version: 1,
+        steps: [{ id: "s1", title: "t", action: "a" }],
+        completedStepIds: [],
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+    expect(existsSync(planPath)).toBe(true);
+    deleteSession("plan-sidecar");
+    expect(existsSync(sessionPath("plan-sidecar"))).toBe(false);
+    expect(existsSync(planPath)).toBe(false);
+  });
+
+  it("clear-all deletes every workspace session while leaving other workspaces intact", () => {
+    // Mirrors the daemon's session_clear loop: enumerate the workspace's
+    // sessions and deleteSession each, covering meta-tagged + legacy
+    // code-<base>- prefix matches, and leaving unrelated sessions alone.
+    appendSessionMessage("in-a", { role: "user", content: "x" });
+    appendSessionMessage("in-a2", { role: "user", content: "x" });
+    appendSessionMessage("code-a-202605251200", { role: "user", content: "x" });
+    appendSessionMessage("in-b", { role: "user", content: "x" });
+    appendSessionMessage("unrelated", { role: "user", content: "x" });
+    patchSessionMeta("in-a", { workspace: "/proj/a" });
+    patchSessionMeta("in-a2", { workspace: "/proj/a" });
+    patchSessionMeta("in-b", { workspace: "/proj/b" });
+
+    for (const s of listSessionsForWorkspace("/proj/a")) deleteSession(s.name);
+
+    expect(existsSync(sessionPath("in-a"))).toBe(false);
+    expect(existsSync(sessionPath("in-a2"))).toBe(false);
+    expect(existsSync(sessionPath("code-a-202605251200"))).toBe(false);
+    expect(existsSync(sessionPath("in-b"))).toBe(true);
+    expect(existsSync(sessionPath("unrelated"))).toBe(true);
+    expect(listSessionsForWorkspace("/proj/a")).toEqual([]);
+    expect(listSessionsForWorkspace("/proj/b").map((s) => s.name)).toEqual(["in-b"]);
+  });
+
+  it("pruneStaleSessions deletes sessions older than the cutoff and leaves fresh ones", () => {
+    // Three sessions: two backdated past the 90-day default, one
+    // fresh. Backdate via utimesSync since createTime/mtime is what
+    // listSessions reads.
+    appendSessionMessage("ancient1", { role: "user", content: "x" });
+    appendSessionMessage("ancient2", { role: "user", content: "x" });
+    appendSessionMessage("recent", { role: "user", content: "x" });
+    const oldDate = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000);
+    utimesSync(sessionPath("ancient1"), oldDate, oldDate);
+    utimesSync(sessionPath("ancient2"), oldDate, oldDate);
+
+    const removed = pruneStaleSessions(90);
+    expect(removed.sort()).toEqual(["ancient1", "ancient2"]);
+    expect(existsSync(sessionPath("ancient1"))).toBe(false);
+    expect(existsSync(sessionPath("ancient2"))).toBe(false);
+    expect(existsSync(sessionPath("recent"))).toBe(true);
+  });
+
+  it("pruneStaleSessions with a tighter cutoff catches sessions the default would skip", () => {
+    appendSessionMessage("yesterday", { role: "user", content: "x" });
+    const yest = new Date(Date.now() - 36 * 60 * 60 * 1000); // 1.5 days
+    utimesSync(sessionPath("yesterday"), yest, yest);
+
+    expect(pruneStaleSessions(90)).toEqual([]);
+    expect(existsSync(sessionPath("yesterday"))).toBe(true);
+    expect(pruneStaleSessions(1)).toEqual(["yesterday"]);
+    expect(existsSync(sessionPath("yesterday"))).toBe(false);
+  });
+
+  describe("archiveSession", () => {
+    it("returns null when the session file does not exist", () => {
+      expect(archiveSession("ghost")).toBeNull();
+    });
+
+    it("returns null when the session file is empty", () => {
+      appendSessionMessage("empty", { role: "user", content: "x" });
+      writeFileSync(sessionPath("empty"), "");
+      expect(archiveSession("empty")).toBeNull();
+      expect(existsSync(sessionPath("empty"))).toBe(true);
+    });
+
+    it("renames jsonl + sidecars to a timestamped archive name", () => {
+      appendSessionMessage("live", { role: "user", content: "hi" });
+      const events = sessionPath("live").replace(/\.jsonl$/, ".events.jsonl");
+      const meta = sessionPath("live").replace(/\.jsonl$/, ".meta.json");
+      const backup = `${sessionPath("live")}.bak`;
+      writeFileSync(events, '{"id":1}\n');
+      writeFileSync(meta, "{}");
+      writeFileSync(backup, `${JSON.stringify({ role: "user", content: "backup" })}\n`);
+
+      const archived = archiveSession("live");
+      expect(archived).toMatch(/^live__archive_\d{12}/);
+      expect(existsSync(sessionPath("live"))).toBe(false);
+      expect(existsSync(sessionPath(archived!))).toBe(true);
+      expect(existsSync(events)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+      expect(existsSync(backup)).toBe(false);
+      expect(existsSync(sessionPath(archived!).replace(/\.jsonl$/, ".events.jsonl"))).toBe(true);
+      expect(existsSync(sessionPath(archived!).replace(/\.jsonl$/, ".meta.json"))).toBe(true);
+      expect(existsSync(`${sessionPath(archived!)}.bak`)).toBe(true);
+      expect(loadSessionMessages(archived!)).toEqual([{ role: "user", content: "hi" }]);
+    });
+
+    it("disambiguates when called twice in the same minute", () => {
+      appendSessionMessage("rapid", { role: "user", content: "first" });
+      const a = archiveSession("rapid");
+      appendSessionMessage("rapid", { role: "user", content: "second" });
+      const b = archiveSession("rapid");
+      expect(a).not.toBeNull();
+      expect(b).not.toBeNull();
+      expect(a).not.toBe(b);
+      expect(loadSessionMessages(a!)).toEqual([{ role: "user", content: "first" }]);
+      expect(loadSessionMessages(b!)).toEqual([{ role: "user", content: "second" }]);
+    });
+
+    it("archive name is excluded from the resume-by-prefix lookup", () => {
+      appendSessionMessage("proj", { role: "user", content: "x" });
+      const archived = archiveSession("proj");
+      expect(archived).not.toBeNull();
+      expect(findSessionsByPrefix("proj-")).toEqual([]);
+    });
+
+    it("archive shows up in listSessions", () => {
+      appendSessionMessage("show", { role: "user", content: "x" });
+      const archived = archiveSession("show");
+      const names = listSessions().map((s) => s.name);
+      expect(names).toContain(archived);
+    });
+  });
+
+  describe("clearLog archive integration", () => {
+    it("CacheFirstLoop.clearLog archives the live transcript and starts an empty file", () => {
+      const client = new DeepSeekClient({
+        apiKey: "sk-test",
+        fetch: (async () => new Response()) as any,
+      });
+      const loop = new CacheFirstLoop({
+        client,
+        prefix: new ImmutablePrefix({ system: "s" }),
+        stream: false,
+        session: "clear-archive",
+      });
+      loop.appendAndPersist({ role: "user", content: "first turn" });
+      loop.appendAndPersist({ role: "assistant", content: "reply" });
+
+      const { dropped, archived } = loop.clearLog();
+      expect(dropped).toBe(2);
+      expect(archived).toMatch(/^clear-archive__archive_\d{12}/);
+      expect(loadSessionMessages(archived!)).toHaveLength(2);
+      expect(loadSessionMessages("clear-archive")).toEqual([]);
+      expect(loop.log.length).toBe(0);
+    });
+
+    it("clearLog returns archived: null when the session has nothing on disk", () => {
+      const client = new DeepSeekClient({
+        apiKey: "sk-test",
+        fetch: (async () => new Response()) as any,
+      });
+      const loop = new CacheFirstLoop({
+        client,
+        prefix: new ImmutablePrefix({ system: "s" }),
+        stream: false,
+        session: "clear-empty",
+      });
+      const { archived } = loop.clearLog();
+      expect(archived).toBeNull();
+    });
+  });
+
+  it("sessionsDir exists after first append", () => {
+    appendSessionMessage("s", { role: "user", content: "x" });
+    expect(existsSync(sessionsDir())).toBe(true);
+    expect(existsSync(dirname(sessionPath("s")))).toBe(true);
+  });
+
+  it("loop.appendAndPersist writes bang-style messages to the session file", () => {
+    // Regression: before 0.5.14 the bang handler called loop.log.append which
+    // only touched memory, so `!cmd` output was lost on session resume.
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      fetch: (async () => new Response()) as any,
+    });
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s" }),
+      stream: false,
+      session: "bang-persist",
+    });
+    loop.appendAndPersist({ role: "user", content: "[!ls]\n$ ls\n[exit 0]\nfile1 file2" });
+    const reloaded = loadSessionMessages("bang-persist");
+    expect(reloaded).toEqual([{ role: "user", content: "[!ls]\n$ ls\n[exit 0]\nfile1 file2" }]);
+  });
+
+  it("a detached active loop cannot recreate its deleted session", () => {
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      fetch: (async () => new Response()) as any,
+    });
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s" }),
+      stream: false,
+      session: "active-delete",
+    });
+    loop.appendAndPersist({ role: "user", content: "before deletion" });
+    loop.detachSessionPersistence();
+    expect(deleteSession("active-delete")).toBe(true);
+
+    // Simulate a late event yielded while an aborted turn unwinds.
+    loop.appendAndPersist({ role: "assistant", content: "late event" });
+
+    expect(sessionExists("active-delete")).toBe(false);
+    expect(loop.sessionName).toBeNull();
+  });
+
+  describe("timestampSuffix", () => {
+    it("returns a 12-character string of digits", () => {
+      const ts = timestampSuffix();
+      expect(ts).toMatch(/^\d{12}$/);
+    });
+
+    it("starts with the current year", () => {
+      const year = String(new Date().getFullYear());
+      expect(timestampSuffix().startsWith(year)).toBe(true);
+    });
+
+    it("is sortable — later calls produce lexicographically larger strings", () => {
+      const a = timestampSuffix();
+      const b = timestampSuffix();
+      // In the unlikely event both fall on the same minute, they're equal
+      expect(b.localeCompare(a)).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe("freshSessionName", () => {
+    it("defaults to a default-prefixed name when no current session", () => {
+      expect(freshSessionName(undefined)).toMatch(/^default-\d{14}$/);
+    });
+
+    it("preserves a non-timestamped base", () => {
+      expect(freshSessionName("foo")).toMatch(/^foo-\d{14}$/);
+    });
+
+    it("strips an existing 12-digit timestamp suffix before re-stamping", () => {
+      expect(freshSessionName("foo-202605120800")).toMatch(/^foo-\d{14}$/);
+    });
+
+    it("strips an existing 14-digit timestamp suffix before re-stamping", () => {
+      expect(freshSessionName("foo-20260512080000")).toMatch(/^foo-\d{14}$/);
+    });
+
+    it("keeps dashed bases intact (only the trailing timestamp is stripped)", () => {
+      expect(freshSessionName("my-app-bar")).toMatch(/^my-app-bar-\d{14}$/);
+    });
+  });
+
+  describe("firstFreeSessionName", () => {
+    it("returns the base when it holds no live session", () => {
+      expect(firstFreeSessionName("desktop-20260905143000-1", () => false)).toBe(
+        "desktop-20260905143000-1",
+      );
+    });
+
+    it("takes a -1 suffix when the base file already holds messages (same-second double new_chat)", () => {
+      const occupied = (name: string) => name === "desktop-20260905143000-1";
+      expect(firstFreeSessionName("desktop-20260905143000-1", occupied)).toBe(
+        "desktop-20260905143000-1-1",
+      );
+    });
+
+    it("skips past multiple occupied names", () => {
+      const taken = new Set(["desktop-20260905143000-1", "desktop-20260905143000-1-1"]);
+      expect(firstFreeSessionName("desktop-20260905143000-1", (n) => taken.has(n))).toBe(
+        "desktop-20260905143000-1-2",
+      );
+    });
+
+    it("reuses an empty (0-byte) session file instead of suffixing", () => {
+      // Empty files are deleted by new_chat's cleanup pass, so they are free.
+      const occupied = (name: string) => name === "other-session";
+      expect(firstFreeSessionName("desktop-20260905143000-1", occupied)).toBe(
+        "desktop-20260905143000-1",
+      );
+    });
+  });
+
+  describe("resolveSession", () => {
+    it("returns the base name when no prior sessions and no flags", () => {
+      const { resolved, preview } = resolveSession("fresh");
+      expect(resolved).toBe("fresh");
+      expect(preview).toBeUndefined();
+    });
+
+    it("generates a timestamped name on forceNew", () => {
+      const { resolved, preview } = resolveSession("demo", true);
+      expect(resolved).toMatch(/^demo-\d{12}$/);
+      expect(preview).toBeUndefined();
+    });
+
+    it("returns undefined when sessionName is undefined", () => {
+      const { resolved, preview } = resolveSession(undefined);
+      expect(resolved).toBeUndefined();
+      expect(preview).toBeUndefined();
+    });
+
+    it("picks the base name when no prefixed sessions exist and it has messages", () => {
+      appendSessionMessage("project", { role: "user", content: "hello" });
+      const { resolved, preview } = resolveSession("project");
+      expect(resolved).toBe("project");
+      expect(preview).toBeDefined();
+      expect(preview!.messageCount).toBe(1);
+    });
+
+    it("prefers a prefixed session with messages over a sidecar-only folder", () => {
+      appendSessionMessage("myproject", { role: "user", content: "real messages" });
+      // A folder with ONLY an events sidecar (no messages.jsonl) is not a
+      // usable resume target — the prefixed scan skips it.
+      const eventsPath = sessionEventsPath("myproject-20260430T200000");
+      mkdirSync(dirname(eventsPath), { recursive: true });
+      writeFileSync(eventsPath, "{}");
+
+      const { resolved, preview } = resolveSession("myproject");
+      expect(resolved).toBe("myproject");
+      expect(preview).toBeDefined();
+      expect(preview!.messageCount).toBe(1);
+    });
+
+    it("picks the latest prefixed session over the base name", () => {
+      appendSessionMessage("project", { role: "user", content: "old" });
+      appendSessionMessage("project-20260430T091500", { role: "user", content: "newer" });
+      // Create a later timestamp so it sorts first
+      const evenLater = new Date(Date.now() + 5000);
+      appendSessionMessage("project-20260430T154500", { role: "user", content: "newest" });
+      utimesSync(sessionPath("project-20260430T154500"), evenLater, evenLater);
+
+      const { resolved, preview } = resolveSession("project");
+      // Bare "project" is excluded — prefix lookup uses "project-" (with dash).
+      expect(resolved).toBe("project-20260430T154500");
+      expect(preview).toBeDefined();
+    });
+
+    it("forceResume resolves to the latest prefixed session", () => {
+      appendSessionMessage("app", { role: "user", content: "a" });
+      appendSessionMessage("app-20260430T091500", { role: "user", content: "b" });
+      const { resolved, preview } = resolveSession("app", false, true);
+      expect(resolved).toBe("app-20260430T091500");
+      expect(preview).toBeUndefined();
+    });
+
+    it("forceResume falls back to base name when no prefixed sessions exist", () => {
+      const { resolved, preview } = resolveSession("standalone", false, true);
+      expect(resolved).toBe("standalone");
+      expect(preview).toBeUndefined();
+    });
+  });
+
+  describe("findSessionsByPrefix", () => {
+    it("returns [] when the sessions directory does not exist", () => {
+      const dir = sessionsDir();
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+      expect(findSessionsByPrefix("anything")).toEqual([]);
+    });
+
+    it("returns session names matching the prefix, sorted alpha-reverse", () => {
+      // Filename sort — zero-padded YYYYMMDDHHmm sorts newest-first after reverse.
+      // Non-digit suffixes (letters > digits in ASCII) sort above timestamps.
+      appendSessionMessage("code-reasonix-old", { role: "user", content: "x" });
+      appendSessionMessage("code-reasonix-20260430T143200", { role: "user", content: "y" });
+      appendSessionMessage("code-reasonix-20260430T154500", { role: "user", content: "z" });
+
+      const result = findSessionsByPrefix("code-reasonix-");
+      expect(result).toEqual([
+        "code-reasonix-old",
+        "code-reasonix-20260430T154500",
+        "code-reasonix-20260430T143200",
+      ]);
+    });
+
+    it("does not return sessions that don't start with the prefix", () => {
+      appendSessionMessage("foo-bar", { role: "user", content: "a" });
+      appendSessionMessage("foo-baz", { role: "user", content: "b" });
+      appendSessionMessage("other-thing", { role: "user", content: "c" });
+
+      expect(findSessionsByPrefix("foo-")).toEqual(["foo-baz", "foo-bar"]);
+    });
+
+    it("only matches .jsonl files, not sidecar files", () => {
+      appendSessionMessage("alpha-001", { role: "user", content: "x" });
+      writeFileSync(sessionPath("alpha-001").replace(/\.jsonl$/, ".plan.json"), "{}");
+      writeFileSync(sessionPath("alpha-001").replace(/\.jsonl$/, ".pending.json"), "{}");
+      writeFileSync(sessionPath("alpha-001").replace(/\.jsonl$/, ".events.jsonl"), "{}");
+
+      const result = findSessionsByPrefix("alpha-");
+      expect(result).toEqual(["alpha-001"]);
+    });
+
+    it("prefix with trailing dash excludes the bare base session name", () => {
+      appendSessionMessage("project", { role: "user", content: "a" });
+      appendSessionMessage("project-20260430T143200", { role: "user", content: "b" });
+
+      expect(findSessionsByPrefix("project-")).toEqual(["project-20260430T143200"]);
+      // No-dash prefix matches both; reverse-sort puts the timestamped name
+      // first ("project-…" > "project" lexicographically).
+      expect(findSessionsByPrefix("project")).toEqual(["project-20260430T143200", "project"]);
+    });
+  });
+
+  describe("issue #333 — resume seeds cost carryover from session meta", () => {
+    it("CacheFirstLoop on resume preloads totalCostUsd / turnCount into stats", () => {
+      appendSessionMessage("c333", { role: "user", content: "hi" });
+      appendSessionMessage("c333", { role: "assistant", content: "hello" });
+      patchSessionMeta("c333", { totalCostUsd: 0.0123, turnCount: 5 });
+
+      const client = new DeepSeekClient({ apiKey: "sk-test" });
+      const loop = new CacheFirstLoop({
+        client,
+        prefix: new ImmutablePrefix({ system: "test" }),
+        session: "c333",
+      });
+
+      expect(loop.stats.totalCost).toBe(0.0123);
+      const summary = loop.stats.summary();
+      expect(summary.totalCostUsd).toBe(0.0123);
+      expect(summary.turns).toBe(5);
+    });
+
+    it("fresh session (no meta) leaves carryover at zero", () => {
+      const client = new DeepSeekClient({ apiKey: "sk-test" });
+      const loop = new CacheFirstLoop({
+        client,
+        prefix: new ImmutablePrefix({ system: "test" }),
+        session: "fresh-c333",
+      });
+      expect(loop.stats.totalCost).toBe(0);
+      expect(loop.stats.summary().turns).toBe(0);
+    });
+  });
+
+  describe("issue #364 — resume seeds cache + lastPromptTokens from session meta", () => {
+    it("CacheFirstLoop on resume preloads cache totals + last prompt tokens", () => {
+      appendSessionMessage("c364", { role: "user", content: "hi" });
+      appendSessionMessage("c364", { role: "assistant", content: "hello" });
+      patchSessionMeta("c364", {
+        cacheHitTokens: 366976,
+        cacheMissTokens: 109,
+        lastPromptTokens: 367085,
+      });
+
+      const client = new DeepSeekClient({ apiKey: "sk-test" });
+      const loop = new CacheFirstLoop({
+        client,
+        prefix: new ImmutablePrefix({ system: "test" }),
+        session: "c364",
+      });
+
+      const summary = loop.stats.summary();
+      expect(summary.cacheHitRatio).toBeCloseTo(366976 / (366976 + 109), 4);
+      expect(summary.lastPromptTokens).toBe(367085);
+    });
+  });
+
+  it("session meta round-trips model + reasoningEffort", () => {
+    patchSessionMeta("prefs", { model: "deepseek-v4-pro", reasoningEffort: "max" });
+    expect(loadSessionMeta("prefs")).toMatchObject({
+      model: "deepseek-v4-pro",
+      reasoningEffort: "max",
+    });
+    // An unrelated later patch must not clobber the stored prefs.
+    patchSessionMeta("prefs", { summary: "hello" });
+    expect(loadSessionMeta("prefs")).toMatchObject({
+      model: "deepseek-v4-pro",
+      reasoningEffort: "max",
+      summary: "hello",
+    });
+  });
+
+  it("session meta round-trips per-session MCP state", () => {
+    patchSessionMeta("mcpstate", {
+      mcp: { disabledServers: ["blender"], disabledTools: { blender: ["a", "b"] } },
+    });
+    expect(loadSessionMeta("mcpstate").mcp).toEqual({
+      disabledServers: ["blender"],
+      disabledTools: { blender: ["a", "b"] },
+    });
+    // A later unrelated patch must not clobber the stored MCP state.
+    patchSessionMeta("mcpstate", { summary: "chat" });
+    expect(loadSessionMeta("mcpstate").mcp).toEqual({
+      disabledServers: ["blender"],
+      disabledTools: { blender: ["a", "b"] },
+    });
+  });
+});
+
+describe("normalizeSessionMcpState", () => {
+  it("returns undefined for non-objects", () => {
+    expect(normalizeSessionMcpState(undefined)).toBeUndefined();
+    expect(normalizeSessionMcpState("nope")).toBeUndefined();
+    expect(normalizeSessionMcpState(null)).toBeUndefined();
+  });
+
+  it("collapses an empty/stateless object to undefined", () => {
+    expect(normalizeSessionMcpState({})).toBeUndefined();
+    expect(normalizeSessionMcpState({ disabledServers: [], disabledTools: {} })).toBeUndefined();
+  });
+
+  it("drops non-strings and empties, deduping what remains", () => {
+    expect(normalizeSessionMcpState({ disabledServers: ["a", "a", 3, ""] })).toEqual({
+      disabledServers: ["a"],
+    });
+    expect(
+      normalizeSessionMcpState({ disabledTools: { s: ["x", "x", 1], empty: [], bad: 5 } }),
+    ).toEqual({ disabledTools: { s: ["x"] } });
+  });
+});
+
+describe("resolveSessionModelPrefs", () => {
+  // subagentModel is undefined by default = subagents follow the main model.
+  const fallback = { model: "deepseek-v4-flash", reasoningEffort: "high" } as const;
+
+  it("prefers the stored model + effort + subagent override when present", () => {
+    expect(
+      resolveSessionModelPrefs(
+        { model: "deepseek-v4-pro", reasoningEffort: "max", subagentModel: "deepseek-v4-pro" },
+        fallback,
+      ),
+    ).toEqual({
+      model: "deepseek-v4-pro",
+      reasoningEffort: "max",
+      subagentModel: "deepseek-v4-pro",
+    });
+  });
+
+  it("falls back per-field when a value is missing (subagent undefined → follows main)", () => {
+    expect(resolveSessionModelPrefs({ model: "deepseek-v4-pro" }, fallback)).toEqual({
+      model: "deepseek-v4-pro",
+      reasoningEffort: "high",
+      subagentModel: undefined,
+    });
+    expect(
+      resolveSessionModelPrefs(
+        { reasoningEffort: "low", subagentModel: "deepseek-v4-pro" },
+        fallback,
+      ),
+    ).toEqual({
+      model: "deepseek-v4-flash",
+      reasoningEffort: "low",
+      subagentModel: "deepseek-v4-pro",
+    });
+  });
+
+  it("rejects blank or malformed values", () => {
+    expect(
+      resolveSessionModelPrefs(
+        { model: "   ", reasoningEffort: "ultra", subagentModel: "  " },
+        fallback,
+      ),
+    ).toEqual(fallback);
+    expect(
+      resolveSessionModelPrefs(
+        { model: "  deepseek-v4-pro  ", reasoningEffort: 42, subagentModel: 7 },
+        fallback,
+      ),
+    ).toEqual({
+      model: "deepseek-v4-pro",
+      reasoningEffort: "high",
+      subagentModel: undefined,
+    });
+  });
+});
+
+describe("normalizeWorkspace", () => {
+  it("collapses trailing slashes and `.` segments on posix", () => {
+    expect(normalizeWorkspace("/proj/a/", "linux")).toBe("/proj/a");
+    expect(normalizeWorkspace("/proj/./a", "linux")).toBe("/proj/a");
+  });
+
+  it("lowercases drive letter and unifies separators on win32", () => {
+    expect(normalizeWorkspace("C:\\Users\\Foo\\proj", "win32")).toBe("c:/Users/Foo/proj");
+    expect(normalizeWorkspace("c:/users/foo/proj", "win32")).toBe("c:/users/foo/proj");
+  });
+
+  it("yields the same canonical form for win32 drive-case + separator variants", () => {
+    const variants = [
+      "C:\\Users\\foo\\proj",
+      "c:\\Users\\foo\\proj",
+      "C:/Users/foo/proj",
+      "c:/Users/foo/proj/",
+    ];
+    const canonicals = variants.map((v) => normalizeWorkspace(v, "win32"));
+    for (const c of canonicals) expect(c).toBe(canonicals[0]);
+  });
+
+  it("returns empty string for undefined or empty input", () => {
+    expect(normalizeWorkspace(undefined)).toBe("");
+    expect(normalizeWorkspace("")).toBe("");
+  });
+});
+
+describe("folder-per-session layout + legacy migration", () => {
+  let tmp: string;
+  const realHome = homedir();
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "reasonix-session-layout-"));
+    vi.stubEnv("USERPROFILE", tmp);
+    vi.stubEnv("HOME", tmp);
+    vi.spyOn(require("node:os"), "homedir").mockReturnValue(tmp);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    if (existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("migrates legacy flat jsonl + sidecars into the session folder", () => {
+    const dir = sessionsDir();
+    mkdirSync(dir, { recursive: true });
+    const legacy = join(dir, "old-chat.jsonl");
+    writeFileSync(legacy, `${JSON.stringify({ role: "user", content: "hi" })}\n`);
+    writeFileSync(`${legacy.replace(/\.jsonl$/, "")}.meta.json`, JSON.stringify({ summary: "s" }));
+    writeFileSync(`${legacy.replace(/\.jsonl$/, "")}.events.jsonl`, "{}\n");
+
+    const { migrated } = migrateLegacyFlatSessions();
+    expect(migrated).toEqual(["old-chat"]);
+
+    // Everything lives in the folder now; nothing flat remains.
+    expect(existsSync(legacy)).toBe(false);
+    expect(loadSessionMessages("old-chat")).toEqual([{ role: "user", content: "hi" }]);
+    expect(loadSessionMeta("old-chat").summary).toBe("s");
+    expect(existsSync(sessionEventsPath("old-chat"))).toBe(true);
+  });
+
+  it("migration is idempotent — a migrated disk migrates nothing the second time", () => {
+    appendSessionMessage("already-foldered", { role: "user", content: "x" });
+    expect(migrateLegacyFlatSessions().migrated).toEqual([]);
+    expect(migrateLegacyFlatSessions().migrated).toEqual([]);
+    expect(loadSessionMessages("already-foldered")).toHaveLength(1);
+  });
+
+  it("migration keeps EMPTY legacy flat jsonls — an empty session is a real session", () => {
+    const dir = sessionsDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "empty-chat.jsonl"), "");
+
+    const { migrated, prunedEmpty } = migrateLegacyFlatSessions();
+    expect(migrated).toEqual(["empty-chat"]);
+    expect(prunedEmpty).toEqual([]);
+    // The empty transcript survives as an empty messages.jsonl in its folder.
+    expect(existsSync(join(dir, "empty-chat.jsonl"))).toBe(false);
+    expect(existsSync(sessionDir("empty-chat"))).toBe(true);
+    expect(loadSessionMessages("empty-chat")).toEqual([]);
+  });
+
+  it("listSessions lists every session folder — empty or not — and hides stray files", () => {
+    appendSessionMessage("real", { role: "user", content: "x" });
+    // An empty session folder (fresh New chat) IS a session; a stray file is not.
+    mkdirSync(sessionDir("empty"), { recursive: true });
+    writeFileSync(sessionMessagesPath("empty"), "");
+    writeFileSync(join(sessionsDir(), "stray.txt"), "noise");
+
+    const names = listSessions()
+      .map((s) => s.name)
+      .sort();
+    expect(names).toEqual(["empty", "real"]);
+    const emptyInfo = listSessions().find((s) => s.name === "empty");
+    expect(emptyInfo?.messageCount).toBe(0);
+  });
+
+  it("ensureSessionDir eagerly materializes folder + empty transcript + meta", () => {
+    ensureSessionDir("fresh-chat");
+    patchSessionMeta("fresh-chat", { workspace: "C:\\repo" });
+
+    expect(existsSync(sessionDir("fresh-chat"))).toBe(true);
+    expect(existsSync(sessionPath("fresh-chat"))).toBe(true);
+    expect(statSync(sessionPath("fresh-chat")).size).toBe(0);
+    // It exists, lists, and loads as an empty conversation.
+    expect(sessionExists("fresh-chat")).toBe(true);
+    expect(listSessions().map((s) => s.name)).toContain("fresh-chat");
+    expect(loadSessionMessages("fresh-chat")).toEqual([]);
+  });
+
+  it("updatedAt is stamped on append/patch and wins over a stale mtime when sorting", () => {
+    appendSessionMessage("older-activity", { role: "user", content: "x" });
+    // Give the first session an old explicit stamp and an old mtime.
+    patchSessionMeta("older-activity", { summary: "old" });
+    const old = Date.parse("2026-01-01T00:00:00.000Z");
+    // Backdate the meta's updatedAt by rewriting through the private path:
+    // patchSessionMeta always stamps now(), so simulate an old session by
+    // backdating both files afterwards.
+    utimesSync(sessionPath("older-activity"), old / 1000, old / 1000);
+
+    appendSessionMessage("newer-activity", { role: "user", content: "y" });
+    // newer-activity's meta.updatedAt is "now" — it must sort first even if
+    // filesystem mtimes were reordered by a copy/restore.
+    const sessions = listSessions();
+    expect(sessions[0]!.name).toBe("newer-activity");
+    expect(sessions[0]!.lastActive).toBeGreaterThan(old);
+  });
+
+  it("sessionRecency falls back through lastActive → mtime → name timestamp", () => {
+    const nameTs = Date.UTC(2026, 8, 5, 12, 0, 0);
+    const mtime = Date.UTC(2026, 8, 5, 10, 0, 0);
+
+    // No explicit stamp: max(mtime, name) as before.
+    expect(sessionRecency({ name: "desktop-20260905120000-1", mtime: new Date(mtime) })).toBe(
+      nameTs,
+    );
+
+    // Explicit stamp newer than both: wins.
+    const fresh = Date.UTC(2026, 8, 6, 0, 0, 0);
+    expect(
+      sessionRecency({
+        name: "desktop-20260905120000-1",
+        mtime: new Date(mtime),
+        lastActive: fresh,
+      }),
+    ).toBe(fresh);
+  });
+});

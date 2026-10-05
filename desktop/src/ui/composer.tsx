@@ -1,0 +1,1098 @@
+import { DEFAULT_MODEL, modelDisplayName } from "@reasonix/core-utils";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import {
+  type ChangeEvent,
+  Fragment,
+  type KeyboardEvent,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import type React from "react";
+import type { QueuedSend } from "../App";
+import { type TKey, t } from "../i18n";
+import { I } from "../icons";
+import { isImagePath, resolveImagePath } from "../image-attach";
+import { toWorkspaceRelative } from "../workspace-path";
+import { MODEL_CATALOG_GROUP_LABELS, deriveModelCatalog } from "../model-catalog";
+import type { EditMode, ReasoningEffort, UserImageAttachment } from "../protocol";
+import { AudioRecorder } from "../voice/audio-recorder";
+import { getSelectedAudioInputDeviceId } from "../voice/device";
+import { speechTranscriber } from "../voice/transcriber";
+import { DEFAULT_COMPOSER_ROWS, applyComposerTextareaSize } from "./composer-sizing";
+import { activationHandler } from "./keyboard";
+import { TimerSpan } from "./live";
+import { Shortcut } from "./shortcut";
+export type { EditMode, ReasoningEffort };
+
+export type QueuedSendItem = string | QueuedSend;
+
+type ModeEntry = { k: EditMode; label: TKey; icon: React.ReactNode; hint: TKey };
+
+const EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
+
+/** Abort a transcription that has not settled within this window. */
+const TRANSCRIBE_TIMEOUT_MS = 60_000;
+
+const MODE_INFO: ModeEntry[] = [
+  { k: "plan", label: "editMode.plan", icon: <I.list size={11} />, hint: "editMode.planHint" },
+  {
+    k: "review",
+    label: "editMode.review",
+    icon: <I.shield size={11} />,
+    hint: "editMode.reviewHint",
+  },
+  { k: "auto", label: "editMode.auto", icon: <I.zap size={11} />, hint: "editMode.autoHint" },
+  { k: "yolo", label: "editMode.yolo", icon: <I.warn size={11} />, hint: "editMode.yoloHint" },
+];
+
+export function ModeSwitch({
+  mode,
+  onChange,
+}: {
+  mode: EditMode;
+  onChange: (m: EditMode) => void;
+}) {
+  return (
+    <div className="mode-switch" data-mode={mode}>
+      {MODE_INFO.map((m) => (
+        <button
+          key={m.k}
+          type="button"
+          className="ms-seg"
+          data-on={mode === m.k}
+          data-k={m.k}
+          onClick={() => onChange(m.k)}
+          title={t(m.hint)}
+        >
+          {m.icon}
+          <span>{t(m.label)}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function Composer({
+  draft,
+  setDraft,
+  onSend,
+  quickSend,
+  onAbort,
+  disabled,
+  busy,
+  busyLabel,
+  modelLabel,
+  subagentModelLabel = DEFAULT_MODEL,
+  reasoningEffort,
+  onModelChange,
+  onSubagentModelChange = () => {},
+  onEffortChange,
+  editMode,
+  onEditModeChange,
+  /** Dynamically fetched Ollama models (`GET {base}/models`) — rendered as a scrollable
+   *  group under the known models so the hundreds Ollama offers stay browsable. */
+  ollamaModels,
+  ollamaModelsError,
+  ollamaHiddenCount,
+  ollamaVisionModels,
+  onRefreshOllamaModels,
+  antigravityModels,
+  antigravityModelsError,
+  onRefreshAntigravityModels,
+  opencodeModels,
+  opencodeModelsError,
+  opencodeVisionModels,
+  onRefreshOpencodeModels,
+  customModels,
+  enabledModels,
+  textareaRef,
+  workspaceDir,
+  queuedSends,
+  onQueueWhileBusy,
+  onDequeueSend,
+  onSendNow,
+  pendingImages,
+  onRemoveImage,
+  imageCapable,
+  onPasteImage,
+  onImageRejected,
+  onPickImage,
+  onVoiceError,
+  voiceAvailable = true,
+}: {
+  draft: string;
+  setDraft: React.Dispatch<React.SetStateAction<string>>;
+  onSend: (text?: string | QueuedSend) => void;
+  /** The active quick-send action — drives the composer's quick button. Absent → "proceed". */
+  quickSend?: { message: string; shorthand: string; label?: string };
+  onAbort: () => void;
+  disabled?: boolean;
+  busy?: boolean;
+  /** Replaces the hint-row left side while the agent is running — typically "Reasoning" or "Skill · <name>". */
+  busyLabel?: string;
+  modelLabel: string;
+  /** Per-tab subagent model shown in the menu's subagent column. Defaults to the shared model default. */
+  subagentModelLabel?: string;
+  reasoningEffort: ReasoningEffort;
+  onModelChange: (model: string) => void;
+  /** Called when the user picks a model in the subagent column. */
+  onSubagentModelChange?: (model: string) => void;
+  onEffortChange: (effort: ReasoningEffort) => void;
+  editMode: EditMode;
+  onEditModeChange: (mode: EditMode) => void;
+  /** Dynamically fetched Ollama models (raw ids, e.g. `llama3.1:latest`). */
+  ollamaModels?: string[];
+  /** Why the fetch failed — replaces the list so the failure isn't silent. */
+  ollamaModelsError?: string;
+  /** Models hidden because the account's plan doesn't cover them. */
+  ollamaHiddenCount?: number;
+  /** Re-fetch the Ollama model list (`force` bypasses the backend's cache). */
+  onRefreshOllamaModels?: (force?: boolean) => void;
+  /** Prefixed vision-capable Ollama ids (`ollama/llava`) — shown as a badge. */
+  ollamaVisionModels?: ReadonlySet<string>;
+  /** Exact model ids returned by the signed-in Antigravity account. */
+  antigravityModels?: string[];
+  /** Why the latest Antigravity auth or model refresh failed. */
+  antigravityModelsError?: string;
+  /** Re-fetch the signed-in account's Antigravity model ids. */
+  onRefreshAntigravityModels?: () => void;
+  opencodeModels?: string[];
+  opencodeModelsError?: string;
+  opencodeVisionModels?: ReadonlySet<string>;
+  onRefreshOpencodeModels?: (force?: boolean) => void;
+  /** Ids with an explicit `models` provider mapping in config.json — offered
+   *  in the general list because the user declared them. */
+  customModels?: string[];
+  /** Model ids offered by every picker (opt-in allow-list — unlisted models
+   *  are hidden). Global persistent setting (`enabledModels` in config.json),
+   *  edited from Settings → Models. */
+  enabledModels?: string[];
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  workspaceDir?: string;
+  /** Messages typed while busy=true; rendered as removable chips above the textarea and auto-drained FIFO on turn-complete. */
+  queuedSends?: QueuedSendItem[];
+  /** Called when the user presses Enter or quick send while busy with a non-empty draft, payload, or pending images. Owns clearing the draft and images. */
+  onQueueWhileBusy?: (
+    send: string | QueuedSend,
+    images?: { id: string; thumbnail: string; wire?: UserImageAttachment }[],
+  ) => void;
+  onDequeueSend?: (index: number) => void;
+  /** Sends the whole queue immediately — the app aborts the running turn so the drain fires on turn-complete. */
+  onSendNow?: () => void;
+  /** Vision attachments queued for the next send (ChatGPT models only). */
+  pendingImages?: { id: string; thumbnail: string; wire?: UserImageAttachment }[];
+  onRemoveImage?: (id: string) => void;
+  /** True when the active model accepts image content (gpt-*). */
+  imageCapable?: boolean;
+  /** Vision path for clipboard images — bytes downscaled and attached. */
+  onPasteImage?: (file: File) => Promise<void>;
+  /** Fired when a paste is dropped because the active model can't accept
+   *  image attachments. Lets the app explain and point at vision models. */
+  onImageRejected?: () => void;
+  /** Vision path for picked/dropped image paths — daemon reads the bytes. */
+  onPickImage?: (path: string) => void;
+  /** Surfaces every voice-input failure as a durable in-chat error notice. */
+  onVoiceError: (message: string) => void;
+  /** True when at least one voice model is downloaded — the voice button is
+   *  disabled (grayed out) when none are installed. */
+  voiceAvailable?: boolean;
+}) {
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [subagentMenuOpen, setSubagentMenuOpen] = useState(false);
+  const [effortMenuOpen, setEffortMenuOpen] = useState(false);
+  const modelWrapRef = useRef<HTMLDivElement>(null);
+  const subagentWrapRef = useRef<HTMLDivElement>(null);
+  const effortWrapRef = useRef<HTMLDivElement>(null);
+  // macOS Chinese IME fires compositionend BEFORE the confirm keydown.
+  const composingRef = useRef(false);
+  const compositionEndedAtRef = useRef(0);
+  const historyRef = useRef<string[]>([]);
+  const [browseIdx, setBrowseIdx] = useState(-1);
+  const savedDraftRef = useRef("");
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    applyComposerTextareaSize(textarea);
+  });
+
+  useEffect(() => {
+    if (!modelMenuOpen && !subagentMenuOpen && !effortMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const inside =
+        (modelWrapRef.current?.contains(target) ?? false) ||
+        (subagentWrapRef.current?.contains(target) ?? false) ||
+        (effortWrapRef.current?.contains(target) ?? false);
+      if (!inside) {
+        setModelMenuOpen(false);
+        setSubagentMenuOpen(false);
+        setEffortMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [modelMenuOpen, subagentMenuOpen, effortMenuOpen]);
+
+  const attachFile = async () => {
+    try {
+      const picked = await openFileDialog({
+        multiple: false,
+        directory: false,
+        defaultPath: workspaceDir,
+      });
+      if (typeof picked !== "string" || !picked) return;
+      if (imageCapable && onPickImage && isImagePath(picked)) {
+        onPickImage(resolveImagePath(picked, workspaceDir));
+        return;
+      }
+      const rel = toWorkspaceRelative(picked, workspaceDir);
+      setDraft((current) => (current ? `${current.replace(/\s+$/, "")} ${rel} ` : `${rel} `));
+      textareaRef.current?.focus();
+    } catch (err) {
+      console.error("attach failed", err);
+    }
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const imageItem = items.find((item) => item.type.startsWith("image/"));
+    if (!imageItem) return;
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    e.preventDefault();
+    if (imageCapable && onPasteImage) {
+      try {
+        await onPasteImage(file);
+      } catch (err) {
+        console.error("clipboard image attach failed", err);
+      }
+      return;
+    }
+    onImageRejected?.();
+  };
+
+  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    setDraft(e.target.value);
+  };
+
+  const recordSendAndReset = () => {
+    const trimmed = draft.trim();
+    historyRef.current.push(trimmed);
+    if (historyRef.current.length > 100) historyRef.current.shift();
+    setBrowseIdx(-1);
+  };
+
+  const handleProceed = () => {
+    if (disabled) return;
+    const trimmed = draft.trim();
+    if (trimmed) {
+      historyRef.current.push(trimmed);
+    }
+    const shorthand = quickSend?.shorthand || "proceed";
+    historyRef.current.push(shorthand);
+    if (historyRef.current.length > 100) {
+      historyRef.current.splice(0, historyRef.current.length - 100);
+    }
+    setBrowseIdx(-1);
+    setDraft("");
+    if (busy) {
+      if (onQueueWhileBusy) {
+        onQueueWhileBusy(
+          quickSend
+            ? { text: quickSend.message, echo: shorthand }
+            : { text: "proceed", echo: "proceed" },
+        );
+      }
+    } else if (quickSend) {
+      onSend({ text: quickSend.message, echo: shorthand });
+    } else {
+      onSend("proceed");
+    }
+  };
+
+  const navigateHistory = (dir: -1 | 1) => {
+    const hist = historyRef.current;
+    if (hist.length === 0) return;
+    if (dir === -1) {
+      const nextIdx = browseIdx + 1;
+      if (nextIdx < hist.length) {
+        if (browseIdx === -1) savedDraftRef.current = draft;
+        setBrowseIdx(nextIdx);
+        setDraft(hist[hist.length - 1 - nextIdx]);
+      }
+    } else {
+      if (browseIdx > 0) {
+        const nextIdx = browseIdx - 1;
+        setBrowseIdx(nextIdx);
+        setDraft(hist[hist.length - 1 - nextIdx]);
+      } else if (browseIdx === 0) {
+        setBrowseIdx(-1);
+        setDraft(savedDraftRef.current);
+      }
+    }
+  };
+
+  const [voiceState, setVoiceState] = useState<"idle" | "recording" | "transcribing">("idle");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const recorderRef = useRef<AudioRecorder | null>(null);
+  const transcribeAbortRef = useRef<AbortController | null>(null);
+  const transcribeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelReasonRef = useRef<"user" | "timeout" | null>(null);
+
+  const clearTranscribeWatchdog = () => {
+    if (transcribeTimerRef.current) {
+      clearTimeout(transcribeTimerRef.current);
+      transcribeTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      recorderRef.current?.cancel();
+      recorderRef.current = null;
+      transcribeAbortRef.current?.abort();
+      if (transcribeTimerRef.current) clearTimeout(transcribeTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!voiceError) return;
+    const timer = setTimeout(() => setVoiceError(null), 4000);
+    return () => clearTimeout(timer);
+  }, [voiceError]);
+
+  const reportVoiceError = (stage: string, err: unknown) => {
+    const reason = err instanceof Error ? err.message : String(err);
+    const message = `Voice input failed during ${stage}: ${reason || "Unknown error."}`;
+    setVoiceError(message);
+    onVoiceError(message);
+  };
+
+  const handleToggleVoice = async () => {
+    if (disabled) return;
+    setVoiceError(null);
+
+    if (voiceState === "transcribing") {
+      // A click while transcribing cancels the in-flight recognition.
+      cancelReasonRef.current = "user";
+      transcribeAbortRef.current?.abort();
+      return;
+    }
+
+    if (voiceState === "recording") {
+      const recorder = recorderRef.current;
+      if (!recorder) {
+        reportVoiceError(
+          "recording stop",
+          new Error("The active microphone recorder was unavailable."),
+        );
+        setVoiceState("idle");
+        return;
+      }
+      setVoiceState("transcribing");
+      const controller = new AbortController();
+      transcribeAbortRef.current = controller;
+      cancelReasonRef.current = null;
+      transcribeTimerRef.current = setTimeout(() => {
+        cancelReasonRef.current = "timeout";
+        transcribeAbortRef.current?.abort();
+      }, TRANSCRIBE_TIMEOUT_MS);
+      try {
+        const { audioData } = await recorder.stop();
+        recorderRef.current = null;
+        const { text } = await speechTranscriber.transcribe(audioData, {
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        if (!text.trim()) {
+          throw new Error("The speech recognizer returned no transcript.");
+        }
+        setDraft((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
+        textareaRef.current?.focus();
+      } catch (err) {
+        if (cancelReasonRef.current === "timeout") {
+          speechTranscriber.reset();
+          reportVoiceError(
+            "transcription",
+            new Error("Transcription timed out. The speech model may be stuck; it will reload."),
+          );
+        } else if (cancelReasonRef.current === null) {
+          reportVoiceError("recording or transcription", err);
+        }
+        // A user-initiated cancel is silent.
+      } finally {
+        clearTranscribeWatchdog();
+        transcribeAbortRef.current = null;
+        cancelReasonRef.current = null;
+        recorder.cancel();
+        recorderRef.current = null;
+        setVoiceState("idle");
+      }
+      return;
+    }
+
+    if (voiceState === "idle") {
+      const recorder = new AudioRecorder({
+        onError: (err) => reportVoiceError("audio cleanup", err),
+        deviceId: getSelectedAudioInputDeviceId(),
+      });
+      recorderRef.current = recorder;
+      try {
+        await recorder.start();
+        setVoiceState("recording");
+      } catch (err) {
+        recorder.cancel();
+        recorderRef.current = null;
+        reportVoiceError("microphone startup", err);
+        setVoiceState("idle");
+      }
+    }
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const ta = textareaRef.current;
+    if (e.key === "ArrowUp" && ta && ta.selectionStart === 0) {
+      e.preventDefault();
+      navigateHistory(-1);
+      return;
+    }
+    if (e.key === "ArrowDown" && ta && ta.selectionStart === draft.length) {
+      e.preventDefault();
+      navigateHistory(1);
+      return;
+    }
+    if (e.key === "Escape") {
+      if (modelMenuOpen || subagentMenuOpen || effortMenuOpen) {
+        e.preventDefault();
+        setModelMenuOpen(false);
+        setSubagentMenuOpen(false);
+        setEffortMenuOpen(false);
+        return;
+      }
+    }
+    if (composingRef.current || Date.now() - compositionEndedAtRef.current < 50) return;
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (busy) {
+        const text = draft.trim();
+        const hasPendingImages = pendingImages && pendingImages.length > 0;
+        if ((text || hasPendingImages) && onQueueWhileBusy) {
+          onQueueWhileBusy(text, hasPendingImages ? [...pendingImages] : undefined);
+        }
+      } else if (!disabled && (draft.trim() || (pendingImages && pendingImages.length > 0))) {
+        recordSendAndReset();
+        onSend();
+      }
+    }
+  };
+
+  const modelListProps = {
+    ollamaModels,
+    ollamaModelsError,
+    ollamaHiddenCount,
+    ollamaVisionModels,
+    antigravityModels,
+    antigravityModelsError,
+    opencodeModels,
+    opencodeModelsError,
+    opencodeVisionModels,
+    customModels,
+    enabledModels,
+    onRefreshOllamaModels,
+    onRefreshAntigravityModels,
+    onRefreshOpencodeModels,
+  };
+
+  return (
+    <div className="composer-wrap">
+      <div className="composer-inner">
+        {queuedSends && queuedSends.length > 0 ? (
+          <div className="composer-queued">
+            <span className="composer-queued-label">
+              {t("composer.queueCount", { n: queuedSends.length })}
+            </span>
+            {queuedSends.map((raw, i) => {
+              const item = typeof raw === "string" ? { text: raw } : raw;
+              const displayText = item.echo || item.text;
+              const images = item.images;
+              const hasImages = Boolean(images && images.length > 0);
+              const tooltip = [
+                item.echo && item.echo !== item.text ? `${item.echo}: ${item.text}` : item.text,
+                hasImages && images
+                  ? `(${images.length} image${images.length > 1 ? "s" : ""})`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" ");
+
+              return (
+                // biome-ignore lint/suspicious/noArrayIndexKey: queue is dequeue-by-index; chips are text-only leaves
+                <span key={i} className="composer-queue-chip" title={tooltip}>
+                  {hasImages && images ? (
+                    <span className="composer-queue-chip-images">
+                      {images.map((im) => (
+                        <img
+                          key={im.id}
+                          src={im.thumbnail}
+                          alt=""
+                          className="composer-queue-chip-img"
+                        />
+                      ))}
+                    </span>
+                  ) : null}
+                  {displayText ? <span className="text">{displayText}</span> : null}
+                  {onDequeueSend ? (
+                    <span
+                      className="x"
+                      onClick={() => onDequeueSend(i)}
+                      onKeyDown={activationHandler(() => onDequeueSend(i))}
+                    >
+                      <I.x size={10} />
+                    </span>
+                  ) : null}
+                </span>
+              );
+            })}
+            {onSendNow ? (
+              <button type="button" className="composer-queued-send" onClick={onSendNow}>
+                <I.send size={11} />
+                {t("composer.sendNow")}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="hint-row">
+          {busy && busyLabel ? (
+            <>
+              <span className="composer-busy-status">
+                <span className="composer-busy-pip" />
+                <span className="composer-busy-label">{busyLabel}</span>
+                <TimerSpan active={busy ?? false} className="composer-busy-time" />
+              </span>
+              <span className="grow" />
+              <ModeSwitch mode={editMode} onChange={onEditModeChange} />
+              <span className="hint-sep" />
+              <span>
+                <Shortcut keys={["enter"]} /> {t("composer.queue")} &nbsp;·&nbsp;{" "}
+                <Shortcut keys={["esc"]} /> {t("composer.interrupt")}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="grow" />
+              <ModeSwitch mode={editMode} onChange={onEditModeChange} />
+              <span className="hint-sep" />
+              <span>
+                <Shortcut keys={["enter"]} /> {t("composer.send")} &nbsp;{" "}
+                <Shortcut keys={["shift", "enter"]} /> {t("composer.newline")}
+              </span>
+            </>
+          )}
+        </div>
+
+        <div className="composer">
+          <textarea
+            ref={textareaRef}
+            value={draft}
+            placeholder={t("composer.placeholder")}
+            onChange={handleChange}
+            onPaste={(e) => void handlePaste(e)}
+            onKeyDown={handleKeyDown}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false;
+              compositionEndedAtRef.current = Date.now();
+            }}
+            rows={DEFAULT_COMPOSER_ROWS}
+            disabled={disabled}
+          />
+
+          {pendingImages && pendingImages.length > 0 ? (
+            <div className="composer-images">
+              {pendingImages.map((im) => (
+                <div key={im.id} className="composer-image">
+                  <img src={im.thumbnail} alt="" />
+                  {onRemoveImage ? (
+                    <button
+                      type="button"
+                      className="composer-image-remove"
+                      title={t("composer.removeImage")}
+                      onClick={() => onRemoveImage(im.id)}
+                    >
+                      <I.x size={11} />
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="composer-foot">
+            <button
+              type="button"
+              className="cf-btn"
+              title={t("composer.insertFile")}
+              onClick={() => void attachFile()}
+            >
+              <span className="ico">
+                <I.paperclip size={14} />
+              </span>
+            </button>
+
+            <span className="grow" />
+
+            <div ref={modelWrapRef} className="model-pill-wrap">
+              <button
+                type="button"
+                className="model-pill"
+                onClick={() => {
+                  setModelMenuOpen((v) => !v);
+                  setSubagentMenuOpen(false);
+                  setEffortMenuOpen(false);
+                }}
+                title={t("composer.switchModel")}
+              >
+                <I.brain size={12} />
+                <span>{modelDisplayName(modelLabel)}</span>
+                <I.chev size={10} />
+              </button>
+              {modelMenuOpen ? (
+                <MenuPop width={420}>
+                  <div className="ph">
+                    <span className="tok">M</span>
+                    <span>{t("composer.switchModel")}</span>
+                  </div>
+                  <ModelList
+                    activeModel={modelLabel}
+                    onPick={(m) => {
+                      onModelChange(m);
+                      setModelMenuOpen(false);
+                    }}
+                    {...modelListProps}
+                  />
+                </MenuPop>
+              ) : null}
+            </div>
+            <div ref={subagentWrapRef} className="model-pill-wrap">
+              <button
+                type="button"
+                className="model-pill subagent-pill"
+                onClick={() => {
+                  setSubagentMenuOpen((v) => !v);
+                  setModelMenuOpen(false);
+                  setEffortMenuOpen(false);
+                }}
+                title={t("composer.switchSubagentModel")}
+              >
+                <I.bot size={12} />
+                <span>{modelDisplayName(subagentModelLabel)}</span>
+                <I.chev size={10} />
+              </button>
+              {subagentMenuOpen ? (
+                <MenuPop width={420}>
+                  <div className="ph">
+                    <span className="tok">S</span>
+                    <span>{t("composer.switchSubagentModel")}</span>
+                  </div>
+                  <ModelList
+                    activeModel={subagentModelLabel}
+                    onPick={(m) => {
+                      onSubagentModelChange(m);
+                      setSubagentMenuOpen(false);
+                    }}
+                    {...modelListProps}
+                  />
+                </MenuPop>
+              ) : null}
+            </div>
+            <div ref={effortWrapRef} className="model-pill-wrap">
+              <button
+                type="button"
+                className="model-pill effort-pill"
+                onClick={() => {
+                  setEffortMenuOpen((v) => !v);
+                  setModelMenuOpen(false);
+                  setSubagentMenuOpen(false);
+                }}
+                title={t("composer.switchEffort")}
+              >
+                <I.cpu size={12} />
+                <span>{reasoningEffort}</span>
+                <I.chev size={10} />
+              </button>
+              {effortMenuOpen ? (
+                <MenuPop width={320}>
+                  <div className="ph">
+                    <span className="tok">E</span>
+                    <span>{t("composer.switchEffort")}</span>
+                  </div>
+                  <div className="popup-list effort-menu-list">
+                    {EFFORTS.map((e) => (
+                      <div
+                        key={e}
+                        className="popup-item"
+                        data-active={e === reasoningEffort}
+                        onClick={() => {
+                          onEffortChange(e);
+                          setEffortMenuOpen(false);
+                        }}
+                        onKeyDown={activationHandler(() => {
+                          onEffortChange(e);
+                          setEffortMenuOpen(false);
+                        })}
+                      >
+                        <span className="ico">
+                          <I.cpu size={12} />
+                        </span>
+                        <div className="nm">
+                          <span className="cmd">{e}</span>
+                          <div className="desc">{t(`effort.${e}Desc` as TKey)}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </MenuPop>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              className="quick-proceed-btn"
+              disabled={disabled}
+              onClick={handleProceed}
+              title={
+                quickSend
+                  ? `${quickSend.shorthand}: ${quickSend.message}`
+                  : t("composer.quickSendTitle")
+              }
+            >
+              <I.play size={11} />
+              <span>{quickSend?.shorthand || t("composer.proceed")}</span>
+            </button>
+            <button
+              type="button"
+              className={`voice-btn ${voiceState === "recording" ? "recording" : ""} ${voiceState === "transcribing" ? "transcribing" : ""}`}
+              disabled={disabled || !voiceAvailable}
+              aria-busy={voiceState === "transcribing"}
+              onClick={handleToggleVoice}
+              title={
+                !voiceAvailable
+                  ? t("composer.voiceUnavailable")
+                  : voiceError
+                    ? t("composer.voiceError", { error: voiceError })
+                    : voiceState === "recording"
+                      ? t("composer.voiceRecording")
+                      : voiceState === "transcribing"
+                        ? t("composer.voiceTranscribingCancel")
+                        : t("composer.voiceInput")
+              }
+            >
+              {voiceState === "recording" ? (
+                <I.stop size={13} />
+              ) : voiceState === "transcribing" ? (
+                <span
+                  className="spin voice-throbber processing-indicator"
+                  role="status"
+                  aria-label={t("composer.voiceTranscribing")}
+                  aria-live="polite"
+                />
+              ) : (
+                <I.mic size={13} />
+              )}
+              {voiceError ? <div className="voice-error-tooltip">{voiceError}</div> : null}
+            </button>
+            {busy ? (
+              <button
+                type="button"
+                className="send-btn stop"
+                onClick={onAbort}
+                title={t("composer.interrupt")}
+              >
+                <I.stop size={14} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="send-btn"
+                disabled={disabled || !draft.trim()}
+                onClick={() => {
+                  if (!disabled && draft.trim()) {
+                    recordSendAndReset();
+                    onSend();
+                  }
+                }}
+              >
+                <I.send size={14} />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Shared model picker column. Rendered once per selector (main agent and
+ *  subagent) so both expose the exact same model options — KNOWN_MODELS, the
+ *  signed-in Antigravity group, the Ollama catalog, and a custom-model input. */
+function ModelList({
+  activeModel,
+  onPick,
+  ollamaModels,
+  ollamaModelsError,
+  ollamaHiddenCount,
+  ollamaVisionModels,
+  antigravityModels,
+  antigravityModelsError,
+  opencodeModels,
+  opencodeModelsError,
+  opencodeVisionModels,
+  customModels,
+  enabledModels,
+  onRefreshOllamaModels,
+  onRefreshAntigravityModels,
+  onRefreshOpencodeModels,
+}: {
+  activeModel: string;
+  onPick: (model: string) => void;
+  ollamaModels?: string[];
+  ollamaModelsError?: string;
+  ollamaHiddenCount?: number;
+  ollamaVisionModels?: ReadonlySet<string>;
+  antigravityModels?: string[];
+  antigravityModelsError?: string;
+  opencodeModels?: string[];
+  opencodeModelsError?: string;
+  opencodeVisionModels?: ReadonlySet<string>;
+  /** Ids with an explicit `models` provider mapping — user-declared, so offered. */
+  customModels?: string[];
+  /** Model ids offered by the picker (opt-in allow-list). The active model
+   *  always stays visible so a running tab can never strand itself. */
+  enabledModels?: string[];
+  onRefreshOllamaModels?: (force?: boolean) => void;
+  onRefreshAntigravityModels?: () => void;
+  onRefreshOpencodeModels?: (force?: boolean) => void;
+}) {
+  const [draft, setDraft] = useState(activeModel);
+  const catalog = deriveModelCatalog({
+    discoveredAntigravityModels: antigravityModels,
+    customModels,
+    opencodeModels,
+    includeAntigravity: Boolean(antigravityModels),
+    ollamaVisionModels,
+    opencodeVisionModels,
+  });
+  const ollamaGroup = Boolean(ollamaModels && ollamaModels.length > 0);
+
+  // Global allow-list from Settings → Models: only enabled models are offered.
+  // The active model always stays visible so a running tab can never strand
+  // itself, even when it isn't on the allow-list (or the list is empty).
+  const enabledSet = new Set(enabledModels ?? []);
+  const visibleUnlessActive = (id: string): boolean => id === activeModel || enabledSet.has(id);
+
+  type GroupDef = {
+    key: string;
+    title: string;
+    models: readonly string[];
+    icon?: (props: { size?: number }) => React.ReactNode;
+    refresh?: () => void;
+    refreshTitle?: string;
+    error?: string;
+    note?: string;
+  };
+
+  const groups: GroupDef[] = [
+    ...catalog.groups.map(
+      (group): GroupDef => ({
+        ...group,
+        title: t(MODEL_CATALOG_GROUP_LABELS[group.key]),
+        ...(group.key === "opencode"
+          ? {
+              refresh: onRefreshOpencodeModels ? () => onRefreshOpencodeModels(true) : undefined,
+              refreshTitle: t("composer.modelOpencodeRefresh"),
+              error: opencodeModelsError
+                ? t("composer.modelOpencodeError", { error: opencodeModelsError })
+                : undefined,
+            }
+          : {}),
+        ...(group.key === "antigravity"
+          ? {
+              refresh: onRefreshAntigravityModels,
+              refreshTitle: t("composer.modelAntigravityRefresh"),
+              error: antigravityModelsError
+                ? t("composer.modelAntigravityError", { error: antigravityModelsError })
+                : undefined,
+            }
+          : {}),
+      }),
+    ),
+    ...(!catalog.groups.some((group) => group.key === "antigravity") && antigravityModelsError
+      ? [
+          {
+            key: "antigravity",
+            title: t("composer.modelAntigravityGroup"),
+            models: [],
+            refresh: onRefreshAntigravityModels,
+            refreshTitle: t("composer.modelAntigravityRefresh"),
+            error: t("composer.modelAntigravityError", { error: antigravityModelsError }),
+          },
+        ]
+      : []),
+    ...(ollamaGroup || ollamaModelsError
+      ? [
+          {
+            key: "ollama",
+            title: t("composer.modelOllamaGroup"),
+            models: (ollamaModels ?? []).map((id) => `ollama/${id}`),
+            icon: I.bot,
+            refresh: () => onRefreshOllamaModels?.(true),
+            refreshTitle: t("composer.modelOllamaRefresh"),
+            error:
+              ollamaModelsError && !ollamaGroup && activeModel.startsWith("ollama/")
+                ? t("composer.modelOllamaError", { error: ollamaModelsError })
+                : undefined,
+            note:
+              ollamaHiddenCount && ollamaHiddenCount > 0
+                ? t("composer.modelOllamaHidden", { count: ollamaHiddenCount })
+                : undefined,
+          },
+        ]
+      : []),
+  ];
+
+  const visibleGroups = groups
+    .map((group) => ({
+      ...group,
+      models: group.models.filter(visibleUnlessActive),
+    }))
+    .filter((group) => {
+      // Keep group headers that carry an error/refresh affordance even when
+      // every model in them is hidden; drop purely empty catalog groups.
+      if (group.error) return true;
+      if (group.key === "ollama" && ollamaModelsError) return true;
+      if (group.key === "antigravity" && antigravityModelsError) return true;
+      return group.models.length > 0;
+    });
+
+  return (
+    <div className="popup-list model-menu-list">
+      {enabledModels && enabledModels.length > 0 ? null : (
+        <div className="model-menu-error">{t("composer.modelNoneEnabled")}</div>
+      )}
+      {visibleGroups.map((group) => {
+        if (group.models.length === 0 && !group.error) return null;
+        const Icon = group.icon ?? I.brain;
+        return (
+          <Fragment key={group.key}>
+            <div className="model-menu-group">
+              <span className="grow">{group.title}</span>
+              {group.note ? <span className="model-menu-note">{group.note}</span> : null}
+              {group.refresh ? (
+                <button
+                  type="button"
+                  className="mini-btn"
+                  title={group.refreshTitle}
+                  onClick={group.refresh}
+                >
+                  <I.refresh size={10} />
+                </button>
+              ) : null}
+            </div>
+            {group.error ? <div className="model-menu-error">{group.error}</div> : null}
+            {group.models.map((model) => (
+              <div
+                key={model}
+                className="popup-item"
+                data-active={model === activeModel}
+                onClick={() => onPick(model)}
+                onKeyDown={activationHandler(() => onPick(model))}
+              >
+                <span className="ico">
+                  <Icon size={12} />
+                </span>
+                <div className="nm">
+                  <span className="cmd">{modelDisplayName(model)}</span>
+                </div>
+                {catalog.acceptsImages(model) ? <span className="badge">vision</span> : null}
+              </div>
+            ))}
+          </Fragment>
+        );
+      })}
+      <div className="model-menu-custom">
+        <input
+          className="field mono model-menu-custom-input"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="custom model id"
+        />
+        <button
+          type="button"
+          className="btn model-menu-custom-confirm"
+          disabled={!draft.trim() || draft.trim() === activeModel}
+          onClick={() => onPick(draft.trim())}
+        >
+          {t("composer.confirm")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Fixed-position popup anchored to its wrapper (the pill's `position:
+ *  relative` container). The picker sits inside the `.main` column, which has
+ *  `overflow: hidden` — an absolutely positioned popup would get clipped at
+ *  the sidebar boundary and render behind it. Pinning to the viewport escapes
+ *  the clip and stacks above the sidebar, anchored to the pill's box and
+ *  clamped to the window. */
+function MenuPop({ width, children }: { width: number; children: React.ReactNode }) {
+  const popRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [visible, setVisible] = useState(false);
+  useLayoutEffect(() => {
+    const position = () => {
+      const pop = popRef.current;
+      const wrap = pop?.parentElement; // the pill wrapper
+      if (!pop || !wrap) return;
+      const wr = wrap.getBoundingClientRect();
+      const pr = pop.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const pad = 8;
+      const w = Math.min(width, vw - 16);
+      const left = Math.max(pad, Math.min(wr.right - w, vw - w - pad));
+      let top = wr.top - pr.height - 6;
+      if (top < pad) top = wr.bottom + 6; // no room above the pill — open below
+      top = Math.max(pad, Math.min(top, vh - pr.height - pad));
+      setPos({ left, top });
+      setVisible(true);
+    };
+    position();
+    window.addEventListener("resize", position);
+    return () => window.removeEventListener("resize", position);
+  }, [width]);
+
+  return (
+    <div
+      ref={popRef}
+      className="popup"
+      style={{
+        position: "fixed",
+        left: pos?.left ?? 0,
+        top: pos?.top ?? 0,
+        bottom: "auto",
+        right: "auto",
+        width: `min(${width}px, calc(100vw - 16px))`,
+        visibility: visible ? undefined : "hidden",
+      }}
+    >
+      {children}
+    </div>
+  );
+}

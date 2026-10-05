@@ -1,0 +1,436 @@
+import { constants, type BigIntStats } from "node:fs";
+import { copyFile, mkdir, open, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { messageOf } from "@reasonix/core-utils";
+import { tmpSiblingPath } from "../core/atomic-write.js";
+import { readJsonFileSilentlyAsync } from "../core/json-file.js";
+import { SESSION_MESSAGES_FILENAME, SESSION_META_FILENAME } from "../memory/session-layout.js";
+
+const READ_BUFFER_BYTES = 64 * 1024;
+const MAX_SESSION_FILES = 100_000;
+const MAX_SESSION_BYTES = 1024 * 1024 * 1024;
+const PARALLEL_READS = 32;
+/** How many times to rescan a session file that keeps changing under us (its own
+ *  live turn appending) before recording the best-effort count. */
+const SESSION_CHANGE_RETRIES = 3;
+
+export interface SessionFileIdentity {
+  dev: string;
+  ino: string;
+  ctimeNs: string;
+  mtimeNs: string;
+  size: number;
+}
+
+export interface SessionDirectoryRecord<M> {
+  name: string;
+  path: string;
+  identity: SessionFileIdentity;
+  messageCount: number;
+  endedWithNewline: boolean;
+  mtime: Date;
+  meta: M;
+  metaIdentity: SessionFileIdentity | null;
+}
+
+export type SessionIndexCache = "hit" | "refresh" | "inflight";
+
+function identity(stats: BigIntStats): SessionFileIdentity {
+  return {
+    dev: String(stats.dev),
+    ino: String(stats.ino),
+    ctimeNs: String(stats.ctimeNs),
+    mtimeNs: String(stats.mtimeNs),
+    size: Number(stats.size),
+  };
+}
+
+function sameFile(a: SessionFileIdentity, b: SessionFileIdentity): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+function unchanged(a: SessionFileIdentity, b: SessionFileIdentity): boolean {
+  return sameFile(a, b) && a.ctimeNs === b.ctimeNs && a.mtimeNs === b.mtimeNs && a.size === b.size;
+}
+
+function metaUnchanged(a: SessionFileIdentity | null, b: SessionFileIdentity | null): boolean {
+  if (a === null) return b === null;
+  if (b === null) return false;
+  return unchanged(a, b);
+}
+
+interface PersistedSessionIndexRecord<M> {
+  name: string;
+  path: string;
+  identity: SessionFileIdentity;
+  messageCount: number;
+  endedWithNewline: boolean;
+  mtimeMs: number;
+  meta: M;
+  metaIdentity: SessionFileIdentity | null;
+}
+
+interface PersistedSessionIndex<M> {
+  /** v1 = flat <name>.jsonl layout (pre folder-per-session); v2 = <name>/messages.jsonl folders. */
+  version: 2;
+  directory: string;
+  records: PersistedSessionIndexRecord<M>[];
+}
+
+function isSessionFileIdentity(value: unknown): value is SessionFileIdentity {
+  if (typeof value !== "object" || value === null) return false;
+  const identity = value as Record<string, unknown>;
+  return (
+    typeof identity.dev === "string" &&
+    typeof identity.ino === "string" &&
+    typeof identity.ctimeNs === "string" &&
+    typeof identity.mtimeNs === "string" &&
+    typeof identity.size === "number"
+  );
+}
+
+function isPersistedSessionIndex(value: unknown): value is PersistedSessionIndex<unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  const index = value as Record<string, unknown>;
+  if (index.version !== 2 || typeof index.directory !== "string") return false;
+  if (!Array.isArray(index.records)) return false;
+  return index.records.every((record) => {
+    if (typeof record !== "object" || record === null) return false;
+    const entry = record as Record<string, unknown>;
+    return (
+      typeof entry.name === "string" &&
+      typeof entry.path === "string" &&
+      isSessionFileIdentity(entry.identity) &&
+      typeof entry.messageCount === "number" &&
+      typeof entry.endedWithNewline === "boolean" &&
+      typeof entry.mtimeMs === "number" &&
+      typeof entry.meta === "object" &&
+      entry.meta !== null &&
+      (entry.metaIdentity === null || isSessionFileIdentity(entry.metaIdentity))
+    );
+  });
+}
+
+async function countLines(
+  handle: Awaited<ReturnType<typeof open>>,
+  start: number,
+  length: number,
+): Promise<{ count: number; endedWithNewline: boolean; bytesRead: number }> {
+  const buffer = Buffer.allocUnsafe(Math.min(READ_BUFFER_BYTES, Math.max(1, length)));
+  let position = start;
+  let remaining = length;
+  let count = 0;
+  let scanned = 0;
+  let lastByte: number | undefined;
+  while (remaining > 0) {
+    const requested = Math.min(buffer.length, remaining);
+    const { bytesRead } = await handle.read(buffer, 0, requested, position);
+    // A live writer truncating the transcript mid-scan yields a short read.
+    // Stop rather than throwing: the caller re-stats, then retries or records
+    // the best-effort count for the range it actually read.
+    if (bytesRead === 0) break;
+    for (let index = 0; index < bytesRead; index += 1) {
+      if (buffer[index] === 0x0a) count += 1;
+    }
+    lastByte = buffer[bytesRead - 1];
+    position += bytesRead;
+    remaining -= bytesRead;
+    scanned += bytesRead;
+  }
+  const endedWithNewline = scanned > 0 && lastByte === 0x0a;
+  if (scanned > 0 && !endedWithNewline) count += 1;
+  return { count, endedWithNewline, bytesRead: scanned };
+}
+
+export class SessionDirectoryIndex<M> {
+  private records = new Map<string, SessionDirectoryRecord<M>>();
+  private inflight: {
+    generation: number;
+    value: Promise<readonly SessionDirectoryRecord<M>[]>;
+  } | null = null;
+  private generation = 0;
+  private refreshedAt = 0;
+  private loaded = false;
+  private cacheLoaded = false;
+
+  constructor(
+    private readonly directory: () => string,
+    private readonly loadMeta: (name: string) => M,
+    private readonly ttlMs = 30_000,
+    private readonly now: () => number = Date.now,
+    private readonly maxFiles = MAX_SESSION_FILES,
+    private readonly cacheFile?: string,
+  ) {}
+
+  load(): { value: Promise<readonly SessionDirectoryRecord<M>[]>; cache: SessionIndexCache } {
+    if (this.loaded && this.refreshedAt + this.ttlMs > this.now()) {
+      return { value: Promise.resolve([...this.records.values()]), cache: "hit" };
+    }
+    if (this.inflight?.generation === this.generation) {
+      return { value: this.inflight.value, cache: "inflight" };
+    }
+    const generation = this.generation;
+    const request = this.refresh(generation).finally(() => {
+      if (this.inflight?.value === request) this.inflight = null;
+    });
+    this.inflight = { generation, value: request };
+    return { value: request, cache: "refresh" };
+  }
+
+  invalidate(): void {
+    this.generation += 1;
+    this.refreshedAt = 0;
+  }
+
+  remove(name: string): void {
+    this.records.delete(join(this.directory(), name, SESSION_MESSAGES_FILENAME));
+    this.invalidate();
+    if (this.cacheFile !== undefined) void this.persistIndex(this.records);
+  }
+
+  private async refresh(generation: number): Promise<readonly SessionDirectoryRecord<M>[]> {
+    await this.seedFromCache();
+    let files: string[];
+    try {
+      // One folder per session — every session folder lists, empty or not (an
+      // empty session is a real session: New chat materializes it eagerly and
+      // only an explicit delete removes it). Stray non-directory entries are
+      // invisible.
+      files = (await readdir(this.directory(), { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+        .map((entry) => entry.name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.publish(generation, new Map());
+        return [];
+      }
+      throw error;
+    }
+    if (files.length > this.maxFiles) {
+      throw new Error(`session directory exceeds ${this.maxFiles} files`);
+    }
+    const results: Array<SessionDirectoryRecord<M> | null> = new Array(files.length).fill(null);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(PARALLEL_READS, files.length) }, async () => {
+      for (;;) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= files.length) return;
+        const name = files[index]!;
+        const path = join(this.directory(), name, SESSION_MESSAGES_FILENAME);
+        try {
+          results[index] = await this.readRecord(path, name, this.records.get(path));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw error;
+        }
+      }
+    });
+    await Promise.all(workers);
+    const next = new Map<string, SessionDirectoryRecord<M>>();
+    let changed = false;
+    for (let index = 0; index < files.length; index += 1) {
+      const record = results[index];
+      if (record === null || record === undefined) continue;
+      next.set(record.path, record);
+      if (record !== this.records.get(record.path)) changed = true;
+    }
+    if (next.size !== this.records.size) changed = true;
+    this.publish(generation, next);
+    if (changed && generation === this.generation && this.cacheFile !== undefined) {
+      await this.persistIndex(next);
+    }
+    return [...next.values()];
+  }
+
+  private async seedFromCache(): Promise<void> {
+    const cacheFile = this.cacheFile;
+    if (this.cacheLoaded || cacheFile === undefined) return;
+    this.cacheLoaded = true;
+    const cached = await readJsonFileSilentlyAsync(cacheFile, isPersistedSessionIndex);
+    if (cached === null || cached.directory !== this.directory()) return;
+    const seeded = new Map<string, SessionDirectoryRecord<M>>();
+    for (const record of cached.records) {
+      seeded.set(record.path, {
+        name: record.name,
+        path: record.path,
+        identity: record.identity,
+        messageCount: record.messageCount,
+        endedWithNewline: record.endedWithNewline,
+        mtime: new Date(record.mtimeMs),
+        meta: record.meta as M,
+        metaIdentity: record.metaIdentity,
+      });
+    }
+    this.records = seeded;
+  }
+
+  private async persistIndex(records: Map<string, SessionDirectoryRecord<M>>): Promise<void> {
+    const cacheFile = this.cacheFile;
+    if (cacheFile === undefined) return;
+    try {
+      const body = JSON.stringify(this.serialize(records));
+      await mkdir(dirname(cacheFile), { recursive: true });
+      const tmp = tmpSiblingPath(cacheFile);
+      try {
+        await writeFile(tmp, body, { encoding: "utf8", mode: 0o600 });
+        try {
+          await rename(tmp, cacheFile);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+          await copyFile(tmp, cacheFile);
+        }
+      } finally {
+        await rm(tmp, { force: true });
+      }
+    } catch (error) {
+      process.stderr.write(`reasonix: session index cache write failed — ${messageOf(error)}\n`);
+    }
+  }
+
+  private serialize(
+    records: Map<string, SessionDirectoryRecord<M>>,
+  ): PersistedSessionIndex<unknown> {
+    return {
+      version: 2,
+      directory: this.directory(),
+      records: [...records.values()].map((record) => ({
+        name: record.name,
+        path: record.path,
+        identity: record.identity,
+        messageCount: record.messageCount,
+        endedWithNewline: record.endedWithNewline,
+        mtimeMs: record.mtime.getTime(),
+        meta: record.meta,
+        metaIdentity: record.metaIdentity,
+      })),
+    };
+  }
+
+  private publish(generation: number, records: Map<string, SessionDirectoryRecord<M>>): void {
+    if (generation !== this.generation) return;
+    this.records = records;
+    this.refreshedAt = this.now();
+    this.loaded = true;
+  }
+
+  private async readRecord(
+    path: string,
+    name: string,
+    previous?: SessionDirectoryRecord<M>,
+  ): Promise<SessionDirectoryRecord<M>> {
+    const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+    let handle: Awaited<ReturnType<typeof open>> | null = null;
+    try {
+      handle = await open(path, constants.O_RDONLY | noFollow);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (!handle) {
+      const sessionDirPath = join(this.directory(), name);
+      const metaStats = await stat(join(sessionDirPath, SESSION_META_FILENAME), {
+        bigint: true,
+      }).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      const dirStats = await stat(sessionDirPath, { bigint: true }).catch(() => null);
+      if (!dirStats || !dirStats.isDirectory()) {
+        throw Object.assign(new Error(`session directory missing: ${name}`), { code: "ENOENT" });
+      }
+      const nextMetaIdentity = metaStats ? identity(metaStats) : null;
+      let meta: M;
+      if (previous !== undefined && metaUnchanged(previous.metaIdentity, nextMetaIdentity)) {
+        meta = previous.meta;
+      } else {
+        meta = this.loadMeta(name);
+      }
+      const mtime = metaStats
+        ? new Date(Number(metaStats.mtimeMs))
+        : new Date(Number(dirStats.mtimeMs));
+      return {
+        name,
+        path,
+        identity: identity(dirStats),
+        messageCount: 0,
+        endedWithNewline: false,
+        mtime,
+        meta,
+        metaIdentity: nextMetaIdentity,
+      };
+    }
+    try {
+      const fileStats = await handle.stat({ bigint: true });
+      if (!fileStats.isFile()) throw new Error(`session is not a regular file: ${name}`);
+      const fileIdentity = identity(fileStats);
+      if (fileIdentity.size > MAX_SESSION_BYTES) {
+        throw new Error(`session exceeds ${MAX_SESSION_BYTES} bytes: ${name}`);
+      }
+      const metaStats = await stat(join(this.directory(), name, SESSION_META_FILENAME), {
+        bigint: true,
+      }).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      const nextMetaIdentity = metaStats ? identity(metaStats) : null;
+      let meta: M;
+      let metaReused = false;
+      if (previous !== undefined && metaUnchanged(previous.metaIdentity, nextMetaIdentity)) {
+        meta = previous.meta;
+        metaReused = true;
+      } else {
+        meta = this.loadMeta(name);
+      }
+      if (previous && unchanged(previous.identity, fileIdentity)) {
+        return metaReused ? previous : { ...previous, meta, metaIdentity: nextMetaIdentity };
+      }
+      const appendOnly =
+        previous &&
+        sameFile(previous.identity, fileIdentity) &&
+        previous.identity.size < fileIdentity.size &&
+        previous.endedWithNewline;
+      let start = appendOnly ? previous.identity.size : 0;
+      let base = appendOnly ? previous.messageCount : 0;
+      // A session's transcript is appended to (or, on rewrite, truncated) by its
+      // own running turn, so it can change while we scan it. That is a benign
+      // race, not corruption: the line count still describes exactly the byte
+      // range we read, and the next refresh re-reads from the fresh identity.
+      // Rescan a few times for a settled count, then record the best effort —
+      // never reject the whole listing over a concurrent append (which surfaced
+      // to users as a spurious, agent-stopping `session_list failed`). The stat
+      // is taken on the already-open handle, so the file can never be swapped
+      // out under us; a change is only ever a size/mtime bump on this same file.
+      let scannedStats = fileStats;
+      let scanned = fileIdentity;
+      let counted = await countLines(handle, start, scanned.size - start);
+      for (let attempt = 0; ; attempt += 1) {
+        const finalStats = await handle.stat({ bigint: true });
+        const finalIdentity = identity(finalStats);
+        const settled =
+          unchanged(scanned, finalIdentity) && counted.bytesRead === scanned.size - start;
+        if (settled || attempt >= SESSION_CHANGE_RETRIES) break;
+        // Same file, still changing — rescan against the fresh identity, and
+        // drop the append range if the transcript shrank below its boundary.
+        scanned = finalIdentity;
+        scannedStats = finalStats;
+        if (scanned.size < start) {
+          start = 0;
+          base = 0;
+        }
+        counted = await countLines(handle, start, scanned.size - start);
+      }
+      return {
+        name,
+        path,
+        identity: scanned,
+        messageCount: base + counted.count,
+        endedWithNewline: counted.endedWithNewline,
+        mtime: new Date(Number(scannedStats.mtimeMs)),
+        meta,
+        metaIdentity: nextMetaIdentity,
+      };
+    } finally {
+      await handle.close();
+    }
+  }
+}

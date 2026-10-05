@@ -1,0 +1,249 @@
+name: Release
+
+# The ONLY workflow in this repo, and it runs ONLY when manually dispatched
+# from the Actions tab, never on push. Keeping version increments and the
+# Windows installer build off the critical path of every commit is the point.
+#
+# A manual run verifies on Windows (lint, typecheck, build, tests) and then
+# releases from the LATEST commit of the branch it is dispatched on (main by
+# default): the patch version is bumped from package.json, a `vX.Y.Z` tag +
+# `chore(release)` commit are pushed (via GITHUB_TOKEN, which does NOT
+# re-trigger workflows), the Windows installer is built and published to a
+# GitHub Release (published, not draft, because the updater's
+# `releases/latest/download/latest.json` endpoint only resolves for public
+# releases and a draft never appears there).
+#
+# `workflow_dispatch` with a `tag` input rebuilds an existing tag instead
+# of versioning from HEAD (e.g. v0.53.6; the tag must exist on the remote).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional existing tag to rebuild (e.g. v0.53.6). Empty = version from the latest commit."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+# Serialize manual runs so two dispatches can't race on the same tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify (windows · node ${{ matrix.node }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (biome)
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build (tsup)
+        run: npm run build
+
+      - name: Test (vitest + coverage)
+        run: npm run test:coverage
+
+      - name: Coverage job summary
+        if: always()
+        run: node scripts/coverage-summary.mjs
+
+      - name: Notify Discord on release failure
+        if: failure()
+        shell: bash
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_CI_WEBHOOK }}
+        run: |
+          test -n "$WEBHOOK_URL" || { echo "DISCORD_CI_WEBHOOK unset, skipping"; exit 0; }
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS -X POST -H "Content-Type: application/json" \
+            -d "{\"content\":\"❌ CI failed on \`${{ github.ref_name }}\` (windows-latest) — ${{ github.actor }}\n${RUN_URL}\"}" \
+            "$WEBHOOK_URL"
+
+  release:
+    name: build windows installer
+    needs: verify
+    runs-on: windows-latest
+    # secrets.* isn't accessible from step-level if:, so expose presence as a
+    # job-level env. Treat "true"/"false" strings as booleans downstream.
+    env:
+      HAS_WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - name: Resolve ref
+        id: ref
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "ref=refs/tags/${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            # Rebuild an existing tag: use it as-is, no new commit/tag.
+            echo "version=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "new=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Base = package.json version (NOT the latest tag — the fork has
+          # upstream v1.x tags that would corrupt a version-sort).
+          base=$(node -p "require('./package.json').version")
+          maj=${base%%.*}; rest=${base#*.}; min=${rest%%.*}; pat=${rest#*.}
+          while :; do
+            ver="${maj}.${min}.${pat}"
+            if ! git rev-parse -q --verify "refs/tags/v${ver}" >/dev/null; then
+              break
+            fi
+            pat=$((pat + 1))
+          done
+          echo "version=v${ver}" >> "$GITHUB_OUTPUT"
+          echo "new=1" >> "$GITHUB_OUTPUT"
+
+      - name: Bump package.json + desktop version
+        if: steps.version.outputs.new == '1'
+        shell: bash
+        run: |
+          ver="${{ steps.version.outputs.version }}"
+          semver="${ver#v}"
+          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('package.json','utf8'));j.version='${semver}';fs.writeFileSync('package.json',JSON.stringify(j,null,2)+'\n')"
+          node scripts/sync-desktop-version.mjs "${ver}"
+
+      # GITHUB_TOKEN pushes don't create new workflow runs, so this commit
+      # and tag never re-trigger this workflow. `git push origin HEAD:main`
+      # (not `git push origin main`) because checkout left us on a detached
+      # HEAD at GITHUB_SHA. If main moved while verify ran, the push is
+      # rejected and the run fails; re-dispatch to release the newer commit.
+      - name: Commit + tag + push
+        if: steps.version.outputs.new == '1'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json desktop/package.json desktop/src-tauri/tauri.conf.json desktop/src-tauri/Cargo.toml
+          git commit -m "chore(release): ${{ steps.version.outputs.version }}"
+          git tag "${{ steps.version.outputs.version }}"
+          git push origin HEAD:main
+          git push origin "${{ steps.version.outputs.version }}"
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Setup Rust (x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+          key: windows-x64
+
+      - name: Install root deps
+        # Desktop deps are installed explicitly below; skip the redundant copy
+        # this repo's postinstall would otherwise run (scripts/postinstall.mjs).
+        env:
+          REASONIX_SKIP_DESKTOP_POSTINSTALL: "1"
+        run: npm ci
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm ci
+
+      # The root CLI bundle (dist/) and the desktop frontend are built by
+      # tauri-action -> beforeBuildCommand (desktop/package.json `build:tauri`),
+      # so they are intentionally NOT built as separate steps here; doing so
+      # ran the same tsup + vite builds twice per job (~30s wasted).
+
+      # The bundled Node runtime (~79 MB node.exe) is a build input, not a build
+      # product, and bundle:node re-downloads it on every run otherwise. Cache
+      # it so the step no-ops on a hit; the key hashes the bundling script so a
+      # NODE_VERSION bump invalidates.
+      - name: Cache bundled Node runtime
+        uses: actions/cache@v5
+        with:
+          path: desktop/src-tauri/binaries/node.exe
+          key: node-runtime-${{ runner.os }}-${{ hashFiles('desktop/scripts/bundle-node.mjs') }}
+
+      - name: Download bundled Node runtime
+        working-directory: desktop
+        run: npm run bundle:node
+
+      # tauri-action defaults releaseCommitish to github.sha, which by release
+      # time is the pre-push dispatched tip: no longer a branch head and not
+      # tagged. Releasing a ref-less SHA while the repo carries
+      # .github/workflows/ changes needs the `workflows` scope, which the
+      # Actions token cannot hold -> 403 "Resource not accessible by
+      # integration" (github.blog: Enforcing workflow scope when creating a
+      # release). Pin the target to the dispatched ref, which always has a ref.
+
+      # tauri-action signs the bundle whenever the WINDOWS_CERTIFICATE_* env
+      # vars are defined — including when they're defined to the empty string,
+      # which is what `secrets.UNSET` evaluates to. Gate the signing block on
+      # the certificate being non-empty so unsigned builds don't trip
+      # `security import` / `signtool` on missing certs.
+      - name: Build Tauri bundle (unsigned)
+        if: env.HAS_WIN_CERT != 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: ${{ steps.version.outputs.version }}
+          releaseCommitish: ${{ github.ref_name }}
+          releaseName: Reasonix+ ${{ steps.version.outputs.version }}
+          releaseDraft: false
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc
+
+      - name: Build Tauri bundle (signed)
+        if: env.HAS_WIN_CERT == 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: ${{ steps.version.outputs.version }}
+          releaseCommitish: ${{ github.ref_name }}
+          releaseName: Reasonix+ ${{ steps.version.outputs.version }}
+          releaseDraft: false
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc

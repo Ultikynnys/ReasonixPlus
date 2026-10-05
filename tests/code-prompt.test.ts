@@ -1,0 +1,320 @@
+/** codeSystemPrompt — gitignore injection + system-append composition. */
+
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CODE_SYSTEM_PROMPT, codeSystemPrompt } from "../src/code/prompt.js";
+import { ImmutablePrefix } from "../src/memory/runtime.js";
+
+describe("codeSystemPrompt", () => {
+  let root: string;
+  let cfgPath: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "reasonix-prompt-"));
+    // The base prompt now depends on `enableSubagents` (knowledge-level gate) —
+    // pin it to a tmp config so containment assertions against the frozen
+    // CODE_SYSTEM_PROMPT don't go machine-dependent on a dev's real
+    // ~/.reasonix/config.json.
+    cfgPath = join(root, "config.json");
+    process.env.REASONIX_CONFIG = cfgPath;
+  });
+  afterEach(() => {
+    // `defaultConfigPath()` treats unset/undefined the same (env?.trim()), so an
+    // undefined assignment is enough to restore real-config resolution.
+    process.env.REASONIX_CONFIG = undefined;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("does not append a .gitignore section when none exists", () => {
+    // We can no longer assert raw equality with CODE_SYSTEM_PROMPT —
+    // the bundled builtin skills (`explore`, `research`) always inject
+    // a `# Skills` block via applySkillsIndex. Assert the absence of
+    // the .gitignore-specific section instead.
+    const out = codeSystemPrompt(root);
+    expect(out).not.toMatch(/# Project \.gitignore/);
+    expect(out).toContain(CODE_SYSTEM_PROMPT);
+  });
+
+  it("appends the .gitignore content as a fenced block", () => {
+    writeFileSync(join(root, ".gitignore"), "node_modules/\ndist/\n.env\n", "utf8");
+    const out = codeSystemPrompt(root);
+    expect(out.length).toBeGreaterThan(CODE_SYSTEM_PROMPT.length);
+    expect(out).toMatch(/# Project \.gitignore/);
+    expect(out).toContain("node_modules/");
+    expect(out).toContain(".env");
+  });
+
+  it("truncates a .gitignore larger than 2000 chars", () => {
+    // Baseline prompt with a tiny .gitignore — isolates the truncation
+    // delta from unrelated, fixed-size additions (e.g. the builtin Skills
+    // index), so the bound doesn't go stale as the prompt grows.
+    writeFileSync(join(root, ".gitignore"), "node_modules/\n", "utf8");
+    const small = codeSystemPrompt(root);
+    const huge = `${"# comment ".repeat(500)}\n`; // ~5000 chars
+    writeFileSync(join(root, ".gitignore"), huge, "utf8");
+    const out = codeSystemPrompt(root);
+    expect(out).toMatch(/truncated \d+ chars/);
+    // A 5 KB .gitignore must be capped near the 2000-char limit — only a
+    // little larger than the tiny-.gitignore baseline, not 5 KB larger.
+    expect(out.length).toBeLessThan(small.length + 2500);
+  });
+
+  it("reminds the model to skip dependency / build / VCS dirs", () => {
+    // We don't enumerate specific names in the prompt anymore (too
+    // ecosystem-biased); the principle is stated generically and the
+    // pinned .gitignore block is the authoritative denylist.
+    expect(CODE_SYSTEM_PROMPT).toMatch(/dependency.*build.*VCS|skip/i);
+  });
+
+  it("locks identity to this prompt — workspace files don't redefine the assistant", () => {
+    // Issue #550: a Hermes / persona-platform data dir at the workspace
+    // root used to make the model claim it was a sub-profile of that
+    // host product. Names a few specific markers so the rule is
+    // unambiguous on the model side.
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Identity is fixed by this prompt/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/SOUL\.md/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/not a sub-profile/);
+  });
+
+  it("strictly forbids silent turn endings and requires reasons to be stated", () => {
+    expect(CODE_SYSTEM_PROMPT).toMatch(/NEVER end a turn silently without explaining why/i);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Reason must ALWAYS be stated at the end/i);
+  });
+
+  it("uses direct, minimal, verifiable execution guidance", () => {
+    expect(CODE_SYSTEM_PROMPT).toMatch(/# Execution policy/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/smallest sufficient sequence of tools/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/verify every mutation before claiming success/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/continue from the last verified state/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Preserve every explicit requirement/);
+  });
+
+  it("keeps generated script tests near the script without making workspace-root cwd mandatory", () => {
+    expect(CODE_SYSTEM_PROMPT).toMatch(/default.*directory where the script was written/i);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/do not assume.*input.*data.*directory.*cwd/i);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/pass data paths as arguments/i);
+  });
+
+  describe("audit-mode rails (#610)", () => {
+    it("warns against theorizing on auto-preview output instead of reading the dispatch site", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Auto-preview is for locating, not auditing/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/range:"A-B"/);
+    });
+
+    it("covers doc freshness and architectural-state claims, not just runtime behavior", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/runtime behavior, current architectural state/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/whether a plan doc is still accurate/);
+    });
+
+    it("requires a flag-to-consumer trace before claiming runtime behavior", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Flag → consumer trace/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/parallelSafe\?: boolean/);
+    });
+
+    it("requires grep over enumeration for inventory claims (which tools have flag F?)", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/For inventory claims/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/grep the flag; don't enumerate from memory/);
+    });
+
+    it("forbids fabricated percentages without a measurement", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/No fabricated percentages/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/40-60% tokens/);
+    });
+
+    it("requires accounting for schema cost before proposing a new tool", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Schema cost is real/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/tighten prompt \/ existing tool/);
+    });
+
+    it("treats MEMORY.md feedback as part of the design space", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/MEMORY\.md is part of the design space/);
+    });
+
+    it("flags promoting user-facing features to model tools as a category error", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/User-facing ≠ model-facing ≠ library-facing/);
+    });
+
+    it("calls out library exports as a fourth surface so they aren't mistaken for dead code", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/library exports \(`src\/index\.ts`\)/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Treating a library export as "dead code"/);
+    });
+  });
+
+  describe("semantic_search routing fragment", () => {
+    it("is absent by default (no index registered)", () => {
+      const out = codeSystemPrompt(root);
+      expect(out).not.toMatch(/# Search routing/);
+    });
+
+    it("is appended when hasSemanticSearch is true", () => {
+      const out = codeSystemPrompt(root, { hasSemanticSearch: true });
+      expect(out).toMatch(/# Search routing/);
+      expect(out).toMatch(/semantic_search/);
+      expect(out).toMatch(/search_content/);
+      expect(out).toMatch(/Descriptive queries/);
+    });
+
+    it("places the routing fragment BEFORE the .gitignore section", () => {
+      // .gitignore content can change between sessions; the routing
+      // fragment must sit before it so the cacheable portion of the
+      // prompt remains contiguous.
+      writeFileSync(join(root, ".gitignore"), "node_modules\n");
+      const out = codeSystemPrompt(root, { hasSemanticSearch: true });
+      const routingAt = out.indexOf("# Search routing");
+      const gitignoreAt = out.indexOf("# Project .gitignore");
+      expect(routingAt).toBeGreaterThan(0);
+      expect(gitignoreAt).toBeGreaterThan(routingAt);
+    });
+  });
+
+  describe("modelId interpolation (#582)", () => {
+    it("defaults to flash when modelId is omitted (back-compat)", () => {
+      const out = codeSystemPrompt(root);
+      expect(out).toContain("`deepseek-v4-flash`");
+      expect(out).toContain("If asked which model you are, answer `deepseek-v4-flash`");
+    });
+
+    it("interpolates the supplied modelId without adding self-escalation controls", () => {
+      const out = codeSystemPrompt(root, { modelId: "deepseek-v4-pro" });
+      expect(out).toContain("`deepseek-v4-pro`");
+      expect(out).toContain("Deliver the strongest answer you can directly");
+      expect(out).toContain("If asked which model you are, answer `deepseek-v4-pro`");
+      expect(out).not.toContain("NEEDS_PRO");
+      expect(out).not.toMatch(/running on `?deepseek-v4-flash`?/);
+    });
+  });
+
+  describe("subagents disabled — knowledge-level gate", () => {
+    it("swaps the delegation section for a disabled note when enableSubagents=false", () => {
+      writeFileSync(cfgPath, JSON.stringify({ enableSubagents: false }), "utf8");
+      const out = codeSystemPrompt(root, { configPath: cfgPath });
+      expect(out).not.toContain("Delegating to subagents via Skills");
+      expect(out).toContain("# Subagents are disabled");
+      expect(out).toContain("Settings → Tools");
+    });
+
+    it("keeps the delegation section when the setting is absent (default on)", () => {
+      const out = codeSystemPrompt(root, { configPath: cfgPath });
+      expect(out).toContain("Delegating to subagents via Skills");
+      expect(out).not.toContain("# Subagents are disabled");
+    });
+
+    it("omits subagent skills from the skills index when disabled", () => {
+      writeFileSync(cfgPath, JSON.stringify({ enableSubagents: false }), "utf8");
+      const skillDir = join(root, ".reasonix", "skills", "my-audit");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, "SKILL.md"),
+        "---\nname: my-audit\ndescription: Run a custom audit\nrunAs: subagent\n---\n\nAudit body.\n",
+        "utf8",
+      );
+      const out = codeSystemPrompt(root, { configPath: cfgPath });
+      expect(out).not.toContain("my-audit");
+      // Inline skills still surface.
+      const skillDir2 = join(root, ".reasonix", "skills", "fmt");
+      mkdirSync(skillDir2, { recursive: true });
+      writeFileSync(
+        join(skillDir2, "SKILL.md"),
+        "---\nname: fmt\ndescription: Format the codebase\n---\n\nFormat body.\n",
+        "utf8",
+      );
+      const out2 = codeSystemPrompt(root, { configPath: cfgPath });
+      expect(out2).toContain("- fmt: Format the codebase");
+      expect(out2).not.toContain("my-audit");
+    });
+  });
+
+  describe("system append", () => {
+    it("keeps engineering lifecycle mode cache-neutral", () => {
+      const bare = codeSystemPrompt(root);
+      const off = codeSystemPrompt(root, { engineeringLifecycleMode: "off" });
+      const strict = codeSystemPrompt(root, { engineeringLifecycleMode: "strict" });
+
+      expect(bare).toBe(off);
+      expect(strict).toBe(off);
+      expect(strict).not.toMatch(/# Engineering lifecycle contract/);
+    });
+
+    it("keeps immutable prefix fingerprints identical across lifecycle modes", () => {
+      const off = new ImmutablePrefix({
+        system: codeSystemPrompt(root, { engineeringLifecycleMode: "off" }),
+        toolSpecs: [],
+      });
+      const strict = new ImmutablePrefix({
+        system: codeSystemPrompt(root, { engineeringLifecycleMode: "strict" }),
+        toolSpecs: [],
+      });
+
+      expect(strict.fingerprint).toBe(off.fingerprint);
+    });
+
+    it("does not add a User System Append section when neither option is provided", () => {
+      const out = codeSystemPrompt(root);
+      expect(out).not.toMatch(/# User System Append/);
+    });
+
+    it("preserves the base system prompt when appending", () => {
+      const out = codeSystemPrompt(root, { systemAppend: "Extra rule." });
+      expect(out).toContain(CODE_SYSTEM_PROMPT);
+    });
+
+    it("appends an inline systemAppend string under a # User System Append heading", () => {
+      const out = codeSystemPrompt(root, {
+        systemAppend: "Always inspect relevant files before editing.",
+      });
+      expect(out).toMatch(/# User System Append/);
+      expect(out).toContain("Always inspect relevant files before editing.");
+    });
+
+    it("appends systemAppendFile contents under the # User System Append heading", () => {
+      const out = codeSystemPrompt(root, { systemAppendFile: "Run tests before committing." });
+      expect(out).toMatch(/# User System Append/);
+      expect(out).toContain("Run tests before committing.");
+    });
+
+    it("appends inline prompt first, then file contents, when both are provided", () => {
+      const out = codeSystemPrompt(root, {
+        systemAppend: "First instruction.",
+        systemAppendFile: "Second instruction.",
+      });
+      expect(out).toMatch(/# User System Append/);
+      const appendIdx = out.indexOf("# User System Append");
+      const firstIdx = out.indexOf("First instruction.", appendIdx);
+      const secondIdx = out.indexOf("Second instruction.", appendIdx);
+      expect(firstIdx).toBeGreaterThan(0);
+      expect(secondIdx).toBeGreaterThan(firstIdx);
+    });
+
+    it("places the append section after the .gitignore section", () => {
+      writeFileSync(join(root, ".gitignore"), "node_modules\n");
+      const out = codeSystemPrompt(root, { systemAppend: "Post-gitignore instruction." });
+      const gitignoreAt = out.indexOf("# Project .gitignore");
+      const appendAt = out.indexOf("# User System Append");
+      expect(gitignoreAt).toBeGreaterThan(0);
+      expect(appendAt).toBeGreaterThan(gitignoreAt);
+    });
+  });
+
+  describe("MCP bridges awareness", () => {
+    it("injects configured MCP bridges block into the system prompt", () => {
+      writeFileSync(
+        join(root, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            blender: {
+              command: "uvx.exe",
+              args: ["--python", "3.11", "blender-mcp"],
+            },
+          },
+        }),
+        "utf8",
+      );
+      const out = codeSystemPrompt(root);
+      expect(out).toMatch(/# Configured MCP bridges/);
+      expect(out).toContain("- blender (stdio): uvx.exe --python 3.11 blender-mcp");
+      expect(out).toContain("list_mcp_bridges");
+    });
+  });
+});

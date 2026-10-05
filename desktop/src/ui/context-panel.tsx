@@ -1,0 +1,1816 @@
+import { invoke } from "@tauri-apps/api/core";
+import { openPath } from "@tauri-apps/plugin-opener";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent } from "react";
+import type { ActivePlan, SessionFile, Settings, UsageStats } from "../App";
+import { t, useLang } from "../i18n";
+import type { TKey } from "../i18n";
+import { I } from "../icons";
+import type {
+  ContextRawEvent,
+  McpSpecInfo,
+  MemoryDetail,
+  MemoryEntryInfo,
+  SettingsPatch,
+} from "../protocol";
+import { toWorkspaceAbsolute } from "../workspace-path";
+import { PanelErrorBoundary } from "./error-boundary";
+import { FileMenu } from "./file-menu";
+import { activationHandler } from "./keyboard";
+
+type Tab = "files" | "tools" | "context" | "memory" | "rules" | "plan";
+
+/** Fallback until the sidecar reports the real cap via $ctx_breakdown — the V4 context
+ *  window is 300K (DEEPSEEK_CONTEXT_TOKENS); never show the old 1M API ceiling. */
+const CONTEXT_MAX_TOKENS = 300_000;
+
+/** 1_234_567 → "1.2M" or 500_000 → "500K" — used for compaction-limit labels and slider display. */
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  return n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n));
+}
+
+export function ContextPanel({
+  settings,
+  usage,
+  mcpSpecs,
+  mcpBridged,
+  onToggleSessionMcp,
+  sessionFiles,
+  memory,
+  memoryDetail,
+  memoryResult,
+  onReadMemory,
+  onWriteMemory,
+  onDeleteMemory,
+  onExportMemories,
+  onImportMemories,
+  onDismissMemoryResult,
+  onCompact,
+  onAddRule,
+  onRemoveRule,
+  onSaveSettings,
+  onReadContext,
+  onWriteContext,
+  rawContext,
+  activePlan,
+}: {
+  settings: Settings | null;
+  usage: UsageStats;
+  mcpSpecs: McpSpecInfo[];
+  mcpBridged: boolean;
+  /** Per-session MCP enable/disable (Tools section) — edits THIS session, not the default. */
+  onToggleSessionMcp?: (name: string, disabled: boolean, tool?: string) => void;
+  sessionFiles: SessionFile[];
+  memory: MemoryEntryInfo[];
+  memoryDetail: MemoryDetail | null;
+  memoryResult: { ok: boolean; message: string } | null;
+  onReadMemory: (path: string) => void;
+  onWriteMemory: (
+    scope: "global" | "project",
+    name: string,
+    description: string,
+    body: string,
+  ) => void;
+  onDeleteMemory: (path: string) => void;
+  onExportMemories: () => void;
+  onImportMemories: (json: string) => void;
+  onDismissMemoryResult: () => void;
+  onCompact?: () => void;
+  onAddRule?: (ruleType: "shell" | "path", pattern: string) => void;
+  onRemoveRule?: (ruleType: "shell" | "path", pattern: string) => void;
+  onSaveSettings?: (patch: SettingsPatch) => void;
+  /** Latest $context_raw payload — the Raw context read side. */
+  rawContext?: Omit<ContextRawEvent, "type"> | null;
+  onReadContext?: () => void;
+  onWriteContext?: (text: string) => void;
+  activePlan?: ActivePlan | null;
+}) {
+  useLang();
+  const [tab, setTab] = useState<Tab>("files");
+  const reserved = usage.reservedTokens;
+  const lastHit = usage.lastCallCacheHit ?? 0;
+  const lastMiss = usage.lastCallCacheMiss ?? 0;
+  const observedLog = Math.max(0, lastHit + lastMiss - reserved);
+  const logTokens = Math.max(usage.liveLogTokens, observedLog);
+  const cached = Math.min(logTokens, Math.max(0, lastHit - reserved));
+  const used = Math.max(0, logTokens - cached);
+  // Real per-model cap from the sidecar (300K for V4) — the fallback below
+  // matches it so the bar is never wrong while the first snapshot is in flight.
+  const ctxMax = usage.ctxMax ?? CONTEXT_MAX_TOKENS;
+  const reservedPct = Math.min(100, (reserved / ctxMax) * 100);
+  const usedPct = Math.min(100, (used / ctxMax) * 100);
+  const cachedPct = Math.min(100, (cached / ctxMax) * 100);
+  const free = Math.max(0, ctxMax - reserved - used - cached);
+  return (
+    <aside className="ctx">
+      <div className="ctx-tabs">
+        <div
+          className="ctx-tab"
+          data-active={tab === "files"}
+          onClick={() => setTab("files")}
+          onKeyDown={activationHandler(() => setTab("files"))}
+        >
+          {t("contextPanel.filesTab")}
+        </div>
+        <div
+          className="ctx-tab"
+          data-active={tab === "tools"}
+          onClick={() => setTab("tools")}
+          onKeyDown={activationHandler(() => setTab("tools"))}
+        >
+          {t("contextPanel.toolsTab")}
+        </div>
+        <div
+          className="ctx-tab"
+          data-active={tab === "context"}
+          onClick={() => setTab("context")}
+          onKeyDown={activationHandler(() => setTab("context"))}
+        >
+          {t("contextPanel.rawTab")}
+        </div>
+        <div
+          className="ctx-tab"
+          data-active={tab === "memory"}
+          onClick={() => setTab("memory")}
+          onKeyDown={activationHandler(() => setTab("memory"))}
+        >
+          {t("contextPanel.memoryTab")}
+        </div>
+        <div
+          className="ctx-tab"
+          data-active={tab === "rules"}
+          onClick={() => setTab("rules")}
+          onKeyDown={activationHandler(() => setTab("rules"))}
+        >
+          {t("contextPanel.rulesTab")}
+        </div>
+        <div
+          className="ctx-tab"
+          data-active={tab === "plan"}
+          onClick={() => setTab("plan")}
+          onKeyDown={activationHandler(() => setTab("plan"))}
+        >
+          {t("contextPanel.planTab")}
+        </div>
+      </div>
+
+      <div className="ctx-body">
+        <div className="ctx-block">
+          <div className="h">
+            <span>{t("contextPanel.contextTokens")}</span>
+            <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {(reserved + used + cached).toLocaleString()} / {ctxMax.toLocaleString()}
+              {onCompact ? (
+                <button
+                  type="button"
+                  className="mini-btn"
+                  title={t("contextPanel.compactBtnTooltip")}
+                  onClick={onCompact}
+                >
+                  <I.archive size={11} />
+                  <span style={{ marginLeft: 3, fontSize: 10.5 }}>
+                    {t("contextPanel.compactBtn")}
+                  </span>
+                </button>
+              ) : null}
+            </span>
+          </div>
+          <div className="meter">
+            <span className="rsvd" style={{ width: `${reservedPct}%` }} />
+            <span className="cached" style={{ width: `${cachedPct}%` }} />
+            <span className="used" style={{ width: `${usedPct}%` }} />
+            {/* Auto-compaction limits (context-manager.ts): fold 75% / forced summary 80% */}
+            <span
+              className={`meter-tick fold ${settings?.disableAutoCompaction ? "disabled" : ""}`}
+              style={{ left: "75%", opacity: settings?.disableAutoCompaction ? 0.3 : undefined }}
+              title={
+                settings?.disableAutoCompaction
+                  ? t("contextPanel.autoCompactionDisabledTooltip")
+                  : t("contextPanel.foldTick", {
+                      tokens: fmtCompact(ctxMax * 0.75),
+                    })
+              }
+            />
+            <span
+              className={`meter-tick force ${settings?.disableAutoCompaction ? "disabled" : ""}`}
+              style={{ left: "80%", opacity: settings?.disableAutoCompaction ? 0.3 : undefined }}
+              title={
+                settings?.disableAutoCompaction
+                  ? t("contextPanel.autoCompactionDisabledTooltip")
+                  : t("contextPanel.forceTick", {
+                      tokens: fmtCompact(ctxMax * 0.8),
+                    })
+              }
+            />
+          </div>
+          <div className="legend">
+            <span className="l">
+              <span className="sw r" />
+              {t("contextPanel.reservedKey")} <span className="v">{reserved.toLocaleString()}</span>
+            </span>
+            <span className="l">
+              <span className="sw c" />
+              {t("contextPanel.cacheKey")} <span className="v">{cached.toLocaleString()}</span>
+            </span>
+            <span className="l">
+              <span className="sw u" />
+              {t("contextPanel.usedKey")} <span className="v">{used.toLocaleString()}</span>
+            </span>
+            <span className="l">
+              {t("contextPanel.freeKey")} <span className="v">{free.toLocaleString()}</span>
+            </span>
+            <span className="l">
+              <span className="sw z" />
+              {settings?.disableAutoCompaction
+                ? t("contextPanel.compactionDisabled")
+                : t("contextPanel.compactionAt", {
+                    fold: fmtCompact(ctxMax * 0.75),
+                    force: fmtCompact(ctxMax * 0.8),
+                  })}
+            </span>
+          </div>
+        </div>
+
+        <PanelErrorBoundary key={tab} label={tab}>
+          {tab === "files" && <CtxFiles files={sessionFiles} settings={settings} />}
+          {tab === "tools" && (
+            <CtxTools
+              specs={mcpSpecs}
+              bridged={mcpBridged}
+              settings={settings}
+              usage={usage}
+              onSaveSettings={onSaveSettings}
+              onToggleSessionMcp={onToggleSessionMcp}
+            />
+          )}
+          {tab === "context" && (
+            <CtxRaw raw={rawContext ?? null} onRead={onReadContext} onWrite={onWriteContext} />
+          )}
+          {tab === "memory" && (
+            <CtxMemory
+              entries={memory}
+              detail={memoryDetail}
+              result={memoryResult}
+              onRead={onReadMemory}
+              onWrite={onWriteMemory}
+              onDelete={onDeleteMemory}
+              onExport={onExportMemories}
+              onImport={onImportMemories}
+              onDismissResult={onDismissMemoryResult}
+            />
+          )}
+          {tab === "rules" && (
+            <CtxRules settings={settings} onAddRule={onAddRule} onRemoveRule={onRemoveRule} />
+          )}
+          {tab === "plan" ? (
+            activePlan ? <CtxPlan plan={activePlan} /> : <div className="ctx-empty">No plan history yet.</div>
+          ) : null}
+        </PanelErrorBoundary>
+      </div>
+    </aside>
+  );
+}
+
+function CtxPlan({ plan }: { plan: ActivePlan }) {
+  const done = new Set(plan.completedStepIds);
+  const finished = plan.steps.filter((step) => done.has(step.id)).length;
+  const runningId = plan.steps.find((step) => !done.has(step.id))?.id;
+  return (
+    <div className="ctx-plan">
+      <div className="ctx-section-head">
+        <div className="ctx-section-title">{plan.summary ?? t("contextPanel.activePlanTitle")}</div>
+        <div className="ctx-plan-progress">
+          {finished}/{plan.steps.length}
+        </div>
+      </div>
+      {plan.steps.length === 0 ? (
+        <div className="ctx-empty">{t("contextPanel.activePlanEmpty")}</div>
+      ) : (
+        <ol className="ctx-plan-list">
+          {plan.steps.map((step) => {
+            const isDone = done.has(step.id);
+            const isRunning = step.id === runningId;
+            return (
+              <li
+                key={step.id}
+                className="ctx-plan-step"
+                data-state={isDone ? "done" : isRunning ? "running" : "queued"}
+              >
+                <span className="ctx-plan-check" aria-hidden="true">
+                  {isDone ? "✓" : isRunning ? "•" : ""}
+                </span>
+                <div>
+                  <div className="ctx-plan-title">{step.title}</div>
+                  <div className="ctx-plan-action">{step.action}</div>
+                  {plan.stepResults[step.id] ? (
+                    <div className="ctx-plan-result">{plan.stepResults[step.id]}</div>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+type TreeNode =
+  | { kind: "dir"; depth: number; name: string; key: string }
+  | { kind: "file"; depth: number; name: string; path: string; key: string; status: "c" | "m" };
+
+function resolveContextAbs(path: string, settings: Settings | null): string {
+  return toWorkspaceAbsolute(path, settings?.workspaceDir);
+}
+
+async function openContextFile(path: string, settings: Settings | null): Promise<void> {
+  const abs = resolveContextAbs(path, settings);
+  // Reveal the file in the OS file explorer (parent folder with the item
+  // selected); openPath is only the last resort. The workspace lets the
+  // Rust side resolve bare references to their real location.
+  try {
+    await invoke("reveal_in_explorer", {
+      path: abs,
+      workspace: settings?.workspaceDir ?? null,
+    });
+  } catch {
+    await openPath(abs);
+  }
+}
+
+function buildSessionTree(files: SessionFile[]): TreeNode[] {
+  const sorted = [...files].sort((a, b) =>
+    a.path.replace(/\\/g, "/").localeCompare(b.path.replace(/\\/g, "/")),
+  );
+  const out: TreeNode[] = [];
+  const seenDirs = new Set<string>();
+  for (const f of sorted) {
+    const displayPath = f.path.replace(/\\/g, "/");
+    const parts = displayPath.split("/").filter(Boolean);
+    if (parts.length === 0) continue;
+    let prefix = "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      const seg = parts[i] ?? "";
+      prefix = prefix ? `${prefix}/${seg}` : seg;
+      if (!seenDirs.has(prefix)) {
+        seenDirs.add(prefix);
+        out.push({ kind: "dir", depth: i, name: seg, key: `d:${prefix}` });
+      }
+    }
+    const leaf = parts[parts.length - 1] ?? "";
+    out.push({
+      kind: "file",
+      depth: parts.length - 1,
+      name: leaf,
+      path: displayPath,
+      key: `f:${f.path}`,
+      status: f.status,
+    });
+  }
+  return out;
+}
+
+function CtxRaw({
+  raw,
+  onRead,
+  onWrite,
+}: {
+  raw: Omit<ContextRawEvent, "type"> | null;
+  onRead?: () => void;
+  onWrite?: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState(raw?.text ?? "");
+  const [dirty, setDirty] = useState(false);
+  // Read from the seeding effect without re-running it on the dirty flip, which
+  // would briefly flash the pre-apply text back before the refresh lands.
+  const dirtyRef = useRef(false);
+  const busy = raw?.busy ?? false;
+
+  // Fetch on tab open; the Refresh button re-requests.
+  useEffect(() => {
+    onRead?.();
+  }, []);
+
+  // Reseed only when the server text itself changes, never over an active edit.
+  useEffect(() => {
+    if (!dirtyRef.current) setDraft(raw?.text ?? "");
+  }, [raw?.text]);
+
+  const markDirty = (value: string) => {
+    dirtyRef.current = true;
+    setDraft(value);
+    setDirty(true);
+  };
+
+  // Direct apply: the button, or Cmd/Ctrl+Enter in the editor.
+  const apply = () => {
+    if (!dirty || busy || !onWrite) return;
+    onWrite(draft);
+    dirtyRef.current = false;
+    setDirty(false);
+  };
+
+  return (
+    <div className="ctx-block">
+      <div className="h">
+        <span>{t("contextPanel.rawTitle")}</span>
+        <span className="right">
+          {raw
+            ? t("contextPanel.rawMeta", {
+                count: raw.messageCount,
+                tokens: raw.tokens.toLocaleString(),
+              })
+            : "-"}
+        </span>
+      </div>
+      <p className="ollama-help">{t("contextPanel.rawHelp")}</p>
+      <textarea
+        className="raw-context"
+        spellCheck={false}
+        value={draft}
+        disabled={busy}
+        aria-label={t("contextPanel.rawAria")}
+        onChange={(e) => markDirty(e.target.value)}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            apply();
+          }
+        }}
+      />
+      {raw?.notice ? <div className="raw-notice">{raw.notice}</div> : null}
+      <div className="raw-actions">
+        <button type="button" className="mini-btn" onClick={() => onRead?.()} disabled={busy}>
+          {t("contextPanel.rawRefresh")}
+        </button>
+        <button
+          type="button"
+          className="mini-btn"
+          disabled={!dirty || busy || !onWrite}
+          title={busy ? t("contextPanel.rawBusy") : undefined}
+          onClick={apply}
+        >
+          {t("contextPanel.rawApply")}
+        </button>
+        <button
+          type="button"
+          className="mini-btn"
+          disabled={!dirty}
+          onClick={() => {
+            dirtyRef.current = false;
+            setDraft(raw?.text ?? "");
+            setDirty(false);
+          }}
+        >
+          {t("contextPanel.rawRevert")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CtxFiles({ files, settings }: { files: SessionFile[]; settings: Settings | null }) {
+  const tree = useMemo(() => buildSessionTree(files), [files]);
+  const [menu, setMenu] = useState<{ x: number; y: number; path: string } | null>(null);
+  return (
+    <div className="ctx-block">
+      <div className="h">
+        <span>{t("contextPanel.filesTitle")}</span>
+        <span className="right">
+          {files.length === 0 ? "—" : t("contextPanel.filesCount", { count: files.length })}
+        </span>
+      </div>
+      <div className="tree">
+        {files.length === 0 ? (
+          <div className="ctx-empty">{t("contextPanel.noFilesMsg")}</div>
+        ) : (
+          tree.map((n) =>
+            n.kind === "dir" ? (
+              <div
+                className="node"
+                key={n.key}
+                data-d={n.depth}
+                data-kind="dir"
+                style={{ paddingLeft: 4 + n.depth * 14 }}
+              >
+                <span className="ico">
+                  <I.folder size={12} />
+                </span>
+                <span className="nm">{n.name}/</span>
+              </div>
+            ) : (
+              <div
+                className="node"
+                key={n.key}
+                data-d={n.depth}
+                data-kind="file"
+                title={n.path}
+                style={{ paddingLeft: 4 + n.depth * 14 }}
+                onClick={() => void openContextFile(n.path, settings)}
+                onKeyDown={activationHandler(() => void openContextFile(n.path, settings))}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setMenu({ x: e.clientX, y: e.clientY, path: n.path });
+                }}
+              >
+                <span className="ico">
+                  <I.file size={12} />
+                </span>
+                <span className="node-text">
+                  <span className="nm">{n.name}</span>
+                  <span className="full-path">{n.path}</span>
+                </span>
+                <span
+                  className="dot"
+                  data-s={n.status}
+                  title={
+                    n.status === "m"
+                      ? t("contextPanel.fileModified")
+                      : t("contextPanel.fileInContext")
+                  }
+                />
+                <button
+                  type="button"
+                  className="tree-action"
+                  aria-label={t("contextPanel.openFile", { path: n.path })}
+                  title={t("contextPanel.openFile", { path: n.path })}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void openContextFile(n.path, settings);
+                  }}
+                >
+                  <I.file size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="tree-action"
+                  aria-label={t("contextPanel.copyPath", { path: n.path })}
+                  title={t("contextPanel.copyPath", { path: n.path })}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void navigator.clipboard?.writeText(n.path);
+                  }}
+                >
+                  <I.copy size={12} />
+                </button>
+              </div>
+            ),
+          )
+        )}
+      </div>
+      {menu ? (
+        <FileMenu
+          anchor={{ x: menu.x, y: menu.y }}
+          abs={resolveContextAbs(menu.path, settings)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+type OllamaNumberKey = Exclude<keyof NonNullable<Settings["ollamaGeneration"]>, "keepAlive">;
+
+const OLLAMA_NUMBER_FIELDS: Array<{
+  key: OllamaNumberKey;
+  labelKey: TKey;
+  min: number;
+  max: number;
+  step: number;
+  defaultValue: number;
+  advanced?: boolean;
+}> = [
+  {
+    key: "temperature",
+    labelKey: "contextPanel.ollamaTemperature",
+    min: 0,
+    max: 2,
+    step: 0.05,
+    defaultValue: 0.8,
+  },
+  {
+    key: "topP",
+    labelKey: "contextPanel.ollamaTopP",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    defaultValue: 0.9,
+  },
+  {
+    key: "topK",
+    labelKey: "contextPanel.ollamaTopK",
+    min: 0,
+    max: 1_000,
+    step: 1,
+    defaultValue: 40,
+  },
+  { key: "minP", labelKey: "contextPanel.ollamaMinP", min: 0, max: 1, step: 0.01, defaultValue: 0 },
+  {
+    key: "seed",
+    labelKey: "contextPanel.ollamaSeed",
+    min: 0,
+    max: 2_147_483_647,
+    step: 1,
+    defaultValue: 0,
+    advanced: true,
+  },
+  {
+    key: "repeatPenalty",
+    labelKey: "contextPanel.ollamaRepeatPenalty",
+    min: 0,
+    max: 2,
+    step: 0.05,
+    defaultValue: 1.1,
+    advanced: true,
+  },
+  {
+    key: "repeatLastN",
+    labelKey: "contextPanel.ollamaRepeatLastN",
+    min: -1,
+    max: 1_000_000,
+    step: 1,
+    defaultValue: 64,
+    advanced: true,
+  },
+  {
+    key: "frequencyPenalty",
+    labelKey: "contextPanel.ollamaFrequencyPenalty",
+    min: -2,
+    max: 2,
+    step: 0.05,
+    defaultValue: 0,
+    advanced: true,
+  },
+  {
+    key: "presencePenalty",
+    labelKey: "contextPanel.ollamaPresencePenalty",
+    min: -2,
+    max: 2,
+    step: 0.05,
+    defaultValue: 0,
+    advanced: true,
+  },
+];
+
+interface OllamaPreset {
+  id: string;
+  labelKey: TKey;
+  tooltipKey: TKey;
+  patch: NonNullable<SettingsPatch["ollamaGeneration"]>;
+}
+
+const OLLAMA_SAMPLING_PRESETS: OllamaPreset[] = [
+  {
+    id: "default",
+    labelKey: "contextPanel.ollamaPresetDefault",
+    tooltipKey: "contextPanel.ollamaPresetDefaultTooltip",
+    patch: {
+      temperature: null,
+      topP: null,
+      topK: null,
+      minP: null,
+      seed: null,
+      repeatPenalty: null,
+      repeatLastN: null,
+      frequencyPenalty: null,
+      presencePenalty: null,
+    },
+  },
+  {
+    id: "coding",
+    labelKey: "contextPanel.ollamaPresetCoding",
+    tooltipKey: "contextPanel.ollamaPresetCodingTooltip",
+    patch: {
+      temperature: 0.2,
+      topP: 0.9,
+      topK: 40,
+      minP: null,
+      seed: null,
+      repeatPenalty: null,
+      repeatLastN: null,
+      frequencyPenalty: null,
+      presencePenalty: null,
+    },
+  },
+  {
+    id: "balanced",
+    labelKey: "contextPanel.ollamaPresetBalanced",
+    tooltipKey: "contextPanel.ollamaPresetBalancedTooltip",
+    patch: {
+      temperature: 0.7,
+      topP: 0.9,
+      topK: 40,
+      minP: 0.05,
+      seed: null,
+      repeatPenalty: null,
+      repeatLastN: null,
+      frequencyPenalty: null,
+      presencePenalty: null,
+    },
+  },
+  {
+    id: "creative",
+    labelKey: "contextPanel.ollamaPresetCreative",
+    tooltipKey: "contextPanel.ollamaPresetCreativeTooltip",
+    patch: {
+      temperature: 1.0,
+      topP: 0.95,
+      topK: 50,
+      minP: null,
+      seed: null,
+      repeatPenalty: null,
+      repeatLastN: null,
+      frequencyPenalty: null,
+      presencePenalty: null,
+    },
+  },
+  {
+    id: "anti-loop",
+    labelKey: "contextPanel.ollamaPresetAntiLoop",
+    tooltipKey: "contextPanel.ollamaPresetAntiLoopTooltip",
+    patch: {
+      temperature: 0.7,
+      topP: 0.9,
+      topK: 40,
+      minP: null,
+      seed: null,
+      repeatPenalty: 1.1,
+      repeatLastN: 64,
+      frequencyPenalty: null,
+      presencePenalty: null,
+    },
+  },
+];
+
+function isPresetActive(
+  preset: OllamaPreset,
+  overrides: Settings["ollamaGenerationOverrides"],
+): boolean {
+  for (const field of OLLAMA_NUMBER_FIELDS) {
+    const expected = preset.patch[field.key];
+    const actual = overrides?.[field.key];
+    if (expected === null) {
+      if (actual !== undefined) return false;
+    } else if (expected !== undefined) {
+      if (actual !== expected) return false;
+    }
+  }
+  return true;
+}
+
+function OllamaNumberField({
+  field,
+  value,
+  defaultValue,
+  overridden,
+  onSaveSettings,
+}: {
+  field: (typeof OLLAMA_NUMBER_FIELDS)[number];
+  value: number | undefined;
+  defaultValue: number;
+  overridden: boolean;
+  onSaveSettings?: (patch: SettingsPatch) => void;
+}) {
+  const [draft, setDraft] = useState(value === undefined ? "" : String(value));
+  const [editing, setEditing] = useState(false);
+
+  // A live $settings round-trip updates `value`: only bleed it back into the
+  // draft while the field is idle so an in-progress edit isn't clobbered.
+  useEffect(() => {
+    if (!editing) setDraft(value === undefined ? "" : String(value));
+  }, [value, editing]);
+
+  // Save `raw` as a number if it parses to a complete, in-range value. Returns
+  // true on success so callers can tell a committed value from a mid-keystroke
+  // draft (e.g. a trailing "." or lone "-") that must not be persisted.
+  const commitValue = (raw: string): boolean => {
+    const trimmed = raw.trim();
+    if (!/^-?\d*\.?\d+$/.test(trimmed)) return false;
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || parsed < field.min || parsed > field.max) return false;
+    onSaveSettings?.({ ollamaGeneration: { [field.key]: parsed } });
+    return true;
+  };
+
+  const finishEditing = () => {
+    // Complete valid values were already persisted by onChange. On blur, only
+    // discard an incomplete or invalid draft instead of sending a duplicate.
+    const trimmed = draft.trim();
+    if (trimmed && !/^-?\d*\.?\d+$/.test(trimmed)) {
+      setDraft(value === undefined ? "" : String(value));
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (trimmed && (!Number.isFinite(parsed) || parsed < field.min || parsed > field.max)) {
+      setDraft(value === undefined ? "" : String(value));
+    }
+  };
+
+  return (
+    <label className="ollama-field">
+      <span>{t(field.labelKey)}</span>
+      <span className="ollama-field-control">
+        <input
+          type="number"
+          value={draft}
+          min={field.min}
+          max={field.max}
+          step={field.step}
+          placeholder={String(defaultValue)}
+          aria-label={t(field.labelKey)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            // Complete valid values reach the daemon in the same event so the
+            // current agent's next request cannot race a deferred settings save.
+            commitValue(event.target.value);
+          }}
+          onFocus={() => setEditing(true)}
+          onBlur={() => {
+            setEditing(false);
+            finishEditing();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
+          }}
+        />
+        {overridden ? (
+          <button
+            type="button"
+            className="mini-btn"
+            title={t("contextPanel.ollamaResetTooltip")}
+            onClick={() => onSaveSettings?.({ ollamaGeneration: { [field.key]: null } })}
+          >
+            {t("contextPanel.contextWindowReset")}
+          </button>
+        ) : null}
+      </span>
+    </label>
+  );
+}
+
+function OllamaGenerationControls({
+  settings,
+  onSaveSettings,
+}: {
+  settings: Settings;
+  onSaveSettings?: (patch: SettingsPatch) => void;
+}) {
+  const values = settings.ollamaGeneration;
+  const overrides = settings.ollamaGenerationOverrides;
+  const modelDefaults = settings.ollamaModelDefaults;
+  const [keepAlive, setKeepAlive] = useState(values?.keepAlive ?? "30m");
+  const [keepAliveEditing, setKeepAliveEditing] = useState(false);
+  useEffect(() => {
+    if (!keepAliveEditing) setKeepAlive(values?.keepAlive ?? "30m");
+  }, [values?.keepAlive, keepAliveEditing]);
+
+  const finishKeepAliveEditing = () => {
+    if (!keepAlive.trim()) setKeepAlive(values?.keepAlive ?? "30m");
+  };
+
+  const fields = (advanced: boolean) =>
+    OLLAMA_NUMBER_FIELDS.filter((field) => Boolean(field.advanced) === advanced).map((field) => (
+      <OllamaNumberField
+        key={field.key}
+        field={field}
+        value={values?.[field.key]}
+        defaultValue={modelDefaults?.[field.key] ?? field.defaultValue}
+        overridden={overrides?.[field.key] !== undefined}
+        onSaveSettings={onSaveSettings}
+      />
+    ));
+
+  return (
+    <div className="ctx-block ollama-generation" data-testid="ollama-generation-settings">
+      <div className="h">
+        <span>{t("contextPanel.ollamaGeneration")}</span>
+        <span className="right">{t("contextPanel.ollamaNativeApi")}</span>
+      </div>
+      <p className="ollama-help">{t("contextPanel.ollamaGenerationHelp")}</p>
+      <div className="ollama-presets" role="group" aria-label={t("contextPanel.ollamaGeneration")}>
+        {OLLAMA_SAMPLING_PRESETS.map((preset) => {
+          const active = isPresetActive(preset, overrides);
+          return (
+            <button
+              key={preset.id}
+              type="button"
+              className="ollama-preset-btn"
+              data-active={active ? "true" : undefined}
+              title={t(preset.tooltipKey)}
+              onClick={() => onSaveSettings?.({ ollamaGeneration: preset.patch })}
+            >
+              {t(preset.labelKey)}
+            </button>
+          );
+        })}
+      </div>
+      <div className="ollama-fields">{fields(false)}</div>
+      <details className="ollama-advanced">
+        <summary>{t("contextPanel.ollamaAdvanced")}</summary>
+        <div className="ollama-fields">
+          {fields(true)}
+          <label className="ollama-field">
+            <span>{t("contextPanel.ollamaKeepAlive")}</span>
+            <span className="ollama-field-control">
+              <input
+                value={keepAlive}
+                aria-label={t("contextPanel.ollamaKeepAlive")}
+                list="ollama-keep-alive-options"
+                onChange={(event) => {
+                  setKeepAlive(event.target.value);
+                  const value = event.target.value.trim();
+                  if (value) onSaveSettings?.({ ollamaGeneration: { keepAlive: value } });
+                }}
+                onFocus={() => setKeepAliveEditing(true)}
+                onBlur={() => {
+                  setKeepAliveEditing(false);
+                  finishKeepAliveEditing();
+                }}
+              />
+              {overrides?.keepAlive !== undefined ? (
+                <button
+                  type="button"
+                  className="mini-btn"
+                  title={t("contextPanel.ollamaResetTooltip")}
+                  onClick={() => onSaveSettings?.({ ollamaGeneration: { keepAlive: null } })}
+                >
+                  {t("contextPanel.contextWindowReset")}
+                </button>
+              ) : null}
+            </span>
+          </label>
+          <datalist id="ollama-keep-alive-options">
+            <option value="0" />
+            <option value="5m" />
+            <option value="30m" />
+            <option value="1h" />
+            <option value="-1" />
+          </datalist>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function CtxTools({
+  specs,
+  bridged,
+  settings,
+  usage,
+  onSaveSettings,
+  onToggleSessionMcp,
+}: {
+  specs: McpSpecInfo[];
+  bridged: boolean;
+  settings: Settings | null;
+  usage: UsageStats;
+  onSaveSettings?: (patch: SettingsPatch) => void;
+  /** Per-session MCP enable/disable — edits THIS session, not the Settings default. */
+  onToggleSessionMcp?: (name: string, disabled: boolean, tool?: string) => void;
+}) {
+  const readyCount = specs.filter((s) => s.status === "connected").length;
+  const [expandedMcp, setExpandedMcp] = useState<Set<string>>(new Set());
+  const toggleMcpExpanded = (raw: string) =>
+    setExpandedMcp((prev) => {
+      const next = new Set(prev);
+      if (next.has(raw)) next.delete(raw);
+      else next.add(raw);
+      return next;
+    });
+  const effectiveTokens = settings?.contextTokens ?? usage.ctxMax ?? 300_000;
+  const clampedTokens = Math.min(1_000_000, Math.max(128_000, effectiveTokens));
+  const [sliderValue, setSliderValue] = useState<number>(clampedTokens);
+
+  useEffect(() => {
+    setSliderValue(clampedTokens);
+  }, [clampedTokens]);
+
+  const commit = (val: number) => {
+    const next = Math.min(1_000_000, Math.max(128_000, val));
+    onSaveSettings?.({ contextTokens: next });
+  };
+
+  const effectiveMaxIter = settings?.maxIterPerTurn ?? 50;
+  const clampedMaxIter = Math.min(100, Math.max(50, effectiveMaxIter));
+  const [iterValue, setIterValue] = useState<number>(clampedMaxIter);
+
+  useEffect(() => {
+    setIterValue(clampedMaxIter);
+  }, [clampedMaxIter]);
+
+  const commitIter = (val: number) => {
+    const next = Math.min(100, Math.max(50, val));
+    onSaveSettings?.({ maxIterPerTurn: next });
+  };
+
+  const effectiveDupTokens = settings?.duplicateSessionTokens ?? 50_000;
+  const clampedDupTokens = Math.min(1_000_000, Math.max(1_000, effectiveDupTokens));
+  const [dupTokensValue, setDupTokensValue] = useState<number>(clampedDupTokens);
+
+  useEffect(() => {
+    setDupTokensValue(clampedDupTokens);
+  }, [clampedDupTokens]);
+
+  const commitDupTokens = (val: number) => {
+    const next = Math.min(1_000_000, Math.max(1_000, val));
+    onSaveSettings?.({ duplicateSessionTokens: next });
+  };
+
+  return (
+    <>
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.contextWindow")}</span>
+          <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span>
+              {fmtCompact(sliderValue)} ({sliderValue.toLocaleString()})
+            </span>
+            {settings?.contextTokens !== undefined && settings?.contextTokens !== null ? (
+              <button
+                type="button"
+                className="mini-btn"
+                title={t("contextPanel.contextWindowResetTooltip")}
+                onClick={() => onSaveSettings?.({ contextTokens: null })}
+              >
+                {t("contextPanel.contextWindowReset")}
+              </button>
+            ) : null}
+          </span>
+        </div>
+        <div className="ctx-slider-container">
+          <input
+            type="range"
+            className="ctx-slider"
+            min={128_000}
+            max={1_000_000}
+            step={1_000}
+            value={sliderValue}
+            aria-label={t("contextPanel.contextWindow")}
+            onChange={(e) => setSliderValue(Number(e.target.value))}
+            onPointerUp={(e) => commit(Number(e.currentTarget.value))}
+            onKeyUp={(e) => commit(Number(e.currentTarget.value))}
+          />
+          <div className="ctx-slider-bounds">
+            <span>128K</span>
+            <span>1M</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.maxIterations")}</span>
+          <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span>{t("contextPanel.maxIterationsUnit", { count: iterValue })}</span>
+            {settings?.maxIterPerTurnOverride !== undefined &&
+            settings?.maxIterPerTurnOverride !== null ? (
+              <button
+                type="button"
+                className="mini-btn"
+                title={t("contextPanel.maxIterationsResetTooltip")}
+                onClick={() => onSaveSettings?.({ maxIterPerTurn: null })}
+              >
+                {t("contextPanel.contextWindowReset")}
+              </button>
+            ) : null}
+          </span>
+        </div>
+        <div className="ctx-slider-container">
+          <input
+            type="range"
+            className="ctx-slider"
+            min={50}
+            max={100}
+            step={1}
+            value={iterValue}
+            aria-label={t("contextPanel.maxIterations")}
+            onChange={(e) => setIterValue(Number(e.target.value))}
+            onPointerUp={(e) => commitIter(Number(e.currentTarget.value))}
+            onKeyUp={(e) => commitIter(Number(e.currentTarget.value))}
+          />
+          <div className="ctx-slider-bounds">
+            <span>50</span>
+            <span>100</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.autoCompaction")}</span>
+          <span className="right">
+            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
+              <button
+                type="button"
+                data-on={!settings?.disableAutoCompaction}
+                onClick={() => onSaveSettings?.({ disableAutoCompaction: false })}
+              >
+                {t("contextPanel.autoCompactionEnabled")}
+              </button>
+              <button
+                type="button"
+                data-on={!!settings?.disableAutoCompaction}
+                onClick={() => onSaveSettings?.({ disableAutoCompaction: true })}
+              >
+                {t("contextPanel.autoCompactionDisabled")}
+              </button>
+            </div>
+          </span>
+        </div>
+        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+          {settings?.disableAutoCompaction
+            ? t("contextPanel.autoCompactionDisabledDesc")
+            : t("contextPanel.autoCompactionEnabledDesc")}
+        </div>
+      </div>
+
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.subagents")}</span>
+          <span className="right">
+            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
+              <button
+                type="button"
+                aria-label={t("contextPanel.enableSubagents")}
+                aria-pressed={settings?.enableSubagents !== false}
+                data-on={settings?.enableSubagents !== false}
+                onClick={() => onSaveSettings?.({ enableSubagents: true })}
+              >
+                {t("contextPanel.subagentsEnabled")}
+              </button>
+              <button
+                type="button"
+                aria-label={t("contextPanel.disableSubagents")}
+                aria-pressed={settings?.enableSubagents === false}
+                data-on={settings?.enableSubagents === false}
+                onClick={() => onSaveSettings?.({ enableSubagents: false })}
+              >
+                {t("contextPanel.subagentsDisabled")}
+              </button>
+            </div>
+          </span>
+        </div>
+        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+          {settings?.enableSubagents === false
+            ? t("contextPanel.subagentsDisabledDesc")
+            : t("contextPanel.subagentsEnabledDesc")}
+        </div>
+      </div>
+
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.elevation")}</span>
+          <span className="right">
+            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
+              <button
+                type="button"
+                aria-label={t("contextPanel.enableElevation")}
+                aria-pressed={settings?.elevationEnabled === true}
+                data-on={settings?.elevationEnabled === true}
+                onClick={() => onSaveSettings?.({ elevationEnabled: true })}
+              >
+                {t("contextPanel.elevationEnabled")}
+              </button>
+              <button
+                type="button"
+                aria-label={t("contextPanel.disableElevation")}
+                aria-pressed={settings?.elevationEnabled !== true}
+                data-on={settings?.elevationEnabled !== true}
+                onClick={() => onSaveSettings?.({ elevationEnabled: false })}
+              >
+                {t("contextPanel.elevationDisabled")}
+              </button>
+            </div>
+          </span>
+        </div>
+        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+          {settings?.elevationEnabled === true
+            ? t("contextPanel.elevationEnabledDesc")
+            : t("contextPanel.elevationDisabledDesc")}
+        </div>
+      </div>
+
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.repetitionGuard")}</span>
+          <span className="right">
+            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
+              <button
+                type="button"
+                aria-label={t("contextPanel.enableRepetitionGuard")}
+                aria-pressed={settings?.repetitionGuardEnabled === true}
+                data-on={settings?.repetitionGuardEnabled === true}
+                onClick={() => onSaveSettings?.({ repetitionGuardEnabled: true })}
+              >
+                {t("contextPanel.repetitionGuardEnabled")}
+              </button>
+              <button
+                type="button"
+                aria-label={t("contextPanel.disableRepetitionGuard")}
+                aria-pressed={settings?.repetitionGuardEnabled !== true}
+                data-on={settings?.repetitionGuardEnabled !== true}
+                onClick={() => onSaveSettings?.({ repetitionGuardEnabled: false })}
+              >
+                {t("contextPanel.repetitionGuardDisabled")}
+              </button>
+            </div>
+          </span>
+        </div>
+        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+          {settings?.repetitionGuardEnabled === true
+            ? t("contextPanel.repetitionGuardEnabledDesc")
+            : t("contextPanel.repetitionGuardDisabledDesc")}
+        </div>
+      </div>
+
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.questionTimer")}</span>
+          <span className="right">
+            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
+              <button
+                type="button"
+                aria-label={t("contextPanel.enableQuestionTimer")}
+                aria-pressed={settings?.questionTimerEnabled === true}
+                data-on={settings?.questionTimerEnabled === true}
+                onClick={() => onSaveSettings?.({ questionTimerEnabled: true })}
+              >
+                {t("contextPanel.questionTimerEnabled")}
+              </button>
+              <button
+                type="button"
+                aria-label={t("contextPanel.disableQuestionTimer")}
+                aria-pressed={settings?.questionTimerEnabled !== true}
+                data-on={settings?.questionTimerEnabled !== true}
+                onClick={() => onSaveSettings?.({ questionTimerEnabled: false })}
+              >
+                {t("contextPanel.questionTimerDisabled")}
+              </button>
+            </div>
+          </span>
+        </div>
+        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+          {settings?.questionTimerEnabled === true
+            ? t("contextPanel.questionTimerEnabledDesc")
+            : t("contextPanel.questionTimerDisabledDesc")}
+        </div>
+      </div>
+
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.duplicateSessionLimit")}</span>
+          <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span>
+              {fmtCompact(dupTokensValue)} ({dupTokensValue.toLocaleString()})
+            </span>
+            {settings?.duplicateSessionTokens !== undefined &&
+            settings?.duplicateSessionTokens !== null ? (
+              <button
+                type="button"
+                className="mini-btn"
+                title={t("contextPanel.duplicateSessionLimitResetTooltip")}
+                onClick={() => onSaveSettings?.({ duplicateSessionTokens: null })}
+              >
+                {t("contextPanel.contextWindowReset")}
+              </button>
+            ) : null}
+          </span>
+        </div>
+        <div className="ctx-slider-container">
+          <input
+            type="range"
+            className="ctx-slider"
+            min={1_000}
+            max={1_000_000}
+            step={1_000}
+            value={dupTokensValue}
+            aria-label={t("contextPanel.duplicateSessionLimit")}
+            onChange={(e) => setDupTokensValue(Number(e.target.value))}
+            onPointerUp={(e) => commitDupTokens(Number(e.currentTarget.value))}
+            onKeyUp={(e) => commitDupTokens(Number(e.currentTarget.value))}
+          />
+          <div className="ctx-slider-bounds">
+            <span>1K</span>
+            <span>1M</span>
+          </div>
+        </div>
+        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+          {t("contextPanel.duplicateSessionLimitDesc")}
+        </div>
+      </div>
+
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.duplicateSessionAutoProceed")}</span>
+          <span className="right">
+            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
+              <button
+                type="button"
+                aria-label={t("contextPanel.enableDuplicateSessionAutoProceed")}
+                aria-pressed={settings?.duplicateSessionAutoProceed === true}
+                data-on={settings?.duplicateSessionAutoProceed === true}
+                onClick={() => onSaveSettings?.({ duplicateSessionAutoProceed: true })}
+              >
+                {t("contextPanel.duplicateSessionAutoProceedOn")}
+              </button>
+              <button
+                type="button"
+                aria-label={t("contextPanel.disableDuplicateSessionAutoProceed")}
+                aria-pressed={settings?.duplicateSessionAutoProceed !== true}
+                data-on={settings?.duplicateSessionAutoProceed !== true}
+                onClick={() => onSaveSettings?.({ duplicateSessionAutoProceed: false })}
+              >
+                {t("contextPanel.duplicateSessionAutoProceedOff")}
+              </button>
+            </div>
+          </span>
+        </div>
+        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+          {settings?.duplicateSessionAutoProceed === true
+            ? t("contextPanel.duplicateSessionAutoProceedOnDesc")
+            : t("contextPanel.duplicateSessionAutoProceedOffDesc")}
+        </div>
+      </div>
+
+      {settings &&
+      (settings.modelEndpoint?.provider === "ollama" ||
+        settings.subagentModelEndpoint?.provider === "ollama") ? (
+        <OllamaGenerationControls settings={settings} onSaveSettings={onSaveSettings} />
+      ) : null}
+
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.mcpTitle")}</span>
+          <span className="right">
+            {specs.length === 0
+              ? "—"
+              : bridged
+                ? t("contextPanel.mcpReadyAll", { count: specs.length })
+                : t("contextPanel.mcpReadySome", { ready: readyCount, count: specs.length })}
+          </span>
+        </div>
+        {specs.length === 0 ? (
+          <div className="ctx-empty">{t("contextPanel.mcpEmpty")}</div>
+        ) : (
+          specs.map((s) => {
+            const dot =
+              s.status === "connected"
+                ? "ok"
+                : s.status === "failed" || s.parseError
+                  ? "off"
+                  : "pending";
+            const suffix = s.statusReason
+              ? ` · ${s.statusReason}`
+              : s.status === "connected"
+                ? typeof s.toolCount === "number"
+                  ? ` · ${t("contextPanel.mcpTools", { count: s.toolCount })}`
+                  : ` · ${t("contextPanel.mcpReady")}`
+                : s.status === "handshake"
+                  ? ` · ${t("contextPanel.mcpConnecting")}`
+                  : s.status === "disabled"
+                    ? ` · ${t("contextPanel.mcpDisabled")}`
+                    : s.status === "failed"
+                      ? ` · ${t("contextPanel.mcpFailed")}`
+                      : ` · ${t("contextPanel.mcpConfigured")}`;
+            const canToggle = s.name !== null && Boolean(onToggleSessionMcp);
+            const sessionOff = s.sessionDisabled === true;
+            const tools = s.tools ?? [];
+            const offTools = new Set(s.sessionDisabledTools ?? []);
+            const expanded = expandedMcp.has(s.raw);
+            return (
+              <div key={s.raw} style={{ marginBottom: 6 }}>
+                <div className="mcp-row" style={{ marginBottom: tools.length > 0 ? 4 : 6 }}>
+                  <span className="ico">
+                    <I.wrench size={12} />
+                  </span>
+                  <div className="body">
+                    <div className="n">{s.name ?? s.summary}</div>
+                    <div className="m">
+                      {s.transport}
+                      {suffix}
+                    </div>
+                  </div>
+                  {canToggle ? (
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      style={{
+                        fontSize: 11,
+                        flex: "0 0 auto",
+                        color: sessionOff ? "var(--accent)" : undefined,
+                      }}
+                      onClick={() => onToggleSessionMcp?.(s.name as string, !sessionOff)}
+                    >
+                      {sessionOff ? t("contextPanel.mcpEnable") : t("contextPanel.mcpDisable")}
+                    </button>
+                  ) : null}
+                  <span className="status" data-s={dot} />
+                </div>
+                {canToggle && tools.length > 0 ? (
+                  <div style={{ paddingLeft: 8 }}>
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      style={{ fontSize: 11 }}
+                      onClick={() => toggleMcpExpanded(s.raw)}
+                    >
+                      {expanded ? "▾" : "▸"}{" "}
+                      {t("contextPanel.mcpToolsLabel", { count: tools.length })}
+                    </button>
+                    {expanded ? (
+                      <div
+                        style={{ display: "flex", flexDirection: "column", gap: 1, marginTop: 4 }}
+                      >
+                        {tools.map((tool) => {
+                          const off = offTools.has(tool);
+                          return (
+                            <div
+                              key={tool}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 6,
+                                padding: "1px 0",
+                              }}
+                            >
+                              <span
+                                className="mono"
+                                style={{
+                                  fontSize: 11,
+                                  color: off ? "var(--muted)" : undefined,
+                                  textDecoration: off ? "line-through" : undefined,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {tool}
+                              </span>
+                              <button
+                                type="button"
+                                className="mini-btn"
+                                style={{
+                                  fontSize: 11,
+                                  flex: "0 0 auto",
+                                  color: off ? "var(--accent)" : undefined,
+                                }}
+                                onClick={() => onToggleSessionMcp?.(s.name as string, !off, tool)}
+                              >
+                                {off ? t("contextPanel.mcpEnable") : t("contextPanel.mcpDisable")}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </>
+  );
+}
+
+function CtxMemory({
+  entries,
+  detail,
+  result,
+  onRead,
+  onWrite,
+  onDelete,
+  onExport,
+  onImport,
+  onDismissResult,
+}: {
+  entries: MemoryEntryInfo[];
+  detail: MemoryDetail | null;
+  result: { ok: boolean; message: string } | null;
+  onRead: (path: string) => void;
+  onWrite: (scope: "global" | "project", name: string, description: string, body: string) => void;
+  onDelete: (path: string) => void;
+  onExport: () => void;
+  onImport: (json: string) => void;
+  onDismissResult: () => void;
+}) {
+  const [composing, setComposing] = useState(false);
+  const [name, setName] = useState("");
+  const [scope, setScope] = useState<"global" | "project">("project");
+  const [body, setBody] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const submit = (): void => {
+    const trimmedName = name.trim();
+    const trimmedBody = body.trim();
+    if (!trimmedName || !trimmedBody) return;
+    onWrite(scope, trimmedName, trimmedBody.slice(0, 150), trimmedBody);
+    setName("");
+    setBody("");
+    setComposing(false);
+  };
+
+  const onFile = (e: ChangeEvent<HTMLInputElement>): void => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => onImport(String(reader.result ?? ""));
+    reader.readAsText(file);
+  };
+
+  return (
+    <div className="ctx-block">
+      <div className="h">
+        <span>{t("contextPanel.memoryTitle")}</span>
+        <span className="right">
+          <span className="mem-actions">
+            <button
+              type="button"
+              className="mem-action"
+              title={t("contextPanel.exportMemories")}
+              onClick={onExport}
+            >
+              ⇪ {t("contextPanel.saveLabel")}
+            </button>
+            <button
+              type="button"
+              className="mem-action"
+              title={t("contextPanel.importMemories")}
+              onClick={() => fileRef.current?.click()}
+            >
+              ⇓ {t("contextPanel.loadLabel")}
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".json,application/json"
+              style={{ display: "none" }}
+              onChange={onFile}
+            />
+          </span>
+        </span>
+      </div>
+
+      {result ? (
+        <div className={`mem-result ${result.ok ? "" : "err"}`}>
+          <span>{result.message}</span>
+          <button type="button" className="mem-result-x" onClick={onDismissResult}>
+            ✕
+          </button>
+        </div>
+      ) : null}
+
+      {entries.length === 0 ? (
+        <div className="ctx-empty">{t("contextPanel.noMemoriesMsg")}</div>
+      ) : (
+        <div className="mem">
+          {entries.map((m) => (
+            <div
+              className="mem-row"
+              data-active={detail?.path === m.path}
+              key={m.path}
+              onClick={() => onRead(m.path)}
+              onKeyDown={activationHandler(() => onRead(m.path))}
+            >
+              <span className="scope" data-s={m.scope}>
+                {m.scope === "project"
+                  ? t("contextPanel.scopeProject")
+                  : t("contextPanel.scopeGlobal")}
+              </span>
+              <span className="txt">{m.description || m.name}</span>
+              <button
+                type="button"
+                className="mem-del"
+                title={t("contextPanel.deleteMemory")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(m.path);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {detail ? <pre className="mem-detail">{detail.body}</pre> : null}
+
+      {composing ? (
+        <div className="mem-composer">
+          <div className="mem-composer-row">
+            <input
+              className="mem-input"
+              placeholder={t("contextPanel.newNamePh")}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              spellCheck={false}
+            />
+            <select
+              className="mem-scope"
+              value={scope}
+              onChange={(e) => setScope(e.target.value as "global" | "project")}
+            >
+              <option value="project">{t("contextPanel.scopeProject")}</option>
+              <option value="global">{t("contextPanel.scopeGlobal")}</option>
+            </select>
+          </div>
+          <textarea
+            className="mem-textarea"
+            placeholder={t("contextPanel.newBodyPh")}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+          />
+          <div className="mem-composer-actions">
+            <button
+              type="button"
+              className="btn small"
+              disabled={!name.trim() || !body.trim()}
+              onClick={submit}
+            >
+              {t("contextPanel.saveMemory")}
+            </button>
+            <button type="button" className="btn small ghost" onClick={() => setComposing(false)}>
+              {t("contextPanel.cancelMemory")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" className="mem-new" onClick={() => setComposing(true)}>
+          ＋ {t("contextPanel.newMemory")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CtxRules({
+  settings,
+  onAddRule,
+  onRemoveRule,
+}: {
+  settings: Settings | null;
+  onAddRule?: (ruleType: "shell" | "path", pattern: string) => void;
+  onRemoveRule?: (ruleType: "shell" | "path", pattern: string) => void;
+}) {
+  const [ruleType, setRuleType] = useState<"shell" | "path">("shell");
+  const [pattern, setPattern] = useState("");
+
+  const editMode = settings?.editMode ?? "review";
+  const items: { p: string; allow: boolean; desc: string }[] =
+    editMode === "yolo"
+      ? [{ p: "*", allow: true, desc: t("contextPanel.ruleYolo") }]
+      : editMode === "auto"
+        ? [
+            {
+              p: "read_file, list_directory, search_files, *",
+              allow: true,
+              desc: t("contextPanel.ruleReadOnly"),
+            },
+            {
+              p: "run_command (allowlist)",
+              allow: true,
+              desc: t("contextPanel.ruleShellAllowlist"),
+            },
+            {
+              p: "edit_file, write_file, run_command (other)",
+              allow: false,
+              desc: t("contextPanel.ruleWritesAsk"),
+            },
+          ]
+        : [{ p: "*", allow: false, desc: t("contextPanel.ruleReview") }];
+
+  const shellRules = settings?.shellAllowed ?? [];
+  const pathRules = settings?.pathAllowed ?? [];
+  const totalCustom = shellRules.length + pathRules.length;
+
+  const handleAdd = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = pattern.trim();
+    if (!trimmed || !onAddRule) return;
+    onAddRule(ruleType, trimmed);
+    setPattern("");
+  };
+
+  return (
+    <>
+      <div className="ctx-block">
+        <div className="h">
+          <span>{t("contextPanel.autoApproveTitle")}</span>
+          <span className="right">{editMode}</span>
+        </div>
+        {items.map((r) => (
+          <div className="rule" key={r.p}>
+            <div className="top">
+              <span className={`pat ${r.allow ? "" : "deny"}`}>{r.p}</span>
+              <span className={`sw ${r.allow ? "" : "deny"}`}>
+                {r.allow ? t("contextPanel.allow") : t("contextPanel.ask")}
+              </span>
+            </div>
+            <div className="desc">{r.desc}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="ctx-block" style={{ marginTop: 14 }}>
+        <div className="h">
+          <span>{t("contextPanel.customRulesTitle")}</span>
+          <span className="right">{totalCustom}</span>
+        </div>
+
+        {shellRules.map((r) => (
+          <div className="rule" key={`shell-${r}`}>
+            <div className="top">
+              <span className="pat">{r}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="sw">{t("contextPanel.allow")}</span>
+                {onRemoveRule && (
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    title={t("contextPanel.deleteRuleTooltip")}
+                    aria-label={`Remove rule: ${r}`}
+                    onClick={() => onRemoveRule("shell", r)}
+                  >
+                    <I.trash size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="desc">{t("contextPanel.ruleTypeShell")}</div>
+          </div>
+        ))}
+
+        {pathRules.map((r) => (
+          <div className="rule" key={`path-${r}`}>
+            <div className="top">
+              <span className="pat">{r}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="sw">{t("contextPanel.allow")}</span>
+                {onRemoveRule && (
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    title={t("contextPanel.deleteRuleTooltip")}
+                    aria-label={`Remove rule: ${r}`}
+                    onClick={() => onRemoveRule("path", r)}
+                  >
+                    <I.trash size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="desc">{t("contextPanel.ruleTypePath")}</div>
+          </div>
+        ))}
+
+        {totalCustom === 0 && (
+          <div style={{ color: "var(--muted)", fontSize: 12, padding: "4px 0" }}>
+            {t("contextPanel.noCustomRules")}
+          </div>
+        )}
+
+        {onAddRule && (
+          <form className="rule-composer" onSubmit={handleAdd}>
+            <div className="rule-composer-row">
+              <select
+                className="rule-select"
+                value={ruleType}
+                onChange={(e) => setRuleType(e.target.value as "shell" | "path")}
+                aria-label="Rule type"
+              >
+                <option value="shell">{t("contextPanel.ruleTypeShell")}</option>
+                <option value="path">{t("contextPanel.ruleTypePath")}</option>
+              </select>
+              <input
+                type="text"
+                className="rule-input"
+                placeholder={t("contextPanel.rulePatternPlaceholder")}
+                value={pattern}
+                onChange={(e) => setPattern(e.target.value)}
+                aria-label="Rule pattern"
+              />
+              <button
+                type="submit"
+                className="btn small"
+                disabled={!pattern.trim()}
+                title={t("contextPanel.addRuleBtn")}
+                aria-label={t("contextPanel.addRuleBtn")}
+              >
+                <I.plus size={12} />
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </>
+  );
+}

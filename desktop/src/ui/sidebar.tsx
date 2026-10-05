@@ -1,0 +1,415 @@
+import { openPath } from "@tauri-apps/plugin-opener";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type SessionInfo, sortSessionsByCreationDescending } from "../App";
+import { t, useLang } from "../i18n";
+import { I } from "../icons";
+import { formatTokensPerSecond } from "../stream-rate";
+import { useClampedPopupPosition } from "./file-menu";
+import { activationHandler } from "./keyboard";
+import { Shortcut } from "./shortcut";
+
+type PendingDelete = {
+  name: string;
+  pretty: string;
+  x: number;
+  y: number;
+};
+
+type PendingClear = {
+  x: number;
+  y: number;
+};
+
+function prettyName(s: SessionInfo): string {
+  if (s.summary?.trim()) return s.summary.trim();
+  // Session names are `desktop-<14-digit timestamp>-<tabCounter>` with an
+  // optional `-N` dedupe suffix when two chats mint in the same second —
+  // match the timestamp first, then let the trailing counters fall through.
+  const m = s.name.match(/^desktop-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(?:\d{2})?-(\d+)(?:-\d+)?$/);
+  if (m) {
+    const [, , month, day, hh, mm, tab] = m;
+    return `${t("sidebarPanel.sessionTitle", {
+      month,
+      day,
+      hour: hh,
+      minute: mm,
+    })}${tab && tab !== "1" ? ` · #${tab}` : ""}`;
+  }
+  return s.name.replace(/^desktop-/, "").replace(/[-_]+/g, " ");
+}
+
+function relative(ms: number): string {
+  const min = ms / 60_000;
+  if (min < 1) return t("sidebarPanel.justNow");
+  if (min < 60) return t("sidebarPanel.minutesAgo", { n: Math.floor(min) });
+  const hr = min / 60;
+  if (hr < 24) return t("sidebarPanel.hoursAgo", { n: Math.floor(hr) });
+  const d = hr / 24;
+  if (d < 7) return t("sidebarPanel.daysAgo", { n: Math.floor(d) });
+  return t("sidebarPanel.weeksAgo", { n: Math.floor(d / 7) });
+}
+
+export function Sidebar({
+  sessions,
+  activeName,
+  workspaceDir,
+  runningSessions,
+  sessionRates,
+  onNewChat,
+  onLoadSession,
+  onDeleteSession,
+  onClearSessions,
+  onReorderSession,
+  onOpenWorkdir,
+  onOpenSettings,
+  onOpenAbout,
+}: {
+  sessions: SessionInfo[];
+  activeName?: string;
+  workspaceDir?: string;
+  /** Session names whose agent is actively running (a turn in flight) anywhere
+   *  in the workspace — the ONLY thing that dots a session item, matching the
+   *  tab bar's running-agents-only rule. No dot for a merely open channel. */
+  runningSessions?: Set<string>;
+  /** Live provider output rate (tokens/second) keyed by session name. Only
+   *  present while the session's stream is running; a paused/stalled stream
+   *  reports 0. */
+  sessionRates?: Map<string, number>;
+  onNewChat: () => void;
+  onLoadSession: (name: string) => void;
+  onDeleteSession: (name: string) => void;
+  onClearSessions: () => void;
+  onReorderSession?: (name: string) => void;
+  onOpenWorkdir: (anchor: { top?: number; bottom?: number; left: number }) => void;
+  onOpenSettings: () => void;
+  onOpenAbout: () => void;
+}) {
+  useLang();
+  const [query, setQuery] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [pendingClear, setPendingClear] = useState<PendingClear | null>(null);
+  const workspaceLabel = workspaceDir
+    ? workspaceDir.split(/[\\/]/).pop() || workspaceDir
+    : t("sidebarPanel.noWorkspace");
+  const sortedSessions = [...sessions].sort(sortSessionsByCreationDescending);
+  const filtered = query
+    ? sortedSessions.filter((s) => {
+        const q = query.toLowerCase();
+        return prettyName(s).toLowerCase().includes(q) || s.name.toLowerCase().includes(q);
+      })
+    : sortedSessions;
+
+  useEffect(() => {
+    if (!pendingDelete && !pendingClear) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest(".session-delete-popover")) {
+        setPendingDelete(null);
+        setPendingClear(null);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setPendingDelete(null);
+        setPendingClear(null);
+      }
+    };
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [pendingDelete, pendingClear]);
+
+  return (
+    <aside className="sidebar">
+      <div className="side-head">
+        <button type="button" className="new-btn" onClick={onNewChat}>
+          <I.plus size={14} />
+          <span className="label">{t("sidebarPanel.newChat")}</span>
+          <Shortcut keys={["mod", "N"]} />
+        </button>
+      </div>
+
+      <div className="side-workspace">
+        <button
+          type="button"
+          className="workspace-btn"
+          title={
+            workspaceDir
+              ? t("sidebarPanel.switchWorkspace", { workspace: workspaceDir })
+              : t("sidebarPanel.pickWorkspace")
+          }
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            onOpenWorkdir({ top: rect.bottom + 6, left: rect.left });
+          }}
+        >
+          <span className="ico">
+            <I.folder size={13} />
+          </span>
+          <span className="body">
+            <span className="label">{t("sidebarPanel.workspace")}</span>
+            <span className="name">{workspaceLabel}</span>
+          </span>
+          <I.chev size={12} />
+        </button>
+        {workspaceDir ? (
+          <button
+            type="button"
+            className="open-workdir-btn"
+            title={t("sidebarPanel.openWorkspace")}
+            aria-label={t("sidebarPanel.openWorkspace")}
+            onClick={() => {
+              void openPath(workspaceDir).catch((err) =>
+                console.error("open workspace failed", err),
+              );
+            }}
+          >
+            <I.external size={13} />
+          </button>
+        ) : null}
+      </div>
+
+      <div className="search-row">
+        <div className="input">
+          <I.search size={13} />
+          <input
+            placeholder={t("sidebarPanel.searchSessions")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <Shortcut keys={["mod", "K"]} />
+        </div>
+      </div>
+
+      <div className="session-list">
+        <div className="side-section">
+          <div className="label">
+            <span>{t("sidebarPanel.recent")}</span>
+            <span className="count">{filtered.length}</span>
+            {sessions.length > 0 ? (
+              <button
+                type="button"
+                className="clear-all-btn"
+                title={t("sidebarPanel.clearAllSessions")}
+                aria-label={t("sidebarPanel.clearAllSessions")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setPendingClear({ x: rect.right, y: rect.bottom });
+                }}
+              >
+                <I.trash size={12} />
+              </button>
+            ) : null}
+          </div>
+          {sessions.length === 0 ? (
+            <div
+              style={{
+                padding: "12px 8px",
+                fontSize: 11,
+                color: "var(--muted-2)",
+                fontFamily: "Geist Mono, monospace",
+              }}
+            >
+              {t("sidebarPanel.noSessions")}
+            </div>
+          ) : filtered.length === 0 ? (
+            <div
+              style={{
+                padding: "12px 8px",
+                fontSize: 11,
+                color: "var(--muted-2)",
+                fontFamily: "Geist Mono, monospace",
+              }}
+            >
+              {t("sidebarPanel.noMatches")}
+            </div>
+          ) : null}
+          {filtered.map((s) => {
+            const active = s.name === activeName;
+            const mtime = Date.parse(s.mtime);
+            const updated = Number.isFinite(mtime) ? relative(Date.now() - mtime) : s.mtime;
+            const running = runningSessions?.has(s.name) ?? false;
+            const rate = running ? sessionRates?.get(s.name) : undefined;
+            return (
+              <div
+                key={s.name}
+                className="session-item"
+                data-active={active}
+                onClick={() => {
+                  // Skip the round-trip when clicking the already-loaded
+                  // session — a reload would clear live in-turn state (#1653).
+                  if (s.name === activeName) return;
+                  onLoadSession(s.name);
+                }}
+                role="button"
+                tabIndex={0}
+                title={s.name}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && s.name !== activeName) onLoadSession(s.name);
+                }}
+              >
+                {running ? <span className="state" /> : null}
+                <div className="body">
+                  <span className="title">{prettyName(s)}</span>
+                  <span className="meta">
+                    <span>{t("sidebarPanel.messageCount", { count: s.messageCount })}</span>
+                    <span className="sep">·</span>
+                    <span>{updated}</span>
+                    {rate !== undefined ? (
+                      <>
+                        <span className="sep">·</span>
+                        <span className="rate" title={t("sidebarPanel.tokensPerSecondTitle")}>
+                          {t("sidebarPanel.tokensPerSecond", {
+                            rate: formatTokensPerSecond(rate),
+                          })}
+                        </span>
+                      </>
+                    ) : null}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="reorder-btn"
+                  title={t("sidebarPanel.moveToTop")}
+                  aria-label={t("sidebarPanel.moveToTop")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onReorderSession?.(s.name);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+                  }}
+                >
+                  <I.arrowUp size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="delete-btn"
+                  title={t("sidebarPanel.deleteSession")}
+                  aria-label={t("sidebarPanel.deleteSession")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setPendingDelete({
+                      name: s.name,
+                      pretty: prettyName(s),
+                      x: rect.right,
+                      y: rect.bottom,
+                    });
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+                  }}
+                >
+                  <I.x size={12} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="side-foot">
+        <div className="row" onClick={onOpenAbout} onKeyDown={activationHandler(onOpenAbout)}>
+          <span className="ico">
+            <I.help size={13} />
+          </span>
+          <span>{t("about.sidebarLabel")}</span>
+        </div>
+        <div className="row" onClick={onOpenSettings} onKeyDown={activationHandler(onOpenSettings)}>
+          <span className="ico">
+            <I.cog size={13} />
+          </span>
+          <span>{t("sidebarPanel.settings")}</span>
+          <span className="right">
+            <Shortcut keys={["mod", ","]} />
+          </span>
+        </div>
+      </div>
+
+      {pendingDelete ? (
+        <SessionConfirmPopover
+          anchor={pendingDelete}
+          message={t("sidebarPanel.deleteSession")}
+          name={pendingDelete.pretty}
+          confirmLabel={t("sidebarPanel.delete")}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => {
+            onDeleteSession(pendingDelete.name);
+            setPendingDelete(null);
+          }}
+        />
+      ) : null}
+      {pendingClear ? (
+        <SessionConfirmPopover
+          anchor={pendingClear}
+          message={t("sidebarPanel.clearAllSessions")}
+          name={t("sidebarPanel.clearAllConfirm", { count: sessions.length })}
+          confirmLabel={t("sidebarPanel.deleteAll")}
+          onCancel={() => setPendingClear(null)}
+          onConfirm={() => {
+            onClearSessions();
+            setPendingClear(null);
+          }}
+        />
+      ) : null}
+    </aside>
+  );
+}
+
+function SessionConfirmPopover({
+  anchor,
+  message,
+  name,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: {
+  anchor: { x: number; y: number };
+  message: string;
+  name: string;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number }>({
+    left: anchor.x,
+    top: anchor.y,
+  });
+
+  useClampedPopupPosition(ref, anchor, pos, setPos);
+  useLayoutEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+
+  return (
+    <div
+      ref={ref}
+      className="session-delete-popover"
+      // biome-ignore lint/a11y/useSemanticElements: row-anchored popover — <dialog> top-layer semantics would break the absolute anchor
+      role="dialog"
+      aria-modal="true"
+      style={{ left: pos.left, top: pos.top }}
+    >
+      <div className="msg">
+        {message}
+        <span className="name">{name}</span>
+      </div>
+      <div className="actions">
+        <button ref={cancelRef} type="button" className="cancel" onClick={onCancel}>
+          {t("sidebarPanel.cancel")}
+        </button>
+        <button type="button" className="confirm" onClick={onConfirm}>
+          <I.trash size={11} />
+          {confirmLabel}
+        </button>
+      </div>
+    </div>
+  );
+}

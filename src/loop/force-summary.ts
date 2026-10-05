@@ -1,0 +1,204 @@
+import { COMPACTION_SUMMARY_MARKER, messageOf } from "@reasonix/core-utils";
+import { type DeepSeekClient, Usage } from "../client.js";
+import {
+  HISTORY_FOLD_SUMMARY_HEAD_FRACTION,
+  HISTORY_FOLD_SUMMARY_MIN_CHARS,
+  HISTORY_FOLD_SUMMARY_MIN_HEAD_TOKENS,
+  trimMessageWindow,
+} from "../context-manager.js";
+import { withDeadline } from "../core/with-deadline.js";
+import { pruneUnusedFileReads } from "../file-prune.js";
+import { t } from "../i18n/index.js";
+import { type TurnStats, resolveContextTokens } from "../telemetry/stats.js";
+import { countTokensBounded } from "../tokenizer.js";
+import type { ChatMessage } from "../types.js";
+import { buildFoldSummaryInstruction, extractPinnedConstraints } from "./compaction-prompt.js";
+import {
+  compactionRetryBudgetMs,
+  validateCompactionSummary,
+  withCompactionRetry,
+} from "./compaction-retry.js";
+import { errorLabelFor, reasonPrefixFor } from "./errors.js";
+import { buildAssistantMessage } from "./messages.js";
+import { stripHallucinatedToolMarkup } from "./thinking.js";
+import type { LoopEvent } from "./types.js";
+
+// Scaled deadline for the summary call, mirroring the fold summarizer's pattern
+// (context-manager.ts): prefill + queue time grows with the prompt, so a fixed
+// short cap would deterministically kill summaries at large contexts — exactly
+// when the 80% guard fires. The base covers the typical 30-60s summary call at
+// small contexts (raised from 15s after real sessions timed out there). The
+// client's own socket cap (11 min) still bounds a hung connection, but an
+// 11-min stall freezes the whole turn: the loop consumes this generator
+// inline, so in-flight tool dispatch (shell instances included) hangs until it
+// settles. The scaled deadline keeps the wait proportional to the context
+// (~4 min at a 240k-token context) instead of pathological.
+const FORCE_SUMMARY_TIMEOUT_MS = 45_000; // exported for the deadline regression test
+export { FORCE_SUMMARY_TIMEOUT_MS };
+const FORCE_SUMMARY_PER_TOKEN_MS = 1.0;
+const FORCE_SUMMARY_MAX_TIMEOUT_MS = 300_000;
+
+export type ForceSummaryReason = "aborted" | "context-guard" | "stuck";
+
+export interface ForceSummaryContext {
+  client: DeepSeekClient;
+  buildMessages: () => ChatMessage[];
+  /** Replaces the entire log with the synthesized summary — the force summary
+   *  is a FULL fold, not an append, so the context actually drops below the
+   *  guard threshold instead of re-tripping it next turn. */
+  replaceLog: (msg: ChatMessage) => void;
+  recordStats: (model: string, usage: Usage) => TurnStats;
+  turn: number;
+  /** Model to call for the summary itself — must be valid on the user's endpoint. */
+  model: string;
+  /** Honour the user's /max-tokens cap on the summary call too (#2196). */
+  maxOutputTokens?: number;
+  /** System prompt — used to lift pinned constraints verbatim into the summary. */
+  getSystemPrompt: () => string;
+  /** Final guard supplied by the loop; a force-summary request must not exceed the model budget. */
+  canSend?: (messages: ChatMessage[]) => boolean;
+  /** Effective context ceiling (tokens) for bounding the summarizer input. */
+  ctxMax?: number;
+}
+
+export async function* forceSummaryAfterIterLimit(
+  ctx: ForceSummaryContext,
+  opts: { reason: ForceSummaryReason },
+): AsyncGenerator<LoopEvent, string> {
+  try {
+    // Status bridges the silence — summary call is non-streaming, 30-60s typical.
+    yield { turn: ctx.turn, role: "status", content: t("summary.status") };
+    const rawMessages = ctx.buildMessages();
+
+    // 1. Separate prefix (system) messages from log messages.
+    const prefixMessages = rawMessages.filter((m) => m.role === "system");
+    const logMessages = rawMessages.filter((m) => m.role !== "system");
+
+    // 2. Prune unused file reads so dead file contents do not inflate the summary prompt.
+    const pruned = pruneUnusedFileReads(logMessages);
+
+    // 3. Bound the messages fed to the summarizer so the summary request fits within
+    // the model's context budget instead of blowing past it (context-guard triggers
+    // precisely when context >= 80% or exceeds budget).
+    const ctxMax = ctx.ctxMax ?? resolveContextTokens(ctx.model);
+    let messagesToSummarize = pruned.messages;
+    let droppedTokens = 0;
+    if (ctxMax > 0) {
+      const summaryBudget = Math.max(
+        HISTORY_FOLD_SUMMARY_MIN_HEAD_TOKENS,
+        Math.floor(ctxMax * HISTORY_FOLD_SUMMARY_HEAD_FRACTION),
+      );
+      const trimmed = trimMessageWindow(pruned.messages, summaryBudget);
+      messagesToSummarize = trimmed.messages;
+      droppedTokens = trimmed.droppedTokens;
+    }
+
+    let instruction = buildFoldSummaryInstruction([]);
+    if (droppedTokens > 0) {
+      instruction += `\n\n(Note: the oldest ${droppedTokens} tokens of conversation were trimmed before summarization: summarize only the context shown.)`;
+    }
+
+    // The force summary now REPLACES the whole log, so it must be a
+    // conversation recap that preserves the original objective, negative
+    // constraints, decisions, and open todos — not just a turn-scoped
+    // "what did I learn" blurb. Reuse the fold's instruction for parity.
+    // `stripHallucinatedToolMarkup` below still catches any tool-call/DSML
+    // markup the model hallucinates despite the plain-prose directive.
+    const messages: ChatMessage[] = [
+      ...prefixMessages,
+      ...messagesToSummarize,
+      {
+        role: "user",
+        content: instruction,
+      },
+    ];
+    if (ctx.canSend && !ctx.canSend(messages)) {
+      throw new Error("forced-summary request exceeds the model context budget");
+    }
+    // Use the active turn model — pinning a specific name (e.g. flash) 400s
+    // on third-party endpoints that don't advertise it. `thinking: disabled`
+    // still keeps reasoning tokens off the bill for the bounded paraphrase.
+    // Deadline race: the summary call must settle within a context-scaled
+    // window even when the upstream connection stalls (see constants above).
+    // The deadline aborts the request — AbortSignal.any, the same combination
+    // the client uses for its own socket cap — and rejects, so the catch below
+    // surfaces an error event instead of freezing the turn on "summarizing…".
+    const deadlineMs = Math.min(
+      FORCE_SUMMARY_MAX_TIMEOUT_MS,
+      FORCE_SUMMARY_TIMEOUT_MS +
+        Math.round(
+          messages.reduce(
+            (acc, m) => acc + countTokensBounded(typeof m.content === "string" ? m.content : ""),
+            0,
+          ) * FORCE_SUMMARY_PER_TOKEN_MS,
+        ),
+    );
+    // Deliberately NOT wired to the turn's abort signal — compaction is
+    // non-interruptible by design (same rationale as the fold summarizer in
+    // context-manager.ts). Esc/Stop during the summary is deferred to the next
+    // iteration boundary; the request is bounded only by the scaled deadline.
+    const resp = await withCompactionRetry({
+      maxElapsedMs: compactionRetryBudgetMs(deadlineMs),
+      timeoutMessage: "forced-summary-timeout",
+      attempt: async (attemptSignal) => {
+        const response = await withDeadline(
+          (signal) =>
+            ctx.client.chat({
+              model: ctx.model,
+              messages,
+              signal,
+              thinking: "disabled",
+              maxTokens: ctx.maxOutputTokens,
+            }),
+          deadlineMs,
+          "forced-summary-timeout",
+          attemptSignal,
+        );
+        validateCompactionSummary(
+          stripHallucinatedToolMarkup(response.content?.trim() ?? ""),
+          HISTORY_FOLD_SUMMARY_MIN_CHARS,
+        );
+        return response;
+      },
+    });
+    const rawContent = resp.content?.trim() ?? "";
+    const cleaned = stripHallucinatedToolMarkup(rawContent);
+    const summary = cleaned;
+    const reasonPrefix = reasonPrefixFor(opts.reason);
+    const annotated = `${reasonPrefix}\n\n${summary}`;
+    const summaryStats = ctx.recordStats(ctx.model, resp.usage ?? new Usage());
+    // Full fold: stamp the recap + pinned constraints and REPLACE the log, so
+    // the context drops below the guard instead of growing on top of it.
+    const constraints = extractPinnedConstraints(ctx.getSystemPrompt());
+    const constraintTail = constraints
+      ? `\n\n[PINNED CONSTRAINTS — preserved verbatim]\n\n${constraints}`
+      : "";
+    ctx.replaceLog(
+      buildAssistantMessage(
+        COMPACTION_SUMMARY_MARKER + summary + constraintTail,
+        [],
+        ctx.model,
+        resp.reasoningContent,
+      ),
+    );
+    yield {
+      turn: ctx.turn,
+      role: "assistant_final",
+      content: annotated,
+      stats: summaryStats,
+      forcedSummary: true,
+    };
+    yield { turn: ctx.turn, role: "done", content: summary };
+    // Returns the raw summary text (without the reason prefix) so the caller can
+    // fill the compaction card's summaryChars without re-parsing the event.
+    return summary;
+  } catch (err) {
+    const label = errorLabelFor(opts.reason);
+    const raw = messageOf(err);
+    const message = t("summary.failedAfterReason", {
+      label,
+      message: raw === "forced-summary-timeout" ? "summary request timed out" : raw,
+    });
+    throw new Error(message);
+  }
+}

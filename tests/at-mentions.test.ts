@@ -1,0 +1,767 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  AT_MENTION_PATTERN,
+  AT_PICKER_PREFIX,
+  DEFAULT_AT_MENTION_MAX_BYTES,
+  DEFAULT_PICKER_IGNORE_DIRS,
+  detectAtPicker,
+  expandAtMentions,
+  listDirectory,
+  listFilesSync,
+  listFilesWithStatsAsync,
+  parseAtQuery,
+  rankPickerCandidates,
+  walkFilesStream,
+} from "../src/at-mentions.js";
+
+describe("AT_MENTION_PATTERN", () => {
+  it("matches @path at start of string", () => {
+    const matches = [...".".matchAll(AT_MENTION_PATTERN)];
+    expect(matches).toHaveLength(0);
+    const m2 = [..."@src/loop.ts".matchAll(AT_MENTION_PATTERN)];
+    expect(m2).toHaveLength(1);
+    expect(m2[0]![1]).toBe("src/loop.ts");
+  });
+
+  it("matches @path after whitespace", () => {
+    const m = [..."look at @src/loop.ts please".matchAll(AT_MENTION_PATTERN)];
+    expect(m).toHaveLength(1);
+    expect(m[0]![1]).toBe("src/loop.ts");
+  });
+
+  it("does NOT match @ embedded in a word (email, social handle)", () => {
+    const m1 = [..."email user@example.com".matchAll(AT_MENTION_PATTERN)];
+    expect(m1).toHaveLength(0);
+    const m2 = [..."foo@bar".matchAll(AT_MENTION_PATTERN)];
+    expect(m2).toHaveLength(0);
+  });
+
+  it("matches CJK-named paths (issue #749)", () => {
+    const text = "see @docs/中文/readme.md";
+    const matches = [...text.matchAll(AT_MENTION_PATTERN)].map((m) => m[1]);
+    expect(matches).toEqual(["docs/中文/readme.md"]);
+  });
+
+  it("matches multiple @paths in one string", () => {
+    const m = [..."compare @a.ts and @b.ts".matchAll(AT_MENTION_PATTERN)];
+    expect(m).toHaveLength(2);
+    expect(m[0]![1]).toBe("a.ts");
+    expect(m[1]![1]).toBe("b.ts");
+  });
+});
+
+describe("expandAtMentions", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "reasonix-at-mentions-"));
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "loop.ts"), "export const x = 1;\n");
+    writeFileSync(join(root, "notes.md"), "# Notes\nhello\n");
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("returns text unchanged when there are no mentions", () => {
+    const r = expandAtMentions("plain prompt with no mentions", root);
+    expect(r.text).toBe("plain prompt with no mentions");
+    expect(r.expansions).toEqual([]);
+  });
+
+  it("inlines an existing file under a `Referenced files` block", () => {
+    const r = expandAtMentions("look at @src/loop.ts", root);
+    expect(r.expansions).toHaveLength(1);
+    expect(r.expansions[0]!.ok).toBe(true);
+    expect(r.expansions[0]!.path).toBe("src/loop.ts");
+    expect(r.text).toContain("look at @src/loop.ts");
+    expect(r.text).toContain("[Referenced files]");
+    expect(r.text).toContain('<file path="src/loop.ts">');
+    expect(r.text).toContain("export const x = 1;");
+    expect(r.text).toContain("</file>");
+  });
+
+  it("de-duplicates repeated mentions of the same file", () => {
+    const r = expandAtMentions("compare @src/loop.ts with @src/loop.ts", root);
+    expect(r.expansions).toHaveLength(1);
+    // Only one file block in the output.
+    const fileBlocks = r.text.match(/<file path="/g) ?? [];
+    expect(fileBlocks).toHaveLength(1);
+  });
+
+  it("expands multiple different files in the same prompt", () => {
+    const r = expandAtMentions("read @src/loop.ts and @notes.md", root);
+    expect(r.expansions).toHaveLength(2);
+    expect(r.expansions.every((ex) => ex.ok)).toBe(true);
+    expect(r.text).toContain('<file path="src/loop.ts">');
+    expect(r.text).toContain('<file path="notes.md">');
+  });
+
+  it("marks missing files as skipped with a reason", () => {
+    const r = expandAtMentions("look at @src/does-not-exist.ts", root);
+    expect(r.expansions).toHaveLength(1);
+    expect(r.expansions[0]!.ok).toBe(false);
+    expect(r.expansions[0]!.skip).toBe("missing");
+    expect(r.text).toContain('skipped="missing"');
+  });
+
+  it("rejects paths that escape the root directory", () => {
+    const r = expandAtMentions("peek at @../../../etc/passwd", root);
+    expect(r.expansions).toHaveLength(1);
+    expect(r.expansions[0]!.skip).toBe("escape");
+    expect(r.text).not.toContain("passwd content");
+  });
+
+  it("rejects absolute paths", () => {
+    const r = expandAtMentions("look at @/etc/hosts", root);
+    expect(r.expansions).toHaveLength(1);
+    expect(r.expansions[0]!.skip).toBe("escape");
+  });
+
+  it("skips files larger than maxBytes", () => {
+    const big = join(root, "big.log");
+    writeFileSync(big, "x".repeat(1000));
+    const r = expandAtMentions("inspect @big.log", root, { maxBytes: 500 });
+    expect(r.expansions).toHaveLength(1);
+    expect(r.expansions[0]!.ok).toBe(false);
+    expect(r.expansions[0]!.skip).toBe("too-large");
+    expect(r.expansions[0]!.bytes).toBe(1000);
+    expect(r.text).toContain('skipped="too-large"');
+  });
+
+  it("strips a trailing sentence-terminator dot from the path", () => {
+    // `@src/loop.ts.` — the trailing `.` is a sentence period, not
+    // part of the filename. The mention should resolve src/loop.ts.
+    const r = expandAtMentions("look at @src/loop.ts.", root);
+    expect(r.expansions).toHaveLength(1);
+    expect(r.expansions[0]!.ok).toBe(true);
+    expect(r.expansions[0]!.path).toBe("src/loop.ts");
+  });
+
+  it("default max bytes is 64KB", () => {
+    expect(DEFAULT_AT_MENTION_MAX_BYTES).toBe(64 * 1024);
+  });
+
+  it("expands a directory mention to a recursive listing block", () => {
+    const r = expandAtMentions("look at @src", root);
+    expect(r.expansions).toHaveLength(1);
+    const ex = r.expansions[0]!;
+    expect(ex.ok).toBe(true);
+    expect(ex.isDirectory).toBe(true);
+    expect(ex.entries).toBe(1);
+    expect(ex.truncated).toBe(false);
+    expect(r.text).toContain('<directory path="src" entries="1">');
+    expect(r.text).toContain("src/loop.ts");
+    expect(r.text).toContain("</directory>");
+    // The dir block must NOT be wrapped as a `<file>` block.
+    expect(r.text).not.toContain('<file path="src">');
+  });
+
+  it("treats `@<dir>/` and `@<dir>` identically", () => {
+    const r = expandAtMentions("look at @src/", root);
+    expect(r.expansions).toHaveLength(1);
+    expect(r.expansions[0]!.path).toBe("src");
+    expect(r.expansions[0]!.isDirectory).toBe(true);
+  });
+
+  it("caps directory listings at maxDirEntries and flags truncation", () => {
+    mkdirSync(join(root, "many"));
+    for (let i = 0; i < 5; i++) writeFileSync(join(root, "many", `f${i}.txt`), "");
+    const r = expandAtMentions("see @many", root, { maxDirEntries: 2 });
+    expect(r.expansions[0]!.ok).toBe(true);
+    expect(r.expansions[0]!.entries).toBe(2);
+    expect(r.expansions[0]!.truncated).toBe(true);
+    expect(r.text).toContain('truncated="true"');
+  });
+
+  it("respects gitignore rules from the project root when listing a sub-dir", () => {
+    writeFileSync(join(root, ".gitignore"), "src/loop.ts\n");
+    const r = expandAtMentions("see @src", root);
+    expect(r.expansions[0]!.ok).toBe(true);
+    expect(r.expansions[0]!.entries).toBe(0);
+    expect(r.text).not.toContain("src/loop.ts");
+  });
+});
+
+describe("detectAtPicker", () => {
+  it("fires when the buffer ends with `@`", () => {
+    const r = detectAtPicker("look at @");
+    expect(r).not.toBeNull();
+    expect(r!.query).toBe("");
+    // `@` is at offset 8 (after "look at ").
+    expect(r!.atOffset).toBe(8);
+  });
+
+  it("captures the partial query after `@`", () => {
+    const r = detectAtPicker("edit @src/lo");
+    expect(r).not.toBeNull();
+    expect(r!.query).toBe("src/lo");
+    expect(r!.atOffset).toBe(5);
+  });
+
+  it("does NOT fire when @ is embedded in a word", () => {
+    expect(detectAtPicker("email@example.com")).toBeNull();
+  });
+
+  it("does NOT fire when the buffer ends with a space after the mention", () => {
+    // Trailing space closes the picker — the user's done picking.
+    expect(detectAtPicker("@src/loop.ts ")).toBeNull();
+  });
+
+  it("does NOT fire when there's no @ at all", () => {
+    expect(detectAtPicker("just a normal message")).toBeNull();
+  });
+
+  it("fires at start of string", () => {
+    const r = detectAtPicker("@sr");
+    expect(r).not.toBeNull();
+    expect(r!.query).toBe("sr");
+    expect(r!.atOffset).toBe(0);
+  });
+
+  it("captures CJK characters in the path (issue #749)", () => {
+    const r = detectAtPicker("look at @中文");
+    expect(r).not.toBeNull();
+    expect(r!.query).toBe("中文");
+    expect(r!.atOffset).toBe(8);
+  });
+
+  it("captures CJK folder with trailing slash so Tab can drill in (issue #749)", () => {
+    const r = detectAtPicker("@中文/");
+    expect(r).not.toBeNull();
+    expect(r!.query).toBe("中文/");
+    expect(r!.atOffset).toBe(0);
+  });
+
+  it("captures a child path under a CJK folder (issue #749)", () => {
+    const r = detectAtPicker("@中文/sub.ts");
+    expect(r).not.toBeNull();
+    expect(r!.query).toBe("中文/sub.ts");
+  });
+});
+
+describe("AT_PICKER_PREFIX vs AT_MENTION_PATTERN (sanity)", () => {
+  it("picker captures empty partial", () => {
+    const m = AT_PICKER_PREFIX.exec("hi @");
+    expect(m).not.toBeNull();
+    expect(m![1]).toBe("");
+  });
+
+  it("expansion pattern requires a non-empty path", () => {
+    // Completed mentions for expandAtMentions need at least one char.
+    const m = [..."hi @".matchAll(AT_MENTION_PATTERN)];
+    expect(m).toHaveLength(0);
+  });
+});
+
+describe("rankPickerCandidates", () => {
+  const files = [
+    "src/loop.ts",
+    "src/at-mentions.ts",
+    "src/tokenizer.ts",
+    "src/cli/ui/App.tsx",
+    "src/cli/ui/PromptInput.tsx",
+    "tests/loop.test.ts",
+    "tests/at-mentions.test.ts",
+    "README.md",
+  ];
+
+  it("returns the first `limit` entries when query is empty", () => {
+    const r = rankPickerCandidates(files, "", 3);
+    expect(r).toHaveLength(3);
+    expect(r).toEqual(files.slice(0, 3));
+  });
+
+  it("filters by substring match (case-insensitive)", () => {
+    const r = rankPickerCandidates(files, "LOOP");
+    expect(r).toContain("src/loop.ts");
+    expect(r).toContain("tests/loop.test.ts");
+    expect(r).not.toContain("README.md");
+  });
+
+  it("ranks basename-prefix matches above substring matches", () => {
+    // `ment` appears in "at-mentions" (both src and tests). Basenames
+    // are "at-mentions.ts" and "at-mentions.test.ts" — both start
+    // with `at-m` not `ment`. Not a basename-prefix hit; both should
+    // score the same (substring).
+    const r = rankPickerCandidates(files, "at-m");
+    // `at-m` is a basename prefix for both at-mentions files:
+    expect(r[0]).toMatch(/at-mentions/);
+    expect(r[1]).toMatch(/at-mentions/);
+  });
+
+  it("ranks path-prefix above substring when basename doesn't match", () => {
+    // `tests/` is a path prefix (not basename). Both tests/* hit.
+    const r = rankPickerCandidates(files, "tests/");
+    expect(r[0]).toMatch(/^tests\//);
+  });
+
+  it("returns empty array when nothing matches", () => {
+    const r = rankPickerCandidates(files, "zzznomatch");
+    expect(r).toEqual([]);
+  });
+
+  it("respects the limit parameter", () => {
+    const r = rankPickerCandidates(files, "s", 2);
+    expect(r).toHaveLength(2);
+  });
+
+  it("sorts by mtime descending when entries carry FileWithStats and query is empty", () => {
+    const entries = [
+      { path: "a.ts", mtimeMs: 100 },
+      { path: "b.ts", mtimeMs: 300 },
+      { path: "c.ts", mtimeMs: 200 },
+    ];
+    const r = rankPickerCandidates(entries, "", 5);
+    // Newest (b, mtime 300) → middle (c, 200) → oldest (a, 100).
+    expect(r).toEqual(["b.ts", "c.ts", "a.ts"]);
+  });
+
+  it("recently-used paths float to the top on empty query regardless of mtime", () => {
+    const entries = [
+      { path: "a.ts", mtimeMs: 300 },
+      { path: "b.ts", mtimeMs: 100 },
+      { path: "c.ts", mtimeMs: 200 },
+    ];
+    const r = rankPickerCandidates(entries, "", {
+      limit: 5,
+      recentlyUsed: ["c.ts"],
+    });
+    // Recently-used c.ts comes first even though a.ts has a newer mtime.
+    expect(r[0]).toBe("c.ts");
+    // Remaining sorted by mtime descending.
+    expect(r[1]).toBe("a.ts");
+    expect(r[2]).toBe("b.ts");
+  });
+
+  it("fuzzy-subsequence-matches when no substring hits — typed acronyms find the file", () => {
+    // `atmnt` isn't a substring of any path, but is a subsequence of
+    // `at-mentions`. Today's prefix-only ranker would drop it; fuzzy
+    // fallback should surface both at-mentions paths.
+    const r = rankPickerCandidates(files, "atmnt");
+    expect(r).toContain("src/at-mentions.ts");
+    expect(r).toContain("tests/at-mentions.test.ts");
+  });
+
+  it("substring hits still rank above fuzzy-subsequence hits", () => {
+    // `loop` is a substring of "src/loop.ts" (class 2) and
+    // "tests/loop.test.ts" (class 2). It's a subsequence of a few
+    // others (e.g. "src/cli/ui/PromptInput.tsx" has l-o-..-p? actually
+    // no `l` then `o` then `o` then `p` — "PromptInput" is P-r-o-m-p-t,
+    // no subsequence). Use a query that matches both substring and
+    // subsequence to verify substring wins:
+    //   `app` → substring hit on "src/cli/ui/App.tsx" (case-insensitive)
+    //         + subseq match on "src/at-mentions.ts" (a-..-p? no `p`).
+    // Simpler: just ensure all results for `loop` are substring hits
+    // (the only two such files), and nothing fuzzy snuck above.
+    const r = rankPickerCandidates(files, "loop");
+    expect(r[0]).toMatch(/loop/);
+    expect(r[1]).toMatch(/loop/);
+  });
+
+  it("clusters of consecutive subsequence chars rank above scattered ones", () => {
+    const candidates = [
+      "src/a/b/c/d/e/things.ts", // `thgs` scattered as subseq with gaps
+      "src/things.ts", // `thgs` as cleaner subseq, no path noise
+    ];
+    const r = rankPickerCandidates(candidates, "thgs");
+    expect(r[0]).toBe("src/things.ts");
+  });
+
+  it("tie-breaks query matches by recently-used, then mtime", () => {
+    const entries = [
+      { path: "src/alpha.ts", mtimeMs: 100 },
+      { path: "src/alpha2.ts", mtimeMs: 500 }, // newer
+    ];
+    const r = rankPickerCandidates(entries, "alpha", { limit: 5 });
+    // Both match with the same score (basename prefix, same hit
+    // position) — mtime tiebreak puts alpha2 first.
+    expect(r[0]).toBe("src/alpha2.ts");
+    expect(r[1]).toBe("src/alpha.ts");
+
+    // Now with recency: older alpha.ts boosted over newer alpha2.ts.
+    const r2 = rankPickerCandidates(entries, "alpha", {
+      limit: 5,
+      recentlyUsed: ["src/alpha.ts"],
+    });
+    expect(r2[0]).toBe("src/alpha.ts");
+    expect(r2[1]).toBe("src/alpha2.ts");
+  });
+
+  it("preserves input order on empty query when no mtime + no recency signal", () => {
+    // Back-compat: bare string input behaves as before.
+    const r = rankPickerCandidates(files, "", 3);
+    expect(r).toEqual(files.slice(0, 3));
+  });
+
+  it("accepts a number literal as the third arg for limit (back-compat)", () => {
+    const r = rankPickerCandidates(files, "loop", 1);
+    expect(r).toHaveLength(1);
+  });
+});
+
+describe("listFilesSync", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "reasonix-listfiles-"));
+    mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(join(root, "src", "cli"), { recursive: true });
+    mkdirSync(join(root, "node_modules", "foo"), { recursive: true });
+    mkdirSync(join(root, ".git", "objects"), { recursive: true });
+    writeFileSync(join(root, "package.json"), "{}");
+    writeFileSync(join(root, "README.md"), "# hi");
+    writeFileSync(join(root, ".gitignore"), "dist/");
+    writeFileSync(join(root, "src", "index.ts"), "");
+    writeFileSync(join(root, "src", "cli", "app.ts"), "");
+    writeFileSync(join(root, "node_modules", "foo", "index.js"), "");
+    writeFileSync(join(root, ".git", "objects", "abc"), "");
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("returns files recursively, with forward-slash separators", () => {
+    const files = listFilesSync(root);
+    expect(files).toContain("package.json");
+    expect(files).toContain("README.md");
+    expect(files).toContain("src/index.ts");
+    expect(files).toContain("src/cli/app.ts");
+    // All entries use forward slashes even on Windows.
+    for (const f of files) {
+      expect(f).not.toContain("\\");
+    }
+  });
+
+  it("skips ignored directories by default", () => {
+    const files = listFilesSync(root);
+    expect(files.every((f) => !f.includes("node_modules"))).toBe(true);
+    expect(files.every((f) => !f.includes(".git/"))).toBe(true);
+  });
+
+  it("descends into dot-directories and custom-dir skips only when asked", () => {
+    const files = listFilesSync(root, {
+      ignoreDirs: [],
+      respectGitignore: false,
+      includeDotDirs: true,
+    });
+    expect(files).toContain(".git/objects/abc");
+    expect(files).toContain("node_modules/foo/index.js");
+    // .gitignore is only respected when asked; dist/ was never created here.
+    expect(files).toContain(".gitignore");
+  });
+
+  it("includes dotfiles at the top level (e.g. .gitignore)", () => {
+    const files = listFilesSync(root);
+    expect(files).toContain(".gitignore");
+  });
+
+  it("respects custom ignoreDirs", () => {
+    const files = listFilesSync(root, { ignoreDirs: ["src"] });
+    expect(files.every((f) => !f.startsWith("src/"))).toBe(true);
+    expect(files).toContain("package.json");
+  });
+
+  it("caps the result count at maxResults", () => {
+    const files = listFilesSync(root, { maxResults: 2 });
+    expect(files.length).toBeLessThanOrEqual(2);
+  });
+
+  it("returns an empty list for an unreadable root (falls through)", () => {
+    const files = listFilesSync(join(root, "does-not-exist"));
+    expect(files).toEqual([]);
+  });
+
+  it("exposes the default ignore list", () => {
+    expect(DEFAULT_PICKER_IGNORE_DIRS).toContain("node_modules");
+    expect(DEFAULT_PICKER_IGNORE_DIRS).toContain(".git");
+    expect(DEFAULT_PICKER_IGNORE_DIRS).toContain("dist");
+  });
+
+  it("includes symlinks pointing at regular files", () => {
+    writeFileSync(join(root, "target.ts"), "// target\n");
+    let symlinksWorked = true;
+    try {
+      symlinkSync(join(root, "target.ts"), join(root, "alias.ts"));
+    } catch {
+      symlinksWorked = false;
+    }
+    if (!symlinksWorked) return;
+    const files = listFilesSync(root);
+    expect(files).toContain("alias.ts");
+  });
+});
+
+describe("listFilesWithStatsAsync", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "reasonix-listfiles-async-"));
+    mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(join(root, "src", "cli"), { recursive: true });
+    mkdirSync(join(root, "node_modules", "foo"), { recursive: true });
+    writeFileSync(join(root, "package.json"), "{}");
+    writeFileSync(join(root, "README.md"), "# hi");
+    writeFileSync(join(root, "src", "index.ts"), "");
+    writeFileSync(join(root, "src", "cli", "app.ts"), "");
+    writeFileSync(join(root, "node_modules", "foo", "index.js"), "");
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("returns the same shape as listFilesSync — DFS-alphabetical", async () => {
+    const entries = await listFilesWithStatsAsync(root);
+    const paths = entries.map((e) => e.path);
+    expect(paths).toContain("package.json");
+    expect(paths).toContain("src/index.ts");
+    expect(paths).toContain("src/cli/app.ts");
+    // Forward slashes on every platform — same contract the sync
+    // walk advertises.
+    for (const e of entries) {
+      expect(e.path).not.toContain("\\");
+    }
+  });
+
+  it("skips default-ignored dirs (node_modules, .git, etc)", async () => {
+    const entries = await listFilesWithStatsAsync(root);
+    expect(entries.every((e) => !e.path.includes("node_modules"))).toBe(true);
+  });
+
+  it("respects maxResults", async () => {
+    const entries = await listFilesWithStatsAsync(root, { maxResults: 2 });
+    expect(entries.length).toBeLessThanOrEqual(2);
+  });
+
+  it("populates mtimeMs for each entry", async () => {
+    const entries = await listFilesWithStatsAsync(root);
+    for (const e of entries) {
+      expect(e.mtimeMs).toBeGreaterThan(0);
+    }
+  });
+
+  it("returns [] for an unreadable root", async () => {
+    const entries = await listFilesWithStatsAsync(join(root, "does-not-exist"));
+    expect(entries).toEqual([]);
+  });
+
+  it("honors root .gitignore — ignored files and dirs are skipped", async () => {
+    writeFileSync(join(root, ".gitignore"), "ignored-file.log\ngenerated/\n");
+    writeFileSync(join(root, "ignored-file.log"), "noise");
+    mkdirSync(join(root, "generated"), { recursive: true });
+    writeFileSync(join(root, "generated", "out.dart"), "");
+    const entries = await listFilesWithStatsAsync(root);
+    const paths = entries.map((e) => e.path);
+    expect(paths).not.toContain("ignored-file.log");
+    expect(paths.every((p) => !p.startsWith("generated/"))).toBe(true);
+    // Sanity: non-ignored files still present.
+    expect(paths).toContain("src/index.ts");
+  });
+
+  it("respectGitignore=false bypasses .gitignore filter", async () => {
+    writeFileSync(join(root, ".gitignore"), "ignored-file.log\n");
+    writeFileSync(join(root, "ignored-file.log"), "noise");
+    const entries = await listFilesWithStatsAsync(root, { respectGitignore: false });
+    expect(entries.map((e) => e.path)).toContain("ignored-file.log");
+  });
+
+  it("walks nested .gitignore files — sub-dir patterns scope correctly", async () => {
+    // Root .gitignore catches root-only matches; sub .gitignore adds local patterns.
+    writeFileSync(join(root, ".gitignore"), "secret.env\n");
+    writeFileSync(join(root, "secret.env"), "k=v");
+    mkdirSync(join(root, "lib"), { recursive: true });
+    writeFileSync(join(root, "lib", ".gitignore"), "*.generated.ts\n");
+    writeFileSync(join(root, "lib", "main.ts"), "");
+    writeFileSync(join(root, "lib", "schema.generated.ts"), "");
+    // Sub-pattern doesn't leak to siblings.
+    writeFileSync(join(root, "schema.generated.ts"), "");
+    const entries = await listFilesWithStatsAsync(root);
+    const paths = entries.map((e) => e.path);
+    expect(paths).not.toContain("secret.env");
+    expect(paths).not.toContain("lib/schema.generated.ts");
+    expect(paths).toContain("lib/main.ts");
+    // Sibling at root is NOT caught by lib/.gitignore.
+    expect(paths).toContain("schema.generated.ts");
+  });
+
+  it("negation patterns (!important.log) override prior excludes", async () => {
+    writeFileSync(join(root, ".gitignore"), "*.log\n!keep.log\n");
+    writeFileSync(join(root, "drop.log"), "");
+    writeFileSync(join(root, "keep.log"), "");
+    const paths = (await listFilesWithStatsAsync(root)).map((e) => e.path);
+    expect(paths).not.toContain("drop.log");
+    expect(paths).toContain("keep.log");
+  });
+
+  it("includes symlinks pointing at regular files; drops symlinks-to-dirs and broken links", async () => {
+    writeFileSync(join(root, "real-target.ts"), "// target\n");
+    mkdirSync(join(root, "real-dir"));
+    let symlinksWorked = true;
+    try {
+      symlinkSync(join(root, "real-target.ts"), join(root, "linked-file.ts"));
+      symlinkSync(join(root, "real-dir"), join(root, "linked-dir"));
+      symlinkSync(join(root, "no-such-target"), join(root, "broken-link"));
+    } catch {
+      // Windows non-admin can't create symlinks — skip on those hosts.
+      symlinksWorked = false;
+    }
+    if (!symlinksWorked) return;
+    const paths = (await listFilesWithStatsAsync(root)).map((e) => e.path);
+    expect(paths).toContain("linked-file.ts");
+    expect(paths).not.toContain("linked-dir");
+    expect(paths).not.toContain("broken-link");
+  });
+});
+
+describe("parseAtQuery", () => {
+  it("empty input is the root browse", () => {
+    expect(parseAtQuery("")).toEqual({ dir: "", filter: "", trailingSlash: false });
+  });
+
+  it("bare token is a root-level filter", () => {
+    expect(parseAtQuery("auth")).toEqual({ dir: "", filter: "auth", trailingSlash: false });
+  });
+
+  it("trailing slash flips on browse-this-dir mode", () => {
+    expect(parseAtQuery("src/")).toEqual({ dir: "src", filter: "", trailingSlash: true });
+  });
+
+  it("query inside a path splits on the last slash", () => {
+    expect(parseAtQuery("src/auth/log")).toEqual({
+      dir: "src/auth",
+      filter: "log",
+      trailingSlash: false,
+    });
+  });
+
+  it("backslashes normalize to forward slashes", () => {
+    expect(parseAtQuery("src\\auth")).toEqual({
+      dir: "src",
+      filter: "auth",
+      trailingSlash: false,
+    });
+  });
+});
+
+describe("listDirectory", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "reasonix-listdir-"));
+    mkdirSync(join(root, "src", "auth"), { recursive: true });
+    mkdirSync(join(root, "tests"), { recursive: true });
+    mkdirSync(join(root, "node_modules"), { recursive: true });
+    mkdirSync(join(root, ".git"), { recursive: true });
+    writeFileSync(join(root, "README.md"), "x");
+    writeFileSync(join(root, "package.json"), "{}");
+    writeFileSync(join(root, "src", "index.ts"), "x");
+    writeFileSync(join(root, "src", "loop.ts"), "x");
+    writeFileSync(join(root, "src", "auth", "login.ts"), "x");
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("lists immediate children only — dirs before files, alpha within group", async () => {
+    const entries = await listDirectory(root, "");
+    const labels = entries.map((e) => `${e.name}${e.isDir ? "/" : ""}`);
+    expect(labels).toEqual(["src/", "tests/", "package.json", "README.md"]);
+  });
+
+  it("drills into a subdir without scanning siblings", async () => {
+    const entries = await listDirectory(root, "src");
+    const names = entries.map((e) => e.name);
+    expect(names).toEqual(["auth", "index.ts", "loop.ts"]);
+    expect(entries.find((e) => e.name === "auth")?.isDir).toBe(true);
+  });
+
+  it("paths returned for subdir entries are root-relative", async () => {
+    const entries = await listDirectory(root, "src");
+    const auth = entries.find((e) => e.name === "auth");
+    expect(auth?.path).toBe("src/auth");
+    const idx = entries.find((e) => e.name === "index.ts");
+    expect(idx?.path).toBe("src/index.ts");
+  });
+
+  it("escapes outside the root resolve to empty", async () => {
+    const out = await listDirectory(root, "../..");
+    expect(out).toEqual([]);
+  });
+
+  it("missing dir resolves to empty (not a throw)", async () => {
+    const out = await listDirectory(root, "does-not-exist");
+    expect(out).toEqual([]);
+  });
+
+  it("respects .gitignore in the dir being listed", async () => {
+    writeFileSync(join(root, ".gitignore"), "secret.txt\n");
+    writeFileSync(join(root, "secret.txt"), "x");
+    writeFileSync(join(root, "ok.txt"), "x");
+    const entries = await listDirectory(root, "");
+    const names = entries.map((e) => e.name);
+    expect(names).toContain("ok.txt");
+    expect(names).not.toContain("secret.txt");
+  });
+});
+
+describe("walkFilesStream", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "reasonix-stream-"));
+    mkdirSync(join(root, "a"), { recursive: true });
+    mkdirSync(join(root, "b", "c"), { recursive: true });
+    mkdirSync(join(root, "node_modules", "junk"), { recursive: true });
+    writeFileSync(join(root, "a", "1.ts"), "x");
+    writeFileSync(join(root, "a", "2.ts"), "x");
+    writeFileSync(join(root, "b", "3.ts"), "x");
+    writeFileSync(join(root, "b", "c", "4.ts"), "x");
+    writeFileSync(join(root, "node_modules", "junk", "skip.ts"), "x");
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("emits each file via onEntry exactly once", async () => {
+    const seen: string[] = [];
+    await walkFilesStream(root, { onEntry: (e) => void seen.push(e.path) });
+    expect(seen.sort()).toEqual(["a/1.ts", "a/2.ts", "b/3.ts", "b/c/4.ts"]);
+  });
+
+  it("returning false from onEntry halts the walk", async () => {
+    const seen: string[] = [];
+    await walkFilesStream(root, {
+      onEntry: (e) => {
+        seen.push(e.path);
+        return seen.length < 2;
+      },
+    });
+    expect(seen.length).toBe(2);
+  });
+
+  it("AbortSignal halts the walk", async () => {
+    const ac = new AbortController();
+    const seen: string[] = [];
+    const result = await walkFilesStream(root, {
+      signal: ac.signal,
+      onEntry: (e) => {
+        seen.push(e.path);
+        if (seen.length === 1) ac.abort();
+      },
+    });
+    expect(result.cancelled).toBe(true);
+    expect(seen.length).toBeLessThanOrEqual(4);
+  });
+
+  it("default ignoreDirs blocks node_modules", async () => {
+    const seen: string[] = [];
+    await walkFilesStream(root, { onEntry: (e) => void seen.push(e.path) });
+    expect(seen.find((p) => p.includes("node_modules"))).toBeUndefined();
+  });
+
+  it("onProgress fires at end with the total scanned count", async () => {
+    let last = 0;
+    await walkFilesStream(root, {
+      onEntry: () => {},
+      onProgress: (n) => {
+        last = n;
+      },
+      progressIntervalMs: 0,
+    });
+    expect(last).toBe(4);
+  });
+});

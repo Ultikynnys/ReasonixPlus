@@ -1,0 +1,374 @@
+/** Append-only JSONL of per-turn tokens + cost; best-effort writes, never blocks the turn. No prompts/completions logged. */
+
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+import { DAY_MS, formatBytes } from "@reasonix/core-utils";
+import type { Usage } from "../client.js";
+import type { ModelProvider } from "../config.js";
+import { appendJsonlLine, countJsonlLines, parseJsonl, readJsonlLines } from "../core/jsonl.js";
+import { reasonixHome } from "../reasonix-home.js";
+import {
+  CLAUDE_SONNET_PRICING,
+  DEEPSEEK_PRICING,
+  billingContextForModel,
+  cacheSavingsUsd,
+  claudeEquivalentCost,
+  costUsd,
+} from "./stats.js";
+
+/** One turn's snapshot — serialized verbatim as a JSONL line. */
+export interface UsageRecord {
+  /** Epoch millis when the record was written. */
+  ts: number;
+  /** Session name if the turn ran inside a persisted session, `null` for ephemeral. */
+  session: string | null;
+  /** Model id the turn ran against (drives the pricing lookup). */
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  /** Total cost of the turn in USD — 0 for quota-billed providers (their real
+   *  unit is plan-window %, never converted to dollars). */
+  costUsd: number;
+  /** Native billing unit for this record. */
+  billingKind?: "usd" | "quota" | "none";
+  /** Provider resolved when the request was recorded. */
+  provider?: ModelProvider;
+  /** Plan-window percentage points consumed — only present when billingKind === "quota". */
+  quotaUsedPct?: number;
+  /** What the same turn would have cost at Claude Sonnet 4.6 rates. */
+  claudeEquivUsd: number;
+  /** Absent on legacy records — treat as "turn" when missing. */
+  kind?: "turn" | "subagent";
+  /** Present when `kind === "subagent"`. Attribution metadata for the /stats roll-up. */
+  subagent?: {
+    /** Skill that spawned it, when the spawn came from a `runAs: subagent` skill. */
+    skillName?: string;
+    /** First ~60 chars of the task prompt — enough context to recognize a run, never the full text. */
+    taskPreview: string;
+    /** Tool calls the child loop dispatched before returning. */
+    toolIters: number;
+    /** Wall-clock ms. */
+    durationMs: number;
+  };
+}
+
+/** Where the log lives. Tests override via `opts.path`. */
+export function defaultUsageLogPath(homeDirOverride?: string): string {
+  return join(reasonixHome(homeDirOverride), "usage.jsonl");
+}
+
+export interface AppendUsageInput {
+  session: string | null;
+  model: string;
+  usage: Usage;
+  /** Override the timestamp (tests). */
+  now?: number;
+  /** Override the log path (tests). */
+  path?: string;
+  /** When appending a subagent summary row, set `kind: "subagent"` and populate `subagent`. */
+  kind?: "turn" | "subagent";
+  subagent?: UsageRecord["subagent"];
+  /** Native billing unit for this turn. Quota-billed turns record 0 USD. */
+  billingKind?: "usd" | "quota" | "none";
+  /** Resolved provider identity. Pass with billingKind to avoid re-resolution. */
+  provider?: ModelProvider;
+  /** Plan-window percentage points consumed — only when billingKind === "quota". */
+  quotaUsedPct?: number;
+}
+
+const USAGE_COMPACTION_THRESHOLD_BYTES = 5 * 1024 * 1024;
+const USAGE_RETENTION_DAYS = 365;
+
+function compactUsageLogIfLarge(path: string, now: number): void {
+  // Open once for the size check + read so they bind to the same fd
+  // (CodeQL js/file-system-race). Concurrent appenders that grow the
+  // log between check and read can no longer cause us to act on a
+  // stale size and rewrite based on partial content.
+  let raw: string;
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const stat = fstatSync(fd);
+      if (stat.size < USAGE_COMPACTION_THRESHOLD_BYTES) return;
+      const buf = Buffer.alloc(stat.size);
+      let read = 0;
+      while (read < stat.size) {
+        const n = readSync(fd, buf, read, stat.size - read, read);
+        if (n <= 0) break;
+        read += n;
+      }
+      raw = buf.toString("utf8", 0, read);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return;
+  }
+  const cutoff = now - USAGE_RETENTION_DAYS * DAY_MS;
+  const kept: string[] = [];
+  for (const rec of parseJsonl(raw, isValidRecord)) {
+    if (rec.ts >= cutoff) kept.push(JSON.stringify(rec));
+  }
+  // No-op when nothing aged out — avoids rewrite storms on fresh logs.
+  if (kept.length === countJsonlLines(raw)) return;
+  // Write to a sibling tmp path then rename — atomic from a reader's
+  // POV and severs CodeQL's stat→write taint chain. Concurrent
+  // appenders during the compaction window lose their entries; we
+  // accept that for a best-effort usage log.
+  const tmp = `${path}.compacting`;
+  try {
+    writeFileSync(tmp, kept.length > 0 ? `${kept.join("\n")}\n` : "", "utf8");
+    renameSync(tmp, path);
+  } catch {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* tmp may not exist — ignore */
+    }
+  }
+}
+
+/** Returns the record so tests can assert cost fields without re-reading the log. */
+export function appendUsage(input: AppendUsageInput): UsageRecord {
+  const resolved =
+    input.billingKind === undefined || input.provider === undefined
+      ? billingContextForModel(input.model)
+      : undefined;
+  const billingKind = input.billingKind ?? resolved?.kind ?? "none";
+  const provider = input.provider ?? resolved?.provider ?? "deepseek";
+  const ts = input.now ?? Date.now();
+  // Quota-billed providers expose no dollar amounts — never invent a USD figure
+  // from token counts. The telemetry log stores their native unit (quota %).
+  const isUsd = billingKind === "usd";
+  const record: UsageRecord = {
+    ts,
+    session: input.session,
+    model: input.model,
+    promptTokens: input.usage.promptTokens,
+    completionTokens: input.usage.completionTokens,
+    cacheHitTokens: input.usage.promptCacheHitTokens,
+    cacheMissTokens: input.usage.promptCacheMissTokens,
+    costUsd: isUsd ? costUsd(input.model, input.usage, undefined, { provider, at: ts }) : 0,
+    billingKind,
+    provider,
+    ...(billingKind === "quota" && typeof input.quotaUsedPct === "number"
+      ? { quotaUsedPct: input.quotaUsedPct }
+      : {}),
+    // Claude-equivalent is a USD reference — meaningless for quota providers.
+    claudeEquivUsd: isUsd ? claudeEquivalentCost(input.usage) : 0,
+  };
+  if (input.kind === "subagent") record.kind = "subagent";
+  if (input.subagent) record.subagent = input.subagent;
+
+  const path = input.path ?? defaultUsageLogPath();
+  try {
+    appendJsonlLine(path, record);
+    compactUsageLogIfLarge(path, record.ts);
+  } catch {
+    /* best-effort — disk failure shouldn't break the chat */
+  }
+  return record;
+}
+
+export function readUsageLog(path: string = defaultUsageLogPath()): UsageRecord[] {
+  return readJsonlLines(path, isValidRecord);
+}
+
+function isValidRecord(rec: unknown): rec is UsageRecord {
+  if (!rec || typeof rec !== "object") return false;
+  const r = rec as Partial<UsageRecord>;
+  return (
+    typeof r.ts === "number" &&
+    typeof r.model === "string" &&
+    typeof r.promptTokens === "number" &&
+    typeof r.completionTokens === "number" &&
+    typeof r.cacheHitTokens === "number" &&
+    typeof r.cacheMissTokens === "number" &&
+    typeof r.costUsd === "number" &&
+    typeof r.claudeEquivUsd === "number"
+  );
+}
+
+/** One row of the `reasonix stats` dashboard — a rolled-up window. */
+export interface UsageBucket {
+  label: string;
+  /** Start of the window as epoch millis. `0` = unbounded (all-time). */
+  since: number;
+  turns: number;
+  promptTokens: number;
+  completionTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  costUsd: number;
+  claudeEquivUsd: number;
+  /** Recomputed from current pricing each aggregate — intentionally NOT frozen with `costUsd`. */
+  cacheSavingsUsd: number;
+}
+
+/** Cache hit ratio for a bucket — zero denominator returns 0. */
+export function bucketCacheHitRatio(b: UsageBucket): number {
+  const denom = b.cacheHitTokens + b.cacheMissTokens;
+  return denom > 0 ? b.cacheHitTokens / denom : 0;
+}
+
+/** Savings vs Claude as a fraction (0.94 = 94% savings). 0 if Claude cost is 0. */
+export function bucketSavingsFraction(b: UsageBucket): number {
+  return b.claudeEquivUsd > 0 ? 1 - b.costUsd / b.claudeEquivUsd : 0;
+}
+
+function emptyBucket(label: string, since: number): UsageBucket {
+  return {
+    label,
+    since,
+    turns: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+    costUsd: 0,
+    claudeEquivUsd: 0,
+    cacheSavingsUsd: 0,
+  };
+}
+
+function addToBucket(b: UsageBucket, r: UsageRecord): void {
+  b.turns += 1;
+  b.promptTokens += r.promptTokens;
+  b.completionTokens += r.completionTokens;
+  b.cacheHitTokens += r.cacheHitTokens;
+  b.cacheMissTokens += r.cacheMissTokens;
+  b.costUsd += r.costUsd;
+  b.claudeEquivUsd += r.claudeEquivUsd;
+  b.cacheSavingsUsd += cacheSavingsUsd(r.model, r.cacheHitTokens);
+}
+
+export interface AggregateOptions {
+  /** Override `Date.now()` for deterministic tests. */
+  now?: number;
+}
+
+export interface UsageAggregate {
+  /** Fixed-order rolling windows: today, week, month, all-time. */
+  buckets: UsageBucket[];
+  /** Model id → turn count. Sorted descending; top entry is the "most used." */
+  byModel: Array<{ model: string; turns: number }>;
+  /** Session name → turn count. Sorted descending. Null sessions are grouped under `"(ephemeral)"`. */
+  bySession: Array<{ session: string; turns: number }>;
+  /** Earliest record's ts, or `null` when the log is empty. Drives "saved $X since <date>". */
+  firstSeen: number | null;
+  /** Latest record's ts, or `null` when the log is empty. */
+  lastSeen: number | null;
+  /** Undefined when no subagent records exist; counts spawns, not internal child-loop turns. */
+  subagents?: SubagentAggregate;
+}
+
+/** Rolled-up view of all `kind: "subagent"` records. */
+export interface SubagentAggregate {
+  total: number;
+  costUsd: number;
+  totalDurationMs: number;
+  /** Per-skill breakdown. Records without `skillName` (raw spawn_subagent calls) group under `"(adhoc)"`. */
+  bySkill: Array<{ skillName: string; count: number; costUsd: number; durationMs: number }>;
+}
+
+/** Rolling 24h/7d/30d windows — avoids "it's 00:03, 'today' is empty" surprises. */
+export function aggregateUsage(
+  records: UsageRecord[],
+  opts: AggregateOptions = {},
+): UsageAggregate {
+  const now = opts.now ?? Date.now();
+  const day = DAY_MS;
+  const today = emptyBucket("today", now - day);
+  const week = emptyBucket("week", now - 7 * day);
+  const month = emptyBucket("month", now - 30 * day);
+  const all = emptyBucket("all-time", 0);
+
+  const modelCounts = new Map<string, number>();
+  const sessionCounts = new Map<string, number>();
+  let firstSeen: number | null = null;
+  let lastSeen: number | null = null;
+  const skillCounts = new Map<string, { count: number; costUsd: number; durationMs: number }>();
+  let subagentTotal = 0;
+  let subagentCost = 0;
+  let subagentDuration = 0;
+
+  for (const r of records) {
+    addToBucket(all, r);
+    if (r.ts >= today.since) addToBucket(today, r);
+    if (r.ts >= week.since) addToBucket(week, r);
+    if (r.ts >= month.since) addToBucket(month, r);
+
+    modelCounts.set(r.model, (modelCounts.get(r.model) ?? 0) + 1);
+    const sessKey = r.session ?? "(ephemeral)";
+    sessionCounts.set(sessKey, (sessionCounts.get(sessKey) ?? 0) + 1);
+
+    if (firstSeen === null || r.ts < firstSeen) firstSeen = r.ts;
+    if (lastSeen === null || r.ts > lastSeen) lastSeen = r.ts;
+
+    if (r.kind === "subagent") {
+      subagentTotal += 1;
+      subagentCost += r.costUsd;
+      const dur = r.subagent?.durationMs ?? 0;
+      subagentDuration += dur;
+      const key = r.subagent?.skillName?.trim() || "(adhoc)";
+      const prev = skillCounts.get(key) ?? { count: 0, costUsd: 0, durationMs: 0 };
+      prev.count += 1;
+      prev.costUsd += r.costUsd;
+      prev.durationMs += dur;
+      skillCounts.set(key, prev);
+    }
+  }
+
+  const byModel = Array.from(modelCounts.entries())
+    .map(([model, turns]) => ({ model, turns }))
+    .sort((a, b) => b.turns - a.turns);
+  const bySession = Array.from(sessionCounts.entries())
+    .map(([session, turns]) => ({ session, turns }))
+    .sort((a, b) => b.turns - a.turns);
+
+  const subagents: SubagentAggregate | undefined =
+    subagentTotal > 0
+      ? {
+          total: subagentTotal,
+          costUsd: subagentCost,
+          totalDurationMs: subagentDuration,
+          bySkill: Array.from(skillCounts.entries())
+            .map(([skillName, v]) => ({ skillName, ...v }))
+            .sort((a, b) => b.count - a.count),
+        }
+      : undefined;
+
+  return {
+    buckets: [today, week, month, all],
+    byModel,
+    bySession,
+    firstSeen,
+    lastSeen,
+    subagents,
+  };
+}
+
+/** File-size helper for the stats header — "1.2 MB" etc. Returns "" if missing. */
+export function formatLogSize(path: string = defaultUsageLogPath()): string {
+  if (!existsSync(path)) return "";
+  try {
+    return formatBytes(statSync(path).size);
+  } catch {
+    return "";
+  }
+}
+
+/** Re-exports for downstream consumers that also want the pricing constants. */
+export { CLAUDE_SONNET_PRICING, DEEPSEEK_PRICING };

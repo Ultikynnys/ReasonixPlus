@@ -1,0 +1,233 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ANTIGRAVITY_OAUTH_CLIENT_ID } from "../src/antigravity-oauth.js";
+import { buildCodeToolset } from "../src/code/setup.js";
+import { saveAntigravityOAuth, saveEnableSubagents } from "../src/config.js";
+import { resetTypesafeValidationCache } from "../src/tools/jev.js";
+
+// #700-followup: buildCodeToolset used to eagerly construct a DeepSeekClient
+// for the subagent runner, which threw "DEEPSEEK_API_KEY is not set" before
+// the wizard could prompt. Now the client is constructed lazily on the first
+// subagent dispatch, so the toolset builds without a key.
+
+describe("buildCodeToolset", () => {
+  let savedKey: string | undefined;
+  let savedTypesafeKey: string | undefined;
+  let tmpRoot: string;
+  let cfgPath: string;
+
+  beforeEach(() => {
+    resetTypesafeValidationCache();
+    savedKey = process.env.DEEPSEEK_API_KEY;
+    savedTypesafeKey = process.env.TYPESAFE_API_KEY;
+    // biome-ignore lint/performance/noDelete: setting to "undefined" string would mask test
+    delete process.env.DEEPSEEK_API_KEY;
+    // biome-ignore lint/performance/noDelete: setting to "undefined" string would mask test
+    delete process.env.TYPESAFE_API_KEY;
+    tmpRoot = mkdtempSync(join(tmpdir(), "reasonix-code-setup-"));
+    cfgPath = join(tmpRoot, "config.json");
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    if (savedKey !== undefined) process.env.DEEPSEEK_API_KEY = savedKey;
+    if (savedTypesafeKey !== undefined) process.env.TYPESAFE_API_KEY = savedTypesafeKey;
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("builds without DEEPSEEK_API_KEY set", async () => {
+    const toolset = await buildCodeToolset({ rootDir: tmpRoot });
+    expect(toolset.tools.size).toBeGreaterThan(0);
+    await toolset.jobs.shutdown();
+  });
+
+  it("does not expose JEV to models when no TypeSafe key is configured", async () => {
+    const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
+    expect(toolset.tools.has("jev_evaluate")).toBe(false);
+    await toolset.jobs.shutdown();
+  });
+
+  it("exposes JEV to models only after the configured TypeSafe key validates", async () => {
+    writeFileSync(cfgPath, JSON.stringify({ typesafeApiKey: "valid-typesafe-key" }), "utf8");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          models: [{ name: "jev-latest", description: "Jev", release_date: "2026-01-01" }],
+        }),
+        { status: 200 },
+      ),
+    );
+    const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
+
+    const spec = toolset.tools.specs().find((entry) => entry.function.name === "jev_evaluate");
+    expect(spec).toBeDefined();
+    expect(spec?.function.description).toMatch(/JEV.*TypeSafe/s);
+    expect(spec?.function.parameters.required).toEqual(["state", "questions"]);
+    await toolset.jobs.shutdown();
+  });
+
+  it("does not expose JEV when TypeSafe rejects the configured key", async () => {
+    writeFileSync(cfgPath, JSON.stringify({ typesafeApiKey: "invalid-typesafe-key" }), "utf8");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("unauthorized", { status: 401 }),
+    );
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
+
+    expect(toolset.tools.has("jev_evaluate")).toBe(false);
+    expect(stderr).toHaveBeenCalledWith(expect.stringMatching(/key validation failed/));
+    await toolset.jobs.shutdown();
+  });
+
+  it("keeps see_image dispatchable independently of model capability changes", async () => {
+    const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
+
+    expect(toolset.tools.has("see_image")).toBe(true);
+    expect(toolset.tools.has("screen_capture")).toBe(true);
+    const out = await toolset.tools.dispatch("see_image", "{}");
+    expect(out).toContain("no image available");
+    expect(out).not.toContain("Unknown tool");
+    await toolset.jobs.shutdown();
+  });
+
+  it("editMode=plan flips the registry's plan-mode gate so write tools refuse to dispatch", async () => {
+    writeFileSync(cfgPath, JSON.stringify({ editMode: "plan" }), "utf8");
+    const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
+    const out = await toolset.tools.dispatch(
+      "write_file",
+      JSON.stringify({ path: "new.txt", content: "hello" }),
+    );
+    expect(JSON.parse(out).error).toMatch(/unavailable in plan mode/i);
+    await toolset.jobs.shutdown();
+  });
+
+  it("accepts a per-tab subagentModel getter and builds without error", async () => {
+    // The getter is read lazily at spawn time, so merely passing it must not
+    // change build-time behavior (and must not construct a client eagerly).
+    let reads = 0;
+    const toolset = await buildCodeToolset({
+      rootDir: tmpRoot,
+      subagentModel: () => {
+        reads += 1;
+        return "deepseek-v4-flash";
+      },
+    });
+    expect(toolset.tools.size).toBeGreaterThan(0);
+    // Never consulted during toolset construction — only on an actual subagent spawn.
+    expect(reads).toBe(0);
+    await toolset.jobs.shutdown();
+  });
+
+  it("blocks dedicated and custom subagent skills before constructing a client", async () => {
+    saveEnableSubagents(false, cfgPath);
+    const skillDir = join(tmpRoot, ".reasonix", "skills", "custom-audit");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, "SKILL.md"),
+      [
+        "---",
+        "name: custom-audit",
+        "description: Run a custom audit",
+        "runAs: subagent",
+        "---",
+        "",
+        "Audit the requested area.",
+      ].join("\n"),
+      "utf8",
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
+
+    // Knowledge-level gate: the dedicated subagent tools are no longer even
+    // registered — the tool spec never offers what can't run.
+    expect(toolset.tools.has("explore")).toBe(false);
+    expect(toolset.tools.has("research")).toBe(false);
+    expect(toolset.tools.has("review")).toBe(false);
+    expect(toolset.tools.has("security_review")).toBe(false);
+    // run_skill still resolves the custom skill by name; the runner gate
+    // stays as the backstop with the actionable error message.
+    const result = await toolset.tools.dispatch(
+      "run_skill",
+      JSON.stringify({ name: "custom-audit", arguments: "inspect auth" }),
+    );
+    expect(JSON.parse(result).error).toMatch(/subagents are disabled/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await toolset.jobs.shutdown();
+  });
+
+  it("registers the dedicated subagent tools when subagents are enabled", async () => {
+    // Pin an explicit enabled config — a dev machine's real ~/.reasonix/config.json
+    // may have subagents disabled, and then the gate keeping the tools out is correct.
+    writeFileSync(cfgPath, JSON.stringify({ enableSubagents: true }), "utf8");
+    const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
+    expect(toolset.tools.has("explore")).toBe(true);
+    expect(toolset.tools.has("research")).toBe(true);
+    expect(toolset.tools.has("review")).toBe(true);
+    expect(toolset.tools.has("security_review")).toBe(true);
+
+    // Live toggle round trip — the same call the desktop's settings handler makes.
+    toolset.syncSubagentTools(false);
+    expect(toolset.tools.has("explore")).toBe(false);
+    expect(toolset.tools.has("research")).toBe(false);
+    expect(toolset.tools.has("review")).toBe(false);
+    expect(toolset.tools.has("security_review")).toBe(false);
+
+    toolset.syncSubagentTools(true);
+    expect(toolset.tools.has("explore")).toBe(true);
+    expect(toolset.tools.has("research")).toBe(true);
+    expect(toolset.tools.has("review")).toBe(true);
+    expect(toolset.tools.has("security_review")).toBe(true);
+    await toolset.jobs.shutdown();
+  });
+
+  it("runs subagents with Gemini models using resolved Antigravity auth", async () => {
+    saveAntigravityOAuth(
+      {
+        clientId: ANTIGRAVITY_OAUTH_CLIENT_ID,
+        accessToken: "at-test-token",
+        refreshToken: "rt-test-token",
+        expiresAt: Date.now() + 3600_000,
+        projectId: "test-project-123",
+        models: ["gemini-3.7-flash-tiered"],
+      },
+      cfgPath,
+    );
+
+    const sse = [
+      `data: ${JSON.stringify({
+        response: {
+          candidates: [{ content: { parts: [{ text: "subagent investigation complete" }] } }],
+          usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 },
+        },
+      })}\n\n`,
+    ].join("");
+
+    let capturedAuth: string | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      capturedAuth = headers.authorization ?? headers.Authorization;
+      return new Response(sse, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+
+    const toolset = await buildCodeToolset({
+      rootDir: tmpRoot,
+      configPath: cfgPath,
+      subagentModel: () => "gemini-3.7-flash-tiered",
+    });
+
+    const result = await toolset.tools.dispatch(
+      "explore",
+      JSON.stringify({ task: "investigate repo structure" }),
+    );
+    const parsed = JSON.parse(result);
+    expect(parsed.success).toBe(true);
+    expect(parsed.output).toBe("subagent investigation complete");
+    expect(capturedAuth).toBe("Bearer at-test-token");
+    await toolset.jobs.shutdown();
+  });
+});

@@ -1,0 +1,376 @@
+/** Compaction model-call deadlines: forced summary + fold triage settle even when the upstream hangs. */
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DeepSeekClient } from "../src/client.js";
+import { ContextManager, FILE_TRIAGE_TIMEOUT_MS } from "../src/context-manager.js";
+import { withDeadline } from "../src/core/with-deadline.js";
+import { COMPACTION_RETRY_DELAY_MS } from "../src/loop/compaction-retry.js";
+import {
+  FORCE_SUMMARY_TIMEOUT_MS,
+  type ForceSummaryContext,
+  forceSummaryAfterIterLimit,
+} from "../src/loop/force-summary.js";
+import type { LoopEvent } from "../src/loop/types.js";
+import { AppendOnlyLog } from "../src/memory/runtime.js";
+import { SessionStats } from "../src/telemetry/stats.js";
+import type { ChatMessage } from "../src/types.js";
+
+/** Fetch that NEVER settles and ignores abort — the worst-case hung connection. */
+function hangForeverFetch(): typeof fetch {
+  return vi.fn(() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+}
+
+function summaryJsonResponse(content: string): Response {
+  return new Response(
+    JSON.stringify({
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content, reasoning_content: null },
+          finish_reason: "stop",
+        },
+      ],
+      usage: {
+        prompt_tokens: 50,
+        completion_tokens: 10,
+        total_tokens: 60,
+        prompt_cache_hit_tokens: 0,
+        prompt_cache_miss_tokens: 50,
+      },
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+describe("compaction model-call deadlines", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("forceSummaryAfterIterLimit settles with an error when the summary call hangs", async () => {
+    vi.useFakeTimers();
+    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: hangForeverFetch() });
+    const ctx: ForceSummaryContext = {
+      client,
+      buildMessages: () => [{ role: "user", content: "do the thing" }],
+      replaceLog: vi.fn(),
+      // Never reached on the timeout path — only needed to satisfy the type.
+      recordStats: (() => ({})) as unknown as ForceSummaryContext["recordStats"],
+      turn: 1,
+      model: "deepseek-v4-flash",
+      getSystemPrompt: () => "system",
+    };
+
+    const gen = forceSummaryAfterIterLimit(ctx, { reason: "context-guard" });
+    // Status card first — the loop shows "summarizing…" while the call runs.
+    expect((await gen.next()).value).toMatchObject({ role: "status" });
+
+    const next = gen.next();
+    const rejection = expect(next).rejects.toThrow("summary request timed out");
+    // Tiny context uses the base per-attempt deadline. Advance past all four
+    // attempts and the three retry delays before expecting the final error.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await vi.advanceTimersByTimeAsync(FORCE_SUMMARY_TIMEOUT_MS + 1_000);
+      await vi.advanceTimersByTimeAsync(COMPACTION_RETRY_DELAY_MS);
+    }
+    await vi.advanceTimersByTimeAsync(FORCE_SUMMARY_TIMEOUT_MS + 1_000);
+    await rejection;
+
+    // The helper reports exhaustion to the canonical compaction lifecycle.
+    // That owner emits the one terminal compaction_end event for the UI card.
+  });
+
+  it("retries a forced summary after a transient provider body drop", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      fetch: vi.fn(async () => {
+        calls++;
+        if (calls === 1) {
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.error(new Error("provider connection reset"));
+            },
+          });
+          return new Response(stream, {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return summaryJsonResponse("recovered forced summary");
+      }),
+    });
+    const ctx: ForceSummaryContext = {
+      client,
+      buildMessages: () => [{ role: "user", content: "do the thing" }],
+      replaceLog: vi.fn(),
+      recordStats: (() => ({})) as unknown as ForceSummaryContext["recordStats"],
+      turn: 1,
+      model: "deepseek-v4-flash",
+      getSystemPrompt: () => "system",
+    };
+
+    const gen = forceSummaryAfterIterLimit(ctx, { reason: "context-guard" });
+    expect((await gen.next()).value).toMatchObject({ role: "status" });
+    const pending = gen.next();
+    await vi.advanceTimersByTimeAsync(COMPACTION_RETRY_DELAY_MS);
+    const final = await pending;
+
+    expect(final.value).toMatchObject({
+      role: "assistant_final",
+      content: expect.stringContaining("recovered forced summary"),
+    });
+    expect(calls).toBe(2);
+    expect((await gen.next()).value).toMatchObject({ role: "done" });
+  });
+
+  it("retries three empty forced summaries and succeeds on the fourth attempt", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      fetch: vi.fn(async () => {
+        calls++;
+        return summaryJsonResponse(calls < 4 ? "" : "summary recovered on fourth attempt");
+      }),
+    });
+    const ctx: ForceSummaryContext = {
+      client,
+      buildMessages: () => [{ role: "user", content: "do the thing" }],
+      replaceLog: vi.fn(),
+      recordStats: (() => ({})) as unknown as ForceSummaryContext["recordStats"],
+      turn: 1,
+      model: "deepseek-v4-flash",
+      getSystemPrompt: () => "system",
+    };
+
+    const gen = forceSummaryAfterIterLimit(ctx, { reason: "context-guard" });
+    expect((await gen.next()).value).toMatchObject({ role: "status" });
+    const pending = gen.next();
+    await vi.advanceTimersByTimeAsync(COMPACTION_RETRY_DELAY_MS * 3);
+    const final = await pending;
+
+    expect(final.value).toMatchObject({
+      role: "assistant_final",
+      content: expect.stringContaining("summary recovered on fourth attempt"),
+    });
+    expect(calls).toBe(4);
+  });
+
+  it("forceSummaryAfterIterLimit full-folds: replaceLog carries the marker, summary, and pinned constraints", async () => {
+    const replaceLog = vi.fn();
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      fetch: vi.fn(async () =>
+        summaryJsonResponse("Earlier turns explored auth; objective: ship the refactor."),
+      ) as unknown as typeof fetch,
+    });
+    const ctx: ForceSummaryContext = {
+      client,
+      buildMessages: () => [{ role: "user", content: "ship the refactor" }],
+      replaceLog,
+      recordStats: (() => ({})) as unknown as ForceSummaryContext["recordStats"],
+      turn: 1,
+      model: "deepseek-v4-flash",
+      getSystemPrompt: () =>
+        "# HIGH PRIORITY constraints (must observe)\n\nNever launch Blender.\n\n# User memory\n\nDo not publish without review.\n",
+    };
+
+    const events: LoopEvent[] = [];
+    for await (const ev of forceSummaryAfterIterLimit(ctx, { reason: "context-guard" })) {
+      events.push(ev);
+    }
+
+    expect(events.some((e) => e.role === "assistant_final")).toBe(true);
+    expect(replaceLog).toHaveBeenCalledTimes(1);
+    const committed = replaceLog.mock.calls[0]![0] as ChatMessage;
+    const text = typeof committed.content === "string" ? committed.content : "";
+    // Marker → the summary renders as a compaction recap, not a fresh answer.
+    expect(text).toContain("CONVERSATION HISTORY SUMMARY");
+    expect(text).toContain("ship the refactor");
+    // Pinned constraints survive the full fold verbatim.
+    expect(text).toContain("Never launch Blender");
+    expect(text).toContain("[PINNED CONSTRAINTS — preserved verbatim]");
+  });
+
+  it("fold completes fail-open when the file-triage call hangs past its deadline", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls++;
+      // Call #1 = fold summarizer → resolves; call #2 = file triage → hangs
+      // forever, ignoring abort. The fold must still commit (fail-open).
+      if (calls === 1) return summaryJsonResponse("Earlier turns explored topic X.");
+      return new Promise<Response>(() => {});
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock });
+
+    const log = new AppendOnlyLog();
+    const big =
+      "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. ".repeat(
+        40,
+      );
+    log.append({ role: "user", content: big });
+    log.append({ role: "assistant", content: big });
+    // A file-path tool call so the fold's triage step actually runs.
+    log.append({
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "t1",
+          type: "function",
+          function: { name: "read_file", arguments: JSON.stringify({ path: "src/foo.ts" }) },
+        },
+      ],
+    });
+    log.append({ role: "tool", tool_call_id: "t1", content: "file contents" });
+    log.append({ role: "user", content: "keep going" });
+    log.append({ role: "assistant", content: big });
+
+    const cm = new ContextManager({
+      client,
+      log,
+      stats: new SessionStats(),
+      sessionName: null,
+      getCurrentTurn: () => 0,
+      getSystemPrompt: () => "system",
+      billingContextFor: () => ({ kind: "usd", provider: "deepseek", at: 0 }),
+    });
+
+    const pending = cm.fold("test-model", { keepRecentTokens: 500, keepHeadTokens: 0 });
+    await vi.advanceTimersByTimeAsync(FILE_TRIAGE_TIMEOUT_MS + 100);
+    const result = await pending;
+
+    // The triage hang must not stall the fold: it commits with zero drops.
+    expect(calls).toBe(2);
+    expect(result.folded).toBe(true);
+    expect(result.error).toBeUndefined();
+    expect(result.droppedFiles).toBeUndefined();
+    expect(log.length).toBe(1);
+  });
+
+  it("forceSummaryAfterIterLimit succeeds when raw context exceeds the model budget by trimming messages", async () => {
+    const replaceLog = vi.fn();
+    let capturedRequest: any = null;
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      geminiAuthResolver: async () => ({ accessToken: "test-token", projectId: "test-project" }),
+      fetch: vi.fn(async (_url: unknown, init?: RequestInit) => {
+        capturedRequest = JSON.parse(init?.body as string);
+        return new Response(
+          JSON.stringify({
+            response: {
+              candidates: [
+                {
+                  content: {
+                    parts: [{ text: "Compacted summary of the conversation." }],
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as unknown as typeof fetch,
+    });
+
+    // Create a large conversation log (~30K tokens)
+    const bigContent = "large chunk of tool output or file content with many words. ".repeat(100);
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 30; i++) {
+      messages.push({ role: "user", content: `Turn ${i} user request` });
+      messages.push({ role: "assistant", content: `Turn ${i} response with ${bigContent}` });
+    }
+
+    // Model context budget is 20,000 tokens (less than the 30K+ token conversation)
+    const ctxMax = 20_000;
+    const ctx: ForceSummaryContext = {
+      client,
+      buildMessages: () => messages,
+      replaceLog,
+      recordStats: (() => ({})) as unknown as ForceSummaryContext["recordStats"],
+      turn: 1,
+      model: "gemini-3.8-flash-tiered",
+      getSystemPrompt: () => "system prompt",
+      ctxMax,
+      canSend: (msgs) => {
+        // canSend verifies the request does not exceed the model context budget
+        const total = msgs.reduce(
+          (acc, m) => acc + (typeof m.content === "string" ? m.content.length / 4 : 0),
+          0,
+        );
+        return total <= ctxMax;
+      },
+    };
+
+    const events: LoopEvent[] = [];
+    for await (const ev of forceSummaryAfterIterLimit(ctx, { reason: "context-guard" })) {
+      events.push(ev);
+    }
+
+    // Verify it did not fail with ForceSummaryFailed
+    expect(events.some((e) => e.role === "error")).toBe(false);
+    expect(replaceLog).toHaveBeenCalledTimes(1);
+    const committed = replaceLog.mock.calls[0]![0] as ChatMessage;
+    const text = typeof committed.content === "string" ? committed.content : "";
+    expect(text).toContain("CONVERSATION HISTORY SUMMARY");
+    expect(text).toContain("Compacted summary of the conversation.");
+
+    // The sent request messages should be trimmed to fit within the budget
+    expect(capturedRequest).toBeDefined();
+    // For Gemini Antigravity, request body carries request.contents
+    const sentContents = capturedRequest.request?.contents as Array<{
+      role: string;
+      parts: unknown[];
+    }>;
+    expect(sentContents).toBeDefined();
+    expect(sentContents.length).toBeLessThan(messages.length);
+  });
+
+  describe("withDeadline", () => {
+    it("rejects with the timeout identity when the task hangs", async () => {
+      vi.useFakeTimers();
+      const hanging = new Promise<never>(() => {});
+      const pending = withDeadline(() => hanging, 1_000, "fold-timeout");
+      // Swallow the rejection so the fake-timer advance isn't an unhandled
+      // rejection; the caught value below is what we assert on.
+      pending.catch(() => {});
+      await vi.advanceTimersByTimeAsync(1_001);
+      await expect(pending).rejects.toThrow("fold-timeout");
+    });
+
+    it("aborts the task signal on timeout and clears the timer on settle", async () => {
+      vi.useFakeTimers();
+      let sawSignal: AbortSignal | undefined;
+      let settled = false;
+      const pending = withDeadline(
+        (signal) => {
+          sawSignal = signal;
+          return new Promise<never>(() => {});
+        },
+        1_000,
+        "fold-timeout",
+      );
+      pending.catch(() => {});
+      const deadlinePromise = (async () => {
+        await vi.advanceTimersByTimeAsync(1_001);
+        settled = true;
+      })();
+      await pending.catch(() => {});
+      // The signal handed to the task reflects the deadline abort after it fires.
+      expect(sawSignal).toBeDefined();
+      expect(sawSignal?.aborted).toBe(true);
+      await deadlinePromise;
+      expect(settled).toBe(true);
+    });
+
+    it("preserves a transient failure and clears the timer", async () => {
+      const err = new Error("provider connection reset");
+      await expect(withDeadline(() => Promise.reject(err), 10_000, "fold-timeout")).rejects.toBe(
+        err,
+      );
+    });
+  });
+});

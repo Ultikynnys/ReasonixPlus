@@ -1,0 +1,886 @@
+// @vitest-environment jsdom
+
+import { invoke } from "@tauri-apps/api/core";
+import { openPath } from "@tauri-apps/plugin-opener";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), openUrl: vi.fn() }));
+
+import { WorkspaceProvider } from "../Markdown";
+import {
+  DiffCard,
+  NoticeCard,
+  PreText,
+  ReasoningCard,
+  ShellCard,
+  SubagentCard,
+  ToolCard,
+  extractSubagentResultMeta,
+  isSubagentTool,
+} from "./cards";
+import { formatDuration } from "./format";
+
+beforeAll(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText: vi.fn() },
+    configurable: true,
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.mocked(invoke).mockReset();
+  vi.mocked(openPath).mockReset();
+});
+
+function wrap(ui: React.ReactNode) {
+  return (
+    <WorkspaceProvider value={{ dir: "/repo" }}>
+      <div>{ui}</div>
+    </WorkspaceProvider>
+  );
+}
+
+describe("card duration labels", () => {
+  it("keeps sub-second durations in ms and switches to seconds at 1s", () => {
+    expect(formatDuration(0)).toBe("0 ms");
+    expect(formatDuration(111)).toBe("111 ms");
+    expect(formatDuration(999)).toBe("999 ms");
+    expect(formatDuration(1000)).toBe("1.0s");
+    expect(formatDuration(2500)).toBe("2.5s");
+    expect(formatDuration(8421)).toBe("8.4s");
+  });
+
+  it("shows a reasoning card's duration in the header", () => {
+    const { container } = render(
+      wrap(<ReasoningCard text="weighing options" streaming={false} durationMs={1500} />),
+    );
+    expect(container.querySelector(".meta-dur")?.textContent).toBe("1.5s");
+  });
+
+  it("shows no duration on a reasoning card still streaming without a time", () => {
+    const { container } = render(wrap(<ReasoningCard text="…" streaming={true} />));
+    expect(container.querySelector(".meta-dur")).toBeNull();
+  });
+
+  it("limits live reasoning to the latest 10 paragraphs", () => {
+    const text = Array.from({ length: 12 }, (_, i) => `reasoning row ${i + 1}`).join("\n\n");
+    const { container } = render(wrap(<ReasoningCard text={text} streaming />));
+    const rows = Array.from(container.querySelectorAll(".reason .stream p"));
+
+    expect(rows).toHaveLength(10);
+    expect(rows[0]?.textContent).toBe("reasoning row 3");
+    expect(rows.at(-1)?.textContent).toBe("reasoning row 12");
+  });
+
+  it("keeps all reasoning paragraphs after streaming completes", () => {
+    const text = Array.from({ length: 12 }, (_, i) => `reasoning row ${i + 1}`).join("\n\n");
+    const { container } = render(wrap(<ReasoningCard text={text} streaming={false} />));
+    fireEvent.click(screen.getByRole("button", { name: /reasoning/i }));
+
+    expect(container.querySelectorAll(".reason .stream p")).toHaveLength(12);
+  });
+
+  it("renders a tool card's duration in seconds once it passes 1s", () => {
+    render(<ToolCard name="read_file" args="{}" result="ok" durationMs={2500} ok />);
+    expect(screen.getByText("2.5s")).toBeTruthy();
+  });
+
+  it("renders a sub-second tool duration in ms", () => {
+    render(<ToolCard name="read_file" args="{}" result="ok" durationMs={42} ok />);
+    expect(screen.getByText("42 ms")).toBeTruthy();
+  });
+});
+
+describe("reasoning scroll lifecycle", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("pins completed reasoning on initial expansion and every reopening", () => {
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(900);
+    const { container } = render(wrap(<ReasoningCard text="completed" streaming={false} />));
+    const header = screen.getByRole("button", { name: /reasoning/i });
+    expect(container.querySelector(".reason .stream")).toBeNull();
+    fireEvent.click(header);
+    const stream = container.querySelector<HTMLElement>(".reason .stream")!;
+    expect(stream.scrollTop).toBe(900);
+    stream.scrollTop = 0;
+    fireEvent.click(header);
+    expect(container.querySelector(".reason .stream")).toBeNull();
+    fireEvent.click(header);
+    expect(container.querySelector<HTMLElement>(".reason .stream")?.scrollTop).toBe(900);
+  });
+
+  it("pins updates, completion and resize, and disconnects observers on collapse", () => {
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(700);
+    const disconnect = vi.fn();
+    let onResize = () => {};
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { onResize = callback; }
+      observe = vi.fn();
+      disconnect = disconnect;
+    });
+    const { container, rerender } = render(wrap(<ReasoningCard text="first" streaming />));
+    const stream = container.querySelector<HTMLElement>(".reason .stream")!;
+    expect(stream.scrollTop).toBe(700);
+    stream.scrollTop = 0;
+    rerender(wrap(<ReasoningCard text="first\nsecond" streaming />));
+    expect(stream.scrollTop).toBe(700);
+    stream.scrollTop = 0;
+    rerender(wrap(<ReasoningCard text="first\nsecond" streaming={false} />));
+    expect(stream.scrollTop).toBe(700);
+    stream.scrollTop = 0;
+    onResize();
+    expect(stream.scrollTop).toBe(700);
+    fireEvent.click(screen.getByRole("button", { name: /reasoning/i }));
+    expect(disconnect).toHaveBeenCalledTimes(3);
+  });
+
+  it("caps single-newline CRLF rows and ignores blank trailing rows", () => {
+    const text = Array.from({ length: 12 }, (_, i) => `row ${i + 1}`).join("\r\n") + "\r\n\r\n";
+    const { container } = render(wrap(<ReasoningCard text={text} streaming />));
+    const rows = container.querySelectorAll(".reason .stream p");
+    expect(rows).toHaveLength(10);
+    expect(rows[0]?.textContent).toBe("row 3");
+    expect(rows[9]?.textContent).toBe("row 12");
+  });
+});
+
+describe("ToolCard — show-in-explorer button", () => {
+  it("shows the button for read_file even while the card body is collapsed", async () => {
+    const { container } = render(
+      wrap(
+        <ToolCard
+          name="read_file"
+          args={JSON.stringify({ path: "src/foo.ts", range: "50-100" })}
+          result="…content…"
+          ok
+        />,
+      ),
+    );
+
+    // ToolCard body starts collapsed (defaultOpen=false) — but the header
+    // action must be visible regardless.
+    expect(container.querySelector(".tool-call")).toBeNull();
+    const btn = screen.getByRole("button", { name: "src/foo.ts" });
+    expect(btn).toBeTruthy();
+
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("reveal_in_explorer", {
+        path: "/repo/src/foo.ts",
+        workspace: "/repo",
+      }),
+    );
+    expect(openPath).not.toHaveBeenCalled();
+    // Clicking the action must not expand the card (it's outside the toggle button).
+    expect(container.querySelector(".tool-call")).toBeNull();
+  });
+
+  it("shows the button for write_file args", async () => {
+    render(
+      wrap(
+        <ToolCard
+          name="write_file"
+          args={JSON.stringify({ path: "src/new.ts", content: "…" })}
+          result="ok"
+          ok
+        />,
+      ),
+    );
+
+    const btn = screen.getByRole("button", { name: "src/new.ts" });
+    expect(btn).toBeTruthy();
+
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("reveal_in_explorer", {
+        path: "/repo/src/new.ts",
+        workspace: "/repo",
+      }),
+    );
+  });
+
+  it("handles long file paths without omitting the button or accessible name", async () => {
+    const longPath =
+      "CookingForBlockheads-1.4.4-GTNH/src/main/java/net/blay09/mods/cookingforblockheads/container/ContainerRecipeBook.java";
+    render(
+      wrap(
+        <ToolCard
+          name="read_file"
+          args={JSON.stringify({ path: longPath })}
+          result="ok"
+          durationMs={111}
+          ok
+        />,
+      ),
+    );
+
+    const btn = screen.getByRole("button", { name: longPath });
+    expect(btn).toBeTruthy();
+    expect(btn.getAttribute("title")).toBe(longPath);
+
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("reveal_in_explorer", {
+        path: `/repo/${longPath}`,
+        workspace: "/repo",
+      }),
+    );
+  });
+
+  it("shows no file button for non-file tools", () => {
+    render(
+      wrap(
+        <ToolCard
+          name="run_command"
+          args={JSON.stringify({ command: "npm test" })}
+          result="✓"
+          ok
+        />,
+      ),
+    );
+    expect(screen.queryByRole("button", { name: /npm test/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^src\// })).toBeNull();
+  });
+
+  it("shows the engine pill for web_search results", () => {
+    render(
+      wrap(
+        <ToolCard
+          name="web_search"
+          args={JSON.stringify({ query: "flutter 3.19" })}
+          result={"query: flutter 3.19\nengine: bing\nresults (2):\n1. One\n   https://one"}
+          ok
+        />,
+      ),
+    );
+
+    const header = screen.getByRole("button", { name: /web_search/ });
+    expect(header.textContent).toContain("bing");
+  });
+
+  it("shows the engine pill for web_fetch results too", () => {
+    render(
+      wrap(
+        <ToolCard
+          name="web_fetch"
+          args={JSON.stringify({ url: "https://example.com/" })}
+          result={"engine: ollama\n\nFetched\nhttps://example.com/\n\ncontent"}
+          ok
+        />,
+      ),
+    );
+
+    const header = screen.getByRole("button", { name: /web_fetch/ });
+    expect(header.textContent).toContain("ollama");
+  });
+
+  it("shows no engine pill when the result has no engine line", () => {
+    const { container } = render(
+      wrap(
+        <ToolCard
+          name="run_command"
+          args={JSON.stringify({ command: "npm test" })}
+          result="✓"
+          ok
+        />,
+      ),
+    );
+    expect(container.querySelector(".pill-tag")).toBeNull();
+  });
+});
+
+describe("ToolCard — expanded body formatting", () => {
+  it("pretty-prints JSON args as an indented pre-wrap block when expanded", () => {
+    const { container } = render(
+      wrap(
+        <ToolCard
+          name="mark_step_complete"
+          args={JSON.stringify({
+            stepId: "step-1",
+            title: "Remove the 3 buttons + relayout",
+            evidence: [{ kind: "manual", summary: "3 edits applied" }],
+          })}
+          result="Done."
+          ok
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByText("mark_step_complete"));
+
+    const argsValue = container.querySelector(".tool-call .row .v .pre-text");
+    expect(argsValue).not.toBeNull();
+    // pre-wrap is on the element (class), not an inline style — shared with plan cards
+    expect(argsValue!.className).toContain("pre-text");
+    // pretty-printed: keys land on their own lines, not one blob
+    expect(argsValue!.textContent).toContain("\n  \"stepId\": \"step-1\"");
+    expect(argsValue!.textContent).toContain("\n  \"title\":");
+  });
+
+  it("keeps line breaks in a multi-line result (multi_edit summary) via pre-wrap", () => {
+    const { container } = render(
+      wrap(
+        <ToolCard
+          name="multi_edit"
+          args={JSON.stringify({ edits: [{ path: "src/a.ts", search: "x", replace: "y" }] })}
+          result={"multi_edit: applied 7 edits across 1 file\n# src/a.ts\n@@ -14,4 +14,3 @@"}
+          ok
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByText("multi_edit"));
+
+    const rows = container.querySelectorAll(".tool-call .row .v .pre-text");
+    expect(rows.length).toBe(2);
+    const resultValue = rows[1]!;
+    expect(resultValue.textContent).toContain("\n");
+  });
+
+  it("renders a long read_file result past the old 1200-char cap", () => {
+    const content = `${"x".repeat(1500)}\nEND-MARKER`;
+    const { container } = render(
+      wrap(
+        <ToolCard
+          name="read_file"
+          args={JSON.stringify({ path: "src/big.ts" })}
+          result={content}
+          ok
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByText("read_file"));
+
+    const body = container.querySelector(".tool-call")!;
+    expect(body.textContent).toContain("END-MARKER");
+  });
+
+  it("leaves non-JSON args (shell command text) untouched", () => {
+    const { container } = render(
+      wrap(<ToolCard name="unknown_tool" args={"--flag value\nsecond line"} result="ok" ok />),
+    );
+    fireEvent.click(screen.getByText("unknown_tool"));
+
+    const argsValue = container.querySelector(".tool-call .row .v .pre-text")!;
+    expect(argsValue.textContent).toBe("--flag value\nsecond line");
+  });
+});
+
+describe("SubagentCard — model visibility", () => {
+  const run = {
+    runId: "run-1",
+    task: "Inspect quota rendering",
+    skillName: "explore",
+    model: "deepseek-v4-flash",
+    status: "done" as const,
+    contextTokens: 12_345,
+    costUsd: 0.0123,
+    tools: [],
+  };
+
+  it("shows the child model in the card header", () => {
+    render(<SubagentCard name="explore" runs={[run]} />);
+
+    const header = screen.getByRole("button", { name: /explore/ });
+    expect(header.textContent).toContain("deepseek-v4-flash");
+    expect(header.textContent).toContain("ctx 12.3k");
+    expect(header.textContent).toContain("$0.0123");
+  });
+
+  it("updates context while running and hides cost until completion", () => {
+    const { rerender } = render(
+      <SubagentCard
+        name="explore"
+        runs={[{ ...run, status: "running", contextTokens: 8_000, costUsd: undefined }]}
+      />,
+    );
+
+    let header = screen.getByRole("button", { name: /explore/ });
+    expect(header.textContent).toContain("ctx 8.0k");
+    expect(header.textContent).not.toContain("$");
+
+    rerender(<SubagentCard name="explore" runs={[run]} />);
+    header = screen.getByRole("button", { name: /explore/ });
+    expect(header.textContent).toContain("ctx 12.3k");
+    expect(header.textContent).toContain("$0.0123");
+  });
+
+  it("shows the child context meter instead of raw char counters on the run row", () => {
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        runs={[
+          { ...run, contextMax: 300_000, outputChars: 1_204, toolReadChars: 45_678 },
+        ]}
+      />,
+    );
+
+    // No run row may display the old "read chars" counter — context x/y replaces it.
+    // toolReadChars is set so a revert to the raw counter would fail the ctx assertion.
+    expect(container.textContent).not.toContain("read chars");
+    const row = container.querySelector(".sub-row");
+    const statsRole = row
+      ? [...row.querySelectorAll(".role")].find((el) => el.textContent?.includes("ctx "))
+      : undefined;
+    expect(statsRole?.textContent).toContain("ctx 12.3k / 300.0k");
+    expect(statsRole?.textContent).toContain("output chars");
+  });
+
+  it("shows no row context meter when the daemon omits the cap (older versions)", () => {
+    const { container } = render(<SubagentCard name="explore" runs={[run]} />);
+    const statsRole = [
+      ...container.querySelectorAll(".sub-row .role"),
+    ].find((el) => el.textContent?.includes("ctx "));
+    expect(statsRole).toBeUndefined();
+    expect(container.textContent).not.toContain("read chars");
+  });
+
+  it("shows a provider quota % instead of a dollar figure for plan-billed runs", () => {
+    render(
+      <SubagentCard
+        name="explore"
+        runs={[
+          {
+            ...run,
+            costUsd: 0,
+            billingKind: "quota",
+            quotaUsedPct: 2.5,
+          },
+        ]}
+      />,
+    );
+
+    const header = screen.getByRole("button", { name: /explore/ });
+    expect(header.textContent).toContain("2.50%");
+    expect(header.textContent).not.toContain("$");
+  });
+
+  it("shows no cost metric when the run has no measurable billing", () => {
+    render(
+      <SubagentCard
+        name="explore"
+        runs={[{ ...run, costUsd: 0, billingKind: "none" }]}
+      />,
+    );
+    const header = screen.getByRole("button", { name: /explore/ });
+    expect(header.textContent).not.toContain("$");
+    expect(header.textContent).not.toContain("%");
+  });
+
+  it("shows no cost metric when a quota run produced no measurable delta", () => {
+    render(
+      <SubagentCard
+        name="explore"
+        runs={[{ ...run, costUsd: 0, billingKind: "quota", quotaUsedPct: undefined }]}
+      />,
+    );
+    const header = screen.getByRole("button", { name: /explore/ });
+    expect(header.textContent).not.toContain("$");
+    expect(header.textContent).not.toContain("%");
+  });
+
+  it("shows every distinct model for mixed-model fan-out", () => {
+    render(
+      <SubagentCard
+        name="explore"
+        runs={[
+          run,
+          {
+            ...run,
+            runId: "run-2",
+            model: "deepseek-v4-pro",
+            contextTokens: 24_680,
+            costUsd: 0.02,
+          },
+        ]}
+      />,
+    );
+
+    const header = screen.getByRole("button", { name: /explore/ });
+    expect(header.textContent).toContain("deepseek-v4-flash + deepseek-v4-pro");
+    expect(header.textContent).toContain("ctx 12.3k / 24.7k");
+    expect(header.textContent).toContain("$0.0323");
+  });
+
+  it("renders subagent kind badge and markdown result in card body", () => {
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        runs={[run]}
+        result="Found 3 references in `src/index.ts`."
+        durationMs={2500}
+      />,
+    );
+
+    const header = screen.getByRole("button", { name: /explore/ });
+    expect(header.querySelector(".kind")?.textContent).toBe("subagent");
+    expect(header.textContent).toContain("2.5s");
+
+    const resultEl = container.querySelector(".subagent-result");
+    expect(resultEl?.textContent).toContain("Found 3 references in src/index.ts.");
+  });
+
+  it("identifies subagent tool names correctly", () => {
+    expect(isSubagentTool("explore")).toBe(true);
+    expect(isSubagentTool("research")).toBe(true);
+    expect(isSubagentTool("review")).toBe(true);
+    expect(isSubagentTool("security_review")).toBe(true);
+    expect(isSubagentTool("security-review")).toBe(true);
+    expect(isSubagentTool("spawn_subagent")).toBe(true);
+    expect(isSubagentTool("run_skill", JSON.stringify({ name: "explore" }))).toBe(true);
+    expect(isSubagentTool("read_file")).toBe(false);
+    expect(isSubagentTool("run_command")).toBe(false);
+  });
+
+  it("recovers model and cost from the persisted result envelope", () => {
+    expect(
+      extractSubagentResultMeta(
+        JSON.stringify({
+          success: true,
+          output: "…",
+          turns: 6,
+          elapsed_ms: 25223,
+          cost_usd: 0.0062,
+          model: "deepseek-v4-flash",
+          billing_kind: "usd",
+        }),
+      ),
+    ).toEqual({
+      costUsd: 0.0062,
+      model: "deepseek-v4-flash",
+      billingKind: "usd",
+      elapsedMs: 25223,
+      turns: 6,
+    });
+
+    // quota-billed run
+    expect(
+      extractSubagentResultMeta(
+        JSON.stringify({ cost_usd: 0, billing_kind: "quota", quota_used_pct: 2.5 }),
+      ),
+    ).toEqual({ costUsd: 0, billingKind: "quota", quotaUsedPct: 2.5 });
+
+    expect(extractSubagentResultMeta("not json")).toEqual({});
+    expect(extractSubagentResultMeta(undefined)).toEqual({});
+  });
+
+  it("shows model and cost on a result-only run (no subagentRuns after reload)", () => {
+    render(
+      <SubagentCard
+        name="explore"
+        runs={[
+          {
+            runId: "run-1",
+            task: "Inspect quota rendering",
+            skillName: "explore",
+            model: "deepseek-v4-flash",
+            status: "done",
+            costUsd: 0.0422,
+            billingKind: "usd",
+            tools: [],
+          },
+        ]}
+      />,
+    );
+
+    const header = screen.getByRole("button", { name: /explore/ });
+    expect(header.textContent).toContain("deepseek-v4-flash");
+    expect(header.textContent).toContain("$0.0422");
+  });
+
+  it("shows the last 3 rows of thinking and process when subagent is running", () => {
+    const runningRun = {
+      runId: "run-live",
+      task: "Analyze codebase",
+      skillName: "explore",
+      model: "deepseek-v4-flash",
+      status: "running" as const,
+      tools: [],
+      recentRows: [
+        { id: "r1", kind: "thinking" as const, text: "Initial thoughts" },
+        { id: "r2", kind: "process" as const, text: "↳ read_file src/index.ts" },
+        { id: "r3", kind: "thinking" as const, text: "Parsing export signatures" },
+        { id: "r4", kind: "process" as const, text: "↳ search_content loop" },
+      ],
+    };
+
+    render(<SubagentCard name="explore" runs={[runningRun]} />);
+
+    const activityBox = screen.getByLabelText("Subagent activity");
+    expect(activityBox).toBeTruthy();
+
+    const rows = activityBox.querySelectorAll(".sub-activity-row");
+    expect(rows.length).toBe(3);
+
+    // Should show the last 3 rows (r2, r3, r4), dropping r1
+    expect(rows[0]?.textContent).toContain("process");
+    expect(rows[0]?.textContent).toContain("↳ read_file src/index.ts");
+    expect(rows[1]?.textContent).toContain("thinking");
+    expect(rows[1]?.textContent).toContain("Parsing export signatures");
+    expect(rows[2]?.textContent).toContain("process");
+    expect(rows[2]?.textContent).toContain("↳ search_content loop");
+  });
+
+  it("updates the visible last three rows while a subagent is streaming", () => {
+    const run = {
+      runId: "run-streaming",
+      task: "Research current docs",
+      skillName: "research",
+      status: "running" as const,
+      tools: [],
+      recentRows: [{ id: "start", kind: "process" as const, text: "Starting research..." }],
+    };
+    const { rerender } = render(<SubagentCard name="research" runs={[run]} />);
+
+    let activityBox = screen.getByLabelText("Subagent activity");
+    expect(activityBox.textContent).toContain("Starting research...");
+
+    rerender(
+      <SubagentCard
+        name="research"
+        runs={[
+          {
+            ...run,
+            recentRows: [
+              ...run.recentRows,
+              { id: "line-1", kind: "thinking", text: "Checking Tauri events" },
+              { id: "line-2", kind: "thinking", text: "Reading local event bridge" },
+              { id: "tool-1", kind: "process", text: "↳ web_fetch Tauri docs" },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    activityBox = screen.getByLabelText("Subagent activity");
+    const rows = activityBox.querySelectorAll(".sub-activity-row");
+    expect(rows.length).toBe(3);
+    expect(activityBox.textContent).not.toContain("Starting research...");
+    expect(rows[0]?.textContent).toContain("Checking Tauri events");
+    expect(rows[1]?.textContent).toContain("Reading local event bridge");
+    expect(rows[2]?.textContent).toContain("↳ web_fetch Tauri docs");
+  });
+});
+
+describe("DiffCard — show-in-explorer button", () => {
+  it("renders the button in the header and reveals the file in the explorer", async () => {
+    render(
+      wrap(
+        <DiffCard
+          filename="src/foo.ts"
+          applied
+          lines={[
+            { t: "hunk", s: "@@ -12,3 +12,3 @@" },
+            { t: "ctx", l: 12, r: 12, s: "const a = 1;" },
+            { t: "rm", l: 13, s: "const b = 2;" },
+            { t: "add", r: 13, s: "const b = 3;" },
+          ]}
+        />,
+      ),
+    );
+
+    const btn = screen.getByRole("button", { name: "Show in file explorer" });
+    expect(btn).toBeTruthy();
+
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("reveal_in_explorer", {
+        path: "/repo/src/foo.ts",
+        workspace: "/repo",
+      }),
+    );
+    expect(openPath).not.toHaveBeenCalled();
+  });
+
+  it("right-click exposes an Open-with… menu that fires open_with_dialog", async () => {
+    render(
+      wrap(
+        <ToolCard
+          name="read_file"
+          args={JSON.stringify({ path: "src/foo.ts", range: "1-10" })}
+          result="…content…"
+          ok
+        />,
+      ),
+    );
+
+    const btn = screen.getByRole("button", { name: "src/foo.ts" });
+    fireEvent.contextMenu(btn);
+
+    const openWith = await screen.findByRole("menuitem", { name: "Open with…" });
+    expect(openWith).toBeTruthy();
+    expect(invoke).not.toHaveBeenCalledWith("open_with_dialog", expect.anything());
+
+    fireEvent.click(openWith);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("open_with_dialog", {
+        path: "/repo/src/foo.ts",
+      }),
+    );
+  });
+
+  it("right-click menu also offers Copy path and copies the resolved absolute path", async () => {
+    render(
+      wrap(
+        <ToolCard
+          name="write_file"
+          args={JSON.stringify({ path: "src/new.ts", content: "…" })}
+          result="ok"
+          ok
+        />,
+      ),
+    );
+
+    const btn = screen.getByRole("button", { name: "src/new.ts" });
+    fireEvent.contextMenu(btn);
+
+    const copyPath = await screen.findByRole("menuitem", { name: "Copy path" });
+    fireEvent.click(copyPath);
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith("/repo/src/new.ts"),
+    );
+  });
+});
+
+describe("ShellCard — live output rows while running", () => {
+  it("renders only the last three lines of the streamed output tail", () => {
+    const { container } = render(
+      wrap(
+        <ShellCard
+          command="npm test"
+          liveOutput={"pass 1\npass 2\npass 3\npass 4\n"}
+          state="running"
+        />,
+      ),
+    );
+    const rows = [...container.querySelectorAll(".shell-live .line")].map((el) => el.textContent);
+    expect(rows).toEqual(["pass 2", "pass 3", "pass 4"]);
+  });
+
+  it("shows nothing until output actually arrives", () => {
+    const { container } = render(wrap(<ShellCard command="npm test" state="running" />));
+    expect(container.querySelector(".shell-live")).toBeNull();
+  });
+
+  it("shows a trailing partial line while the command is still writing", () => {
+    const { container } = render(
+      wrap(
+        <ShellCard
+          command="cargo build"
+          liveOutput={"Compiling reasonix\nBuilding... 90%"}
+          state="running"
+        />,
+      ),
+    );
+    const rows = [...container.querySelectorAll(".shell-live .line")].map((el) => el.textContent);
+    expect(rows).toEqual(["Compiling reasonix", "Building... 90%"]);
+  });
+
+  it("hides the live tail once the command settles with its full result", () => {
+    const { container } = render(
+      wrap(
+        <ShellCard
+          command="npm test"
+          output="✓ 10 tests passed"
+          liveOutput={"pass 1\npass 2\n"}
+          state="done"
+        />,
+      ),
+    );
+    // Done cards collapse to the header — the live tail must not render and the
+    // full output only appears once the user expands the card.
+    expect(container.querySelector(".shell-live")).toBeNull();
+    expect(container.querySelector(".shell")).toBeNull();
+  });
+
+  it("labels a live background job and streams its tail instead of reading as finished", () => {
+    const { container } = render(
+      wrap(
+        <ShellCard
+          command="curl -o out.bin https://example.com/big.bin"
+          liveOutput={"% Total    % Received\n0 685M    0  2403k  0  1610k"}
+          state="running"
+          background
+          onStop={() => {}}
+        />,
+      ),
+    );
+    // A detached job is not a finished command: the header shows the background
+    // running label, never a done checkmark with a duration.
+    expect(screen.getByRole("img", { name: "Running in background" })).toBeTruthy();
+    const rows = [...container.querySelectorAll(".shell-live .line")].map((el) => el.textContent);
+    expect(rows).toEqual(["% Total    % Received", "0 685M    0  2403k  0  1610k"]);
+    expect(container.querySelector(".meta-dur")).toBeNull();
+  });
+});
+
+describe("ShellCard — terminal escape handling", () => {
+  const ESC = String.fromCharCode(27);
+
+  it("strips ANSI colors from a settled command output", () => {
+    const { container } = render(
+      wrap(
+        <ShellCard
+          command="npx vitest run --reporter=dot"
+          output={`${ESC}[32m·${ESC}[39m${ESC}[33m·${ESC}[39m${ESC}[22m`}
+          state="failed"
+        />,
+      ),
+    );
+    const out = container.querySelector(".shell .out")?.textContent ?? "";
+    expect(out).not.toContain(ESC);
+    expect(out).toContain("··");
+  });
+
+  it("strips ANSI colors from the live output rows", () => {
+    const { container } = render(
+      wrap(
+        <ShellCard
+          command="npx vitest run --reporter=dot"
+          liveOutput={`${ESC}[32mRUN${ESC}[39m\n${ESC}[33mpass${ESC}[39m`}
+          state="running"
+        />,
+      ),
+    );
+    const rows = [...container.querySelectorAll(".shell-live .line")].map((el) => el.textContent);
+    expect(rows).toEqual(["RUN", "pass"]);
+  });
+});
+
+describe("PreText — raw text sanitization", () => {
+  const ESC = String.fromCharCode(27);
+
+  it("strips ANSI escapes and control bytes from string children", () => {
+    const raw = `a${ESC}[31mb${ESC}[0m${String.fromCharCode(7)}c`;
+    const { container } = render(wrap(<PreText>{raw}</PreText>));
+    expect(container.querySelector(".pre-text")?.textContent).toBe("abc");
+  });
+
+  it("leaves composed node children untouched", () => {
+    const { container } = render(
+      wrap(
+        <PreText>
+          <div key="k">node child</div>
+        </PreText>,
+      ),
+    );
+    expect(container.querySelector(".pre-text div")?.textContent).toBe("node child");
+    expect(container.querySelector(".pre-text")?.textContent).toBe("node child");
+  });
+});
+
+describe("NoticeCard — raw text sanitization", () => {
+  const ESC = String.fromCharCode(27);
+
+  it("strips ANSI escapes and control bytes from the notice body", () => {
+    const raw = `error ${ESC}[31mred${ESC}[0m${String.fromCharCode(7)}`;
+    const { container } = render(wrap(<NoticeCard text={raw} severity="error" />));
+    const body = container.querySelector(".notice-body")?.textContent ?? "";
+    expect(body).not.toContain(ESC);
+    expect(body).toBe("error red");
+  });
+});

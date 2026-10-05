@@ -1,0 +1,284 @@
+import type { DeepSeekClient, Usage } from "../client.js";
+import type { ReasoningEffort } from "../config.js";
+import type { ChatMessage, ToolCall, ToolSpec } from "../types.js";
+import { StreamRepetitionDetector } from "./repetition.js";
+import { looksLikeCompleteJson } from "./shrink.js";
+import { thinkingModeForModel } from "./thinking.js";
+import type { LoopEvent } from "./types.js";
+
+export interface StreamModelOptions {
+  client: DeepSeekClient;
+  model: string;
+  messages: ChatMessage[];
+  toolSpecs: readonly ToolSpec[];
+  signal: AbortSignal;
+  reasoningEffort: ReasoningEffort;
+  /** Per-turn output token cap forwarded to the stream as `max_tokens`. Undefined = no cap. */
+  maxTokens?: number;
+  turn: number;
+  /** Optional checker for tools that require user intervention/confirmation. */
+  isUserIntervention?: (name: string) => boolean;
+  /** When true, abort a stream that degenerates into an exact-periodic run on
+   *  any channel (reasoning, content, tool name/args). Defaults to false, so
+   *  the guard only runs when the user opts in via Settings → Tools. */
+  repetitionGuardEnabled?: boolean;
+}
+
+export interface StreamModelResult {
+  assistantContent: string;
+  reasoningContent: string;
+  toolCalls: ToolCall[];
+  usage: Usage | null;
+  /** Last non-empty finish reason from the stream (e.g. ollama `done_reason`). */
+  finishReason?: string;
+  /** Normalized refusal / safety / filter reason, when the provider signalled one. */
+  stopReason?: string;
+  /** Model-generated image (Antigravity inlineData part) — data URL + mime. */
+  image?: { dataUrl: string; mimeType: string };
+  /** Exact-periodic output detected while the provider was still streaming. */
+  repetitionStall?: {
+    channel: "content" | "reasoning" | "tool_call";
+    period: number;
+    repeatedChars: number;
+    /** Raw excerpt of the repeated run (starts at the run boundary) so the
+     *  warning can name the offending pattern, not just the fact of a stall. */
+    sample?: string;
+  };
+}
+
+/** Cap on the raw excerpt carried with a repetition stall for the warning. */
+const STALL_SAMPLE_CHARS = 240;
+
+export async function* streamModelResponse(
+  opts: StreamModelOptions,
+): AsyncGenerator<LoopEvent, StreamModelResult, void> {
+  const { client, model, messages, toolSpecs, signal, reasoningEffort, maxTokens, turn } = opts;
+  let assistantContent = "";
+  let reasoningContent = "";
+  let usage: Usage | null = null;
+  let finishReason: string | undefined;
+  let stopReason: string | undefined;
+  let image: { dataUrl: string; mimeType: string } | undefined;
+  let repetitionStall: StreamModelResult["repetitionStall"];
+  // Gemini 3 can deliver a function call's thought signature in a dedicated
+  // trailing part rather than on the call itself (cloudwego/eino-ext#756).
+  // Track the last one seen so a call streamed earlier can be backfilled.
+  let streamThoughtSignature: string | undefined;
+  // The repetition guard is opt-in (Settings → Tools). When off, none of the
+  // per-channel detectors run, so a stream that degenerates into a repeated
+  // pattern is left to finish instead of being aborted.
+  const repetitionGuard = opts.repetitionGuardEnabled === true;
+  const contentRepetition = repetitionGuard ? new StreamRepetitionDetector() : null;
+  const reasoningRepetition = repetitionGuard ? new StreamRepetitionDetector() : null;
+  const toolNameRepetitions = new Map<number, StreamRepetitionDetector>();
+  const toolArgsRepetitions = new Map<number, StreamRepetitionDetector>();
+  // File-editing tools stream arbitrary file bytes as arguments: repetitive
+  // lines are the requested content, not a degenerating stream. A code file
+  // with several identical lines must not abort the call mid-write.
+  const argsRepetitionExempt = new Set(["write_file", "edit_file", "multi_edit"]);
+  const stallAbort = new AbortController();
+  const requestSignal = AbortSignal.any([signal, stallAbort.signal]);
+  const callBuf: Map<number, ToolCall> = new Map();
+  const readyIndices = new Set<number>();
+  let emittedOutput = false;
+
+  try {
+    for await (const chunk of client.stream({
+      model,
+      messages,
+      tools: toolSpecs.length ? toolSpecs : undefined,
+      signal: requestSignal,
+      thinking: thinkingModeForModel(model),
+      reasoningEffort,
+      maxTokens,
+    })) {
+      if (chunk.reasoningDelta) {
+        // Reasoning is rendered transiently but is not persisted until the
+        // stream completes. It is therefore safe to replay a stream that
+        // terminates after reasoning-only deltas; marking it partial here
+        // incorrectly disables the loop's bounded body-read retry.
+        reasoningContent += chunk.reasoningDelta;
+        const repetition = reasoningRepetition?.append(chunk.reasoningDelta);
+        if (repetition) {
+          repetitionStall = {
+            channel: "reasoning",
+            period: repetition.period,
+            repeatedChars: repetition.repeatedChars,
+            sample: reasoningContent.slice(
+              repetition.safeLength,
+              repetition.safeLength + STALL_SAMPLE_CHARS,
+            ),
+          };
+          reasoningContent = reasoningContent.slice(0, repetition.safeLength);
+          stallAbort.abort(new Error("Repetitive reasoning stream stopped"));
+          break;
+        }
+        yield {
+          turn,
+          role: "assistant_delta",
+          content: "",
+          reasoningDelta: chunk.reasoningDelta,
+        };
+      }
+      if (chunk.contentDelta) {
+        emittedOutput = true;
+        assistantContent += chunk.contentDelta;
+        const repetition = contentRepetition?.append(chunk.contentDelta);
+        if (repetition) {
+          repetitionStall = {
+            channel: "content",
+            period: repetition.period,
+            repeatedChars: repetition.repeatedChars,
+            sample: assistantContent.slice(
+              repetition.safeLength,
+              repetition.safeLength + STALL_SAMPLE_CHARS,
+            ),
+          };
+          assistantContent = assistantContent.slice(0, repetition.safeLength);
+          stallAbort.abort(new Error("Repetitive content stream stopped"));
+          break;
+        }
+        yield {
+          turn,
+          role: "assistant_delta",
+          content: chunk.contentDelta,
+        };
+      }
+      if (chunk.toolCallDelta) {
+        const d = chunk.toolCallDelta;
+        const cur = callBuf.get(d.index) ?? {
+          id: d.id,
+          type: "function" as const,
+          function: { name: "", arguments: "" },
+        };
+        if (d.id) cur.id = d.id;
+        if (d.name) {
+          cur.function.name = (cur.function.name ?? "") + d.name;
+          let nameRep = repetitionGuard ? toolNameRepetitions.get(d.index) : undefined;
+          if (repetitionGuard && !nameRep) {
+            nameRep = new StreamRepetitionDetector();
+            toolNameRepetitions.set(d.index, nameRep);
+          }
+          const repetition = nameRep?.append(d.name);
+          if (repetition) {
+            repetitionStall = {
+              channel: "tool_call",
+              period: repetition.period,
+              repeatedChars: repetition.repeatedChars,
+              sample: cur.function.name.slice(
+                repetition.safeLength,
+                repetition.safeLength + STALL_SAMPLE_CHARS,
+              ),
+            };
+            cur.function.name = cur.function.name.slice(0, repetition.safeLength);
+            stallAbort.abort(new Error("Repetitive tool name stream stopped"));
+            break;
+          }
+        }
+        if (d.argumentsDelta) {
+          cur.function.arguments = (cur.function.arguments ?? "") + d.argumentsDelta;
+          const exempt = argsRepetitionExempt.has(cur.function.name);
+          let argsRep = !repetitionGuard || exempt ? undefined : toolArgsRepetitions.get(d.index);
+          if (!argsRep && repetitionGuard && !exempt) {
+            argsRep = new StreamRepetitionDetector();
+            toolArgsRepetitions.set(d.index, argsRep);
+          }
+          const repetition = argsRep?.append(d.argumentsDelta);
+          if (repetition) {
+            repetitionStall = {
+              channel: "tool_call",
+              period: repetition.period,
+              repeatedChars: repetition.repeatedChars,
+              sample: cur.function.arguments.slice(
+                repetition.safeLength,
+                repetition.safeLength + STALL_SAMPLE_CHARS,
+              ),
+            };
+            cur.function.arguments = cur.function.arguments.slice(0, repetition.safeLength);
+            stallAbort.abort(new Error("Repetitive tool arguments stream stopped"));
+            break;
+          }
+        }
+        if (d.thoughtSignature) cur.thoughtSignature = d.thoughtSignature;
+        callBuf.set(d.index, cur);
+
+        const isComplete =
+          !readyIndices.has(d.index) &&
+          cur.function.name &&
+          looksLikeCompleteJson(cur.function.arguments ?? "");
+        if (isComplete) {
+          readyIndices.add(d.index);
+        }
+
+        if (cur.function.name) {
+          emittedOutput = true;
+          yield {
+            turn,
+            role: "tool_call_delta",
+            content: "",
+            toolName: cur.function.name,
+            toolCallArgsChars: (cur.function.arguments ?? "").length,
+            toolCallIndex: d.index,
+            toolCallReadyCount: readyIndices.size,
+          };
+        }
+
+        // Halt stream immediately when an interactive user-intervention tool is ready,
+        // so the model does not continue generating additional thinking or tool calls.
+        if (isComplete) {
+          const isIntervention =
+            opts.isUserIntervention?.(cur.function.name) ??
+            (cur.function.name === "ask_choice" ||
+              cur.function.name === "submit_plan" ||
+              cur.function.name === "revise_plan");
+          if (isIntervention) {
+            finishReason = finishReason ?? "tool_calls";
+            stallAbort.abort(new Error(`Intervention tool ${cur.function.name} ready`));
+            break;
+          }
+        }
+      }
+      if (chunk.usage) usage = chunk.usage;
+      if (chunk.finishReason) finishReason = chunk.finishReason;
+      if (chunk.stopReason) stopReason = chunk.stopReason;
+      if (chunk.image) image = chunk.image;
+      if (chunk.thoughtSignature) streamThoughtSignature = chunk.thoughtSignature;
+    }
+  } catch (err) {
+    // If we deliberately aborted the stream due to repetition stall or an intervention tool ready,
+    // suppress the abort error and let the accumulated response settle cleanly.
+    if (!stallAbort.signal.aborted) {
+      // The loop may safely replay a body-read failure only when no assistant
+      // bytes or tool-call progress reached the UI. Mark partial streams so the
+      // retry path cannot append a second response to a settled card.
+      if (emittedOutput && typeof err === "object" && err !== null) {
+        (err as { partialDelivered?: boolean }).partialDelivered = true;
+      }
+      throw err;
+    }
+  }
+
+  const toolCalls = [...callBuf.values()];
+  // Backfill any function call the stream left without a thought signature so
+  // the echoed-back continuation carries it; omitting it 400s with
+  // "Function call is missing a thought_signature in functionCall parts".
+  // If streamThoughtSignature was not delivered in a separate part, check whether
+  // any streamed call carried a thought signature and reuse it.
+  const anyCallSig = toolCalls.find((c) => c.thoughtSignature)?.thoughtSignature;
+  const effectiveSig = streamThoughtSignature ?? anyCallSig;
+  if (effectiveSig) {
+    for (const tc of toolCalls) {
+      if (!tc.thoughtSignature) tc.thoughtSignature = effectiveSig;
+    }
+  }
+  return {
+    assistantContent,
+    reasoningContent,
+    toolCalls,
+    usage,
+    finishReason,
+    stopReason,
+    image,
+    repetitionStall,
+  };
+}

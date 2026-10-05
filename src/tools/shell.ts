@@ -1,0 +1,648 @@
+/** cwd pinned to root; non-allowlisted commands throw to a UI confirm gate; spawn is `shell: false`, tokenized argv only. */
+
+import * as pathMod from "node:path";
+import { addGlobalShellAllowed, addProjectShellAllowed } from "../config.js";
+import { type PauseAskOpts, type PauseGate, pauseGate } from "../core/pause-gate.js";
+import { appendCommandOutputMetric, estimateOutputTokens } from "../telemetry/command-output.js";
+import type { ToolRegistry } from "../tools.js";
+import { ToolControlFlowError } from "./control-flow-error.js";
+import { JobRegistry, mergeSignals } from "./jobs.js";
+import type { OutputRecoveryLimits } from "./output-recovery.js";
+import {
+  DEFAULT_MAX_OUTPUT_CHARS,
+  DEFAULT_TIMEOUT_SEC,
+  type RunCommandResult,
+  runCommandElevated,
+} from "./shell/exec.js";
+import {
+  type OutputFilterResult,
+  applyOutputFilter,
+  commandSupportsOutputFiltering,
+} from "./shell/output-filter.js";
+import { detectShellOperator, isCommandAllowed, tokenizeCommand } from "./shell/parse.js";
+
+export {
+  BUILTIN_ALLOWLIST,
+  detectShellOperator,
+  hasSensitivePathArgs,
+  isAllowed,
+  isCommandAllowed,
+  isDqEscape,
+  tokenizeCommand,
+} from "./shell/parse.js";
+export type {
+  ElevatedCommandResult,
+  ElevatedInvocation,
+  ResolveExecutableOptions,
+  RunCommandResult,
+} from "./shell/exec.js";
+
+// Explanatory note appended to every force-cancelled shell tool result. It is
+// written to the log the instant the cancel fires (fast-settle in exec.ts /
+// jobs.ts) and reaches the model on the very next prompt — never queued via
+// the steer mechanism, which could arrive too late to stop a blind retry.
+export const USER_CANCEL_NOTE =
+  "This is an intentional user cancellation: users do this when a task stalls indefinitely or takes too long. Do not blindly retry the same command; check what it was waiting on, adjust, or proceed with the conversation.";
+export {
+  buildElevatedInvocation,
+  ELEVATION_DECLINED_EXIT,
+  injectPowerShellUtf8,
+  killProcessTree,
+  prepareSpawn,
+  quoteForCmdExe,
+  resolveExecutable,
+  runCommand,
+  runCommandElevated,
+  smartDecodeOutput,
+  withUtf8Codepage,
+  LiveOutputEmitter,
+} from "./shell/exec.js";
+
+export interface ShellToolsOptions {
+  /** Directory to run commands in. Must be an absolute path. */
+  rootDir: string;
+  /** Seconds before an individual command is killed. Default: 60. */
+  timeoutSec?: number;
+  maxOutputChars?: number;
+  /** Getter form is load-bearing — newly-persisted "always allow" prefixes MUST take effect mid-session. */
+  extraAllowed?: readonly string[] | (() => readonly string[]);
+  /** Getter form lets `editMode === "yolo"` flip mid-session without re-registering tools. */
+  allowAll?: boolean | (() => boolean);
+  /** Whether `run_command` may run a command elevated via Windows UAC (`elevate: true`).
+   *  Opt-in: default false. Getter form lets a mid-session config toggle take effect. */
+  elevationEnabled?: boolean | (() => boolean);
+  /** Override the detected platform (tests only). Defaults to process.platform. */
+  platform?: NodeJS.Platform;
+  jobs?: JobRegistry;
+  /** Fired after `run_background` / `stop_job` mutate the registry — used by the desktop popover for near-real-time updates without polling. */
+  onJobsChanged?: () => void;
+  /** Fired with `run_command`'s incremental stdout+stderr while it runs — the
+   *  desktop wires this to stream live output rows into the shell card. */
+  onShellOutput?: (ev: ShellOutputEvent) => void;
+  sensitivePaths?: { prefixes?: readonly string[]; patterns?: readonly string[] };
+  /** Native semantic reduction for recognized command output. Default true. */
+  outputFiltering?: boolean;
+  /** Retained command-output reduction metrics. Default true. */
+  outputTelemetry?: boolean;
+  /** Disk ceilings for content-addressed raw-output recovery. */
+  outputRecovery?: OutputRecoveryLimits;
+}
+
+/** One incremental stdout/stderr feed for a blocking `run_command` call. */
+export interface ShellOutputEvent {
+  /** Loop call id of the running tool — the desktop maps it to the wire call id. */
+  callId?: string;
+  turn?: number;
+  /** Decoded text since the previous event (already line-coalesced upstream). */
+  text: string;
+}
+
+/** Error thrown by `run_command` when the command isn't allowlisted. */
+export class NeedsConfirmationError extends ToolControlFlowError {
+  readonly command: string;
+  constructor(command: string) {
+    super(
+      "NeedsConfirmationError",
+      `run_command: "${command}" needs the user's approval before it runs. STOP calling tools now: the TUI has already prompted the user to press y (run) or n (deny). Wait for their next message; it will either be the command's output (if they approved) or an instruction to continue without it (if they denied). Don't retry the command or call other shell commands in the meantime.`,
+    );
+    this.command = command;
+  }
+}
+
+export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptions): ToolRegistry {
+  const rootDir = pathMod.resolve(opts.rootDir);
+  const timeoutSec = opts.timeoutSec ?? DEFAULT_TIMEOUT_SEC;
+  const maxOutputChars = opts.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
+  const jobs = opts.jobs ?? new JobRegistry();
+  // Resolved on every dispatch so newly-persisted "always allow"
+  // prefixes take effect inside the session that added them, not just
+  // on the next launch. Static arrays are wrapped into a constant
+  // getter so the call site below is uniform.
+  const getExtraAllowed: () => readonly string[] =
+    typeof opts.extraAllowed === "function"
+      ? opts.extraAllowed
+      : (() => {
+          const snapshot = opts.extraAllowed ?? [];
+          return () => snapshot;
+        })();
+  // Resolve dynamically so the TUI can flip yolo mode mid-session and
+  // have the registry pick it up on the next dispatch. Static booleans
+  // are wrapped into a thunk for uniformity.
+  const isAllowAll: () => boolean =
+    typeof opts.allowAll === "function" ? opts.allowAll : () => opts.allowAll === true;
+  // Elevation is opt-in (config gate). Resolve dynamically so a mid-session
+  // toggle is honored without re-registering the tool.
+  const isElevationEnabled: () => boolean =
+    typeof opts.elevationEnabled === "function"
+      ? opts.elevationEnabled
+      : () => opts.elevationEnabled === true;
+
+  registry.register({
+    name: "run_command",
+    description:
+      'Run a shell command in the project root; returns combined stdout+stderr. Allowlisted read-only / test / lint / typecheck commands run immediately; mutating / network / install commands gate on user confirmation.\n\nDO NOT use run_command for file operations: use write_file, edit_file, multi_edit, copy_file, move_file, or delete_file instead. Shell utilities (echo, cp, sed, cat, tee, perl, python -c, etc.) bypass validation, lack rollback, and will trigger user confirmation gates that waste turns.\n\nNo real shell: argv parsed natively for cross-platform parity:\n• Supported: chains `|`/`||`/`&&`/`;` (each segment allowlist-checked) and file redirects `>`/`>>`/`<`/`2>`/`2>>`/`2>&1`/`&>`.\n• Rejected: background `&`, heredoc `<<`, `$(…)`, subshells, `$VAR` expansion, glob expansion. Quote operator chars as literals (`grep "a|b" file`).\n• `cd` is rejected in chains. By default, run generated scripts from the directory where the script was written; do not assume an input/data directory is the cwd. Pass input/data paths as arguments unless the command truly depends on that cwd. For package tools, use `npm --prefix <dir>`, `git -C <dir>`, `cargo -C <dir>`.\n• Filter at source: `grep -c` / `wc -l` / narrower paths over unbounded dumps.\n\n`persistent: true` runs the command as a workspace-scoped job that survives Stop / New chat / turn-abort and appears in the Jobs panel; it stays alive until you close it with `stop_job` or the workspace/app closes. Persistent commands run as a single process (no chain operators / elevation). Default false.',
+    // Plan-mode gate: allow allowlisted commands through (git status,
+    // cargo check, ls, grep …) so the model can actually investigate
+    // during planning. Anything that would otherwise trigger a
+    // confirmation prompt is treated as "not read-only" and bounced.
+    readOnlyCheck: (args: { command?: unknown; elevate?: unknown }) => {
+      // Elevated runs are a privilege change — never read-only, always confirmed.
+      if (args?.elevate === true) return false;
+      if (isAllowAll()) return true;
+      const cmd = typeof args?.command === "string" ? args.command.trim() : "";
+      if (!cmd) return false;
+      return isCommandAllowed(cmd, getExtraAllowed(), rootDir, opts.sensitivePaths);
+    },
+    parameters: {
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          description:
+            "Full command line. Quoting + chain/redirect rules per the top-level description.",
+        },
+        timeoutSec: {
+          type: "integer",
+          description: `Override the default ${timeoutSec}s timeout for a single command.`,
+        },
+        elevate: {
+          type: "boolean",
+          description:
+            "Windows only. Run the command elevated via the OS UAC consent prompt (a real UAC dialog appears; the user must approve). Use only when the task genuinely needs admin rights (e.g. reading NVMe SMART / storage reliability counters). Requires elevation to be enabled in Settings → Tools. Elevated runs are always re-confirmed and can never be allowlisted.",
+        },
+        persistent: {
+          type: "boolean",
+          description:
+            "Spawn as a workspace-scoped job that survives Stop / New chat / turn-abort: it appears in the Jobs panel and stays alive until you close it (`stop_job`) or the workspace/app closes. Runs as a single process (no chain operators / elevation). Default false.",
+        },
+      },
+      required: ["command"],
+    },
+    fn: async (
+      args: { command: string; timeoutSec?: number; elevate?: boolean; persistent?: boolean },
+      ctx,
+    ) => {
+      const cmd = args.command.trim();
+      if (!cmd) throw new Error("run_command: empty command");
+      const effectiveTimeout = Math.max(1, Math.min(600, args.timeoutSec ?? timeoutSec));
+      const elevate = args.elevate === true;
+      const persistent = args.persistent === true;
+      if (persistent && elevate) {
+        throw new Error("run_command: persistent and elevate are mutually exclusive.");
+      }
+      const platform = opts.platform ?? process.platform;
+      if (elevate && platform !== "win32") {
+        throw new Error("run_command: elevate=true is only supported on Windows (UAC).");
+      }
+      if (elevate && !isElevationEnabled()) {
+        throw new Error(
+          "run_command: elevate=true is disabled. Enable it in Settings → Tools (Elevation) before requesting an elevated command.",
+        );
+      }
+      await confirmShellCommand(cmd, {
+        gate: ctx?.confirmationGate ?? pauseGate,
+        // Elevated runs are a privilege change: ALWAYS confirm, never allowlisted.
+        isAllowed:
+          !elevate &&
+          (isAllowAll() || isCommandAllowed(cmd, getExtraAllowed(), rootDir, opts.sensitivePaths)),
+        ask: {
+          kind: "run_command",
+          payload: {
+            command: cmd,
+            cwd: rootDir,
+            timeoutSec: effectiveTimeout,
+            ...(elevate ? { elevated: true } : {}),
+          },
+        },
+        onAlwaysAllow: (prefix) => addGlobalShellAllowed(prefix),
+      });
+
+      if (persistent) {
+        return runPersistentCommand(cmd, {
+          jobs,
+          rootDir,
+          timeoutSec: effectiveTimeout,
+          onJobsChanged: opts.onJobsChanged,
+        });
+      }
+
+      if (elevate) {
+        // Validate parseability before elevating (unclosed quotes etc.), then
+        // run through the same Jobs registry as every other shell command.
+        tokenizeCommand(cmd);
+        const { result: elevatedResult } = await jobs.runForeground(cmd, {
+          cwd: rootDir,
+          timeoutSec: effectiveTimeout,
+          maxOutputChars,
+          signal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
+          outputRecovery: opts.outputRecovery,
+          onJobsChanged: opts.onJobsChanged,
+          run: (signal) =>
+            runCommandElevated(cmd, {
+              cwd: rootDir,
+              timeoutSec: effectiveTimeout,
+              maxOutputChars,
+              signal,
+              outputRecovery: opts.outputRecovery,
+            }),
+        });
+        if (ctx?.cancelSignal?.aborted) {
+          return JSON.stringify({
+            cancelledByUser: true,
+            error: `Command force-stopped by the user. ${USER_CANCEL_NOTE}`,
+            output: elevatedResult.output,
+            exitCode: elevatedResult.exitCode,
+          });
+        }
+        return `[elevated · Windows UAC]\n${formatCommandResult(cmd, elevatedResult)}`;
+      }
+
+      const argv = tokenizeCommand(cmd);
+      const preserveOutput = opts.outputFiltering !== false && commandSupportsOutputFiltering(argv);
+      const { result: rawResult } = await jobs.runForeground(cmd, {
+        cwd: rootDir,
+        timeoutSec: effectiveTimeout,
+        maxOutputChars,
+        signal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
+        outputRecovery: opts.outputRecovery,
+        preserveOutput,
+        onJobsChanged: opts.onJobsChanged,
+        onOutput:
+          opts.onShellOutput !== undefined
+            ? (text) => opts.onShellOutput!({ callId: ctx?.callId, turn: ctx?.turn, text })
+            : undefined,
+      });
+      const filtered = applyOutputFilter(argv, rawResult, opts.outputFiltering !== false);
+      const result = exposeRecoveryWhenNeeded(filtered.result, filtered.filter);
+      if (opts.outputTelemetry !== false) {
+        try {
+          appendCommandOutputMetric({
+            timestamp: new Date().toISOString(),
+            commandFamily: filtered.filter.commandFamily,
+            mode: filtered.filter.mode,
+            rawChars: rawResult.output.length,
+            shownChars: result.output.length,
+            rawTokens: estimateOutputTokens(rawResult.output),
+            shownTokens: estimateOutputTokens(result.output),
+            durationMs: rawResult.durationMs ?? 0,
+            exitCode: rawResult.exitCode,
+            recoveryAvailable: result.recovery !== undefined,
+            recoveryComplete: result.recovery?.complete ?? null,
+          });
+        } catch (error) {
+          process.stderr.write(
+            `reasonix: command output telemetry write failed: ${(error as Error).message}\n`,
+          );
+        }
+      }
+      if (ctx?.cancelSignal?.aborted) {
+        return JSON.stringify({
+          cancelledByUser: true,
+          error: `Command force-stopped by the user. ${USER_CANCEL_NOTE}`,
+          output: result.output,
+          exitCode: result.exitCode,
+        });
+      }
+      return formatCommandResult(cmd, result);
+    },
+  });
+
+  registry.register({
+    name: "run_background",
+    description:
+      "Spawn a long-running process and detach. Waits up to `waitSec` for startup or a readiness signal ('Local:', 'listening on', 'compiled successfully'), then returns job id + startup preview. Companion tools: `job_output`, `wait_for_job`, `stop_job`, `list_jobs`. Single process only: no chains/redirects. Use `cwd` (not `cd X && cmd`) for subdirs.\n\nUSE THIS (not run_command) for: dev servers / watchers (`npm dev`, `uvicorn`, `tsc --watch`, anything with dev/serve/watch in the name) AND one-shot long jobs (large `curl`, `pip install`, `cargo build`, `docker build`). Pair with `wait_for_job` for server-side blocking: one tool call regardless of duration. Pass `persistent: true` to keep the job alive across Stop / New chat (workspace-scoped); it shows in the Jobs panel until you close it with `stop_job` or the workspace/app closes.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          description:
+            "Full command line. Same quoting rules as run_command (no pipes / redirects / chaining).",
+        },
+        cwd: {
+          type: "string",
+          description:
+            "Working directory for the spawn. Workspace-relative or absolute. Defaults to the workspace root. Must resolve inside the workspace: paths escaping the root are rejected.",
+        },
+        waitSec: {
+          type: "integer",
+          description:
+            "Max seconds to wait for startup before returning. 0..30, default 3. A ready-signal match short-circuits this.",
+        },
+        persistent: {
+          type: "boolean",
+          description:
+            "Keep the job alive across Stop / New chat / turn-abort (workspace-scoped): it shows in the Jobs panel until you close it with `stop_job` or the workspace/app closes. Default false.",
+        },
+      },
+      required: ["command"],
+    },
+    fn: async (
+      args: { command: string; cwd?: string; waitSec?: number; persistent?: boolean },
+      ctx,
+    ) => {
+      const cmd = args.command.trim();
+      if (!cmd) throw new Error("run_background: empty command");
+      const persistent = args.persistent === true;
+      const cwd = resolveCwdInsideRoot(rootDir, args.cwd);
+      await confirmShellCommand(cmd, {
+        gate: ctx?.confirmationGate ?? pauseGate,
+        isAllowed:
+          isAllowAll() || isCommandAllowed(cmd, getExtraAllowed(), rootDir, opts.sensitivePaths),
+        ask: {
+          kind: "run_background",
+          payload: { command: cmd, cwd, waitSec: args.waitSec },
+        },
+        onAlwaysAllow: (prefix) => addGlobalShellAllowed(prefix),
+      });
+      const result = await jobs.start(cmd, {
+        cwd,
+        waitSec: args.waitSec,
+        // Persistent jobs are workspace-scoped — never wire the turn/cancel
+        // signal, so Esc / Ctrl+K / Stop leave them running. They end via
+        // stop_job, a full workspace/app shutdown, or the Jobs Close button.
+        ...(persistent
+          ? { persistent: true }
+          : { signal: ctx?.signal, cancelSignal: ctx?.cancelSignal }),
+      });
+      opts.onJobsChanged?.();
+      if (!persistent && ctx?.cancelSignal?.aborted) {
+        return JSON.stringify({
+          cancelledByUser: true,
+          error: `Background job startup force-stopped by the user. ${USER_CANCEL_NOTE}`,
+          jobId: result.jobId,
+          preview: result.preview,
+          exitCode: result.exitCode,
+        });
+      }
+      const formatted = formatJobStart(result);
+      return persistent
+        ? `${formatted}\n[persistent: survives Stop / New chat; close with stop_job ${result.jobId}]`
+        : formatted;
+    },
+  });
+
+  registry.register({
+    name: "job_output",
+    description:
+      "Read the latest output of a background job started with `run_background` (or a persistent `run_command`). By default returns the tail of the buffer (last 80 lines). Pass `since` (the `byteLength` from a previous call) to stream only new content incrementally; use `tailLines` for more or fewer lines. Works on persistent jobs at any point: read a long-running server's console output whenever you need it. A single read is capped (~32K chars) so a dense console can't saturate your context: page a larger buffer in range-bounded chunks with `since`, or narrow it with `tailLines`. Tells you whether the job is still running, so you can stop polling when it's done.",
+    readOnly: true,
+    parallelSafe: true,
+    stormExempt: true,
+    parameters: {
+      type: "object",
+      properties: {
+        jobId: { type: "integer", description: "Job id returned by run_background." },
+        since: {
+          type: "integer",
+          description:
+            "Return only output written past this byte offset (for incremental polling).",
+        },
+        tailLines: {
+          type: "integer",
+          description: "Cap the returned slice to the last N lines. Default 80, 0 = unlimited.",
+        },
+      },
+      required: ["jobId"],
+    },
+    fn: async (args: { jobId: number; since?: number; tailLines?: number }) => {
+      const out = jobs.read(args.jobId, {
+        since: args.since,
+        tailLines: args.tailLines ?? 80,
+      });
+      if (!out) return `job ${args.jobId}: not found (use list_jobs)`;
+      return formatJobRead(args.jobId, out);
+    },
+  });
+
+  registry.register({
+    name: "wait_for_job",
+    description:
+      "Block server-side until a background job finishes (or, opt-in, until it produces new output), bounded by `timeoutMs`. Costs ONE tool call regardless of how long the wait runs: use this instead of polling `job_output` in a loop. Returns JSON with `exited`, `exitCode`, and `latestOutput`.\n\n`waitFor` controls the wake condition:\n- `'exit'` (default): only wake on the job exiting (or the timeout). Right for downloads, installs, builds, anything one-shot. Chatty progress bars do NOT wake the wait.\n- `'output-or-exit'` : also wake whenever the job writes a new line. Right for tailing a dev server / watcher and reacting to a specific log line.\n\nFor a download or install, set `timeoutMs` to the slowest reasonable end-to-end (e.g. 300_000 for a 5-min wheel install).\n\n`latestOutput` is capped (~32K chars) just like `job_output` : page the full buffer in bounded chunks with `job_output` + `since`.",
+    readOnly: true,
+    parallelSafe: true,
+    stormExempt: true,
+    parameters: {
+      type: "object",
+      properties: {
+        jobId: { type: "integer", description: "Job id returned by run_background." },
+        timeoutMs: {
+          type: "integer",
+          description:
+            "Max time to block before returning if the wake condition hasn't fired. Clamped to 0..300000. Default 5000.",
+        },
+        waitFor: {
+          type: "string",
+          enum: ["exit", "output-or-exit"],
+          description:
+            "Wake condition. 'exit' = only on job exit (right for downloads / installs / builds). 'output-or-exit' = also on any new output (right for tailing a dev server). Default 'exit'.",
+        },
+      },
+      required: ["jobId"],
+    },
+    fn: async (
+      args: {
+        jobId: number;
+        timeoutMs?: number;
+        waitFor?: "exit" | "output-or-exit";
+      },
+      ctx,
+    ) => {
+      const out = await jobs.waitForJob(args.jobId, {
+        timeoutMs: args.timeoutMs,
+        waitFor: args.waitFor,
+        cancelSignal: ctx?.cancelSignal,
+      });
+      if (ctx?.cancelSignal?.aborted) {
+        return JSON.stringify({
+          cancelledByUser: true,
+          error: `Wait force-stopped by the user. ${USER_CANCEL_NOTE}`,
+          jobId: args.jobId,
+        });
+      }
+      if (!out) return `job ${args.jobId}: not found (use list_jobs)`;
+      if (out.exited) opts.onJobsChanged?.();
+      return {
+        jobId: args.jobId,
+        exited: out.exited,
+        exitCode: out.exitCode,
+        latestOutput: out.latestOutput,
+      };
+    },
+  });
+
+  registry.register({
+    name: "stop_job",
+    description:
+      "Stop a background job started with `run_background`. SIGTERM first; SIGKILL after a short grace period if it doesn't exit cleanly. Returns the final output + exit code. Safe to call on an already-exited job. Also closes a persistent shell (from `run_background`/`run_command` with `persistent: true`): the only agent-side way to end one.",
+    parameters: {
+      type: "object",
+      properties: {
+        jobId: { type: "integer" },
+      },
+      required: ["jobId"],
+    },
+    fn: async (args: { jobId: number }) => {
+      const rec = await jobs.stop(args.jobId);
+      opts.onJobsChanged?.();
+      if (!rec) return `job ${args.jobId}: not found`;
+      return formatJobStop(rec);
+    },
+  });
+
+  registry.register({
+    name: "list_jobs",
+    description:
+      "List every background job in this workspace (running and exited) with id, command, pid, status; persistent jobs are marked. Use when you've lost track of which job_id corresponds to which process, to see what is still alive, to find a persistent job to close with `stop_job`, or to find the job id for `job_output`.",
+    readOnly: true,
+    parallelSafe: true,
+    stormExempt: true,
+    parameters: { type: "object", properties: {} },
+    fn: async () => {
+      const all = jobs.list();
+      if (all.length === 0) return "(no background jobs started this session)";
+      return all.map(formatJobRow).join("\n");
+    },
+  });
+
+  return registry;
+}
+
+// Route a shell command through the confirmation gate unless already allowlisted.
+async function confirmShellCommand<K extends "run_command" | "run_background">(
+  cmd: string,
+  opts: {
+    gate: PauseGate;
+    isAllowed: boolean;
+    ask: PauseAskOpts<K>;
+    onAlwaysAllow: (prefix: string) => void;
+  },
+): Promise<void> {
+  if (opts.isAllowed) return;
+  const choice = await opts.gate.ask(opts.ask);
+  if (choice.type === "deny") {
+    throw new Error(`user denied: ${cmd}${choice.denyContext ? `: ${choice.denyContext}` : ""}`);
+  }
+  if (choice.type === "always_allow") {
+    opts.onAlwaysAllow(choice.prefix);
+  }
+  // "run_once" — fall through and execute
+}
+
+function resolveCwdInsideRoot(rootDir: string, raw: string | undefined): string {
+  const root = pathMod.resolve(rootDir);
+  if (!raw || !raw.trim()) return root;
+  const resolved = pathMod.resolve(root, raw);
+  const rel = pathMod.relative(root, resolved);
+  if (rel.startsWith("..") || pathMod.isAbsolute(rel)) {
+    throw new Error(
+      `run_background: cwd "${raw}" resolves outside the workspace root (${root}). Pass a workspace-relative path.`,
+    );
+  }
+  return resolved;
+}
+
+/** `run_command` with `persistent: true`: spawn through the JobRegistry (single
+ *  process — same rules as run_background) and wait up to a bounded foreground
+ *  window; if the process outlives it, leave it running as a persistent job. */
+async function runPersistentCommand(
+  cmd: string,
+  opts: { jobs: JobRegistry; rootDir: string; timeoutSec: number; onJobsChanged?: () => void },
+): Promise<string> {
+  const op = detectShellOperator(cmd);
+  if (op !== null) {
+    throw new Error(
+      `run_command: persistent=true runs a single process: shell operator "${op}" is not supported. Run a script file or drop persistent.`,
+    );
+  }
+  const result = await opts.jobs.start(cmd, {
+    cwd: opts.rootDir,
+    waitSec: Math.min(30, opts.timeoutSec),
+    persistent: true,
+  });
+  opts.onJobsChanged?.();
+  if (!result.stillRunning) {
+    const header =
+      result.exitCode !== null ? `$ ${cmd}\n[exit ${result.exitCode}]` : `$ ${cmd}\n[exited]`;
+    return result.preview ? `${header}\n${result.preview}` : header;
+  }
+  const header = `[job ${result.jobId} started · pid ${result.pid ?? "?"} · PERSISTENT: survives Stop / New chat; close with stop_job ${result.jobId}]`;
+  return result.preview ? `${header}\n${result.preview}` : header;
+}
+
+function formatJobStart(r: import("./jobs.js").JobStartResult): string {
+  const header = r.stillRunning
+    ? `[job ${r.jobId} started · pid ${r.pid ?? "?"} · ${r.readyMatched ? "READY signal matched" : "running (no ready signal yet)"}]`
+    : r.exitCode !== null
+      ? `[job ${r.jobId} exited during startup · exit ${r.exitCode}]`
+      : `[job ${r.jobId} failed to start]`;
+  return r.preview ? `${header}\n${r.preview}` : header;
+}
+
+function formatJobRead(jobId: number, r: import("./jobs.js").JobReadResult): string {
+  const status = r.running
+    ? `running · pid ${r.pid ?? "?"}`
+    : r.exitCode !== null
+      ? `exited ${r.exitCode}`
+      : r.spawnError
+        ? `failed (${r.spawnError})`
+        : "stopped";
+  const tag = r.persistent ? " · persistent" : "";
+  const header = `[job ${jobId} · ${status}${tag} · byteLength=${r.byteLength}]\n$ ${r.command}`;
+  return r.output ? `${header}\n${r.output}` : header;
+}
+
+function formatJobStop(r: import("./jobs.js").JobRecord): string {
+  const running = r.running
+    ? "still running (SIGKILL may be pending)"
+    : `exit ${r.exitCode ?? "?"}`;
+  const tail = tailLines(r.output, 40);
+  const tag = r.persistent ? " · persistent" : "";
+  const header = `[job ${r.id} stopped · ${running}${tag}]\n$ ${r.command}`;
+  return tail ? `${header}\n${tail}` : header;
+}
+
+function formatJobRow(r: import("./jobs.js").JobRecord): string {
+  const age = ((Date.now() - r.startedAt) / 1000).toFixed(1);
+  const state = r.running
+    ? `running   ·  pid ${r.pid ?? "?"}`
+    : r.exitCode !== null
+      ? `exit ${r.exitCode}`
+      : r.spawnError
+        ? "failed"
+        : "stopped";
+  const tag = r.persistent ? "persistent · " : "";
+  return `  ${String(r.id).padStart(3)}  ${(tag + state).padEnd(24)}  ${age}s ago   $ ${r.command}`;
+}
+
+function tailLines(s: string, n: number): string {
+  if (!s) return "";
+  const lines = s.split("\n");
+  if (lines.length <= n) return s;
+  const dropped = lines.length - n;
+  return [`[… ${dropped} earlier lines …]`, ...lines.slice(-n)].join("\n");
+}
+
+function exposeRecoveryWhenNeeded(
+  result: RunCommandResult,
+  filter: OutputFilterResult,
+): RunCommandResult {
+  const expose = result.truncated || result.exitCode !== 0 || filter.omitted;
+  return expose ? result : { ...result, recovery: undefined };
+}
+
+export function formatCommandResult(cmd: string, r: RunCommandResult): string {
+  const header = r.timedOut
+    ? `$ ${cmd}\n[killed after timeout]`
+    : `$ ${cmd}\n[exit ${r.exitCode ?? "?"}]`;
+  const notes: string[] = [];
+  if (r.recovery) {
+    const incomplete = r.recovery.complete
+      ? ""
+      : ` (INCOMPLETE: stored ${r.recovery.storedBytes}/${r.recovery.totalBytes} bytes)`;
+    notes.push(`[full output: ${r.recovery.path}${incomplete}]`);
+  } else if (r.recoveryError) {
+    notes.push(`[output recovery failed: ${r.recoveryError}]`);
+  }
+  return [header, r.output, ...notes].filter(Boolean).join("\n");
+}

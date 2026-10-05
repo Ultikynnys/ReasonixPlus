@@ -1,0 +1,77 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Reasonix+",
+  "version": "1.0.0",
+  "identifier": "dev.reasonix.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev:tauri",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build:tauri",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Reasonix+",
+        "width": 1024,
+        "height": 720,
+        "minWidth": 480,
+        "minHeight": 320,
+        "center": true,
+        "resizable": true,
+        "decorations": false,
+        "transparent": false,
+        "backgroundColor": "#0b0b0b",
+        "additionalBrowserArgs": "--enable-features=WebGPU --enable-unsafe-webgpu --force_high_performance_gpu"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: asset: https://asset.localhost; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval' blob:; connect-src 'self' ipc: http://ipc.localhost blob: https://huggingface.co https://*.huggingface.co https://*.hf.co; worker-src 'self' blob:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "requireLiteralLeadingDot": false,
+          "allow": [
+            "**/*"
+          ]
+        }
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../../dist": "dist",
+      "../../data": "data"
+    },
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "languages": [
+          "English"
+        ],
+        "customLanguageFiles": {
+          "English": "nsis/English.nsh"
+        }
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/Ultikynnys/ReasonixPlus/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdCMDJFNkE1MTY2NkU0M0UKUldRKzVHWVdwZVlDZTEwWjdyWnIyRWxVS1Jhck8wTHoveGdJUnRWejVkT1gxSlpEV1dCK3c5SE4K"
+    }
+  }
+}

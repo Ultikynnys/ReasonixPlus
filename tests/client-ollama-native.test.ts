@@ -1,0 +1,679 @@
+/** Native `/api/chat` transport for the Ollama provider: payload shape,
+ *  non-stream + NDJSON stream parsing, cache-hit inference, num_ctx probe. */
+
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DeepSeekClient, type Usage } from "../src/client.js";
+import { saveOllamaGenerationPatch } from "../src/config.js";
+import { estimateRequestTokens } from "../src/tokenizer.js";
+
+const savedKeepAlive = process.env.OLLAMA_KEEP_ALIVE;
+const savedNumCtx = process.env.OLLAMA_NUM_CTX;
+const savedTemperature = process.env.OLLAMA_TEMPERATURE;
+const savedReasonixConfig = process.env.REASONIX_CONFIG;
+const testConfigPath = join(tmpdir(), "reasonix-test-empty-config.json");
+
+beforeEach(() => {
+  process.env.OLLAMA_KEEP_ALIVE = "30m";
+  process.env.OLLAMA_NUM_CTX = "8192";
+  // biome-ignore lint/performance/noDelete: persisted settings must win in live-reload tests
+  delete process.env.OLLAMA_TEMPERATURE;
+  process.env.REASONIX_CONFIG = testConfigPath;
+  writeFileSync(testConfigPath, "{}", "utf8");
+});
+
+afterEach(() => {
+  if (savedReasonixConfig === undefined) {
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.REASONIX_CONFIG;
+  } else {
+    process.env.REASONIX_CONFIG = savedReasonixConfig;
+  }
+  if (savedKeepAlive === undefined) {
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_KEEP_ALIVE;
+  } else {
+    process.env.OLLAMA_KEEP_ALIVE = savedKeepAlive;
+  }
+  if (savedNumCtx === undefined) {
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_NUM_CTX;
+  } else {
+    process.env.OLLAMA_NUM_CTX = savedNumCtx;
+  }
+  if (savedTemperature === undefined) {
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_TEMPERATURE;
+  } else {
+    process.env.OLLAMA_TEMPERATURE = savedTemperature;
+  }
+});
+
+/** Route by URL: /api/show → `show`, everything else → `chat`. */
+function mockOllamaFetch(chat: unknown, show?: unknown): { fetch: typeof fetch; calls: string[] } {
+  const calls: string[] = [];
+  const fetch = vi.fn(async (url: unknown) => {
+    const u = String(url);
+    calls.push(u);
+    if (show !== undefined && u.includes("/api/show")) {
+      return new Response(JSON.stringify(show), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(typeof chat === "string" ? chat : JSON.stringify(chat), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return { fetch, calls };
+}
+
+function nativeChatResponse(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    model: "qwen3:32b",
+    message: { role: "assistant", content: "ok" },
+    done: true,
+    done_reason: "stop",
+    prompt_eval_count: 500,
+    eval_count: 2,
+    prompt_eval_duration: 5_000_000,
+    eval_duration: 2_000_000,
+    load_duration: 10_000_000,
+    ...overrides,
+  };
+}
+
+describe("ollama native payload", () => {
+  it("posts to /api/chat on the native origin, stripping /v1", async () => {
+    const { fetch, calls } = mockOllamaFetch(nativeChatResponse());
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(calls[calls.length - 1]).toBe("http://localhost:11434/api/chat");
+  });
+
+  it("maps generation settings and request overrides into native options", async () => {
+    let capturedInit: RequestInit | undefined;
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      capturedInit = init as RequestInit;
+      return new Response(JSON.stringify(nativeChatResponse()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "https://ollama.example.com",
+      apiKey: "sk-cloud",
+      fetch,
+    });
+    await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user", content: "hi" }],
+      temperature: 0.5,
+      maxTokens: 200,
+      ollama: {
+        topP: 0.85,
+        minP: 0.05,
+        seed: 42,
+        repeatPenalty: 1.4,
+        frequencyPenalty: 0.2,
+        presencePenalty: 0.1,
+        topK: 60,
+        repeatLastN: 256,
+        keepAlive: "1h",
+      },
+    });
+    const body = JSON.parse(String(capturedInit!.body)) as Record<string, unknown>;
+    expect(body.model).toBe("qwen3:32b");
+    expect(body.keep_alive).toBe("1h");
+    expect(body.options).toEqual({
+      num_predict: 200,
+      temperature: 0.5,
+      top_p: 0.85,
+      min_p: 0.05,
+      seed: 42,
+      num_ctx: 8192,
+      repeat_penalty: 1.4,
+      frequency_penalty: 0.2,
+      presence_penalty: 0.1,
+      top_k: 60,
+      repeat_last_n: 256,
+    });
+  });
+
+  it("reloads modified generation settings for the current client on its next request", async () => {
+    const capturedBodies: Array<Record<string, unknown>> = [];
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      capturedBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify(nativeChatResponse()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    const request = {
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user" as const, content: "hi" }],
+    };
+
+    saveOllamaGenerationPatch({ temperature: 0.2, topP: 0.9 }, testConfigPath);
+    await client.chat(request);
+    saveOllamaGenerationPatch({ temperature: 1.7, topP: 0.2 }, testConfigPath);
+    await client.chat(request);
+
+    expect(capturedBodies[0]?.options).toMatchObject({ temperature: 0.2, top_p: 0.9 });
+    expect(capturedBodies[1]?.options).toMatchObject({ temperature: 1.7, top_p: 0.2 });
+  });
+
+  it("converts image parts to native images and tool-call args to objects", async () => {
+    let capturedInit: RequestInit | undefined;
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      capturedInit = init as RequestInit;
+      return new Response(JSON.stringify(nativeChatResponse()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    await client.chat({
+      model: "ollama/llava",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "what is this?" },
+            { type: "image_url", image_url: { url: "data:image/png;base64,QUFBQQ==" } },
+          ],
+        },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "read_file", arguments: '{"path":"a.ts"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", name: "read_file", content: "42" },
+      ],
+    });
+    const body = JSON.parse(String(capturedInit!.body)) as {
+      messages: Array<Record<string, unknown>>;
+    };
+    expect(body.messages[0]).toEqual({
+      role: "user",
+      content: "what is this?",
+      images: ["QUFBQQ=="],
+    });
+    expect(body.messages[1]!.tool_calls).toEqual([
+      { function: { name: "read_file", arguments: { path: "a.ts" } } },
+    ]);
+    expect(body.messages[2]).toEqual({
+      role: "tool",
+      tool_call_id: "call_1",
+      tool_name: "read_file",
+      content: "42",
+    });
+  });
+
+  it("forwards repeat_penalty, frequency_penalty, presence_penalty, top_k, repeat_last_n when configured via env", async () => {
+    process.env.OLLAMA_REPEAT_PENALTY = "1.3";
+    process.env.OLLAMA_FREQUENCY_PENALTY = "0.5";
+    process.env.OLLAMA_PRESENCE_PENALTY = "0.4";
+    process.env.OLLAMA_TOP_K = "50";
+    process.env.OLLAMA_REPEAT_LAST_N = "128";
+    let capturedInit: RequestInit | undefined;
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      capturedInit = init as RequestInit;
+      return new Response(JSON.stringify(nativeChatResponse()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const body = JSON.parse(String(capturedInit!.body)) as Record<string, unknown>;
+    const options = body.options as Record<string, unknown>;
+    expect(options.repeat_penalty).toBe(1.3);
+    expect(options.frequency_penalty).toBe(0.5);
+    expect(options.presence_penalty).toBe(0.4);
+    expect(options.top_k).toBe(50);
+    expect(options.repeat_last_n).toBe(128);
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_REPEAT_PENALTY;
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_FREQUENCY_PENALTY;
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_PRESENCE_PENALTY;
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_TOP_K;
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_REPEAT_LAST_N;
+  });
+
+  it("omits sampling penalty options and top_k from payload when unconfigured so model defaults apply", async () => {
+    // Ensure no env vars leak into this test.
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_REPEAT_PENALTY;
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_FREQUENCY_PENALTY;
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_PRESENCE_PENALTY;
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_TOP_K;
+    // biome-ignore lint/performance/noDelete: restore exact env state
+    delete process.env.OLLAMA_REPEAT_LAST_N;
+    let capturedInit: RequestInit | undefined;
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      capturedInit = init as RequestInit;
+      return new Response(JSON.stringify(nativeChatResponse()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const body = JSON.parse(String(capturedInit!.body)) as Record<string, unknown>;
+    const options = (body.options ?? {}) as Record<string, unknown>;
+    expect(options.repeat_penalty).toBeUndefined();
+    expect(options.frequency_penalty).toBeUndefined();
+    expect(options.presence_penalty).toBeUndefined();
+    expect(options.top_k).toBeUndefined();
+    expect(options.repeat_last_n).toBeUndefined();
+  });
+
+  it("maps thinking/effort to native think and responseFormat to format json", async () => {
+    let capturedInit: RequestInit | undefined;
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      capturedInit = init as RequestInit;
+      return new Response(JSON.stringify(nativeChatResponse()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user", content: "hi" }],
+      thinking: "enabled",
+      responseFormat: { type: "json_object" },
+    });
+    const body = JSON.parse(String(capturedInit!.body)) as Record<string, unknown>;
+    expect(body.think).toBe(true);
+    expect(body.format).toBe("json");
+  });
+});
+
+describe("ollama native non-stream response", () => {
+  it("parses message/thinking/tool_calls and metrics into Usage", async () => {
+    const { fetch } = mockOllamaFetch(
+      nativeChatResponse({
+        message: {
+          role: "assistant",
+          content: "done",
+          thinking: "let me think",
+          tool_calls: [{ function: { name: "read_file", arguments: { path: "a.ts" } } }],
+        },
+      }),
+    );
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    const res = await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(res.content).toBe("done");
+    expect(res.reasoningContent).toBe("let me think");
+    expect(res.toolCalls).toEqual([
+      {
+        id: undefined,
+        type: "function",
+        function: { name: "read_file", arguments: '{"path":"a.ts"}' },
+      },
+    ]);
+    expect(res.usage.promptTokens).toBe(500);
+    expect(res.usage.completionTokens).toBe(2);
+    expect(res.usage.promptEvalDurationMs).toBe(5);
+    expect(res.usage.evalDurationMs).toBe(2);
+    expect(res.usage.loadDurationMs).toBe(10);
+  });
+});
+
+describe("ollama native NDJSON stream", () => {
+  it("accumulates content/thinking deltas, tool calls and the done-chunk metrics", async () => {
+    const lines = [
+      { model: "qwen3:32b", message: { role: "assistant", content: "Hel" }, done: false },
+      { model: "qwen3:32b", message: { role: "assistant", content: "lo" }, done: false },
+      {
+        model: "qwen3:32b",
+        message: {
+          role: "assistant",
+          tool_calls: [{ function: { name: "read_file", arguments: { path: "a.ts" } } }],
+        },
+        done: false,
+      },
+      {
+        model: "qwen3:32b",
+        message: { role: "assistant", content: "" },
+        done: true,
+        done_reason: "stop",
+        prompt_eval_count: 500,
+        eval_count: 2,
+        prompt_eval_duration: 5_000_000,
+      },
+    ];
+    const { fetch } = mockOllamaFetch(`${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    const chunks: Array<{ contentDelta?: string; toolCallDelta?: unknown; finishReason?: string }> =
+      [];
+    let usage: Usage | null = null;
+    for await (const chunk of client.stream({
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user", content: "hi" }],
+    })) {
+      chunks.push(chunk);
+      if (chunk.usage) usage = chunk.usage;
+    }
+    const deltas = chunks.map((c) => c.contentDelta).filter((d) => d !== undefined);
+    expect(deltas).toEqual(["Hel", "lo"]);
+    const toolChunk = chunks.find((c) => c.toolCallDelta);
+    expect(toolChunk!.toolCallDelta).toEqual({
+      index: 0,
+      id: undefined,
+      name: "read_file",
+      argumentsDelta: '{"path":"a.ts"}',
+    });
+    const doneChunk = chunks.find((c) => c.finishReason !== undefined);
+    expect(doneChunk!.finishReason).toBe("stop");
+    expect(usage).not.toBeNull();
+    expect(usage!.promptTokens).toBe(500);
+    expect(usage!.completionTokens).toBe(2);
+    expect(usage!.promptEvalDurationMs).toBe(5);
+  });
+
+  it("rejects a stream that EOFs without the done:true completion frame", async () => {
+    const truncated = [
+      { model: "qwen3:32b", message: { role: "assistant", content: "partial" }, done: false },
+    ];
+    const { fetch } = mockOllamaFetch(`${truncated.map((l) => JSON.stringify(l)).join("\n")}\n`);
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    const consume = async () => {
+      for await (const _ of client.stream({
+        model: "ollama/qwen3:32b",
+        messages: [{ role: "user", content: "hi" }],
+      })) {
+        /* drain */
+      }
+    };
+    await expect(consume()).rejects.toMatchObject({
+      message: expect.stringContaining(
+        "Ollama stream terminated before the `done` completion frame",
+      ),
+      phase: "stream_body_read",
+    });
+  });
+
+  it("tags a mid-stream body read failure as stream_body_read", async () => {
+    const readErr = Object.assign(new Error("terminated"), { code: "UND_ERR_ABORTED" });
+    let callCount = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        callCount++;
+        if (callCount === 1) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              '{"model":"qwen3:32b","message":{"role":"assistant","content":"hi"},"done":false}\n',
+            ),
+          );
+          return;
+        }
+        controller.error(readErr);
+      },
+    });
+    const fetch = vi.fn(async () => {
+      return new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "application/x-ndjson" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    const consume = async () => {
+      for await (const _ of client.stream({
+        model: "ollama/qwen3:32b",
+        messages: [{ role: "user", content: "hi" }],
+      })) {
+        /* drain */
+      }
+    };
+    await expect(consume()).rejects.toMatchObject({
+      message: expect.stringContaining("Ollama stream body read failed: terminated"),
+      phase: "stream_body_read",
+      code: "UND_ERR_ABORTED",
+    });
+  });
+});
+
+describe("ollama cache-hit inference", () => {
+  it("reports hits for a shared message prefix and drops them after a fold", async () => {
+    const { fetch } = mockOllamaFetch(nativeChatResponse());
+    const client = new DeepSeekClient({
+      baseUrl: "http://localhost:11434/v1",
+      allowMissingKey: true,
+      fetch,
+    });
+    const system = { role: "system" as const, content: "you are a coding agent" };
+    const first = await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [system, { role: "user", content: "hi" }],
+    });
+    // First request: no previous prefix to reuse.
+    expect(first.usage.promptCacheHitTokens).toBe(0);
+
+    const second = await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [
+        system,
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello" },
+        { role: "user", content: "now read a.ts" },
+      ],
+    });
+    // Shared prefix [system, user hi, assistant hello] is inferred as cached.
+    expect(second.usage.promptCacheHitTokens).toBeGreaterThan(0);
+    expect(second.usage.promptCacheHitTokens).toBeLessThan(second.usage.promptTokens);
+    expect(second.usage.promptCacheMissTokens).toBeLessThan(second.usage.promptTokens);
+
+    const preFold = await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [
+        system,
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello" },
+        { role: "user", content: "now read a.ts" },
+        { role: "assistant", content: "sure" },
+        { role: "user", content: "and now?" },
+        { role: "assistant", content: "done" },
+        { role: "user", content: "next" },
+      ],
+    });
+    const preFoldHit = preFold.usage.promptCacheHitTokens;
+    // A fold replaces the conversation head with a summary — the shared prefix
+    // with the previous request shrinks to the 5 matching head messages, and
+    // the inferred hit count is exactly the token estimate of that prefix.
+    const foldedMessages = [
+      system,
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "now read a.ts" },
+      { role: "assistant", content: "sure" },
+      { role: "user", content: "[summary of earlier turns]" },
+      { role: "assistant", content: "done" },
+      { role: "user", content: "next" },
+    ] as const;
+    const folded = await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [...foldedMessages],
+    });
+    expect(folded.usage.promptCacheHitTokens).toBe(
+      estimateRequestTokens(foldedMessages.slice(0, 5), undefined),
+    );
+    expect(folded.usage.promptCacheHitTokens).toBeGreaterThan(0);
+    expect(folded.usage.promptCacheHitTokens).toBeLessThan(folded.usage.promptTokens);
+    // Sanity: the fold's shared prefix (5 messages) is shorter than the prior
+    // turn's (7 messages) — the estimate reflects the overlap, not the size of
+    // the whole prompt.
+    void preFoldHit;
+  });
+});
+
+describe("ollama num_ctx learning", () => {
+  it("probes /api/show once, caches the window, and sends it as options.num_ctx", async () => {
+    // biome-ignore lint/performance/noDelete: test needs the env unset
+    delete process.env.OLLAMA_NUM_CTX;
+    const showCalls: string[] = [];
+    const capturedBodies: Array<Record<string, unknown>> = [];
+    const fetch = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes("/api/show")) {
+        showCalls.push(String(url));
+        return new Response(JSON.stringify({ model_info: { "llama.context_length": 131072 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      capturedBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify(nativeChatResponse()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "https://ollama.example.com",
+      apiKey: "sk-cloud",
+      fetch,
+    });
+    await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(capturedBodies).toHaveLength(2);
+    expect(capturedBodies[0]!.options).toEqual({
+      num_ctx: 131072,
+    });
+    expect(showCalls).toHaveLength(1);
+  });
+
+  it("falls back to DEFAULT_CONTEXT_TOKENS (131072) when /api/show is unavailable", async () => {
+    // biome-ignore lint/performance/noDelete: test needs the env unset
+    delete process.env.OLLAMA_NUM_CTX;
+    let capturedInit: RequestInit | undefined;
+    const fetch = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes("/api/show")) {
+        return new Response("not found", { status: 404 });
+      }
+      capturedInit = init as RequestInit;
+      return new Response(JSON.stringify(nativeChatResponse()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "https://ollama.example.com",
+      apiKey: "sk-cloud",
+      fetch,
+    });
+    await client.chat({
+      model: "ollama/qwen3:32b",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const body = JSON.parse(String(capturedInit!.body)) as Record<string, unknown>;
+    expect(body.options).toEqual({
+      num_ctx: 131072,
+    });
+  });
+
+  it("retains assistant messages with reasoning_content when content is empty", async () => {
+    let capturedInit: RequestInit | undefined;
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      capturedInit = init as RequestInit;
+      return new Response(JSON.stringify(nativeChatResponse()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "https://ollama.example.com",
+      apiKey: "sk-cloud",
+      fetch,
+    });
+    await client.chat({
+      model: "ollama/deepseek-v4-flash",
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "", reasoning_content: "thinking about it" },
+        { role: "assistant", content: "" }, // completely empty, should be dropped
+      ],
+    });
+    const body = JSON.parse(String(capturedInit!.body)) as Record<string, unknown>;
+    const messages = body.messages as Array<Record<string, unknown>>;
+    expect(messages).toHaveLength(2);
+    expect(messages[0]!.role).toBe("user");
+    expect(messages[1]!.role).toBe("assistant");
+    expect(messages[1]!.thinking).toBe("thinking about it");
+  });
+});

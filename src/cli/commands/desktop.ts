@@ -1,0 +1,7747 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
+import { stdin } from "node:process";
+import { createInterface } from "node:readline";
+import {
+  ANTIGRAVITY_MODELS,
+  MAX_IMAGE_BYTES,
+  MailProvider,
+  flattenText,
+  isUsableAntigravityModel,
+  messageOf,
+  redactDiagnosticText,
+  redactDiagnosticValue,
+  scanImageMentions,
+  sleep,
+  stripMentionTokens,
+  toApprovalPrompt,
+} from "@reasonix/core-utils";
+import type {
+  AntigravityQuotaEvent,
+  BalanceEvent,
+  BtwResultEvent,
+  CheckpointRequiredEvent,
+  ChoiceRequiredEvent,
+  CodexQuotaEvent,
+  ConfirmRequiredEvent,
+  ContextRawEvent,
+  CtxBreakdownEvent,
+  DesktopDiagnosticEvent,
+  DirectKernelWireEvent,
+  JobInfo,
+  JobsEvent,
+  LoadedMessage,
+  LoadedSegment,
+  MailAuthEvent,
+  MailAuthState,
+  McpExtensionCheckEvent,
+  McpExtensionStatus,
+  McpExtensionStatusEvent,
+  McpSpecInfo,
+  McpSpecStatus,
+  McpSpecsEvent,
+  MemoryDetailEvent,
+  MemoryEvent,
+  MemoryExportEvent,
+  MemoryResultEvent,
+  MentionPreviewEvent,
+  MentionResultsEvent,
+  ModelEndpointInfo,
+  NeedsSetupEvent,
+  OllamaModelsEvent,
+  OllamaQuotaEvent,
+  OpencodeModelsEvent,
+  PathAccessRequiredEvent,
+  PlanClearedEvent,
+  PlanRequiredEvent,
+  PlanRestoredEvent,
+  PlanStep,
+  PlaywrightBrowserInstallEvent,
+  RetryResultEvent,
+  RevisionRequiredEvent,
+  SessionCompactedEvent,
+  SessionEmptyEvent,
+  SessionLoadedEvent,
+  SessionRetractedEvent,
+  SessionsEvent,
+  SettingsEvent,
+  SkillsEvent,
+  StepCompletedEvent,
+  TabClosedEvent,
+  TabOpenedEvent,
+  TabsSnapshotEvent,
+  TurnCompleteEvent,
+  TurnOutcome,
+  UserImageAttachment,
+  WorkspaceInitializedEvent,
+  ZaiQuota,
+  ZaiQuotaEvent,
+  ZaiQuotaWindow,
+} from "@reasonix/core-utils";
+import {
+  type FileWithStats,
+  listDirectory,
+  listFilesWithStatsAsync,
+  parseAtQuery,
+  rankPickerCandidates,
+} from "../../at-mentions.js";
+import { pickPrimaryBalance } from "../../client.js";
+import {
+  archivePlanState,
+  clearPlanState,
+  isPlanComplete,
+  loadPlanState,
+  savePlanState,
+} from "../../code/plan-store.js";
+import { codeSystemPrompt } from "../../code/prompt.js";
+import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
+import { fetchCodexQuotaViaOAuth } from "../../codex-backend.js";
+import {
+  DEFAULT_GEMINI_CHAT_URL,
+  DEFAULT_MODEL,
+  DEFAULT_OLLAMA_CHAT_URL,
+  DEFAULT_OPENCODE_CHAT_URL,
+  DEFAULT_ZAI_CHAT_URL,
+  OPENCODE_MODELS,
+  type ReasonixConfig,
+  SUPPORTED_MODELS,
+  addGlobalPathAllowed,
+  addGlobalShellAllowed,
+  addProjectPathAllowed,
+  addProjectShellAllowed,
+  anyProviderConfigured,
+  bridgeEndpointEnv,
+  deriveNativeOllamaOrigin,
+  isOllamaCloudEndpoint,
+  isOpenAIStandardEndpoint,
+  isPlausibleKey,
+  isReasoningEffort,
+  loadAllPathAllowed,
+  loadAllShellAllowed,
+  loadApiKey,
+  loadBraveApiKey,
+  loadContextTokens,
+  loadCustomQuickSends,
+  loadDesktopOpenTabs,
+  loadDisableAutoCompaction,
+  loadDuplicateSessionAutoProceed,
+  loadDuplicateSessionTokens,
+  loadEditMode,
+  loadEffectiveMcpConfig,
+  loadElevationEnabled,
+  loadEnableSubagents,
+  loadEnabledModels,
+  loadEndpoint,
+  loadEndpointForModel,
+  loadExaApiKey,
+  loadMaxIterPerTurn,
+  loadMaxOutputTokens,
+  loadMetasoApiKey,
+  loadModel,
+  loadOllamaApiKey,
+  loadOllamaEndpoint,
+  loadOllamaGenerationOverrides,
+  loadOllamaGenerationSettings,
+  loadOpencodeApiKey,
+  loadPerplexityApiKey,
+  loadProjectPathAllowed,
+  loadProjectShellAllowed,
+  loadQuestionTimerEnabled,
+  loadQuickSendId,
+  loadReasoningEffort,
+  loadRecentWorkspaces,
+  loadRepetitionGuardEnabled,
+  loadResolvedSkillPaths,
+  loadSubagentModels,
+  loadTavilyApiKey,
+  loadTypesafeApiKey,
+  loadWorkspaceDir,
+  loadZaiApiKey,
+  mergeMcpServerEntry,
+  modelAcceptsImages,
+  providerForModel,
+  pushRecentWorkspace,
+  readConfig,
+  webSearchEngine as readWebSearchEngine,
+  removeGlobalPathAllowed,
+  removeGlobalShellAllowed,
+  removeProjectPathAllowed,
+  removeProjectShellAllowed,
+  removeRecentWorkspace,
+  saveAntigravityOAuth,
+  saveApiKey,
+  saveBaseUrl,
+  saveContextTokens,
+  saveCustomQuickSends,
+  saveDesktopOpenTabs,
+  saveDisableAutoCompaction,
+  saveDuplicateSessionAutoProceed,
+  saveDuplicateSessionTokens,
+  saveEditMode,
+  saveElevationEnabled,
+  saveEnableSubagents,
+  saveEnabledModels,
+  saveGmailOAuth,
+  saveMailProvider,
+  saveMaxIterPerTurn,
+  saveModel,
+  saveOllamaGenerationPatch,
+  saveOpenAIApiKey,
+  saveOpenAIOAuth,
+  saveQuestionTimerEnabled,
+  saveQuickSendId,
+  saveReasoningEffort,
+  saveRepetitionGuardEnabled,
+  saveWorkspaceDir,
+  setMcpServerDisabled,
+  setMcpToolDisabled,
+  writeConfig,
+} from "../../config.js";
+import { parseContext, serializeContext } from "../../context-plaintext.js";
+import { ConcurrencyGate } from "../../core/concurrency-gate.js";
+import { redactEventValue } from "../../core/event-redaction.js";
+import { Eventizer } from "../../core/eventize.js";
+import { EventType } from "../../core/events.js";
+import type { Event as KernelEvent, SubagentProgressEvent } from "../../core/events.js";
+import { pauseGate } from "../../core/pause-gate.js";
+import { autoResolveVerdict } from "../../core/pause-policy.js";
+import { AccountQuotaCoordinator } from "../../desktop/account-quota.js";
+import { augmentProcessPath } from "../../desktop/login-shell-path.js";
+import {
+  collectMemoryEntriesForWorkspace,
+  deleteMemoryEntry,
+  exportMemories,
+  importMemories,
+  readMemoryEntryDetail,
+  writeMemoryEntry,
+} from "../../desktop/memory-browser.js";
+import { recordDiagnostic } from "../../diagnostics.js";
+import { buildDuplicateContext } from "../../duplicate-session.js";
+import { normalizeImageToDataUrls } from "../../image-format.js";
+import { supervisePlaywrightInstaller } from "../../mcp/browser-installer.js";
+import {
+  PLAYWRIGHT_DOWNLOAD_HOST_ENV,
+  PLAYWRIGHT_EXTENSION_ARG,
+  PLAYWRIGHT_EXTENSION_STORE_URL,
+  PLAYWRIGHT_EXTENSION_TOKEN_ENV,
+  configurePlaywrightArgs,
+  createPlaywrightProgressParser,
+  installFromPlaywrightDownloadSources,
+  isPlaywrightBrowserInstalled,
+  isPlaywrightManagedBrowser,
+  normalizeExtensionToken,
+  parsePlaywrightConnection,
+  playwrightBrowserInstallArgs,
+  playwrightBrowserInstallEnv,
+} from "../../mcp/extension.js";
+import { ensureNpxAvailable } from "../../mcp/node-runtime.js";
+import { quoteArg } from "../../mcp/stdio.js";
+import { validateTypesafeApiKeyCached } from "../../tools/jev.js";
+
+import {
+  ANTIGRAVITY_OAUTH_CLIENT_ID,
+  antigravityAccount,
+  beginAntigravityOAuthFlow,
+  fetchAntigravityModels,
+  fetchAntigravityQuota,
+  onboardAntigravity,
+  resolveGeminiAuth,
+  signOutAntigravity,
+} from "../../antigravity-oauth.js";
+import { loadDotenv } from "../../env.js";
+import { type ResolvedHook, formatHookOutcomeMessage, loadHooks, runHooks } from "../../hooks.js";
+import { t } from "../../i18n/index.js";
+import {
+  CacheFirstLoop,
+  ImmutablePrefix,
+  type LoopAbortOptions,
+  type LoopEvent,
+} from "../../index.js";
+import { createLogger } from "../../logging.js";
+import { MCP_CATALOG, catalogStdioCommand } from "../../mcp/catalog.js";
+import {
+  GMAIL_MAIL_SERVER_NAME,
+  GMAIL_MCP_URL,
+  GMAIL_OAUTH_REDIRECT_URI,
+  beginGmailOAuthFlow,
+  isGmailMailSpec,
+  resolveGmailToken,
+  signOutGmail,
+} from "../../mcp/gmail-mail.js";
+import {
+  OUTLOOK_MAIL_ARGS,
+  OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS,
+  OUTLOOK_MAIL_SERVER_NAME,
+  isOutlookMailSpec,
+  parseOutlookDeviceCode,
+  parseOutlookLoginStatus,
+} from "../../mcp/outlook-mail.js";
+import { isPlaywrightSpec } from "../../mcp/playwright-tooling.js";
+import { SharedClientRegistry } from "../../mcp/shared-browser.js";
+import { type McpServerSpec, parseMcpSpec, specToRaw } from "../../mcp/spec.js";
+import {
+  type ModelPrefs,
+  type SessionInfo,
+  type SessionMcpState,
+  type SessionMeta,
+  appendSessionMessage,
+  deleteSession,
+  ensureSessionDir,
+  firstFreeSessionName,
+  listSessionsForWorkspace,
+  listSessionsForWorkspaceAsync,
+  loadSessionMessages,
+  loadSessionMessagesAsync,
+  loadSessionMeta,
+  migrateLegacyFlatSessions,
+  normalizeSessionMcpState,
+  patchSessionMeta,
+  patchSessionWorkspaceIfMissing,
+  resolveSessionModelPrefs,
+  sessionExists,
+  sessionPath,
+  stampSessionWorkspace,
+  timestampSuffix,
+} from "../../memory/session.js";
+import { createModelClient } from "../../model-client.js";
+import { type OAuthFlow, beginOAuthFlow, oauthAccount, signOutOpenAI } from "../../oauth.js";
+import {
+  contextTokensForModel,
+  loadOllamaVerdicts,
+  ollamaVerdictsPath,
+  partitionByVerdicts,
+  resolveOllamaModelDefaults,
+  saveOllamaVerdicts,
+  scopeKeyFor,
+  setVerdict,
+  showPayloadContextLength,
+  showPayloadParameters,
+  verdictFor,
+  visionModelsFor,
+} from "../../ollama-model-map.js";
+import { loadOllamaModelsCache, saveOllamaModelsCache } from "../../ollama-models-cache.js";
+import { fetchOpencodeModels } from "../../opencode-models.js";
+import type { SubagentEvent } from "../../tools/subagent.js";
+
+import { SkillStore } from "../../skills.js";
+import {
+  commandOutputTelemetryPath,
+  summarizeCommandOutputMetrics,
+} from "../../telemetry/command-output.js";
+import { billingContextForModel, resolveContextTokens } from "../../telemetry/stats.js";
+import { countTokensBounded } from "../../tokenizer.js";
+import type { ChoiceOption } from "../../tools/choice.js";
+import type { StepCompletion } from "../../tools/plan.js";
+import type { ChatMessage, TurnImage } from "../../types.js";
+import { VERSION, reasonixDefaultWorkspaceDir, reasonixInstallDir } from "../../version.js";
+import { dumpStartupProfile, markPhase } from "../startup-profile.js";
+import {
+  type McpRuntime,
+  type McpSpecOverrides,
+  applyMcpSessionOverrides,
+  createMcpRuntime,
+} from "./mcp-runtime.js";
+
+export interface DesktopOptions {
+  model: string;
+  /** Root directory the agent's filesystem tools operate inside. Defaults to cwd. */
+  dir?: string;
+}
+
+export function desktopUserAbortLoopOptions(): LoopAbortOptions | undefined {
+  // User-facing Abort stops generation; it must not erase a prompt that remains visible in chat.
+  return undefined;
+}
+
+/** Race the generator's next event against the aborter — resolves `null` on
+ * abort even while the loop is suspended (the fold is non-interruptible).
+ * Exported for tests. */
+export function raceLoopStep(
+  gen: AsyncGenerator<LoopEvent>,
+  signal: AbortSignal | undefined,
+): Promise<IteratorResult<LoopEvent> | null> {
+  if (signal?.aborted) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => resolve(null);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    gen.next().then(
+      (r) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(r);
+      },
+      (err) => {
+        signal?.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+// Wait until any in-flight compaction fold has settled. A turn cancelled
+// mid-fold leaves the fold running detached: it is non-interruptible and the
+// host closes the generator fire-and-forget, so it keeps owning the loop's
+// _compacting lock until it commits or fails open at its scaled deadline.
+// Starting a new turn while the lock is held would run the fold and the new
+// message concurrently on the same log. The /compact handler refuses that
+// overlap outright, user turns must wait instead. Bounded by the fold's own
+// deadline; abort-aware so Stop / switch during the wait cancels the pending
+// turn before any request goes out. Exported for tests.
+export async function waitForCompactionIdle(
+  loop: { isCompacting: boolean },
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  while (loop.isCompacting && !signal?.aborted) {
+    await sleep(50);
+  }
+}
+
+/** Manual compaction is a priority barrier: stop the active conversation, wait
+ * for its desktop consumer to release the busy state, then either accept the
+ * fold that was already in flight or run exactly one user fold. */
+export async function runPriorityManualCompaction(options: {
+  abortActive: () => void;
+  isTurnBusy: () => boolean;
+  isCompacting: () => boolean;
+  compact: () => Promise<void>;
+}): Promise<"compacted" | "existing-compaction"> {
+  let sawExistingCompaction = options.isCompacting();
+  options.abortActive();
+  while (options.isTurnBusy()) {
+    sawExistingCompaction ||= options.isCompacting();
+    await sleep(10);
+  }
+  sawExistingCompaction ||= options.isCompacting();
+  while (options.isCompacting()) await sleep(50);
+  if (sawExistingCompaction) return "existing-compaction";
+  await options.compact();
+  return "compacted";
+}
+
+type InMessage = import("@reasonix/core-utils").OutgoingCommand;
+
+/** Direct fd write — bypasses Node's stream layer (and its piped-output
+ *  block buffering) so every JSON line reaches Rust the moment it's
+ *  produced, not whenever the next 8 KB flushes. */
+type KernelWireBridgeEvent = DirectKernelWireEvent | SessionCompactedEvent | SessionRetractedEvent;
+
+type EmittableEvent =
+  | KernelWireBridgeEvent
+  | { type: "$connected" }
+  | { type: "$ready" }
+  | { type: "$error"; message: string }
+  | TurnCompleteEvent
+  | DesktopDiagnosticEvent
+  | { type: "oauth_begin_result"; url: string }
+  | { type: "gemini_oauth_begin_result"; url: string }
+  | ConfirmRequiredEvent
+  | PathAccessRequiredEvent
+  | ChoiceRequiredEvent
+  | PlanRequiredEvent
+  | CheckpointRequiredEvent
+  | RevisionRequiredEvent
+  | StepCompletedEvent
+  | PlanClearedEvent
+  | PlanRestoredEvent
+  | SessionsEvent
+  | SessionLoadedEvent
+  | SessionEmptyEvent
+  | NeedsSetupEvent
+  | SettingsEvent
+  | BalanceEvent
+  | CodexQuotaEvent
+  | OllamaQuotaEvent
+  | OllamaModelsEvent
+  | OpencodeModelsEvent
+  | AntigravityQuotaEvent
+  | ZaiQuotaEvent
+  | MentionResultsEvent
+  | MentionPreviewEvent
+  | RetryResultEvent
+  | BtwResultEvent
+  | TabOpenedEvent
+  | TabClosedEvent
+  | WorkspaceInitializedEvent
+  | TabsSnapshotEvent
+  | McpSpecsEvent
+  | McpExtensionStatusEvent
+  | McpExtensionCheckEvent
+  | MailAuthEvent
+  | PlaywrightBrowserInstallEvent
+  | SkillsEvent
+  | CtxBreakdownEvent
+  | ContextRawEvent
+  | MemoryEvent
+  | MemoryDetailEvent
+  | MemoryResultEvent
+  | MemoryExportEvent
+  | JobsEvent;
+
+const STDOUT_BACKPRESSURE_WAIT = new Int32Array(new SharedArrayBuffer(4));
+
+type SyncWriter = (fd: number, buffer: Buffer, offset: number, length: number) => number;
+
+const SESSION_TITLE_MAX_CHARS = 200;
+
+/** Trim + cap a user-provided session title; empty string means "clear summary". Exported for tests. */
+export function normalizeSessionTitle(raw: string): string {
+  return flattenText(raw).slice(0, SESSION_TITLE_MAX_CHARS);
+}
+
+/** Active deletion must replace the backend-bound session before the refreshed list is emitted. */
+export function shouldReplaceDeletedSession(
+  currentSession: string,
+  deletedSession: string,
+  deleted: boolean,
+): boolean {
+  return deleted && currentSession === deletedSession;
+}
+
+/** Explicit New chat sessions list immediately; a blank replacement created
+ * after deletion stays virtual until its first user-visible activity. */
+export function shouldMaterializeFreshSession(reason: "new-chat" | "session-delete"): boolean {
+  return reason === "new-chat";
+}
+
+/** Boot restore: a persisted tab whose session was DELETED must not resurrect
+ * it on disk — mint a virtual one; only a genuinely new tab self-materializes. */
+export function shouldMaterializeRestoredSession(restore?: { session?: string }): boolean {
+  return !restore?.session;
+}
+
+/** Drain `buffer` to `fd` across partial writes; retry EAGAIN after a 5 ms park. Exported for tests. */
+export function writeAllSync(
+  fd: number,
+  buffer: Buffer,
+  opts: {
+    write?: SyncWriter;
+    wait?: () => void;
+  } = {},
+): void {
+  const write = opts.write ?? writeSync;
+  const wait = opts.wait ?? (() => Atomics.wait(STDOUT_BACKPRESSURE_WAIT, 0, 0, 5));
+  let offset = 0;
+  while (offset < buffer.length) {
+    let written: number;
+    try {
+      written = write(fd, buffer, offset, buffer.length - offset);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EAGAIN") {
+        wait();
+        continue;
+      }
+      throw err;
+    }
+    if (written <= 0) throw new Error("stdout write returned 0 bytes");
+    offset += written;
+  }
+}
+
+function writeEvent(ev: EmittableEvent, tabId?: string): void {
+  const payload = tabId ? { ...ev, tabId } : ev;
+  writeAllSync(1, Buffer.from(`${JSON.stringify(payload)}\n`, "utf8"));
+}
+
+export function redactDesktopDiagnosticMessage(raw: string, max = 2000): string {
+  return redactDiagnosticText(raw, max);
+}
+
+type SubagentProgressPayload = Omit<SubagentProgressEvent, "id" | "ts" | "turn" | "type">;
+
+/** Allowlisted projection for the desktop wire. Assistant text, reasoning deltas, and tool results are omitted. */
+export function projectSubagentEvent(ev: SubagentEvent): SubagentProgressPayload | null {
+  const base = {
+    runId: ev.runId,
+    ...(ev.parentCallId ? { parentCallId: ev.parentCallId } : {}),
+    task: redactDesktopDiagnosticMessage(ev.task, 120),
+    ...(ev.skillName ? { skillName: redactDesktopDiagnosticMessage(ev.skillName, 80) } : {}),
+    ...(ev.model ? { model: redactDesktopDiagnosticMessage(ev.model, 80) } : {}),
+    ...(ev.iter !== undefined ? { iter: ev.iter } : {}),
+    ...(ev.elapsedMs !== undefined ? { elapsedMs: ev.elapsedMs } : {}),
+    ...(ev.contextTokens !== undefined ? { contextTokens: ev.contextTokens } : {}),
+    ...(ev.contextMax !== undefined ? { contextMax: ev.contextMax } : {}),
+    ...(ev.thought ? { thought: redactDesktopDiagnosticMessage(ev.thought, 500) } : {}),
+    ...(ev.maxToolIters !== undefined ? { maxToolIters: ev.maxToolIters } : {}),
+    ...(ev.maxElapsedMs !== undefined ? { maxElapsedMs: ev.maxElapsedMs } : {}),
+    ...(ev.budgetExhausted ? { budgetExhausted: ev.budgetExhausted } : {}),
+  };
+  switch (ev.kind) {
+    case "start":
+      return { ...base, action: "start", phase: "exploring" };
+    case "progress":
+      return { ...base, action: "phase", phase: "exploring" };
+    case "phase":
+      return { ...base, action: "phase", ...(ev.phase ? { phase: ev.phase } : {}) };
+    case "stream-progress":
+      return {
+        ...base,
+        action: "stream",
+        outputChars: ev.outputChars ?? 0,
+        reasoningChars: ev.reasoningChars ?? 0,
+        toolReadChars: ev.toolReadChars ?? 0,
+      };
+    case "end":
+      return {
+        ...base,
+        action: "end",
+        ...(ev.error ? { error: redactDesktopDiagnosticMessage(ev.error, 500) } : {}),
+        ...(ev.turns !== undefined ? { turns: ev.turns } : {}),
+        ...(ev.costUsd !== undefined ? { costUsd: ev.costUsd } : {}),
+        ...(ev.billingKind !== undefined ? { billingKind: ev.billingKind } : {}),
+        ...(ev.quotaUsedPct !== undefined ? { quotaUsedPct: ev.quotaUsedPct } : {}),
+      };
+    case "inner": {
+      const inner = ev.inner;
+      if (!inner || (inner.role !== "tool_start" && inner.role !== "tool")) return null;
+      return {
+        ...base,
+        action: inner.role === "tool_start" ? "tool-start" : "tool-end",
+        ...(inner.callId ? { childCallId: inner.callId } : {}),
+        ...(inner.toolName
+          ? { toolName: redactDesktopDiagnosticMessage(inner.toolName, 100) }
+          : {}),
+        ...(inner.role === "tool_start" && inner.toolArgs
+          ? { toolArgs: sanitizeSubagentToolArgs(inner.toolArgs) }
+          : {}),
+        ...(inner.role === "tool"
+          ? { toolOk: !/^\s*(?:error\b|\{\s*"error")/i.test(inner.content) }
+          : {}),
+      };
+    }
+  }
+}
+
+function sanitizeSubagentToolArgs(raw: string): string {
+  const clipped = redactDesktopDiagnosticMessage(raw, 2000);
+  try {
+    return JSON.stringify(redactEventValue(JSON.parse(clipped)));
+  } catch {
+    return clipped;
+  }
+}
+
+function diagnosticErrorMessage(err: unknown): string {
+  return redactDesktopDiagnosticMessage(messageOf(err));
+}
+
+export function buildDesktopDiagnostic(
+  event: string,
+  details?: Record<string, unknown>,
+  opts: { tabId?: string; level?: DesktopDiagnosticEvent["level"]; message?: string } = {},
+): DesktopDiagnosticEvent {
+  return {
+    type: "$diagnostic",
+    ts: new Date().toISOString(),
+    source: "daemon",
+    level: opts.level ?? "debug",
+    event,
+    ...(opts.message ? { message: diagnosticErrorMessage(opts.message) } : {}),
+    ...(details ? { details: redactDiagnosticValue(details) as Record<string, unknown> } : {}),
+  };
+}
+
+function emitDiagnostic(
+  event: string,
+  details?: Record<string, unknown>,
+  opts: { tabId?: string; level?: DesktopDiagnosticEvent["level"]; message?: string } = {},
+): void {
+  const diagnostic = buildDesktopDiagnostic(event, details, opts);
+  recordDiagnostic(event, {
+    level: diagnostic.level,
+    message: diagnostic.message,
+    details: { ...diagnostic.details, tabId: opts.tabId },
+    source: "daemon",
+  });
+  writeEvent(diagnostic, opts.tabId);
+}
+
+function emitDiagnosticError(
+  event: string,
+  err: unknown,
+  opts: { tabId?: string; details?: Record<string, unknown> } = {},
+): void {
+  emitDiagnostic(event, opts.details, {
+    tabId: opts.tabId,
+    level: "error",
+    message: diagnosticErrorMessage(err),
+  });
+}
+
+function wireEventDetails(ev: EmittableEvent): Record<string, unknown> {
+  switch (ev.type) {
+    case "$error":
+      return { messageLength: ev.message.length };
+    case "error":
+      return { turn: ev.turn, recoverable: ev.recoverable, messageLength: ev.message.length };
+    case "warning":
+      return { turn: ev.turn, severity: ev.severity, textLength: ev.text.length };
+    case "model.turn.started":
+      return { turn: ev.turn, model: ev.model, reasoningEffort: ev.reasoningEffort };
+    case "model.delta":
+      return { turn: ev.turn, channel: ev.channel, chars: ev.text.length };
+    case "model.final":
+      return {
+        turn: ev.turn,
+        contentChars: ev.content.length,
+        reasoningChars: ev.reasoningContent?.length ?? 0,
+        toolCalls: ev.toolCalls.length,
+        usage: ev.usage,
+        costUsd: ev.costUsd,
+      };
+    case "tool.preparing":
+      return { turn: ev.turn, callId: ev.callId, name: ev.name };
+    case "tool.intent":
+      return { turn: ev.turn, callId: ev.callId, name: ev.name, argsChars: ev.args.length };
+    case "tool.result":
+      return { turn: ev.turn, callId: ev.callId, ok: ev.ok, outputChars: ev.output.length };
+    case "subagent.progress":
+      return {
+        turn: ev.turn,
+        runId: ev.runId,
+        action: ev.action,
+        toolName: ev.toolName ?? null,
+        iter: ev.iter ?? null,
+      };
+    case "$session_loaded":
+      return {
+        name: ev.name,
+        messages: ev.messages.length,
+        carryover: ev.carryover,
+        resync: ev.resync ?? false,
+      };
+    case "$sessions":
+      return { sessions: ev.items.length, epoch: ev.epoch, revision: ev.revision };
+    case "$ctx_breakdown":
+      return {
+        reservedTokens: ev.reservedTokens,
+        logTokens: ev.logTokens ?? null,
+        ctxMax: ev.ctxMax ?? null,
+      };
+    case "$codex_quota":
+      return {
+        hasQuota: ev.quota !== null,
+        reason: ev.reason ?? null,
+        weekly: ev.quota?.weekly ?? null,
+        fiveHour: ev.quota?.fiveHour ?? null,
+        turnUsedPct: ev.quota?.turnUsedPct ?? null,
+      };
+    case "$ollama_quota":
+      return {
+        hasQuota: ev.quota !== null,
+        reason: ev.reason ?? null,
+        session: ev.quota?.session ?? null,
+        weekly: ev.quota?.weekly ?? null,
+        turnUsedPct: ev.quota?.turnUsedPct ?? null,
+      };
+    case "$zai_quota":
+      return {
+        hasQuota: ev.quota !== null,
+        reason: ev.reason ?? null,
+        weekly: ev.quota?.weekly ?? null,
+        fiveHour: ev.quota?.fiveHour ?? null,
+        turnUsedPct: ev.quota?.turnUsedPct ?? null,
+      };
+    case "$balance":
+      return {
+        currency: ev.currency,
+        isAvailable: ev.isAvailable,
+        currencies: ev.balanceInfos.length,
+      };
+    case "$tab_opened":
+      return { workspaceDirChars: ev.workspaceDir.length, active: ev.active ?? false };
+    case "$tabs_snapshot":
+      return { tabs: ev.tabs.length };
+    case "$turn_complete":
+      return {};
+    default:
+      return {};
+  }
+}
+
+/** Adopt a freshly-proposed plan onto the tab: full steps, markdown body, and
+ *  summary, with progress reset. Persisted later on approval. */
+
+/** Structural subset of Tab that the plan-persistence helpers touch — lets the
+ *  helpers be unit-tested without constructing a full daemon tab. */
+export interface PlanTrackingTab {
+  currentSession: string;
+  planSteps: PlanStep[];
+  planBody: string | null;
+  planSummary: string | null;
+  completedStepIds: Set<string>;
+  planTotalSteps: number;
+  planStepCompletions: Map<string, StepCompletion>;
+  planPendingRevisionSteps: PlanStep[] | null;
+}
+
+export function adoptProposedPlan(
+  tab: PlanTrackingTab,
+  payload: { plan: string; steps?: PlanStep[]; summary?: string },
+): void {
+  tab.planSteps = payload.steps ?? [];
+  tab.planBody = payload.plan || null;
+  tab.planSummary = payload.summary ?? null;
+  tab.completedStepIds = new Set<string>();
+  tab.planStepCompletions = new Map<string, StepCompletion>();
+  tab.planTotalSteps = tab.planSteps.length;
+}
+
+/** Mark a plan step complete in the tab's tracking (id + result for restore). */
+export function recordPlanStepCompletion(
+  tab: PlanTrackingTab,
+  payload: { stepId: string; title?: string; result: string; notes?: string },
+): void {
+  tab.completedStepIds.add(payload.stepId);
+  const completion: StepCompletion = {
+    kind: "step_completed",
+    stepId: payload.stepId,
+    result: payload.result,
+  };
+  if (payload.title) completion.title = payload.title;
+  if (payload.notes) completion.notes = payload.notes;
+  tab.planStepCompletions.set(payload.stepId, completion);
+}
+
+/** Persist the tab's in-flight plan to plan.json. No-op without a session or a
+ *  structured plan — pure-markdown plans have no progress to restore. */
+export function persistPlanState(tab: PlanTrackingTab): void {
+  if (!tab.currentSession || tab.planSteps.length === 0) return;
+  const extras: {
+    body?: string;
+    summary?: string;
+    stepCompletions?: Map<string, StepCompletion>;
+  } = {};
+  if (tab.planBody) extras.body = tab.planBody;
+  if (tab.planSummary) extras.summary = tab.planSummary;
+  if (tab.planStepCompletions.size > 0) extras.stepCompletions = tab.planStepCompletions;
+  savePlanState(tab.currentSession, tab.planSteps, tab.completedStepIds, extras);
+}
+
+/** Reset the tab's in-memory plan tracking without touching plan.json — used on
+ *  abort/session-switch so the persisted plan can still be restored later. */
+export function resetPlanTracking(tab: PlanTrackingTab): void {
+  tab.completedStepIds.clear();
+  tab.planTotalSteps = 0;
+  tab.planSteps = [];
+  tab.planBody = null;
+  tab.planSummary = null;
+  tab.planStepCompletions.clear();
+}
+
+/** Forget the in-flight plan and delete its persisted plan.json (cancel/stop). */
+export function clearPlanForTab(tab: PlanTrackingTab): void {
+  if (tab.currentSession) clearPlanState(tab.currentSession);
+  resetPlanTracking(tab);
+}
+
+/** Archive a fully-completed plan to the plans/ folder and reset the tab. */
+export function archivePlanForTab(tab: PlanTrackingTab): void {
+  if (tab.currentSession) archivePlanState(tab.currentSession);
+  resetPlanTracking(tab);
+}
+
+/** Merge an accepted plan_revision into the tab's steps (kept-done prefix +
+ *  remaining tail) and persist — shared by the RPC and YOLO countdown paths. */
+export function applyPlanRevision(tab: PlanTrackingTab): void {
+  if (!tab.planPendingRevisionSteps) return;
+  const doneIds = new Set(tab.completedStepIds);
+  const keptDone = tab.planSteps.filter((step) => doneIds.has(step.id));
+  tab.planSteps = [...keptDone, ...tab.planPendingRevisionSteps];
+  tab.planTotalSteps = tab.planSteps.length;
+  tab.planPendingRevisionSteps = null;
+  persistPlanState(tab);
+}
+
+/** Persist hook for a YOLO countdown that auto-resolves a plan gate without a
+ *  plan_response/revision_response RPC. */
+function countdownPlanPersist(kind: string, tab: Tab | undefined): (() => void) | undefined {
+  if (!tab) return undefined;
+  if (kind === "plan_proposed") return () => persistPlanState(tab);
+  if (kind === "plan_revision") return () => applyPlanRevision(tab);
+  return undefined;
+}
+
+/** Restore a persisted plan into the tab's tracking on session load, returning
+ *  the hydrate event to emit. A finished leftover is archived instead of
+ *  resurrected (issue #1355); null when there is nothing to restore. */
+export function restorePlanForTab(
+  tab: PlanTrackingTab,
+  hasPriorMessages: boolean,
+): PlanRestoredEvent | null {
+  if (!tab.currentSession || !hasPriorMessages) return null;
+  const restored = loadPlanState(tab.currentSession);
+  if (!restored || restored.steps.length === 0) return null;
+  if (isPlanComplete(restored)) {
+    archivePlanState(tab.currentSession);
+    return null;
+  }
+  tab.planSteps = restored.steps;
+  tab.planBody = restored.body ?? null;
+  tab.planSummary = restored.summary ?? null;
+  tab.completedStepIds = new Set(restored.completedStepIds);
+  tab.planTotalSteps = restored.steps.length;
+  tab.planStepCompletions = new Map(Object.entries(restored.stepCompletions ?? {}));
+  const stepResults: Record<string, string> = {};
+  for (const [id, completion] of tab.planStepCompletions) stepResults[id] = completion.result;
+  return {
+    type: "$plan_restored",
+    plan: restored.body ?? "",
+    summary: restored.summary,
+    steps: restored.steps,
+    completedStepIds: restored.completedStepIds,
+    stepResults,
+    status: "active",
+  };
+}
+
+/** Restore hook for session load — mutates the tab and emits $plan_restored. */
+function emitRestoredPlan(tab: Tab, hasPriorMessages: boolean): void {
+  const event = restorePlanForTab(tab, hasPriorMessages);
+  if (event) emit(event, tab.id);
+}
+
+function emit(ev: EmittableEvent, tabId?: string): void {
+  writeEvent(ev, tabId);
+  // Model deltas are streamed at token/chunk frequency. They are already
+  // observable in the WebView transcript; duplicating every chunk as a
+  // diagnostic doubles synchronous stdout writes and can starve the loop.
+  if (ev.type === "$diagnostic" || ev.type === "model.delta" || ev.type === "tool.output") return;
+  emitDiagnostic(
+    "wire.emit",
+    { eventType: ev.type, ...wireEventDetails(ev) },
+    {
+      tabId,
+      level: ev.type === "$error" || ev.type === "error" ? "error" : "debug",
+      ...(ev.type === "$error" || ev.type === "error" ? { message: ev.message } : {}),
+    },
+  );
+}
+
+/** Emit a kernel event to a tab; session.compacted's replacement payload is
+ *  converted from the kernel ChatMessage shape into the LoadedMessage wire
+ *  shape so the App reducer can swap in the post-fold conversation. */
+export function sessionCarryover(meta: SessionMeta): SessionLoadedEvent["carryover"] {
+  return {
+    totalCostUsd: meta.totalCostUsd ?? 0,
+    costByProvider: meta.costByProvider,
+    cacheHitTokens: meta.cacheHitTokens ?? 0,
+    cacheMissTokens: meta.cacheMissTokens ?? 0,
+    totalCompletionTokens: meta.totalCompletionTokens ?? 0,
+  };
+}
+
+export function emptySessionCarryover(): SessionLoadedEvent["carryover"] {
+  return {
+    totalCostUsd: 0,
+    costByProvider: {},
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+    totalCompletionTokens: 0,
+  };
+}
+
+export function projectKernelEvent(kev: KernelEvent): KernelWireBridgeEvent | null {
+  switch (kev.type) {
+    case "session.compacted":
+      return {
+        type: EventType.sessionCompacted,
+        id: kev.id,
+        ts: kev.ts,
+        turn: kev.turn,
+        beforeMessages: kev.beforeMessages,
+        afterMessages: kev.afterMessages,
+        reason: kev.reason,
+        replacementMessages: buildLoadedMessages([...kev.replacementMessages]),
+      };
+    case "session.retracted":
+      return {
+        type: EventType.sessionRetracted,
+        id: kev.id,
+        ts: kev.ts,
+        turn: kev.turn,
+        kind: kev.kind,
+        beforeMessages: kev.beforeMessages,
+        afterMessages: kev.afterMessages,
+        replacementMessages: buildLoadedMessages([...kev.replacementMessages]),
+      };
+    case "user.message":
+    case "model.turn.started":
+    case "model.delta":
+    case "model.final":
+    case "tool.preparing":
+    case "tool.intent":
+    case "tool.result":
+    case "tool.output":
+    case "subagent.progress":
+    case "status":
+    case "compaction.started":
+    case "compaction.finished":
+    case "warning":
+    case "error":
+      return kev;
+    case "slash.invoked":
+    case "tool.dispatched":
+    case "tool.denied":
+    case "tool.call":
+    case "tool.confirm.allow":
+    case "tool.confirm.deny":
+    case "tool.confirm.always_allow":
+    case "effect.file.touched":
+    case "effect.memory.written":
+    case "plan.submitted":
+    case "plan.step.completed":
+    case "hook.fired":
+    case "session.opened":
+    case "capability.registered":
+    case "capability.removed":
+      return null;
+    default: {
+      const unhandled: never = kev;
+      return unhandled;
+    }
+  }
+}
+
+function emitKernelEvent(kev: KernelEvent, tabId?: string): void {
+  const wire = projectKernelEvent(kev);
+  if (wire) emit(wire, tabId);
+}
+
+function tailLines(s: string, n: number): string {
+  if (!s) return "";
+  const lines = s.split(/\r?\n/);
+  return lines.slice(-n).join("\n");
+}
+
+const LOADED_RECENT_MESSAGE_WINDOW = 200;
+const LOADED_MIN_ELIDE_CHARS = 4096;
+const LOADED_ELIDED_PREFIX = "[elided — older than the last ";
+
+function elideLoadedField(value: string): string {
+  if (value.length <= LOADED_MIN_ELIDE_CHARS) return value;
+  if (value.startsWith(LOADED_ELIDED_PREFIX)) return value;
+  return `${LOADED_ELIDED_PREFIX}${LOADED_RECENT_MESSAGE_WINDOW} messages; ${value.length.toLocaleString()} chars dropped to save memory. Full content is on disk in the session log.]`;
+}
+
+function elideLoadedMessages(messages: LoadedMessage[]): LoadedMessage[] {
+  if (messages.length < LOADED_RECENT_MESSAGE_WINDOW) return messages;
+  const cutoff = messages.length - LOADED_RECENT_MESSAGE_WINDOW;
+  return messages.map((msg, i) => {
+    if (i >= cutoff || msg.kind !== "assistant") return msg;
+    return {
+      ...msg,
+      segments: msg.segments.map((segment) => {
+        switch (segment.kind) {
+          case "reasoning":
+          case "text":
+            return { ...segment, text: elideLoadedField(segment.text) };
+          case "tool":
+            return {
+              ...segment,
+              args: elideLoadedField(segment.args),
+              ...(segment.result !== undefined ? { result: elideLoadedField(segment.result) } : {}),
+            };
+          default:
+            return segment;
+        }
+      }),
+    };
+  });
+}
+
+/** Clipboard data URLs pass through; dropped files are read, sniffed and re-encoded. */
+async function resolveUserImages(
+  attachments: ReadonlyArray<UserImageAttachment>,
+): Promise<TurnImage[]> {
+  const out: TurnImage[] = [];
+  for (const att of attachments) {
+    if (att.source === "clipboard") {
+      if (!att.dataUrl.startsWith("data:image/")) {
+        throw new Error("clipboard payload is not a data:image URL");
+      }
+      // Normalize the same as dropped files: sniff the real bytes so an
+      // animated WebP paste (or a mismatched MIME) is caught here with a clear
+      // error instead of reaching the vision API and 400ing.
+      const comma = att.dataUrl.indexOf(",");
+      const b64 = comma >= 0 ? att.dataUrl.slice(comma + 1) : "";
+      const normalized = await normalizeImageToDataUrls(Buffer.from(b64, "base64"));
+      if (!normalized.ok) throw new Error(normalized.message);
+      for (const url of normalized.dataUrls) out.push({ url });
+      continue;
+    }
+    const stat = statSync(att.path);
+    if (stat.size > MAX_IMAGE_BYTES) {
+      throw new Error(
+        `image too large (${(stat.size / 1024 / 1024).toFixed(1)} MB > ${MAX_IMAGE_BYTES / 1024 / 1024} MB)`,
+      );
+    }
+    const normalized = await normalizeImageToDataUrls(await readFile(att.path));
+    if (!normalized.ok) {
+      throw new Error(normalized.message);
+    }
+    // Keep the source path so the agent can open/modify the actual file, not
+    // just see the pixels. A tiled image carries the path on its first tile
+    // only, so the user message lists it once.
+    normalized.dataUrls.forEach((url, i) => {
+      out.push(i === 0 ? { url, path: att.path } : { url });
+    });
+  }
+  return out;
+}
+
+/** OpenAI-only: `@path` mentions that resolve to an existing supported image
+ *  become vision attachments (the token is stripped from the text). Non-image
+ *  or missing mentions stay in the text for the model to reach via tools. */
+export async function extractImageMentions(
+  text: string,
+  rootDir: string,
+): Promise<{ text: string; attachments: UserImageAttachment[] }> {
+  const mentions = scanImageMentions(text, (p) => (isAbsolute(p) ? p : join(rootDir, p)));
+  // Existence is a daemon-only check — the webview has no fs access. Mentions
+  // whose files are missing keep their token so the model can investigate.
+  const existing = mentions.filter((m) => existsSync(m.path) && statSync(m.path).isFile());
+  return {
+    text: stripMentionTokens(text, existing),
+    attachments: existing.map((m) => ({ source: "file" as const, path: m.path })),
+  };
+}
+
+/** User records carry plain text for text-only turns and OpenAI content parts
+ *  when images are attached — extract the text and image data URLs for the
+ *  LoadedMessage wire shape. */
+function userLoadedMessage(content: ChatMessage["content"]): {
+  kind: "user";
+  text: string;
+  images?: string[];
+} {
+  if (typeof content === "string" || content === undefined || content === null) {
+    return { kind: "user", text: content ?? "" };
+  }
+  const textParts: string[] = [];
+  const images: string[] = [];
+  for (const part of content) {
+    if (part.type === "text" && part.text.length > 0) {
+      textParts.push(part.text);
+    } else if (part.type === "image_url") {
+      images.push(part.image_url.url);
+    }
+  }
+  return { kind: "user", text: textParts.join("\n"), images: images.length ? images : undefined };
+}
+
+export function buildLoadedMessages(records: ChatMessage[]): LoadedMessage[] {
+  const out: LoadedMessage[] = [];
+  // ONE turn scheme stack-wide: turn N = the Nth real (non-synthetic) user record.
+  // Assistant records inherit the turn they answer — a tool loop produces several
+  // assistant records for ONE turn, all numbered alike (the live renderer keeps one
+  // card per turn). Synthetic user records (mid-turn steer, premature-stop nudge)
+  // never start a turn and never render as user bubbles. The kernel's turn counter
+  // (resumeTurnBaseline) counts the same real user records, so error/notice anchors
+  // and these numbers stay aligned across restarts.
+  let turn = 0;
+  let assistantRecord = 0;
+  let pendingAssistantIdx = -1;
+  for (const rec of records) {
+    if (rec.role === "system") continue;
+    if (rec.role === "user") {
+      if (rec.synthetic === true) continue;
+      turn += 1;
+      pendingAssistantIdx = -1;
+      out.push(userLoadedMessage(rec.content));
+      continue;
+    }
+    if (rec.role === "assistant") {
+      assistantRecord += 1;
+      const segments: LoadedSegment[] = [];
+      if (rec.reasoning_content) segments.push({ kind: "reasoning", text: rec.reasoning_content });
+      if (typeof rec.content === "string" && rec.content) {
+        segments.push({ kind: "text", text: rec.content });
+      } else if (Array.isArray(rec.content)) {
+        for (const part of rec.content) {
+          if (part.type === "text" && part.text) segments.push({ kind: "text", text: part.text });
+          else if (part.type === "image") {
+            segments.push({ kind: "image", dataUrl: part.data_url, mimeType: part.mime_type });
+          }
+        }
+      }
+      if (rec.tool_calls) {
+        for (let i = 0; i < rec.tool_calls.length; i++) {
+          const tc = rec.tool_calls[i];
+          if (!tc) continue;
+          segments.push({
+            kind: "tool",
+            callId: tc.id ?? `tc-r-${assistantRecord}-${i}`,
+            name: tc.function?.name ?? "",
+            args: tc.function?.arguments ?? "",
+          });
+        }
+      }
+      out.push({ kind: "assistant", turn, segments, pending: false });
+      pendingAssistantIdx = out.length - 1;
+      continue;
+    }
+    if (rec.role === "tool") {
+      if (pendingAssistantIdx < 0) continue;
+      const host = out[pendingAssistantIdx];
+      if (host?.kind !== "assistant") continue;
+      const callId = rec.tool_call_id;
+      if (!callId) continue;
+      const seg = host.segments.find((s) => s.kind === "tool" && s.callId === callId);
+      if (seg && seg.kind === "tool") {
+        seg.result = typeof rec.content === "string" ? rec.content : "";
+        seg.ok = !/error|failed/i.test(seg.result.slice(0, 200));
+      }
+    }
+  }
+  // Loaded history is a closed snapshot, not a live turn. If the process or
+  // session ended after persisting an assistant tool call but before its tool
+  // result, leaving `result` undefined would make the desktop render that old
+  // call as running forever after restart. Settle only those unmatched calls;
+  // completed calls already carry their persisted result from the loop above.
+  for (const message of out) {
+    if (message.kind !== "assistant") continue;
+    for (const segment of message.segments) {
+      if (segment.kind !== "tool" || segment.result !== undefined) continue;
+      segment.result = "Tool call interrupted before a result was recorded.";
+      segment.ok = false;
+    }
+  }
+  return elideLoadedMessages(out);
+}
+
+function maskApiKey(key: string | undefined): string | undefined {
+  if (!key) return undefined;
+  if (key.length <= 7) return `${key.slice(0, 2)}…`;
+  return `${key.slice(0, 6)}…${key.slice(-3)}`;
+}
+
+function collectWebSearchApiKeyPrefixes(): {
+  metaso?: string;
+  tavily?: string;
+  perplexity?: string;
+  exa?: string;
+  ollama?: string;
+  brave?: string;
+  zai?: string;
+  opencode?: string;
+  typesafe?: string;
+} {
+  return {
+    metaso: maskApiKey(loadMetasoApiKey()),
+    tavily: maskApiKey(loadTavilyApiKey()),
+    perplexity: maskApiKey(loadPerplexityApiKey()),
+    exa: maskApiKey(loadExaApiKey()),
+    ollama: maskApiKey(loadOllamaApiKey()),
+    brave: maskApiKey(loadBraveApiKey()),
+    zai: maskApiKey(loadZaiApiKey()),
+    opencode: maskApiKey(loadOpencodeApiKey()),
+    typesafe: maskApiKey(loadTypesafeApiKey()),
+  };
+}
+
+let oauthGen = 0;
+let pendingOAuth: OAuthFlow | null = null;
+/** Last OAuth flow failure message — surfaced in the status bar's OpenAI auth
+ *  chip until the next successful sign-in clears it. */
+let lastOAuthError: string | null = null;
+
+let antigravityOAuthGen = 0;
+let pendingAntigravityOAuth: OAuthFlow | null = null;
+/** Last Antigravity OAuth flow failure — surfaced in the status bar's Gemini
+ *  auth chip until the next successful sign-in clears it. */
+let lastAntigravityOAuthError: string | null = null;
+
+async function refreshAntigravityModels(tab: Tab): Promise<void> {
+  try {
+    const auth = await resolveGeminiAuth();
+    if (!auth) throw new Error("Sign in to Google Antigravity before refreshing models");
+    const creds = readConfig().antigravityOAuth;
+    if (!creds) throw new Error("Antigravity credentials disappeared during model refresh");
+    const models = (await fetchAntigravityModels(auth.accessToken, auth.projectId)).map(
+      ({ id }) => id,
+    );
+    saveAntigravityOAuth({ ...creds, projectId: auth.projectId, models });
+    lastAntigravityOAuthError = null;
+    emitSettings(tab);
+  } catch (err) {
+    const message = `Antigravity model refresh failed: ${(err as Error).message}`;
+    lastAntigravityOAuthError = message;
+    emit({ type: "$error", message }, tab.id);
+    emitSettings(tab);
+  }
+}
+
+/** Endpoint + auth state for a model id — drives the status bar's API chip.
+ *  The provider comes from the resolver (config > discovery > catalogs), never
+ *  from the id's name shape. Exported for tests. */
+export function modelEndpointFor(model: string, path?: string): ModelEndpointInfo {
+  const provider = providerForModel(model, path);
+  const billing = billingContextForModel(model, path);
+  if (provider === "ollama") {
+    const oep = loadOllamaEndpoint(path);
+    const baseUrl = oep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL;
+    return {
+      provider: "ollama",
+      baseUrl,
+      billingKind: billing.kind,
+      deployment: isOllamaCloudEndpoint(baseUrl) ? "cloud" : oep.apiKey ? "custom" : "local",
+    };
+  }
+  if (provider === "gemini") {
+    const oep = loadEndpointForModel(model, path);
+    const oauth = readConfig(path).antigravityOAuth;
+    return {
+      provider: "gemini",
+      baseUrl: oep.baseUrl ?? DEFAULT_GEMINI_CHAT_URL,
+      antigravityAuth: oauth?.accessToken ? "oauth" : "none",
+      antigravityAccount: oauth?.account,
+    };
+  }
+  if (provider === "zai") {
+    const ep = loadEndpointForModel(model, path);
+    return {
+      provider: "zai",
+      baseUrl: ep.baseUrl ?? DEFAULT_ZAI_CHAT_URL,
+    };
+  }
+  if (provider === "opencode") {
+    const ep = loadEndpointForModel(model, path);
+    return {
+      provider: "opencode",
+      baseUrl: ep.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL,
+    };
+  }
+  if (provider !== "openai") {
+    return {
+      provider: "deepseek",
+      // Mirrors the client's default (src/client.ts) when nothing is configured.
+      baseUrl: loadEndpoint(path).baseUrl ?? "https://api.deepseek.com",
+    };
+  }
+  const oep = loadEndpointForModel(model, path);
+  const oauth = readConfig(path).openaiOAuth;
+  return {
+    provider: "openai",
+    baseUrl: oep.baseUrl ?? "https://api.openai.com/v1",
+    billingKind: billing.kind,
+    openaiAuth: oauth?.accessToken ? "oauth" : oep.apiKey ? "apiKey" : "none",
+    oauthAccount: oauth?.account,
+  };
+}
+
+function emitSettings(tab: Tab): void {
+  const config = readConfig();
+  const oauth = config.openaiOAuth;
+  const antigravityOAuth = config.antigravityOAuth;
+  const ep = loadEndpoint();
+  const editMode = loadEditMode();
+  if (tab.toolset) applyPlanMode(tab.toolset.tools, editMode);
+  const recent = loadRecentWorkspaces().filter(
+    (p) => !sameWorkspaceDir(p, tab.rootDir) && !sameWorkspaceDir(p, reasonixInstallDir()),
+  );
+  emit(
+    {
+      type: "$settings",
+      reasoningEffort: tab.currentReasoningEffort,
+      editMode,
+      quickSendId: loadQuickSendId(),
+      quickSends: loadCustomQuickSends(),
+      contextTokens: tab.ctxMaxOverride ?? null,
+      maxIterPerTurn: tab.runtime?.loop.maxIterPerTurn ?? loadMaxIterPerTurn(),
+      maxIterPerTurnOverride:
+        typeof config.maxIterPerTurn === "number" ? config.maxIterPerTurn : null,
+      disableAutoCompaction: tab.runtime?.loop.disableAutoCompaction ?? loadDisableAutoCompaction(),
+      enableSubagents: loadEnableSubagents(),
+      elevationEnabled: loadElevationEnabled(),
+      repetitionGuardEnabled:
+        tab.runtime?.loop.repetitionGuardEnabled ?? loadRepetitionGuardEnabled(),
+      questionTimerEnabled: loadQuestionTimerEnabled(),
+      duplicateSessionTokens: loadDuplicateSessionTokens(),
+      duplicateSessionAutoProceed: loadDuplicateSessionAutoProceed(),
+      enabledModels: loadEnabledModels(),
+      baseUrl: ep.baseUrl,
+      apiKeyPrefix: ep.apiKey ? `${ep.apiKey.slice(0, 6)}…${ep.apiKey.slice(-3)}` : undefined,
+      workspaceDir: tab.rootDir,
+      recentWorkspaces: recent,
+      reasonixLocalDir: reasonixDefaultWorkspaceDir(),
+      model: tab.currentModel,
+      customModels: Object.keys(config.models ?? {})
+        .filter((id) => providerForModel(id) !== "gemini" && !SUPPORTED_MODELS.includes(id))
+        .sort(),
+      ollamaBaseUrl: config.ollamaBaseUrl,
+      opencodeBaseUrl: config.opencodeBaseUrl,
+      webSearchEngine: readWebSearchEngine(),
+      webSearchEndpoint: readConfig().webSearchEndpoint,
+      webSearchApiKeys: collectWebSearchApiKeyPrefixes(),
+      subagentModel: tab.currentSubagentModel,
+      mailProvider: config.mailProvider ?? MailProvider.Outlook,
+      ollamaGeneration: loadOllamaGenerationSettings(),
+      ollamaGenerationOverrides: loadOllamaGenerationOverrides(),
+      ollamaModelDefaults:
+        modelEndpointFor(tab.currentModel).provider === "ollama" ||
+        modelEndpointFor(tab.currentSubagentModel ?? tab.currentModel).provider === "ollama"
+          ? resolveOllamaModelDefaults(tab.currentModel)
+          : undefined,
+      statusBar: config.statusBar,
+      modelEndpoint: modelEndpointFor(tab.currentModel),
+      subagentModelEndpoint: modelEndpointFor(tab.currentSubagentModel ?? tab.currentModel),
+      openaiOAuth: {
+        signedIn: !!oauth?.accessToken,
+        account: oauth?.account,
+        flowError: lastOAuthError ?? undefined,
+      },
+      antigravityOAuth: {
+        signedIn:
+          !!antigravityOAuth?.accessToken &&
+          antigravityOAuth.clientId === ANTIGRAVITY_OAUTH_CLIENT_ID,
+        account: antigravityOAuth?.account,
+        models:
+          antigravityOAuth?.models ||
+          antigravityOAuth?.accessToken ||
+          Object.keys(config.models ?? {}).some((id) => config.models?.[id]?.provider === "gemini")
+            ? Array.from(
+                new Set([
+                  ...(antigravityOAuth?.models?.filter(isUsableAntigravityModel) ?? []),
+                  ...ANTIGRAVITY_MODELS,
+                  ...Object.keys(config.models ?? {}).filter(
+                    (id) =>
+                      config.models?.[id]?.provider === "gemini" && isUsableAntigravityModel(id),
+                  ),
+                ]),
+              )
+            : undefined,
+        flowError:
+          lastAntigravityOAuthError ??
+          (antigravityOAuth?.accessToken &&
+          antigravityOAuth.clientId !== ANTIGRAVITY_OAUTH_CLIENT_ID
+            ? "Google authentication changed. Sign in again to enable Gemini free-tier quota."
+            : undefined),
+      },
+      shellAllowed: loadAllShellAllowed(tab.rootDir),
+      pathAllowed: loadAllPathAllowed(tab.rootDir),
+      version: VERSION,
+    },
+    tab.id,
+  );
+  emitTabDiagnostic(tab, "settings.emitted", {
+    model: tab.currentModel,
+    provider: providerForModel(tab.currentModel),
+    modelEndpoint: modelEndpointFor(tab.currentModel),
+    editMode,
+    oauthSignedIn: !!oauth?.accessToken,
+  });
+}
+
+/** Account plan for a cloud Ollama endpoint — `POST {origin}/api/me` with the
+ *  same Bearer key. Undefined on any failure (proxy, local daemon, down):
+ *  an unknown plan means "no filtering", never a hidden model list. */
+export async function fetchOllamaPlan(
+  baseUrl: string,
+  apiKey: string,
+  timeoutMs = 10_000,
+): Promise<string | undefined> {
+  try {
+    const resp = await fetch(`${new URL(baseUrl).origin}/api/me`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: "{}",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!resp.ok) return undefined;
+    const data = (await resp.json()) as { Plan?: unknown };
+    return typeof data.Plan === "string" && data.Plan.length > 0 ? data.Plan : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export type OllamaProbeResult = "ok" | "gated" | "error";
+
+/** Whether an upstream chat response marks the model as subscription-gated.
+ *  Ollama's 403 variants: "requires a subscription" and "requires both a
+ *  Pro, Max, or Team plan ..." — both share the "upgrade for access" tail. */
+export function isSubscriptionGatedResponse(status: number, bodyText: string): boolean {
+  return (
+    status === 403 &&
+    (bodyText.includes("requires a subscription") || bodyText.includes("upgrade for access"))
+  );
+}
+
+/** Minimal chat probe — 1-token completion; 403 = gated, 429 gets one retry.
+ *  Timeout is long: cold big models are slow to first token, and a timeout
+ *  leaves the model unmapped (re-probed on every refresh). */
+export async function probeOllamaModel(
+  baseUrl: string,
+  model: string,
+  apiKey: string,
+  timeoutMs = 30_000,
+): Promise<OllamaProbeResult> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let resp: Response;
+    try {
+      resp = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch {
+      return "error";
+    }
+    if (resp.ok) return "ok";
+    if (resp.status === 429 && attempt === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      continue;
+    }
+    const body = await resp.text().catch(() => "");
+    return isSubscriptionGatedResponse(resp.status, body) ? "gated" : "error";
+  }
+  return "error";
+}
+
+/** Vision capability from a native `/api/show` payload: a non-empty
+ *  `capabilities` array is authoritative ("vision" present), else a vision
+ *  projector/metadata marker, else undefined so the caller probes the image. */
+export function showPayloadVisionCapability(data: unknown): boolean | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const rec = data as Record<string, unknown>;
+  const capabilities = rec.capabilities;
+  if (Array.isArray(capabilities) && capabilities.length > 0) {
+    return capabilities.some((c) => c === "vision");
+  }
+  const projector = rec.projector_info;
+  if (typeof projector === "object" && projector !== null && Object.keys(projector).length > 0) {
+    return true;
+  }
+  const modelInfo = rec.model_info;
+  if (typeof modelInfo === "object" && modelInfo !== null) {
+    for (const key of Object.keys(modelInfo as Record<string, unknown>)) {
+      if (/(^|\.)vision\./.test(key)) return true;
+    }
+  }
+  return undefined;
+}
+
+/** Boolean form of {@link showPayloadVisionCapability}: true only on a positive
+ *  marker. An inconclusive payload reports false here; callers needing the
+ *  probe fallback use the tri-state function. */
+export function showPayloadIsVision(data: unknown): boolean {
+  return showPayloadVisionCapability(data) === true;
+}
+
+/** A 1×1 transparent PNG data URL — the smallest payload that exercises a
+ *  model's vision tower through the OpenAI-compat `/v1/chat/completions`. */
+const TINY_PNG_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+/** Probe whether `model` accepts image parts by POSTing one user message
+ *  with a tiny data-URL image to the OpenAI-compat chat endpoint: 2xx ⇒
+ *  vision-capable, 400 ⇒ text-only, else indeterminate (`undefined`). */
+export async function probeOllamaVision(
+  baseUrl: string,
+  model: string,
+  apiKey: string,
+  timeoutMs = 30_000,
+): Promise<boolean | undefined> {
+  try {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "hi" },
+              { type: "image_url", image_url: { url: TINY_PNG_DATA_URL } },
+            ],
+          },
+        ],
+        max_tokens: 1,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (resp.ok) return true;
+    if (resp.status === 400) return false;
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `/api/show` fetch for vision + context window. Prefers the native payload's
+ *  vision markers, else falls back to the image probe (inconclusive payload,
+ *  or `/api/show` 404/405 on a cloud gateway). */
+export async function fetchOllamaShowInfo(
+  baseUrl: string,
+  model: string,
+  apiKey: string,
+  timeoutMs = 15_000,
+): Promise<
+  | {
+      vision?: boolean;
+      contextTokens?: number;
+      parameters?: Partial<Record<string, number>>;
+    }
+  | undefined
+> {
+  const origin = deriveNativeOllamaOrigin(baseUrl);
+  try {
+    const show = await fetch(`${origin}/api/show?model=${encodeURIComponent(model)}`, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (show.ok) {
+      const data = (await show.json().catch(() => undefined)) as unknown;
+      const contextTokens = showPayloadContextLength(data);
+      const parameters = showPayloadParameters(data);
+      const vision = showPayloadVisionCapability(data);
+      if (vision !== undefined) {
+        return {
+          vision,
+          ...(contextTokens !== undefined ? { contextTokens } : {}),
+          ...(parameters !== undefined ? { parameters } : {}),
+        };
+      }
+      // Inconclusive native payload (cloud gateways omit the vision markers):
+      // keep the window/params, but resolve vision with the image probe.
+      const probed = await probeOllamaVision(baseUrl, model, apiKey, timeoutMs);
+      return {
+        ...(probed !== undefined ? { vision: probed } : {}),
+        ...(contextTokens !== undefined ? { contextTokens } : {}),
+        ...(parameters !== undefined ? { parameters } : {}),
+      };
+    }
+    // 404 / 405 on /api/show — cloud gateway likely; fall through to the probe.
+    if (show.status !== 404 && show.status !== 405) return undefined;
+  } catch {
+    return undefined;
+  }
+  const vision = await probeOllamaVision(baseUrl, model, apiKey, timeoutMs);
+  return vision === undefined ? undefined : { vision };
+}
+
+export async function detectOllamaVision(
+  baseUrl: string,
+  model: string,
+  apiKey: string,
+  timeoutMs = 15_000,
+): Promise<boolean | undefined> {
+  return (await fetchOllamaShowInfo(baseUrl, model, apiKey, timeoutMs))?.vision;
+}
+
+/** Batch size that stays under the cloud's parallel-burst rate limit (19
+ *  concurrent probes 429'd ~half of them; 6 with a 429 retry stays clean). */
+const OLLAMA_PROBE_BATCH = 6;
+
+/** App-global snapshot of the fetched Ollama catalog — endpoint + key are
+ *  global config, so the catalog is fetched once and shared across every tab
+ *  (previously each tab fetched and cached its own copy). */
+export interface OllamaCatalogSnapshot {
+  models: string[];
+  /** Subset of `models` confirmed vision-capable (raw ids, e.g. `llava`). */
+  visionModels?: string[];
+  plan?: string;
+  hiddenCount?: number;
+  error?: string;
+  fetchedAt: number;
+}
+
+/** Reuse the cached catalog for this long on non-force refreshes — rapid
+ *  model-menu opens / tab effects hit the cache instead of the network. */
+const OLLAMA_CATALOG_TTL_MS = 60_000;
+
+let ollamaCatalogCache: OllamaCatalogSnapshot | null = null;
+let ollamaCatalogInflight: Promise<OllamaCatalogSnapshot> | null = null;
+
+/** Prefixed vision set (`ollama/<id>`) built from the last fetched catalog.
+ *  Empty set when the catalog is unavailable — image capability then falls
+ *  back to the static allowlist (no Ollama model is treated as vision). */
+export function ollamaVisionModelIds(): ReadonlySet<string> {
+  const snap = ollamaCatalogCache;
+  if (!snap?.visionModels) return new Set();
+  return new Set(snap.visionModels.map((id) => `ollama/${id}`));
+}
+
+/** Test-only: reset the module-level catalog cache between tests. */
+export function resetOllamaCatalogCacheForTest(): void {
+  ollamaCatalogCache = null;
+  ollamaCatalogInflight = null;
+}
+
+/** Broadcast the current catalog to every tab — emitted without a tabId so the
+ *  frontend routes it into app-global state (all tabs share one list). */
+function emitOllamaCatalog(snap: OllamaCatalogSnapshot): void {
+  emit({
+    type: "$ollama_models",
+    models: snap.models,
+    ...(snap.visionModels !== undefined ? { visionModels: snap.visionModels } : {}),
+    ...(snap.error !== undefined ? { error: snap.error } : {}),
+    ...(snap.plan !== undefined ? { plan: snap.plan } : {}),
+    ...(snap.hiddenCount !== undefined ? { hiddenCount: snap.hiddenCount } : {}),
+  });
+}
+
+function emitOpencodeCatalog(snap: {
+  models: string[];
+  visionModels?: string[];
+  error?: string;
+}): void {
+  emit({
+    type: "$opencode_models",
+    models: snap.models,
+    ...(snap.visionModels !== undefined ? { visionModels: snap.visionModels } : {}),
+    ...(snap.error !== undefined ? { error: snap.error } : {}),
+  });
+}
+
+export async function refreshOpencodeModels(force = false, tab?: Tab): Promise<void> {
+  try {
+    const snap = await fetchOpencodeModels({ force });
+    emitOpencodeCatalog(snap);
+    if (tab && snap.error) {
+      emit({ type: "$error", message: `OpenCode model sync warning: ${snap.error}` }, tab.id);
+    }
+  } catch (err) {
+    const message = `OpenCode model sync failed: ${(err as Error).message}`;
+    emitOpencodeCatalog({ models: [...OPENCODE_MODELS], error: message });
+    if (tab) emit({ type: "$error", message }, tab.id);
+  }
+}
+
+function ollamaScopeKey(ep: { apiKey?: string }, base: string): string {
+  return ep.apiKey ? scopeKeyFor(base, ep.apiKey) : base;
+}
+
+function ollamaFallbackSnapshot(endpointKey: string, error: string): OllamaCatalogSnapshot | null {
+  const diskCache = loadOllamaModelsCache(endpointKey);
+  const fallback = diskCache ?? (ollamaCatalogCache?.models.length ? ollamaCatalogCache : null);
+  if (!fallback || fallback.models.length === 0) return null;
+  return {
+    models: fallback.models,
+    visionModels: fallback.visionModels,
+    plan: fallback.plan,
+    hiddenCount: fallback.hiddenCount,
+    error,
+    fetchedAt: fallback.fetchedAt,
+  };
+}
+
+/** Fetch the Ollama catalog — `GET {base}/models` on the resolved endpoint;
+ *  cloud keys' plan (POST /api/me) gates probing; errors ship as `error`.
+ *  The optional `tab` only feeds diagnostics — the result is tab-independent. */
+async function fetchOllamaCatalog(tab?: Tab): Promise<OllamaCatalogSnapshot> {
+  const ep = loadOllamaEndpoint();
+  const base = ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL;
+  const endpointKey = ollamaScopeKey(ep, base);
+  const diag = (
+    event: string,
+    details?: Record<string, unknown>,
+    level: DesktopDiagnosticEvent["level"] = "debug",
+  ): void => {
+    emitDiagnostic(
+      event,
+      { ...(tab ? tabDiagnosticState(tab) : {}), ...details },
+      { tabId: tab?.id, level },
+    );
+  };
+  try {
+    const resp = await fetch(`${base}/models`, {
+      method: "GET",
+      headers: ep.apiKey ? { Authorization: `Bearer ${ep.apiKey}` } : {},
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      const status = resp.status;
+      diag("ollama.models_fetch.failed", { status });
+      const error =
+        status === 401 || status === 403
+          ? "Ollama API key rejected"
+          : `Ollama endpoint returned HTTP ${status}`;
+      process.stderr.write(
+        `reasonix: Ollama endpoint returned HTTP ${status}, checking cached models\n`,
+      );
+      if (status !== 401 && status !== 403) {
+        const fallback = ollamaFallbackSnapshot(endpointKey, error);
+        if (fallback) return fallback;
+      }
+      return {
+        models: [],
+        error,
+        fetchedAt: Date.now(),
+      };
+    }
+    const data = (await resp.json()) as { data?: Array<{ id?: unknown }> };
+    const models = (data?.data ?? [])
+      .map((m) => (typeof m.id === "string" && m.id.length > 0 ? m.id : undefined))
+      .filter((id): id is string => id !== undefined)
+      .sort();
+    diag("ollama.models_fetch.ok", { count: models.length });
+
+    const gated = new Set<string>();
+    const apiKey = ep.apiKey;
+    // Plan is re-checked every refresh (one cheap request) so the verdict
+    // scope matches the current plan; learned verdicts persist in
+    // `~/.reasonix/ollama-model-map.json`, keyed by plan + endpoint + key hash.
+    const plan = apiKey ? await fetchOllamaPlan(base, apiKey) : undefined;
+    if (plan && apiKey) {
+      const path = ollamaVerdictsPath();
+      const store = loadOllamaVerdicts(path);
+      const scope = scopeKeyFor(base, apiKey);
+      const { known, unknown } = partitionByVerdicts(models, store, plan, scope, Date.now());
+      for (const [model, verdict] of known) {
+        if (verdict.result === "gated") gated.add(model);
+      }
+      if (unknown.length > 0) {
+        for (let i = 0; i < unknown.length; i += OLLAMA_PROBE_BATCH) {
+          const batch = unknown.slice(i, i + OLLAMA_PROBE_BATCH);
+          const results = await Promise.allSettled(
+            batch.map((m) => probeOllamaModel(base, m, apiKey)),
+          );
+          results.forEach((r, j) => {
+            const model = batch[j]!;
+            if (r.status === "fulfilled" && (r.value === "ok" || r.value === "gated")) {
+              setVerdict(store, plan, scope, model, r.value, Date.now());
+              if (r.value === "gated") gated.add(model);
+            }
+            // Probe errors stay unmapped — retried next refresh, so a
+            // transient failure can never permanently hide a model.
+          });
+        }
+        try {
+          saveOllamaVerdicts(store, path);
+        } catch (err) {
+          diag("ollama.verdicts.save_failed", { message: messageOf(err) }, "warn");
+        }
+        diag("ollama.probe.done", {
+          total: unknown.length,
+          cached: known.size,
+          gated: gated.size,
+        });
+      }
+      diag("ollama.plan.resolved", { plan });
+    }
+    const visible = gated.size > 0 ? models.filter((m) => !gated.has(m)) : models;
+    // Vision capability is independent of tier gating: probe every visible
+    // model once (native /api/show with image-probe fallback) and persist the
+    // result on the existing verdict entry when a plan/scope is available.
+    // Keyless local daemons have no scope — the set still lives on the
+    // snapshot so the UI can enable image upload for vision models.
+    const vision = new Set<string>();
+    if (visible.length > 0) {
+      const visionPath = ollamaVerdictsPath();
+      const visionStore = loadOllamaVerdicts(visionPath);
+      const visionScope = plan && apiKey ? scopeKeyFor(base, apiKey) : undefined;
+      const cached = visionScope
+        ? visionModelsFor(visible, visionStore, plan!, visionScope, Date.now())
+        : new Set<string>();
+      const toProbe = visible.filter((m) => !cached.has(m));
+      let visionPersisted = false;
+      for (const m of toProbe) {
+        const info = await fetchOllamaShowInfo(base, m, apiKey ?? "");
+        if (info?.vision === true) vision.add(m);
+        if (info !== undefined && visionScope && plan) {
+          // Re-read the cached entry if present so we don't clobber a tier
+          // verdict that a concurrent pass wrote; then stamp vision + window.
+          const existing = verdictFor(visionStore, plan, visionScope, m, Date.now());
+          setVerdict(
+            visionStore,
+            plan,
+            visionScope,
+            m,
+            existing?.result ?? "ok",
+            existing?.at ?? Date.now(),
+            info.vision,
+            info.contextTokens,
+            info.parameters,
+          );
+          visionPersisted = true;
+        }
+      }
+      for (const m of cached) vision.add(m);
+      if (visionPersisted) {
+        try {
+          saveOllamaVerdicts(visionStore, visionPath);
+        } catch (err) {
+          diag("ollama.vision.save_failed", { message: messageOf(err) }, "warn");
+        }
+      }
+      diag("ollama.vision.done", { total: visible.length, vision: vision.size });
+    }
+    const snapshot: OllamaCatalogSnapshot = {
+      models: visible,
+      visionModels: vision.size > 0 ? [...vision].sort() : undefined,
+      plan,
+      hiddenCount: gated.size > 0 ? gated.size : undefined,
+      fetchedAt: Date.now(),
+    };
+    try {
+      const endpointKey = ep.apiKey ? scopeKeyFor(base, ep.apiKey) : base;
+      saveOllamaModelsCache(endpointKey, {
+        models: snapshot.models,
+        visionModels: snapshot.visionModels,
+        plan: snapshot.plan,
+        hiddenCount: snapshot.hiddenCount,
+        fetchedAt: snapshot.fetchedAt,
+      });
+    } catch (err) {
+      diag("ollama.cache.save_failed", { message: messageOf(err) }, "warn");
+    }
+    return snapshot;
+  } catch (err) {
+    const message = messageOf(err);
+    diag("ollama.models_fetch.error", { message });
+    process.stderr.write(
+      `reasonix: failed to fetch Ollama models (${message}), falling back to cached models\n`,
+    );
+    const fallback = ollamaFallbackSnapshot(endpointKey, `Ollama unreachable: ${message}`);
+    if (fallback) return fallback;
+    return { models: [], error: `Ollama unreachable: ${message}`, fetchedAt: Date.now() };
+  }
+}
+
+/** Refresh (or reuse) the app-global Ollama catalog and broadcast it to every
+ *  tab. Concurrent calls collapse onto one in-flight fetch; non-force calls
+ *  reuse a fresh cache (< TTL). Errors broadcast but are never cached. */
+export async function refreshOllamaModels(
+  force: boolean,
+  tab?: Tab,
+): Promise<OllamaCatalogSnapshot> {
+  if (ollamaCatalogInflight) return ollamaCatalogInflight;
+  const ep = loadOllamaEndpoint();
+  const base = ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL;
+  const endpointKey = ollamaScopeKey(ep, base);
+  if (!ollamaCatalogCache) {
+    const diskCache = loadOllamaModelsCache(endpointKey);
+    if (diskCache && diskCache.models.length > 0) {
+      ollamaCatalogCache = {
+        models: diskCache.models,
+        visionModels: diskCache.visionModels,
+        plan: diskCache.plan,
+        hiddenCount: diskCache.hiddenCount,
+        fetchedAt: diskCache.fetchedAt,
+      };
+    }
+  }
+  const cached = ollamaCatalogCache;
+  if (!force && cached && !cached.error && Date.now() - cached.fetchedAt < OLLAMA_CATALOG_TTL_MS) {
+    emitOllamaCatalog(cached);
+    return cached;
+  }
+  const inflight = fetchOllamaCatalog(tab)
+    .then((snap) => {
+      if (!snap.error || snap.models.length > 0) {
+        ollamaCatalogCache = snap;
+      }
+      emitOllamaCatalog(snap);
+      return snap;
+    })
+    .finally(() => {
+      ollamaCatalogInflight = null;
+    });
+  ollamaCatalogInflight = inflight;
+  return inflight;
+}
+
+async function emitBalance(tab: Tab): Promise<void> {
+  if (!tab.runtime) {
+    emitTabDiagnostic(tab, "balance.skipped", { reason: "runtime-not-ready" });
+    return;
+  }
+  emitTabDiagnostic(tab, "balance.fetch.started");
+  const bal = await tab.runtime.loop.client.getBalance().catch((err) => {
+    emitDiagnosticError("balance.fetch.failed", err, {
+      tabId: tab.id,
+      details: tabDiagnosticState(tab),
+    });
+    return null;
+  });
+  if (!bal) return;
+  const primary = pickPrimaryBalance(bal.balance_infos);
+  if (!primary) {
+    emitTabDiagnostic(tab, "balance.fetch.empty", { balances: bal.balance_infos.length }, "warn");
+    return;
+  }
+  const balanceInfos = bal.balance_infos.map((info) => ({
+    currency: info.currency,
+    total: Number(info.total_balance),
+    granted: info.granted_balance ? Number(info.granted_balance) : undefined,
+    toppedUp: info.topped_up_balance ? Number(info.topped_up_balance) : undefined,
+  }));
+  emit(
+    {
+      type: "$balance",
+      currency: primary.currency,
+      total: Number(primary.total_balance),
+      isAvailable: bal.is_available,
+      balanceInfos,
+    },
+    tab.id,
+  );
+  emitTabDiagnostic(tab, "balance.fetch.succeeded", {
+    currency: primary.currency,
+    isAvailable: bal.is_available,
+    balances: balanceInfos.length,
+  });
+}
+
+/** Last API-reported five-hour / weekly usage — the delta to the next fetch is
+ *  percent points consumed since (each $turn_complete refetches). The five-hour
+ *  window has ~33× better resolution; weekly covers plans that report only weekly. */
+let lastCodexFiveHourUsedPct: number | null = null;
+let lastCodexWeeklyUsedPct: number | null = null;
+const codexQuotaCoordinator = new AccountQuotaCoordinator(
+  async () => {
+    const result = await fetchCodexQuotaViaOAuth(10_000);
+    if (!result.quota) return result;
+    const fiveHourUsedPct = result.quota.fiveHour?.usedPercent ?? null;
+    const weeklyUsedPct = result.quota.weekly?.usedPercent ?? null;
+    const usedPct = fiveHourUsedPct !== null ? fiveHourUsedPct : weeklyUsedPct;
+    const previousBaseline =
+      fiveHourUsedPct !== null ? lastCodexFiveHourUsedPct : lastCodexWeeklyUsedPct;
+    const turnUsedPct =
+      previousBaseline !== null && usedPct !== null && usedPct >= previousBaseline
+        ? usedPct - previousBaseline
+        : null;
+    if (fiveHourUsedPct !== null) lastCodexFiveHourUsedPct = fiveHourUsedPct;
+    else if (weeklyUsedPct !== null) lastCodexWeeklyUsedPct = weeklyUsedPct;
+    return { ...result, quota: { ...result.quota, turnUsedPct } };
+  },
+  15_000,
+  Date.now,
+  {
+    started: (requestId) => emitDiagnostic("quota.snapshot.fetch.started", { requestId }),
+    succeeded: (requestId, result) =>
+      emitDiagnostic("quota.snapshot.fetch.succeeded", {
+        requestId,
+        plan: result.quota?.plan,
+      }),
+    failed: (requestId, reason) =>
+      emitDiagnostic("quota.snapshot.fetch.failed", { requestId, reason }, { level: "error" }),
+  },
+);
+
+/** Accumulate a measured plan-window delta (percentage points) into the open
+ *  session's per-provider quota usage. Native unit only — never converted to
+ *  dollars; USD-kind providers untouched. Meta-write failure is logged, never silent. */
+function accumulateQuotaIntoSession(tab: Tab, provider: string, usedPct: number | null): void {
+  if (usedPct === null || usedPct <= 0 || !tab.currentSession) return;
+  try {
+    const meta = loadSessionMeta(tab.currentSession);
+    const prev = meta.costByProvider?.[provider];
+    const prevPct = prev && prev.kind === "quota" ? (prev.quotaUsedPct ?? 0) : 0;
+    patchSessionMeta(tab.currentSession, {
+      costByProvider: {
+        ...(meta.costByProvider ?? {}),
+        [provider]: { kind: "quota", quotaUsedPct: prevPct + usedPct },
+      },
+    });
+  } catch (err) {
+    process.stderr.write(`reasonix: session quota accumulation failed — ${messageOf(err)}\n`);
+  }
+}
+
+/** Weekly Codex quota for the signed-in ChatGPT plan — OpenAI-model tabs only.
+ *  OAuth HTTP fetch only (no codex CLI dependency). */
+async function emitCodexQuota(tab: Tab, options: { force?: boolean } = {}): Promise<void> {
+  if (providerForModel(tab.currentModel) !== "openai") {
+    emitTabDiagnostic(tab, "quota.skipped", { reason: "non-openai-provider" });
+    return;
+  }
+
+  emitTabDiagnostic(tab, "quota.fetch.started");
+  const delivery = await codexQuotaCoordinator.fetch(options).catch((err) => ({
+    value: { quota: null, reason: (err as Error).message },
+    delivery: "underlying" as const,
+    requestId: -1,
+  }));
+  const quota = delivery.value.quota;
+  const reason = delivery.value.reason;
+
+  if (quota) {
+    emitTabDiagnostic(tab, "quota.fetch.succeeded", {
+      plan: quota.plan,
+      fiveHour: quota.fiveHour,
+      weekly: quota.weekly,
+      turnUsedPct: quota.turnUsedPct ?? null,
+      delivery: delivery.delivery,
+      requestId: delivery.requestId,
+    });
+    // Native unit: the measured plan-window delta accumulates as quota % in the
+    // session's per-provider cost — OpenAI plans expose no dollar amounts, so
+    // no USD is ever derived from this.
+    accumulateQuotaIntoSession(tab, "openai", quota.turnUsedPct ?? null);
+    emit({ type: "$codex_quota", quota }, tab.id);
+    return;
+  }
+  emitTabDiagnostic(tab, "quota.snapshot.delivered", {
+    ok: false,
+    reason,
+    delivery: delivery.delivery,
+    requestId: delivery.requestId,
+  });
+  emit({ type: "$codex_quota", quota: null, ...(reason ? { reason } : {}) }, tab.id);
+}
+
+/** Ollama cloud usage — `GET {origin}/api/usage` with the chat key. The API
+ *  reports `limits.session` (5 h) and `limits.weekly` (7 d) usage as fractions
+ *  of the plan's limit (the absolute cap is not exposed). Undefined on failure. */
+export async function fetchOllamaUsage(
+  baseUrl: string,
+  apiKey: string,
+  timeoutMs = 10_000,
+): Promise<{ session?: number; weekly?: number } | undefined> {
+  try {
+    const resp = await fetch(`${new URL(baseUrl).origin}/api/usage`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!resp.ok) return undefined;
+    const data = (await resp.json()) as {
+      limits?: { session?: { usage?: unknown }; weekly?: { usage?: unknown } };
+    };
+    const session = data.limits?.session?.usage;
+    const weekly = data.limits?.weekly?.usage;
+    if (typeof session !== "number" && typeof weekly !== "number") return undefined;
+    return {
+      ...(typeof session === "number" ? { session } : {}),
+      ...(typeof weekly === "number" ? { weekly } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Last API-reported Ollama session usage % — the delta to the next fetch is
+ *  the percent points of the session window consumed since (each
+ *  $turn_complete refetches; the window resets every 5 h). */
+let lastOllamaSessionUsagePct: number | null = null;
+/** Last Antigravity active-model used fraction (0..1) — the delta to the next
+ *  fetch is the fraction of the window consumed since (each $turn_complete
+ *  refetches; windows reset periodically). */
+let lastAntigravityUsedFraction: number | null = null;
+/** Cloud Ollama usage for the signed-in account — Ollama-provider tabs with a
+ *  key only. Local daemons have no usage endpoint; the fetch mirrors the
+ *  Codex quota fetch and scales the API's fraction to percent. */
+async function emitOllamaQuota(tab: Tab): Promise<void> {
+  const ep = loadOllamaEndpoint();
+  const apiKey = ep.apiKey;
+  if (providerForModel(tab.currentModel) !== "ollama" || !apiKey) {
+    emitTabDiagnostic(tab, "quota.skipped", {
+      reason: !apiKey ? "ollama-no-api-key" : "non-ollama-provider",
+    });
+    return;
+  }
+  emitTabDiagnostic(tab, "quota.fetch.started");
+  const usage = await fetchOllamaUsage(ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL, apiKey);
+  if (!usage) {
+    emitTabDiagnostic(tab, "quota.fetch.failed", { reason: "usage-unavailable" }, "error");
+    emit({ type: "$ollama_quota", quota: null, reason: "usage-unavailable" }, tab.id);
+    return;
+  }
+  const sessionWindow =
+    usage.session !== undefined
+      ? { usagePct: usage.session * 100, remainingPct: Math.max(0, 100 - usage.session * 100) }
+      : null;
+  const weeklyWindow =
+    usage.weekly !== undefined
+      ? { usagePct: usage.weekly * 100, remainingPct: Math.max(0, 100 - usage.weekly * 100) }
+      : null;
+  let turnUsedPct: number | null = null;
+  const sessionPct = sessionWindow?.usagePct ?? null;
+  const previous = lastOllamaSessionUsagePct;
+  if (sessionPct !== null) {
+    // Rollover (session window reset) makes the delta go backwards — report
+    // no turn cost for this fetch and adopt the new baseline.
+    if (previous !== null && sessionPct >= previous) turnUsedPct = sessionPct - previous;
+    lastOllamaSessionUsagePct = sessionPct;
+  }
+  emitTabDiagnostic(tab, "quota.fetch.succeeded", {
+    session: usage.session,
+    weekly: usage.weekly,
+    previousSessionPct: previous,
+    currentSessionPct: sessionPct,
+    turnUsedPct,
+  });
+  // Native unit: cloud Ollama bills plan-window %, not dollars.
+  accumulateQuotaIntoSession(tab, "ollama", turnUsedPct);
+  emit(
+    {
+      type: "$ollama_quota",
+      quota: { session: sessionWindow, weekly: weeklyWindow, turnUsedPct, fetchedAt: Date.now() },
+    },
+    tab.id,
+  );
+}
+
+/** Antigravity (Gemini Code Assist) plan + quota for the signed-in account —
+ *  Gemini-provider tabs only. Uses the undocumented Code Assist `v1internal`
+ *  API: loadCodeAssist for the plan, retrieveUserQuota for per-model windows. */
+async function emitAntigravityQuota(tab: Tab): Promise<void> {
+  if (providerForModel(tab.currentModel) !== "gemini") {
+    emitTabDiagnostic(tab, "quota.skipped", { reason: "non-gemini-provider" });
+    return;
+  }
+  emitTabDiagnostic(tab, "quota.fetch.started");
+  const auth = await resolveGeminiAuth();
+  if (!auth) {
+    emitTabDiagnostic(tab, "quota.fetch.failed", { reason: "antigravity-not-signed-in" }, "error");
+    emit({ type: "$antigravity_quota", quota: null, reason: "not-signed-in" }, tab.id);
+    return;
+  }
+  const quota = await fetchAntigravityQuota(auth.accessToken, auth.projectId).catch((err) => {
+    emitTabDiagnostic(tab, "quota.fetch.failed", { reason: (err as Error).message }, "error");
+    emit({ type: "$antigravity_quota", quota: null, reason: (err as Error).message }, tab.id);
+    return null;
+  });
+  if (!quota) return;
+
+  // The active model's window, else the most-consumed window as a proxy.
+  const active =
+    quota.windows.find((w) => w.modelId === tab.currentModel) ??
+    [...quota.windows].sort((a, b) => b.usedFraction - a.usedFraction)[0] ??
+    null;
+  let turnUsedPct: number | null = null;
+  const usedFraction = active?.usedFraction ?? null;
+  if (usedFraction !== null) {
+    const usedPct = usedFraction * 100;
+    if (lastAntigravityUsedFraction !== null && usedPct >= lastAntigravityUsedFraction * 100) {
+      turnUsedPct = usedPct - lastAntigravityUsedFraction * 100;
+    }
+    lastAntigravityUsedFraction = usedFraction;
+  }
+  emitTabDiagnostic(tab, "quota.fetch.succeeded", {
+    plan: quota.plan?.tierId,
+    windows: quota.windows.length,
+    activeModel: active?.modelId,
+    turnUsedPct,
+  });
+  // Native unit: Antigravity bills plan-window %, not dollars.
+  accumulateQuotaIntoSession(tab, "gemini", turnUsedPct);
+  emit({ type: "$antigravity_quota", quota: { ...quota, turnUsedPct } }, tab.id);
+}
+
+/** A raw `limits[]` row from Z.AI's monitor endpoint — only the fields we read. */
+interface ZaiLimitRow {
+  type?: string;
+  unit?: number;
+  number?: number;
+  usage?: number;
+  currentValue?: number;
+  remaining?: number;
+  percentage?: number;
+  nextResetTime?: number;
+}
+
+/** Z.AI GLM Coding Plan usage — `GET {origin}/api/monitor/usage/quota/limit`. The
+ *  token/credit rows are matched by `unit` (3 = 5-hour, 6 = weekly); each carries a
+ *  `percentage` (0-100) plus an epoch-ms `nextResetTime`. Undefined on any failure. */
+export async function fetchZaiQuota(
+  baseUrl: string,
+  apiKey: string,
+  timeoutMs = 10_000,
+): Promise<Omit<ZaiQuota, "turnUsedPct" | "fetchedAt"> | undefined> {
+  try {
+    const resp = await fetch(`${new URL(baseUrl).origin}/api/monitor/usage/quota/limit`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!resp.ok) return undefined;
+    const data = (await resp.json()) as {
+      data?: { limits?: unknown; level?: unknown };
+    };
+    const limits = data?.data?.limits;
+    if (!Array.isArray(limits)) return undefined;
+    const toWindow = (unit: number): ZaiQuotaWindow | null => {
+      const row = (limits as ZaiLimitRow[]).find(
+        (r) => r && (r.type === "TOKENS_LIMIT" || r.type === "CREDIT_LIMIT") && r.unit === unit,
+      );
+      if (!row) return null;
+      // The server usually reports `percentage` directly; fall back to the
+      // currentValue/usage ratio for payloads that omit it.
+      const pct =
+        typeof row.percentage === "number"
+          ? row.percentage
+          : typeof row.currentValue === "number" && typeof row.usage === "number" && row.usage > 0
+            ? (row.currentValue / row.usage) * 100
+            : null;
+      if (pct === null) return null;
+      return {
+        usagePct: pct,
+        remainingPct: Math.max(0, 100 - pct),
+        resetsAt: typeof row.nextResetTime === "number" ? row.nextResetTime : null,
+      };
+    };
+    const fiveHour = toWindow(3);
+    const weekly = toWindow(6);
+    if (!fiveHour && !weekly) return undefined;
+    const level = data?.data?.level;
+    return { plan: typeof level === "string" ? level : null, fiveHour, weekly };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Last API-reported Z.AI 5-hour / weekly usage % — the delta to the next fetch
+ *  is the percent points of the window consumed since (each $turn_complete
+ *  refetches; the 5-hour window resets on a rolling basis). */
+let lastZaiFiveHourUsedPct: number | null = null;
+let lastZaiWeeklyUsedPct: number | null = null;
+
+/** Z.AI GLM Coding Plan usage for a `zai`-provider tab with a configured key.
+ *  Fetches the monitor endpoint, scales the API's `percentage` to "% left", and
+ *  accumulates the measured delta as the session's native-unit quota %. */
+async function emitZaiQuota(tab: Tab): Promise<void> {
+  if (providerForModel(tab.currentModel) !== "zai") {
+    emitTabDiagnostic(tab, "quota.skipped", { reason: "non-zai-provider" });
+    return;
+  }
+  const apiKey = loadZaiApiKey();
+  if (!apiKey) {
+    emitTabDiagnostic(tab, "quota.skipped", { reason: "zai-no-api-key" });
+    return;
+  }
+  emitTabDiagnostic(tab, "quota.fetch.started");
+  const ep = loadEndpointForModel(tab.currentModel);
+  const quota = await fetchZaiQuota(ep.baseUrl ?? DEFAULT_ZAI_CHAT_URL, apiKey);
+  if (!quota) {
+    emitTabDiagnostic(tab, "quota.fetch.failed", { reason: "usage-unavailable" }, "error");
+    emit({ type: "$zai_quota", quota: null, reason: "usage-unavailable" }, tab.id);
+    return;
+  }
+  // Prefer the 5-hour window (finer resolution); fall back to weekly for plans
+  // that report only the weekly window.
+  const fiveHourPct = quota.fiveHour?.usagePct ?? null;
+  const weeklyPct = quota.weekly?.usagePct ?? null;
+  const currentPct = fiveHourPct !== null ? fiveHourPct : weeklyPct;
+  const baseline = fiveHourPct !== null ? lastZaiFiveHourUsedPct : lastZaiWeeklyUsedPct;
+  // A rollover (window reset) makes the delta go backwards — report no turn cost
+  // for this fetch and adopt the new baseline.
+  const turnUsedPct =
+    baseline !== null && currentPct !== null && currentPct >= baseline
+      ? currentPct - baseline
+      : null;
+  if (fiveHourPct !== null) lastZaiFiveHourUsedPct = fiveHourPct;
+  else if (weeklyPct !== null) lastZaiWeeklyUsedPct = weeklyPct;
+  emitTabDiagnostic(tab, "quota.fetch.succeeded", {
+    plan: quota.plan,
+    fiveHour: fiveHourPct,
+    weekly: weeklyPct,
+    turnUsedPct,
+  });
+  // Native unit: the GLM Coding Plan bills plan-window %, not dollars.
+  accumulateQuotaIntoSession(tab, "zai", turnUsedPct);
+  emit({ type: "$zai_quota", quota: { ...quota, turnUsedPct, fetchedAt: Date.now() } }, tab.id);
+}
+
+/** Provider-aware billing for subagent and main-loop model calls. */
+function subagentBillingFor(model: string): import("../../code/setup.js").SubagentBilling {
+  const context = billingContextForModel(model);
+  switch (context.provider) {
+    case "openai":
+      if (context.kind !== "quota") return { kind: context.kind, provider: "openai" };
+      return {
+        kind: "quota",
+        provider: "openai",
+        measureQuota: async () => {
+          const r = await fetchCodexQuotaViaOAuth(8000).catch(() => ({
+            quota: null,
+            reason: "quota fetch failed",
+          }));
+          const used = r.quota?.fiveHour?.usedPercent ?? r.quota?.weekly?.usedPercent;
+          return typeof used === "number" ? used : null;
+        },
+      };
+    case "ollama": {
+      if (context.kind !== "quota") return { kind: context.kind, provider: "ollama" };
+      const ep = loadOllamaEndpoint();
+      const baseUrl = ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL;
+      const apiKey = ep.apiKey;
+      return {
+        kind: "quota",
+        provider: "ollama",
+        measureQuota: async () => {
+          if (!apiKey) return null;
+          const usage = await fetchOllamaUsage(baseUrl, apiKey, 8000);
+          return usage?.session !== undefined ? usage.session * 100 : null;
+        },
+      };
+    }
+    case "gemini":
+      return {
+        kind: "quota",
+        provider: "gemini",
+        measureQuota: async () => {
+          const auth = await resolveGeminiAuth().catch(() => null);
+          if (!auth) return null;
+          const quota = await fetchAntigravityQuota(auth.accessToken, auth.projectId).catch(
+            () => null,
+          );
+          if (!quota) return null;
+          const active =
+            quota.windows.find((w) => w.modelId === model) ??
+            [...quota.windows].sort((a, b) => b.usedFraction - a.usedFraction)[0] ??
+            null;
+          return active ? active.usedFraction * 100 : null;
+        },
+      };
+    default:
+      return { kind: context.kind, provider: context.provider };
+  }
+}
+
+async function emitSessions(
+  tab: Tab,
+  settledDeletes?: SessionsEvent["settledDeletes"],
+): Promise<void> {
+  const startedAt = performance.now();
+  const revision = ++tab.sessionsRevision;
+  const source = listSessionsForWorkspaceAsync(tab.rootDir);
+  const request = {
+    cache: source.cache,
+    value: source.value.then((sessions): SessionsEvent["items"] =>
+      sessions.map((session) => ({
+        name: session.name,
+        messageCount: session.messageCount,
+        mtime: session.mtime.toISOString(),
+        updatedAt: session.meta.updatedAt,
+        createdAt: session.createdAt,
+        summary: session.meta.summary,
+        workspaceStatus: session.workspaceStatus,
+      })),
+    ),
+  };
+  emitTabDiagnostic(tab, "sessions.list.started", { cache: request.cache });
+  try {
+    const items = await request.value;
+    emit({ type: "$sessions", epoch: tab.sessionsEpoch, revision, items, settledDeletes }, tab.id);
+    emitTabDiagnostic(tab, "sessions.list.completed", {
+      count: items.length,
+      cache: request.cache,
+      durationMs: Number((performance.now() - startedAt).toFixed(3)),
+    });
+  } catch (err) {
+    emitDiagnosticError("sessions.list.failed", err, {
+      tabId: tab.id,
+      details: { ...tabDiagnosticState(tab), cache: request.cache },
+    });
+    emit({ type: "$error", message: `session_list failed: ${(err as Error).message}` }, tab.id);
+  }
+}
+
+function loadSessionIntoTab(
+  tab: Tab,
+  name: string,
+  actions: {
+    abortTurn: (tab: Tab) => void;
+    cancelPendingGates: (tab: Tab) => void;
+    persistOpenTabs: () => void;
+  },
+): void {
+  emitTabDiagnostic(tab, "session.load.started", { name });
+  const records = loadSessionMessages(name);
+  const backfilledWorkspace =
+    patchSessionWorkspaceIfMissing(name, tab.rootDir) || stampSessionWorkspace(name, tab.rootDir);
+  const meta = loadSessionMeta(name);
+  // Only set switching flag when there's a live turn to abort —
+  // otherwise the flag stays true and suppresses the first turn's events (#1217).
+  if (tab.aborter) tab.switching = true;
+  actions.abortTurn(tab);
+  actions.cancelPendingGates(tab);
+  tab.currentSession = name;
+  actions.persistOpenTabs();
+  // Rebind model + effort to the conversation's stored pair before the
+  // runtime rebuild, so the loop is constructed with the right model.
+  restoreSessionModelPrefs(tab, meta);
+  tab.runtime = tab.toolset && tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
+  const loadedMessages = buildLoadedMessages(records);
+  if (loadedMessages.length === 0) {
+    let sizeBytes = 0;
+    try {
+      sizeBytes = statSync(sessionPath(name)).size;
+    } catch {
+      void 0; /* file may not exist */
+    }
+    if (sizeBytes > 0) {
+      emitTabDiagnostic(
+        tab,
+        "session.load.empty",
+        { name, sizeBytes, records: records.length },
+        "warn",
+      );
+      process.stderr.write(
+        `session_load: "${name}" returned 0 messages (file size=${sizeBytes}B): empty or unreadable jsonl\n`,
+      );
+      emit({ type: "$session_empty", name, sizeBytes }, tab.id);
+    }
+  }
+  emit(
+    {
+      type: "$session_loaded",
+      name,
+      messages: loadedMessages,
+      carryover: sessionCarryover(meta),
+    },
+    tab.id,
+  );
+  emitRestoredPlan(tab, loadedMessages.length > 0);
+  emitCtxBreakdown(tab);
+  emitSettings(tab);
+  if (backfilledWorkspace) {
+    void emitSessions(tab);
+  }
+  emitTabDiagnostic(tab, "session.load.completed", {
+    name,
+    records: records.length,
+    loadedMessages: loadedMessages.length,
+    backfilledWorkspace,
+    carryover: sessionCarryover(meta),
+  });
+}
+
+function summarizeMcpSpec(raw: string): McpSpecInfo {
+  try {
+    const parsed = parseMcpSpec(raw);
+    if (parsed.transport === "stdio") {
+      const argv = [parsed.command, ...parsed.args].join(" ");
+      return {
+        raw,
+        name: parsed.name,
+        transport: "stdio",
+        summary: `stdio · ${argv}`,
+        status: "configured",
+      };
+    }
+    return {
+      raw,
+      name: parsed.name,
+      transport: parsed.transport,
+      summary: `${parsed.transport} · ${parsed.url}`,
+      status: "configured",
+    };
+  } catch (err) {
+    return {
+      raw,
+      name: null,
+      transport: "stdio",
+      summary: raw,
+      parseError: (err as Error).message,
+      status: "failed",
+      statusReason: (err as Error).message,
+    };
+  }
+}
+
+/** Snapshot the Settings → MCP default as a fresh session's absolute state. An
+ *  empty object still marks the session as seeded, so later default edits don't
+ *  retroactively change an existing conversation. */
+function sessionMcpFromConfig(rootDir: string): SessionMcpState {
+  const disabledServers: string[] = [];
+  const disabledTools: Record<string, string[]> = {};
+  for (const spec of loadEffectiveMcpConfig(rootDir)) {
+    if (!spec.name) continue;
+    if (spec.disabled) disabledServers.push(spec.name);
+    if (spec.disabledTools?.length) disabledTools[spec.name] = [...spec.disabledTools];
+  }
+  const state: SessionMcpState = {};
+  if (disabledServers.length) state.disabledServers = disabledServers.sort();
+  if (Object.keys(disabledTools).length) state.disabledTools = disabledTools;
+  return state;
+}
+
+/** The active session's stored MCP state. `undefined` = a session created before
+ *  the field existed — callers fall back to the config default. */
+function sessionMcpState(name: string): SessionMcpState | undefined {
+  if (!name) return undefined;
+  const meta = loadSessionMeta(name);
+  if (meta.mcp === undefined) return undefined;
+  return normalizeSessionMcpState(meta.mcp) ?? {};
+}
+
+/** Session overlay for the MCP runtime; `undefined` (legacy session) = use default. */
+function sessionMcpOverrides(name: string): McpSpecOverrides | undefined {
+  const state = sessionMcpState(name);
+  if (state === undefined) return undefined;
+  return {
+    disabledServers: new Set(state.disabledServers ?? []),
+    disabledTools: new Map(
+      Object.entries(state.disabledTools ?? {}).map(([server, tools]) => [server, new Set(tools)]),
+    ),
+  };
+}
+
+/** Config specs for a tab with the active session's MCP overlay applied. */
+function effectiveMcpSpecs(tab: Tab): McpServerSpec[] {
+  return applyMcpSessionOverrides(
+    loadEffectiveMcpConfig(tab.rootDir),
+    sessionMcpOverrides(tab.currentSession),
+  );
+}
+
+function emitMcpSpecs(tab: Tab): void {
+  const normalized = loadEffectiveMcpConfig(tab.rootDir);
+  // Session-scoped view. A legacy session (undefined) mirrors the default.
+  const session = sessionMcpState(tab.currentSession);
+  const liveTools = tab.mcpRuntime?.toolFilterState() ?? [];
+  const toolStateByRaw = new Map(liveTools.map((t) => [t.spec, t]));
+  const specs = normalized.map((spec) => {
+    const raw = specToRaw(spec);
+    const base = summarizeMcpSpec(raw);
+    // Settings-default toggle state — visible even before the first bridge.
+    base.disabled = spec.disabled === true;
+    // Reasonix+ managed servers are built-in: disableable but not removable.
+    base.builtin = isManagedMcpSpec(spec);
+    if (spec.disabledTools?.length) base.disabledTools = spec.disabledTools;
+    // Session toggle state (Tools section). Legacy sessions mirror the default.
+    const sessionDisabled = session
+      ? Boolean(spec.name && session.disabledServers?.includes(spec.name))
+      : spec.disabled === true;
+    const sessionDisabledTools = session
+      ? ((spec.name ? session.disabledTools?.[spec.name] : undefined) ?? [])
+      : (spec.disabledTools ?? []);
+    if (sessionDisabled) base.sessionDisabled = true;
+    if (sessionDisabledTools.length) base.sessionDisabledTools = [...sessionDisabledTools].sort();
+    const toolState = toolStateByRaw.get(raw);
+    if (toolState) {
+      base.tools = [...new Set([...toolState.enabled, ...toolState.disabled])].sort();
+    }
+    const live =
+      tab.mcpStatuses.get(raw) ?? (spec.name ? tab.mcpStatuses.get(spec.name) : undefined);
+    let merged: McpSpecInfo = live
+      ? { ...base, status: live.kind, statusReason: live.reason, toolCount: live.toolCount }
+      : base;
+    // A session-disabled server never reports live "connected" — the reload path stops it.
+    if (sessionDisabled) merged = { ...merged, status: "disabled" };
+    return merged;
+  });
+  const bridged = specs.length > 0 && specs.every((s) => s.status === "connected");
+  emit({ type: "$mcp_specs", specs, bridged }, tab.id);
+  emitTabDiagnostic(tab, "mcp.specs.emitted", {
+    configured: specs.length,
+    connected: specs.filter((spec) => spec.status === "connected").length,
+    bridged,
+  });
+}
+
+/** Extension-integration state for the Settings card — pure so tests can pin it. */
+export function computeMcpExtensionStatus(cfg: ReasonixConfig): McpExtensionStatus {
+  const entry = cfg.mcpServers?.playwright;
+  const args = entry?.args ?? [];
+  const token = entry?.env?.[PLAYWRIGHT_EXTENSION_TOKEN_ENV];
+  const connection = parsePlaywrightConnection(args);
+  return {
+    storeUrl: PLAYWRIGHT_EXTENSION_STORE_URL,
+    server: {
+      configured: Boolean(entry),
+      ...connection,
+      hasExtensionArg: args.includes(PLAYWRIGHT_EXTENSION_ARG),
+      tokenPrefix: token ? `${token.slice(0, 6)}…${token.slice(-3)}` : undefined,
+      args,
+    },
+  };
+}
+
+function emitMcpExtensionStatus(tab: Tab): void {
+  const status = computeMcpExtensionStatus(readConfig());
+  const ev: McpExtensionStatusEvent = { type: "$mcp_extension_status", status };
+  emit(ev, tab.id);
+}
+
+const mailAuthGeneration = new Map<string, number>();
+const mailAuthControllers = new Map<string, AbortController>();
+
+function mailAuthKey(tab: Tab, provider: MailProvider): string {
+  return `${tab.id}:${provider}`;
+}
+
+function nextMailAuthGeneration(tab: Tab, provider: MailProvider): number {
+  const key = mailAuthKey(tab, provider);
+  const generation = (mailAuthGeneration.get(key) ?? 0) + 1;
+  mailAuthGeneration.set(key, generation);
+  return generation;
+}
+
+/** Abort any in-flight flow for a provider and invalidate its pending callbacks. */
+function cancelMailAuth(tab: Tab, provider: MailProvider): void {
+  const key = mailAuthKey(tab, provider);
+  nextMailAuthGeneration(tab, provider);
+  mailAuthControllers.get(key)?.abort();
+  mailAuthControllers.delete(key);
+}
+
+function emitMailAuth(
+  tab: Tab,
+  provider: MailProvider,
+  state: Omit<MailAuthState, "provider">,
+): void {
+  emit({ type: "$mail_auth", state: { provider, ...state } }, tab.id);
+}
+
+interface MailAuthFlow {
+  controller: AbortController;
+  /** True once a newer flow started (or this one was cancelled) — bail out. */
+  isStale: () => boolean;
+  /** Release the controller slot when it's still ours. */
+  finish: () => void;
+}
+
+/** Open a fresh auth flow for a provider: invalidate any prior generation, abort its
+ *  controller, and install ours. Callers poll `isStale()` between awaits and call
+ *  `finish()` in a `finally`. */
+function beginMailAuthFlow(tab: Tab, provider: MailProvider): MailAuthFlow {
+  const key = mailAuthKey(tab, provider);
+  const generation = nextMailAuthGeneration(tab, provider);
+  mailAuthControllers.get(key)?.abort();
+  const controller = new AbortController();
+  mailAuthControllers.set(key, controller);
+  return {
+    controller,
+    isStale: () => mailAuthGeneration.get(key) !== generation,
+    finish: () => {
+      if (mailAuthControllers.get(key) === controller) mailAuthControllers.delete(key);
+    },
+  };
+}
+
+export function isManagedMcpSpec(spec: McpServerSpec): boolean {
+  return isPlaywrightSpec(spec) || isOutlookMailSpec(spec) || isGmailMailSpec(spec);
+}
+
+function outlookMailConfigured(tab: Tab): boolean {
+  return loadEffectiveMcpConfig(tab.rootDir).some(isOutlookMailSpec);
+}
+
+function configureOutlookMailServer(): void {
+  const cfg = readConfig();
+  const entry = MCP_CATALOG.find((candidate) => candidate.name === OUTLOOK_MAIL_SERVER_NAME);
+  if (!entry) throw new Error("bundled catalog has no Outlook Mail entry");
+  mergeMcpServerEntry(cfg, OUTLOOK_MAIL_SERVER_NAME, {
+    transport: "stdio",
+    command: "npx",
+    args: [...OUTLOOK_MAIL_ARGS],
+  });
+  const stored = cfg.mcpServers?.[OUTLOOK_MAIL_SERVER_NAME];
+  if (!stored) throw new Error("failed to create the Outlook Mail server entry");
+  stored.transport = "stdio";
+  stored.command = "npx";
+  stored.args = [...OUTLOOK_MAIL_ARGS];
+  // Managed auth owns the token cache. Drop legacy/custom auth env so no access token,
+  // client secret, or alternate tenant silently survives migration into this integration.
+  stored.env = { MS365_MCP_TENANT_ID: "consumers" };
+  if (!stored.disabledTools || stored.disabledTools.length === 0) {
+    stored.disabledTools = [...OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS];
+  }
+  writeConfig(cfg);
+}
+
+function configureGmailMailServer(): void {
+  const cfg = readConfig();
+  mergeMcpServerEntry(cfg, GMAIL_MAIL_SERVER_NAME, {
+    transport: "streamable-http",
+    url: GMAIL_MCP_URL,
+  });
+  const stored = cfg.mcpServers?.[GMAIL_MAIL_SERVER_NAME];
+  if (!stored) throw new Error("failed to create the Gmail Mail server entry");
+  stored.transport = "streamable-http";
+  stored.url = GMAIL_MCP_URL;
+  writeConfig(cfg);
+}
+
+/** Drop the managed mail server for the provider that is NOT selected so exactly one
+ *  mail integration bridges. Gmail OAuth credentials live separately and survive. */
+function pruneUnselectedMailServer(provider: MailProvider): void {
+  const other = provider === MailProvider.Gmail ? OUTLOOK_MAIL_SERVER_NAME : GMAIL_MAIL_SERVER_NAME;
+  const cfg = readConfig();
+  if (!cfg.mcpServers || !(other in cfg.mcpServers)) return;
+  delete cfg.mcpServers[other];
+  writeConfig(cfg);
+}
+
+async function waitForMailRuntime(tab: Tab, bridge: (tab: Tab) => Promise<void>): Promise<void> {
+  await bridge(tab);
+  await tab.mcpBridgePromise;
+  if (!tab.mcpRuntime) throw new Error("Mail MCP runtime is unavailable");
+}
+
+async function refreshOutlookMailAuth(
+  tab: Tab,
+  bridge: (tab: Tab) => Promise<void>,
+): Promise<void> {
+  const configured = outlookMailConfigured(tab);
+  if (!configured) {
+    emitMailAuth(tab, MailProvider.Outlook, { configured: false, phase: "unconfigured" });
+    return;
+  }
+  try {
+    emitMailAuth(tab, MailProvider.Outlook, { configured: true, phase: "checking" });
+    await waitForMailRuntime(tab, bridge);
+    const raw = await tab.mcpRuntime!.callServerTool(
+      OUTLOOK_MAIL_SERVER_NAME,
+      "verify-login",
+      {},
+      AbortSignal.timeout(15_000),
+    );
+    const status = parseOutlookLoginStatus(raw);
+    emitMailAuth(tab, MailProvider.Outlook, {
+      configured: true,
+      phase: status.success ? "connected" : "disconnected",
+      ...(status.account ? { account: status.account } : {}),
+      message: status.message,
+    });
+  } catch (error) {
+    emitMailAuth(tab, MailProvider.Outlook, {
+      configured: true,
+      phase: "error",
+      message: messageOf(error),
+    });
+  }
+}
+
+/** Gmail auth is self-contained: credentials + tokens live in config, so status
+ *  needs no MCP round-trip. `resolveGmailToken` refreshes an expiring token. */
+async function refreshGmailMailAuth(tab: Tab): Promise<void> {
+  const creds = readConfig().gmailOAuth;
+  const hasClientId = Boolean(creds?.clientId);
+  const hasClientSecret = Boolean(creds?.clientSecret);
+  const base = { hasClientId, hasClientSecret, callbackUrl: GMAIL_OAUTH_REDIRECT_URI };
+  if (!hasClientId || !hasClientSecret) {
+    emitMailAuth(tab, MailProvider.Gmail, {
+      configured: false,
+      phase: "unconfigured",
+      ...base,
+      message: "Add a Google OAuth client ID and secret to connect Gmail.",
+    });
+    return;
+  }
+  if (!creds?.accessToken) {
+    emitMailAuth(tab, MailProvider.Gmail, {
+      configured: true,
+      phase: "disconnected",
+      ...base,
+      message: "Google OAuth credentials saved. Connect to sign in.",
+    });
+    return;
+  }
+  emitMailAuth(tab, MailProvider.Gmail, { configured: true, phase: "checking", ...base });
+  try {
+    await resolveGmailToken();
+    emitMailAuth(tab, MailProvider.Gmail, {
+      configured: true,
+      phase: "connected",
+      ...base,
+      ...(creds.account ? { account: creds.account } : {}),
+      message: "Signed in to Gmail.",
+    });
+  } catch (error) {
+    emitMailAuth(tab, MailProvider.Gmail, {
+      configured: true,
+      phase: "error",
+      ...base,
+      message: messageOf(error),
+    });
+  }
+}
+
+async function connectOutlookMail(tab: Tab, bridge: (tab: Tab) => Promise<void>): Promise<void> {
+  const provider = MailProvider.Outlook;
+  const { controller, isStale, finish } = beginMailAuthFlow(tab, provider);
+  try {
+    configureOutlookMailServer();
+    emitMcpSpecs(tab);
+    emitMailAuth(tab, provider, { configured: true, phase: "starting" });
+    await waitForMailRuntime(tab, bridge);
+    if (isStale()) return;
+    const raw = await tab.mcpRuntime!.callServerTool(
+      OUTLOOK_MAIL_SERVER_NAME,
+      "login",
+      { force: true },
+      AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]),
+    );
+    if (isStale()) return;
+    const immediate = parseOutlookLoginStatus(raw);
+    if (immediate.success) {
+      emitMailAuth(tab, provider, {
+        configured: true,
+        phase: "connected",
+        ...(immediate.account ? { account: immediate.account } : {}),
+        message: immediate.message,
+      });
+      return;
+    }
+    const deviceCode = parseOutlookDeviceCode(raw);
+    if (!deviceCode) throw new Error(immediate.message);
+    emitMailAuth(tab, provider, {
+      configured: true,
+      phase: "device-code",
+      verificationUrl: deviceCode.verificationUrl,
+      ...(deviceCode.userCode ? { userCode: deviceCode.userCode } : {}),
+      message: deviceCode.message,
+    });
+    const deadline = Date.now() + 15 * 60_000;
+    while (Date.now() < deadline && !isStale()) {
+      await sleep(2_000);
+      if (isStale()) return;
+      const verifiedRaw = await tab.mcpRuntime!.callServerTool(
+        OUTLOOK_MAIL_SERVER_NAME,
+        "verify-login",
+        {},
+        AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+      );
+      const verified = parseOutlookLoginStatus(verifiedRaw);
+      if (verified.success) {
+        emitMailAuth(tab, provider, {
+          configured: true,
+          phase: "connected",
+          ...(verified.account ? { account: verified.account } : {}),
+          message: verified.message,
+        });
+        return;
+      }
+    }
+    if (!isStale()) {
+      emitMailAuth(tab, provider, {
+        configured: true,
+        phase: "error",
+        message: "Microsoft sign-in timed out. Start the connection again for a new code.",
+      });
+    }
+  } catch (error) {
+    if (isStale()) return;
+    emitMailAuth(tab, provider, {
+      configured: outlookMailConfigured(tab),
+      phase: "error",
+      message: messageOf(error),
+    });
+  } finally {
+    finish();
+  }
+}
+
+async function connectGmailMail(tab: Tab, bridge: (tab: Tab) => Promise<void>): Promise<void> {
+  const provider = MailProvider.Gmail;
+  const { controller, isStale, finish } = beginMailAuthFlow(tab, provider);
+  const gmailBase = {
+    hasClientId: true,
+    hasClientSecret: true,
+    callbackUrl: GMAIL_OAUTH_REDIRECT_URI,
+  };
+  try {
+    const configured = readConfig().gmailOAuth;
+    if (!configured?.clientId || !configured.clientSecret) {
+      throw new Error("Save a Gmail OAuth client ID and client secret before connecting");
+    }
+    configureGmailMailServer();
+    emitMcpSpecs(tab);
+    emitMailAuth(tab, provider, { configured: true, phase: "starting", ...gmailBase });
+    await waitForMailRuntime(tab, bridge);
+    if (isStale()) return;
+    const oauthFlow = await beginGmailOAuthFlow();
+    emitMailAuth(tab, provider, {
+      configured: true,
+      phase: "browser",
+      verificationUrl: oauthFlow.url,
+      ...gmailBase,
+      message: "Complete Google sign-in in your browser.",
+    });
+    const onAbort = () => oauthFlow.cancel();
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+    const finalCreds = await oauthFlow.done;
+    controller.signal.removeEventListener("abort", onAbort);
+    if (isStale()) return;
+    saveGmailOAuth(finalCreds);
+    emitMailAuth(tab, provider, {
+      configured: true,
+      phase: "connected",
+      ...gmailBase,
+      ...(finalCreds.account ? { account: finalCreds.account } : {}),
+      message: "Signed in to Gmail.",
+    });
+  } catch (error) {
+    if (isStale()) return;
+    const creds = readConfig().gmailOAuth;
+    emitMailAuth(tab, provider, {
+      configured: Boolean(creds?.clientId && creds?.clientSecret),
+      phase: "error",
+      hasClientId: Boolean(creds?.clientId),
+      hasClientSecret: Boolean(creds?.clientSecret),
+      callbackUrl: GMAIL_OAUTH_REDIRECT_URI,
+      message: messageOf(error),
+    });
+  } finally {
+    finish();
+  }
+}
+
+async function signOutOutlookMail(tab: Tab, bridge: (tab: Tab) => Promise<void>): Promise<void> {
+  cancelMailAuth(tab, MailProvider.Outlook);
+  try {
+    await waitForMailRuntime(tab, bridge);
+    await tab.mcpRuntime!.callServerTool(
+      OUTLOOK_MAIL_SERVER_NAME,
+      "logout",
+      {},
+      AbortSignal.timeout(30_000),
+    );
+    emitMailAuth(tab, MailProvider.Outlook, {
+      configured: true,
+      phase: "disconnected",
+      message: "Signed out of Microsoft.",
+    });
+  } catch (error) {
+    emitMailAuth(tab, MailProvider.Outlook, {
+      configured: outlookMailConfigured(tab),
+      phase: "error",
+      message: messageOf(error),
+    });
+  }
+}
+
+/** Gmail sign-out drops tokens but keeps the OAuth client credentials for re-connect. */
+function signOutGmailMail(tab: Tab): void {
+  cancelMailAuth(tab, MailProvider.Gmail);
+  try {
+    signOutGmail();
+    emitMailAuth(tab, MailProvider.Gmail, {
+      configured: true,
+      phase: "disconnected",
+      hasClientId: true,
+      hasClientSecret: true,
+      callbackUrl: GMAIL_OAUTH_REDIRECT_URI,
+      message: "Signed out of Google.",
+    });
+  } catch (error) {
+    emitMailAuth(tab, MailProvider.Gmail, {
+      configured: true,
+      phase: "error",
+      message: messageOf(error),
+    });
+  }
+}
+
+/** Route a provider-neutral auth action to the matching provider implementation. */
+async function refreshMailAuth(
+  tab: Tab,
+  provider: MailProvider,
+  bridge: (tab: Tab) => Promise<void>,
+): Promise<void> {
+  if (provider === MailProvider.Gmail) return refreshGmailMailAuth(tab);
+  return refreshOutlookMailAuth(tab, bridge);
+}
+
+async function connectMail(
+  tab: Tab,
+  provider: MailProvider,
+  bridge: (tab: Tab) => Promise<void>,
+): Promise<void> {
+  if (provider === MailProvider.Gmail) return connectGmailMail(tab, bridge);
+  return connectOutlookMail(tab, bridge);
+}
+
+async function signOutMail(
+  tab: Tab,
+  provider: MailProvider,
+  bridge: (tab: Tab) => Promise<void>,
+): Promise<void> {
+  if (provider === MailProvider.Gmail) return signOutGmailMail(tab);
+  return signOutOutlookMail(tab, bridge);
+}
+
+const playwrightBrowserInstalls = new Map<string, AbortController>();
+
+async function installPlaywrightBrowser(
+  tab: Tab,
+  browser: unknown,
+  onInstalled: () => void,
+): Promise<void> {
+  if (!isPlaywrightManagedBrowser(browser)) {
+    emit(
+      { type: "$error", message: "playwright_browser_install: unsupported managed browser" },
+      tab.id,
+    );
+    return;
+  }
+  if (playwrightBrowserInstalls.has(browser)) {
+    emit(
+      {
+        type: "$playwright_browser_install",
+        install: { phase: "done", browser, ok: false, reason: "installation already running" },
+      } satisfies PlaywrightBrowserInstallEvent,
+      tab.id,
+    );
+    return;
+  }
+  const installController = new AbortController();
+  playwrightBrowserInstalls.set(browser, installController);
+  tab.mcpStatuses.delete("playwright");
+  for (const key of [...tab.mcpStatuses.keys()]) {
+    if (key.startsWith("playwright=")) tab.mcpStatuses.delete(key);
+  }
+  emitMcpSpecs(tab);
+  const configuredArgs = readConfig().mcpServers?.playwright?.args ?? [];
+  const configuredPackage = configuredArgs.find((arg) => /^@playwright\/mcp(?:@|$)/.test(arg));
+  const packageId = /^@playwright\/mcp(?:@[A-Za-z0-9._-]+)?$/.test(configuredPackage ?? "")
+    ? configuredPackage
+    : undefined;
+  await ensureNpxAvailable().catch(() => undefined);
+  const args = playwrightBrowserInstallArgs(browser, packageId);
+  const configuredEnv = readConfig().mcpServers?.playwright?.env;
+  const baseEnv = { ...process.env, ...(configuredEnv ?? {}) };
+  try {
+    const installResult = await installFromPlaywrightDownloadSources(async ({ source, host }) => {
+      emit(
+        { type: "$playwright_browser_install", install: { phase: "running", browser, source } },
+        tab.id,
+      );
+      const env = playwrightBrowserInstallEnv(baseEnv, host);
+      let output = "";
+      let previousProgress: { downloadedBytes: number; at: number } | undefined;
+      let markDownloadComplete = () => {};
+      const progressParser = createPlaywrightProgressParser((progress) => {
+        if (progress.percent === 100) markDownloadComplete();
+        const at = Date.now();
+        const elapsedMs = previousProgress ? at - previousProgress.at : 0;
+        const bytesPerSecond =
+          previousProgress &&
+          elapsedMs > 0 &&
+          progress.downloadedBytes >= previousProgress.downloadedBytes
+            ? Math.round(
+                ((progress.downloadedBytes - previousProgress.downloadedBytes) * 1000) / elapsedMs,
+              )
+            : undefined;
+        previousProgress = { downloadedBytes: progress.downloadedBytes, at };
+        emit(
+          {
+            type: "$playwright_browser_install",
+            install: { phase: "running", browser, source, ...progress, bytesPerSecond },
+          } satisfies PlaywrightBrowserInstallEvent,
+          tab.id,
+        );
+      });
+      const result = await new Promise<{
+        code: number | null;
+        error?: string;
+        cancelled?: boolean;
+      }>((resolveResult) => {
+        // Windows wraps `npx` as `npx.cmd`, which Node 22+ refuses to spawn
+        // without a shell (throws EINVAL). Mirror the stdio transport: on
+        // win32 build one quoted command line and run it through the shell;
+        // elsewhere spawn the bare binary. Args are already allowlisted
+        // (browser) and shape-checked (package pin), so no injection surface.
+        const shell = process.platform === "win32";
+        const child = shell
+          ? spawn(["npx", ...args.map((arg) => quoteArg(arg, true))].join(" "), [], {
+              windowsHide: true,
+              shell: true,
+              env,
+            })
+          : spawn("npx", args, { windowsHide: true, env });
+        const append = (chunk: Buffer | string) => {
+          output = `${output}${String(chunk)}`.slice(-8000);
+          progressParser.push(chunk);
+        };
+        child.stdout?.on("data", append);
+        child.stderr?.on("data", append);
+        const supervisor = supervisePlaywrightInstaller(child, {
+          signal: installController.signal,
+        });
+        markDownloadComplete = supervisor.markDownloadComplete;
+        void supervisor.result.then((result) => {
+          progressParser.flush();
+          resolveResult(result);
+        });
+      });
+      if (result.cancelled) throw new Error("installation cancelled");
+      if (result.code === 0) return null;
+      return (
+        (result.error ?? output.trim().slice(-1000)) || `installer exited with code ${result.code}`
+      );
+    });
+    emit(
+      {
+        type: "$playwright_browser_install",
+        install: {
+          phase: "done",
+          browser,
+          ok: installResult.ok,
+          reason: installResult.ok ? null : installResult.failures.join("\n\n"),
+        },
+      },
+      tab.id,
+    );
+    if (installResult.ok) onInstalled();
+  } catch (error) {
+    emit(
+      {
+        type: "$playwright_browser_install",
+        install: { phase: "done", browser, ok: false, reason: messageOf(error) },
+      },
+      tab.id,
+    );
+  } finally {
+    installController.abort();
+    playwrightBrowserInstalls.delete(browser);
+  }
+}
+
+/** Classify a live relay probe's raw dispatch result. MCP bridge errors come back
+ *  as JSON `{ error }` strings; tool-side failures surface as "### Error" text;
+ *  anything else is a successful browser attach. Exported pure for tests. */
+export function interpretExtensionCheck(
+  raw: string | null,
+  elapsedMs: number,
+): { ok: boolean; reason: string | null; elapsedMs: number } {
+  if (raw === null || raw.trim() === "") {
+    return { ok: false, reason: "probe returned no result", elapsedMs };
+  }
+  const seconds = Math.max(1, Math.round(elapsedMs / 1000));
+  const timedOut = /timed?\s*out|aborted|cancelled/i.test(raw);
+  let errorText: string | null = null;
+  const trimmed = raw.trim();
+  if (/^### Error|^Error:/i.test(trimmed)) {
+    // Playwright prefixes tool-side failures with a bare "### Error" header and puts
+    // the real reason on the next line(s). Surface that, not the useless header.
+    const body = trimmed
+      .replace(/^### Error[ \t]*\n?/i, "")
+      .replace(/^Error:[ \t]*/i, "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join(" ");
+    errorText = (body || "probe failed").slice(0, 200);
+  } else {
+    try {
+      const parsed = JSON.parse(trimmed) as { error?: unknown; cancelledByUser?: unknown };
+      if (parsed && typeof parsed === "object" && (parsed.error || parsed.cancelledByUser)) {
+        errorText = String(parsed.error ?? "cancelled");
+      }
+    } catch {
+      // Not JSON — the tabs listing is plain text; fall through as success.
+      errorText = null;
+    }
+  }
+  if (errorText === null) return { ok: true, reason: null, elapsedMs };
+  if (timedOut || /aborted|cancelled/i.test(errorText)) {
+    return {
+      ok: false,
+      reason: `no browser responded within ${seconds}s — the stored token is likely wrong, or Chrome or Edge isn't running with the extension installed`,
+      elapsedMs,
+    };
+  }
+  if (/unknown tool/i.test(errorText)) {
+    return {
+      ok: false,
+      reason: "playwright tools are not bridged — the server is not connected in this session",
+      elapsedMs,
+    };
+  }
+  return { ok: false, reason: errorText, elapsedMs };
+}
+
+/** End-to-end relay check: dispatch one cheap browser tool through the live
+ *  bridge with a bounded timeout. Success proves the stored token actually works
+ *  (the browser validates it, not us); a timeout means a wrong token or no supported browser. */
+async function runMcpExtensionCheck(tab: Tab): Promise<void> {
+  emit({ type: "$mcp_extension_check", check: { phase: "running" } }, tab.id);
+  const t0 = Date.now();
+  try {
+    const tools = tab.toolset?.tools;
+    if (!tools) throw new Error("toolset gone");
+    const tabsTool = tools.specs().find((s) => s.function.name.endsWith("browser_tabs"));
+    if (!tabsTool) {
+      emit(
+        {
+          type: "$mcp_extension_check",
+          check: {
+            phase: "done",
+            ok: false,
+            reason:
+              "playwright server is not bridged — no browser_tabs tool registered (starts with a session, or the server/tools are disabled)",
+            elapsedMs: Date.now() - t0,
+          },
+        },
+        tab.id,
+      );
+      return;
+    }
+    const raw = await tools.dispatch(
+      tabsTool.function.name,
+      { action: "list" },
+      { signal: AbortSignal.timeout(25000) },
+    );
+    const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+    emit(
+      {
+        type: "$mcp_extension_check",
+        check: { phase: "done", ...interpretExtensionCheck(text, Date.now() - t0) },
+      },
+      tab.id,
+    );
+  } catch (err) {
+    emit(
+      {
+        type: "$mcp_extension_check",
+        check: {
+          phase: "done",
+          ok: false,
+          reason: interpretExtensionCheck(`Error: ${(err as Error).message}`, Date.now() - t0)
+            .reason,
+          elapsedMs: Date.now() - t0,
+        },
+      },
+      tab.id,
+    );
+  }
+}
+
+function emitMemory(tab: Tab): void {
+  try {
+    const entries = collectMemoryEntriesForWorkspace(tab.rootDir);
+    emit({ type: "$memory", entries }, tab.id);
+    emitTabDiagnostic(tab, "memory.list.completed", { count: entries.length });
+  } catch (err) {
+    emitDiagnosticError("memory.list.failed", err, {
+      tabId: tab.id,
+      details: tabDiagnosticState(tab),
+    });
+    emit({ type: "$error", message: `memory_get failed: ${(err as Error).message}` }, tab.id);
+  }
+}
+
+function countTokensForMeter(text: string): number {
+  try {
+    return countTokensBounded(text);
+  } catch {
+    return text.length === 0 ? 0 : Math.max(1, Math.ceil(text.length * 0.3));
+  }
+}
+
+/** Reserved (system + tool specs) tokens per loop prefix. Keyed by prefix
+ *  identity so emitCtxBreakdown stays O(1); length guards cover in-place
+ *  addTool/removeTool (MCP hot-bridge). */
+const reservedTokenCache = new WeakMap<
+  object,
+  { sys: number; sysLen: number; tools: number; toolsLen: number }
+>();
+
+// Shell-output filtering totals for the $ctx_breakdown payload — scoped to the
+// tab's CURRENT session, not the all-time aggregate: the telemetry JSONL is
+// shared across every session the backend has ever run, so an unscoped summary
+// barely moves when a new session appends a few commands (the statusbar chip
+// looked frozen at one percentage forever). emitCtxBreakdown fires after every
+// tool event, so re-reading the telemetry JSONL each time would scale with
+// session history — instead stat the file and re-summarize only when its
+// mtime+size changed (one stat call in steady state). Caches are keyed by the
+// session anchor because concurrent tabs sit in different sessions. A missing
+// or unreadable file — or a session with no commands yet — legitimately means
+// "no data": the fields are omitted and the UI shows no chip, rather than a
+// fake zero.
+const shellOutputSummaryCaches = new Map<
+  number,
+  { mtimeMs: number; size: number; rawTokens: number; shownTokens: number }
+>();
+// One entry per session that produced metrics; cap it so a long-lived backend
+// hopping between many sessions can't accumulate entries forever.
+const SHELL_OUTPUT_CACHE_CAP = 32;
+
+function shellOutputFilteringTotals(sinceMs: number): {
+  rawTokens: number;
+  shownTokens: number;
+} | null {
+  const path = commandOutputTelemetryPath();
+  let stat: { mtimeMs: number; size: number } | null = null;
+  try {
+    const s = statSync(path);
+    stat = { mtimeMs: s.mtimeMs, size: s.size };
+  } catch {
+    return null;
+  }
+  const cached = shellOutputSummaryCaches.get(sinceMs);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return { rawTokens: cached.rawTokens, shownTokens: cached.shownTokens };
+  }
+  try {
+    const summary = summarizeCommandOutputMetrics(path, { since: sinceMs });
+    if (summary.rawTokens <= 0) return null;
+    if (shellOutputSummaryCaches.size >= SHELL_OUTPUT_CACHE_CAP) {
+      shellOutputSummaryCaches.clear();
+    }
+    shellOutputSummaryCaches.set(sinceMs, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      rawTokens: summary.rawTokens,
+      shownTokens: summary.shownTokens,
+    });
+    return { rawTokens: summary.rawTokens, shownTokens: summary.shownTokens };
+  } catch {
+    return null;
+  }
+}
+
+// reserved = system prompt + tool specs, constant for the tab's lifetime once
+// the loop is built. logTokens is refreshed during turns so Desktop doesn't
+// show a fake zero while the streaming call is still waiting on usage metadata.
+function emitCtxBreakdown(tab: Tab): void {
+  // Re-anchor the per-session shell-output totals whenever the tab rebinds a
+  // session (mint / switch / load / workspace change). Comparing against the
+  // stored session name covers every `currentSession` assignment site without
+  // duplicating reset logic in each, and runs before the runtime guard so a
+  // rebind is never skipped: metrics appended before the anchor instant belong
+  // to earlier sessions and must stay out of this session's totals.
+  if (tab.currentSession !== tab.shellMetricsSession) {
+    tab.shellMetricsSession = tab.currentSession;
+    tab.shellMetricsSince = Date.now();
+  }
+  if (!tab.runtime) return;
+  const prefix = tab.runtime.loop.prefix;
+  const toolSpecs = prefix.toolSpecs;
+  let cached = reservedTokenCache.get(prefix);
+  if (!cached || cached.sysLen !== prefix.system.length || cached.toolsLen !== toolSpecs.length) {
+    cached = {
+      sys: countTokensForMeter(prefix.system),
+      sysLen: prefix.system.length,
+      tools: countTokensForMeter(JSON.stringify(toolSpecs)),
+      toolsLen: toolSpecs.length,
+    };
+    reservedTokenCache.set(prefix, cached);
+  }
+  const sys = cached.sys;
+  const tools = cached.tools;
+  let logTokens = 0;
+  try {
+    logTokens = tab.runtime.loop.getCurrentLogTokens();
+  } catch {
+    for (const msg of tab.runtime.loop.log.toMessages()) {
+      logTokens += countTokensForMeter(typeof msg.content === "string" ? msg.content : "");
+      if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        logTokens += countTokensForMeter(JSON.stringify(msg.tool_calls));
+      }
+    }
+  }
+  // ctxMax drives the panel meter's denominator + compaction-limit ticks —
+  // keep it in sync with the loop's context cap (resolveContextTokens + the
+  // verdict-aware override, so Ollama tabs show the same cap the loop enforces).
+  const ctxMax = resolveContextTokens(tab.currentModel, tabCtxMaxOverride(tab));
+  emitTabDiagnostic(tab, "context.breakdown", {
+    reservedTokens: sys + tools,
+    logTokens,
+    ctxMax,
+  });
+  const shellTotals = shellOutputFilteringTotals(tab.shellMetricsSince);
+  emit(
+    {
+      type: "$ctx_breakdown",
+      reservedTokens: sys + tools,
+      logTokens,
+      ctxMax,
+      ...(shellTotals
+        ? {
+            shellOutputRawTokens: shellTotals.rawTokens,
+            shellOutputShownTokens: shellTotals.shownTokens,
+          }
+        : {}),
+    },
+    tab.id,
+  );
+}
+
+// Full request context (system + messages) as editable plaintext (the desktop
+// "Raw context" debug view). Exported for tests.
+export function contextRawPayload(tab: Tab, notice?: string): ContextRawEvent {
+  if (!tab.runtime) {
+    return {
+      type: "$context_raw",
+      text: "",
+      messageCount: 0,
+      tokens: 0,
+      busy: false,
+      ...(notice ? { notice } : {}),
+    };
+  }
+  const loop = tab.runtime.loop;
+  const messages = loop.log.toMessages();
+  const text = serializeContext({ system: loop.prefix.system, messages });
+  return {
+    type: "$context_raw",
+    text,
+    messageCount: messages.length,
+    tokens: countTokensForMeter(text),
+    busy: tab.aborter !== null,
+    ...(notice ? { notice } : {}),
+  };
+}
+
+function emitContextRaw(tab: Tab, notice?: string): void {
+  emit(contextRawPayload(tab, notice), tab.id);
+}
+
+function emitSkills(tab: Tab): void {
+  try {
+    const store = new SkillStore({
+      projectRoot: tab.rootDir,
+      customSkillPaths: loadResolvedSkillPaths(tab.rootDir),
+      subagentModels: loadSubagentModels(),
+    });
+    const items = store.list().map((s) => ({
+      name: s.name,
+      description: s.description,
+      scope: s.scope,
+      path: s.path,
+      runAs: s.runAs,
+      model: s.model,
+    }));
+    emit({ type: "$skills", items }, tab.id);
+    emitTabDiagnostic(tab, "skills.list.completed", { count: items.length });
+  } catch (err) {
+    emitDiagnosticError("skills.list.failed", err, {
+      tabId: tab.id,
+      details: tabDiagnosticState(tab),
+    });
+    emit({ type: "$error", message: `skills_get failed: ${(err as Error).message}` }, tab.id);
+  }
+}
+
+interface RuntimeState {
+  loop: CacheFirstLoop;
+  eventizer: Eventizer;
+  ctx: {
+    model: string;
+    prefixHash: string;
+    reasoningEffort: import("../../config.js").ReasoningEffort;
+  };
+}
+
+type SymbolEntry = { name: string; path: string; line: number; kind: string };
+
+interface Tab {
+  readonly id: string;
+  /** Workspace-tab identity. Each Tab object is one independently running
+   *  session channel; every channel in the same visual workspace tab shares
+   *  this group id. */
+  groupId: string;
+  rootDir: string;
+  /** True until the user assigns a workspace. A pending tab has no rootDir,
+   *  session or toolset — it exists only so the UI can prompt for a workspace
+   *  without merging into an existing workspace tab. */
+  pending: boolean;
+  currentSession: string;
+  /** Session name the shell-output totals are anchored to; null until the first
+   *  emitCtxBreakdown binds it. See the re-anchor block there. */
+  shellMetricsSession: string | null;
+  /** Epoch ms captured when the current session was bound — summarizeCommandOutputMetrics
+   *  counts only telemetry appended after this instant, keeping the statusbar
+   *  chip per-session instead of an all-time aggregate. */
+  shellMetricsSince: number;
+  currentModel: string;
+  /** Per-tab subagent model override, set only when the user picks one in the
+   *  chat menu. `undefined` = subagents implicitly follow the main agent's
+   *  model. Persisted in session meta like the main model. */
+  currentSubagentModel?: string;
+  /** Per-tab reasoning effort — restored from the session's meta on load so a config reset doesn't flip it back to the global default. */
+  currentReasoningEffort: import("../../config.js").ReasoningEffort;
+  /** User-configured context-window cap (tokens); undefined = per-model default (300K). */
+  ctxMaxOverride: number | undefined;
+  /** null while the tab is bootstrapping — see `initTabToolset`. UI gates input on `$ready`, which only fires once this is set. */
+  toolset: Awaited<ReturnType<typeof buildCodeToolset>> | null;
+  /** Empty while bootstrapping; populated together with `toolset`. */
+  system: string;
+  initialization: Promise<void> | null;
+  initializationRevision: number;
+  runtime: RuntimeState | null;
+  aborter: AbortController | null;
+  /** Priority barrier owned by a user-requested compaction. New turns wait on
+   *  this promise so queued sends cannot race ahead of the fold. */
+  manualCompaction: Promise<void> | null;
+  fileIndex: FileWithStats[] | null;
+  fileIndexBuilding: Promise<FileWithStats[]> | null;
+  fileIndexBuiltAt: number;
+  symbolIndex: SymbolEntry[] | null;
+  symbolBuilding: Promise<SymbolEntry[]> | null;
+  recentMentions: string[];
+  /** Pause-gate ids waiting on this tab — abort uses these to free stranded plan_checkpoint / plan_revision / shell-confirm callers. */
+  pendingGateIds: Set<number>;
+  /** Step ids already marked complete in the in-flight plan — also tells UI when a plan is "active". */
+  completedStepIds: Set<string>;
+  /** Total steps in the in-flight plan (0 = no active plan / steps not provided). */
+  planTotalSteps: number;
+  /** Full steps of the in-flight plan — persisted to plan.json so a reload can restore it. */
+  planSteps: PlanStep[];
+  /** Markdown body + human summary of the in-flight plan (persisted with planSteps). */
+  planBody: string | null;
+  planSummary: string | null;
+  /** Per-step results from completed checkpoints, persisted for restore. */
+  planStepCompletions: Map<string, StepCompletion>;
+  /** Remaining steps from a pending plan_revision, merged into planSteps on acceptance. */
+  planPendingRevisionSteps: PlanStep[] | null;
+  mcpRuntime: McpRuntime | null;
+  mcpStatuses: Map<string, { kind: McpSpecStatus; reason?: string; toolCount?: number }>;
+  mcpBridgePromise: Promise<void> | null;
+  /** True while a session switch is in progress — prevents stale events from the old turn. */
+  switching: boolean;
+  /** Identifies session snapshots from this daemon lifetime. */
+  sessionsEpoch: string;
+  /** Monotonic ordering for asynchronous session-list snapshots. */
+  sessionsRevision: number;
+  hooks: ResolvedHook[];
+}
+
+function tabDiagnosticState(tab: Tab): Record<string, unknown> {
+  let credentialAvailable: boolean | null = null;
+  try {
+    credentialAvailable = tabHasCredential(tab);
+  } catch {
+    credentialAvailable = null;
+  }
+  const mcpStatusCounts: Record<string, number> = {};
+  for (const status of tab.mcpStatuses.values()) {
+    mcpStatusCounts[status.kind] = (mcpStatusCounts[status.kind] ?? 0) + 1;
+  }
+  const stats = tab.runtime?.loop.stats.summary() ?? null;
+  let logEntries: number | null = null;
+  if (tab.runtime) {
+    try {
+      logEntries = tab.runtime.loop.log.length;
+    } catch {
+      logEntries = null;
+    }
+  }
+  return {
+    tabId: tab.id,
+    workspaceDirChars: tab.rootDir.length,
+    session: tab.currentSession || null,
+    model: tab.currentModel,
+    provider: providerForModel(tab.currentModel),
+    reasoningEffort: tab.currentReasoningEffort,
+    credentialAvailable,
+    toolsetReady: tab.toolset !== null,
+    runtimeReady: tab.runtime !== null,
+    busy: tab.aborter !== null,
+    switching: tab.switching,
+    pendingGateCount: tab.pendingGateIds.size,
+    plan: { totalSteps: tab.planTotalSteps, completedSteps: tab.completedStepIds.size },
+    mcp: { configured: mcpStatusCounts, runtimeReady: tab.mcpRuntime !== null },
+    indexes: {
+      fileReady: tab.fileIndex !== null,
+      fileBuilding: tab.fileIndexBuilding !== null,
+      symbolReady: tab.symbolIndex !== null,
+      symbolBuilding: tab.symbolBuilding !== null,
+    },
+    hooks: tab.hooks.length,
+    logEntries,
+    turn: tab.runtime?.loop.currentTurn ?? null,
+    stats,
+  };
+}
+
+function emitTabDiagnostic(
+  tab: Tab,
+  event: string,
+  details?: Record<string, unknown>,
+  level: DesktopDiagnosticEvent["level"] = "debug",
+): void {
+  emitDiagnostic(
+    event,
+    { ...tabDiagnosticState(tab), ...details },
+    {
+      tabId: tab.id,
+      level,
+    },
+  );
+}
+
+let tabCounter = 0;
+function nextTabId(): string {
+  tabCounter++;
+  return `t${tabCounter}`;
+}
+
+let groupCounter = 0;
+function nextGroupId(): string {
+  groupCounter++;
+  return `g${groupCounter}`;
+}
+
+/** True when two workspace dirs point at one directory (case-insensitive on
+ *  Windows, where the same path can arrive with different casing). */
+function sameWorkspaceDir(a: string, b: string): boolean {
+  const ra = resolve(a);
+  const rb = resolve(b);
+  return process.platform === "win32" ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+}
+
+/** Collapse persisted session channels onto one visual group per canonical
+ *  workspace. The first occurrence owns the group's identity and order; later
+ *  channels keep their independent sessions but join that workspace tab. */
+export function normalizeWorkspaceTabGroups<T extends { dir: string; groupId?: string }>(
+  entries: readonly T[],
+  mintGroupId: () => string = nextGroupId,
+): T[] {
+  const workspaces: Array<{ dir: string; groupId: string }> = [];
+  const groupOwners = new Map<string, string>();
+
+  return entries.map((entry) => {
+    const existing = workspaces.find((workspace) => sameWorkspaceDir(workspace.dir, entry.dir));
+    if (existing) return { ...entry, groupId: existing.groupId };
+
+    let groupId = entry.groupId;
+    const owner = groupId ? groupOwners.get(groupId) : undefined;
+    if (!groupId || (owner !== undefined && !sameWorkspaceDir(owner, entry.dir))) {
+      do {
+        groupId = mintGroupId();
+      } while (groupOwners.has(groupId));
+    }
+    workspaces.push({ dir: entry.dir, groupId });
+    groupOwners.set(groupId, entry.dir);
+    return { ...entry, groupId };
+  });
+}
+
+/** Every independently running session owned by one visual workspace tab. */
+export function channelsInWorkspaceTab<T extends { groupId: string }>(
+  channels: readonly T[],
+  selected: { groupId: string },
+): T[] {
+  return channels.filter((channel) => channel.groupId === selected.groupId);
+}
+
+/** The newest session to implicitly resume on a switch (newest-first list), or
+ *  null when none. `skip` drops candidates another channel holds so one session
+ *  can't bind to two channels. Pure so the rule is testable. */
+export function pickResumeSession(
+  sessions: readonly SessionInfo[],
+  skip?: (session: SessionInfo) => boolean,
+): SessionInfo | null {
+  if (!skip) return sessions[0] ?? null;
+  return sessions.find((s) => !skip(s)) ?? null;
+}
+
+function mintSessionFor(
+  rootDir: string,
+  prefs?: ModelPrefs,
+  options: { materialize?: boolean; mcp?: SessionMcpState } = {},
+): string {
+  const materialize = options.materialize !== false;
+  // Virtual deletion replacements need unique names even though they do not
+  // occupy disk yet. Eager sessions retain the stable, human-readable suffix.
+  const suffix = materialize ? `${tabCounter}` : `${tabCounter}-${randomUUID().slice(0, 8)}`;
+  // Seconds precision repeats when `new_chat` fires twice within one second —
+  // reuse the collision loop so the second mint takes `-1`, `-2`, … instead
+  // of truncating a session that already exists.
+  const name = firstFreeSessionName(`desktop-${timestampSuffix(14)}-${suffix}`, (candidate) =>
+    sessionExists(candidate),
+  );
+  if (!materialize) return name;
+
+  // EAGER creation: New chat means NEW chat — the folder and its (empty)
+  // transcript + meta land on disk immediately. An empty session is a real
+  // session: it lists in the sidebar, survives switches, and is only ever
+  // removed by an explicit delete.
+  try {
+    ensureSessionDir(name);
+    // Seed the session's MCP state from the Settings default so later default
+    // edits don't retroactively change an existing conversation.
+    patchSessionMeta(name, {
+      workspace: rootDir,
+      ...(prefs ?? {}),
+      mcp: options.mcp ?? sessionMcpFromConfig(rootDir),
+    });
+  } catch (err) {
+    // meta is for filtering only: failure shouldn't block chat, but LOG
+    emitDiagnosticError("session.meta.patch.failed", err, {
+      details: { session: name },
+    });
+    process.stderr.write(`reasonix: session mint failed: ${messageOf(err)}\n`);
+  }
+  return name;
+}
+
+/** The user changed the model/effort/subagent-model enums in the desktop UI —
+ *  persist the new values into the open conversation's meta so a resume (even
+ *  after a reinstall wiped the config) restores them. */
+function persistSessionModelPrefs(tab: Tab): void {
+  if (!tab.currentSession) return;
+  try {
+    patchSessionMeta(tab.currentSession, {
+      model: tab.currentModel,
+      reasoningEffort: tab.currentReasoningEffort,
+      subagentModel: tab.currentSubagentModel,
+    });
+  } catch (err) {
+    emitDiagnosticError("session.model-prefs.persist.failed", err, {
+      tabId: tab.id,
+      details: tabDiagnosticState(tab),
+    });
+    /* meta is best-effort — failure shouldn't block the settings change, but LOG */
+    process.stderr.write(`reasonix: session model prefs persist failed — ${messageOf(err)}\n`);
+  }
+}
+
+/** Record the conversation's model/effort on its first turn — but never
+ *  overwrite what's already stored: only an explicit UI change
+ *  (settings_save) or a freshly minted session writes after that. */
+function stampSessionModelPrefs(tab: Tab): void {
+  if (!tab.currentSession) return;
+  try {
+    const meta = loadSessionMeta(tab.currentSession);
+    if (meta.model !== undefined && meta.reasoningEffort !== undefined) return;
+    patchSessionMeta(tab.currentSession, {
+      model: meta.model ?? tab.currentModel,
+      reasoningEffort: meta.reasoningEffort ?? tab.currentReasoningEffort,
+      subagentModel: meta.subagentModel ?? tab.currentSubagentModel,
+    });
+  } catch (err) {
+    emitDiagnosticError("session.model-prefs.stamp.failed", err, {
+      tabId: tab.id,
+      details: tabDiagnosticState(tab),
+    });
+    /* meta is best-effort — but LOG so the failure isn't silent */
+    process.stderr.write(`reasonix: session model prefs stamp failed — ${messageOf(err)}\n`);
+  }
+}
+
+/** Rebuild only the prompt from current tab state. Callers own runtime/prefix updates. */
+export function refreshTabSystemPrompt(
+  tab: Pick<Tab, "rootDir" | "currentModel" | "system"> & {
+    toolset: Pick<CodeToolset, "semantic"> | null;
+  },
+): void {
+  if (!tab.toolset) return;
+  tab.system = codeSystemPrompt(tab.rootDir, {
+    hasSemanticSearch: tab.toolset.semantic.enabled,
+    modelId: tab.currentModel,
+  });
+}
+
+/** Rebind the tab's model/effort/subagent-model to the conversation's stored
+ *  values — a reinstall can't flip an ongoing conversation's models. */
+function restoreSessionModelPrefs(tab: Tab, meta: SessionMeta): void {
+  const prefs = resolveSessionModelPrefs(meta, {
+    model: tab.currentModel,
+    reasoningEffort: tab.currentReasoningEffort,
+    subagentModel: tab.currentSubagentModel,
+  });
+  if (prefs.model !== tab.currentModel) {
+    tab.currentModel = prefs.model;
+    // The system prompt embeds the model id — refresh it when the model
+    // changes so tool guidance matches the restored model.
+    refreshTabSystemPrompt(tab);
+  }
+  tab.currentReasoningEffort = prefs.reasoningEffort;
+  tab.currentSubagentModel = prefs.subagentModel;
+}
+
+/** Knowledge-level refresh after an enableSubagents toggle: sync the dedicated
+ *  spawn tools on the live registry, recompute the system prompt (skills index +
+ *  section), and rebuild the runtime like a model switch. */
+function refreshSubagentKnowledge(tab: Tab, enabled: boolean): void {
+  const toolset = tab.toolset;
+  if (!toolset) return;
+  toolset.syncSubagentTools(enabled);
+  refreshTabSystemPrompt(tab);
+  tab.runtime = tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
+}
+
+/** Add/remove JEV at the knowledge level, then rebuild the immutable tool-spec prefix. */
+function refreshJevKnowledge(tab: Tab, enabled: boolean): void {
+  const toolset = tab.toolset;
+  if (!toolset) return;
+  toolset.syncJevTool(enabled);
+  tab.runtime = tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
+}
+
+/** Provider-specific "not configured yet" message for a model id — keeps a
+ *  gemini tab from being told to paste a DeepSeek key. Shared by the
+ *  user_input and skill_run setup gates (deepseek is the fallback provider). */
+function notConfiguredMessage(model: string): string {
+  switch (providerForModel(model)) {
+    case "openai":
+      return "Not configured yet — add an OpenAI key or sign in with ChatGPT (Settings → OpenAI) first.";
+    case "ollama":
+      return "Not configured yet — set an Ollama base URL / key and pick an Ollama model (Settings → Models).";
+    case "gemini":
+      return "Not configured yet — sign in to Google Antigravity (Settings → Google) to use Gemini models.";
+    case "zai":
+      return "Not configured yet — add a Z.AI API key in Settings → General to use GLM models.";
+    case "opencode":
+      return "Not configured yet — OpenCode endpoint is unavailable.";
+    default:
+      return "Not configured yet — paste your DeepSeek API key first.";
+  }
+}
+
+/** Whether the tab's CURRENT model can be run now — the strict per-turn gate.
+ *  gpt needs an OpenAI key/OAuth; deepseek needs its key; local Ollama is
+ *  keyless but cloud Ollama needs ollamaApiKey. */
+export function tabCurrentModelUsable(tab: Tab): boolean {
+  if (providerForModel(tab.currentModel) === "openai") {
+    const ep = loadEndpointForModel(tab.currentModel);
+    if (ep.apiKey) return true;
+    return !!readConfig().openaiOAuth?.accessToken;
+  }
+  // Local Ollama omits the Authorization header; a cloud endpoint (default
+  // https://ollama.com/v1) needs ollamaApiKey — a missing key is a per-turn 401.
+  if (providerForModel(tab.currentModel) === "ollama") {
+    const ep = loadOllamaEndpoint();
+    if (ep.apiKey) return true;
+    return isLocalOllamaEndpoint(ep.baseUrl);
+  }
+  if (providerForModel(tab.currentModel) === "gemini") {
+    return !!readConfig().antigravityOAuth?.accessToken;
+  }
+  if (providerForModel(tab.currentModel) === "zai") {
+    return !!loadZaiApiKey();
+  }
+  if (providerForModel(tab.currentModel) === "opencode") {
+    return true;
+  }
+  return !!loadApiKey();
+}
+
+/** True for the keyless local Ollama daemon (localhost / 127.0.0.1 / ::1);
+ *  cloud endpoints are NOT keyless. */
+function isLocalOllamaEndpoint(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return true; // no endpoint resolved → treat as local
+  try {
+    const host = new URL(baseUrl).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/** Setup/readiness gate: usable if the current model's provider has a
+ *  credential, OR if ANY alternative provider is configured. Keeps a
+ *  ChatGPT/Ollama-only install from being soft-locked behind a DeepSeek key. */
+export function tabHasCredential(tab: Tab): boolean {
+  return tabCurrentModelUsable(tab) || anyProviderConfigured();
+}
+
+/** Re-emit the setup/ready gate for a tab after a credential or model change —
+ *  `$ready` when the tab is now usable, `$needs_setup` when it regressed. */
+function emitTabGate(tab: Tab): void {
+  if (tabHasCredential(tab)) emit({ type: "$ready" }, tab.id);
+  else emit({ type: "$needs_setup", reason: "no_api_key" }, tab.id);
+}
+
+/** Effective ctxMaxOverride for a tab: Ollama tabs use the server's learned /api/show
+ *  window (verdict store) when fresh, else the user `contextTokens` setting — every ctxMax
+ *  consumer (loop, meter, settings changes) must resolve the same value. */
+function tabCtxMaxOverride(tab: Tab): number | undefined {
+  if (providerForModel(tab.currentModel) !== "ollama") return tab.ctxMaxOverride;
+  return (
+    contextTokensForModel(
+      loadOllamaVerdicts(ollamaVerdictsPath()),
+      tab.currentModel.replace(/^ollama\//, ""),
+      Date.now(),
+    ) ?? tab.ctxMaxOverride
+  );
+}
+
+function buildRuntimeFor(tab: Tab): RuntimeState {
+  if (!tab.toolset) throw new Error("buildRuntimeFor called before initTabToolset finished");
+  const toolset = tab.toolset;
+  applyPlanMode(toolset.tools, loadEditMode());
+  const ep = loadEndpointForModel(tab.currentModel);
+  const provider = providerForModel(tab.currentModel);
+  const isOpenAI = isOpenAIStandardEndpoint(tab.currentModel);
+  const log = createLogger("desktop");
+  if (isOpenAI) {
+    const keyStatus = ep.apiKey ? "static key present, " : "no static key, ";
+    log.debug(
+      `model ${tab.currentModel} → OpenAI; ${keyStatus}Codex backend transport enabled (plan quota)`,
+    );
+  } else if (provider === "ollama") {
+    log.debug(
+      `model ${tab.currentModel} → Ollama; endpoint ${ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL}`,
+    );
+  } else if (provider === "gemini") {
+    log.debug(
+      `model ${tab.currentModel} → Gemini; endpoint ${ep.baseUrl ?? DEFAULT_GEMINI_CHAT_URL} (Antigravity quota)`,
+    );
+  } else if (provider === "zai") {
+    log.debug(`model ${tab.currentModel} → Z.AI; endpoint ${ep.baseUrl ?? DEFAULT_ZAI_CHAT_URL}`);
+  } else if (provider === "opencode") {
+    log.debug(
+      `model ${tab.currentModel} → OpenCode; endpoint ${ep.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL}`,
+    );
+  } else {
+    log.debug(`model ${tab.currentModel} → DeepSeek; endpoint ${ep.baseUrl ?? "default"}`);
+  }
+  // Stable conversation identity for OpenCode's x-opencode-session routing
+  // follows the tab's session name; subagents get independent generated ids.
+  const client = createModelClient({
+    model: tab.currentModel,
+    sessionId: tab.currentSession ?? undefined,
+  });
+  const prefix = new ImmutablePrefix({ system: tab.system, toolSpecs: toolset.tools.specs() });
+  const reasoningEffort = tab.currentReasoningEffort;
+  // Ollama tabs calibrate compaction against the server's real window when one
+  // has been learned from /api/show (verdict store); the user `contextTokens`
+  // override (clamped ≥300K) is the fallback, then the per-model default.
+  const ctxMaxOverride = tabCtxMaxOverride(tab);
+  const loop = new CacheFirstLoop({
+    client,
+    prefix,
+    tools: toolset.tools,
+    model: tab.currentModel,
+    ctxMaxOverride,
+    session: tab.currentSession,
+    // Turn ordinals are session-wide identity: a model switch rebuilds the
+    // runtime over a possibly-compacted log, and without this floor the new
+    // loop's baseline can regress below turns the desktop already rendered.
+    turnFloor: tab.runtime?.loop.currentTurn ?? 0,
+    reasoningEffort,
+    maxIterPerTurn: loadMaxIterPerTurn(),
+    maxOutputTokens: loadMaxOutputTokens(),
+    disableAutoCompaction: loadDisableAutoCompaction(),
+    repetitionGuardEnabled: loadRepetitionGuardEnabled(),
+    // Provider and billing unit come from resolved endpoint/config evidence.
+    billingContextFor: (model) => {
+      const billing = subagentBillingFor(model);
+      return { kind: billing.kind, provider: billing.provider };
+    },
+    // Live thunk (not a snapshot) so a mid-session Shift+Tab / /mode flip
+    // stops the iteration cap from pausing the turn in yolo.
+    getEditMode: () => loadEditMode(),
+    hooks: tab.hooks,
+    hookCwd: tab.rootDir,
+    onPreCompaction: () => toolset.jobs.cancelAll({ keepPersistent: true }),
+  });
+  const eventizer = new Eventizer();
+  const ctx = { model: tab.currentModel, prefixHash: prefix.fingerprint, reasoningEffort };
+  return { loop, eventizer, ctx };
+}
+
+const TS_EXPORT_RE =
+  /^export\s+(?:default\s+)?(?:async\s+)?(function|class|const|let|var|interface|type|enum)\s+\*?\s*(\w+)/;
+
+/** TTL on the in-memory file index — without this, files deleted / renamed since the last @ popup still show up as candidates. 10s balances "fresh enough for typical edit-then-mention flows" against "don't re-scan 5000 files on every keystroke". */
+const FILE_INDEX_TTL_MS = 10_000;
+
+async function getFileIndexFor(tab: Tab): Promise<FileWithStats[]> {
+  const fresh = tab.fileIndex && Date.now() - tab.fileIndexBuiltAt < FILE_INDEX_TTL_MS;
+  if (fresh) return tab.fileIndex as FileWithStats[];
+  if (tab.fileIndexBuilding) return tab.fileIndexBuilding;
+  tab.fileIndexBuilding = listFilesWithStatsAsync(tab.rootDir, { maxResults: 5000 })
+    .then((res) => {
+      tab.fileIndex = res;
+      tab.fileIndexBuiltAt = Date.now();
+      tab.fileIndexBuilding = null;
+      return res;
+    })
+    .catch((err) => {
+      tab.fileIndexBuilding = null;
+      throw err;
+    });
+  return tab.fileIndexBuilding;
+}
+
+async function getSymbolIndexFor(tab: Tab): Promise<SymbolEntry[]> {
+  if (tab.symbolIndex) return tab.symbolIndex;
+  if (tab.symbolBuilding) return tab.symbolBuilding;
+  tab.symbolBuilding = (async () => {
+    const files = await getFileIndexFor(tab);
+    const sourceExts = /\.(?:ts|tsx|js|jsx|mts|cts)$/;
+    const candidates = files.filter((f) => sourceExts.test(f.path)).slice(0, 1500);
+    const out: SymbolEntry[] = [];
+    const PARALLEL = 16;
+    for (let i = 0; i < candidates.length; i += PARALLEL) {
+      const batch = candidates.slice(i, i + PARALLEL);
+      await Promise.all(
+        batch.map(async (entry) => {
+          const abs = isAbsolute(entry.path) ? entry.path : join(tab.rootDir, entry.path);
+          try {
+            const text = await readFile(abs, "utf8");
+            const lines = text.split(/\r?\n/);
+            for (let li = 0; li < lines.length; li++) {
+              const line = lines[li]!;
+              if (!line.startsWith("export ")) continue;
+              const m = TS_EXPORT_RE.exec(line);
+              if (m) out.push({ kind: m[1]!, name: m[2]!, path: entry.path, line: li + 1 });
+            }
+          } catch (err) {
+            emitDiagnosticError("symbol-index.file.failed", err, {
+              tabId: tab.id,
+              details: { pathChars: entry.path.length, ...tabDiagnosticState(tab) },
+            });
+            // unreadable / binary — skip, but LOG
+            process.stderr.write(`reasonix: symbol index parse failed — ${messageOf(err)}\n`);
+          }
+        }),
+      );
+    }
+    tab.symbolIndex = out;
+    tab.symbolBuilding = null;
+    return out;
+  })().catch((err) => {
+    tab.symbolBuilding = null;
+    throw err;
+  });
+  return tab.symbolBuilding;
+}
+
+function rankSymbols(syms: readonly SymbolEntry[], q: string, limit: number): string[] {
+  const needle = q.toLowerCase();
+  const scored: { entry: SymbolEntry; score: number }[] = [];
+  for (const s of syms) {
+    const lower = s.name.toLowerCase();
+    let score: number;
+    if (lower === needle) score = 0;
+    else if (lower.startsWith(needle)) score = 100;
+    else if (lower.includes(needle)) score = 500 + lower.indexOf(needle);
+    else continue;
+    scored.push({ entry: s, score });
+  }
+  scored.sort((a, b) => a.score - b.score || a.entry.name.localeCompare(b.entry.name));
+  return scored.slice(0, limit).map((s) => `${s.entry.path}:${s.entry.line}`);
+}
+
+function pushMentionRecent(tab: Tab, path: string): void {
+  const MAX = 20;
+  const idx = tab.recentMentions.indexOf(path);
+  if (idx >= 0) tab.recentMentions.splice(idx, 1);
+  tab.recentMentions.unshift(path);
+  if (tab.recentMentions.length > MAX) tab.recentMentions.length = MAX;
+}
+
+/** The desktop sidecar is a long-running daemon — Tauri spawns this Node process once per app launch and pipes JSON over stdin/stdout. Without these handlers, any orphaned promise rejection (e.g. from an aborted turn whose cleanup races a session-switch — #1074) crashes the process with exit code 1, which the Tauri host surfaces as "reasonix exited (code 1)" and a full reconnect cycle. Log loudly so we can find the underlying bug, but don't take the daemon down. */
+let healthDiagnosticsStarted = false;
+
+function startProcessHealthDiagnostics(): void {
+  if (healthDiagnosticsStarted) return;
+  healthDiagnosticsStarted = true;
+  let previousCpu = process.cpuUsage();
+  let previousAt = performance.now();
+  const timer = setInterval(() => {
+    const now = performance.now();
+    const cpu = process.cpuUsage(previousCpu);
+    const elapsedMs = now - previousAt;
+    previousCpu = process.cpuUsage();
+    previousAt = now;
+    const memory = process.memoryUsage();
+    recordDiagnostic("process.health", {
+      level: "verbose",
+      details: {
+        elapsedMs: Number(elapsedMs.toFixed(3)),
+        cpuUserMs: Number((cpu.user / 1000).toFixed(3)),
+        cpuSystemMs: Number((cpu.system / 1000).toFixed(3)),
+        rssBytes: memory.rss,
+        heapUsedBytes: memory.heapUsed,
+        heapTotalBytes: memory.heapTotal,
+        externalBytes: memory.external,
+        arrayBuffersBytes: memory.arrayBuffers,
+        activeResources: process.getActiveResourcesInfo(),
+      },
+    });
+  }, 30_000);
+  timer.unref();
+}
+
+export function installDesktopCrashGuards(
+  stderr: { write: (s: string) => unknown } = process.stderr,
+): void {
+  process.on("unhandledRejection", (reason) => {
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    const message = redactDesktopDiagnosticMessage(
+      err.stack ?? err.message,
+      Number.POSITIVE_INFINITY,
+    );
+    recordDiagnostic("process.unhandled_rejection", { level: "error", message });
+    stderr.write(`[desktop] unhandledRejection: ${message}\n`);
+  });
+  process.on("uncaughtException", (err) => {
+    const message = redactDesktopDiagnosticMessage(
+      err.stack ?? err.message,
+      Number.POSITIVE_INFINITY,
+    );
+    recordDiagnostic("process.uncaught_exception", { level: "error", message });
+    stderr.write(`[desktop] uncaughtException: ${message}\n`);
+  });
+}
+
+export async function desktopCommand(opts: DesktopOptions): Promise<void> {
+  markPhase("desktop_command_entered");
+  loadDotenv();
+  const log = createLogger("desktop");
+  log.info(`Reasonix+ desktop daemon starting (${opts.model ?? "default model"})`);
+  // Tauri spawns the bundled Node from the GUI process, which never runs the
+  // user's shell init (`.bashrc` / `.zshrc` / profile). Probe the login shell
+  // once so nvm / asdf / fnm / volta / mise PATH entries reach `run_command`
+  // children too (#1252). No-op on Windows — system PATH already covers GUI apps.
+  const augmented = augmentProcessPath();
+  markPhase("process_path_ready");
+  if (augmented.added.length > 0) {
+    log.debug(`augmented PATH with ${augmented.added.length} login-shell entries`);
+  }
+  installDesktopCrashGuards();
+  startProcessHealthDiagnostics();
+  // One-time move of pre-folder flat sessions (<name>.jsonl + sidecars) into
+  // their <name>/ folders. Idempotent — a partial migration finishes on the
+  // next boot, and a migrated disk is a single cheap readdir.
+  try {
+    const { migrated, prunedEmpty } = migrateLegacyFlatSessions();
+    if (migrated.length > 0 || prunedEmpty.length > 0) {
+      log.info(
+        `session layout migration: ${migrated.length} migrated, ${prunedEmpty.length} empty pruned`,
+      );
+    }
+  } catch (err) {
+    // Never block boot on migration — reads still fall back to legacy paths.
+    process.stderr.write(`reasonix: session layout migration failed — ${messageOf(err)}\n`);
+  }
+
+  const tabs = new Map<string, Tab>();
+  const tabContext = new AsyncLocalStorage<string>();
+  // Daemon-scoped shared MCP clients for browser servers — one Playwright
+  // client (one browser) is reused by every tab, so switching sessions attaches
+  // to the existing browser instead of spawning a second one.
+  const browserRegistry = new SharedClientRegistry();
+  // Frontend-reported focused tab — persisted so a restart reopens on it (#1244).
+  let lastActiveTabId = "";
+
+  function activeRunningTab(): Tab | undefined {
+    const id = tabContext.getStore();
+    return id ? tabs.get(id) : undefined;
+  }
+
+  let first: Tab;
+  let settleFirstBootstrap!: () => void;
+  const firstBootstrapSettled = new Promise<void>((resolve) => {
+    settleFirstBootstrap = resolve;
+  });
+
+  function emitSessionsForWorkspace(
+    workspaceDir: string,
+    settledDeletes?: SessionsEvent["settledDeletes"],
+  ): void {
+    for (const t of tabs.values()) {
+      if (sameWorkspaceDir(t.rootDir, workspaceDir)) {
+        void emitSessions(t, settledDeletes);
+      }
+    }
+  }
+
+  /** Synchronous tab construction — no I/O. All cheap, disk-only events (`$settings`, `$sessions`, `$memory`, `$skills`, `$mcp_specs`) can fire against this immediately. The heavy bits (`buildCodeToolset`, MCP probes, runtime construction) happen in `initTabToolset` so the UI shell paints without waiting for them. */
+  function createTabSkeleton(
+    initialDir?: string,
+    restoreId?: string,
+    restore?: {
+      groupId?: string;
+      session?: string;
+      /** Fresh-channel (New chat) overrides — inherit the source session's prefs
+       *  rather than the global config default. */
+      model?: string;
+      reasoningEffort?: import("../../config.js").ReasoningEffort;
+      subagentModel?: string;
+    },
+    pending = false,
+  ): Tab {
+    const defaultDir = reasonixDefaultWorkspaceDir();
+    const configuredDir = loadWorkspaceDir();
+    const fallbackDir =
+      configuredDir && !sameWorkspaceDir(configuredDir, reasonixInstallDir())
+        ? configuredDir
+        : defaultDir;
+    const resolvedInitial =
+      initialDir && sameWorkspaceDir(initialDir, reasonixInstallDir()) ? defaultDir : initialDir;
+    const dir = pending ? "" : resolve(resolvedInitial ?? opts.dir ?? fallbackDir);
+    if (!pending) pushRecentWorkspace(dir);
+    const model = restore?.model || opts.model || loadModel() || DEFAULT_MODEL;
+    // Restored tabs keep their persisted id so a backend restart doesn't
+    // re-mint t1..tN over the frontend's still-open tabs. Bump the counter
+    // past the restored id so freshly opened tabs never collide with it.
+    const id = restoreId ?? nextTabId();
+    const idMatch = /^t(\d+)$/.exec(id);
+    if (idMatch) tabCounter = Math.max(tabCounter, Number(idMatch[1]));
+    // Restored groups keep their id; bump the counter past it so a freshly
+    // minted group never collides with a restored one (same rationale as id).
+    const groupId = restore?.groupId ?? nextGroupId();
+    const groupMatch = /^g(\d+)$/.exec(groupId);
+    if (groupMatch) groupCounter = Math.max(groupCounter, Number(groupMatch[1]));
+    const tab: Tab = {
+      id,
+      groupId,
+      rootDir: dir,
+      pending,
+      currentSession: "",
+      shellMetricsSession: null,
+      shellMetricsSince: 0,
+      currentModel: model,
+      currentSubagentModel: restore?.subagentModel,
+      currentReasoningEffort: restore?.reasoningEffort ?? loadReasoningEffort(),
+      ctxMaxOverride: loadContextTokens(),
+      toolset: null,
+      system: "",
+      initialization: null,
+      initializationRevision: 0,
+      runtime: null,
+      aborter: null,
+      manualCompaction: null,
+      fileIndex: null,
+      fileIndexBuilding: null,
+      fileIndexBuiltAt: 0,
+      symbolIndex: null,
+      symbolBuilding: null,
+      recentMentions: [],
+      pendingGateIds: new Set<number>(),
+      completedStepIds: new Set<string>(),
+      planTotalSteps: 0,
+      planSteps: [],
+      planBody: null,
+      planSummary: null,
+      planStepCompletions: new Map<string, StepCompletion>(),
+      planPendingRevisionSteps: null,
+      mcpRuntime: null,
+      mcpStatuses: new Map(),
+      mcpBridgePromise: null,
+      switching: false,
+      sessionsEpoch: randomUUID(),
+      sessionsRevision: 0,
+      hooks: pending ? [] : loadHooks({ projectRoot: dir }),
+    };
+    // A restored session binds its real jsonl when it still exists. A restored
+    // tab whose session was DELETED must stay VIRTUAL (no folder) so it is not
+    // resurrected on restart; only a genuinely new tab materializes eagerly.
+    const restoredSession =
+      restore?.session && sessionExists(restore.session) ? restore.session : undefined;
+    tab.currentSession = pending
+      ? ""
+      : restoredSession
+        ? restoredSession
+        : mintSessionFor(
+            dir,
+            {
+              model: tab.currentModel,
+              reasoningEffort: tab.currentReasoningEffort,
+              subagentModel: tab.currentSubagentModel,
+            },
+            { materialize: shouldMaterializeRestoredSession(restore) },
+          );
+    tabs.set(tab.id, tab);
+    emitTabDiagnostic(tab, "tab.created", { active: false }, "info");
+    return tab;
+  }
+
+  /** Builds the toolset / system prompt / runtime / MCP bridge for a freshly-created skeleton. Reads `tab.currentModel` at call time so model changes during the wait are honored. */
+  function subagentSinkFor(tab: Tab) {
+    return {
+      current: (ev: SubagentEvent): void => {
+        const progress = projectSubagentEvent(ev);
+        const runtime = tab.runtime;
+        if (!progress || !runtime) return;
+        emitKernelEvent(
+          runtime.eventizer.emitSubagentProgress(
+            ev.parentTurn ?? runtime.loop.currentTurn,
+            progress,
+          ),
+          tab.id,
+        );
+      },
+    };
+  }
+
+  /** Streams `run_command` stdout+stderr to the tab as transient `tool.output`
+   *  events so the shell card renders live rows. Drops when the toolset runs
+   *  outside a tab runtime or the call id can't be mapped. */
+  function shellOutputFor(tab: Tab) {
+    return (ev: import("../../tools/shell.js").ShellOutputEvent): void => {
+      const runtime = tab.runtime;
+      if (!runtime || ev.callId === undefined) return;
+      emitKernelEvent(
+        runtime.eventizer.emitToolOutput(ev.turn ?? runtime.loop.currentTurn, {
+          callId: ev.callId,
+          name: "run_command",
+          text: ev.text,
+        }),
+        tab.id,
+      );
+    };
+  }
+
+  const bootstrapGate = new ConcurrencyGate(2);
+
+  async function initTabToolset(tab: Tab, priority = 0): Promise<void> {
+    const bootstrapStartedAt = performance.now();
+    let previousPhaseAt = bootstrapStartedAt;
+    emitTabDiagnostic(tab, "tab.bootstrap.started", undefined, "info");
+    const { value: toolset, queueWaitMs } = await bootstrapGate.run(
+      () =>
+        buildCodeToolset({
+          rootDir: tab.rootDir,
+          onSkillInstalled: () => emitSkills(tab),
+          onJobsChanged: () => emitJobs(),
+          onShellOutput: shellOutputFor(tab),
+          subagentSink: subagentSinkFor(tab),
+          subagentBilling: (m) => subagentBillingFor(m),
+          subagentModel: () => tab.currentSubagentModel ?? tab.currentModel,
+          onPhase: (phase) => {
+            const now = performance.now();
+            emitTabDiagnostic(tab, "tab.bootstrap.phase", {
+              phase,
+              phaseDurationMs: Number((now - previousPhaseAt).toFixed(3)),
+              bootstrapCumulativeMs: Number((now - bootstrapStartedAt).toFixed(3)),
+            });
+            previousPhaseAt = now;
+          },
+        }),
+      priority,
+    );
+    tab.toolset = toolset;
+    if (priority > 0) markPhase("first_toolset_ready");
+    refreshTabSystemPrompt(tab);
+    if (tabCurrentModelUsable(tab)) {
+      bridgeEndpointEnv();
+      tab.runtime = buildRuntimeFor(tab);
+      if (priority > 0) markPhase("first_runtime_ready");
+      emitTabDiagnostic(tab, "tab.runtime.ready", undefined, "info");
+      void bridgeTabMcp(tab);
+    } else {
+      emitTabDiagnostic(tab, "tab.runtime.waiting-for-credential", undefined, "warn");
+    }
+    void settleTabSemantic(tab, tab.rootDir, toolset);
+    emitTabDiagnostic(
+      tab,
+      "tab.bootstrap.completed",
+      {
+        toolCount: toolset.tools.specs().length,
+        semanticEnabled: toolset.semantic.enabled,
+        queueWaitMs: Number(queueWaitMs.toFixed(3)),
+        durationMs: Number((performance.now() - bootstrapStartedAt).toFixed(3)),
+      },
+      "info",
+    );
+  }
+
+  async function emitWorkspaceInitialized(
+    tab: Tab,
+    sessionsInitialized: Promise<void>,
+  ): Promise<void> {
+    await Promise.all([tab.initialization, sessionsInitialized]);
+    emit({ type: "$workspace_initialized", revision: ++tab.initializationRevision }, tab.id);
+  }
+
+  async function settleTabSemantic(tab: Tab, root: string, toolset: CodeToolset): Promise<void> {
+    const startedAt = performance.now();
+    emitTabDiagnostic(tab, "tab.semantic.started", undefined, "debug");
+    try {
+      const result = await toolset.reBootstrapSemantic(root);
+      if (tab.rootDir !== root || tab.toolset !== toolset) {
+        emitTabDiagnostic(tab, "tab.semantic.stale", {
+          durationMs: Number((performance.now() - startedAt).toFixed(3)),
+        });
+        return;
+      }
+      toolset.semantic.enabled = result.enabled;
+      refreshTabSystemPrompt(tab);
+      if (tab.runtime) {
+        const prefix = tab.runtime.loop.prefix;
+        if (result.enabled) {
+          const spec = toolset.tools
+            .specs()
+            .find((candidate) => candidate.function.name === "semantic_search");
+          if (spec) prefix.addTool(spec);
+        } else {
+          prefix.removeTool("semantic_search");
+        }
+        prefix.replaceSystem(tab.system);
+      }
+      emitTabDiagnostic(tab, "tab.semantic.completed", {
+        enabled: result.enabled,
+        durationMs: Number((performance.now() - startedAt).toFixed(3)),
+      });
+    } catch (error) {
+      emitDiagnosticError("tab.semantic.failed", error, {
+        tabId: tab.id,
+        details: {
+          ...tabDiagnosticState(tab),
+          durationMs: Number((performance.now() - startedAt).toFixed(3)),
+        },
+      });
+    }
+  }
+
+  async function bridgeTabMcp(tab: Tab): Promise<void> {
+    if (!tab.runtime || !tab.toolset) {
+      emitTabDiagnostic(tab, "mcp.bridge.skipped", { reason: "runtime-or-toolset-not-ready" });
+      tab.mcpBridgePromise = null;
+      return Promise.resolve();
+    }
+    const configured = effectiveMcpSpecs(tab);
+    emitTabDiagnostic(tab, "mcp.bridge.started", {
+      configured: configured.length,
+    });
+    const playwrightSpec = configured.find((s) => s.name === "playwright");
+    if (playwrightSpec && playwrightSpec.transport === "stdio" && !playwrightSpec.disabled) {
+      await ensureNpxAvailable().catch(() => undefined);
+      const { mode } = parsePlaywrightConnection(playwrightSpec.args);
+      if (
+        isPlaywrightManagedBrowser(mode) &&
+        !isPlaywrightBrowserInstalled(mode) &&
+        !playwrightBrowserInstalls.has(mode)
+      ) {
+        tab.mcpStatuses.set("playwright", { kind: "handshake" });
+        emitMcpSpecs(tab);
+        void installPlaywrightBrowser(tab, mode, () => {
+          void bridgeTabMcp(tab);
+        });
+        tab.mcpBridgePromise = null;
+        return Promise.resolve();
+      }
+    }
+    if (tab.mcpRuntime) {
+      // Already constructed — reload so new/removed specs settle without restart.
+      const p = tab.mcpRuntime
+        .reloadFromConfig(tab.runtime.loop)
+        .then(() => {
+          emitTabDiagnostic(tab, "mcp.bridge.completed", { mode: "reload" });
+          emitMcpSpecs(tab);
+        })
+        .catch((err) => {
+          emitDiagnosticError("mcp.bridge.failed", err, {
+            tabId: tab.id,
+            details: { mode: "reload", ...tabDiagnosticState(tab) },
+          });
+          emit({ type: "$error", message: `mcp reload failed: ${(err as Error).message}` }, tab.id);
+        });
+      tab.mcpBridgePromise = p;
+      return p;
+    }
+    const requested = configured.length;
+    if (requested === 0) {
+      emitTabDiagnostic(tab, "mcp.bridge.skipped", { reason: "no-configured-servers" });
+      tab.mcpBridgePromise = null;
+      return Promise.resolve();
+    }
+    const runtime = createMcpRuntime({
+      getTools: () => {
+        if (!tab.toolset) throw new Error("toolset gone");
+        return tab.toolset.tools;
+      },
+      getMcpPrefix: () => undefined,
+      getRequestedCount: () => requested,
+      getWorkspaceDir: () => tab.rootDir,
+      getSpecOverrides: () => sessionMcpOverrides(tab.currentSession),
+      progressSink: { current: null },
+      browserRegistry,
+    });
+    tab.mcpRuntime = runtime;
+    runtime.setLifecycleSink((event) => {
+      if (event.state === "slow") {
+        emitTabDiagnostic(
+          tab,
+          "mcp.lifecycle",
+          {
+            notice: "slow",
+            name: event.serverName,
+            p95Ms: event.p95Ms,
+            sampleSize: event.sampleSize,
+          },
+          "warn",
+        );
+        return;
+      }
+      const activeSpecs = loadEffectiveMcpConfig(tab.rootDir);
+      const targetSpec = activeSpecs.find((s) => s.name === event.name);
+      const target = targetSpec ? specToRaw(targetSpec) : event.name;
+      if (!targetSpec) {
+        emitTabDiagnostic(
+          tab,
+          "mcp.lifecycle.unmatched",
+          {
+            notice: event.state,
+            name: event.name,
+          },
+          "warn",
+        );
+        return;
+      }
+      emitTabDiagnostic(
+        tab,
+        "mcp.lifecycle",
+        {
+          notice: event.state,
+          name: event.name,
+          ...(event.state === "connected"
+            ? {
+                tools: event.tools,
+                resources: event.resources,
+                prompts: event.prompts,
+                ms: event.ms,
+              }
+            : {}),
+          ...(event.state === "failed" || event.state === "warn" ? { reason: event.reason } : {}),
+        },
+        event.state === "failed" ? "error" : "debug",
+      );
+      if (event.state === "handshake") {
+        tab.mcpStatuses.set(target, { kind: "handshake" });
+        if (targetSpec.name) tab.mcpStatuses.set(targetSpec.name, { kind: "handshake" });
+      } else if (event.state === "connected") {
+        tab.mcpStatuses.set(target, { kind: "connected", toolCount: event.tools });
+        if (targetSpec.name)
+          tab.mcpStatuses.set(targetSpec.name, { kind: "connected", toolCount: event.tools });
+      } else if (event.state === "tools-ready") {
+        // Per-tool toggle applied on a live server — status stays "connected", count refreshes.
+        tab.mcpStatuses.set(target, { kind: "connected", toolCount: event.tools });
+        if (targetSpec.name)
+          tab.mcpStatuses.set(targetSpec.name, { kind: "connected", toolCount: event.tools });
+      } else if (event.state === "failed") {
+        tab.mcpStatuses.set(target, { kind: "failed", reason: event.reason });
+        if (targetSpec.name)
+          tab.mcpStatuses.set(targetSpec.name, { kind: "failed", reason: event.reason });
+      } else if (event.state === "disabled") {
+        tab.mcpStatuses.set(target, { kind: "disabled" });
+        if (targetSpec.name) tab.mcpStatuses.set(targetSpec.name, { kind: "disabled" });
+      }
+      emitMcpSpecs(tab);
+    });
+    const p = runtime
+      .reloadFromConfig(tab.runtime.loop)
+      .then((result) => {
+        emitTabDiagnostic(tab, "mcp.bridge.completed", {
+          mode: "initial",
+          added: result.added.length,
+          removed: result.removed.length,
+          failed: result.failed.length,
+          summaries: result.summaries.length,
+        });
+      })
+      .catch((err) => {
+        emitDiagnosticError("mcp.bridge.failed", err, {
+          tabId: tab.id,
+          details: { mode: "initial", ...tabDiagnosticState(tab) },
+        });
+        emit({ type: "$error", message: `mcp bridge failed: ${(err as Error).message}` }, tab.id);
+      });
+    tab.mcpBridgePromise = p;
+    return p;
+  }
+
+  /** Snapshot of every open tab — workspace dir, loaded session and focus, in tab order. Persisted after open/close/switch so a restart restores the full tab set and each conversation (issues #933, #1244). */
+  function persistOpenTabs(): void {
+    try {
+      saveDesktopOpenTabs(
+        Array.from(tabs.values())
+          // Pending (workspace-less) tabs aren't persisted — a restart never
+          // reopens an unresolved tab.
+          .filter((t) => !t.pending && t.rootDir)
+          .map((t) => ({
+            dir: t.rootDir,
+            id: t.id,
+            session: t.currentSession || undefined,
+            groupId: t.groupId,
+            active: t.id === lastActiveTabId,
+          })),
+      );
+    } catch (err) {
+      emitDiagnosticError("tabs.persist.failed", err, {
+        details: { tabCount: tabs.size, activeTabId: lastActiveTabId },
+      });
+      // best-effort — disk / perms shouldn't break tab management, but LOG
+      process.stderr.write(`reasonix: open tabs persist failed — ${messageOf(err)}\n`);
+    }
+  }
+
+  /** The channel (tab) that owns `name` as its current session, if any. A
+   *  session is a single running agent — at most one channel may hold it. */
+  function channelForSession(name: string): Tab | undefined {
+    for (const t of tabs.values()) {
+      if (t.currentSession === name) return t;
+    }
+    return undefined;
+  }
+
+  async function closeChannel(
+    tab: Tab,
+    options: { ensureFallback?: boolean; persist?: boolean } = {},
+  ): Promise<void> {
+    emitTabDiagnostic(tab, "tab.close.started", undefined, "info");
+    cancelMailAuth(tab, MailProvider.Outlook);
+    cancelMailAuth(tab, MailProvider.Gmail);
+    abortTurn(tab);
+    cancelPendingGates(tab);
+    try {
+      await tab.toolset?.jobs.shutdown();
+    } catch (err) {
+      emitDiagnosticError("tab.jobs.shutdown.failed", err, {
+        tabId: tab.id,
+        details: tabDiagnosticState(tab),
+      });
+      // shutdown errors aren't actionable here — but LOG
+      process.stderr.write(`reasonix: tab job shutdown failed — ${messageOf(err)}\n`);
+    }
+    if (tab.mcpRuntime) {
+      try {
+        // closeAll's loop iterates every MCP client sequentially with no
+        // per-client timeout — one hung streamable-http close can stall
+        // the whole tab close.  Race the entire batch against 5 s so
+        // $tab_closed still fires.
+        const DEADLINE = 5000;
+        await Promise.race([
+          tab.mcpRuntime.closeAll(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("timed out after 5 s")), DEADLINE),
+          ),
+        ]);
+      } catch (err) {
+        emitDiagnosticError("tab.mcp.shutdown.failed", err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+        // MCP shutdown errors aren't actionable here either — but LOG
+        process.stderr.write(`reasonix: tab MCP closeAll failed — ${messageOf(err)}\n`);
+      }
+    }
+    tabs.delete(tab.id);
+    if (first && first.id === tab.id) {
+      const next = tabs.values().next().value;
+      if (next) first = next;
+    }
+    if (lastActiveTabId === tab.id) {
+      lastActiveTabId = tabs.values().next().value?.id ?? "";
+    }
+    if (options.ensureFallback !== false && tabs.size === 0) {
+      const clean = bootstrapTab(undefined, { active: true, pending: true });
+      first = clean;
+      lastActiveTabId = clean.id;
+    }
+    if (options.persist !== false) persistOpenTabs();
+    emitTabDiagnostic(tab, "tab.close.completed", undefined, "info");
+    emit({ type: "$tab_closed" }, tab.id);
+  }
+
+  /** Remove a visual workspace tab and every independently running session it
+   *  owns. This is the only user tab-close path: child agents are not exposed
+   *  as separate ribbon tabs or implicitly replaced. */
+  async function closeWorkspaceTab(
+    tab: Tab,
+    options: { ensureFallback?: boolean; persist?: boolean } = {},
+  ): Promise<void> {
+    const channels = channelsInWorkspaceTab(Array.from(tabs.values()), tab);
+    for (const channel of channels) {
+      await closeChannel(channel, { ensureFallback: false, persist: false });
+    }
+    if (options.ensureFallback !== false && tabs.size === 0) {
+      const clean = bootstrapTab(undefined, { active: true, pending: true });
+      first = clean;
+      lastActiveTabId = clean.id;
+    } else if (!tabs.has(first?.id)) {
+      const next = tabs.values().next().value;
+      if (next) first = next;
+    }
+    if (options.persist !== false) persistOpenTabs();
+  }
+
+  async function runTurn(
+    tab: Tab,
+    text: string,
+    images?: TurnImage[],
+    clientId?: string,
+  ): Promise<void> {
+    // A pending tab has no workspace/session/runtime — there is nothing to run.
+    if (tab.pending || !tab.rootDir) return;
+    if (tab.mcpBridgePromise) {
+      await tab.mcpBridgePromise.catch(() => undefined);
+    }
+    // A manual compact is a user priority command, not ordinary queued work.
+    // Never let a queued send claim the turn until that fold has settled.
+    const manualCompaction = tab.manualCompaction;
+    if (manualCompaction) await manualCompaction;
+    emitTabDiagnostic(
+      tab,
+      "turn.start.requested",
+      {
+        textChars: text.length,
+        imageCount: images?.length ?? 0,
+      },
+      "info",
+    );
+    if (!tab.runtime) {
+      emitTabDiagnostic(tab, "turn.start.rejected", { reason: "runtime-not-ready" }, "error");
+      return;
+    }
+    if (!tabCurrentModelUsable(tab)) {
+      emitTabDiagnostic(tab, "turn.start.rejected", { reason: "credential-unavailable" }, "error");
+      const provider = providerForModel(tab.currentModel);
+      const message =
+        provider === "openai"
+          ? `No OpenAI credential for ${tab.currentModel} — add an OpenAI key or sign in with ChatGPT (Settings → OpenAI).`
+          : provider === "ollama"
+            ? `No Ollama endpoint configured for ${tab.currentModel} — set a base URL / key (Settings → Models → Ollama).`
+            : provider === "gemini"
+              ? "Not signed in to Google Antigravity — sign in from Settings to use Gemini models."
+              : provider === "zai"
+                ? `No Z.AI credential for ${tab.currentModel} — add a Z.AI key in Settings → Models.`
+                : provider === "opencode"
+                  ? `No OpenCode configuration for ${tab.currentModel}.`
+                  : "No API key configured — paste your DeepSeek API key first.";
+      emit({ type: "$error", message }, tab.id);
+      return;
+    }
+    const rt = tab.runtime;
+    // Only vision-capable models accept image content parts — DeepSeek 400s
+    // otherwise. The UI hides the affordance for non-vision models; this is
+    // the hard gate so a stale or forged request can't reach the API.
+    if (
+      images &&
+      images.length > 0 &&
+      !modelAcceptsImages(tab.currentModel, ollamaVisionModelIds())
+    ) {
+      emitTabDiagnostic(
+        tab,
+        "turn.start.rejected",
+        {
+          reason: "images-require-vision-model",
+          imageCount: images.length,
+        },
+        "error",
+      );
+      emit(
+        {
+          type: "$error",
+          message:
+            "Images require a vision-capable model (gpt-*, Gemini, or DeepSeek V4.1 Flash). Switch models to attach images.",
+        },
+        tab.id,
+      );
+      return;
+    }
+    // First turn of a fresh conversation records the model/effort it runs
+    // with; a later resume restores them even after a reinstall wiped the
+    // config. Never overwrites an existing stored pair (see stampSessionModelPrefs).
+    stampSessionModelPrefs(tab);
+    tab.aborter = new AbortController();
+    // A turn cancelled while its compaction fold was mid-summary leaves the
+    // fold running detached: the fold is non-interruptible (summarizeForFold)
+    // and the host closes the generator fire-and-forget, so it keeps owning
+    // the loop's _compacting lock until it settles (commit or fail-open at
+    // its scaled deadline). Starting this turn now would run the fold and the
+    // new message concurrently on the same log — wait for the lock to clear
+    // first, the same guard /compact uses. Stop / switch during the wait
+    // cancels before any request goes out.
+    await waitForCompactionIdle(rt.loop, tab.aborter.signal);
+    if (tab.aborter.signal.aborted) {
+      // The turn never started: nothing to settle beyond the busy flag, same
+      // completion signal as the hook-blocked path above. A session switch
+      // may have set switching while aborting us — this turn has no stale
+      // events to suppress, so clear it like a finished turn would.
+      tab.switching = false;
+      tab.aborter = null;
+      emit({ type: "$turn_complete", outcome: "aborted" }, tab.id);
+      return;
+    }
+    emitTabDiagnostic(
+      tab,
+      "turn.started",
+      {
+        textChars: text.length,
+        imageCount: images?.length ?? 0,
+      },
+      "info",
+    );
+    let lastAssistantText = "";
+    if (tab.currentSession) {
+      const existing = loadSessionMeta(tab.currentSession).summary;
+      if (!existing || !existing.trim()) {
+        const summary = flattenText(text).slice(0, 60);
+        if (summary) {
+          try {
+            patchSessionMeta(tab.currentSession, { summary });
+          } catch (err) {
+            // meta is for display only — failure shouldn't block the turn, but LOG
+            process.stderr.write(
+              `reasonix: session meta summary patch failed — ${messageOf(err)}\n`,
+            );
+          }
+        }
+      }
+    }
+    // A running channel's session must carry its workspace: the workspace's
+    // session list is filtered by meta.workspace, so a session that materialized
+    // without one (e.g. a virtual deletion-replacement on its first send) stays
+    // invisible in the sidebar while its tab badge counts it as an active agent
+    // — a "ghost" session. Stamp it, then re-emit so it appears immediately.
+    if (tab.currentSession && stampSessionWorkspace(tab.currentSession, tab.rootDir)) {
+      emitSessionsForWorkspace(tab.rootDir);
+    }
+    if (tab.hooks.some((h) => h.event === "UserPromptSubmit")) {
+      const report = await runHooks({
+        hooks: tab.hooks,
+        payload: { event: "UserPromptSubmit", cwd: tab.rootDir, prompt: text },
+      });
+      for (const o of report.outcomes) {
+        if (o.decision === "pass") continue;
+        emit({ type: "$error", message: formatHookOutcomeMessage(o) }, tab.id);
+      }
+      if (report.blocked) {
+        tab.aborter = null;
+        emit({ type: "$turn_complete", outcome: "failed" }, tab.id);
+        return;
+      }
+    }
+    await tabContext.run(tab.id, async () => {
+      // Drive the turn generator manually instead of `for await`: an abort
+      // can land while the generator is suspended inside an await (the
+      // compaction fold is deliberately non-interruptible and can hold it
+      // for minutes). A plain for-await only notices the abort when the
+      // next event arrives, so Send now / Stop during a fold never reached
+      // $turn_complete and the queued-sends drain never ran. raceLoopStep
+      // resolves `null` the moment the aborter fires instead.
+      const gen = rt.loop.step(text, images);
+      let aborted = false;
+      let lastTurn = -1;
+      let sawAssistantFinal = false;
+      let openCompactionId: string | undefined;
+      // Terminal-outcome tracking: `producedAnswer` distinguishes a real reply from
+      // a model that stopped silently, so the UI never shows false success.
+      let producedAnswer = false;
+      let sawError = false;
+      let lastStopReason = "";
+      try {
+        let emittedTurnContext = false;
+        while (true) {
+          const next = await raceLoopStep(gen, tab.aborter?.signal);
+          if (next === null) {
+            aborted = true;
+            break;
+          }
+          if (next.done) break;
+          const ev = next.value;
+          lastTurn = ev.turn;
+          if (!emittedTurnContext) {
+            emittedTurnContext = true;
+            // Daemon-authoritative turn echo, before this turn's events so
+            // the reconciled bubble sits above the turn's cards.
+            if (clientId) {
+              emitKernelEvent(
+                rt.eventizer.emitUserMessage(rt.loop.currentTurn, text, clientId),
+                tab.id,
+              );
+            }
+            emitCtxBreakdown(tab);
+          }
+          if (ev.role === "assistant_final") {
+            sawAssistantFinal = true;
+            if (ev.content?.trim()) producedAnswer = true;
+            if (ev.content) lastAssistantText = ev.content;
+          }
+          if (ev.role === "done" && ev.content?.trim()) producedAnswer = true;
+          if (ev.role === "error") {
+            sawError = true;
+            if (ev.error) lastStopReason = ev.error;
+          }
+          if (ev.role === "warning" && ev.severity === "high" && ev.content) {
+            lastStopReason = ev.content;
+          }
+          for (const kev of rt.eventizer.consume(ev, rt.ctx)) emitKernelEvent(kev, tab.id);
+          if (ev.role === "assistant_final" || ev.role === "tool") {
+            emitCtxBreakdown(tab);
+          }
+          // Memory tools mutate disk state behind the loop's back — the UI
+          // panel won't know until we re-emit. Without this the right-hand
+          // panel only updates on tab reopen.
+          if (ev.role === "tool" && (ev.toolName === "remember" || ev.toolName === "forget")) {
+            emitMemory(tab);
+          }
+          if (ev.role === "compaction_start" && ev.compactionId) {
+            openCompactionId = ev.compactionId;
+          }
+          if (ev.role === "compaction_end") openCompactionId = undefined;
+        }
+      } catch (err) {
+        emit({ type: "$error", message: (err as Error).message }, tab.id);
+      } finally {
+        if (aborted) {
+          // Close the suspended generator so its finallys (per-turn abort
+          // state reset) run as soon as the pending await settles — the
+          // fold is non-interruptible, so this must NOT be awaited here.
+          // The loop itself reassigns _turnAbort fresh on the next step(),
+          // so the deferred reset can't clobber the next turn's signal.
+          void gen.return(undefined).catch(() => undefined);
+        }
+        tab.aborter = null;
+        emitTabDiagnostic(
+          tab,
+          "turn.finished",
+          {
+            aborted,
+            lastTurn,
+            sawAssistantFinal,
+            lastAssistantChars: lastAssistantText.length,
+          },
+          aborted ? "warn" : "info",
+        );
+        // If a session switch happened while this turn was running,
+        // suppress stale events to avoid UI state corruption (#1217).
+        if (!tab.switching) {
+          if (aborted && lastTurn >= 0 && !sawAssistantFinal) {
+            // The loop's own abort path never ran (the generator was
+            // closed mid-await), so settle the still-pending assistant
+            // card here — $turn_complete alone leaves it spinning.
+            emitKernelEvent(rt.eventizer.emitAbortedFinal(lastTurn), tab.id);
+          }
+          if (aborted && openCompactionId && lastTurn >= 0) {
+            // Same for a running compaction card: compaction_end was
+            // never yielded. Report the interruption — the detached fold
+            // keeps running and its merge-at-commit preserves anything
+            // the next turn appends.
+            emitKernelEvent(
+              rt.eventizer.emitCompactionFinished(openCompactionId, {
+                turn: lastTurn,
+                folded: false,
+                beforeMessages: 0,
+                afterMessages: 0,
+                summaryChars: 0,
+                error: "aborted by user",
+              }),
+              tab.id,
+            );
+          }
+          const outcome: TurnOutcome = aborted
+            ? "aborted"
+            : producedAnswer
+              ? "success"
+              : sawError
+                ? "failed"
+                : "stopped";
+          const reason = producedAnswer ? undefined : lastStopReason || t("loop.stoppedNoAnswer");
+          emit(
+            {
+              type: "$turn_complete",
+              outcome,
+              ...(lastTurn >= 0 ? { turn: lastTurn } : {}),
+              ...(reason ? { reason } : {}),
+            },
+            tab.id,
+          );
+          emitTabDiagnostic(
+            tab,
+            "turn.complete.emitted",
+            {
+              planProgress: { completed: tab.completedStepIds.size, total: tab.planTotalSteps },
+            },
+            "info",
+          );
+          if (tab.planTotalSteps > 0 && tab.completedStepIds.size >= tab.planTotalSteps) {
+            archivePlanForTab(tab);
+            emit({ type: "$plan_cleared" }, tab.id);
+          }
+          void emitSessions(tab);
+          void emitBalance(tab);
+          void emitCodexQuota(tab, { force: true });
+          void emitOllamaQuota(tab);
+          void emitAntigravityQuota(tab);
+          void emitZaiQuota(tab);
+          if (tab.hooks.some((h) => h.event === "Stop")) {
+            const stopReport = await runHooks({
+              hooks: tab.hooks,
+              payload: {
+                event: "Stop",
+                cwd: tab.rootDir,
+                lastAssistantText,
+                turn: rt.loop.stats.summary().turns,
+              },
+            });
+            for (const o of stopReport.outcomes) {
+              if (o.decision === "pass") continue;
+              emit({ type: "$error", message: formatHookOutcomeMessage(o) }, tab.id);
+            }
+          }
+        }
+        tab.switching = false;
+      }
+    });
+  }
+
+  async function switchWorkspace(tab: Tab, nextDir: string): Promise<void> {
+    const target = resolve(nextDir);
+    emitTabDiagnostic(tab, "workspace.switch.started", { targetChars: target.length }, "info");
+    if (!tab.pending && sameWorkspaceDir(target, tab.rootDir)) {
+      // Re-opening the current workspace means "new session", never a second
+      // workspace tab and never a destructive reload of this agent.
+      const opened = bootstrapTab(tab.rootDir, {
+        active: true,
+        groupId: tab.groupId,
+      });
+      lastActiveTabId = opened.id;
+      persistOpenTabs();
+      emitTabDiagnostic(tab, "workspace.switch.redirected", { reason: "same-workspace" });
+      return;
+    }
+    if (!existsSync(target) || !statSync(target).isDirectory()) {
+      emitTabDiagnostic(
+        tab,
+        "workspace.switch.rejected",
+        { targetChars: target.length, reason: "not-a-directory" },
+        "error",
+      );
+      emit({ type: "$error", message: `Workspace not found: ${target}` }, tab.id);
+      emitSettings(tab);
+      return;
+    }
+    // A workspace tab owns all of its session agents. Changing that tab's
+    // workspace stops/removes every child except this channel, which is reused
+    // for the target workspace below.
+    const siblings = channelsInWorkspaceTab(Array.from(tabs.values()), tab).filter(
+      (candidate) => candidate.id !== tab.id,
+    );
+    for (const sibling of siblings) {
+      await closeChannel(sibling, { ensureFallback: false, persist: false });
+    }
+
+    // The target may already have a workspace tab. In that case this source tab
+    // is removed as a unit and the request becomes a new independent session in
+    // the existing target tab—never a duplicate workspace ribbon entry.
+    const targetTab = Array.from(tabs.values()).find(
+      (candidate) =>
+        candidate.id !== tab.id &&
+        !candidate.pending &&
+        sameWorkspaceDir(candidate.rootDir, target),
+    );
+    if (targetTab) {
+      await closeChannel(tab, { ensureFallback: false, persist: false });
+      const opened = bootstrapTab(target, {
+        active: true,
+        groupId: targetTab.groupId,
+      });
+      lastActiveTabId = opened.id;
+      persistOpenTabs();
+      return;
+    }
+
+    abortTurn(tab);
+    cancelPendingGates(tab);
+    cancelMailAuth(tab, MailProvider.Outlook);
+    cancelMailAuth(tab, MailProvider.Gmail);
+    try {
+      await tab.toolset?.jobs.shutdown();
+    } catch (err) {
+      emitDiagnosticError("workspace.jobs.shutdown.failed", err, {
+        tabId: tab.id,
+        details: { targetChars: target.length, ...tabDiagnosticState(tab) },
+      });
+      // shutdown errors aren't actionable here — but LOG
+      process.stderr.write(`reasonix: tab job shutdown failed — ${messageOf(err)}\n`);
+    }
+    tab.rootDir = target;
+    tab.pending = false;
+    // The reused channel becomes the sole initial session in a new workspace
+    // tab. Its former sibling agents were closed above.
+    tab.groupId = nextGroupId();
+    saveWorkspaceDir(target);
+    pushRecentWorkspace(target);
+    tab.fileIndex = null;
+    tab.fileIndexBuilding = null;
+    tab.fileIndexBuiltAt = 0;
+    tab.symbolIndex = null;
+    tab.symbolBuilding = null;
+    tab.recentMentions.length = 0;
+    tab.hooks = loadHooks({ projectRoot: target });
+    if (tab.currentSession) {
+      // Virtual deletion replacements don't exist on disk — clean up if left dangling.
+      if (!sessionExists(tab.currentSession)) {
+        deleteSession(tab.currentSession);
+      }
+    }
+    // Switch the UI to the new workspace BEFORE loading its conversation: the
+    // frontend clears transcript state on a workspaceDir change, so emitting
+    // settings now keeps a later $session_loaded (with the resumed messages)
+    // from being wiped by that clear.
+    emitSettings(tab);
+    const toolset = await buildCodeToolset({
+      rootDir: target,
+      onSkillInstalled: () => emitSkills(tab),
+      onJobsChanged: () => emitJobs(),
+      onShellOutput: shellOutputFor(tab),
+      subagentSink: subagentSinkFor(tab),
+      subagentBilling: (m) => subagentBillingFor(m),
+      subagentModel: () => tab.currentSubagentModel ?? tab.currentModel,
+    });
+    tab.toolset = toolset;
+    refreshTabSystemPrompt(tab);
+    // Implicitly select the workspace's most recent session (newest-first) so a
+    // workspace switch lands where you left off; mint a fresh conversation only
+    // when the workspace has no sessions yet. loadSessionIntoTab restores the
+    // stored model/effort and rebuilds the runtime + system prompt for it.
+    const { value: workspaceSessions } = listSessionsForWorkspaceAsync(target);
+    // Never resume a session another channel already holds — that would put two
+    // agents on one session. Fall through to the next newest free session.
+    const resume = pickResumeSession(await workspaceSessions, (s) => {
+      const holder = channelForSession(s.name);
+      return holder !== undefined && holder.id !== tab.id;
+    });
+    if (resume) {
+      loadSessionIntoTab(tab, resume.name, { abortTurn, cancelPendingGates, persistOpenTabs });
+    } else {
+      tab.currentSession = mintSessionFor(target);
+      tab.runtime = tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
+      emit(
+        {
+          type: "$session_loaded",
+          name: tab.currentSession,
+          messages: [],
+          carryover: emptySessionCarryover(),
+        },
+        tab.id,
+      );
+    }
+    if (tab.mcpRuntime) {
+      await tab.mcpRuntime.closeAll().catch(() => undefined);
+      tab.mcpRuntime = null;
+    }
+    if (tab.runtime) {
+      void bridgeTabMcp(tab);
+    }
+    void settleTabSemantic(tab, target, toolset);
+    emitSessionsForWorkspace(target);
+    emitSettings(tab);
+    emitSkills(tab);
+    persistOpenTabs();
+    // Let the frontend regroup: the tab's workspace (and now groupId) changed.
+    emit(
+      {
+        type: "$tab_opened",
+        workspaceDir: tab.rootDir,
+        active: tab.id === lastActiveTabId,
+        groupId: tab.groupId,
+        sessions: [tab.currentSession],
+        activeSession: tab.currentSession,
+      },
+      tab.id,
+    );
+    emitTabDiagnostic(tab, "workspace.switch.completed", { targetChars: target.length }, "info");
+    // Re-emit the setup/ready gate: a tab that was PENDING (no workspace) never
+    // got `$ready`, so the composer would stay disabled after assigning one.
+    emitTabGate(tab);
+  }
+
+  function forgetGate(id: number): Tab | undefined {
+    for (const t of tabs.values()) {
+      if (t.pendingGateIds.delete(id)) return t;
+    }
+    return undefined;
+  }
+
+  // Backend half of each YOLO auto-resolve countdown. One entry per pending gate
+  // so the desktop can pause/resume it in lockstep with the card's own clock
+  // (via the `gate_timer` command): without this, "disable timer" only stopped
+  // the UI countdown while the backend still resolved the gate at expiry — a
+  // silent desync where the card sat on screen after the gate was already gone.
+  type GateCountdown = {
+    handle: ReturnType<typeof setTimeout> | null;
+    verdict: unknown;
+    ms: number;
+    /** Fired after the countdown resolves the gate — persists the auto-approved
+     *  plan without a plan_response/revision_response RPC (YOLO countdowns). */
+    onResolve?: () => void;
+  };
+  const gateCountdowns = new Map<number, GateCountdown>();
+
+  function startGateCountdown(id: number, entry: GateCountdown): void {
+    entry.handle = setTimeout(() => {
+      gateCountdowns.delete(id);
+      forgetGate(id);
+      pauseGate.resolve(id, entry.verdict);
+      entry.onResolve?.();
+    }, entry.ms);
+  }
+
+  function armGateCountdown(
+    id: number,
+    verdict: unknown,
+    ms: number,
+    onResolve?: () => void,
+  ): void {
+    const existing = gateCountdowns.get(id);
+    if (existing?.handle) clearTimeout(existing.handle);
+    const entry: GateCountdown = { handle: null, verdict, ms };
+    if (onResolve) entry.onResolve = onResolve;
+    gateCountdowns.set(id, entry);
+    startGateCountdown(id, entry);
+  }
+
+  /** Pause the backend timer but keep the verdict so it can be resumed. */
+  function suspendGateCountdown(id: number): void {
+    const entry = gateCountdowns.get(id);
+    if (!entry?.handle) return;
+    clearTimeout(entry.handle);
+    entry.handle = null;
+  }
+
+  /** Re-arm a fresh full window — mirrors the card restarting its own clock. */
+  function resumeGateCountdown(id: number): void {
+    const entry = gateCountdowns.get(id);
+    if (!entry || entry.handle) return;
+    startGateCountdown(id, entry);
+  }
+
+  function clearGateCountdown(id: number): void {
+    const entry = gateCountdowns.get(id);
+    if (entry?.handle) clearTimeout(entry.handle);
+    gateCountdowns.delete(id);
+  }
+
+  function abortTurn(tab: Tab, opts: LoopAbortOptions = {}): void {
+    tab.aborter?.abort();
+    tab.runtime?.loop.abort(opts);
+  }
+
+  function cancelConversation(tab: Tab, opts: LoopAbortOptions = {}): void {
+    abortTurn(tab, opts);
+    cancelPendingGates(tab);
+    void tab.toolset?.jobs
+      // Session-scoped teardown: Stop / New chat kill ephemeral jobs but spare
+      // workspace-scoped persistent shells (those end on workspace/app close).
+      .shutdown(1500, { keepPersistent: true })
+      .catch((err) => {
+        emitDiagnosticError("conversation.jobs.shutdown.failed", err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+        process.stderr.write(`reasonix: conversation job shutdown failed — ${messageOf(err)}\n`);
+      })
+      .finally(() => emitJobs());
+  }
+
+  function startFreshSession(
+    tab: Tab,
+    options: {
+      reason: "new-chat" | "session-delete";
+      settledDeletes?: SessionsEvent["settledDeletes"];
+      conversationCancelled?: boolean;
+    },
+  ): void {
+    const diagnosticPrefix = options.reason === "new-chat" ? "session.new-chat" : "session.delete";
+    emitTabDiagnostic(tab, `${diagnosticPrefix}.started`, undefined, "info");
+    // Only set switching when a live turn is being aborted. Otherwise it would
+    // suppress the first events emitted by the replacement session (#1217).
+    if (!options.conversationCancelled) {
+      if (tab.aborter) tab.switching = true;
+      cancelConversation(tab);
+    }
+    // Explicit New chat sessions are persisted immediately. A replacement for
+    // a deleted active session stays virtual so clear-all can leave the sidebar
+    // genuinely empty; the first send materializes it through normal writes.
+    try {
+      tab.currentSession = mintSessionFor(
+        tab.rootDir,
+        {
+          model: tab.currentModel,
+          reasoningEffort: tab.currentReasoningEffort,
+          subagentModel: tab.currentSubagentModel,
+        },
+        { materialize: shouldMaterializeFreshSession(options.reason) },
+      );
+      persistOpenTabs();
+      tab.runtime = tab.toolset && tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
+    } catch (err) {
+      emitDiagnosticError(`${diagnosticPrefix}.failed`, err, {
+        tabId: tab.id,
+        details: tabDiagnosticState(tab),
+      });
+      emit(
+        { type: "$error", message: `${options.reason} failed: ${(err as Error).message}` },
+        tab.id,
+      );
+      return;
+    }
+    emit(
+      {
+        type: "$session_loaded",
+        name: tab.currentSession,
+        messages: [],
+        carryover: emptySessionCarryover(),
+      },
+      tab.id,
+    );
+    emitSessionsForWorkspace(tab.rootDir, options.settledDeletes);
+    emitTabDiagnostic(tab, `${diagnosticPrefix}.completed`, undefined, "info");
+  }
+
+  function tabSessionLabel(tab: Tab): string {
+    if (tab.currentSession) {
+      try {
+        const summary = loadSessionMeta(tab.currentSession).summary?.trim();
+        if (summary) return summary;
+      } catch (err) {
+        emitDiagnosticError("session.meta.load.failed", err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+        // session file unreadable — fall through to workspace basename, but LOG
+        process.stderr.write(`reasonix: session meta load failed — ${messageOf(err)}\n`);
+      }
+    }
+    return tab.rootDir.split(/[\\/]/).filter(Boolean).pop() ?? tab.rootDir;
+  }
+
+  function emitJobs(): void {
+    const items: JobInfo[] = [];
+    for (const t of tabs.values()) {
+      const reg = t.toolset?.jobs;
+      if (!reg) continue;
+      const label = tabSessionLabel(t);
+      for (const j of reg.list()) {
+        items.push({
+          id: j.id,
+          tabId: t.id,
+          sessionLabel: label,
+          command: j.command,
+          pid: j.pid,
+          running: j.running,
+          exitCode: j.exitCode,
+          startedAt: j.startedAt,
+          outputTail: tailLines(j.output, 30),
+          spawnError: j.spawnError,
+          persistent: j.persistent,
+        });
+      }
+    }
+    items.sort((a, b) => {
+      if (a.running !== b.running) return a.running ? -1 : 1;
+      return b.startedAt - a.startedAt;
+    });
+    emit({ type: "$jobs", items });
+  }
+
+  async function stopJob(jobId: number): Promise<boolean> {
+    for (const t of tabs.values()) {
+      const reg = t.toolset?.jobs;
+      if (!reg) continue;
+      const hit = reg.list().find((j) => j.id === jobId);
+      if (!hit) continue;
+      await reg.stop(jobId);
+      return true;
+    }
+    return false;
+  }
+
+  async function stopAllJobs(): Promise<void> {
+    const ops: Promise<unknown>[] = [];
+    for (const t of tabs.values()) {
+      const reg = t.toolset?.jobs;
+      if (!reg) continue;
+      for (const j of reg.list()) {
+        if (j.running) ops.push(reg.stop(j.id));
+      }
+    }
+    await Promise.allSettled(ops);
+  }
+
+  function cancelPendingGates(tab: Tab): void {
+    const hadActivePlan = tab.planTotalSteps > 0 || tab.completedStepIds.size > 0;
+    const ids = [...tab.pendingGateIds];
+    tab.pendingGateIds.clear();
+    for (const id of ids) {
+      clearGateCountdown(id);
+      pauseGate.cancel(id);
+    }
+    if (hadActivePlan) {
+      resetPlanTracking(tab);
+      emit({ type: "$plan_cleared" }, tab.id);
+    }
+  }
+
+  // `first` is the fallback tab for legacy tabId-less RPC messages. We
+  // assign it lazily below so saved-tabs restore (issue #933) can choose
+  // the boot dir before construction, and rotate `first` to the next
+  // surviving tab when its source closes.
+  let shuttingDown = false;
+  /** Periodic quota poll: assigned below after tab restore, cleared on shutdown. */
+  let quotaTimer: ReturnType<typeof setInterval> | undefined = undefined;
+  async function gracefulShutdown(): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (quotaTimer) clearInterval(quotaTimer);
+    await Promise.allSettled(
+      [...tabs.values()].map((t) => t.toolset?.jobs.shutdown(1500) ?? Promise.resolve()),
+    );
+    await browserRegistry.closeAll().catch(() => undefined);
+    process.exit(0);
+  }
+  process.on("SIGTERM", () => {
+    void gracefulShutdown();
+  });
+  process.on("SIGINT", () => {
+    void gracefulShutdown();
+  });
+
+  pauseGate.on((req) => {
+    const tab = activeRunningTab();
+    const tabId = tab?.id;
+    if (tab) tab.pendingGateIds.add(req.id);
+    // Shared auto-resolve policy (e.g. plan_checkpoint in auto/yolo) — must
+    // still run BEFORE we emit any UI event, otherwise the surface flickers
+    // a card that we'd immediately tear down.
+    const auto = autoResolveVerdict(req, loadEditMode(), {
+      enableChoiceTimer: loadQuestionTimerEnabled(),
+    });
+    if (auto?.kind === "instant") {
+      // plan_checkpoint specifically needs the step-completed signal to flow
+      // through so the rail progress ticks. Emit it before resolving.
+      if (req.kind === "plan_checkpoint") {
+        const payload = req.payload as {
+          stepId: string;
+          title?: string;
+          result: string;
+          notes?: string;
+        };
+        if (tab) {
+          recordPlanStepCompletion(tab, payload);
+          persistPlanState(tab);
+        }
+        emit(
+          {
+            type: "$step_completed",
+            stepId: payload.stepId,
+            title: payload.title,
+            result: payload.result,
+            notes: payload.notes,
+          },
+          tabId,
+        );
+      }
+      // plan_proposed auto-approved in yolo — clear any prior plan state and
+      // track step count so $step_completed progress-to-clear still works.
+      if (req.kind === "plan_proposed") {
+        const payload = req.payload as {
+          plan: string;
+          steps?: PlanStep[];
+          summary?: string;
+          callId?: string;
+        };
+        if (tab) {
+          adoptProposedPlan(tab, payload);
+          persistPlanState(tab);
+        }
+      }
+      if (tab) tab.pendingGateIds.delete(req.id);
+      pauseGate.resolve(req.id, auto.verdict);
+      return;
+    }
+    // YOLO interactive gates: surface the picker so a watching user can override
+    // the default. Keep a backend timer as the source of eventual resolution;
+    // the frontend mirrors it for visible countdown feedback and resolves first
+    // when the user picks manually. The card's timer toggle drives this handle
+    // via `gate_timer`, so pausing the UI clock also pauses auto-resolve.
+    const countdownMs = auto?.kind === "countdown" ? auto.ms : undefined;
+    if (auto?.kind === "countdown") {
+      armGateCountdown(req.id, auto.verdict, auto.ms, countdownPlanPersist(req.kind, tab));
+    }
+    if (
+      req.kind === "run_command" ||
+      req.kind === "run_background" ||
+      req.kind === "outlook_send"
+    ) {
+      const payload = req.payload as {
+        command?: string;
+        cwd?: string;
+        timeoutSec?: number;
+        waitSec?: number;
+      };
+      emit(
+        {
+          type: "$confirm_required",
+          id: req.id,
+          kind: req.kind,
+          command: payload.command ?? "",
+          prompt: toApprovalPrompt({
+            id: req.id,
+            kind: req.kind,
+            payload,
+          }),
+        },
+        tabId,
+      );
+      return;
+    }
+    if (req.kind === "path_access") {
+      const payload = req.payload as {
+        path: string;
+        intent: "read" | "write";
+        toolName: string;
+        sandboxRoot: string;
+        allowPrefix: string;
+      };
+      emit(
+        {
+          type: "$path_access_required",
+          id: req.id,
+          path: payload.path,
+          intent: payload.intent,
+          toolName: payload.toolName,
+          sandboxRoot: payload.sandboxRoot,
+          allowPrefix: payload.allowPrefix,
+          prompt: toApprovalPrompt({
+            id: req.id,
+            kind: req.kind,
+            payload,
+          }),
+        },
+        tabId,
+      );
+      return;
+    }
+    if (req.kind === "choice") {
+      const payload = req.payload as {
+        question: string;
+        options: ChoiceOption[];
+        allowCustom: boolean;
+      };
+      emit(
+        {
+          type: "$choice_required",
+          id: req.id,
+          question: payload.question,
+          options: payload.options,
+          allowCustom: payload.allowCustom,
+          ...(countdownMs !== undefined ? { countdownMs } : {}),
+        },
+        tabId,
+      );
+      return;
+    }
+    if (req.kind === "plan_proposed") {
+      const payload = req.payload as {
+        plan: string;
+        steps?: PlanStep[];
+        summary?: string;
+        callId?: string;
+      };
+      if (tab) adoptProposedPlan(tab, payload);
+      emit(
+        {
+          type: "$plan_required",
+          id: req.id,
+          plan: payload.plan,
+          steps: payload.steps,
+          summary: payload.summary,
+          callId: payload.callId,
+          ...(countdownMs !== undefined ? { countdownMs } : {}),
+        },
+        tabId,
+      );
+      return;
+    }
+    if (req.kind === "plan_checkpoint") {
+      const payload = req.payload as {
+        stepId: string;
+        title?: string;
+        result: string;
+        notes?: string;
+      };
+      if (tab) {
+        recordPlanStepCompletion(tab, payload);
+        persistPlanState(tab);
+      }
+      emit(
+        {
+          type: "$step_completed",
+          stepId: payload.stepId,
+          title: payload.title,
+          result: payload.result,
+          notes: payload.notes,
+        },
+        tabId,
+      );
+      emit(
+        {
+          type: "$checkpoint_required",
+          id: req.id,
+          stepId: payload.stepId,
+          title: payload.title,
+          result: payload.result,
+          notes: payload.notes,
+          completed: tab?.completedStepIds.size ?? 0,
+          total: tab?.planTotalSteps ?? 0,
+        },
+        tabId,
+      );
+      return;
+    }
+    if (req.kind === "plan_revision") {
+      const payload = req.payload as {
+        reason: string;
+        remainingSteps: PlanStep[];
+        summary?: string;
+      };
+      if (tab) tab.planPendingRevisionSteps = payload.remainingSteps;
+      emit(
+        {
+          type: "$revision_required",
+          id: req.id,
+          reason: payload.reason,
+          remainingSteps: payload.remainingSteps,
+          summary: payload.summary,
+          ...(countdownMs !== undefined ? { countdownMs } : {}),
+        },
+        tabId,
+      );
+      return;
+    }
+    // Unknown PauseKind — `never` makes a new kind without a handler a compile
+    // error; the runtime cancel is the last-mile defense so the agent loop
+    // doesn't hang waiting on a request no one will resolve.
+    const exhaustive: never = req.kind;
+    process.stderr.write(
+      `[desktop] no handler for pause kind "${String(exhaustive)}" — auto-cancelling gate id=${req.id}\n`,
+    );
+    if (tab) tab.pendingGateIds.delete(req.id);
+    pauseGate.cancel(req.id);
+  });
+
+  // Fast-path: emit disk-only events immediately so the UI shell renders
+  // before the toolset finishes building. Heavy work (semantic bootstrap,
+  // MCP probes, runtime construction) runs in initTabToolset which fires
+  // `$ready` when it completes — until then `state.ready` keeps the
+  // composer disabled, so users can't send a message before the runtime
+  // exists. emitBalance was already fire-and-forget.
+  function bootstrapTab(
+    initialDir?: string,
+    restore?: {
+      id?: string;
+      session?: string;
+      active?: boolean;
+      groupId?: string;
+      pending?: boolean;
+      /** Explicit model prefs for a fresh channel (New chat) so the new tab
+       *  inherits the current session's models instead of the global default. */
+      model?: string;
+      reasoningEffort?: import("../../config.js").ReasoningEffort;
+      subagentModel?: string;
+    },
+  ): Tab {
+    const tab = createTabSkeleton(initialDir, restore?.id, restore, restore?.pending ?? false);
+    emitTabDiagnostic(
+      tab,
+      "tab.bootstrap.requested",
+      {
+        restoredId: restore?.id ?? null,
+        restoredSession: restore?.session ?? null,
+        active: restore?.active ?? false,
+      },
+      "info",
+    );
+    // Emit $tab_opened FIRST so the UI shell mounts every tab immediately.
+    // The conversation load below is async and must not gate the next tab's
+    // $tab_opened — otherwise a multi-tab restore opens tabs one at a time,
+    // each blocked behind the previous tab's full session jsonl read+parse.
+    emit(
+      {
+        type: "$tab_opened",
+        workspaceDir: tab.rootDir,
+        active: restore?.active,
+        groupId: tab.groupId,
+        sessions: [tab.currentSession],
+        activeSession: tab.currentSession,
+      },
+      tab.id,
+    );
+    emitSettings(tab);
+    // A pending (workspace-less) tab has no session, toolset, hooks or sidebar
+    // to build — it exists only so the UI can prompt for a workspace. Assigning
+    // one runs switchWorkspace, which does the full build. Do NOT emit $ready,
+    // so the composer stays disabled until a workspace is chosen.
+    if (restore?.pending) {
+      emit({ type: "$workspace_initialized", revision: ++tab.initializationRevision }, tab.id);
+      emitTabDiagnostic(tab, "tab.bootstrap.pending", undefined, "info");
+      return tab;
+    }
+    emitMcpSpecs(tab);
+    emitSkills(tab);
+    // Defer the heavy per-tab work (session jsonl read+parse, sessions/memory
+    // scans, toolset build) so all tabs open before any of it runs. Session
+    // reads use the async loader so they overlap across tabs instead of
+    // serializing on the event loop.
+    void (async () => {
+      // Restore the conversation's stored model/effort FIRST — it's a cheap
+      // meta.json read, but the runtime (built inside initTabToolset) reads
+      // `tab.currentModel` / `tab.currentSession` at build time, so it must
+      // see the restored pair before the toolset build starts.
+      if (restore?.session) {
+        try {
+          if (sessionExists(restore.session)) {
+            tab.currentSession = restore.session;
+            restoreSessionModelPrefs(tab, loadSessionMeta(tab.currentSession));
+          }
+        } catch (err) {
+          // unreadable meta — fall back to the freshly minted session, but LOG
+          emitDiagnosticError("session.restore.failed", err, {
+            tabId: tab.id,
+            details: { requestedSession: restore.session, ...tabDiagnosticState(tab) },
+          });
+          process.stderr.write(`reasonix: session load for resync failed — ${messageOf(err)}\n`);
+        }
+      }
+
+      // Emit the credential gate up front too — `$needs_setup` is the other
+      // side of `$ready` and must not wait on the session read either.
+      if (!tabHasCredential(tab)) {
+        emitTabDiagnostic(tab, "tab.setup.required", { reason: "credential-unavailable" }, "warn");
+        emit({ type: "$needs_setup", reason: "no_api_key" }, tab.id);
+      }
+
+      // Launch the toolset/runtime build IMMEDIATELY. `$ready` (the composer's
+      // enable gate) must not depend on the heavy display work below: the full
+      // current-session jsonl read+parse and the synchronous scan of every
+      // session file are pure for the sidebar/conversation view. Running them
+      // before initTabToolset put boot-to-ready behind the entire session
+      // history, once per restored tab. This order ($ready before
+      // $session_loaded) is the same the desktop_resync path already emits, so
+      // the frontend handles it.
+      tab.initialization = initTabToolset(tab, tab === first || restore?.active ? 1 : 0)
+        .then(() => {
+          if (tabHasCredential(tab)) {
+            emitTabDiagnostic(tab, "tab.ready", undefined, "info");
+            emit({ type: "$ready" }, tab.id);
+            if (tab === first) {
+              markPhase("first_tab_ready_emitted");
+              dumpStartupProfile();
+            }
+          } else {
+            emitTabDiagnostic(
+              tab,
+              "tab.ready.skipped",
+              { reason: "credential-unavailable" },
+              "warn",
+            );
+          }
+          emitCtxBreakdown(tab);
+          if (tab === first) settleFirstBootstrap();
+        })
+        .catch((err) => {
+          emitDiagnosticError("tab.bootstrap.failed", err, {
+            tabId: tab.id,
+            details: tabDiagnosticState(tab),
+          });
+          emit({ type: "$error", message: `init failed: ${(err as Error).message}` }, tab.id);
+          if (tab === first) settleFirstBootstrap();
+        });
+
+      // Synchronous sidebar scans can take seconds on network drives and would
+      // starve the toolset promise despite being logically non-gating.
+      await firstBootstrapSettled;
+
+      // Non-gating display work — runs in parallel with the toolset build above.
+      // Reopen the conversation the tab had, if its jsonl is still readable.
+      let restoredMessages: LoadedMessage[] | undefined;
+      if (restore?.session) {
+        try {
+          if (sessionExists(restore.session)) {
+            const msgs = buildLoadedMessages(await loadSessionMessagesAsync(restore.session));
+            if (msgs.length > 0) restoredMessages = msgs;
+          }
+        } catch (err) {
+          // unreadable jsonl — fall back to the freshly minted session, but LOG
+          emitDiagnosticError("session.restore.failed", err, {
+            tabId: tab.id,
+            details: { requestedSession: restore.session, ...tabDiagnosticState(tab) },
+          });
+          process.stderr.write(`reasonix: session load for resync failed — ${messageOf(err)}\n`);
+        }
+      }
+      emitTabDiagnostic(tab, "tab.bootstrap.session-state", {
+        restored: restoredMessages !== undefined,
+        restoredMessages: restoredMessages?.length ?? 0,
+      });
+      if (tab.currentSession) {
+        patchSessionWorkspaceIfMissing(tab.currentSession, tab.rootDir);
+        // Repair a session that materialized without a workspace stamp (see
+        // stampSessionWorkspace) so a restored ghost lists on the emitSessions
+        // below. No-op for an already-stamped or purely virtual session.
+        stampSessionWorkspace(tab.currentSession, tab.rootDir);
+      }
+      const sessionsInitialized = emitSessions(tab);
+      emitMemory(tab);
+      if (restoredMessages) {
+        const meta = loadSessionMeta(tab.currentSession);
+        emit(
+          {
+            type: "$session_loaded",
+            name: tab.currentSession,
+            messages: restoredMessages,
+            carryover: sessionCarryover(meta),
+          },
+          tab.id,
+        );
+      } else if (tab.currentSession) {
+        emit(
+          {
+            type: "$session_loaded",
+            name: tab.currentSession,
+            messages: [],
+            carryover: emptySessionCarryover(),
+          },
+          tab.id,
+        );
+      }
+      await emitWorkspaceInitialized(tab, sessionsInitialized);
+      void emitBalance(tab);
+      void emitCodexQuota(tab);
+      void emitOllamaQuota(tab);
+      void emitAntigravityQuota(tab);
+      void emitZaiQuota(tab);
+    })();
+    return tab;
+  }
+
+  // Restore the full tab set from the previous session — workspace dir,
+  // loaded session and focused tab (issues #933, #1244). Missing dirs
+  // are silently skipped — a deleted workspace shouldn't break boot.
+  const savedTabs = normalizeWorkspaceTabGroups(
+    loadDesktopOpenTabs()
+      .map((t) => {
+        if (sameWorkspaceDir(t.dir, reasonixInstallDir())) {
+          return { ...t, dir: reasonixDefaultWorkspaceDir() };
+        }
+        return t;
+      })
+      .filter((t) => {
+        try {
+          return existsSync(t.dir) && statSync(t.dir).isDirectory();
+        } catch {
+          return false;
+        }
+      }),
+  );
+  // Never restore the same session into two channels — a session is a single
+  // agent. Keep the first occurrence's session; later duplicates open fresh.
+  const seenRestoreSessions = new Set<string>();
+  const dedupedTabs = savedTabs.map((t) => {
+    if (!t.session) return t;
+    if (seenRestoreSessions.has(t.session)) return { ...t, session: undefined };
+    seenRestoreSessions.add(t.session);
+    return t;
+  });
+  // When launched with --dir, find the matching saved tab so the user's
+  // previous session is restored automatically.
+  const startupDir = opts.dir;
+  const startupTab = startupDir
+    ? dedupedTabs.find((t) => sameWorkspaceDir(t.dir, startupDir))
+    : dedupedTabs[0];
+  const pendingRestores = dedupedTabs.filter((t) => t !== startupTab);
+  void firstBootstrapSettled.then(() => {
+    for (const saved of pendingRestores) bootstrapTab(saved.dir, saved);
+    persistOpenTabs();
+  });
+  first = bootstrapTab(opts.dir ?? dedupedTabs[0]?.dir, startupTab);
+  lastActiveTabId = first.id;
+  // Account-wide quotas change underneath us (other devices, window resets) -
+  // poll so the statusbar chips are never stale. Skipped mid-turn so the
+  // $turn_complete fetch stays the authoritative turn-cost measurement.
+  // Polling uses a 5-minute interval and pauses after 15 minutes of idle
+  // time to conserve bandwidth on metered and poor connections.
+  const QUOTA_POLL_INTERVAL_MS = 5 * 60 * 1000;
+  const QUOTA_POLL_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+  let lastUserActivityAt = Date.now();
+  let quotaPolling = false;
+  quotaTimer = setInterval(() => {
+    if (quotaPolling) return;
+    if (Date.now() - lastUserActivityAt > QUOTA_POLL_IDLE_TIMEOUT_MS) {
+      emitDiagnostic("quota.poll.skipped", {
+        reason: "user-idle",
+        idleMs: Date.now() - lastUserActivityAt,
+      });
+      return;
+    }
+    for (const t of tabs.values()) {
+      if (t.aborter) {
+        emitTabDiagnostic(t, "quota.poll.skipped", { reason: "turn-in-progress" });
+        return;
+      }
+    }
+    const tab = tabs.get(lastActiveTabId);
+    if (!tab) {
+      emitDiagnostic("quota.poll.skipped", {
+        reason: "active-tab-not-found",
+        activeTabId: lastActiveTabId,
+      });
+      return;
+    }
+    emitTabDiagnostic(tab, "quota.poll.started", { intervalMs: QUOTA_POLL_INTERVAL_MS });
+    quotaPolling = true;
+    void Promise.allSettled([
+      emitCodexQuota(tab, { force: false }),
+      emitOllamaQuota(tab),
+      emitAntigravityQuota(tab),
+    ]).finally(() => {
+      quotaPolling = false;
+      emitTabDiagnostic(tab, "quota.poll.completed");
+    });
+  }, QUOTA_POLL_INTERVAL_MS);
+
+  const rl = createInterface({ input: stdin });
+  emit({ type: "$connected" });
+  markPhase("rpc_stdin_listening");
+  rl.on("line", (line) => {
+    lastUserActivityAt = Date.now();
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let msg: InMessage;
+    try {
+      msg = JSON.parse(trimmed) as InMessage;
+    } catch (err) {
+      emitDiagnosticError("rpc.stdin.invalid-json", err, {
+        details: { inputChars: trimmed.length, previewChars: Math.min(trimmed.length, 80) },
+      });
+      emit({ type: "$error", message: `bad json on stdin: ${trimmed.slice(0, 80)}` });
+      return;
+    }
+    emitDiagnostic("rpc.command.received", {
+      command: msg.cmd,
+      tabId: "tabId" in msg ? (msg.tabId ?? null) : null,
+    });
+
+    if (msg.cmd === "tab_open") {
+      try {
+        // A workspace may appear in the ribbon only once. Opening an already-
+        // visible workspace adds a fresh independent session to that tab.
+        //
+        // No workspace → a PENDING tab. It must not default to the local
+        // install dir: that merged every new tab into the existing "Reasonix+
+        // Local" workspace group, so a second tab could never exist. The UI
+        // instead prompts for a workspace (local / recent / browse) and
+        // assigning one runs switchWorkspace.
+        const target = msg.workspaceDir ? resolve(msg.workspaceDir) : undefined;
+        const existing = target
+          ? Array.from(tabs.values()).find((candidate) =>
+              sameWorkspaceDir(candidate.rootDir, target),
+            )
+          : undefined;
+        const opened = target
+          ? bootstrapTab(target, { active: true, groupId: existing?.groupId })
+          : bootstrapTab(undefined, { active: true, pending: true });
+        lastActiveTabId = opened.id;
+        persistOpenTabs();
+      } catch (err) {
+        emitDiagnosticError("tab.open.failed", err);
+        emit({ type: "$error", message: `tab_open failed: ${(err as Error).message}` });
+      }
+      return;
+    }
+    if (msg.cmd === "tab_activate") {
+      const activated = tabs.get(msg.tabId);
+      if (activated) {
+        emitTabDiagnostic(
+          activated,
+          "tab.activated",
+          { previousActiveTabId: lastActiveTabId },
+          "info",
+        );
+        lastActiveTabId = msg.tabId;
+        persistOpenTabs();
+        // Refetch immediately — the tab may have sat idle for hours, and
+        // the statusbar must show the current quota the moment it's shown.
+        void emitCodexQuota(activated, { force: true });
+        void emitOllamaQuota(activated);
+        void emitAntigravityQuota(activated);
+        void emitSessions(activated);
+      } else {
+        emitDiagnostic(
+          "tab.activate.failed",
+          { tabId: msg.tabId },
+          {
+            level: "error",
+            message: "tab activation requested for an unknown tab",
+          },
+        );
+      }
+      return;
+    }
+    if (msg.cmd === "confirm_response") {
+      clearGateCountdown(msg.id);
+      forgetGate(msg.id);
+      pauseGate.resolve(msg.id, msg.response);
+      return;
+    }
+    if (msg.cmd === "choice_response") {
+      clearGateCountdown(msg.id);
+      forgetGate(msg.id);
+      pauseGate.resolve(msg.id, msg.response);
+      return;
+    }
+    if (msg.cmd === "plan_response") {
+      clearGateCountdown(msg.id);
+      const tab = forgetGate(msg.id);
+      if (tab && msg.response.type === "cancel") {
+        clearPlanForTab(tab);
+        emit({ type: "$plan_cleared" }, tab.id);
+      } else if (tab && msg.response.type === "approve") {
+        persistPlanState(tab);
+      }
+      pauseGate.resolve(msg.id, msg.response);
+      return;
+    }
+    if (msg.cmd === "checkpoint_response") {
+      clearGateCountdown(msg.id);
+      const tab = forgetGate(msg.id);
+      if (tab && msg.response.type === "stop") {
+        clearPlanForTab(tab);
+        emit({ type: "$plan_cleared" }, tab.id);
+      } else if (tab) {
+        persistPlanState(tab);
+      }
+      pauseGate.resolve(msg.id, msg.response);
+      return;
+    }
+    if (msg.cmd === "revision_response") {
+      clearGateCountdown(msg.id);
+      const tab = forgetGate(msg.id);
+      if (tab && msg.response.type === "accepted") applyPlanRevision(tab);
+      if (tab) tab.planPendingRevisionSteps = null;
+      pauseGate.resolve(msg.id, msg.response);
+      return;
+    }
+    if (msg.cmd === "gate_timer") {
+      // Card toggled its countdown: keep the backend timer from resolving the
+      // gate out from under the UI (or re-arm it when the timer is switched on).
+      if (msg.enabled) resumeGateCountdown(msg.id);
+      else suspendGateCountdown(msg.id);
+      return;
+    }
+    if (msg.cmd === "setup_save_key") {
+      const key = msg.key.trim();
+      if (!isPlausibleKey(key)) {
+        emit({
+          type: "$error",
+          message: "Key looks too short — paste the full token (16+ chars, no spaces).",
+        });
+        return;
+      }
+      try {
+        saveApiKey(key);
+        bridgeEndpointEnv();
+        for (const tab of tabs.values()) {
+          // Skeleton tabs still mid-bootstrap pick up the new key inside
+          // initTabToolset's tail when buildCodeToolset settles — don't
+          // try to construct a runtime against a null toolset here.
+          if (!tab.toolset) {
+            emitSettings(tab);
+            void emitBalance(tab);
+            continue;
+          }
+          tab.runtime = tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
+          if (tab.runtime) emit({ type: "$ready" }, tab.id);
+          emitSettings(tab);
+          void emitBalance(tab);
+        }
+      } catch (err) {
+        emit({ type: "$error", message: `saveApiKey failed: ${(err as Error).message}` });
+      }
+      return;
+    }
+
+    if (msg.cmd === "desktop_resync") {
+      // WebView reloads keep the daemon alive, so replay transport state and
+      // cheap tab state first. Disk scans are deferred until startup settles.
+      emit({ type: "$connected" });
+      for (const t of tabs.values()) {
+        emit(
+          {
+            type: "$tab_opened",
+            workspaceDir: t.rootDir,
+            active: t.id === lastActiveTabId,
+            groupId: t.groupId,
+            sessions: [t.currentSession],
+            activeSession: t.currentSession,
+          },
+          t.id,
+        );
+        emitSettings(t);
+        if (t.pending) continue;
+        emitMcpSpecs(t);
+        emitSkills(t);
+        if (!tabHasCredential(t)) emit({ type: "$needs_setup", reason: "no_api_key" }, t.id);
+        else if (t.toolset) emit({ type: "$ready" }, t.id);
+      }
+      emit({
+        type: "$tabs_snapshot",
+        tabs: Array.from(tabs.values()).map((t) => ({
+          id: t.id,
+          workspaceDir: t.rootDir,
+          active: t.id === lastActiveTabId,
+          groupId: t.groupId,
+          activeSession: t.currentSession,
+        })),
+      });
+      void firstBootstrapSettled.then(async () => {
+        for (const t of tabs.values()) {
+          if (t.pending) {
+            await emitWorkspaceInitialized(t, Promise.resolve());
+            continue;
+          }
+          const sessionsInitialized = emitSessions(t);
+          emitMemory(t);
+          void emitBalance(t);
+          if (t.currentSession) {
+            try {
+              const msgs = buildLoadedMessages(await loadSessionMessagesAsync(t.currentSession));
+              const meta = loadSessionMeta(t.currentSession);
+              emit(
+                {
+                  type: "$session_loaded",
+                  name: t.currentSession,
+                  messages: msgs,
+                  carryover: sessionCarryover(meta),
+                  resync: true,
+                },
+                t.id,
+              );
+              emitRestoredPlan(t, msgs.length > 0);
+            } catch (err) {
+              emitDiagnosticError("session.resync.failed", err, {
+                tabId: t.id,
+                details: tabDiagnosticState(t),
+              });
+              process.stderr.write(
+                `reasonix: session load for resync failed — ${messageOf(err)}\n`,
+              );
+              emit(
+                {
+                  type: "$session_loaded",
+                  name: t.currentSession,
+                  messages: [],
+                  carryover: emptySessionCarryover(),
+                  resync: true,
+                },
+                t.id,
+              );
+              emit({ type: "$error", message: `session resync failed: ${messageOf(err)}` }, t.id);
+            }
+          }
+          await emitWorkspaceInitialized(t, sessionsInitialized);
+          emitCtxBreakdown(t);
+        }
+      });
+      // Auto-refresh the Ollama catalog once per launch/WebView reload — the
+      // catalog is app-global (endpoint + key are global config), so a single
+      // fetch broadcasts to every tab. Unconditional: even a tab on a
+      // DeepSeek/OpenAI model benefits when a local Ollama daemon is up, and a
+      // failure only surfaces on the Models settings page (the composer hides
+      // the error unless the tab's model is an Ollama model).
+      void refreshOllamaModels(true);
+      void refreshOpencodeModels(false);
+      return;
+    }
+    if (msg.cmd === "jobs_list") {
+      emitJobs();
+      return;
+    }
+    if (msg.cmd === "jobs_stop") {
+      void stopJob(msg.jobId).finally(() => emitJobs());
+      return;
+    }
+    if (msg.cmd === "jobs_stop_all") {
+      void stopAllJobs().finally(() => emitJobs());
+      return;
+    }
+    if (msg.cmd === "workspace_recent_remove") {
+      try {
+        removeRecentWorkspace(msg.path);
+        const targetPath = resolve(msg.path.trim());
+        const matchingTabs = Array.from(tabs.values()).filter(
+          (t) => resolve(t.rootDir) === targetPath || t.rootDir === msg.path.trim(),
+        );
+        if (matchingTabs.length > 0) {
+          if (tabs.size <= matchingTabs.length) {
+            const clean = bootstrapTab(undefined, { active: true });
+            first = clean;
+            lastActiveTabId = clean.id;
+          }
+          const groups = new Set(matchingTabs.map((t) => t.groupId));
+          for (const groupId of groups) {
+            const workspaceTab = Array.from(tabs.values()).find((t) => t.groupId === groupId);
+            if (workspaceTab) void closeWorkspaceTab(workspaceTab);
+          }
+        }
+        persistOpenTabs();
+        for (const openTab of tabs.values()) {
+          emitSettings(openTab);
+        }
+      } catch (err) {
+        emitDiagnosticError("workspace.recent.remove.failed", err);
+        emit({
+          type: "$error",
+          message: `workspace_recent_remove failed: ${(err as Error).message}`,
+        });
+      }
+      return;
+    }
+
+    const tab = msg.tabId ? tabs.get(msg.tabId) : first;
+    if (!tab) {
+      emitDiagnostic(
+        "rpc.dispatch.unknown-tab",
+        { tabId: msg.tabId ?? null, command: msg.cmd },
+        { level: "error", message: "command dropped because the tab is unknown" },
+      );
+      if (msg.cmd === "tab_close" && msg.tabId) {
+        // Ghost tab — id no longer known backend-side (re-minted after a
+        // restart, or already closed). Ack the close so the frontend removes
+        // it immediately instead of leaving a zombie until the next resync.
+        emit({ type: "$tab_closed" }, msg.tabId);
+        return;
+      }
+      // Unknown tabId — the renderer's per-tab router drops the event
+      // silently. Surface to stderr instead so it's at least visible when
+      // the desktop is launched from a terminal.
+      process.stderr.write(
+        `rpc dispatch: unknown tabId=${msg.tabId} for cmd=${msg.cmd} — dropping\n`,
+      );
+      return;
+    }
+
+    if (msg.cmd === "abort") {
+      emitTabDiagnostic(tab, "rpc.command.abort", undefined, "info");
+      cancelConversation(tab, desktopUserAbortLoopOptions());
+      return;
+    }
+    if (msg.cmd === "cancel_tool") {
+      emitTabDiagnostic(tab, "rpc.command.cancel-tool", undefined, "info");
+      tab.runtime?.loop.cancelCurrentTool("User stopped the running command (desktop Stop button)");
+      return;
+    }
+    if (msg.cmd === "tab_close") {
+      closeWorkspaceTab(tab).catch((err) => {
+        emitDiagnosticError("tab.close.failed", err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+        process.stderr.write(`reasonix: closeTab rejected — ${messageOf(err)}\n`);
+      });
+      return;
+    }
+    if (msg.cmd === "mcp_specs_get") {
+      emitMcpSpecs(tab);
+      return;
+    }
+    if (msg.cmd === "mcp_specs_add") {
+      const spec = msg.spec.trim();
+      if (!spec) {
+        emit({ type: "$error", message: "mcp_specs_add: spec is empty" }, tab.id);
+        return;
+      }
+      try {
+        parseMcpSpec(spec);
+      } catch (err) {
+        emit({ type: "$error", message: `mcp_specs_add: ${(err as Error).message}` }, tab.id);
+        return;
+      }
+      try {
+        const cfg = readConfig();
+        const list = cfg.mcp ?? [];
+        if (!list.includes(spec)) {
+          cfg.mcp = [...list, spec];
+          writeConfig(cfg);
+        }
+        emitMcpSpecs(tab);
+        void bridgeTabMcp(tab);
+      } catch (err) {
+        emitDiagnosticError("mcp.spec.add.failed", err, {
+          tabId: tab.id,
+          details: { specChars: spec.length, ...tabDiagnosticState(tab) },
+        });
+        emit({ type: "$error", message: `mcp_specs_add: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "mcp_specs_remove") {
+      try {
+        let parsedSpec: McpServerSpec | null = null;
+        try {
+          parsedSpec = parseMcpSpec(msg.spec);
+        } catch (err) {
+          emitDiagnosticError("mcp.spec.parse.ignored", err, {
+            tabId: tab.id,
+            details: { spec: msg.spec },
+          });
+        }
+        if (parsedSpec && isManagedMcpSpec(parsedSpec)) {
+          emit(
+            {
+              type: "$error",
+              message: "mcp_specs_remove: Reasonix+ managed MCP servers can't be removed",
+            },
+            tab.id,
+          );
+          return;
+        }
+        const cfg = readConfig();
+        let changed = false;
+        const list = cfg.mcp ?? [];
+        if (list.includes(msg.spec)) {
+          cfg.mcp = list.filter((s) => s !== msg.spec);
+          changed = true;
+        }
+        const parsedName = parsedSpec?.name ?? null;
+        if (parsedName && cfg.mcpServers && parsedName in cfg.mcpServers) {
+          delete cfg.mcpServers[parsedName];
+          changed = true;
+        }
+        if (changed) writeConfig(cfg);
+        tab.mcpStatuses.delete(msg.spec);
+        if (parsedName) tab.mcpStatuses.delete(parsedName);
+        emitMcpSpecs(tab);
+        void bridgeTabMcp(tab);
+      } catch (err) {
+        emitDiagnosticError("mcp.spec.remove.failed", err, {
+          tabId: tab.id,
+          details: { specChars: msg.spec.length, ...tabDiagnosticState(tab) },
+        });
+        emit({ type: "$error", message: `mcp_specs_remove: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "mcp_specs_toggle") {
+      try {
+        const cfg = readConfig();
+        const ok = msg.tool
+          ? setMcpToolDisabled(cfg, msg.name, msg.tool, msg.disabled)
+          : setMcpServerDisabled(cfg, msg.name, msg.disabled);
+        if (!ok) {
+          emit(
+            { type: "$error", message: `mcp_specs_toggle: unknown server "${msg.name}"` },
+            tab.id,
+          );
+          return;
+        }
+        writeConfig(cfg);
+        emitMcpSpecs(tab);
+        void bridgeTabMcp(tab);
+      } catch (err) {
+        emitDiagnosticError("mcp.spec.toggle.failed", err, {
+          tabId: tab.id,
+          details: { name: msg.name, tool: msg.tool, disabled: msg.disabled },
+        });
+        emit({ type: "$error", message: `mcp_specs_toggle: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "mcp_session_toggle") {
+      if (!tab.currentSession) return;
+      try {
+        // Tools-section toggle: edit THIS session's absolute MCP state (seed a
+        // legacy session from the default first so its current state is frozen
+        // in), then re-bridge so the change is live.
+        const state = sessionMcpState(tab.currentSession) ?? sessionMcpFromConfig(tab.rootDir);
+        const next: SessionMcpState = { ...state };
+        if (msg.tool) {
+          const tools = new Set(state.disabledTools?.[msg.name] ?? []);
+          if (msg.disabled) tools.add(msg.tool);
+          else tools.delete(msg.tool);
+          const disabledTools = { ...(state.disabledTools ?? {}) };
+          if (tools.size > 0) disabledTools[msg.name] = [...tools].sort();
+          else delete disabledTools[msg.name];
+          next.disabledTools = Object.keys(disabledTools).length ? disabledTools : undefined;
+        } else {
+          const servers = new Set(state.disabledServers ?? []);
+          if (msg.disabled) servers.add(msg.name);
+          else servers.delete(msg.name);
+          next.disabledServers = servers.size ? [...servers].sort() : undefined;
+        }
+        patchSessionMeta(tab.currentSession, { mcp: next });
+        emitMcpSpecs(tab);
+        void bridgeTabMcp(tab);
+      } catch (err) {
+        emitDiagnosticError("mcp.session.toggle.failed", err, {
+          tabId: tab.id,
+          details: { name: msg.name, tool: msg.tool, disabled: msg.disabled },
+        });
+        emit({ type: "$error", message: `mcp_session_toggle: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "mcp_extension_status") {
+      emitMcpExtensionStatus(tab);
+      return;
+    }
+    if (msg.cmd === "mail_provider_set") {
+      try {
+        saveMailProvider(msg.provider);
+        pruneUnselectedMailServer(msg.provider);
+        emitSettings(tab);
+        emitMcpSpecs(tab);
+        void bridgeTabMcp(tab).then(() => refreshMailAuth(tab, msg.provider, bridgeTabMcp));
+      } catch (error) {
+        emit({ type: "$error", message: `mail_provider_set: ${messageOf(error)}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "mail_status") {
+      void refreshMailAuth(tab, msg.provider, bridgeTabMcp);
+      return;
+    }
+    if (msg.cmd === "mail_configure") {
+      try {
+        if (msg.provider === MailProvider.Gmail) {
+          const clientId = msg.clientId?.trim() ?? "";
+          const clientSecret = msg.clientSecret?.trim() ?? "";
+          if (!clientId || !clientSecret) {
+            throw new Error("Enter both a Google OAuth client ID and client secret");
+          }
+          saveGmailOAuth({ clientId, clientSecret });
+          configureGmailMailServer();
+        } else {
+          configureOutlookMailServer();
+        }
+        emitMcpSpecs(tab);
+        emitMailAuth(tab, msg.provider, { configured: true, phase: "disconnected" });
+        void bridgeTabMcp(tab).then(() => refreshMailAuth(tab, msg.provider, bridgeTabMcp));
+      } catch (error) {
+        emitMailAuth(tab, msg.provider, {
+          configured: false,
+          phase: "error",
+          message: messageOf(error),
+        });
+      }
+      return;
+    }
+    if (msg.cmd === "mail_connect") {
+      void connectMail(tab, msg.provider, bridgeTabMcp);
+      return;
+    }
+    if (msg.cmd === "mail_cancel") {
+      cancelMailAuth(tab, msg.provider);
+      emitMailAuth(tab, msg.provider, {
+        configured:
+          msg.provider === MailProvider.Gmail
+            ? Boolean(readConfig().gmailOAuth?.clientId)
+            : outlookMailConfigured(tab),
+        phase: "disconnected",
+        message:
+          msg.provider === MailProvider.Gmail
+            ? "Google sign-in cancelled."
+            : "Microsoft sign-in cancelled.",
+      });
+      return;
+    }
+    if (msg.cmd === "mail_signout") {
+      void signOutMail(tab, msg.provider, bridgeTabMcp);
+      return;
+    }
+    if (msg.cmd === "playwright_browser_install_cancel") {
+      const controller = playwrightBrowserInstalls.get(msg.browser);
+      if (controller) controller.abort();
+      return;
+    }
+    if (msg.cmd === "playwright_browser_install") {
+      void installPlaywrightBrowser(tab, msg.browser, () => {
+        const cfg = readConfig();
+        const entry = MCP_CATALOG.find((e) => e.name === "playwright");
+        if (entry) {
+          const { command, args } = catalogStdioCommand(entry);
+          mergeMcpServerEntry(cfg, entry.name, { transport: "stdio", command, args });
+          const stored = cfg.mcpServers?.[entry.name];
+          if (stored) {
+            stored.args = configurePlaywrightArgs(stored.args ?? args, msg.browser);
+            const env = { ...(stored.env ?? {}) };
+            delete env[PLAYWRIGHT_EXTENSION_TOKEN_ENV];
+            delete env[PLAYWRIGHT_DOWNLOAD_HOST_ENV];
+            stored.env = Object.keys(env).length > 0 ? env : undefined;
+            writeConfig(cfg);
+            emitMcpSpecs(tab);
+            emitMcpExtensionStatus(tab);
+          }
+        }
+        void bridgeTabMcp(tab);
+      });
+      return;
+    }
+    if (msg.cmd === "mcp_extension_configure") {
+      try {
+        const token = typeof msg.token === "string" ? normalizeExtensionToken(msg.token) : "";
+        const cfg = readConfig();
+        const entry = MCP_CATALOG.find((e) => e.name === "playwright");
+        if (!entry) throw new Error("bundled catalog has no playwright entry");
+        const { command, args } = catalogStdioCommand(entry);
+        mergeMcpServerEntry(cfg, entry.name, { transport: "stdio", command, args });
+        const stored = cfg.mcpServers?.[entry.name];
+        if (!stored) throw new Error("failed to create the playwright server entry");
+        stored.args = configurePlaywrightArgs(
+          stored.args ?? args,
+          msg.mode,
+          msg.cdpEndpoint,
+          msg.extensionBrowser,
+        );
+        const env = { ...(stored.env ?? {}) };
+        if (msg.mode === "extension" && token) {
+          // Explicit write: tokens rotate, so a newly entered one replaces any stored value.
+          env[PLAYWRIGHT_EXTENSION_TOKEN_ENV] = token;
+        } else if (msg.mode !== "extension") {
+          delete env[PLAYWRIGHT_EXTENSION_TOKEN_ENV];
+        }
+        delete env[PLAYWRIGHT_DOWNLOAD_HOST_ENV];
+        stored.env = Object.keys(env).length > 0 ? env : undefined;
+        writeConfig(cfg);
+        emitMcpSpecs(tab);
+        emitMcpExtensionStatus(tab);
+        void bridgeTabMcp(tab);
+      } catch (err) {
+        emitDiagnosticError("mcp.extension.configure.failed", err, {
+          tabId: tab.id,
+        });
+        emit(
+          { type: "$error", message: `mcp_extension_configure: ${(err as Error).message}` },
+          tab.id,
+        );
+      }
+      return;
+    }
+    if (msg.cmd === "mcp_extension_check") {
+      void runMcpExtensionCheck(tab);
+      return;
+    }
+    if (msg.cmd === "rule_add") {
+      const pattern = msg.pattern.trim();
+      if (!pattern) {
+        emit({ type: "$error", message: "rule_add: pattern is empty" }, tab.id);
+        return;
+      }
+      try {
+        if (msg.ruleType === "shell") {
+          addGlobalShellAllowed(pattern);
+        } else if (msg.ruleType === "path") {
+          addGlobalPathAllowed(pattern);
+        }
+        emitSettings(tab);
+      } catch (err) {
+        emit({ type: "$error", message: `rule_add: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "rule_remove") {
+      const pattern = msg.pattern.trim();
+      if (!pattern) {
+        emit({ type: "$error", message: "rule_remove: pattern is empty" }, tab.id);
+        return;
+      }
+      try {
+        if (msg.ruleType === "shell") {
+          removeGlobalShellAllowed(pattern);
+          removeProjectShellAllowed(tab.rootDir, pattern);
+        } else if (msg.ruleType === "path") {
+          removeGlobalPathAllowed(pattern);
+          removeProjectPathAllowed(tab.rootDir, pattern);
+        }
+        emitSettings(tab);
+      } catch (err) {
+        emit({ type: "$error", message: `rule_remove: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "skills_get") {
+      emitSkills(tab);
+      return;
+    }
+    if (msg.cmd === "skill_run") {
+      if (!tab.runtime) {
+        emit({ type: "$error", message: notConfiguredMessage(tab.currentModel) }, tab.id);
+        return;
+      }
+      try {
+        const store = new SkillStore({
+          projectRoot: tab.rootDir,
+          customSkillPaths: loadResolvedSkillPaths(tab.rootDir),
+        });
+        const found = store.read(msg.name);
+        if (!found) {
+          emit({ type: "$error", message: `skill not found: ${msg.name}` }, tab.id);
+          return;
+        }
+        const extra = msg.args?.trim() ?? "";
+        const header = `# Skill: ${found.name}${found.description ? `\n> ${found.description}` : ""}`;
+        const argsLine = extra ? `\n\nArguments: ${extra}` : "";
+        const payload = `${header}\n\n${found.body}${argsLine}`;
+        void runTurn(tab, payload);
+      } catch (err) {
+        emit({ type: "$error", message: `skill_run: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "session_list") {
+      void emitSessions(tab);
+      return;
+    }
+    if (msg.cmd === "session_delete") {
+      // Stop every live owner BEFORE removing its folder. Deleting first leaves
+      // the old runtime a window to append another event and recreate the same
+      // session directory with an empty transcript and reset metadata.
+      const affectedTabs = Array.from(tabs.values()).filter(
+        (openTab) => openTab.currentSession === msg.name,
+      );
+      for (const affectedTab of affectedTabs) {
+        if (affectedTab.aborter) affectedTab.switching = true;
+        cancelConversation(affectedTab);
+        affectedTab.runtime?.loop.detachSessionPersistence();
+      }
+
+      const existed = sessionExists(msg.name);
+      const deleted = deleteSession(msg.name);
+      const removed = deleted || !existed;
+      if (!removed) {
+        emit({ type: "$error", message: `session_delete failed: ${msg.name}` }, tab.id);
+        for (const affectedTab of affectedTabs) {
+          affectedTab.runtime =
+            affectedTab.toolset && tabCurrentModelUsable(affectedTab)
+              ? buildRuntimeFor(affectedTab)
+              : null;
+          affectedTab.switching = false;
+        }
+      }
+      for (const openTab of tabs.values()) {
+        const settledDeletes = [{ name: msg.name, removed }];
+        if (shouldReplaceDeletedSession(openTab.currentSession, msg.name, removed)) {
+          startFreshSession(openTab, {
+            reason: "session-delete",
+            settledDeletes,
+            conversationCancelled: true,
+          });
+        } else {
+          void emitSessions(openTab, settledDeletes);
+        }
+      }
+      return;
+    }
+    if (msg.cmd === "session_clear") {
+      const candidates = listSessionsForWorkspace(tab.rootDir);
+      const candidateNames = new Set(candidates.map((session) => session.name));
+      // As with single deletion, detach active writers before touching disk so
+      // none can resurrect a just-deleted session from an in-flight turn.
+      const affectedTabs = Array.from(tabs.values()).filter((openTab) =>
+        candidateNames.has(openTab.currentSession),
+      );
+      for (const affectedTab of affectedTabs) {
+        if (affectedTab.aborter) affectedTab.switching = true;
+        cancelConversation(affectedTab);
+        affectedTab.runtime?.loop.detachSessionPersistence();
+      }
+
+      const settledDeletes = candidates.map((session) => ({
+        name: session.name,
+        removed: deleteSession(session.name),
+      }));
+      const deletedSessions = new Set(
+        settledDeletes.filter((result) => result.removed).map((result) => result.name),
+      );
+      const failed = settledDeletes.filter((result) => !result.removed);
+      if (failed.length > 0) {
+        emit(
+          { type: "$error", message: `session_clear failed for ${failed.length} session(s)` },
+          tab.id,
+        );
+        for (const affectedTab of affectedTabs) {
+          if (deletedSessions.has(affectedTab.currentSession)) continue;
+          affectedTab.runtime =
+            affectedTab.toolset && tabCurrentModelUsable(affectedTab)
+              ? buildRuntimeFor(affectedTab)
+              : null;
+          affectedTab.switching = false;
+        }
+      }
+      for (const openTab of tabs.values()) {
+        if (deletedSessions.has(openTab.currentSession)) {
+          startFreshSession(openTab, {
+            reason: "session-delete",
+            settledDeletes,
+            conversationCancelled: true,
+          });
+        } else {
+          void emitSessions(openTab, settledDeletes);
+        }
+      }
+      return;
+    }
+    if (msg.cmd === "session_rename") {
+      try {
+        const trimmed = normalizeSessionTitle(msg.title);
+        patchSessionMeta(msg.name, { summary: trimmed || undefined });
+        emitSessionsForWorkspace(tab.rootDir);
+      } catch (err) {
+        emit(
+          { type: "$error", message: `session_rename failed: ${(err as Error).message}` },
+          tab.id,
+        );
+      }
+      return;
+    }
+    if (msg.cmd === "session_reorder") {
+      try {
+        const now =
+          typeof msg.createdAt === "number" && Number.isFinite(msg.createdAt) && msg.createdAt > 0
+            ? msg.createdAt
+            : Date.now();
+        patchSessionMeta(msg.name, { createdAt: now });
+        emitSessionsForWorkspace(tab.rootDir);
+      } catch (err) {
+        emit(
+          { type: "$error", message: `session_reorder failed: ${(err as Error).message}` },
+          tab.id,
+        );
+      }
+      return;
+    }
+    if (msg.cmd === "session_load") {
+      // Legacy alias for additive session_open. Loading from the sidebar must
+      // never replace or abort the channel the user is currently watching.
+      const holder = channelForSession(msg.name);
+      if (holder) {
+        if (holder.id !== tab.id) {
+          lastActiveTabId = holder.id;
+          persistOpenTabs();
+          emit(
+            {
+              type: "$tab_opened",
+              workspaceDir: holder.rootDir,
+              active: true,
+              groupId: holder.groupId,
+              sessions: [holder.currentSession],
+              activeSession: holder.currentSession,
+            },
+            holder.id,
+          );
+        }
+        emitSessionsForWorkspace(holder.rootDir);
+        return;
+      }
+      try {
+        const opened = bootstrapTab(tab.rootDir, {
+          session: msg.name,
+          active: true,
+          groupId: tab.groupId,
+        });
+        lastActiveTabId = opened.id;
+        persistOpenTabs();
+      } catch (err) {
+        emitDiagnosticError("session.load.failed", err, {
+          tabId: tab.id,
+          details: { requestedSession: msg.name, ...tabDiagnosticState(tab) },
+        });
+        process.stderr.write(`session_load: "${msg.name}" threw — ${(err as Error).message}\n`);
+        emit({ type: "$error", message: `session_load failed: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "session_open") {
+      const name = msg.name;
+      // Already open somewhere — focus it; never open a second agent on one
+      // session.
+      const existing = channelForSession(name);
+      if (existing) {
+        lastActiveTabId = existing.id;
+        persistOpenTabs();
+        emit(
+          {
+            type: "$tab_opened",
+            workspaceDir: existing.rootDir,
+            active: true,
+            groupId: existing.groupId,
+            sessions: [existing.currentSession],
+            activeSession: existing.currentSession,
+          },
+          existing.id,
+        );
+        emitSessionsForWorkspace(existing.rootDir);
+        return;
+      }
+      try {
+        // Stack the session into the requesting tab's group so one tab can host
+        // several sessions side by side (each an independent running agent).
+        const opened = bootstrapTab(tab.rootDir, {
+          session: name,
+          active: true,
+          groupId: tab.groupId,
+        });
+        lastActiveTabId = opened.id;
+        persistOpenTabs();
+      } catch (err) {
+        emitDiagnosticError("session.open.failed", err, {
+          tabId: tab.id,
+          details: { requestedSession: name, ...tabDiagnosticState(tab) },
+        });
+        emit({ type: "$error", message: `session_open failed: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "memory_read") {
+      try {
+        const detail = readMemoryEntryDetail({ path: msg.path }, tab.rootDir);
+        emit({ type: "$memory_detail", detail }, tab.id);
+      } catch (err) {
+        emit({ type: "$error", message: `memory_read failed: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "memory_write") {
+      try {
+        writeMemoryEntry(
+          {
+            scope: msg.scope,
+            name: msg.name,
+            description: msg.description,
+            body: msg.body,
+            ...(msg.type ? { type: msg.type } : {}),
+            ...(msg.priority ? { priority: msg.priority } : {}),
+          },
+          tab.rootDir,
+        );
+        emitMemory(tab);
+        emit(
+          { type: "$memory_result", ok: true, message: `saved ${msg.scope}/${msg.name}` },
+          tab.id,
+        );
+      } catch (err) {
+        emit({ type: "$memory_result", ok: false, message: (err as Error).message }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "memory_delete") {
+      try {
+        const ok = deleteMemoryEntry(msg.path, tab.rootDir);
+        emitMemory(tab);
+        emit(
+          {
+            type: "$memory_result",
+            ok,
+            message: ok ? "memory deleted" : "memory not found",
+          },
+          tab.id,
+        );
+      } catch (err) {
+        emit({ type: "$memory_result", ok: false, message: (err as Error).message }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "memory_export") {
+      try {
+        const bundle = exportMemories(tab.rootDir);
+        emit({ type: "$memory_export", text: JSON.stringify(bundle, null, 2) }, tab.id);
+      } catch (err) {
+        emit(
+          { type: "$error", message: `memory_export failed: ${(err as Error).message}` },
+          tab.id,
+        );
+      }
+      return;
+    }
+    if (msg.cmd === "memory_import") {
+      try {
+        const result = importMemories(JSON.parse(msg.json), tab.rootDir);
+        emitMemory(tab);
+        const skipped = result.skipped.length > 0 ? ` (skipped ${result.skipped.length})` : "";
+        emit(
+          {
+            type: "$memory_result",
+            ok: true,
+            message: `imported ${result.imported} memory${result.imported === 1 ? "" : "ies"}${skipped}`,
+          },
+          tab.id,
+        );
+      } catch (err) {
+        emit({ type: "$memory_result", ok: false, message: (err as Error).message }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "new_chat") {
+      // New chat is additive: preserve every existing agent in this workspace
+      // tab and mount a fresh independent session beside them.
+      if (tab.pending || !tab.rootDir) return;
+      try {
+        const opened = bootstrapTab(tab.rootDir, {
+          active: true,
+          groupId: tab.groupId,
+          // Inherit the source session's models/effort — otherwise the fresh
+          // channel falls back to the global config default and drops the
+          // per-conversation subagent override entirely.
+          model: tab.currentModel,
+          reasoningEffort: tab.currentReasoningEffort,
+          subagentModel: tab.currentSubagentModel,
+        });
+        lastActiveTabId = opened.id;
+        persistOpenTabs();
+      } catch (err) {
+        emitDiagnosticError("session.new-chat.failed", err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+        emit({ type: "$error", message: `new-chat failed: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "duplicate_session") {
+      // Clone this conversation into a NEW session, trimmed to the newest
+      // `duplicateSessionTokens` tokens, opened on the user-picked models. The
+      // frontend ships the export markdown (the export format lives there); we
+      // trim it here where the accurate DeepSeek tokenizer lives.
+      if (tab.pending || !tab.rootDir) return;
+      const markdown = typeof msg.markdown === "string" ? msg.markdown : "";
+      if (!markdown.trim()) {
+        emit({ type: "$error", message: "Duplicate session: nothing to duplicate." }, tab.id);
+        return;
+      }
+      const model = msg.model || tab.currentModel;
+      const subagentModel = msg.subagentModel || tab.currentSubagentModel || model;
+      const context = buildDuplicateContext(markdown, loadDuplicateSessionTokens());
+      const autoProceed = loadDuplicateSessionAutoProceed();
+      try {
+        // Mint a real session for the duplicate, stamped with the chosen models
+        // so bootstrapTab restores them (resolveSessionModelPrefs reads meta).
+        const name = mintSessionFor(
+          tab.rootDir,
+          {
+            model,
+            reasoningEffort: tab.currentReasoningEffort,
+            subagentModel,
+          },
+          // Duplicate is the exception: inherit the SOURCE session's live MCP
+          // state, not the current Settings default.
+          { mcp: sessionMcpState(tab.currentSession) ?? sessionMcpFromConfig(tab.rootDir) },
+        );
+        // Auto-proceed off (default): seed the blob as the opening user turn and
+        // stop, so the user drives the next message. On: leave the log empty and
+        // let the runTurn below append + run it.
+        if (!autoProceed) appendSessionMessage(name, { role: "user", content: context });
+        const opened = bootstrapTab(tab.rootDir, {
+          session: name,
+          active: true,
+          groupId: tab.groupId,
+        });
+        lastActiveTabId = opened.id;
+        persistOpenTabs();
+        if (autoProceed) {
+          void opened.initialization
+            ?.then(() => {
+              // Runtime is built at the tail of initTabToolset; a null runtime
+              // means the chosen model isn't configured — leave it for setup.
+              if (opened.runtime) void runTurn(opened, context);
+            })
+            .catch((err) => {
+              emit(
+                { type: "$error", message: `duplicate_session failed: ${(err as Error).message}` },
+                opened.id,
+              );
+            });
+        }
+      } catch (err) {
+        emitDiagnosticError("session.duplicate.failed", err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+        emit(
+          { type: "$error", message: `duplicate_session failed: ${(err as Error).message}` },
+          tab.id,
+        );
+      }
+      return;
+    }
+    if (msg.cmd === "oauth_begin") {
+      oauthGen++;
+      if (pendingOAuth) pendingOAuth.cancel();
+      const gen = oauthGen;
+      void beginOAuthFlow()
+        .then((flow) => {
+          pendingOAuth = flow;
+          emit({ type: "oauth_begin_result", url: flow.url }, tab.id);
+          void flow.done
+            .then(async (creds) => {
+              if (gen !== oauthGen) return; // superseded by a newer begin/signout
+              pendingOAuth = null;
+              const account = (await oauthAccount(creds.accessToken)) ?? creds.account;
+              saveOpenAIOAuth({ ...creds, account });
+              lastOAuthError = null;
+              // The runtime snapshots the credential source at build time —
+              // build (or rebuild) now-credentialed tabs so a fresh sign-in
+              // takes effect (and clears the needs-setup screen) without a
+              // model flip. A tab that booted un-credentialed has a null
+              // runtime — it must be built here, not just rebuilt.
+              for (const t of tabs.values()) {
+                if (t.toolset) {
+                  t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
+                  if (t.runtime) emit({ type: "$ready" }, t.id);
+                }
+              }
+              emitSettings(tab);
+            })
+            .catch((err: Error) => {
+              if (gen !== oauthGen) return;
+              pendingOAuth = null;
+              lastOAuthError = err.message;
+              emit({ type: "$error", message: err.message }, tab.id);
+              emitSettings(tab);
+            });
+        })
+        .catch((err: Error) => {
+          lastOAuthError = err.message;
+          emit({ type: "$error", message: `oauth_begin failed: ${err.message}` }, tab.id);
+          emitSettings(tab);
+        });
+      return;
+    }
+    if (msg.cmd === "oauth_cancel") {
+      oauthGen++;
+      if (pendingOAuth) {
+        pendingOAuth.cancel();
+        pendingOAuth = null;
+      }
+      return;
+    }
+    if (msg.cmd === "oauth_signout") {
+      oauthGen++;
+      lastOAuthError = null;
+      if (pendingOAuth) {
+        pendingOAuth.cancel();
+        pendingOAuth = null;
+      }
+      void signOutOpenAI()
+        .then(() => emitSettings(tab))
+        .catch((err: Error) => {
+          emit({ type: "$error", message: `oauth_signout failed: ${err.message}` }, tab.id);
+        });
+      return;
+    }
+    if (msg.cmd === "gemini_oauth_begin") {
+      antigravityOAuthGen++;
+      if (pendingAntigravityOAuth) pendingAntigravityOAuth.cancel();
+      const gen = antigravityOAuthGen;
+      void beginAntigravityOAuthFlow()
+        .then((flow) => {
+          pendingAntigravityOAuth = flow;
+          emit({ type: "gemini_oauth_begin_result", url: flow.url }, tab.id);
+          void flow.done
+            .then(async (creds) => {
+              if (gen !== antigravityOAuthGen) return; // superseded by a newer begin/signout
+              pendingAntigravityOAuth = null;
+              const account = (await antigravityAccount(creds.accessToken)) ?? creds.account;
+              const projectId = await onboardAntigravity(creds.accessToken);
+              const onboarded = {
+                ...creds,
+                clientId: ANTIGRAVITY_OAUTH_CLIENT_ID,
+                account,
+                projectId,
+              };
+              saveAntigravityOAuth(onboarded);
+              const models = (await fetchAntigravityModels(creds.accessToken, projectId)).map(
+                ({ id }) => id,
+              );
+              saveAntigravityOAuth({ ...onboarded, models });
+              lastAntigravityOAuthError = null;
+              // Build (or rebuild) now-credentialed tabs so a fresh sign-in
+              // takes effect (and clears the needs-setup screen) without a
+              // model flip. A tab that booted un-credentialed has a null
+              // runtime — it must be built here, not just rebuilt.
+              for (const t of tabs.values()) {
+                if (t.toolset) {
+                  t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
+                  if (t.runtime) emit({ type: "$ready" }, t.id);
+                }
+              }
+              emitSettings(tab);
+            })
+            .catch((err: Error) => {
+              if (gen !== antigravityOAuthGen) return;
+              pendingAntigravityOAuth = null;
+              lastAntigravityOAuthError = err.message;
+              emit({ type: "$error", message: err.message }, tab.id);
+              emitSettings(tab);
+            });
+        })
+        .catch((err: Error) => {
+          lastAntigravityOAuthError = err.message;
+          emit({ type: "$error", message: `gemini_oauth_begin failed: ${err.message}` }, tab.id);
+          emitSettings(tab);
+        });
+      return;
+    }
+    if (msg.cmd === "gemini_oauth_cancel") {
+      antigravityOAuthGen++;
+      if (pendingAntigravityOAuth) {
+        pendingAntigravityOAuth.cancel();
+        pendingAntigravityOAuth = null;
+      }
+      return;
+    }
+    if (msg.cmd === "gemini_oauth_signout") {
+      antigravityOAuthGen++;
+      lastAntigravityOAuthError = null;
+      if (pendingAntigravityOAuth) {
+        pendingAntigravityOAuth.cancel();
+        pendingAntigravityOAuth = null;
+      }
+      void signOutAntigravity()
+        .then(() => emitSettings(tab))
+        .catch((err: Error) => {
+          emit({ type: "$error", message: `gemini_oauth_signout failed: ${err.message}` }, tab.id);
+        });
+      return;
+    }
+    if (msg.cmd === "setup_save_openai_key") {
+      const key = msg.key.trim();
+      if (!isPlausibleKey(key)) {
+        emit(
+          {
+            type: "$error",
+            message: "Key looks too short — paste the full token (16+ chars, no spaces).",
+          },
+          tab.id,
+        );
+        return;
+      }
+      try {
+        saveOpenAIApiKey(key);
+        // A fresh OpenAI key also unblocks ChatGPT-only installs whose tab still
+        // defaults to a DeepSeek model — build (or rebuild) every now-credentialed
+        // tab ready. A tab that booted un-credentialed has a null runtime — it
+        // must be built here, not just rebuilt.
+        for (const t of tabs.values()) {
+          if (t.toolset) {
+            t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
+            if (t.runtime) emit({ type: "$ready" }, t.id);
+          }
+        }
+        emitSettings(tab);
+      } catch (err) {
+        emit(
+          { type: "$error", message: `saveOpenAIApiKey failed: ${(err as Error).message}` },
+          tab.id,
+        );
+      }
+      return;
+    }
+    if (msg.cmd === "settings_get") {
+      emitSettings(tab);
+      return;
+    }
+    if (msg.cmd === "codex_quota_get") {
+      void emitCodexQuota(tab, { force: true });
+      return;
+    }
+    if (msg.cmd === "ollama_quota_get") {
+      void emitOllamaQuota(tab);
+      return;
+    }
+    if (msg.cmd === "antigravity_quota_get") {
+      void emitAntigravityQuota(tab);
+      return;
+    }
+    if (msg.cmd === "zai_quota_get") {
+      void emitZaiQuota(tab);
+      return;
+    }
+    if (msg.cmd === "ollama_models_list") {
+      // `force` (manual refresh button) refetches; plain calls reuse the
+      // app-global cache within its TTL so tab effects don't hammer the
+      // endpoint. The broadcast is tabId-less — every tab shares the result.
+      void refreshOllamaModels(!!msg.force, tab);
+      return;
+    }
+    if (msg.cmd === "antigravity_models_refresh") {
+      void refreshAntigravityModels(tab);
+      return;
+    }
+    if (msg.cmd === "opencode_models_refresh") {
+      void refreshOpencodeModels(!!msg.force, tab);
+      return;
+    }
+    if (msg.cmd === "settings_save") {
+      try {
+        // JEV/TypeSafe key is validated asynchronously (network) but must never be
+        // dropped when co-sent with other fields — so handle it first, before the
+        // early-return branches below (e.g. workspaceDir) can swallow the message.
+        if (msg.typesafeApiKey !== undefined) {
+          const nextKey = msg.typesafeApiKey?.trim() || "";
+          void (async () => {
+            try {
+              if (nextKey) await validateTypesafeApiKeyCached(nextKey, { force: true });
+              const envKey = process.env.TYPESAFE_API_KEY?.trim() || "";
+              if (envKey && envKey !== nextKey) {
+                await validateTypesafeApiKeyCached(envKey, { force: true });
+              }
+              const cfg = readConfig();
+              cfg.typesafeApiKey = nextKey || undefined;
+              writeConfig(cfg);
+              const effectiveKey = envKey || nextKey;
+              for (const openTab of tabs.values()) {
+                refreshJevKnowledge(openTab, Boolean(effectiveKey));
+                emitSettings(openTab);
+              }
+            } catch (err) {
+              emit(
+                {
+                  type: "$error",
+                  message: `TypeSafe API key validation failed: ${(err as Error).message}`,
+                },
+                tab.id,
+              );
+              emitSettings(tab);
+            }
+          })();
+        }
+        if (msg.reasoningEffort !== undefined && isReasoningEffort(msg.reasoningEffort)) {
+          saveReasoningEffort(msg.reasoningEffort);
+          tab.currentReasoningEffort = msg.reasoningEffort;
+          tab.runtime?.loop.configure({ reasoningEffort: msg.reasoningEffort });
+          persistSessionModelPrefs(tab);
+        }
+        if (msg.editMode !== undefined) {
+          saveEditMode(msg.editMode);
+          if (tab.toolset) applyPlanMode(tab.toolset.tools, msg.editMode);
+        }
+        if (msg.quickSendId !== undefined) {
+          saveQuickSendId(msg.quickSendId);
+        }
+        if (msg.quickSends !== undefined) {
+          saveCustomQuickSends(msg.quickSends);
+        }
+        if (msg.contextTokens !== undefined) {
+          saveContextTokens(msg.contextTokens);
+          const next = loadContextTokens();
+          tab.ctxMaxOverride = next;
+          // Re-resolve verdict-aware so an Ollama tab keeps its learned window
+          // while the new user value stays the fallback (matches boot logic).
+          tab.runtime?.loop.configure({ ctxMaxOverride: tabCtxMaxOverride(tab) ?? null });
+          emitCtxBreakdown(tab);
+          emitSettings(tab);
+        }
+        if (msg.maxIterPerTurn !== undefined) {
+          saveMaxIterPerTurn(msg.maxIterPerTurn);
+          const next = loadMaxIterPerTurn();
+          for (const openTab of tabs.values()) {
+            openTab.runtime?.loop.configure({ maxIterPerTurn: next });
+            emitSettings(openTab);
+          }
+        }
+        if (msg.disableAutoCompaction !== undefined) {
+          saveDisableAutoCompaction(msg.disableAutoCompaction);
+          const next = loadDisableAutoCompaction();
+          for (const openTab of tabs.values()) {
+            openTab.runtime?.loop.configure({ disableAutoCompaction: next });
+            emitSettings(openTab);
+          }
+        }
+        if (msg.duplicateSessionTokens !== undefined) {
+          saveDuplicateSessionTokens(msg.duplicateSessionTokens);
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
+        if (msg.duplicateSessionAutoProceed !== undefined) {
+          saveDuplicateSessionAutoProceed(msg.duplicateSessionAutoProceed);
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
+        if (msg.enableSubagents !== undefined) {
+          saveEnableSubagents(msg.enableSubagents);
+          for (const openTab of tabs.values()) {
+            refreshSubagentKnowledge(openTab, msg.enableSubagents);
+            emitSettings(openTab);
+          }
+        }
+        if (msg.elevationEnabled !== undefined) {
+          // The shell tool reads this via a live getter, so no toolset rebuild
+          // is needed — persisting + re-emitting settings is enough.
+          saveElevationEnabled(msg.elevationEnabled);
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
+        if (msg.repetitionGuardEnabled !== undefined) {
+          saveRepetitionGuardEnabled(msg.repetitionGuardEnabled);
+          const next = loadRepetitionGuardEnabled();
+          for (const openTab of tabs.values()) {
+            openTab.runtime?.loop.configure({ repetitionGuardEnabled: next });
+            emitSettings(openTab);
+          }
+        }
+        if (msg.questionTimerEnabled !== undefined) {
+          saveQuestionTimerEnabled(msg.questionTimerEnabled);
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
+        if (msg.enabledModels !== undefined) {
+          saveEnabledModels(Array.isArray(msg.enabledModels) ? msg.enabledModels : []);
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
+        if (msg.ollamaGeneration !== undefined) {
+          saveOllamaGenerationPatch(msg.ollamaGeneration);
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
+        if (msg.baseUrl !== undefined) saveBaseUrl(msg.baseUrl);
+        if (msg.workspaceDir !== undefined) {
+          void switchWorkspace(tab, msg.workspaceDir);
+          return;
+        }
+        if (msg.ollamaBaseUrl !== undefined) {
+          const cfg = readConfig();
+          cfg.ollamaBaseUrl = msg.ollamaBaseUrl?.trim() || undefined;
+          writeConfig(cfg);
+        }
+        if (
+          msg.webSearchEngine !== undefined ||
+          msg.webSearchEndpoint !== undefined ||
+          msg.metasoApiKey !== undefined ||
+          msg.baiduApiKey !== undefined ||
+          msg.tavilyApiKey !== undefined ||
+          msg.perplexityApiKey !== undefined ||
+          msg.exaApiKey !== undefined ||
+          msg.ollamaApiKey !== undefined ||
+          msg.braveApiKey !== undefined ||
+          msg.zaiApiKey !== undefined ||
+          msg.opencodeApiKey !== undefined ||
+          msg.opencodeBaseUrl !== undefined
+        ) {
+          const cfg = readConfig();
+          if (msg.webSearchEngine !== undefined) cfg.webSearchEngine = msg.webSearchEngine;
+          if (msg.webSearchEndpoint !== undefined) {
+            cfg.webSearchEndpoint = msg.webSearchEndpoint?.trim() || undefined;
+          }
+          if (msg.metasoApiKey !== undefined) {
+            cfg.metasoApiKey = msg.metasoApiKey?.trim() || undefined;
+          }
+          if (msg.baiduApiKey !== undefined) {
+            cfg.baiduApiKey = msg.baiduApiKey?.trim() || undefined;
+          }
+          if (msg.tavilyApiKey !== undefined) {
+            cfg.tavilyApiKey = msg.tavilyApiKey?.trim() || undefined;
+          }
+          if (msg.perplexityApiKey !== undefined) {
+            cfg.perplexityApiKey = msg.perplexityApiKey?.trim() || undefined;
+          }
+          if (msg.exaApiKey !== undefined) {
+            cfg.exaApiKey = msg.exaApiKey?.trim() || undefined;
+          }
+          if (msg.ollamaApiKey !== undefined) {
+            cfg.ollamaApiKey = msg.ollamaApiKey?.trim() || undefined;
+          }
+          if (msg.braveApiKey !== undefined) {
+            cfg.braveApiKey = msg.braveApiKey?.trim() || undefined;
+          }
+          if (msg.zaiApiKey !== undefined) {
+            cfg.zaiApiKey = msg.zaiApiKey?.trim() || undefined;
+          }
+          if (msg.opencodeApiKey !== undefined) {
+            cfg.opencodeApiKey = msg.opencodeApiKey?.trim() || undefined;
+          }
+          if (msg.opencodeBaseUrl !== undefined) {
+            cfg.opencodeBaseUrl = msg.opencodeBaseUrl?.trim() || undefined;
+          }
+          writeConfig(cfg);
+        }
+        if (msg.subagentModel !== undefined) {
+          const next = msg.subagentModel.trim();
+          if (next) {
+            tab.currentSubagentModel = next;
+            // Resolved lazily at spawn time (setup reads `() => tab.currentSubagentModel`),
+            // so no toolset rebuild is needed — the next subagent spawn picks it up.
+            persistSessionModelPrefs(tab);
+          }
+        }
+        if (msg.model !== undefined) {
+          const next = msg.model.trim();
+          if (next && next !== tab.currentModel) {
+            // Snapshot so a failed switch can roll back: without this the UI
+            // (optimistic settings_patch) shows a model the daemon never
+            // built a runtime for, and every later send misfires.
+            const prevModel = tab.currentModel;
+            const prevSystem = tab.system;
+            // Release a running turn before the rebuild. The in-flight runTurn
+            // captured the previous runtime, so it keeps driving the old
+            // loop/client and never adopts the new model; a wedged request then
+            // holds the turn (and every queued send behind it) until the
+            // client's 11-min timeout. Abort BEFORE the rebuild so the OLD loop
+            // is the one stopped, and WITHOUT the `switching` flag so the
+            // turn's $turn_complete still lands and the FE settles + drains.
+            if (tab.aborter) abortTurn(tab, desktopUserAbortLoopOptions());
+            try {
+              tab.currentModel = next;
+              saveModel(next);
+              persistSessionModelPrefs(tab);
+              if (tab.toolset) {
+                refreshTabSystemPrompt(tab);
+                // Build even when the tab had no runtime (e.g. a gated welcome
+                // tab that just picked an Ollama model) — only if the new model
+                // is actually usable, else drop a stale runtime.
+                if (tabCurrentModelUsable(tab)) tab.runtime = buildRuntimeFor(tab);
+                else tab.runtime = null;
+              }
+            } catch (modelErr) {
+              // Best-effort restore of the last working model so the daemon
+              // keeps serving the conversation the UI still displays.
+              tab.currentModel = prevModel;
+              try {
+                saveModel(prevModel);
+              } catch (saveErr) {
+                process.stderr.write(
+                  `reasonix: model prefs rollback save failed — ${messageOf(saveErr)}\n`,
+                );
+              }
+              persistSessionModelPrefs(tab);
+              if (tab.toolset) {
+                tab.system = prevSystem;
+                try {
+                  if (tabCurrentModelUsable(tab)) tab.runtime = buildRuntimeFor(tab);
+                  else tab.runtime = null;
+                } catch {
+                  tab.runtime = null;
+                }
+              }
+              throw modelErr;
+            }
+          }
+        }
+        emitSettings(tab);
+        emitTabGate(tab);
+      } catch (err) {
+        emit(
+          { type: "$error", message: `settings_save failed: ${(err as Error).message}` },
+          tab.id,
+        );
+        // Re-sync even on failure: the UI applied the patch optimistically,
+        // so without this it permanently displays settings the daemon rejected.
+        try {
+          emitSettings(tab);
+        } catch (emitErr) {
+          process.stderr.write(`reasonix: settings re-emit failed — ${messageOf(emitErr)}\n`);
+        }
+        emitTabGate(tab);
+      }
+      return;
+    }
+    if (msg.cmd === "mention_query") {
+      const nonce = msg.nonce;
+      const query = msg.query;
+      const parsed = parseAtQuery(query);
+      // Empty query → list workspace root's top-level entries (tree
+      // style). Without this, bare `@` floods with all 5000 files; the
+      // TUI's @+Tab pattern already shows the tree top.
+      const treeWalk = parsed.trailingSlash || query.length === 0;
+      if (treeWalk) {
+        void listDirectory(tab.rootDir, parsed.dir)
+          .then((entries) => {
+            const results = entries.map((e) => (e.isDir ? `${e.path}/` : e.path));
+            emit({ type: "$mention_results", nonce, query, results }, tab.id);
+          })
+          .catch((err) => {
+            emit(
+              { type: "$error", message: `mention_query (dir) failed: ${(err as Error).message}` },
+              tab.id,
+            );
+            emit({ type: "$mention_results", nonce, query, results: [] }, tab.id);
+          });
+        return;
+      }
+      const wantSymbols = query.length >= 2 && !query.includes("/");
+      void (async () => {
+        try {
+          const files = await getFileIndexFor(tab);
+          const fileResults = rankPickerCandidates(files, query, {
+            limit: wantSymbols ? 19 : 25,
+            recentlyUsed: tab.recentMentions,
+          });
+          let symResults: string[] = [];
+          if (wantSymbols) {
+            const syms = await getSymbolIndexFor(tab);
+            symResults = rankSymbols(syms, query, 6);
+          }
+          emit(
+            { type: "$mention_results", nonce, query, results: [...symResults, ...fileResults] },
+            tab.id,
+          );
+        } catch (err) {
+          emit(
+            { type: "$error", message: `mention_query failed: ${(err as Error).message}` },
+            tab.id,
+          );
+          emit({ type: "$mention_results", nonce, query, results: [] }, tab.id);
+        }
+      })();
+      return;
+    }
+    if (msg.cmd === "mention_picked") {
+      pushMentionRecent(tab, msg.path);
+      return;
+    }
+    if (msg.cmd === "mention_preview") {
+      const nonce = msg.nonce;
+      const rel = msg.path;
+      const abs = isAbsolute(rel) ? rel : join(tab.rootDir, rel);
+      const safeAbs = resolve(abs);
+      const safeRoot = resolve(tab.rootDir);
+      if (!safeAbs.startsWith(safeRoot)) {
+        emit({ type: "$mention_preview", nonce, path: rel, head: "", totalLines: 0 }, tab.id);
+        return;
+      }
+      void readFile(safeAbs, "utf8")
+        .then((text) => {
+          const lines = text.split(/\r?\n/);
+          if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+          const head = lines.slice(0, 12).join("\n");
+          emit(
+            { type: "$mention_preview", nonce, path: rel, head, totalLines: lines.length },
+            tab.id,
+          );
+        })
+        .catch(() => {
+          emit({ type: "$mention_preview", nonce, path: rel, head: "", totalLines: 0 }, tab.id);
+        });
+      return;
+    }
+    if (msg.cmd === "compact_history") {
+      if (!tab.runtime || tab.manualCompaction) return;
+      const rt = tab.runtime;
+      const task = runPriorityManualCompaction({
+        abortActive: () => cancelConversation(tab, desktopUserAbortLoopOptions()),
+        isTurnBusy: () => tab.aborter !== null,
+        isCompacting: () => rt.loop.isCompacting,
+        compact: async () => {
+          // Compaction card lifecycle is routed through the same LoopEvent
+          // stream as automatic folds and all other loop activity.
+          for await (const ev of rt.loop.compactHistoryWithEvents()) {
+            for (const kev of rt.eventizer.consume(ev, rt.ctx)) emitKernelEvent(kev, tab.id);
+          }
+        },
+      })
+        .then(() => emitCtxBreakdown(tab))
+        .catch((err) => {
+          emit({ type: "$error", message: `/compact failed: ${(err as Error).message}` }, tab.id);
+        })
+        .finally(() => {
+          if (tab.manualCompaction === task) tab.manualCompaction = null;
+        });
+      // Claim priority synchronously before the abort completion can drain a
+      // queued send. Repeated clicks coalesce on this one operation.
+      tab.manualCompaction = task;
+      return;
+    }
+    if (msg.cmd === "context_raw_get") {
+      emitContextRaw(tab);
+      return;
+    }
+    if (msg.cmd === "context_raw_set") {
+      if (!tab.runtime) {
+        emit({ type: "$error", message: "No active agent to edit context for." }, tab.id);
+        return;
+      }
+      // A rewrite mid-turn would race the in-flight request; require idle.
+      if (tab.aborter !== null || tab.runtime.loop.isCompacting) {
+        emit(
+          { type: "$error", message: "Context is locked while a turn is running; stop first." },
+          tab.id,
+        );
+        return;
+      }
+      const before = tab.runtime.loop.log.length;
+      const { system, messages } = parseContext(msg.text);
+      const { dropped } = tab.runtime.loop.replaceConversation(system, messages);
+      // Swap the desktop transcript to the new log: the same out-of-band
+      // replacement channel retry / fold use, so the visible conversation
+      // matches the agent's live context instead of going stale.
+      emitKernelEvent(
+        tab.runtime.eventizer.emitSessionRetracted(
+          tab.runtime.loop.currentTurn,
+          "context-edit",
+          before,
+          tab.runtime.loop.log.length,
+          tab.runtime.loop.log.entries,
+        ),
+        tab.id,
+      );
+      emitContextRaw(
+        tab,
+        dropped > 0
+          ? `Applied. ${dropped} unpaired tool message(s) were dropped to keep the request valid.`
+          : undefined,
+      );
+      emitCtxBreakdown(tab);
+      return;
+    }
+    if (msg.cmd === "retry") {
+      if (!tab.runtime) return;
+      // Retry truncates the log outside the turn stream — record the
+      // replacement in the kernel event log (session.retracted) so replaying
+      // the events sidecar yields the truncated conversation, same as
+      // session.compacted after a fold.
+      const before = tab.runtime.loop.log.length;
+      const prev = tab.runtime.loop.retryLastUser();
+      if (prev) {
+        emit({ type: "$retry_result", text: prev }, tab.id);
+        emitKernelEvent(
+          tab.runtime.eventizer.emitSessionRetracted(
+            tab.runtime.loop.currentTurn,
+            "retry",
+            before,
+            tab.runtime.loop.log.length,
+            tab.runtime.loop.log.entries,
+          ),
+          tab.id,
+        );
+      }
+      return;
+    }
+
+    if (msg.cmd === "btw") {
+      if (!tab.runtime) return;
+      const question = msg.text.trim();
+      if (!question) return;
+      void (async () => {
+        try {
+          const reply = await tab.runtime!.loop.client.chat({
+            model: tab.currentModel,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are answering a side question that is unrelated to the current coding conversation. Answer concisely (1-3 sentences) in plain prose. Do not call tools, do not ask clarifying questions, and do not reference any prior turns.",
+              },
+              { role: "user", content: question },
+            ],
+          });
+          const answer =
+            (typeof reply.content === "string" ? reply.content.trim() : "") || "(no answer)";
+          emit({ type: "$btw_result", question, answer }, tab.id);
+        } catch (err) {
+          emit({ type: "$error", message: `/btw failed: ${(err as Error).message}` }, tab.id);
+        }
+      })();
+      return;
+    }
+    if (msg.cmd === "user_input") {
+      if (!tab.runtime) {
+        emit({ type: "$error", message: notConfiguredMessage(tab.currentModel) }, tab.id);
+        return;
+      }
+      void (async () => {
+        let text = msg.text;
+        let attachments = msg.images ? [...msg.images] : [];
+        // Vision-capable models accept image parts — auto-parse `@path`
+        // mentions of local images into vision attachments so typing or
+        // picking an image path just works. Other models never get image
+        // parts (runTurn gates).
+        if (modelAcceptsImages(tab.currentModel, ollamaVisionModelIds())) {
+          const converted = await extractImageMentions(text, tab.rootDir);
+          if (converted.attachments.length > 0) {
+            text = converted.text;
+            attachments = [...attachments, ...converted.attachments];
+          }
+        }
+        let images: TurnImage[] | undefined;
+        if (attachments.length > 0) {
+          try {
+            images = await resolveUserImages(attachments);
+          } catch (err) {
+            emit(
+              { type: "$error", message: `Image attach failed: ${(err as Error).message}` },
+              tab.id,
+            );
+            return;
+          }
+        }
+        void runTurn(tab, text, images, msg.clientId);
+      })();
+    }
+  });
+
+  await new Promise<void>((resolve) => {
+    rl.on("close", () => {
+      void gracefulShutdown();
+      resolve();
+    });
+  });
+}

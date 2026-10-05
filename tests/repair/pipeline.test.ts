@@ -1,0 +1,202 @@
+import { describe, expect, it } from "vitest";
+import { ToolCallRepair } from "../../src/repair/index.js";
+import type { ToolCall } from "../../src/types.js";
+
+function call(id: string, name: string, args: string): ToolCall {
+  return { id, type: "function", function: { name, arguments: args } };
+}
+
+describe("ToolCallRepair pipeline", () => {
+  it("merges scavenged calls with declared calls", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["search"]) });
+    const declared = [call("c1", "search", '{"q":"a"}')];
+    const reasoning = `I should also run {"name": "search", "arguments": {"q": "b"}}`;
+    const { calls, report } = repair.process(declared, reasoning);
+    expect(calls.length).toBe(2);
+    expect(report.scavenged).toBe(1);
+  });
+
+  it("repairs truncated arguments JSON", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["search"]) });
+    const declared = [call("c1", "search", '{"q":"abc')];
+    const { calls, report } = repair.process(declared, null);
+    expect(calls.length).toBe(1);
+    expect(() => JSON.parse(calls[0]!.function.arguments)).not.toThrow();
+    expect(report.truncationsFixed).toBe(1);
+  });
+
+  it("breaks call storms", () => {
+    const repair = new ToolCallRepair({
+      allowedToolNames: new Set(["x"]),
+      stormWindow: 6,
+      stormThreshold: 3,
+    });
+    for (let i = 0; i < 2; i++) {
+      repair.process([call(`c${i}`, "x", "{}")], null);
+    }
+    const { calls, report } = repair.process([call("c3", "x", "{}")], null);
+    expect(calls.length).toBe(0);
+    expect(report.stormsBroken).toBe(1);
+  });
+
+  it("dedupes scavenge vs declared by signature", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["search"]) });
+    const declared = [call("c1", "search", '{"q":"a"}')];
+    const reasoning = `noted: {"name":"search","arguments":{"q":"a"}}`;
+    const { calls, report } = repair.process(declared, reasoning);
+    expect(calls.length).toBe(1);
+    expect(report.scavenged).toBe(0);
+  });
+
+  it("scavenges DSML tool calls from the content channel (regular turn, not just reasoning)", () => {
+    // R1 sometimes emits the DSML envelope in the content stream
+    // instead of the proper tool_calls field. Before this wire-up,
+    // the model's intent was silently dropped.
+    const repair = new ToolCallRepair({
+      allowedToolNames: new Set(["filesystem_read_file"]),
+    });
+    const content = [
+      "I'll read the file next.",
+      '<｜DSML｜invoke name="filesystem_read_file">',
+      '  <｜DSML｜parameter name="path" string="true">README.md</｜DSML｜parameter>',
+      "</｜DSML｜invoke>",
+    ].join("\n");
+    const { calls, report } = repair.process([], null, content);
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.function.name).toBe("filesystem_read_file");
+    expect(JSON.parse(calls[0]!.function.arguments)).toEqual({ path: "README.md" });
+    expect(report.scavenged).toBe(1);
+  });
+
+  it("does not double-count when DSML appears in both reasoning and content", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["search"]) });
+    const dsml =
+      '<｜DSML｜invoke name="search"><｜DSML｜parameter name="q" string="true">ts</｜DSML｜parameter></｜DSML｜invoke>';
+    const { calls, report } = repair.process([], dsml, dsml);
+    expect(calls.length).toBe(1);
+    expect(report.scavenged).toBe(1);
+  });
+
+  it("recovers multiple Markdown edits and removes only those blocks from content", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["edit_file"]) });
+    const content = [
+      "Applying both changes.",
+      "src/a.ts",
+      "<<<<<<< SEARCH",
+      "oldA",
+      "=======",
+      "newA",
+      ">>>>>>> REPLACE",
+      "src/b.ts",
+      "<<<<<<< SEARCH",
+      "oldB",
+      "=======",
+      "newB",
+      ">>>>>>> REPLACE",
+      "Continuing after the edits.",
+    ].join("\n");
+    const result = repair.process([], null, content);
+    expect(result.calls).toHaveLength(2);
+    expect(result.report.scavenged).toBe(2);
+    expect(result.content).toBe("Applying both changes.\n\n\nContinuing after the edits.");
+  });
+
+  it("deduplicates a Markdown call against a declared call and still removes the raw block", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["edit_file"]) });
+    const args = { path: "src/a.ts", search: "old", replace: "new" };
+    const content = ["src/a.ts", "<<<<<<< SEARCH", "old", "=======", "new", ">>>>>>> REPLACE"].join(
+      "\n",
+    );
+    const result = repair.process([call("c1", "edit_file", JSON.stringify(args))], null, content);
+    expect(result.calls).toHaveLength(1);
+    expect(result.report.scavenged).toBe(0);
+    expect(result.content).toBe("");
+  });
+
+  it("repairs repeating tool names in declared calls", () => {
+    const repair = new ToolCallRepair({
+      allowedToolNames: new Set(["read_file", "write_file"]),
+    });
+    const repeatingName = "read_fileread_fileread_fileread_fileread_file";
+    const declared = [call("c1", repeatingName, '{"path":"src/index.ts"}')];
+    const { calls, report } = repair.process(declared, null);
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.function.name).toBe("read_file");
+    expect(report.notes.some((n) => n.includes("repaired repeating tool name"))).toBe(true);
+  });
+
+  it("resetStorm clears the repeat-window so post-reset calls aren't suppressed", () => {
+    const repair = new ToolCallRepair({
+      allowedToolNames: new Set(["x"]),
+      stormWindow: 6,
+      stormThreshold: 3,
+    });
+    // Build up to the storm threshold — third identical call would be suppressed.
+    for (let i = 0; i < 2; i++) {
+      repair.process([call(`c${i}`, "x", "{}")], null);
+    }
+    // Mid-turn reset (what step() does on each new user message).
+    repair.resetStorm();
+    // With a fresh window the next call passes through — no suppression.
+    const { calls, report } = repair.process([call("c-after", "x", "{}")], null);
+    expect(calls.length).toBe(1);
+    expect(report.stormsBroken).toBe(0);
+  });
+
+  it("splits provider-concatenated parallel-call arguments into separate calls", () => {
+    // Real-world shape (session desktop-20260909140432): two parallel explore
+    // calls emitted as ONE tool_call whose arguments are both JSON objects —
+    // every intended call died at JSON.parse with "Unexpected non-whitespace
+    // character after JSON at position 2529".
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["explore"]) });
+    const args = '{"task":"dsh survey"}{"task":"reasonix survey"}';
+    const { calls, report } = repair.process([call("call_fggzx1mk", "explore", args)], null, null);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.id).toBe("call_fggzx1mk");
+    expect(calls[0]!.function.arguments).toBe('{"task":"dsh survey"}');
+    expect(calls[1]!.id).toBe("call_fggzx1mk-split2");
+    expect(calls[1]!.function.name).toBe("explore");
+    expect(calls[1]!.function.arguments).toBe('{"task":"reasonix survey"}');
+    expect(report.argsSplitCalls).toBe(1);
+    expect(report.notes.join("\n")).toContain("split concatenated arguments into 2 calls");
+  });
+
+  it("salvages the leading object when the trailing content is not valid JSON", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["explore"]) });
+    const { calls } = repair.process([call("c1", "explore", '{"task":"x"}garbage')], null, null);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0]!.function.arguments)).toEqual({ task: "x" });
+  });
+
+  it("leaves single-object arguments untouched (no split, no salvage)", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["explore"]) });
+    const args = '{"task":"only one"}';
+    const { calls, report } = repair.process([call("c1", "explore", args)], null, null);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.function.arguments).toBe(args);
+    expect(report.argsSplitCalls).toBe(0);
+    expect(report.truncationsFixed).toBe(0);
+  });
+
+  it("preserves thoughtSignature on split concatenated argument calls", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["explore"]) });
+    const args = '{"task":"one"}{"task":"two"}';
+    const c = { ...call("c1", "explore", args), thoughtSignature: "sig-split-test" };
+    const { calls } = repair.process([c], null, null);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.thoughtSignature).toBe("sig-split-test");
+    expect(calls[1]!.thoughtSignature).toBe("sig-split-test");
+  });
+
+  it("attaches turn thoughtSignature to scavenged tool calls", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["search"]) });
+    const declared = [
+      { ...call("c1", "search", '{"q":"a"}'), thoughtSignature: "sig-turn-scavenge" },
+    ];
+    const reasoning = `I should also run {"name": "search", "arguments": {"q": "b"}}`;
+    const { calls } = repair.process(declared, reasoning);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.thoughtSignature).toBe("sig-turn-scavenge");
+    expect(calls[1]!.thoughtSignature).toBe("sig-turn-scavenge");
+  });
+});

@@ -1,0 +1,1334 @@
+/** Wire protocol shared by the desktop daemon (src/cli/commands/desktop.ts)
+ *  and the Tauri React shell (desktop/src/protocol.ts). Both bundles import
+ *  these shapes from here so a field change can't silently drift between the
+ *  two sides of the JSON-RPC bridge. */
+
+import type { ApprovalPrompt } from "./approval-prompt.js";
+import type { ChoiceOption, PlanStep, ReasoningEffort } from "./permission-types.js";
+
+export type EditMode = "review" | "auto" | "yolo" | "plan";
+
+/** A composer "quick send" — a one-click action that sends a message to the
+ *  model. `message` is the full text sent via user_input; `shorthand` is the
+ *  short form shown in the chat when the message is long. */
+export interface QuickSend {
+  id: string;
+  label?: string;
+  message: string;
+  shorthand: string;
+}
+
+/** Maximum character length allowed for a quick send button shorthand. */
+export const QUICK_SEND_SHORTHAND_MAX_LENGTH = 20;
+
+/** Clamp and normalize shorthand text to ensure it fits comfortably in the composer button. */
+export function enforceQuickSendShorthand(raw: string): string {
+  return raw.trim().slice(0, QUICK_SEND_SHORTHAND_MAX_LENGTH);
+}
+
+/** Built-in quick sends — always available; the active one is selected in
+ *  Settings → General and defaults to Proceed. */
+export const BUILTIN_QUICK_SENDS: readonly QuickSend[] = [
+  { id: "proceed", message: "proceed", shorthand: "proceed" },
+  {
+    id: "commit-and-push",
+    message: "commit and push all changes",
+    shorthand: "commit and push",
+  },
+];
+
+export function isQuickSend(v: unknown): v is QuickSend {
+  if (!v || typeof v !== "object") return false;
+  const q = v as Record<string, unknown>;
+  return (
+    typeof q.id === "string" &&
+    typeof q.message === "string" &&
+    (typeof q.shorthand === "string" || typeof q.label === "string")
+  );
+}
+
+/** Built-ins plus user-defined customs — the full set of selectable quick sends. */
+export function allQuickSends(customs: readonly QuickSend[]): QuickSend[] {
+  return [...BUILTIN_QUICK_SENDS, ...customs].map((q) => {
+    const rawShorthand = q.shorthand || q.label || "";
+    return {
+      id: q.id,
+      shorthand: enforceQuickSendShorthand(rawShorthand),
+      message: q.message,
+    };
+  });
+}
+
+/** The active quick send by id, falling back to Proceed when unknown/absent. */
+export function resolveActiveQuickSend(
+  id: string | undefined,
+  customs: readonly QuickSend[],
+): QuickSend {
+  const found = allQuickSends(customs).find((q) => q.id === id) ?? BUILTIN_QUICK_SENDS[0]!;
+  return {
+    ...found,
+    shorthand: enforceQuickSendShorthand(found.shorthand),
+  };
+}
+
+export type WebSearchEngineName =
+  | "bing"
+  | "bing-intl"
+  | "searxng"
+  | "metaso"
+  | "baidu"
+  | "tavily"
+  | "perplexity"
+  | "exa"
+  | "brave"
+  | "ollama"
+  | "zai";
+
+export interface OllamaGenerationSettings {
+  temperature?: number;
+  topP?: number;
+  minP?: number;
+  seed?: number;
+  keepAlive: string;
+  repeatPenalty?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  topK?: number;
+  repeatLastN?: number;
+}
+
+export type OllamaGenerationPatch = {
+  [K in keyof OllamaGenerationSettings]?: OllamaGenerationSettings[K] | null;
+};
+
+// ---- events ----
+
+export type ConnectedEvent = { type: "$connected" };
+export type ReadyEvent = { type: "$ready" };
+export type ProtocolErrorEvent = { type: "$error"; message: string };
+/** Terminal outcome of a turn. Drives whether the desktop shows success feedback
+ *  or an explanatory stop card. */
+export type TurnOutcome = "success" | "stopped" | "failed" | "aborted";
+export type TurnCompleteEvent = {
+  type: "$turn_complete";
+  /** Absent on older sidecars — the desktop treats an absent outcome as success. */
+  outcome?: TurnOutcome;
+  /** Turn the outcome describes, when the daemon knows it. */
+  turn?: number;
+  /** Human-readable reason a non-success turn ended without an answer. */
+  reason?: string;
+};
+
+/** Common envelope for kernel events forwarded directly to desktop clients. */
+export interface KernelWireEventBase {
+  id: number;
+  ts: string;
+  turn: number;
+}
+
+export interface KernelUserMessageEvent extends KernelWireEventBase {
+  type: "user.message";
+  text: string;
+  /** Echo of the sender's optimistic-message id — lets the desktop reconcile
+   *  its bubble with the daemon-assigned turn instead of appending a duplicate. */
+  clientId?: string;
+}
+
+export interface KernelModelTurnStartedEvent extends KernelWireEventBase {
+  type: "model.turn.started";
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  prefixHash: string;
+}
+
+export interface KernelModelDeltaEvent extends KernelWireEventBase {
+  type: "model.delta";
+  channel: "content" | "reasoning" | "tool_args";
+  text: string;
+}
+
+export interface KernelUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
+}
+
+export interface KernelWireToolCall {
+  id?: string;
+  type?: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface KernelModelFinalEvent extends KernelWireEventBase {
+  type: "model.final";
+  content: string;
+  reasoningContent?: string;
+  replaceStreamedOutput?: boolean;
+  toolCalls: ReadonlyArray<KernelWireToolCall>;
+  usage: KernelUsage;
+  costUsd: number;
+  forcedSummary?: boolean;
+  image?: { dataUrl: string; mimeType: string };
+}
+
+export interface KernelToolPreparingEvent extends KernelWireEventBase {
+  type: "tool.preparing";
+  callId: string;
+  name: string;
+}
+
+export interface KernelToolIntentEvent extends KernelWireEventBase {
+  type: "tool.intent";
+  callId: string;
+  name: string;
+  args: string;
+}
+
+export interface KernelToolResultEvent extends KernelWireEventBase {
+  type: "tool.result";
+  callId: string;
+  ok: boolean;
+  output: string;
+}
+
+export interface KernelToolOutputEvent extends KernelWireEventBase {
+  type: "tool.output";
+  callId: string;
+  name: string;
+  text: string;
+}
+
+export interface KernelSubagentProgressEvent extends KernelWireEventBase {
+  type: "subagent.progress";
+  runId: string;
+  parentCallId?: string;
+  action: "start" | "phase" | "stream" | "tool-start" | "tool-end" | "end";
+  task: string;
+  skillName?: string;
+  model?: string;
+  phase?: "exploring" | "summarising";
+  iter?: number;
+  elapsedMs?: number;
+  contextTokens?: number;
+  /** Context cap the child loop enforces (resolveContextTokens of the child model). Meter denominator. */
+  contextMax?: number;
+  outputChars?: number;
+  reasoningChars?: number;
+  toolReadChars?: number;
+  thought?: string;
+  childCallId?: string;
+  toolName?: string;
+  toolArgs?: string;
+  toolOk?: boolean;
+  error?: string;
+  turns?: number;
+  costUsd?: number;
+  billingKind?: "usd" | "quota" | "none";
+  quotaUsedPct?: number;
+  maxToolIters?: number;
+  maxElapsedMs?: number;
+  budgetExhausted?: "tool-iters" | "elapsed";
+}
+
+export interface KernelStatusEvent extends KernelWireEventBase {
+  type: "status";
+  text: string;
+}
+
+export interface KernelCompactionStartedEvent extends KernelWireEventBase {
+  type: "compaction.started";
+  compactionId: string;
+  reason: "user" | "auto-context-pressure";
+  kind?: "fold" | "force-summary";
+  aggressive?: boolean;
+}
+
+export interface KernelCompactionFinishedEvent extends KernelWireEventBase {
+  type: "compaction.finished";
+  compactionId: string;
+  kind?: "fold" | "force-summary";
+  folded: boolean;
+  beforeMessages: number;
+  afterMessages: number;
+  summaryChars: number;
+  summary?: string;
+  error?: string;
+  warn?: string;
+  prunedFiles?: number;
+  prunedTokens?: number;
+  droppedFiles?: string[];
+}
+
+export interface KernelWarningEvent extends KernelWireEventBase {
+  type: "warning";
+  text: string;
+  severity: "low" | "high";
+}
+
+export interface KernelErrorEvent extends KernelWireEventBase {
+  type: "error";
+  message: string;
+  recoverable: boolean;
+}
+
+export type DirectKernelWireEvent =
+  | KernelUserMessageEvent
+  | KernelModelTurnStartedEvent
+  | KernelModelDeltaEvent
+  | KernelModelFinalEvent
+  | KernelToolPreparingEvent
+  | KernelToolIntentEvent
+  | KernelToolResultEvent
+  | KernelToolOutputEvent
+  | KernelSubagentProgressEvent
+  | KernelStatusEvent
+  | KernelCompactionStartedEvent
+  | KernelCompactionFinishedEvent
+  | KernelWarningEvent
+  | KernelErrorEvent;
+
+export type DesktopDiagnosticLevel = "debug" | "info" | "warn" | "error";
+
+/** Structured daemon diagnostics delivered to the Tauri WebView console.
+ *  Details must be redacted and must never contain credentials or message bodies. */
+export interface DesktopDiagnosticEvent {
+  type: "$diagnostic";
+  ts: string;
+  source: "daemon";
+  level: DesktopDiagnosticLevel;
+  event: string;
+  message?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface ConfirmRequiredEvent {
+  type: "$confirm_required";
+  id: number;
+  kind: "run_command" | "run_background" | "outlook_send";
+  command: string;
+  prompt?: ApprovalPrompt;
+}
+
+export interface PathAccessRequiredEvent {
+  type: "$path_access_required";
+  id: number;
+  path: string;
+  intent: "read" | "write";
+  toolName: string;
+  sandboxRoot: string;
+  allowPrefix: string;
+  prompt?: ApprovalPrompt;
+}
+
+export interface ChoiceRequiredEvent {
+  type: "$choice_required";
+  id: number;
+  question: string;
+  options: ChoiceOption[];
+  allowCustom: boolean;
+  /** YOLO auto-selection window (ms) — the card picks the first option at expiry. */
+  countdownMs?: number;
+}
+
+export interface PlanRequiredEvent {
+  type: "$plan_required";
+  id: number;
+  plan: string;
+  steps?: unknown[];
+  summary?: string;
+  /** Stable submit_plan tool call that anchors live progress in the chat timeline. */
+  callId?: string;
+  /** YOLO auto-approval window (ms) — the card auto-picks the first option at expiry. */
+  countdownMs?: number;
+}
+
+export interface CheckpointRequiredEvent {
+  type: "$checkpoint_required";
+  id: number;
+  stepId: string;
+  title?: string;
+  result: string;
+  notes?: string;
+  completed: number;
+  total: number;
+}
+
+export interface RevisionRequiredEvent {
+  type: "$revision_required";
+  id: number;
+  reason: string;
+  remainingSteps: PlanStep[];
+  summary?: string;
+  /** YOLO auto-approval window (ms) — the card auto-picks accept rewrite at expiry. */
+  countdownMs?: number;
+}
+
+export interface StepCompletedEvent {
+  type: "$step_completed";
+  stepId: string;
+  title?: string;
+  result: string;
+  notes?: string;
+}
+
+export type PlanClearedEvent = { type: "$plan_cleared" };
+
+/** Hydrate the client's active plan from persisted disk state on session load /
+ *  WebView reload — mirrors the $plan_required/step_completed shape so the
+ *  ContextPanel and rail can rebuild the plan without a live turn. */
+export interface PlanRestoredEvent {
+  type: "$plan_restored";
+  /** Markdown body; empty string for a pure-structured plan. */
+  plan: string;
+  summary?: string;
+  steps: PlanStep[];
+  completedStepIds: string[];
+  /** Per-step results keyed by step id, from persisted step completions. */
+  stepResults?: Record<string, string>;
+  /** A finished plan is archived instead of restored, so this is always "active". */
+  status?: "active" | "finished";
+}
+
+export interface SessionsEvent {
+  type: "$sessions";
+  /** Identifies the daemon lifetime that produced this snapshot. */
+  epoch: string;
+  /** Monotonic per-tab snapshot revision. Older async results must be ignored. */
+  revision: number;
+  /** Delete operations settled by this authoritative snapshot. */
+  settledDeletes?: { name: string; removed: boolean }[];
+  items: {
+    name: string;
+    messageCount: number;
+    mtime: string;
+    /** Explicit last-activity epoch-ms from the session's meta — drives the
+     *  sidebar's relative-time label so it survives file copies/restores that
+     *  reset filesystem timestamps. */
+    updatedAt?: number;
+    /** Creation epoch-ms (meta.createdAt, else the name-embedded timestamp) —
+     *  the sidebar sorts on this (falling back to mtime). */
+    createdAt?: number;
+    summary?: string;
+    workspaceStatus?: "matched" | "legacy_missing_meta";
+  }[];
+}
+
+export interface MentionResultsEvent {
+  type: "$mention_results";
+  nonce: number;
+  query: string;
+  results: string[];
+}
+
+export interface MentionPreviewEvent {
+  type: "$mention_preview";
+  nonce: number;
+  path: string;
+  head: string;
+  totalLines: number;
+}
+
+export interface TabOpenedEvent {
+  type: "$tab_opened";
+  workspaceDir: string;
+  /** True when the frontend should focus this session channel. */
+  active?: boolean;
+  /** Compatibility snapshot for this channel; currently contains its one session. */
+  sessions?: string[];
+  /** Visual workspace-tab identity shared by all of its session channels. */
+  groupId?: string;
+  /** Session owned by this channel. */
+  activeSession?: string;
+}
+
+/** One backend session channel closed. A tab_close command emits this once for
+ *  every channel in the addressed visual workspace tab. */
+export type TabClosedEvent = { type: "$tab_closed" };
+
+export interface WorkspaceInitializedEvent {
+  type: "$workspace_initialized";
+  revision: number;
+}
+
+/** Authoritative tab list, emitted at the END of a `desktop_resync`. The
+ *  frontend replaces its tab set with this snapshot — stale tabs left over
+ *  from an older backend generation (id reuse across restarts) get pruned
+ *  instead of living on as ghosts that route events to the wrong tab. */
+export interface TabsSnapshotEvent {
+  type: "$tabs_snapshot";
+  tabs: {
+    id: string;
+    workspaceDir: string;
+    active: boolean;
+    /** Compatibility snapshot for this channel; currently contains one session. */
+    sessions?: string[];
+    /** Visual workspace-tab identity shared by sibling channels. */
+    groupId?: string;
+    /** Session owned by this channel. */
+    activeSession?: string;
+  }[];
+}
+
+export type McpSpecStatus = "configured" | "handshake" | "connected" | "failed" | "disabled";
+
+export interface McpSpecInfo {
+  raw: string;
+  name: string | null;
+  transport: "stdio" | "sse" | "streamable-http";
+  summary: string;
+  parseError?: string;
+  status: McpSpecStatus;
+  statusReason?: string;
+  toolCount?: number;
+  /** Server-level DEFAULT from config (Settings) — true while disabled, even before first bridge. */
+  disabled?: boolean;
+  /** Bare MCP tool names disabled in the DEFAULT (Settings) for this server. */
+  disabledTools?: string[];
+  /** THIS session's server-level disable (Tools-section toggles). Absent = follow the default. */
+  sessionDisabled?: boolean;
+  /** Bare MCP tool names disabled in THIS session for this server (Tools-section toggles). */
+  sessionDisabledTools?: string[];
+  /** Bare MCP tool names the server exposes — feeds the per-tool toggle UI. */
+  tools?: string[];
+  /** Reasonix+-managed server (currently Playwright) — disableable and
+   *  reconfigureable through its card, but never removable from the list. */
+  builtin?: boolean;
+}
+
+export interface McpSpecsEvent {
+  type: "$mcp_specs";
+  specs: McpSpecInfo[];
+  bridged: boolean;
+}
+
+export type PlaywrightManagedBrowser = "chrome" | "firefox" | "webkit" | "msedge";
+
+/** Extension relay targets: the Playwright Extension is Chromium-only, so the
+ *  card chooses between Chrome (the default) and Edge. */
+export type PlaywrightExtensionBrowser = "chrome" | "msedge";
+
+export type PlaywrightMcpConnectionMode = PlaywrightManagedBrowser | "extension" | "cdp";
+
+export interface McpExtensionServerState {
+  configured: boolean;
+  mode: PlaywrightMcpConnectionMode;
+  hasExtensionArg: boolean;
+  cdpEndpoint?: string;
+  /** Browser the extension relay targets when mode is "extension" (defaults to chrome). */
+  extensionBrowser?: PlaywrightExtensionBrowser;
+  /** Redacted relay-token identifier for saved-state UI; never contains the full token. */
+  tokenPrefix?: string;
+  args: string[];
+}
+
+export interface McpExtensionStatus {
+  storeUrl: string;
+  server: McpExtensionServerState;
+}
+
+export interface McpExtensionStatusEvent {
+  type: "$mcp_extension_status";
+  status: McpExtensionStatus;
+}
+
+/** Live relay probe — "running" fires when the probe starts, "done" carries the
+ *  verdict: whether a browser actually attached through the stored token. */
+export type McpExtensionCheck =
+  | { phase: "running" }
+  | { phase: "done"; ok: boolean; reason: string | null; elapsedMs: number };
+
+export interface McpExtensionCheckEvent {
+  type: "$mcp_extension_check";
+  check: McpExtensionCheck;
+}
+
+export enum MailProvider {
+  Outlook = "outlook",
+  Gmail = "gmail",
+}
+
+export type MailAuthPhase =
+  | "unconfigured"
+  | "disconnected"
+  | "checking"
+  | "starting"
+  | "device-code"
+  | "browser"
+  | "verifying"
+  | "connected"
+  | "error";
+
+/** Sanitized mail auth state. OAuth credentials never cross the desktop wire protocol. */
+export interface MailAuthState {
+  provider: MailProvider;
+  configured: boolean;
+  phase: MailAuthPhase;
+  account?: string;
+  verificationUrl?: string;
+  userCode?: string;
+  callbackUrl?: string;
+  hasClientId?: boolean;
+  hasClientSecret?: boolean;
+  message?: string;
+}
+
+export interface MailAuthEvent {
+  type: "$mail_auth";
+  state: MailAuthState;
+}
+
+export type PlaywrightBrowserInstall =
+  | {
+      phase: "running";
+      browser: PlaywrightManagedBrowser;
+      source: "official" | "backup";
+      downloadedBytes?: number;
+      totalBytes?: number;
+      percent?: number;
+      bytesPerSecond?: number;
+    }
+  | {
+      phase: "done";
+      browser: PlaywrightManagedBrowser;
+      ok: boolean;
+      reason: string | null;
+    };
+
+export interface PlaywrightBrowserInstallEvent {
+  type: "$playwright_browser_install";
+  install: PlaywrightBrowserInstall;
+}
+
+export type SkillScope = "project" | "custom" | "global" | "builtin";
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  scope: SkillScope;
+  path: string;
+  runAs: "inline" | "subagent";
+  model?: string;
+}
+
+export interface SkillsEvent {
+  type: "$skills";
+  items: SkillInfo[];
+}
+
+export interface CtxBreakdownEvent {
+  type: "$ctx_breakdown";
+  reservedTokens: number;
+  /** Current log token count (real-time) — sent after /compact to refresh the meter. */
+  logTokens?: number;
+  /** Model context cap — denominator + compaction-limit ticks for the meter. */
+  ctxMax?: number;
+  /** Cumulative cross-session shell-output filtering totals (summarizeCommandOutputMetrics):
+   *  tokens the filters removed from command output before it reached the model. Omitted
+   *  when telemetry is absent or the summary is unavailable — the UI shows no chip. */
+  shellOutputRawTokens?: number;
+  shellOutputShownTokens?: number;
+}
+
+export type MemoryEntryKind = "project_file" | "global_file" | "structured";
+
+export interface MemoryEntryInfo {
+  kind: MemoryEntryKind;
+  scope: "project" | "global";
+  name: string;
+  path: string;
+  description: string;
+  type?: string;
+}
+
+export type MemoryEntryDetail = MemoryEntryInfo & {
+  body: string;
+  createdAt?: string;
+};
+
+export interface MemoryEvent {
+  type: "$memory";
+  entries: MemoryEntryInfo[];
+}
+
+export interface MemoryDetailEvent {
+  type: "$memory_detail";
+  detail: MemoryEntryDetail;
+}
+
+export interface MemoryResultEvent {
+  type: "$memory_result";
+  ok: boolean;
+  message: string;
+}
+
+export interface MemoryExportEvent {
+  type: "$memory_export";
+  text: string;
+}
+
+export type RetryResultEvent = { type: "$retry_result"; text: string };
+
+/** Full request context (system prompt + conversation) rendered as editable
+ *  plaintext: powers the desktop's read/write "Raw context" debug view.
+ *  Aimed at inspecting/hand-editing what gets sent to the model (esp. local
+ *  Ollama models). Writing back is refused while a turn is in flight. */
+export interface ContextRawEvent {
+  type: "$context_raw";
+  /** Editable plaintext of the full request context (system block + messages). */
+  text: string;
+  /** Conversation message count (excludes the system block). */
+  messageCount: number;
+  /** Bounded token estimate of the serialized context, for the UI header. */
+  tokens: number;
+  /** True while a turn is in flight; the UI disables Apply. */
+  busy: boolean;
+  /** Optional one-shot note surfaced after a write (e.g. unpaired tool messages
+   *  healed away to keep the request valid). Absent on a plain read. */
+  notice?: string;
+}
+
+export type BtwResultEvent = { type: "$btw_result"; question: string; answer: string };
+
+export interface JobInfo {
+  id: number;
+  tabId: string;
+  sessionLabel: string;
+  command: string;
+  pid: number | null;
+  running: boolean;
+  exitCode: number | null;
+  startedAt: number;
+  outputTail: string;
+  spawnError?: string;
+  /** True for workspace-scoped jobs (the shell `persistent` flag) — they survive
+   *  Stop / New chat and end only on workspace/app close or an explicit close. */
+  persistent?: boolean;
+}
+
+export interface JobsEvent {
+  type: "$jobs";
+  items: JobInfo[];
+}
+
+export type LoadedSegment =
+  | { kind: "text"; text: string }
+  | { kind: "reasoning"; text: string }
+  | { kind: "image"; dataUrl: string; mimeType: string }
+  | {
+      kind: "tool";
+      callId: string;
+      name: string;
+      args: string;
+      result?: string;
+      ok?: boolean;
+    }
+  | { kind: "warning"; id?: string; text: string; severity?: "low" | "high" };
+
+export type LoadedMessage =
+  | { kind: "user"; text: string; images?: string[] }
+  | {
+      kind: "assistant";
+      turn: number;
+      segments: LoadedSegment[];
+      pending: false;
+    };
+
+export interface SessionLoadedEvent {
+  type: "$session_loaded";
+  name: string;
+  messages: LoadedMessage[];
+  carryover: {
+    totalCostUsd: number;
+    /** Per-provider cumulative costs in each provider's native unit (USD for
+     *  token-priced APIs, plan-window % for quota APIs). Never converted between
+     *  providers. Keyed by provider id ("deepseek" | "openai" | "ollama" | "gemini"). */
+    costByProvider?: Record<string, SessionProviderCost>;
+    cacheHitTokens: number;
+    cacheMissTokens: number;
+    totalCompletionTokens: number;
+  };
+  /** Set on `desktop_resync` re-emits — the frontend must not let a resync
+   *  echo clobber a live streaming transcript (same session, busy). */
+  resync?: boolean;
+}
+
+/** Per-provider cumulative session usage in the provider's native unit. Mirrors
+ *  src/telemetry/stats.ts SessionProviderCost — defined here so the frontend
+ *  has a standalone wire shape (core-utils cannot import from src). */
+export interface SessionProviderCost {
+  /** Providers can carry both units after a model or plan switch. */
+  kind: "usd" | "quota" | "none" | "mixed";
+  /** Cumulative token-priced USD, when measured. */
+  totalCostUsd?: number;
+  /** Cumulative plan-window percentage points, when measured. */
+  quotaUsedPct?: number;
+}
+
+/** A fold committed and REPLACED the conversation — the chat must swap its
+ *  message list to the post-fold log (summary message + preserved tail), like
+ *  a session reload. `replacementMessages` ships in the same LoadedMessage
+ *  wire shape as $session_loaded.messages. */
+export interface SessionCompactedEvent {
+  type: "session.compacted";
+  id: number;
+  ts: string;
+  turn: number;
+  beforeMessages: number;
+  afterMessages: number;
+  reason: "user" | "auto-context-pressure";
+  replacementMessages: LoadedMessage[];
+}
+
+/** A retry, rewind, abort-discard, or raw-context edit replaced the live
+ *  conversation. The replacement uses the same LoadedMessage wire shape as
+ *  session loading and compaction, while retaining the edit reason. */
+export interface SessionRetractedEvent {
+  type: "session.retracted";
+  id: number;
+  ts: string;
+  turn: number;
+  kind: "retry" | "rewind" | "abort-discard" | "context-edit";
+  beforeMessages: number;
+  afterMessages: number;
+  replacementMessages: LoadedMessage[];
+}
+
+export interface SessionEmptyEvent {
+  type: "$session_empty";
+  name: string;
+  sizeBytes: number;
+}
+
+export type NeedsSetupEvent = { type: "$needs_setup"; reason: "no_api_key" };
+
+export interface SettingsEvent {
+  type: "$settings";
+  reasoningEffort: ReasoningEffort;
+  editMode: EditMode;
+  /** Active quick-send action id (default "proceed"). */
+  quickSendId: string;
+  /** User-defined quick sends (built-ins are code-defined). */
+  quickSends: QuickSend[];
+  /** User-configured context-window cap (tokens); null = per-model default (300K). */
+  contextTokens?: number | null;
+  /** Effective per-turn iteration cap after config, environment, and default resolution. */
+  maxIterPerTurn?: number | null;
+  /** Explicit config override; null means environment/default resolution is active. */
+  maxIterPerTurnOverride?: number | null;
+  /** When true, all automatic compaction sources (turn-start folds, post-response folds, context guards) are disabled. Only manual compaction runs. */
+  disableAutoCompaction?: boolean;
+  /** Whether subagent skills may run. Defaults to true when absent. */
+  enableSubagents?: boolean;
+  /** Whether `run_command` may run commands elevated via Windows UAC. Defaults to false. */
+  elevationEnabled?: boolean;
+  /** Whether the stream repetition / "stuck re-thinking" guard may abort a
+   *  degenerating stream. Defaults to false (opt-in). */
+  repetitionGuardEnabled?: boolean;
+  questionTimerEnabled?: boolean;
+  /** Duplicate-session context budget in tokens (default 50 000); null = default. */
+  duplicateSessionTokens?: number | null;
+  /** When true, a duplicated session auto-runs one turn to continue; default off (user proceeds manually). */
+  duplicateSessionAutoProceed?: boolean;
+  baseUrl?: string;
+  apiKeyPrefix?: string;
+  workspaceDir: string;
+  recentWorkspaces: string[];
+  /** Local Reasonix+ workspace directory — always offered as a pinned
+   *  workspace choice when a new (workspace-less) tab asks for one. */
+  reasonixLocalDir?: string;
+  model: string;
+  /** Ids with an explicit `models` provider mapping in config.json — offered
+   *  by the model picker alongside the catalogs, since the user declared them. */
+  customModels?: string[];
+  /** Model ids offered by every model picker (opt-in allow-list — unlisted
+   *  models are hidden). Global persistent setting (`enabledModels` in
+   *  config.json), edited from Settings → Models. */
+  enabledModels?: string[];
+  /** Ollama chat endpoint (OpenAI-compatible) — shown in the Models settings page. */
+  ollamaBaseUrl?: string;
+  webSearchEngine?: WebSearchEngineName;
+  webSearchEndpoint?: string;
+  webSearchApiKeys?: {
+    metaso?: string;
+    baidu?: string;
+    tavily?: string;
+    perplexity?: string;
+    exa?: string;
+    ollama?: string;
+    brave?: string;
+    zai?: string;
+    opencode?: string;
+    typesafe?: string;
+  };
+  opencodeBaseUrl?: string;
+  /** Per-tab subagent model — the default model used when a subagent skill has no explicit `model:` frontmatter override. Absent = deepseek-v4-flash. */
+  subagentModel?: string;
+  /** Per-field visibility toggles for the bottom status row. Absent = all default to true. */
+  statusBar?: {
+    showBalance?: boolean;
+    showSessionCost?: boolean;
+    showTurnCost?: boolean;
+    showCacheHit?: boolean;
+    showCtxUsage?: boolean;
+    showVersion?: boolean;
+    showFeedbackHint?: boolean;
+  };
+  /** Effective native Ollama generation values after environment/config/default resolution. */
+  ollamaGeneration?: OllamaGenerationSettings;
+  /** Explicit persisted values, used to expose per-field reset actions. */
+  ollamaGenerationOverrides?: OllamaGenerationPatch;
+  /** Effective model default sampling values (Modelfile /api/show or Ollama defaults). */
+  ollamaModelDefaults?: Record<string, number>;
+  /** Endpoint + auth state for the tab's current model — per tab, follows model switches. */
+  modelEndpoint?: ModelEndpointInfo;
+  /** Resolved endpoint for the tab's effective subagent model. */
+  subagentModelEndpoint?: ModelEndpointInfo;
+  /** OpenAI website-account OAuth state — never ships tokens, only the masked account. */
+  openaiOAuth?: {
+    signedIn: boolean;
+    account?: string;
+    /** Last OAuth flow failure (e.g. upstream invalid_client / timeout) — drives the status-bar auth chip until the next successful sign-in. */
+    flowError?: string;
+  };
+  /** Selected managed mail integration. */
+  mailProvider?: MailProvider;
+  /** Google Antigravity OAuth state — powers gemini-* models on the Antigravity quota. */
+  antigravityOAuth?: {
+    signedIn: boolean;
+    account?: string;
+    /** Exact model ids returned by Antigravity for this account. */
+    models?: string[];
+    /** Last OAuth flow failure — drives the status-bar Gemini auth chip until the next successful sign-in. */
+    flowError?: string;
+  };
+  /** Auto-approved shell command prefixes for the current project. */
+  shellAllowed?: string[];
+  /** Auto-approved outside-sandbox directory prefixes for the current project. */
+  pathAllowed?: string[];
+  version: string;
+}
+
+/** Settings state consumed by the desktop UI, derived from the wire event contract.
+ *  Quick-send fields remain optional for compatibility with older daemons. */
+export type SettingsPayload = Omit<SettingsEvent, "type" | "quickSendId" | "quickSends"> &
+  Partial<Pick<SettingsEvent, "quickSendId" | "quickSends">>;
+
+/** Endpoint + auth state for the tab's CURRENT model — the status bar's API
+ *  chip is per tab and flips between DeepSeek, OpenAI, Ollama and Gemini with the model. */
+export interface ModelEndpointInfo {
+  provider: "deepseek" | "openai" | "ollama" | "gemini" | "zai" | "opencode";
+  baseUrl: string;
+  /** Native billing unit resolved by the daemon for this endpoint. */
+  billingKind?: "usd" | "quota" | "none";
+  /** Ollama endpoint deployment classification; absent for other providers. */
+  deployment?: "cloud" | "local" | "custom";
+  /** Auth source for OpenAI endpoints — absent for the DeepSeek provider. */
+  openaiAuth?: "oauth" | "apiKey" | "none";
+  /** Masked account email when signed in via OAuth. */
+  oauthAccount?: string;
+  /** Auth source for gemini endpoints (Antigravity quota). */
+  antigravityAuth?: "oauth" | "none";
+  /** Masked Google account email when signed in via Antigravity OAuth. */
+  antigravityAccount?: string;
+}
+
+export interface BalanceInfoItem {
+  currency: string;
+  total: number;
+  granted?: number;
+  toppedUp?: number;
+}
+
+export interface BalanceEvent {
+  type: "$balance";
+  currency: string;
+  total: number;
+  isAvailable: boolean;
+  balanceInfos: BalanceInfoItem[];
+}
+
+/** One quota window reported by the Codex app-server (account/rateLimits/read).
+ *  Windows are identified by `windowMinutes`, never by position — OpenAI has
+ *  changed which buckets appear for different plans (issue #32707). */
+export interface CodexQuotaWindow {
+  /** Window length in minutes — 300 = 5-hour, 10080 = weekly. */
+  windowMinutes: number;
+  /** Server-reported usage in this window (0-100+). */
+  usedPercent: number;
+  /** 100 - usedPercent — the statusbar's "% left". Computed once, daemon-side. */
+  remainingPercent: number;
+  /** ISO timestamp of the next reset, or null when the server didn't report one. */
+  resetsAt: string | null;
+}
+
+/** ChatGPT-plan Codex quota (daemon source: src/codex-backend.ts, OAuth fetch
+ *  of the official codex rate_limits endpoint — no codex CLI needed). `null`
+ *  payload means "no data" — not signed in, rejected, or malformed — the UI
+ *  degrades to no chip instead of a wrong number. */
+export interface CodexQuota {
+  /** Plan type from account/read (e.g. "plus", "pro"), or null. */
+  plan: string | null;
+  /** 5-hour window, when the plan reports one (some plans only report weekly). */
+  fiveHour: CodexQuotaWindow | null;
+  /** Weekly window — the primary ribbon value. */
+  weekly: CodexQuotaWindow | null;
+  /** Percentage points of the weekly window consumed since the previous fetch
+   *  (fetches fire on every $turn_complete). Null until a second measurement
+   *  exists. Pure API numbers, no cost conversion. */
+  turnUsedPct?: number | null;
+  fetchedAt: number;
+}
+
+export interface CodexQuotaEvent {
+  type: "$codex_quota";
+  quota: CodexQuota | null;
+  /** Why quota is null (HTTP status, malformed payload, network error) —
+   *  surfaced in the statusbar tooltip so a silent "—" is diagnosable. */
+  reason?: string;
+}
+
+/** One Ollama cloud usage window (`GET {origin}/api/usage`). The API reports
+ *  usage as a fraction of the plan's limit (session window resets every 5 h,
+ *  weekly every 7 d) but never the absolute cap — the daemon scales the
+ *  fraction to percent, mirroring how the Codex quota reports usedPercent. */
+export interface OllamaQuotaWindow {
+  /** API-reported usage in this window as a percentage of the plan's limit (usage × 100). */
+  usagePct: number;
+  /** 100 - usagePct — the statusbar's "% left". */
+  remainingPct: number;
+}
+
+/** Cloud Ollama usage for the signed-in account (daemon source: `GET
+ *  {origin}/api/usage` with the same Bearer key as chat). `null` payload means
+ *  "no data" — no key, local daemon, or fetch failure — the UI degrades to a
+ *  dash instead of a wrong number. */
+export interface OllamaQuota {
+  /** 5-hour session window (resets every 5 h). */
+  session: OllamaQuotaWindow | null;
+  /** 7-day weekly window (resets every 7 d). */
+  weekly: OllamaQuotaWindow | null;
+  /** Percentage points of the session window consumed since the previous
+   *  fetch (fetches fire on every $turn_complete). Null until a second
+   *  measurement exists. */
+  turnUsedPct?: number | null;
+  fetchedAt: number;
+}
+
+export interface OllamaQuotaEvent {
+  type: "$ollama_quota";
+  quota: OllamaQuota | null;
+  /** Why quota is null — surfaced in the statusbar tooltip. */
+  reason?: string;
+}
+
+/** One Z.AI GLM Coding Plan usage window (`GET {origin}/api/monitor/usage/quota/limit`).
+ *  Unlike Ollama/Codex, the API reports plan usage directly as a percentage
+ *  (`percentage`) per window, plus an epoch-ms reset time. The 5-hour window
+ *  (`unit: 3`) resets on a rolling basis; the weekly window (`unit: 6`) resets
+ *  every 7 days. */
+export interface ZaiQuotaWindow {
+  /** API-reported plan-window usage, 0-100 (the server's `percentage` field). */
+  usagePct: number;
+  /** 100 - usagePct — the statusbar's "% left". */
+  remainingPct: number;
+  /** Epoch millis when the window resets, or null when the server didn't report one. */
+  resetsAt: number | null;
+}
+
+/** Z.AI GLM Coding Plan usage (daemon source: the undocumented `GET
+ *  {origin}/api/monitor/usage/quota/limit` monitor endpoint with the same Bearer
+ *  key as chat). `null` payload means "no data" — no key, a Developer (pay-per-
+ *  token) key, or a fetch failure — the UI degrades to a dash, never a wrong
+ *  number. */
+export interface ZaiQuota {
+  /** Plan tier from the payload's `level` (e.g. "lite", "pro", "max"), or null. */
+  plan: string | null;
+  /** 5-hour rolling window (`unit: 3`), or null when the plan has none. */
+  fiveHour: ZaiQuotaWindow | null;
+  /** Weekly window (`unit: 6`), or null when the plan has none. */
+  weekly: ZaiQuotaWindow | null;
+  /** Percentage points of the 5-hour window consumed since the previous fetch
+   *  (fetches fire on every $turn_complete). Null until a second measurement
+   *  exists. */
+  turnUsedPct?: number | null;
+  fetchedAt: number;
+}
+
+export interface ZaiQuotaEvent {
+  type: "$zai_quota";
+  quota: ZaiQuota | null;
+  /** Why quota is null — surfaced in the statusbar tooltip. */
+  reason?: string;
+}
+
+/** The account's Google Antigravity (Gemini Code Assist) plan, from
+ *  loadCodeAssist.currentTier. */
+export interface AntigravityPlan {
+  tierId: string;
+  name: string;
+  upgradeText?: string;
+  upgradeType?: string;
+  upgradeUri?: string;
+}
+
+/** One per-model quota window from retrieveUserQuota.buckets. */
+export interface AntigravityQuotaWindow {
+  modelId: string;
+  /** Fraction of the window already consumed, 0..1. */
+  usedFraction: number;
+  /** ISO timestamp when the window resets; absent when not a limited bucket. */
+  resetTime?: string;
+}
+
+/** Google Antigravity usage for the signed-in account (daemon source: the
+ *  undocumented Code Assist `v1internal` API — loadCodeAssist for the plan,
+ *  retrieveUserQuota for per-model windows). `null` payload means "no data" —
+ *  not signed in or fetch failure — the UI degrades to no chip. */
+export interface AntigravityQuota {
+  plan: AntigravityPlan | null;
+  /** Per-model usage windows (already vertex-deduped, daemon-side). */
+  windows: AntigravityQuotaWindow[];
+  /** Percentage points of the active model's window consumed since the previous
+   *  fetch (fetches fire on every $turn_complete). Null until a second
+   *  measurement exists. */
+  turnUsedPct?: number | null;
+  fetchedAt: number;
+}
+
+export interface AntigravityQuotaEvent {
+  type: "$antigravity_quota";
+  quota: AntigravityQuota | null;
+  /** Why quota is null — surfaced in the statusbar tooltip. */
+  reason?: string;
+}
+
+/** Dynamically fetched model list for the Ollama provider — driven by the
+ *  picker's "Ollama" section so the hundreds of available models don't need
+ *  hardcoding. `error` replaces the list when the endpoint is unreachable,
+ *  auth was rejected, or the payload was malformed. */
+export interface OllamaModelsEvent {
+  type: "$ollama_models";
+  /** Raw model ids the endpoint reported (e.g. `llama3.1:latest`). */
+  models: string[];
+  /** Subset of `models` confirmed vision-capable (multimodal) — the UI uses
+   *  this to enable image upload for those models. Absent when none detected
+   *  or the catalog couldn't be probed. */
+  visionModels?: string[];
+  /** The account's Ollama plan (`free`, `pro`, ...) when resolvable via the
+   *  cloud `/api/me` endpoint — lets the picker explain filtering. */
+  plan?: string;
+  /** Models hidden because the account's plan doesn't cover them (only set
+   *  when the endpoint is subscription-gated and the probe detected some). */
+  hiddenCount?: number;
+  error?: string;
+}
+
+/** Dynamically fetched free model list for the OpenCode provider from models.dev. */
+export interface OpencodeModelsEvent {
+  type: "$opencode_models";
+  models: string[];
+  visionModels?: string[];
+  error?: string;
+}
+
+// ---- commands ----
+
+export interface SettingsPatch {
+  reasoningEffort?: ReasoningEffort;
+  editMode?: EditMode;
+  quickSendId?: string;
+  quickSends?: QuickSend[];
+  /** Context-window cap in tokens, clamped to [128000, 1000000]; null/undefined = per-model default. */
+  contextTokens?: number | null;
+  /** Per-turn iteration cap, clamped to [50, 100]; null/undefined = default (50). */
+  maxIterPerTurn?: number | null;
+  /** Disable automatic compaction from all sources except the manual button. */
+  disableAutoCompaction?: boolean;
+  /** Allow dedicated and skill-based subagents to run. */
+  enableSubagents?: boolean;
+  /** Allow `run_command` to run commands elevated via Windows UAC. */
+  elevationEnabled?: boolean;
+  /** Allow the stream repetition / "stuck re-thinking" guard to abort a degenerating stream. */
+  repetitionGuardEnabled?: boolean;
+  questionTimerEnabled?: boolean;
+  /** Duplicate-session context budget in tokens, clamped to [1000, 1000000]; null/undefined = default (50 000). */
+  duplicateSessionTokens?: number | null;
+  /** Auto-run one continuation turn in a freshly duplicated session. Default false. */
+  duplicateSessionAutoProceed?: boolean;
+  baseUrl?: string;
+  workspaceDir?: string;
+  model?: string;
+  /** Model ids offered by every model picker. Replaces the whole persisted
+   *  `enabledModels` allow-list; empty array disables everything. */
+  enabledModels?: string[];
+  /** Per-tab subagent model — default for subagent skills without an explicit `model:` frontmatter. */
+  subagentModel?: string;
+  /** Ollama chat endpoint override (OpenAI-compatible). null = back to the local default. */
+  ollamaBaseUrl?: string | null;
+  /** Native Ollama generation options. Null fields clear their persisted override. */
+  ollamaGeneration?: OllamaGenerationPatch;
+  webSearchEngine?: WebSearchEngineName;
+  webSearchEndpoint?: string | null;
+  metasoApiKey?: string | null;
+  baiduApiKey?: string | null;
+  tavilyApiKey?: string | null;
+  perplexityApiKey?: string | null;
+  exaApiKey?: string | null;
+  ollamaApiKey?: string | null;
+  braveApiKey?: string | null;
+  zaiApiKey?: string | null;
+  opencodeApiKey?: string | null;
+  typesafeApiKey?: string | null;
+  opencodeBaseUrl?: string | null;
+}
+
+/** An image to attach to a user message. Clipboard paste flows ship the
+ *  bytes the UI already encoded; drag-and-drop ships a path the daemon reads
+ *  (the webview has no fs access for arbitrary OS paths). */
+export type UserImageAttachment =
+  | { source: "clipboard"; dataUrl: string }
+  | { source: "file"; path: string };
+
+export type OutgoingCommand = { tabId?: string } & (
+  | {
+      cmd: "user_input";
+      text: string;
+      images?: UserImageAttachment[];
+      /** Sender's optimistic-message id — echoed back on the `user.message`
+       *  event so the desktop reconciles its bubble with the daemon turn. */
+      clientId?: string;
+    }
+  | { cmd: "abort" }
+  | { cmd: "cancel_tool" }
+  | {
+      cmd: "confirm_response";
+      id: number;
+      response: import("./permission-types.js").ConfirmationChoice;
+    }
+  | { cmd: "choice_response"; id: number; response: import("./permission-types.js").ChoiceVerdict }
+  | { cmd: "plan_response"; id: number; response: import("./permission-types.js").PlanVerdict }
+  | {
+      cmd: "checkpoint_response";
+      id: number;
+      response: import("./permission-types.js").CheckpointVerdict;
+    }
+  | {
+      cmd: "revision_response";
+      id: number;
+      response: import("./permission-types.js").RevisionVerdict;
+    }
+  /** Pause/resume the backend auto-resolve countdown for one gate so it stays
+   *  in lockstep with the card's own clock. `enabled: false` cancels the pending
+   *  auto-resolve (the gate waits for a manual pick); `enabled: true` re-arms a
+   *  fresh full window. Without this, "disable timer" only stopped the UI while
+   *  the backend still resolved at expiry. */
+  | { cmd: "gate_timer"; id: number; enabled: boolean }
+  | { cmd: "session_list" }
+  | { cmd: "desktop_resync" }
+  | { cmd: "session_delete"; name: string }
+  | { cmd: "session_clear" }
+  /** Legacy alias for additive session_open; never replaces the active agent. */
+  | { cmd: "session_load"; name: string }
+  /** Focus an existing session agent or add it to the current workspace tab. */
+  | { cmd: "session_open"; name: string }
+  | { cmd: "session_rename"; name: string; title: string }
+  | { cmd: "session_reorder"; name: string; createdAt?: number }
+  | { cmd: "memory_read"; path: string }
+  | {
+      cmd: "memory_write";
+      scope: "global" | "project";
+      name: string;
+      description: string;
+      body: string;
+      type?: string;
+      priority?: "low" | "medium" | "high";
+    }
+  | { cmd: "memory_delete"; path: string }
+  | { cmd: "memory_export" }
+  | { cmd: "memory_import"; json: string }
+  | { cmd: "new_chat" }
+  | { cmd: "setup_save_key"; key: string }
+  | { cmd: "setup_save_openai_key"; key: string }
+  | { cmd: "oauth_begin" }
+  | { cmd: "oauth_cancel" }
+  | { cmd: "oauth_signout" }
+  | { cmd: "gemini_oauth_begin" }
+  | { cmd: "gemini_oauth_cancel" }
+  | { cmd: "gemini_oauth_signout" }
+  | { cmd: "antigravity_models_refresh" }
+  | { cmd: "opencode_models_refresh"; force?: boolean }
+  | { cmd: "settings_get" }
+  | ({ cmd: "settings_save" } & SettingsPatch)
+  | { cmd: "codex_quota_get" }
+  | { cmd: "ollama_quota_get" }
+  | { cmd: "antigravity_quota_get" }
+  | { cmd: "zai_quota_get" }
+  | { cmd: "ollama_models_list"; force?: boolean }
+  | { cmd: "mention_query"; query: string; nonce: number }
+  | { cmd: "mention_preview"; path: string; nonce: number }
+  | { cmd: "mention_picked"; path: string }
+  /** Open a workspace tab, or add a fresh session when that workspace is open. */
+  | { cmd: "tab_open"; workspaceDir?: string }
+  /** Close the addressed channel's entire visual workspace tab and all agents in it. */
+  | { cmd: "tab_close" }
+  | { cmd: "tab_activate"; tabId: string }
+  | { cmd: "workspace_recent_remove"; path: string }
+  | { cmd: "mcp_specs_get" }
+  | { cmd: "mcp_specs_add"; spec: string }
+  | { cmd: "mcp_specs_remove"; spec: string }
+  | { cmd: "mcp_specs_toggle"; name: string; disabled: boolean; tool?: string }
+  /** Per-session MCP toggle (Tools section) — edits the active session's state, not the default. */
+  | { cmd: "mcp_session_toggle"; name: string; disabled: boolean; tool?: string }
+  | { cmd: "mcp_extension_status" }
+  | {
+      cmd: "mcp_extension_configure";
+      mode: PlaywrightMcpConnectionMode;
+      token?: string;
+      cdpEndpoint?: string;
+      extensionBrowser?: PlaywrightExtensionBrowser;
+    }
+  | { cmd: "mcp_extension_check" }
+  | { cmd: "mail_provider_set"; provider: MailProvider }
+  | { cmd: "mail_status"; provider: MailProvider }
+  | {
+      cmd: "mail_configure";
+      provider: MailProvider;
+      clientId?: string;
+      clientSecret?: string;
+    }
+  | { cmd: "mail_connect"; provider: MailProvider }
+  | { cmd: "mail_cancel"; provider: MailProvider }
+  | { cmd: "mail_signout"; provider: MailProvider }
+  | { cmd: "playwright_browser_install"; browser: PlaywrightManagedBrowser }
+  | { cmd: "playwright_browser_install_cancel"; browser: PlaywrightManagedBrowser }
+  | { cmd: "rule_add"; ruleType: "shell" | "path"; pattern: string }
+  | { cmd: "rule_remove"; ruleType: "shell" | "path"; pattern: string }
+  | { cmd: "skills_get" }
+  | { cmd: "skill_run"; name: string; args?: string }
+  | { cmd: "jobs_list" }
+  | { cmd: "jobs_stop"; jobId: number }
+  | { cmd: "jobs_stop_all" }
+  | { cmd: "compact_history" }
+  /** Request the full request context as editable plaintext ($context_raw reply). */
+  | { cmd: "context_raw_get" }
+  /** Replace the live context (system prompt + messages) from edited plaintext.
+   *  Refused while a turn is in flight; re-healed server-side before applying. */
+  | { cmd: "context_raw_set"; text: string }
+  /** Duplicate the current conversation as a new truncated session opened on the
+   *  chosen models. `markdown` is the current session's export body; the daemon
+   *  trims it to the last `duplicateSessionTokens` tokens and seeds the new
+   *  session (or auto-continues, per `duplicateSessionAutoProceed`). */
+  | {
+      cmd: "duplicate_session";
+      markdown: string;
+      model: string;
+      subagentModel: string;
+    }
+  | { cmd: "retry" }
+  | { cmd: "btw"; text: string }
+);
