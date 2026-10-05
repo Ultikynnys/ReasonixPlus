@@ -10,19 +10,16 @@ import "./heap-limit-launch.js";
 // Windows cmd, which would beep the system bell every render (#1786).
 import "./strip-bel.js";
 
-import { Command } from "commander";
 import { isReasoningEffort, loadProxyConfig, saveReasoningEffort } from "../config.js";
-import { t } from "../i18n/index.js";
-import { VERSION } from "../index.js";
 import { installProxyIfConfigured } from "../net/proxy.js";
 import { resolveDefaults } from "./resolve.js";
 import { markPhase } from "./startup-profile.js";
 
 // HTTPS_PROXY / HTTP_PROXY only reach Node's fetch via undici's global
 // dispatcher; install before any client (DeepSeek, web tools) constructs a
-// fetch closure (#646). Argv is peeked manually here — commander hasn't run
-// yet — so position of `--no-proxy` doesn't matter and we can honor it before
-// any fetch closure captures the dispatcher.
+// fetch closure (#646). `--no-proxy` is read straight off argv (there is no CLI
+// parser), so its position doesn't matter and we can honor it before any fetch
+// closure captures the dispatcher.
 const cliNoProxy = process.argv.includes("--no-proxy");
 const cfgProxy = loadProxyConfig();
 installProxyIfConfigured(process.env, {
@@ -45,40 +42,40 @@ function persistEffortFlag(flag: unknown): void {
   }
 }
 
-const program = new Command();
-program
-  .name("reasonix")
-  .description("Reasonix+ desktop backend (headless JSON-RPC over stdio)")
-  .version(VERSION)
-  .option("--no-proxy", t("ui.noProxyHint"));
+/** Read `--flag <value>` or `--flag=value` from argv (there is no CLI parser). */
+function readOption(name: string, alias?: string): string | undefined {
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === undefined) continue;
+    if (arg === name || (alias !== undefined && arg === alias)) return argv[i + 1];
+    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
+  }
+  return undefined;
+}
 
 // The desktop app is the only product surface. The Tauri shell spawns this
-// entry as `reasonix desktop` and speaks JSON-RPC over stdio
-// (desktop/src-tauri/src/rpc.rs).
-program
-  .command("desktop")
-  .description("headless JSON-RPC chat for the desktop client (internal)")
-  .option("-m, --model <id>", t("ui.modelIdHint"))
-  .option("--dir <path>", "root directory for filesystem tools (default: cwd)")
-  .option("--effort <level>", t("ui.effortHintShort"))
-  .action(async (opts) => {
-    persistEffortFlag(opts.effort);
-    const defaults = resolveDefaults({
-      model: opts.model,
-      mcp: [],
-      effort: opts.effort,
-      noConfig: false,
-    });
-    markPhase("desktop_import_started");
-    const { desktopCommand } = await import("./commands/desktop.js");
-    markPhase("desktop_import_completed");
-    await desktopCommand({
-      model: defaults.model,
-      dir: opts.dir,
-    });
+// entry as `node dist/cli/index.js desktop` and speaks JSON-RPC over stdio
+// (desktop/src-tauri/src/rpc.rs). There is no user-facing CLI.
+async function main(): Promise<void> {
+  const effort = readOption("--effort");
+  persistEffortFlag(effort);
+  const defaults = resolveDefaults({
+    model: readOption("--model", "-m"),
+    mcp: [],
+    effort,
+    noConfig: false,
   });
+  markPhase("desktop_import_started");
+  const { desktopCommand } = await import("./commands/desktop.js");
+  markPhase("desktop_import_completed");
+  await desktopCommand({
+    model: defaults.model,
+    dir: readOption("--dir"),
+  });
+}
 
-program.parseAsync(process.argv).catch((err) => {
+main().catch((err) => {
   console.error(err);
   process.exit(1);
 });

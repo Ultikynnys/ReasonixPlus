@@ -35,20 +35,19 @@ export const EN: TranslationSchema = {
     index: "Build (or incrementally refresh) a local semantic search index.",
   },
   stats: {
-    usageHint: "run `reasonix chat`, `reasonix code`, or `reasonix run <task>` — every turn",
-    usageDetail: "appends one line to the log and `reasonix stats` will roll it up.",
+    usageHint: "appended once per turn",
+    usageDetail: "appends one line to the log for the usage dashboard.",
   },
   run: {
     missingApiKey:
       "DEEPSEEK_API_KEY is not set and stdin is not a TTY (cannot prompt).\n" +
-      "Set the env var, or run `reasonix chat` once interactively to save a key.\n",
+      "Set the env var, or add a key in Settings.\n",
   },
   sessions: {
-    emptyHint:
-      "no saved sessions yet — run `reasonix chat` (sessions are auto-saved unless --no-session).",
+    emptyHint: "no saved sessions yet (sessions are auto-saved).",
     listHeader: "Saved sessions (~/.reasonix/sessions/):",
-    inspectHint: "Inspect:  reasonix sessions <name>",
-    resumeHint: "Resume:   reasonix chat --session <name>",
+    inspectHint: "Inspect sessions in the sidebar",
+    resumeHint: "Resume saved sessions from the sidebar",
     noSession: 'no session named "{name}" (or it\u2019s empty).',
     lookedAt: "looked at: {path}",
     noIdleSessions: "no sessions idle \u2265{days} days. Nothing pruned.",
@@ -58,7 +57,7 @@ export const EN: TranslationSchema = {
     daysInvalid: "--days must be a positive integer (got {days}).",
   },
   ui: {
-    welcome: "Run `reasonix` any time to start chatting — your settings are remembered.",
+    welcome: "Your settings are remembered.",
     taglineChat: "Multi-provider agent",
     taglineCode: "Multi-provider coding agent",
     taglineSub: "cache-first · flash-first",
@@ -339,7 +338,7 @@ export const EN: TranslationSchema = {
     },
     sessions: { description: "list saved sessions (current marked with ▸)" },
     title: { description: "ask the model to rename this session from the conversation" },
-    setup: { description: "reminds you to exit and run `reasonix setup`" },
+    setup: { description: "reminds you to reconfigure in Settings" },
     semantic: {
       description: "show semantic_search status — built? Ollama installed? how to enable",
     },
@@ -712,7 +711,7 @@ export const EN: TranslationSchema = {
   errors: {
     contextOverflowTooMany: "too many tokens",
     deepseekAuth:
-      "Authentication failed (DeepSeek 401): {inner}. Run `reasonix setup` or set a valid DEEPSEEK_API_KEY in Settings. Get one at https://platform.deepseek.com/api_keys.",
+      "Authentication failed (DeepSeek 401): {inner}. Set a valid DEEPSEEK_API_KEY in Settings. Get one at https://platform.deepseek.com/api_keys.",
     deepseekCredits:
       "Out of balance (DeepSeek): {inner}. Top up at https://platform.deepseek.com/top_up.",
     deepseekPermission:
@@ -896,8 +895,8 @@ export const EN: TranslationSchema = {
       helpUrlPunct:
         "                             Trailing sentence punctuation (./,/)) is stripped automatically.",
       helpSessionsTitle: "Sessions (auto-enabled by default, named 'default'):",
-      helpSessionCustom: "  reasonix chat --session <name>   use a different named session",
-      helpSessionNone: "  reasonix chat --no-session       disable persistence for this run",
+      helpSessionCustom: "  use the sidebar to switch session",
+      helpSessionNone: "  sessions persist automatically",
       retryNone: "nothing to retry — no prior user message in this session's log.",
       retryInfo: '▸ retrying: "{preview}"',
       loopTuiOnly: "/loop is only available in the interactive TUI (not in run/replay).",
@@ -937,17 +936,16 @@ export const EN: TranslationSchema = {
       hooksExitCodes: "exit 0 = pass · exit 2 = block (Pre*) · other = warn",
       hooksLoaded: "▸ {count} hook(s) loaded",
       hooksSources: "sources: project={project} · global={global}",
-      updateCurrent: "current: reasonix {version}",
+      updateCurrent: "current: Reasonix+ {version}",
       updateLatestPending: "latest:  (not yet resolved — background check in flight or offline)",
       updateRetryHint: "triggered a fresh registry fetch — retry `/update` in a few seconds,",
-      updateRetryHint2: "or run `reasonix update` in another terminal to force it synchronously.",
-      updateLatest: "latest:  reasonix {version}",
+      updateRetryHint2: "restart Reasonix+ to check again.",
+      updateLatest: "latest:  Reasonix+ {version}",
       updateUpToDate: "you're on the latest. nothing to do.",
-      updateNpxHint: "you're running via npx — the next `npx reasonix ...` launch will auto-fetch.",
+      updateNpxHint: "Reasonix+ checks for updates on launch.",
       updateNpxForce: "to force a refresh sooner: `npm cache clean --force`.",
       updateUpgradeHint: "to upgrade, exit this session and run:",
-      updateUpgradeCmd1:
-        "  reasonix update           (interactive, dry-run supported via --dry-run)",
+      updateUpgradeCmd1: "  check for updates in Settings → About",
       updateUpgradeCmd2: "  {command}   (direct)",
       updateInSessionDisabled:
         "in-session install is deliberately disabled — the install spawn would",
@@ -958,30 +956,28 @@ export const EN: TranslationSchema = {
       statsWillAppear: "will show up in the dashboard once you send a message.",
     },
     edits: {
-      undoCodeOnly:
-        "/undo is only available inside `reasonix code` — chat mode doesn't apply edits.",
-      historyCodeOnly: "/history is only available inside `reasonix code`.",
-      showCodeOnly: "/show is only available inside `reasonix code`.",
-      applyCodeOnly: "/apply is only available inside `reasonix code` (nothing to apply here).",
-      discardCodeOnly: "/discard is only available inside `reasonix code`.",
-      planCodeOnly:
-        "/plan is only available inside `reasonix code` — chat mode doesn't gate tool writes.",
+      undoCodeOnly: "/undo is only available when edit mode is active.",
+      historyCodeOnly: "/history is only available when edit mode is active.",
+      showCodeOnly: "/show is only available when edit mode is active.",
+      applyCodeOnly: "/apply is only available when edits are pending.",
+      discardCodeOnly: "/discard is only available when edits are pending.",
+      planCodeOnly: "/plan is only available in code mode.",
       planOn:
         "▸ plan mode ON — write tools are gated; the model MUST call `submit_plan` before anything executes. (The model can also call submit_plan on its own for big tasks even when plan mode is off — this toggle is the stronger, explicit constraint.) Type /plan off to leave.",
       planOff:
         "▸ plan mode OFF — write tools are live again. Model can still propose plans autonomously for large tasks.",
-      modeCodeOnly: "/mode is only available inside `reasonix code`.",
+      modeCodeOnly: "/mode is only available in code mode.",
       modeUsage: "usage: /mode <review|auto|yolo>   (Shift+Tab also cycles)",
       modeYolo:
         "▸ edit mode: YOLO — edits AND shell commands auto-run with no prompt. /undo still rolls back edits. Use carefully.",
       modeAuto:
         "▸ edit mode: AUTO — edits apply immediately; press u within 5s to undo, or /undo later. Shell commands still ask.",
       modeReview: "▸ edit mode: review — edits queue for /apply (or y) / /discard (or n)",
-      commitCodeOnly: "/commit is only available inside `reasonix code` (needs a rooted git repo).",
+      commitCodeOnly: "/commit needs a rooted git repo.",
       commitUsage:
         'usage: /commit "your commit message"  — runs `git add -A && git commit -m "…"` in {root}',
-      walkCodeOnly: "/walk is only available inside `reasonix code`.",
-      cwdCodeOnly: "/cwd is only available inside `reasonix code`.",
+      walkCodeOnly: "/walk is only available in code mode.",
+      cwdCodeOnly: "/cwd is only available in code mode.",
       cwdUsage:
         "usage: /cwd <path>   (current root: {current}). Re-points filesystem / shell / memory tools to <path>.",
       cwdUsageNoCurrent: "usage: /cwd <path>   re-points the workspace root to <path>.",
@@ -1000,7 +996,7 @@ export const EN: TranslationSchema = {
     },
     permissions: {
       mutateCodeOnly:
-        "/permissions add / remove / clear are only available inside `reasonix code` — they edit the project-scoped allowlist (`~/.reasonix/config.json` projects[<root>].shellAllowed).",
+        "/permissions add / remove / clear edit the project-scoped allowlist (`~/.reasonix/config.json` projects[<root>].shellAllowed).",
       addUsage:
         'usage: /permissions add <prefix>   (multi-token OK: /permissions add "git push origin")',
       addAlready: "▸ already allowed: {prefix}",
@@ -1100,7 +1096,7 @@ export const EN: TranslationSchema = {
     },
     plans: {
       noSession:
-        "no session attached — `/plans` is per-session. Run `reasonix code` in a project to get a session.",
+        "no session attached — `/plans` is per-session. Start a session in a project to use it.",
       activePlan: "▸ active plan{label} — {done}/{total} step{s} done · last touched {when}",
       activeNone: "▸ active plan: (none)",
       noArchives:
@@ -1111,7 +1107,7 @@ export const EN: TranslationSchema = {
       evidenceLine: "  evidence {stepId}: {summary}",
       archivedEvidenceLine: "    evidence: {summary}",
       replayNoSession:
-        "no session attached — `/replay` is per-session. Run `reasonix code` in a project to get a session.",
+        "no session attached — `/replay` is per-session. Start a session in a project to use it.",
       replayNoArchives:
         "no archived plans yet for this session — `/replay` lights up once a plan completes (auto-archives when every step is done).",
       replayInvalidIndex:
@@ -1131,9 +1127,9 @@ export const EN: TranslationSchema = {
       doneAllOk: "▸ marked {count} step(s) done.",
     },
     jobs: {
-      codeOnly: "/jobs is only available inside `reasonix code`.",
-      killCodeOnly: "/kill is only available inside `reasonix code`.",
-      logsCodeOnly: "/logs is only available inside `reasonix code`.",
+      codeOnly: "/jobs is only available in code mode.",
+      killCodeOnly: "/kill is only available in code mode.",
+      logsCodeOnly: "/logs is only available in code mode.",
       empty:
         "◈ jobs · 0 running · 0 total\n  (run_background spawns one — dev servers, watchers, long-running scripts)",
       header: "◈ jobs · {running} running · {total} total",
@@ -1178,7 +1174,7 @@ export const EN: TranslationSchema = {
       saveUsage:
         "usage: /memory save <name> <text…>  [--scope global|project] [--type <t>] [--priority low|medium|high] [--description <one-liner>] [--expires project_end]",
       saveNoProject:
-        "project scope unavailable in this session (no working directory). Use --scope global, or run `reasonix code` for project-scoped memory.",
+        "project scope unavailable in this session (no working directory). Use --scope global for cross-project memory.",
       saved: "▸ saved ({scope}/{name}): {description}",
       saveError: "save failed: {reason}",
       clearUsage: "usage: /memory clear <global|project> confirm",
@@ -1201,17 +1197,16 @@ export const EN: TranslationSchema = {
     },
     mcp: {
       noServers:
-        'no MCP servers attached. Run `reasonix setup` to pick some, or launch with --mcp "<spec>". `reasonix mcp list` shows the catalog. Note: model-invoked shell commands are gated per-call (allow once / allow always / deny) — no global allow-all flag.',
+        'no MCP servers attached. Configure servers in the MCP settings, or launch with --mcp "<spec>". the MCP catalog lists available servers. Note: model-invoked shell commands are gated per-call (allow once / allow always / deny) — no global allow-all flag.',
       toolsLabel: "  tools     {count}",
       resourcesHint: "`/resource` to browse+read",
       promptsHint: "`/prompt` to browse+fetch",
       awarenessOnly:
         "Chat mode consumes tools today; resources+prompts are surfaced here for awareness.",
-      catalogHint:
-        "Full catalog: `reasonix mcp list` · deeper diagnosis: `reasonix mcp inspect <spec>`.",
+      catalogHint: "Manage MCP servers in the MCP settings.",
       fallbackServers: "MCP servers ({count}):",
       fallbackTools: "Tools in registry ({count}):",
-      fallbackChange: "To change this set, exit and run `reasonix setup`.",
+      fallbackChange: "To change this set, use the MCP settings.",
       usageDisableEnable:
         "usage: /mcp {action} <name>  ·  pick a name shown in /mcp (anonymous servers can't be named-toggled).",
       usageReconnect: "usage: /mcp reconnect <name>  ·  pick a name shown in /mcp.",
@@ -1224,7 +1219,7 @@ export const EN: TranslationSchema = {
     },
     init: {
       codeOnly:
-        "/init only works in code mode (it needs filesystem tools).\nRun `reasonix code [path]` to start a session rooted at the\nproject you want to initialize, then run /init.",
+        "/init only works in code mode (it needs filesystem tools). Open the project as the workspace, then run /init.",
       exists: "▸ REASONIX.md already exists at {path}",
       existsForce: "  /init force   regenerate from scratch (overwrites)",
       existsEdit: "  Or edit it by hand — it's just markdown. The current file is",
@@ -1284,7 +1279,7 @@ export const EN: TranslationSchema = {
       listProjectScope:
         "  · <project>/.reasonix/skills/<name>/SKILL.md  (or <name>.md)  — project scope",
       listGlobalScope: "  · ~/.reasonix/skills/<name>/SKILL.md  (or <name>.md)  — global scope",
-      listProjectOnly: "  (project scope is only active in `reasonix code`)",
+      listProjectOnly: "  (project scope is only active in code mode)",
       listFrontmatter: "Each file's frontmatter needs at least `name` and `description`.",
       listInvoke:
         "Invoke a skill with `/skill <name> [args]` or by asking the model to call `run_skill`.",
@@ -1567,7 +1562,7 @@ export const EN: TranslationSchema = {
   },
   startup: {
     codeRooted:
-      '\u25b8 reasonix code: rooted at {rootDir}, session "{session}" \u00b7 {tools} native tool(s){semantic}',
+      '\u25b8 Reasonix+ backend: rooted at {rootDir}, session "{session}" \u00b7 {tools} native tool(s){semantic}',
     ephemeral: "(ephemeral)",
     semanticOn: " \u00b7 semantic_search on",
   },
@@ -1780,7 +1775,7 @@ export const EN: TranslationSchema = {
     verySlow: "very slow \u00b7 {ms}ms",
     slowToast: "\u26a0 MCP `{name}` slow \u00b7 {seconds}s p95 over the last {sampleSize} calls",
     emptyHint:
-      "\u2139 no MCP servers configured \u2014 try: `reasonix setup` to re-pick, or `reasonix mcp install filesystem` \u00b7 shell commands gate per-call (allow once / allow always / deny), no global allow-all",
+      "\u2139 no MCP servers configured \u2014 configure MCP servers in the MCP settings \u00b7 shell commands gate per-call (allow once / allow always / deny), no global allow-all",
   },
   denyContextInput: {
     description:
@@ -1823,8 +1818,8 @@ export const EN: TranslationSchema = {
     bridged: "\u2713 installed {name} - bridged",
     bridgeFailed: "\u25b2 installed {name} - bridge failed: {reason}",
     bridgeReloadFailed:
-      "\u2713 installed {name} - restart `reasonix code` to bridge (reload failed: {message})",
-    restartBridge: "\u2713 installed {name} - restart `reasonix code` to bridge",
+      "\u2713 installed {name} - restart Reasonix+ to bridge (reload failed: {message})",
+    restartBridge: "\u2713 installed {name} - restart Reasonix+ to bridge",
     needsEnv: "  \u00b7  needs env: {env}",
     badgeOfficial: "[off]",
     badgeSmithery: "[smt]",
@@ -1837,7 +1832,7 @@ export const EN: TranslationSchema = {
   },
   mcpBrowser: {
     title: "\u25c8 MCP browser",
-    empty: "No MCP servers attached. Run `reasonix setup` to pick some, or launch with --mcp.",
+    empty: "No MCP servers attached. Add servers in the MCP settings.",
     serverCount: "{count} server{s}",
     footer: "\u2191\u2193 pick \u00b7 [r] reconnect \u00b7 [d] disable \u00b7 esc quit",
   },
@@ -1866,9 +1861,8 @@ export const EN: TranslationSchema = {
     reconnectDetail: "tearing down \u00b7 re-handshake \u00b7 listing tools",
     disabledDetail: "via /mcp disable {name}",
     failedSetupHint:
-      "→ run `reasonix setup` to remove this entry, or fix the underlying issue (missing npm package, network, etc.).",
-    failedSetupConfigHint:
-      "→ run `reasonix setup` to remove broken entries from your saved config.",
+      "→ remove this entry, or fix the underlying issue (missing npm package, network, etc.).",
+    failedSetupConfigHint: "→ remove broken entries from your saved config.",
     abortedHint:
       "MCP startup aborted — {count} server(s) skipped. Run /mcp to retry once you've fixed the underlying issue.",
     toolsReady: "tools ready",
@@ -1886,7 +1880,7 @@ export const EN: TranslationSchema = {
     autoApproveIn: "auto-approving in {n}s — first option picks itself",
   },
   diffApp: {
-    title: "reasonix diff",
+    title: "Reasonix+ diff",
     turnLabel: "turn {turn} ({current}/{total})",
     turnsAligned: "{count} turns aligned",
     paneEmpty: "(no records on this side for this turn)",
@@ -1961,19 +1955,18 @@ export const EN: TranslationSchema = {
     cachedAge: "cached, {age}",
     moreAvailable: "more available",
     allLoaded: "all loaded",
-    morePagesAvailable:
-      "\u25b8 more pages available \u2014 `reasonix mcp list --pages <n>` or --all",
-    installHint: "Install:  reasonix mcp install <name>",
-    usageSearch: "usage: reasonix mcp search <query>",
-    usageInstall: "usage: reasonix mcp install <name>",
+    morePagesAvailable: "\u25b8 more pages available",
+    installHint: "Install MCP servers from the MCP settings",
+    usageSearch: "Search the MCP catalog from the MCP settings",
+    usageInstall: "Install MCP servers from the MCP settings",
     noMatchesFor: 'No matches for "{q}" across {count} loaded entries ({source})',
     matchCount: '{count} match(es) for "{q}" in {source} registry ({loaded} entries scanned):',
-    moreLoaded: "\u2026 {count} more loaded \u2014 use `reasonix mcp search <query>` to filter",
+    moreLoaded: "\u2026 {count} more loaded",
     moreMatches: "\u2026 {count} more matches",
     installed: "Installed: {spec}",
     noServerFound:
       'No MCP server named "{target}" found after walking {pages} page(s) of the {source} registry.',
-    noServerTryMore: "Try: reasonix mcp install {target} --max-pages 100",
+    noServerTryMore: "No catalog entry found for {target}",
     noInstallMeta:
       'Could not derive install metadata for "{name}" \u2014 try `npx -y @smithery/cli install {name}` directly.',
     buildSpecFailed: "Cannot build install spec for {name}: {message}",

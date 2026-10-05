@@ -211,7 +211,7 @@ are aimed at it. Treat the two as unrelated. Everything else upstream was remove
   `deepseek-v4-flash-vision-exp` in the official model list; image attachments; edit modes including
   `yolo`; the per-turn iteration cap with a grace window (yolo bypasses the pause); off-peak/peak
   rate display and the current pricing table; Codex and Ollama quota chips in the status bar.
-- The CLI entry (`src/cli/index.ts`) exposes a single `desktop` command: headless JSON-RPC over
+- The backend entry (`src/cli/index.ts`) runs the headless JSON-RPC daemon over
   stdio, spawned by the Tauri shell.
 
 ## License

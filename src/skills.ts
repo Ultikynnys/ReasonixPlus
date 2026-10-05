@@ -332,7 +332,7 @@ export class SkillStore {
       return { error: `invalid skill name: "${name}" (use letters, digits, _, -, .)` };
     }
     if (scope === "project" && !this.projectRoot) {
-      return { error: "project scope requires a workspace: run from `reasonix code`" };
+      return { error: "project scope requires a workspace: open a project to use project scope" };
     }
     const root =
       scope === "project"

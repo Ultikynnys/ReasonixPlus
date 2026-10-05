@@ -68,7 +68,7 @@ export function registerMemoryTools(
         scope: {
           ...memoryScopeEnum(),
           description:
-            "global = across all projects; project = current sandbox only (needs `reasonix code`).",
+            "global = across all projects; project = current sandbox only (needs a workspace).",
         },
         name: {
           type: "string",
@@ -108,7 +108,7 @@ export function registerMemoryTools(
     }) => {
       const scopeError = projectScopeError(
         args.scope,
-        "Retry with scope='global', or ask the user to switch to `reasonix code` for project-scoped memory.",
+        "Retry with scope='global', or open a project for project-scoped memory.",
       );
       if (scopeError) return scopeError;
       try {

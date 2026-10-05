@@ -71,7 +71,7 @@ function registerCompatibleSemanticSearchTool(
         signal: ctx?.signal,
       });
       if (hits === null) {
-        return "No semantic index found for this project. Run `reasonix index` to build one.";
+        return "No semantic index found for this project. Build one from the semantic index settings.";
       }
       if (hits.length === 0) {
         return `query: ${args.query}\n\nno matches above the score threshold (${args.minScore ?? defaultMinScore}).`;

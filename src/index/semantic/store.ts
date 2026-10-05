@@ -196,13 +196,13 @@ export async function openStore(indexDir: string, identity: IndexIdentity): Prom
   if (meta) {
     if (meta.version !== STORE_VERSION) {
       throw new Error(
-        `Index format version ${meta.version} does not match current ${STORE_VERSION}. Run \`reasonix index --rebuild\`.`,
+        `Index format version ${meta.version} does not match current ${STORE_VERSION}. Rebuild it from the semantic index settings.`,
       );
     }
     const mismatch = compareIndexIdentity(meta, identity);
     if (mismatch !== null) {
       throw new Error(
-        `Index was built with provider "${meta.provider}" model "${meta.model}" but current config is provider "${identity.provider}" model "${identity.model}". Run \`reasonix index --rebuild\`.`,
+        `Index was built with provider "${meta.provider}" model "${meta.model}" but current config is provider "${identity.provider}" model "${identity.model}". Rebuild it from the semantic index settings.`,
       );
     }
   }

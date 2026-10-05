@@ -75,7 +75,7 @@ function registerBuiltinSubagentTool(
     fn: async (args: { task?: unknown }, ctx) => {
       if (!subagentRunner) {
         return JSON.stringify({
-          error: `${spec.toolName}: no subagent runner is configured for this session: run inside \`reasonix code\`, or pass \`subagentRunner\` to \`registerSkillTools\`.`,
+          error: `${spec.toolName}: no subagent runner is configured for this session: run inside a code-mode session, or pass \`subagentRunner\` to \`registerSkillTools\`.`,
         });
       }
       const task = typeof args.task === "string" ? args.task.trim() : "";
@@ -250,7 +250,7 @@ export function registerSkillTools(
       if (skill.runAs === "subagent") {
         if (!subagentRunner) {
           return JSON.stringify({
-            error: `run_skill: skill ${JSON.stringify(name)} is marked runAs=subagent but no subagent runner is configured for this session. Skill authors who need isolation should run inside reasonix code (or a library setup that passes subagentRunner to registerSkillTools).`,
+            error: `run_skill: skill ${JSON.stringify(name)} is marked runAs=subagent but no subagent runner is configured for this session. Skill authors who need isolation should run inside a code-mode session (or a library setup that passes subagentRunner to registerSkillTools).`,
           });
         }
         if (!rawArgs) {
@@ -355,7 +355,7 @@ export function registerSkillTools(
       if (scope === "project" && !hasProjectScope) {
         return JSON.stringify({
           error:
-            "install_skill: scope='project' requires a workspace: run from `reasonix code`, or use scope='global'",
+            "install_skill: scope='project' requires a workspace: open a project, or use scope='global'",
         });
       }
 

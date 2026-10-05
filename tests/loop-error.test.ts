@@ -29,7 +29,7 @@ describe("formatLoopError", () => {
     );
     const out = formatLoopError(raw);
     expect(out).toMatch(/Authentication failed/);
-    expect(out).toMatch(/reasonix setup/);
+    expect(out).toMatch(/DEEPSEEK_API_KEY in Settings/);
     expect(out).toMatch(/DEEPSEEK_API_KEY/);
     // Inner error.message survives the unwrap
     expect(out).toContain("Your api key is invalid");
