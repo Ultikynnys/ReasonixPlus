@@ -67,18 +67,6 @@ jobs:
         if: always()
         run: node scripts/coverage-summary.mjs
 
-      - name: Notify Discord on release failure
-        if: failure()
-        shell: bash
-        env:
-          WEBHOOK_URL: ${{ secrets.DISCORD_CI_WEBHOOK }}
-        run: |
-          test -n "$WEBHOOK_URL" || { echo "DISCORD_CI_WEBHOOK unset, skipping"; exit 0; }
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -sS -X POST -H "Content-Type: application/json" \
-            -d "{\"content\":\"❌ CI failed on \`${{ github.ref_name }}\` (windows-latest) — ${{ github.actor }}\n${RUN_URL}\"}" \
-            "$WEBHOOK_URL"
-
   release:
     name: build windows installer
     needs: verify
