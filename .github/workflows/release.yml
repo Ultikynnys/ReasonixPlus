@@ -148,11 +148,20 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ver="${{ steps.version.outputs.version }}"
           git add package.json desktop/package.json desktop/src-tauri/tauri.conf.json desktop/src-tauri/Cargo.toml
-          git commit -m "chore(release): ${{ steps.version.outputs.version }}"
-          git tag "${{ steps.version.outputs.version }}"
+          # A fresh version line (e.g. the first v1.0.0 after the 1.0.0 reset)
+          # resolves to the version already in package.json, so the bump stages
+          # nothing. Tag the current commit instead of failing on an empty
+          # `git commit` ("nothing to commit, working tree clean").
+          if git diff --cached --quiet; then
+            echo "package.json already at $ver - tagging without a bump commit"
+          else
+            git commit -m "chore(release): $ver"
+          fi
+          git tag "$ver"
           git push origin HEAD:main
-          git push origin "${{ steps.version.outputs.version }}"
+          git push origin "$ver"
 
       - name: Setup Node 22
         uses: actions/setup-node@v6
