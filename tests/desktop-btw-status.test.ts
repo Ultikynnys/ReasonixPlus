@@ -38,7 +38,7 @@ describe("desktop timeline notices", () => {
     expect(next.ready).toBe(state.ready);
   });
 
-  it("appends a notice to the last completed turn's place in creation order", () => {
+  it("anchors a notice to the start of its turn's group, above that turn's reply", () => {
     const state: AppState = {
       ...makeState(),
       messages: [
@@ -49,19 +49,20 @@ describe("desktop timeline notices", () => {
       ],
     };
     const next = reduce(state, { t: "push_notice", text: "Export failed", severity: "error" });
-    // Notices are appended in creation order, so the card lands at the tail —
-    // after turn 2 — like every other timeline card.
+    // The notice belongs to turn 2 (the last completed turn), so it slots right
+    // after that turn's user message and above its reply, keeping creation order
+    // within the turn instead of floating at the transcript tail.
     expect(next.messages.map((m) => m.kind)).toEqual([
       "user",
       "assistant",
       "user",
-      "assistant",
       "notice",
+      "assistant",
     ]);
-    expect(next.messages.at(-1)).toMatchObject({ kind: "notice", turn: 2 });
+    expect(next.messages.at(-2)).toMatchObject({ kind: "notice", turn: 2 });
   });
 
-  it("appends a notice dispatched mid-turn at the timeline tail in creation order", () => {
+  it("anchors a mid-turn notice to its in-flight turn, above the streaming card", () => {
     const state: AppState = {
       ...makeState(),
       messages: [
@@ -77,17 +78,18 @@ describe("desktop timeline notices", () => {
       text: "Image attach failed",
       severity: "error",
     });
-    // Creation order: the notice is appended at the tail, where it was created —
-    // never re-anchored above newer content. It still records the in-flight turn.
+    // The in-flight turn (2) owns the notice: it lands right after that turn's
+    // user message, above the still-streaming card — never below the queued user
+    // message at the tail. It still records the in-flight turn.
     expect(next.messages.map((m) => m.kind)).toEqual([
       "user",
       "assistant",
       "user",
+      "notice",
       "assistant",
       "user",
-      "notice",
     ]);
-    expect(next.messages.at(-1)).toMatchObject({ kind: "notice", turn: 2 });
+    expect(next.messages.at(-3)).toMatchObject({ kind: "notice", turn: 2 });
   });
 });
 

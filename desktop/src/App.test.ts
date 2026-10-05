@@ -638,6 +638,42 @@ describe("Desktop App reducer — usage", () => {
     ]);
   });
 
+  it("anchors a status notice to the start of its turn, above that turn's response", () => {
+    let s = initialState();
+    const act = (action: Parameters<typeof reduce>[1]) => {
+      s = reduce(s, action);
+    };
+    const inc = (event: { type: string } & Record<string, unknown>) => {
+      s = reduce(s, { t: "incoming", event } as unknown as Parameters<typeof reduce>[1]);
+    };
+    const labels = (msgs: typeof s.messages) =>
+      msgs.map((m) => {
+        if (m.kind === "notice") return `${m.severity}-${m.turn}`;
+        if (m.kind === "user") return `user-${m.turn}`;
+        return `assistant-${m.turn}${m.pending ? "(pending)" : ""}`;
+      });
+
+    // Turn 1 completes cleanly (its assistant card is the newest entry).
+    act({ t: "send_user", text: "first", clientId: "c-1" });
+    inc({
+      type: "model.turn.started",
+      id: 1,
+      ts: "t",
+      turn: 1,
+      model: "m",
+      reasoningEffort: "medium",
+      prefixHash: "h",
+    });
+    inc({ type: "model.final", id: 2, ts: "t", turn: 1, content: "hello", usage: null });
+    inc({ type: "$turn_complete", ts: "t" });
+    expect(labels(s.messages)).toEqual(["user-1", "assistant-1"]);
+
+    // A mode-switch ("Mode: AUTO") notice must sit WITH turn 1 — right after its
+    // user message — not float at the bottom of the transcript below the reply.
+    act({ t: "push_notice", text: "Mode: AUTO", severity: "info" });
+    expect(labels(s.messages)).toEqual(["user-1", "info-1", "assistant-1"]);
+  });
+
   it("keeps error cards below their own turn's user message when numbering is unified", () => {
     // Turn contract pinned stack-wide: the kernel's turn number equals the FE
     // user-message position. A resumed session whose earlier turn failed (user
@@ -2456,6 +2492,41 @@ describe("Desktop App reducer — model.final content", () => {
     });
   });
 
+  it("re-marks the card pending when a later tool iteration streams after a mid-turn final", () => {
+    let state = reduce(initialState(), { t: "incoming", event: turnStarted });
+    state = reduce(state, {
+      t: "batch_delta",
+      items: [{ turn: 1, channel: "reasoning", text: "first pass" }],
+    });
+    // Mid-turn final (iteration 1 done): the card settles so its reasoning run
+    // closes and the spinner gives way to the completion checkmark.
+    state = reduce(state, {
+      t: "incoming",
+      event: {
+        type: "model.final",
+        id: 2,
+        ts: "t",
+        turn: 1,
+        content: "",
+        toolCalls: [],
+        usage: {},
+        costUsd: 0,
+      },
+    });
+    let assistant = state.messages.find((m) => m.kind === "assistant");
+    expect(assistant?.pending).toBe(false);
+
+    // Iteration 2 streams more output for the SAME turn (after a tool call): the
+    // card must read as still-streaming again so the reasoning spinner shows
+    // instead of a premature green checkmark.
+    state = reduce(state, {
+      t: "batch_delta",
+      items: [{ turn: 1, channel: "reasoning", text: "second pass" }],
+    });
+    assistant = state.messages.find((m) => m.kind === "assistant");
+    expect(assistant?.pending).toBe(true);
+  });
+
   it("does not duplicate content already streamed as deltas", () => {
     let state = reduce(initialState(), { t: "incoming", event: turnStarted });
     state = reduce(state, {
@@ -2716,6 +2787,28 @@ describe("Desktop App reducer — OpenAI OAuth flow state", () => {
       account: "u@example.com",
       flowError: "OAuth token exchange failed: invalid_client",
     });
+  });
+
+  it("$settings carries shellAllowed and pathAllowed into settings", () => {
+    const state = initialState();
+    const next = reduce(state, {
+      t: "incoming",
+      event: {
+        type: "$settings",
+        reasoningEffort: "medium",
+        editMode: "yolo",
+        quickSendId: "proceed",
+        quickSends: [],
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "deepseek-v4-flash",
+        shellAllowed: ["npm test"],
+        pathAllowed: ["/opt/tools"],
+        version: "0.50.1",
+      },
+    });
+    expect(next.settings?.shellAllowed).toEqual(["npm test"]);
+    expect(next.settings?.pathAllowed).toEqual(["/opt/tools"]);
   });
 
   it("$settings without signed-in OAuth keeps oauthWaiting", () => {

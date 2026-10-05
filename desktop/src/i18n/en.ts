@@ -545,23 +545,11 @@ export const en = {
     setup: {
       welcome: "Welcome to Reasonix+",
       description:
-        "Choose a provider to get started: DeepSeek, ChatGPT (OpenAI), or a local/cloud Ollama. Credentials are stored locally only.",
-      descriptionGpt:
-        "You picked an OpenAI (ChatGPT) model: add an OpenAI API key or sign in with your ChatGPT account. DeepSeek keys are not accepted for gpt models.",
-      descriptionOllama:
-        "Point at your Ollama endpoint (local daemon or cloud) and pick a model. Local Ollama is keyless.",
-      providerDeepSeek: "DeepSeek",
-      providerOpenAI: "ChatGPT",
-      providerOllama: "Ollama",
-      ollamaModelPlaceholder: "ollama/llama3.1",
-      ollamaModelLabel: "Ollama model id",
-      ollamaBaseUrlPlaceholder: "http://localhost:11434/v1",
-      ollamaBaseUrlLabel: "Ollama base URL (optional)",
+        "Open Settings to enable the model(s) you want and sign in with the API key or OAuth account for whichever provider you need (DeepSeek, ChatGPT/OpenAI, Google, Z.AI, or Ollama). Set up only what you use.",
+      openSettings: "Open Settings",
       workspace: "Workspace",
       notSelected: "Not selected",
       choose: "Choose…",
-      saveAndStart: "Save & start",
-      useOllama: "Use Ollama",
     },
     update: {
       available: "New version available · {current} → {latest}",

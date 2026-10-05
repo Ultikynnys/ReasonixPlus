@@ -66,7 +66,6 @@ import {
   type McpSpecInfo,
   type MemoryDetail,
   type MemoryEntryInfo,
-  type ModelEndpointInfo,
   type OllamaQuota,
   type OutgoingCommand,
   type PlanStep,
@@ -856,7 +855,11 @@ export function reduce(state: State, action: Action): State {
               it.text,
             );
           }
-          return { ...m, segments };
+          // A fresh stream re-opens the card. A mid-turn `model.final` settles
+          // the message once per model iteration, so a later iteration's
+          // reasoning has to re-assert pending, or its card renders the
+          // completion checkmark while it is still streaming.
+          return { ...m, segments, pending: true };
         }),
       };
     }
@@ -1369,16 +1372,38 @@ function currentTurnForNotice(messages: ChatMessage[]): number {
   return last;
 }
 
-// Build a notice and append it in creation order. Every notice path routes
-// through here so the streaming-card guard applies uniformly (btw / session-empty
-// / exit notices previously bypassed it and landed below the streaming card).
+// Anchor a status notice (mode switch, btw answer, exit) to its turn: slot it at
+// the START of that turn's group — right after the turn's user message, above the
+// turn's assistant card — so it reads as part of the turn instead of floating at
+// the bottom of the transcript. Notices already placed in the turn keep their
+// order (a later one goes after them). Falls back to the tail when the turn has
+// no user card yet (turn 0, or an event that lands before the user message).
+function placeNoticeAtTurnStart(messages: ChatMessage[], notice: ChatMessage): ChatMessage[] {
+  const turn = notice.turn;
+  if (turn === undefined || turn <= 0) return [...messages, notice];
+  const userIdx = messages.findIndex((m) => m.kind === "user" && m.turn === turn);
+  if (userIdx < 0) return [...messages, notice];
+  let idx = userIdx + 1;
+  while (
+    idx < messages.length &&
+    messages[idx]?.kind === "notice" &&
+    messages[idx]?.turn === turn
+  ) {
+    idx += 1;
+  }
+  return [...messages.slice(0, idx), notice, ...messages.slice(idx)];
+}
+
+// Build a status notice and anchor it to its owning turn (see
+// placeNoticeAtTurnStart). Every status notice path routes through here so the
+// turn placement applies uniformly.
 function insertNotice(
   messages: ChatMessage[],
   text: string,
   severity: NoticeSeverity = "info",
   turn?: number,
 ): ChatMessage[] {
-  return appendNoticeMessage(messages, {
+  return placeNoticeAtTurnStart(messages, {
     kind: "notice",
     id: nextNoticeId(),
     text,
@@ -1960,6 +1985,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           openaiOAuth: ev.openaiOAuth,
           antigravityOAuth: ev.antigravityOAuth,
           mailProvider: ev.mailProvider ?? MailProvider.Outlook,
+          shellAllowed: ev.shellAllowed,
+          pathAllowed: ev.pathAllowed,
           version: ev.version,
         },
         oauthWaiting: ev.openaiOAuth?.signedIn ? false : state.oauthWaiting,
@@ -2093,10 +2120,14 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         messages: state.messages.map((m) => {
           if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
           if (ev.channel === "content") {
-            return { ...m, segments: appendTextSegment(m.segments, "text", ev.text) };
+            return { ...m, segments: appendTextSegment(m.segments, "text", ev.text), pending: true };
           }
           if (ev.channel === "reasoning") {
-            return { ...m, segments: appendTextSegment(m.segments, "reasoning", ev.text) };
+            return {
+              ...m,
+              segments: appendTextSegment(m.segments, "reasoning", ev.text),
+              pending: true,
+            };
           }
           return m;
         }),
@@ -3661,16 +3692,7 @@ function TabRuntime({
             <NeedsSetupView
               workspaceDir={state.settings?.workspaceDir}
               onPickWorkspace={pickWorkspace}
-              model={state.settings?.model}
-              modelEndpoint={state.settings?.modelEndpoint}
-              oauthWaiting={state.oauthWaiting}
-              onOAuthBegin={() => sendRpc({ cmd: "oauth_begin" })}
-              onSubmit={(key) => sendRpc({ cmd: "setup_save_key", key })}
-              onSaveOpenAIApiKey={(key) => sendRpc({ cmd: "setup_save_openai_key", key })}
-              onSaveOllama={(modelId, baseUrl) =>
-                sendRpc({ cmd: "settings_save", model: modelId, ollamaBaseUrl: baseUrl ?? null })
-              }
-              ollamaBaseUrl={state.settings?.ollamaBaseUrl}
+              onOpenSettings={() => openSettingsAt("models")}
             />
           ) : (
             <>
@@ -4973,49 +4995,13 @@ function EmptyState({
 function NeedsSetupView({
   workspaceDir,
   onPickWorkspace,
-  model,
-  modelEndpoint,
-  oauthWaiting,
-  onOAuthBegin,
-  onSubmit,
-  onSaveOpenAIApiKey,
-  onSaveOllama,
-  ollamaBaseUrl,
+  onOpenSettings,
 }: {
   workspaceDir?: string;
   onPickWorkspace: () => void;
-  model?: string;
-  /** Daemon-resolved endpoint info for the current model — the provider
-   *  authority for the wizard's preselected tab, never the model name. */
-  modelEndpoint?: ModelEndpointInfo;
-  oauthWaiting: boolean;
-  onOAuthBegin: () => void;
-  onSubmit: (key: string) => void;
-  onSaveOpenAIApiKey: (key: string) => void;
-  onSaveOllama: (modelId: string, baseUrl?: string) => void;
-  ollamaBaseUrl?: string;
+  onOpenSettings: () => void;
 }) {
   useLang();
-  const [key, setKey] = useState("");
-  const [ollamaModel, setOllamaModel] = useState("");
-  const [baseUrl, setBaseUrl] = useState(ollamaBaseUrl ?? "http://localhost:11434/v1");
-  // Preselect the tab for the daemon-RESOLVED provider (or the ollama/
-  // addressing scheme); a model name never implies its provider, so it never
-  // picks the tab. Unknown resolutions start on the neutral DeepSeek tab and
-  // the user chooses.
-  const [provider, setProvider] = useState<"deepseek" | "openai" | "ollama">(() =>
-    modelEndpoint?.provider === "openai"
-      ? "openai"
-      : modelEndpoint?.provider === "ollama" ||
-          (modelEndpoint === undefined && typeof model === "string" && model.startsWith("ollama/"))
-        ? "ollama"
-        : "deepseek",
-  );
-  const tabs: { id: "deepseek" | "openai" | "ollama"; label: string }[] = [
-    { id: "deepseek", label: t("app.setup.providerDeepSeek") },
-    { id: "openai", label: t("app.setup.providerOpenAI") },
-    { id: "ollama", label: t("app.setup.providerOllama") },
-  ];
   return (
     <div
       style={{
@@ -5029,24 +5015,8 @@ function NeedsSetupView({
       }}
     >
       <div style={{ fontSize: 18, fontWeight: 600 }}>{t("app.setup.welcome")}</div>
-      <div style={{ fontSize: 12.5, color: "var(--muted)", maxWidth: 420, textAlign: "center" }}>
-        {provider === "openai"
-          ? t("app.setup.descriptionGpt")
-          : provider === "ollama"
-            ? t("app.setup.descriptionOllama")
-            : t("app.setup.description")}
-      </div>
-      <div className="setup-seg" style={{ width: "min(420px, 100%)" }}>
-        {tabs.map((p) => (
-          <button
-            key={p.id}
-            type="button"
-            data-on={provider === p.id}
-            onClick={() => setProvider(p.id)}
-          >
-            {p.label}
-          </button>
-        ))}
+      <div style={{ fontSize: 12.5, color: "var(--muted)", maxWidth: 460, textAlign: "center" }}>
+        {t("app.setup.description")}
       </div>
       <div
         style={{
@@ -5065,68 +5035,9 @@ function NeedsSetupView({
             {t("app.setup.choose")}
           </button>
         </div>
-        {provider === "openai" && (
-          <button
-            type="button"
-            className="btn primary"
-            disabled={oauthWaiting}
-            onClick={onOAuthBegin}
-          >
-            {oauthWaiting ? t("settings.openaiWaiting") : t("settings.openaiSignIn")}
-          </button>
-        )}
-        {provider === "ollama" && (
-          <>
-            <input
-              className="field mono"
-              type="text"
-              value={ollamaModel}
-              onChange={(e) => setOllamaModel(e.target.value)}
-              placeholder={t("app.setup.ollamaModelPlaceholder")}
-              aria-label={t("app.setup.ollamaModelLabel")}
-              style={{ width: "100%" }}
-            />
-            <input
-              className="field mono"
-              type="text"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder={t("app.setup.ollamaBaseUrlPlaceholder")}
-              aria-label={t("app.setup.ollamaBaseUrlLabel")}
-              style={{ width: "100%" }}
-            />
-            <button
-              type="button"
-              className="btn primary"
-              disabled={!ollamaModel.trim()}
-              onClick={() => onSaveOllama(ollamaModel.trim(), baseUrl.trim() || undefined)}
-            >
-              {t("app.setup.useOllama")}
-            </button>
-          </>
-        )}
-        {provider !== "ollama" && (
-          <input
-            className="field mono"
-            type="password"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="sk-…"
-            style={{ width: "100%" }}
-          />
-        )}
-        {provider !== "ollama" && (
-          <button
-            type="button"
-            className="btn primary"
-            disabled={!key.trim()}
-            onClick={() =>
-              provider === "openai" ? onSaveOpenAIApiKey(key.trim()) : onSubmit(key.trim())
-            }
-          >
-            {provider === "openai" ? t("settings.apiKeySave") : t("app.setup.saveAndStart")}
-          </button>
-        )}
+        <button type="button" className="btn primary" onClick={onOpenSettings}>
+          {t("app.setup.openSettings")}
+        </button>
       </div>
     </div>
   );
