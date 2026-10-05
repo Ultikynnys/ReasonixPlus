@@ -191,7 +191,6 @@ Requires Node >= 22 and npm.
 
 - [Architecture](docs/ARCHITECTURE.md): the three pillars, cache-first loop, tool-call repair,
   and cost control
-- [Code of Conduct](CODE_OF_CONDUCT.md) · [Security policy](SECURITY.md)
 - [Installer signing](desktop/SIGNING.md)
 
 ## Divergence from upstream
