@@ -6,13 +6,16 @@ const componentMocks = await import("./support/desktop-component-mocks.js");
 vi.mock("../desktop/src/Markdown", () => componentMocks.markdown);
 vi.mock("../desktop/src/ui/thread", () => componentMocks.thread);
 
-type ReduceFn = Awaited<typeof import("../desktop/src/App")>["reduce"];
+type AppModule = Awaited<typeof import("../desktop/src/App")>;
+type ReduceFn = AppModule["reduce"];
 type AppState = Parameters<ReduceFn>[0];
 
 let reduce: ReduceFn;
+let mapLoadedMessages: AppModule["mapLoadedMessages"];
+let collectPersistedNotices: AppModule["collectPersistedNotices"];
 
 beforeAll(async () => {
-  ({ reduce } = await import("../desktop/src/App"));
+  ({ reduce, mapLoadedMessages, collectPersistedNotices } = await import("../desktop/src/App"));
 });
 
 const makeState = () => baseAppState({ ready: true });
@@ -180,5 +183,35 @@ describe("desktop $turn_complete reducer (#1456)", () => {
     expect(next.pendingChoices).toEqual([]);
     expect(next.pendingCheckpoints).toEqual([]);
     expect(next.pendingRevisions).toEqual([]);
+  });
+});
+
+describe("desktop session notice persistence round-trip", () => {
+  it("maps a persisted notice LoadedMessage back to a notice card, keeping its turn", () => {
+    const mapped = mapLoadedMessages([
+      { kind: "notice", id: "n1", text: "Mode: AUTO", severity: "warning", turn: 2 },
+    ]);
+    expect(mapped).toEqual([
+      { kind: "notice", id: "n1", text: "Mode: AUTO", severity: "warning", turn: 2 },
+    ]);
+  });
+
+  it("collects notice cards and assistant warning segments into the persisted shape", () => {
+    const collected = collectPersistedNotices([
+      { kind: "notice", id: "n1", text: "Mode: AUTO", severity: "info", turn: 2 },
+      {
+        kind: "assistant",
+        turn: 2,
+        pending: false,
+        segments: [
+          { kind: "text", text: "hi" },
+          { kind: "warning", id: "w1", text: "degeneration", severity: "high" },
+        ],
+      },
+    ]);
+    expect(collected).toEqual([
+      { id: "n1", kind: "notice", text: "Mode: AUTO", severity: "info", turn: 2 },
+      { id: "w1", kind: "warning", text: "degeneration", severity: "high", turn: 2 },
+    ]);
   });
 });

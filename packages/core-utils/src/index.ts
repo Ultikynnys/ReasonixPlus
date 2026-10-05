@@ -177,6 +177,8 @@ export type {
   JobsEvent,
   LoadedSegment,
   LoadedMessage,
+  NoticeSeverity,
+  PersistedNotice,
   SessionLoadedEvent,
   SessionProviderCost,
   SessionCompactedEvent,

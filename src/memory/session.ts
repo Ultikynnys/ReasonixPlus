@@ -18,6 +18,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, posix as posixPath, win32 as win32Path } from "node:path";
 import {
   DAY_MS,
+  type PersistedNotice,
   messageOf,
   parseSessionTimestamp,
   sortSessionsDescending,
@@ -38,6 +39,7 @@ import {
   sessionEventsPath,
   sessionMessagesPath,
   sessionMetaPath,
+  sessionNoticesPath,
   sessionPlanPath,
   sessionsDir,
 } from "./session-layout.js";
@@ -52,6 +54,7 @@ export {
 export {
   SESSION_META_FILENAME,
   SESSION_MESSAGES_FILENAME,
+  SESSION_NOTICES_FILENAME,
   SESSION_PLAN_FILENAME,
   SESSION_PLANS_DIRNAME,
   sanitizeName,
@@ -59,6 +62,7 @@ export {
   sessionEventsPath,
   sessionMessagesPath,
   sessionMetaPath,
+  sessionNoticesPath,
   sessionPlanPath,
   sessionPlansDir,
   sessionsDir,
@@ -372,6 +376,38 @@ export function appendSessionMessage(name: string, message: ChatMessage): void {
   chmodPrivate(path);
   touchSessionUpdatedAt(name);
   sessionDirectoryIndex.invalidate();
+}
+
+/** Shape guard for one persisted annotation card (notice or warning). */
+function isPersistedNotice(value: unknown): value is PersistedNotice {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.id === "string" &&
+    (v.kind === "notice" || v.kind === "warning") &&
+    typeof v.text === "string" &&
+    typeof v.severity === "string" &&
+    typeof v.turn === "number" &&
+    Number.isFinite(v.turn)
+  );
+}
+
+function isPersistedNoticeArray(value: unknown): value is PersistedNotice[] {
+  return Array.isArray(value) && value.every(isPersistedNotice);
+}
+
+/** Read a session's persisted UI annotation cards (notice + warning). Returns []
+ *  when the sidecar is absent or malformed — older sessions simply have none. */
+export function loadSessionNotices(name: string): PersistedNotice[] {
+  return readJsonFileSilently(sessionNoticesPath(name), isPersistedNoticeArray) ?? [];
+}
+
+/** Replace a session's persisted annotation cards atomically. Idempotent
+ *  full-list overwrite: the frontend re-syncs its whole notice list on change. */
+export function writeSessionNotices(name: string, notices: PersistedNotice[]): void {
+  ensureSessionDir(name);
+  const path = sessionNoticesPath(name);
+  atomicWriteSync(path, `${JSON.stringify(notices)}\n`, tmpSiblingPath(path));
 }
 
 /** Finite-number guard for the write-once creation stamp. */

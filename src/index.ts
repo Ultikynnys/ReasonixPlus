@@ -235,10 +235,12 @@ export {
   deleteSession,
   listSessions,
   loadSessionMessages,
+  loadSessionNotices,
   sanitizeName as sanitizeSessionName,
   sessionDir,
   sessionPath,
   sessionsDir,
+  writeSessionNotices,
 } from "./memory/session.js";
 export type { SessionInfo } from "./memory/session.js";
 

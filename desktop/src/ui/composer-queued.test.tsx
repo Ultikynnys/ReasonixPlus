@@ -31,10 +31,12 @@ const baseProps = {
 function renderQueued({
   queuedSends,
   onDequeueSend,
+  onEditQueuedSend,
   onSendNow,
 }: {
   queuedSends?: QueuedSendItem[];
   onDequeueSend?: (index: number) => void;
+  onEditQueuedSend?: (index: number) => void;
   onSendNow?: () => void;
 }) {
   return render(
@@ -42,6 +44,7 @@ function renderQueued({
       {...baseProps}
       queuedSends={queuedSends ?? []}
       onDequeueSend={onDequeueSend}
+      onEditQueuedSend={onEditQueuedSend}
       onSendNow={onSendNow}
     />,
   );
@@ -151,5 +154,38 @@ describe("Composer queued-sends row", () => {
     expect(screen.getByText("commit and push")).toBeTruthy();
     const chip = document.querySelector(".composer-queue-chip");
     expect(chip?.getAttribute("title")).toBe("commit and push: commit and push all changes");
+  });
+});
+
+describe("Composer queued-chip edit affordance", () => {
+  it("clicking the edit button calls onEditQueuedSend with its index", () => {
+    const onEditQueuedSend = vi.fn();
+    renderQueued({
+      queuedSends: ["first message", "second message"],
+      onEditQueuedSend,
+    });
+
+    const editButtons = document.querySelectorAll(".composer-queue-chip .edit");
+    expect(editButtons.length).toBe(2);
+    fireEvent.click(editButtons[1]);
+    expect(onEditQueuedSend).toHaveBeenCalledWith(1);
+  });
+
+  it("clicking a chip's text pulls that message back for editing", () => {
+    const onEditQueuedSend = vi.fn();
+    renderQueued({
+      queuedSends: ["first message", "second message"],
+      onEditQueuedSend,
+    });
+
+    fireEvent.click(screen.getByText("first message"));
+    expect(onEditQueuedSend).toHaveBeenCalledWith(0);
+  });
+
+  it("omits the edit affordance when onEditQueuedSend is not wired", () => {
+    renderQueued({ queuedSends: ["queued text"], onDequeueSend: vi.fn() });
+
+    expect(document.querySelectorAll(".composer-queue-chip .edit").length).toBe(0);
+    expect(screen.getByText("queued text").classList.contains("editable")).toBe(false);
   });
 });

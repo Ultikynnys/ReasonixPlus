@@ -113,6 +113,7 @@ export function Composer({
   queuedSends,
   onQueueWhileBusy,
   onDequeueSend,
+  onEditQueuedSend,
   onSendNow,
   pendingImages,
   onRemoveImage,
@@ -180,6 +181,8 @@ export function Composer({
     images?: { id: string; thumbnail: string; wire?: UserImageAttachment }[],
   ) => void;
   onDequeueSend?: (index: number) => void;
+  /** Brings a queued message back into the composer to edit — removes it from the queue and restores its text + images. */
+  onEditQueuedSend?: (index: number) => void;
   /** Sends the whole queue immediately — the app aborts the running turn so the drain fires on turn-complete. */
   onSendNow?: () => void;
   /** Vision attachments queued for the next send (ChatGPT models only). */
@@ -528,6 +531,8 @@ export function Composer({
               ]
                 .filter(Boolean)
                 .join(" ");
+              // Hoisted so the chip's text and its pencil share one handler.
+              const editQueued = onEditQueuedSend ? () => onEditQueuedSend(i) : undefined;
 
               return (
                 // biome-ignore lint/suspicious/noArrayIndexKey: queue is dequeue-by-index; chips are text-only leaves
@@ -544,7 +549,25 @@ export function Composer({
                       ))}
                     </span>
                   ) : null}
-                  {displayText ? <span className="text">{displayText}</span> : null}
+                  {displayText ? (
+                    <span
+                      className={editQueued ? "text editable" : "text"}
+                      onClick={editQueued}
+                      onKeyDown={editQueued ? activationHandler(editQueued) : undefined}
+                    >
+                      {displayText}
+                    </span>
+                  ) : null}
+                  {editQueued ? (
+                    <span
+                      className="edit"
+                      title={t("composer.editQueued")}
+                      onClick={editQueued}
+                      onKeyDown={activationHandler(editQueued)}
+                    >
+                      <I.pencil size={10} />
+                    </span>
+                  ) : null}
                   {onDequeueSend ? (
                     <span
                       className="x"

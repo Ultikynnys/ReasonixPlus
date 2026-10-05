@@ -68,6 +68,7 @@ import {
   type MemoryEntryInfo,
   type OllamaQuota,
   type OutgoingCommand,
+  type PersistedNotice,
   type PlanStep,
   type PlanVerdict,
   type PlaywrightBrowserInstall,
@@ -1191,7 +1192,7 @@ function pruneSessionFiles(existing: SessionFile[], dropped: readonly string[]):
 /** Convert a server-sent conversation (LoadedMessage shape) into UI messages.
  *  Shared by $session_loaded and session.compacted — both carry the same wire
  *  shape, so the live fold replacement and a session reload render identically. */
-function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
+export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
   // User turns are counted by user-message position (1-based), matching live
   // numbering. List index i+1 would drift: the loaded list interleaves
   // assistant messages, so the 2nd user message would render as turn 3 and
@@ -1207,6 +1208,9 @@ function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
         turn: userTurn,
         ...(m.images ? { images: m.images } : {}),
       };
+    }
+    if (m.kind === "notice") {
+      return { kind: "notice", id: m.id, text: m.text, severity: m.severity, turn: m.turn };
     }
     const segments: AssistantSegment[] = m.segments.map((s, segIdx) => {
       if (s.kind === "tool") {
@@ -1233,6 +1237,32 @@ function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
     });
     return { kind: "assistant", turn: m.turn, segments, pending: false };
   });
+}
+
+/** Flatten the live transcript's annotation cards (notice cards + assistant
+ *  warning segments) into the persisted shape the daemon stores per session, so
+ *  none is transient across reload / resync / restart. */
+export function collectPersistedNotices(messages: ChatMessage[]): PersistedNotice[] {
+  const out: PersistedNotice[] = [];
+  for (const m of messages) {
+    if (m.kind === "notice") {
+      out.push({ id: m.id, kind: "notice", text: m.text, severity: m.severity, turn: m.turn ?? 0 });
+      continue;
+    }
+    if (m.kind !== "assistant") continue;
+    for (const s of m.segments) {
+      if (s.kind === "warning") {
+        out.push({
+          id: s.id,
+          kind: "warning",
+          text: s.text,
+          severity: s.severity ?? "high",
+          turn: m.turn,
+        });
+      }
+    }
+  }
+  return out;
 }
 
 /** Re-derive the "Files in context" list from a conversation: paths from tool
@@ -2957,6 +2987,22 @@ function TabRuntime({
     dispatch({ t: "push_notice", text, severity });
   }, []);
 
+  // Persist the transcript's annotation cards (notices + assistant warning
+  // segments) with the session so none is transient — the daemon stores them in
+  // the session's notices sidecar and merges them back on load/resync. Idempotent
+  // full-list sync, fired only when the set actually changes.
+  const noticesSyncSigRef = useRef("");
+  useEffect(() => {
+    // Skip until the session is known: syncing an empty list before
+    // $session_loaded has merged the persisted cards would wipe them.
+    if (!state.currentSession) return;
+    const notices = collectPersistedNotices(state.messages);
+    const sig = `${state.currentSession}\n${JSON.stringify(notices)}`;
+    if (sig === noticesSyncSigRef.current) return;
+    noticesSyncSigRef.current = sig;
+    sendRpc({ cmd: "notices_sync", notices });
+  }, [state.messages, state.currentSession, sendRpc]);
+
   // Vision attachments (gpt-* + DeepSeek vision models): paste carries bytes
   // from the webview; picked/dropped files ship a path the daemon reads.
   // Pending images render as thumbnails above the composer until send.
@@ -3952,6 +3998,31 @@ function TabRuntime({
                   setPendingImages([]);
                 }}
                 onDequeueSend={(index) => dispatch({ t: "dequeue_send", index })}
+                onEditQueuedSend={(index) => {
+                  const item = state.queuedSends[index];
+                  if (!item) return;
+                  dispatch({ t: "dequeue_send", index });
+                  // Bringing a message back to edit must not destroy an
+                  // in-progress draft: re-queue whatever the composer already
+                  // holds (text and/or attached images) before restoring.
+                  if (draft.trim() || pendingImages.length > 0) {
+                    dispatch({
+                      t: "enqueue_send",
+                      send: {
+                        text: draft,
+                        ...(pendingImages.length > 0 ? { images: pendingImages } : {}),
+                      },
+                    });
+                  }
+                  setDraft(item.text);
+                  setPendingImages(
+                    (item.images ?? []).filter(
+                      (im): im is { id: string; thumbnail: string; wire: UserImageAttachment } =>
+                        Boolean(im.wire),
+                    ),
+                  );
+                  composerRef.current?.focus();
+                }}
                 onSendNow={() => sendRpc({ cmd: "abort" })}
                 pendingImages={pendingImages}
                 onRemoveImage={removePendingImage}

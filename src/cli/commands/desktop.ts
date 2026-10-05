@@ -10,6 +10,7 @@ import {
   ANTIGRAVITY_MODELS,
   MAX_IMAGE_BYTES,
   MailProvider,
+  type PersistedNotice,
   flattenText,
   isUsableAntigravityModel,
   messageOf,
@@ -296,15 +297,18 @@ import {
   loadSessionMessages,
   loadSessionMessagesAsync,
   loadSessionMeta,
+  loadSessionNotices,
   migrateLegacyFlatSessions,
   normalizeSessionMcpState,
   patchSessionMeta,
   patchSessionWorkspaceIfMissing,
   resolveSessionModelPrefs,
   sessionExists,
+  sessionNoticesPath,
   sessionPath,
   stampSessionWorkspace,
   timestampSuffix,
+  writeSessionNotices,
 } from "../../memory/session.js";
 import { createModelClient } from "../../model-client.js";
 import { type OAuthFlow, beginOAuthFlow, oauthAccount, signOutOpenAI } from "../../oauth.js";
@@ -1209,6 +1213,69 @@ export function buildLoadedMessages(records: ChatMessage[]): LoadedMessage[] {
     }
   }
   return elideLoadedMessages(out);
+}
+
+/** Re-insert persisted annotation cards into a loaded transcript so none is
+ *  transient: a notice slots at the START of its turn's group (matching the
+ *  live UI); a warning re-attaches to its turn's assistant card. */
+export function mergeNoticesIntoLoaded(
+  loaded: LoadedMessage[],
+  notices: readonly PersistedNotice[],
+): LoadedMessage[] {
+  if (notices.length === 0) return loaded;
+  // Copy so appending warning segments never mutates the caller's arrays.
+  const out: LoadedMessage[] = loaded.map((m) =>
+    m.kind === "assistant" ? { ...m, segments: [...m.segments] } : m,
+  );
+  for (const rec of notices) {
+    if (rec.kind !== "warning") continue;
+    const host = lastAssistantOfTurn(out, rec.turn);
+    if (!host || host.kind !== "assistant") continue;
+    host.segments.push({
+      kind: "warning",
+      id: rec.id,
+      text: rec.text,
+      severity: rec.severity === "low" ? "low" : "high",
+    });
+  }
+  for (const rec of notices) {
+    if (rec.kind !== "notice") continue;
+    const notice: LoadedMessage = {
+      kind: "notice",
+      id: rec.id,
+      text: rec.text,
+      severity: rec.severity === "low" || rec.severity === "high" ? "warning" : rec.severity,
+      turn: rec.turn,
+    };
+    out.splice(noticeInsertIndex(out, rec.turn), 0, notice);
+  }
+  return out;
+}
+
+function lastAssistantOfTurn(messages: LoadedMessage[], turn: number): LoadedMessage | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.kind === "assistant" && m.turn === turn) return m;
+  }
+  return undefined;
+}
+
+/** Where a turn's notices anchor: right after the turn's Nth user message (and
+ *  any notice already slotted there). turn <= 0 → the very start; a turn with
+ *  no user message → the tail. */
+function noticeInsertIndex(messages: LoadedMessage[], turn: number): number {
+  if (turn <= 0) return 0;
+  let userSeen = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m?.kind !== "user") continue;
+    userSeen += 1;
+    if (userSeen !== turn) continue;
+    let at = i + 1;
+    while (at < messages.length && messages[at]?.kind === "notice") at += 1;
+    return at;
+  }
+  return messages.length;
 }
 
 function maskApiKey(key: string | undefined): string | undefined {
@@ -2459,7 +2526,10 @@ function loadSessionIntoTab(
   // runtime rebuild, so the loop is constructed with the right model.
   restoreSessionModelPrefs(tab, meta);
   tab.runtime = tab.toolset && tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
-  const loadedMessages = buildLoadedMessages(records);
+  const loadedMessages = mergeNoticesIntoLoaded(
+    buildLoadedMessages(records),
+    loadSessionNotices(name),
+  );
   if (loadedMessages.length === 0) {
     let sizeBytes = 0;
     try {
@@ -5831,7 +5901,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       if (restore?.session) {
         try {
           if (sessionExists(restore.session)) {
-            const msgs = buildLoadedMessages(await loadSessionMessagesAsync(restore.session));
+            const msgs = mergeNoticesIntoLoaded(
+              buildLoadedMessages(await loadSessionMessagesAsync(restore.session)),
+              loadSessionNotices(restore.session),
+            );
             if (msgs.length > 0) restoredMessages = msgs;
           }
         } catch (err) {
@@ -6178,7 +6251,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           void emitBalance(t);
           if (t.currentSession) {
             try {
-              const msgs = buildLoadedMessages(await loadSessionMessagesAsync(t.currentSession));
+              const msgs = mergeNoticesIntoLoaded(
+                buildLoadedMessages(await loadSessionMessagesAsync(t.currentSession)),
+                loadSessionNotices(t.currentSession),
+              );
               const meta = loadSessionMeta(t.currentSession);
               emit(
                 {
@@ -6780,6 +6856,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           { type: "$error", message: `session_reorder failed: ${(err as Error).message}` },
           tab.id,
         );
+      }
+      return;
+    }
+    if (msg.cmd === "notices_sync") {
+      if (tab.currentSession) {
+        try {
+          // Skip the write when there is nothing stored and nothing to store —
+          // a session with no cards never mints an empty sidecar.
+          if (msg.notices.length > 0 || existsSync(sessionNoticesPath(tab.currentSession))) {
+            writeSessionNotices(tab.currentSession, msg.notices);
+          }
+        } catch (err) {
+          emitDiagnosticError("session.notices.sync.failed", err, { tabId: tab.id });
+        }
       }
       return;
     }

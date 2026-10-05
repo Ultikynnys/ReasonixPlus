@@ -729,6 +729,23 @@ export type LoadedSegment =
     }
   | { kind: "warning"; id?: string; text: string; severity?: "low" | "high" };
 
+/** Severity of a transcript notice card — shared by the live UI and the
+ *  persisted session notices so a restored card keeps its tone. */
+export type NoticeSeverity = "info" | "success" | "warning" | "error";
+
+/** A UI annotation card (standalone notice or assistant warning segment) kept
+ *  with the session in its notices sidecar — never a model-replay record — and
+ *  merged back into the transcript on load so no card is transient. */
+export interface PersistedNotice {
+  id: string;
+  kind: "notice" | "warning";
+  text: string;
+  /** Notice card tone, or a warning segment's "low" | "high". */
+  severity: NoticeSeverity | "low" | "high";
+  /** Owning turn (1-based real-user count); 0 = before the first user message. */
+  turn: number;
+}
+
 export type LoadedMessage =
   | { kind: "user"; text: string; images?: string[] }
   | {
@@ -736,7 +753,8 @@ export type LoadedMessage =
       turn: number;
       segments: LoadedSegment[];
       pending: false;
-    };
+    }
+  | { kind: "notice"; id: string; text: string; severity: NoticeSeverity; turn?: number };
 
 export interface SessionLoadedEvent {
   type: "$session_loaded";
@@ -1331,4 +1349,7 @@ export type OutgoingCommand = { tabId?: string } & (
     }
   | { cmd: "retry" }
   | { cmd: "btw"; text: string }
+  /** Replace this session's persisted annotation cards (notice + warning) so
+   *  they survive reload/resync. Idempotent full-list overwrite. */
+  | { cmd: "notices_sync"; notices: PersistedNotice[] }
 );

@@ -5952,6 +5952,28 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--border);
   color: var(--fg);
 }
+.composer-queue-chip .text.editable {
+  cursor: pointer;
+}
+.composer-queue-chip .text.editable:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.composer-queue-chip .edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.composer-queue-chip .edit:hover {
+  background: var(--border);
+  color: var(--fg);
+}
 .composer-queued-send {
   display: inline-flex;
   align-items: center;

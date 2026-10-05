@@ -11,6 +11,9 @@ export const SESSION_MESSAGES_FILENAME = "messages.jsonl";
 export const SESSION_META_FILENAME = "meta.json";
 /** Per-session event sidecar log. */
 export const SESSION_EVENTS_FILENAME = "events.jsonl";
+/** UI annotation cards (notice + warning) persisted so no transcript card is
+ *  transient — a single JSON array replaced on every notices_sync. */
+export const SESSION_NOTICES_FILENAME = "notices.json";
 /** Active plan state (written by plan-store). */
 export const SESSION_PLAN_FILENAME = "plan.json";
 /** Completed-plan archives live under this subfolder. */
@@ -45,6 +48,10 @@ export function sessionMetaPath(name: string): string {
 
 export function sessionEventsPath(name: string): string {
   return join(sessionDir(name), SESSION_EVENTS_FILENAME);
+}
+
+export function sessionNoticesPath(name: string): string {
+  return join(sessionDir(name), SESSION_NOTICES_FILENAME);
 }
 
 export function sessionPlanPath(name: string): string {

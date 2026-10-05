@@ -51,6 +51,7 @@ export const en = {
     placeholder: "Ask the agent / describe a task…",
     queueCount: "queued {n}",
     sendNow: "send now",
+    editQueued: "Edit in composer",
     queue: "queue",
     interrupt: "stop",
     proceed: "Proceed",

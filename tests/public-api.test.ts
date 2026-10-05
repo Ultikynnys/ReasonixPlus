@@ -314,6 +314,7 @@ const PUBLIC_API: readonly string[] = [
   "loadOllamaApiKey",
   "loadPerplexityApiKey",
   "loadSessionMessages",
+  "loadSessionNotices",
   "loadZaiApiKey",
   "markOutputRecoveryRead",
   "matchesTool",
@@ -371,6 +372,7 @@ const PUBLIC_API: readonly string[] = [
   "webSearch",
   "withUtf8Codepage",
   "writeConfig",
+  "writeSessionNotices",
 ];
 
 describe("public API surface", () => {
