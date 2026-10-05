@@ -38,7 +38,7 @@ Download the latest Windows installer from
 [GitHub Releases](https://github.com/Ultikynnys/ReasonixPlus/releases) and run
 `Reasonix+_x.y.z_x64-setup.exe`. The installer is built and published by the
 [release workflow](https://github.com/Ultikynnys/ReasonixPlus/actions/workflows/release.yml) on
-every push to `main`, and the app auto-updates from the same releases. The app bundles its own Node
+manual dispatch from the Actions tab, and the app auto-updates from the same releases. The app bundles its own Node
 runtime, so no `npm install` or Node installation is needed.
 
 - First run asks for a [DeepSeek API key](https://platform.deepseek.com/api_keys). The key is stored
@@ -89,8 +89,6 @@ billing:
    per-turn iteration cap with a grace window, an optional USD budget, and live cost/cache metering
    with off-peak/peak rate awareness (peak hours bill at 2x; off-peak applies all day on weekends,
    Beijing time).
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full writeup.
 
 ## Features
 
@@ -189,8 +187,6 @@ Requires Node >= 22 and npm.
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md): the three pillars, cache-first loop, tool-call repair,
-  and cost control
 - [Installer signing](desktop/SIGNING.md)
 
 ## Divergence from upstream
