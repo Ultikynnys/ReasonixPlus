@@ -48,6 +48,10 @@ export interface RunCommandResult {
   recoveryError?: string;
   /** True when the process was killed for exceeding `timeoutSec`. */
   timedOut: boolean;
+  /** True when the run was killed by an abort (user stopped the conversation or
+   *  the command, compaction, shutdown), not a natural exit. Without it a killed
+   *  command reports an unknown `exitCode` (`[exit ?]`), which reads as a crash. */
+  aborted?: boolean;
 }
 
 /** Flush cadence for live output: coalesce short writes so a chatty process
@@ -212,6 +216,7 @@ export async function runCommand(
     const byteCap = maxChars * 2 * 4; // worst-case 4 bytes/char for utf-8/gbk
     const recoveryCapture = new OutputRecoveryCapture(opts.cwd, opts.outputRecovery);
     let timedOut = false;
+    let aborted = false;
     let settled = false;
     const live = opts.onOutput ? new LiveOutputEmitter(opts.onOutput, maxChars * 2) : null;
     const killChildTree = () => killProcessTree(child);
@@ -248,6 +253,7 @@ export async function runCommand(
           exitCode,
           durationMs: Date.now() - startedAt,
           timedOut,
+          aborted,
           maxChars,
           recovery: recoveryResult?.ok ? recoveryResult.ref : undefined,
           recoveryError: recoveryResult && !recoveryResult.ok ? recoveryResult.error : undefined,
@@ -260,6 +266,7 @@ export async function runCommand(
       finish(null);
     }, timeoutMs);
     const onAbort = () => {
+      aborted = true;
       killChildTree();
       finish(null);
     };
@@ -309,6 +316,7 @@ export function assembleResult(args: {
   exitCode: number | null;
   durationMs: number;
   timedOut: boolean;
+  aborted?: boolean;
   maxChars: number;
   recovery?: OutputRecoveryRef;
   recoveryError?: string;
@@ -328,6 +336,7 @@ export function assembleResult(args: {
     totalOutputBytes: args.totalBytes,
     durationMs: args.durationMs,
     timedOut: args.timedOut,
+    ...(args.aborted ? { aborted: true } : {}),
     ...(args.recovery ? { recovery: args.recovery } : {}),
     ...(args.recoveryError ? { recoveryError: args.recoveryError } : {}),
   };
@@ -381,7 +390,13 @@ function spawnCollect(
   bin: string,
   args: string[],
   opts: { cwd: string; timeoutSec: number; signal?: AbortSignal },
-): Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer; timedOut: boolean }> {
+): Promise<{
+  exitCode: number | null;
+  stdout: Buffer;
+  stderr: Buffer;
+  timedOut: boolean;
+  aborted: boolean;
+}> {
   return new Promise((resolve, reject) => {
     let child: ChildProcess;
     try {
@@ -393,13 +408,20 @@ function spawnCollect(
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let timedOut = false;
+    let aborted = false;
     let settled = false;
     const finish = (exitCode: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(killTimer);
       opts.signal?.removeEventListener("abort", onAbort);
-      resolve({ exitCode, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), timedOut });
+      resolve({
+        exitCode,
+        stdout: Buffer.concat(stdout),
+        stderr: Buffer.concat(stderr),
+        timedOut,
+        aborted,
+      });
     };
     const killChildTree = () => killProcessTree(child);
     const killTimer = setTimeout(() => {
@@ -408,6 +430,7 @@ function spawnCollect(
       finish(null);
     }, opts.timeoutSec * 1000);
     const onAbort = () => {
+      aborted = true;
       killChildTree();
       finish(null);
     };
@@ -500,6 +523,7 @@ export async function runCommandElevated(
       exitCode: collected.exitCode,
       durationMs: Date.now() - startedAt,
       timedOut: collected.timedOut,
+      aborted: collected.aborted,
       maxChars,
       recovery: recoveryResult?.ok ? recoveryResult.ref : undefined,
       recoveryError: recoveryResult && !recoveryResult.ok ? recoveryResult.error : undefined,

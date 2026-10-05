@@ -43,6 +43,51 @@ export type {
 // the steer mechanism, which could arrive too late to stop a blind retry.
 export const USER_CANCEL_NOTE =
   "This is an intentional user cancellation: users do this when a task stalls indefinitely or takes too long. Do not blindly retry the same command; check what it was waiting on, adjust, or proceed with the conversation.";
+
+/** Root cause for a shell run that stopped before it finished. Every premature
+ *  stop must name its cause: a bare `exitCode: null` surfaces to the model as
+ *  `[exit ?]`, which it reads as a crash. Returns null for a normal exit. */
+function shellStopReason(
+  ctx: { signal?: AbortSignal; cancelSignal?: AbortSignal } | undefined,
+  result: { aborted?: boolean },
+): string | null {
+  if (ctx?.cancelSignal?.aborted) return "the user stopped the running command";
+  if (ctx?.signal?.aborted) return "the user stopped the conversation";
+  if (result.aborted) return "the run was aborted before it finished (compaction or shutdown)";
+  return null;
+}
+
+/** JSON tool result for a force-stopped shell run: names the cause and keeps
+ *  the partial output, matching the `cancelledByUser` contract the loop already
+ *  understands (so the model never blames the tool for an interruption). */
+function forceStoppedResult(
+  r: { output: string; exitCode: number | null },
+  reason: string,
+): string {
+  return JSON.stringify({
+    cancelledByUser: true,
+    stoppedReason: reason,
+    error: `Command force-stopped before completion: ${reason}. ${USER_CANCEL_NOTE}`,
+    output: r.output,
+    exitCode: r.exitCode,
+  });
+}
+
+/** Short label for a job's force-stop cause, surfaced by job_output/list_jobs. */
+function jobStopLabel(reason: import("./jobs.js").JobStopReason | undefined): string {
+  switch (reason) {
+    case "user":
+      return "stopped by user";
+    case "cancelled":
+      return "cancelled (turn stop)";
+    case "compaction":
+      return "stopped for context compaction";
+    case "shutdown":
+      return "stopped on workspace shutdown";
+    default:
+      return "stopped";
+  }
+}
 export {
   buildElevatedInvocation,
   ELEVATION_DECLINED_EXIT,
@@ -246,13 +291,9 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
               outputRecovery: opts.outputRecovery,
             }),
         });
-        if (ctx?.cancelSignal?.aborted) {
-          return JSON.stringify({
-            cancelledByUser: true,
-            error: `Command force-stopped by the user. ${USER_CANCEL_NOTE}`,
-            output: elevatedResult.output,
-            exitCode: elevatedResult.exitCode,
-          });
+        const stopReason = shellStopReason(ctx, elevatedResult);
+        if (stopReason !== null) {
+          return forceStoppedResult(elevatedResult, stopReason);
         }
         return `[elevated · Windows UAC]\n${formatCommandResult(cmd, elevatedResult)}`;
       }
@@ -295,13 +336,9 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
           );
         }
       }
-      if (ctx?.cancelSignal?.aborted) {
-        return JSON.stringify({
-          cancelledByUser: true,
-          error: `Command force-stopped by the user. ${USER_CANCEL_NOTE}`,
-          output: result.output,
-          exitCode: result.exitCode,
-        });
+      const stopReason = shellStopReason(ctx, result);
+      if (stopReason !== null) {
+        return forceStoppedResult(result, stopReason);
       }
       return formatCommandResult(cmd, result);
     },
@@ -366,10 +403,12 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
           : { signal: ctx?.signal, cancelSignal: ctx?.cancelSignal }),
       });
       opts.onJobsChanged?.();
-      if (!persistent && ctx?.cancelSignal?.aborted) {
+      const startupStop = shellStopReason(ctx, {});
+      if (!persistent && startupStop !== null) {
         return JSON.stringify({
           cancelledByUser: true,
-          error: `Background job startup force-stopped by the user. ${USER_CANCEL_NOTE}`,
+          stoppedReason: startupStop,
+          error: `Background job startup force-stopped before completion: ${startupStop}. ${USER_CANCEL_NOTE}`,
           jobId: result.jobId,
           preview: result.preview,
           exitCode: result.exitCode,
@@ -453,10 +492,12 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
         waitFor: args.waitFor,
         cancelSignal: ctx?.cancelSignal,
       });
-      if (ctx?.cancelSignal?.aborted) {
+      const waitStop = shellStopReason(ctx, {});
+      if (waitStop !== null) {
         return JSON.stringify({
           cancelledByUser: true,
-          error: `Wait force-stopped by the user. ${USER_CANCEL_NOTE}`,
+          stoppedReason: waitStop,
+          error: `Wait force-stopped before completion: ${waitStop}. ${USER_CANCEL_NOTE}`,
           jobId: args.jobId,
         });
       }
@@ -466,6 +507,7 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
         jobId: args.jobId,
         exited: out.exited,
         exitCode: out.exitCode,
+        stopReason: out.stopReason,
         latestOutput: out.latestOutput,
       };
     },
@@ -582,11 +624,13 @@ function formatJobStart(r: import("./jobs.js").JobStartResult): string {
 function formatJobRead(jobId: number, r: import("./jobs.js").JobReadResult): string {
   const status = r.running
     ? `running · pid ${r.pid ?? "?"}`
-    : r.exitCode !== null
-      ? `exited ${r.exitCode}`
-      : r.spawnError
-        ? `failed (${r.spawnError})`
-        : "stopped";
+    : r.spawnError
+      ? `failed (${r.spawnError})`
+      : r.stopReason
+        ? jobStopLabel(r.stopReason)
+        : r.exitCode !== null
+          ? `exited ${r.exitCode}`
+          : "stopped";
   const tag = r.persistent ? " · persistent" : "";
   const header = `[job ${jobId} · ${status}${tag} · byteLength=${r.byteLength}]\n$ ${r.command}`;
   return r.output ? `${header}\n${r.output}` : header;
@@ -595,7 +639,11 @@ function formatJobRead(jobId: number, r: import("./jobs.js").JobReadResult): str
 function formatJobStop(r: import("./jobs.js").JobRecord): string {
   const running = r.running
     ? "still running (SIGKILL may be pending)"
-    : `exit ${r.exitCode ?? "?"}`;
+    : r.stopReason
+      ? jobStopLabel(r.stopReason)
+      : r.exitCode !== null
+        ? `exit ${r.exitCode}`
+        : "stopped";
   const tail = tailLines(r.output, 40);
   const tag = r.persistent ? " · persistent" : "";
   const header = `[job ${r.id} stopped · ${running}${tag}]\n$ ${r.command}`;
@@ -606,11 +654,13 @@ function formatJobRow(r: import("./jobs.js").JobRecord): string {
   const age = ((Date.now() - r.startedAt) / 1000).toFixed(1);
   const state = r.running
     ? `running   ·  pid ${r.pid ?? "?"}`
-    : r.exitCode !== null
-      ? `exit ${r.exitCode}`
-      : r.spawnError
-        ? "failed"
-        : "stopped";
+    : r.spawnError
+      ? "failed"
+      : r.stopReason
+        ? jobStopLabel(r.stopReason)
+        : r.exitCode !== null
+          ? `exit ${r.exitCode}`
+          : "stopped";
   const tag = r.persistent ? "persistent · " : "";
   return `  ${String(r.id).padStart(3)}  ${(tag + state).padEnd(24)}  ${age}s ago   $ ${r.command}`;
 }
@@ -634,7 +684,9 @@ function exposeRecoveryWhenNeeded(
 export function formatCommandResult(cmd: string, r: RunCommandResult): string {
   const header = r.timedOut
     ? `$ ${cmd}\n[killed after timeout]`
-    : `$ ${cmd}\n[exit ${r.exitCode ?? "?"}]`;
+    : r.aborted
+      ? `$ ${cmd}\n[stopped before completion: the run was cancelled (user stop / turn interrupt), not a command failure]`
+      : `$ ${cmd}\n[exit ${r.exitCode ?? "?"}]`;
   const notes: string[] = [];
   if (r.recovery) {
     const incomplete = r.recovery.complete

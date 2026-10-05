@@ -97,6 +97,14 @@ describe("codeSystemPrompt", () => {
     expect(CODE_SYSTEM_PROMPT).toMatch(/pass data paths as arguments/i);
   });
 
+  it("keeps comments minimal, honest, and free of narration", () => {
+    expect(CODE_SYSTEM_PROMPT).toMatch(/# Comments: minimal/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/a second copy of intent/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Why, not what/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/keep block comments to 3 lines or fewer/i);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/correct or remove it in the same edit/i);
+  });
+
   describe("audit-mode rails (#610)", () => {
     it("warns against theorizing on auto-preview output instead of reading the dispatch site", () => {
       expect(CODE_SYSTEM_PROMPT).toMatch(/Auto-preview is for locating, not auditing/);

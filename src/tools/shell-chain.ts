@@ -283,6 +283,10 @@ export interface ChainResult {
   recovery?: OutputRecoveryRef;
   recoveryError?: string;
   timedOut: boolean;
+  /** True when the chain was killed by an abort (user stop / turn interrupt)
+   *  rather than a natural exit, so the result names the stop instead of
+   *  surfacing a bare/unknown exit code. */
+  aborted?: boolean;
 }
 
 interface ChainGroup {
@@ -327,7 +331,14 @@ export async function runChain(chain: CommandChain, opts: RunChainOptions): Prom
   const deadline = Date.now() + opts.timeoutSec * 1000;
   let lastExit: number | null = 0;
   let timedOut = false;
+  let aborted = false;
   for (const group of groups) {
+    // An abort before or between groups is a stop, not a failure — record it so
+    // the result names the cause instead of surfacing a bare exit code.
+    if (opts.signal?.aborted) {
+      aborted = true;
+      break;
+    }
     if (group.opBefore === "&&" && lastExit !== 0) continue;
     if (group.opBefore === "||" && lastExit === 0) continue;
     const remainingMs = deadline - Date.now();
@@ -349,7 +360,10 @@ export async function runChain(chain: CommandChain, opts: RunChainOptions): Prom
       timedOut = true;
       break;
     }
-    if (opts.signal?.aborted) break;
+    if (opts.signal?.aborted) {
+      aborted = true;
+      break;
+    }
   }
   live?.end();
   const output = buf.toString();
@@ -375,6 +389,7 @@ export async function runChain(chain: CommandChain, opts: RunChainOptions): Prom
     totalOutputBytes: recoveryCapture.totalBytes,
     durationMs: Date.now() - opts.startedAt,
     timedOut,
+    ...(aborted ? { aborted: true } : {}),
     ...(recoveryResult?.ok ? { recovery: recoveryResult.ref } : {}),
     ...(recoveryResult && !recoveryResult.ok ? { recoveryError: recoveryResult.error } : {}),
   };

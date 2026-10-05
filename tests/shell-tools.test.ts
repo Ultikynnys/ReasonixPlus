@@ -835,6 +835,24 @@ describe("registerShellTools — dispatch integration", () => {
     }
   }, 15000);
 
+  it("a job stopped by the user records the reason so job_output names it", async () => {
+    const registry = new ToolRegistry();
+    const jobs = new (await import("../src/tools/jobs.js")).JobRegistry();
+    registerShellTools(registry, { rootDir: tmp, jobs, extraAllowed: ["node"] });
+    try {
+      const startOut = await registry.dispatch(
+        "run_background",
+        JSON.stringify({ command: 'node -e "setInterval(()=>{}, 1000)"', waitSec: 0.1 }),
+      );
+      const jobId = Number(startOut.match(/job (\d+) started/)![1]);
+      await registry.dispatch("stop_job", JSON.stringify({ jobId }));
+      const out = await registry.dispatch("job_output", JSON.stringify({ jobId }));
+      expect(out).toContain("stopped by user");
+    } finally {
+      await jobs.shutdown(2000);
+    }
+  }, 15000);
+
   it("run_command with persistent rejects a shell operator (single-process rule)", async () => {
     const registry = new ToolRegistry();
     const jobs = new (await import("../src/tools/jobs.js")).JobRegistry();
@@ -977,6 +995,31 @@ describe("user cancel (Ctrl+K / desktop Stop) — cancelSignal contract", () => 
     expect(r.exitCode).toBe(null);
     expect(r.timedOut).toBe(false);
   }, 15000);
+
+  it("run_command with the TURN signal aborted names the conversation stop instead of a bare exit code", async () => {
+    const registry = new ToolRegistry();
+    registerShellTools(registry, { rootDir: tmp, extraAllowed: ["node"] });
+    const turn = new AbortController();
+    const run = registry.dispatch(
+      "run_command",
+      JSON.stringify({ command: 'node -e "setTimeout(()=>{}, 10000)"' }),
+      { signal: turn.signal },
+    );
+    await new Promise((r) => setTimeout(r, 150));
+    turn.abort();
+    const out = await run;
+    const parsed = JSON.parse(out) as {
+      cancelledByUser?: boolean;
+      stoppedReason?: string;
+      error?: string;
+    };
+    expect(parsed.cancelledByUser).toBe(true);
+    expect(parsed.stoppedReason).toBe("the user stopped the conversation");
+    expect(parsed.error).toContain("the user stopped the conversation");
+    // Regression: a turn-stopped foreground command used to report `[exit ?]`
+    // with no root cause, which the model reads as a crash.
+    expect(out).not.toContain("[exit ?]");
+  }, 15000);
 });
 
 describe("formatCommandResult", () => {
@@ -990,6 +1033,17 @@ describe("formatCommandResult", () => {
     expect(formatCommandResult("sleep 10", { exitCode: null, output: "", timedOut: true })).toBe(
       "$ sleep 10\n[killed after timeout]",
     );
+  });
+
+  it("names a user/loop-stopped run instead of leaving the exit code unknown", () => {
+    const out = formatCommandResult("sleep 10", {
+      exitCode: null,
+      output: "",
+      timedOut: false,
+      aborted: true,
+    });
+    expect(out).toContain("[stopped before completion");
+    expect(out).not.toContain("[exit ?]");
   });
 
   it("elides the body when output is empty", () => {

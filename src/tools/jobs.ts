@@ -63,6 +63,9 @@ export interface JobStartResult {
   exitCode: number | null;
 }
 
+/** Why a background job was force-stopped before a natural exit. */
+export type JobStopReason = "user" | "cancelled" | "compaction" | "shutdown";
+
 export interface JobRecord {
   id: number;
   command: string;
@@ -80,6 +83,10 @@ export interface JobRecord {
   spawnError?: string;
   /** True when spawned with `persistent: true` — session-scoped teardown spares it. */
   persistent: boolean;
+  /** Why the job was force-stopped (killed without a natural exit), when known.
+   *  Surfaced by job_output / wait_for_job / list_jobs so a user- or loop-initiated
+   *  stop never reads to the model as a crash. */
+  stopReason?: JobStopReason;
 }
 
 /** Returns an AbortSignal that fires when either of the two input signals
@@ -247,7 +254,7 @@ export class JobRegistry {
     child.on("exit", settleClosed);
     child.on("close", settleClosed);
 
-    const onAbort = () => this.stop(id, { graceMs: 100 });
+    const onAbort = () => this.stop(id, { graceMs: 100, reason: "cancelled" });
     // Merge the turn abort signal with the per-tool-call cancel signal so
     // Esc AND Ctrl+K / desktop Stop both kill the job during startup.
     const merged = mergeSignals(opts.signal, opts.cancelSignal);
@@ -308,6 +315,7 @@ export class JobRegistry {
       pid: job.pid,
       spawnError: job.spawnError,
       persistent: job.persistent,
+      stopReason: job.stopReason,
     };
   }
 
@@ -327,6 +335,7 @@ export class JobRegistry {
         exited: true,
         exitCode: job.exitCode,
         latestOutput: capJobOutput(job.output, DEFAULT_READ_MAX_CHARS, "tail"),
+        stopReason: job.stopReason,
       };
     }
 
@@ -371,6 +380,7 @@ export class JobRegistry {
         DEFAULT_READ_MAX_CHARS,
         "tail",
       ),
+      stopReason: job.stopReason,
     };
   }
 
@@ -451,10 +461,14 @@ export class JobRegistry {
   }
 
   /** SIGTERM, wait graceMs, then SIGKILL. Idempotent on already-exited jobs. */
-  async stop(id: number, opts: { graceMs?: number } = {}): Promise<JobRecord | null> {
+  async stop(
+    id: number,
+    opts: { graceMs?: number; reason?: JobStopReason } = {},
+  ): Promise<JobRecord | null> {
     const job = this.jobs.get(id);
     if (!job) return null;
     if (!job.running) return snapshot(job);
+    job.stopReason = opts.reason ?? "user";
     if (job.cancel) {
       job.cancel.abort();
       job.running = false;
@@ -512,6 +526,7 @@ export class JobRegistry {
     for (const job of this.jobs.values()) {
       if (!job.running) continue;
       if (opts.keepPersistent && job.persistent) continue;
+      job.stopReason = "compaction";
       if (job.cancel) {
         job.cancel.abort();
         job.running = false;
@@ -550,6 +565,7 @@ export class JobRegistry {
     );
     if (runningJobs.length === 0) return;
 
+    for (const job of runningJobs) job.stopReason = "shutdown";
     for (const job of runningJobs) {
       if (job.cancel) {
         job.cancel.abort();
@@ -648,12 +664,16 @@ export interface JobReadResult {
   pid: number | null;
   spawnError?: string;
   persistent: boolean;
+  /** Why the job was force-stopped, when it was killed rather than exiting. */
+  stopReason?: JobStopReason;
 }
 
 export interface JobWaitResult {
   exited: boolean;
   exitCode: number | null;
   latestOutput: string;
+  /** Why the job was force-stopped, when it was killed rather than exiting. */
+  stopReason?: JobStopReason;
 }
 
 function snapshot(job: InternalJob): JobRecord {
@@ -668,6 +688,7 @@ function snapshot(job: InternalJob): JobRecord {
     running: job.running,
     spawnError: job.spawnError,
     persistent: job.persistent,
+    stopReason: job.stopReason,
   };
 }
 
