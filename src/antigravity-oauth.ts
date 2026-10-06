@@ -385,10 +385,9 @@ export async function onboardAntigravity(accessToken: string): Promise<string> {
   return projectId;
 }
 
-/** Google id suffixes known to serve no traffic: deprecated 3.5 generations and
- *  agent-internal routing ids. Verified live: 3.5 answers "no longer available"
- *  and -lite variants 503 with no capacity, while the tiered/-low/-medium/-high
- *  ids of the same generation work. */
+/** Google ids known to serve no traffic. Verified live: gemini-3.5* answers
+ *  "no longer available", -lite/-extra-low variants 503 with no capacity, and
+ *  gemini-pro-agent is an internal routing id. */
 const ANTIGRAVITY_DEAD_SUFFIXES: readonly RegExp[] = [
   /^gemini-3\.5-/,
   /-(lite|extra-low)$/,

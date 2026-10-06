@@ -6872,6 +6872,9 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   min-width: 0;
   flex: 1 1 auto;
 }
+.scard .mcp-remove {
+  flex: 0 0 auto;
+}
 .scard .mcp-spec-summary {
   min-width: 0;
   overflow-wrap: anywhere;
