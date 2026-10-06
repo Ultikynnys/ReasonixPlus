@@ -485,13 +485,21 @@ function CtxCollapsible({
   right,
   defaultCollapsed = false,
   children,
+  onCollapsedChange,
 }: {
   title: string;
   right?: ReactNode;
   defaultCollapsed?: boolean;
   children: ReactNode;
+  /** Reports collapse state so a parent can pause background work (polling) while hidden. */
+  onCollapsedChange?: (collapsed: boolean) => void;
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const onCollapsedChangeRef = useRef(onCollapsedChange);
+  onCollapsedChangeRef.current = onCollapsedChange;
+  useEffect(() => {
+    onCollapsedChangeRef.current?.(collapsed);
+  }, [collapsed]);
   return (
     <div className="ctx-block">
       <div className="h">
@@ -649,13 +657,13 @@ function CtxGit({ settings, files }: { settings: Settings | null; files: Session
   const workspaceDir = settings?.workspaceDir;
   const [status, setStatus] = useState<GitStatusResult | null>(null);
   const [nonce, setNonce] = useState(0);
+  const [collapsed, setCollapsed] = useState(false);
   const signature = useMemo(() => files.map((f) => `${f.status}:${f.path}`).join("|"), [files]);
 
   useEffect(() => {
-    if (!workspaceDir) {
-      setStatus(null);
-      return;
-    }
+    // The 3s Tauri invoke is a visible periodic stall on large repos, so it only
+    // runs while the section is expanded; the header stays live via sessionFiles.
+    if (!workspaceDir || collapsed) return;
     let alive = true;
     const load = async () => {
       try {
@@ -671,13 +679,14 @@ function CtxGit({ settings, files }: { settings: Settings | null; files: Session
       alive = false;
       clearInterval(timer);
     };
-  }, [workspaceDir, signature, nonce]);
+  }, [workspaceDir, signature, nonce, collapsed]);
 
   const repo = status?.isRepo === true;
   const entries = status?.entries ?? [];
   return (
     <CtxCollapsible
       title={t("contextPanel.gitTitle")}
+      onCollapsedChange={setCollapsed}
       right={
         <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {repo
@@ -690,7 +699,10 @@ function CtxGit({ settings, files }: { settings: Settings | null; files: Session
             className="mini-btn"
             title={t("contextPanel.gitRefresh")}
             aria-label={t("contextPanel.gitRefresh")}
-            onClick={() => setNonce((n) => n + 1)}
+            onClick={() => {
+              setCollapsed(false);
+              setNonce((n) => n + 1);
+            }}
           >
             <I.refresh size={11} />
           </button>
@@ -2071,13 +2083,13 @@ function CtxRules({
             )}
             {adding && (onAddRule || editing) && (
               <form className="rule-composer" onSubmit={(e) => handleAdd(e, section.scope)}>
-                <select aria-label={t("contextPanel.ruleMatchType")} value={match}
+                <select className="rule-select" aria-label={t("contextPanel.ruleMatchType")} value={match}
                   onChange={(event) => setMatch(event.target.value as "pattern" | "regex")}>
                   <option value="pattern">{t("contextPanel.ruleMatchPattern")}</option>
                   <option value="regex">{t("contextPanel.ruleMatchRegex")}</option>
                 </select>
                 {match === "regex" && <div className="note">{t("contextPanel.ruleRegexHint")}</div>}
-                {regexError && <div role="alert">{regexError}</div>}
+                {regexError && <div role="alert" style={{ color: "var(--danger)" }}>{regexError}</div>}
                 <div className="rule-composer-row">
                   <button
                     type="button"
