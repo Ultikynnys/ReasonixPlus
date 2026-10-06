@@ -34,6 +34,27 @@ describe("toApprovalPrompt", () => {
       expect(p.actions.find((a) => a.id === "allow_global")!.scope).toBe("global");
     });
 
+    it("drops an add-rule action for a scope the caller already covers", () => {
+      const workspaceCovered = toApprovalPrompt({
+        id: 1,
+        kind: "run_command",
+        payload: { command: "npm test", coveredScopes: ["workspace"] },
+      });
+      expect(workspaceCovered.actions.map((a) => a.id)).toEqual([
+        "run_once",
+        "deny",
+        "allow_global",
+      ]);
+      expect(workspaceCovered.actions.find((a) => a.id === "allow_global")!.scope).toBe("global");
+
+      const bothCovered = toApprovalPrompt({
+        id: 1,
+        kind: "run_command",
+        payload: { command: "npm test", coveredScopes: ["workspace", "global"] },
+      });
+      expect(bothCovered.actions.map((a) => a.id)).toEqual(["run_once", "deny"]);
+    });
+
     it("derives single-token prefix for unknown commands", () => {
       const p = toApprovalPrompt({
         id: 1,

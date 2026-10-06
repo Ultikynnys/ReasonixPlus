@@ -1,4 +1,4 @@
-import type { ApprovalPrompt } from "@reasonix/core-utils";
+import type { ApprovalAction, ApprovalPrompt } from "@reasonix/core-utils";
 import { sanitizeTerminalText } from "@reasonix/core-utils";
 import { isCompactionSummary, stripCompactionMarker } from "@reasonix/core-utils/compaction";
 import { derivePrefix } from "@reasonix/core-utils/derive-prefix";
@@ -362,12 +362,12 @@ export const AssistantMsg = memo(function AssistantMsg({
                 onApprove={pendingConfirm ? () => onApproveConfirm(pendingConfirm.id) : undefined}
                 onReject={pendingConfirm ? () => onRejectConfirm(pendingConfirm.id) : undefined}
                 onAddWorkspaceRule={
-                  pendingConfirm
+                  pendingConfirm && ruleActionFor(pendingConfirm.prompt, "workspace")
                     ? () => onRuleConfirm(pendingConfirm.id, "workspace", derivePrefix(cmd))
                     : undefined
                 }
                 onAddGlobalRule={
-                  pendingConfirm
+                  pendingConfirm && ruleActionFor(pendingConfirm.prompt, "global")
                     ? () => onRuleConfirm(pendingConfirm.id, "global", derivePrefix(cmd))
                     : undefined
                 }
@@ -754,6 +754,16 @@ export function RevisionApprovalCard({
   );
 }
 
+/** The prompt's "add to <scope> rules" action, or undefined when the daemon dropped it
+ *  because that scope already carries a matching rule. Both the inline shell card and the
+ *  confirm cards read this single source of truth. */
+function ruleActionFor(
+  prompt: ApprovalPrompt,
+  scope: "workspace" | "global",
+): ApprovalAction | undefined {
+  return prompt.actions.find((a) => a.kind === "allow_always" && a.scope === scope);
+}
+
 function mapTone(tone: ApprovalPrompt["tone"]): import("./extra-cards").ApprovalTone {
   switch (tone) {
     case "error":
@@ -780,10 +790,8 @@ export function ConfirmApprovalCard({
 }) {
   useLang();
   const allowAction = prompt.actions.find((a) => a.kind === "allow_once");
-  const ruleAction = (scope: "workspace" | "global") =>
-    prompt.actions.find((a) => a.kind === "allow_always" && a.scope === scope);
-  const workspaceRule = ruleAction("workspace");
-  const globalRule = ruleAction("global");
+  const workspaceRule = ruleActionFor(prompt, "workspace");
+  const globalRule = ruleActionFor(prompt, "global");
   const rejectAction = prompt.actions.find((a) => a.kind === "reject");
   return (
     <ApprovalCard
@@ -848,10 +856,8 @@ export function PathAccessApprovalCard({
   const intent = String(prompt.data?.intent ?? "read");
   const isWrite = intent === "write";
   const allowAction = prompt.actions.find((a) => a.kind === "allow_once");
-  const ruleAction = (scope: "workspace" | "global") =>
-    prompt.actions.find((a) => a.kind === "allow_always" && a.scope === scope);
-  const workspaceRule = ruleAction("workspace");
-  const globalRule = ruleAction("global");
+  const workspaceRule = ruleActionFor(prompt, "workspace");
+  const globalRule = ruleActionFor(prompt, "global");
   const rejectAction = prompt.actions.find((a) => a.kind === "reject");
   return (
     <ApprovalCard

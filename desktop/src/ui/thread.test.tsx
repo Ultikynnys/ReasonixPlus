@@ -185,6 +185,21 @@ describe("ConfirmApprovalCard — ApprovalPrompt rendering", () => {
     expect(onAddWorkspaceRule).toHaveBeenCalledTimes(1);
   });
 
+  it("hides a scope's add-rule button when the prompt already covers it", () => {
+    const base = makeShellPrompt("npm test");
+    render(
+      <ConfirmApprovalCard
+        prompt={{ ...base, actions: base.actions.filter((a) => a.scope !== "workspace") }}
+        onAllow={() => {}}
+        onAddWorkspaceRule={() => {}}
+        onAddGlobalRule={() => {}}
+        onDeny={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Add to workspace rules" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add to global rules" })).toBeTruthy();
+  });
+
   it("fires onDeny when secondary button is clicked", () => {
     const onDeny = vi.fn();
     render(

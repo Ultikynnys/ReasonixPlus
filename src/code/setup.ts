@@ -3,6 +3,7 @@ import {
   DEFAULT_MODEL,
   type EditMode,
   type ModelProvider,
+  isNeverAskMode,
   loadAllShellAllowed,
   loadEditMode,
   loadElevationEnabled,
@@ -16,6 +17,7 @@ import {
   loadTypesafeApiKey,
   providerForModel,
   readConfig,
+  ruleModeInForce,
   rulePatterns,
   searchEnabled,
 } from "../config.js";
@@ -125,11 +127,9 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
     registerShellTools(tools, {
       rootDir: root,
       extraAllowed: () => rulePatterns("follow", "shell", root).allow,
-      extraAsk: () =>
-        rulePatterns(loadEditMode() === "never-ask" ? "never-ask" : "follow", "shell", root).ask,
-      extraDenied: () =>
-        loadEditMode() === "never-ask" ? rulePatterns("never-ask", "shell", root).deny : [],
-      allowAll: () => loadEditMode() === "never-ask",
+      extraAsk: () => rulePatterns(ruleModeInForce(), "shell", root).ask,
+      extraDenied: () => (isNeverAskMode() ? rulePatterns("never-ask", "shell", root).deny : []),
+      allowAll: () => isNeverAskMode(),
       elevationEnabled: () => loadElevationEnabled(),
       jobs,
       onJobsChanged: opts.onJobsChanged,

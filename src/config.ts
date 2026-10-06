@@ -2144,6 +2144,36 @@ function ruleTarget(
   return project.rules;
 }
 
+/** The structured rule array for a scope, or undefined when it does not exist yet. */
+function ruleList(
+  cfg: ReasonixConfig,
+  scope: RuleScope,
+  projectKey: string,
+): StoredRule[] | undefined {
+  return scope === "global" ? cfg.rules : cfg.projects?.[projectKey]?.rules;
+}
+
+/** The pre-structured allow-list array a rule of this scope and kind lives in, if any. */
+function legacyList(
+  cfg: ReasonixConfig,
+  scope: RuleScope,
+  projectKey: string,
+  kind: RuleKind,
+): string[] | undefined {
+  const key: AllowListField = kind === "shell" ? "shellAllowed" : "pathAllowed";
+  return scope === "global" ? cfg[key] : cfg.projects?.[projectKey]?.[key];
+}
+
+/** Two stored rules are the same rule: same mode, effect, kind, and pattern. */
+function rulesEqual(a: StoredRule, b: StoredRule): boolean {
+  return a.mode === b.mode && a.effect === b.effect && a.kind === b.kind && a.pattern === b.pattern;
+}
+
+/** The pre-structured allow lists only ever encode a Follow/allow rule. */
+function isLegacyAllowRule(rule: StoredRule): boolean {
+  return rule.mode === "follow" && rule.effect === "allow";
+}
+
 /** Add a rule to the list its scope implies. Returns false when it was already there. */
 export function addRule(
   rule: ScopedRule,
@@ -2160,14 +2190,7 @@ export function addRule(
   };
   const cfg = readConfig(path);
   const target = ruleTarget(cfg, rule.scope, findProjectKey(cfg, rootDir) ?? rootDir);
-  const exists = target.some(
-    (r) =>
-      r.mode === stored.mode &&
-      r.effect === stored.effect &&
-      r.kind === stored.kind &&
-      r.pattern === stored.pattern,
-  );
-  if (exists) return false;
+  if (target.some((r) => rulesEqual(r, stored))) return false;
   target.push(stored);
   writeConfig(cfg, path);
   return true;
@@ -2180,23 +2203,32 @@ export function removeRule(
   path: string = defaultConfigPath(),
 ): boolean {
   const cfg = readConfig(path);
-  const matches = (r: StoredRule) =>
-    r.mode === rule.mode &&
-    r.effect === rule.effect &&
-    r.kind === rule.kind &&
-    r.pattern === rule.pattern;
-  const target =
-    rule.scope === "global"
-      ? cfg.rules
-      : cfg.projects?.[findProjectKey(cfg, rootDir) ?? rootDir]?.rules;
-  if (!target) return false;
-  const next = target.filter((r) => !matches(r));
-  if (next.length === target.length) return false;
-  if (rule.scope === "global") cfg.rules = next;
-  else {
-    const key = findProjectKey(cfg, rootDir) ?? rootDir;
-    if (cfg.projects?.[key]) cfg.projects[key].rules = next;
+  const projectKey = findProjectKey(cfg, rootDir) ?? rootDir;
+  let removed = false;
+
+  const target = ruleList(cfg, rule.scope, projectKey);
+  if (target) {
+    const next = target.filter((r) => !rulesEqual(r, rule));
+    if (next.length !== target.length) {
+      removed = true;
+      if (rule.scope === "global") cfg.rules = next;
+      else if (cfg.projects?.[projectKey]) cfg.projects[projectKey].rules = next;
+    }
   }
+
+  // A rule read in from the pre-structured allow lists has no structured entry, so the
+  // legacy list is where it actually lives; without this a delete click on such a row
+  // writes nothing and the rule reappears, which reads as an unresponsive button.
+  const legacy = legacyList(cfg, rule.scope, projectKey, rule.kind);
+  if (legacy && isLegacyAllowRule(rule)) {
+    const at = legacy.indexOf(rule.pattern);
+    if (at >= 0) {
+      legacy.splice(at, 1);
+      removed = true;
+    }
+  }
+
+  if (!removed) return false;
   writeConfig(cfg, path);
   return true;
 }
@@ -2213,41 +2245,39 @@ export function updateRule(
   if (!trimmed) return false;
   const cfg = readConfig(path);
   const projectKey = findProjectKey(cfg, rootDir) ?? rootDir;
-  const listFor = (scope: RuleScope): StoredRule[] | undefined =>
-    scope === "global" ? cfg.rules : cfg.projects?.[projectKey]?.rules;
-  const source = listFor(from.scope);
-  const index = source?.findIndex(
-    (r) =>
-      r.mode === from.mode &&
-      r.effect === from.effect &&
-      r.kind === from.kind &&
-      r.pattern === from.pattern,
-  );
+  const source = ruleList(cfg, from.scope, projectKey);
+  const index = source?.findIndex((r) => rulesEqual(r, from));
 
   // A rule read in from the pre-structured allow lists has no structured entry yet, so an
   // explicit edit migrates that one entry: drop it from the flat list, store it structured.
-  const legacyKey: AllowListField = from.kind === "shell" ? "shellAllowed" : "pathAllowed";
-  const legacy = from.scope === "global" ? cfg[legacyKey] : cfg.projects?.[projectKey]?.[legacyKey];
+  const legacy = legacyList(cfg, from.scope, projectKey, from.kind);
   const legacyIndex = legacy?.indexOf(from.pattern) ?? -1;
   const fromStructured = index !== undefined && index >= 0;
-  const fromLegacy = from.mode === "follow" && from.effect === "allow" && legacyIndex >= 0;
+  const fromLegacy = isLegacyAllowRule(from) && legacyIndex >= 0;
   if (!fromStructured && !fromLegacy) return false;
 
   const stored: StoredRule = { mode: to.mode, effect: to.effect, kind: to.kind, pattern: trimmed };
   const target = ruleTarget(cfg, to.scope, projectKey);
-  const duplicate = target.some(
-    (r) =>
-      r.mode === stored.mode &&
-      r.effect === stored.effect &&
-      r.kind === stored.kind &&
-      r.pattern === stored.pattern,
-  );
-  if (duplicate) return false;
+  if (target.some((r) => rulesEqual(r, stored))) return false;
   if (fromStructured) source!.splice(index!, 1);
   else legacy!.splice(legacyIndex, 1);
   target.push(stored);
   writeConfig(cfg, path);
   return true;
+}
+
+/** Split rules into per-effect pattern lists, keeping only the given mode and kind. */
+function bucketByEffect(
+  rules: readonly ScopedRule[],
+  mode: RuleMode,
+  kind: RuleKind,
+): { allow: string[]; ask: string[]; deny: string[] } {
+  const out = { allow: [] as string[], ask: [] as string[], deny: [] as string[] };
+  for (const rule of rules) {
+    if (rule.mode !== mode || rule.kind !== kind) continue;
+    out[rule.effect].push(rule.pattern);
+  }
+  return out;
 }
 
 /** Patterns for one mode and kind, split by effect, ready for the enforcement checks. */
@@ -2257,12 +2287,30 @@ export function rulePatterns(
   rootDir: string,
   path: string = defaultConfigPath(),
 ): { allow: string[]; ask: string[]; deny: string[] } {
-  const out = { allow: [] as string[], ask: [] as string[], deny: [] as string[] };
-  for (const rule of loadRules(rootDir, path)) {
-    if (rule.mode !== mode || rule.kind !== kind) continue;
-    out[rule.effect].push(rule.pattern);
-  }
-  return out;
+  return bucketByEffect(loadRules(rootDir, path), mode, kind);
+}
+
+/** `rulePatterns`, split by scope as well: lets an approval prompt tell whether a given
+ *  scope already carries a rule for the target and stop offering to add a duplicate. */
+export function rulePatternsByScope(
+  mode: RuleMode,
+  kind: RuleKind,
+  rootDir: string,
+  path: string = defaultConfigPath(),
+): Record<RuleScope, { allow: string[]; ask: string[]; deny: string[] }> {
+  const rules = loadRules(rootDir, path);
+  return {
+    global: bucketByEffect(
+      rules.filter((r) => r.scope === "global"),
+      mode,
+      kind,
+    ),
+    workspace: bucketByEffect(
+      rules.filter((r) => r.scope === "workspace"),
+      mode,
+      kind,
+    ),
+  };
 }
 
 /** A workspace and how many of its own rules it carries. */
@@ -2346,6 +2394,22 @@ export function loadEditMode(path: string = defaultConfigPath()): EditMode {
   if (raw === "review" || raw === "auto") return "follow";
   if (raw === "yolo" || raw === "ignore") return "never-ask";
   return "follow";
+}
+
+/** True when the persisted edit mode is never-ask. */
+export function isNeverAskMode(path: string = defaultConfigPath()): boolean {
+  return loadEditMode(path) === "never-ask";
+}
+
+/** The rule mode whose patterns apply for an edit mode: never-ask when it is selected,
+ *  else follow (`read-only` never consults rules, so it maps to follow here). */
+export function ruleModeFor(editMode: EditMode): RuleMode {
+  return editMode === "never-ask" ? "never-ask" : "follow";
+}
+
+/** The rule mode whose patterns are in force now. */
+export function ruleModeInForce(path: string = defaultConfigPath()): RuleMode {
+  return ruleModeFor(loadEditMode(path));
 }
 
 /** Persist the edit mode so `/mode auto` survives a relaunch. */

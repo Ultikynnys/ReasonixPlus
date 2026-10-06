@@ -14,6 +14,7 @@ import {
   loadAllPathAllowed,
   loadEditMode,
   loadProjectPathAllowed,
+  ruleModeFor,
   rulePatterns,
 } from "../config.js";
 import { type ConfirmationChoice, pauseGate as defaultPauseGate } from "../core/pause-gate.js";
@@ -187,11 +188,9 @@ export function registerFilesystemTools(
       if (denied.some((dir) => pathIsUnder(abs, dir))) {
         throw new Error(`${abs}: blocked by your Never Ask rules`);
       }
-      askMatched = rulePatterns(
-        mode === "never-ask" ? "never-ask" : "follow",
-        "path",
-        rootDir,
-      ).ask.some((dir) => pathIsUnder(abs, dir));
+      askMatched = rulePatterns(ruleModeFor(mode), "path", rootDir).ask.some((dir) =>
+        pathIsUnder(abs, dir),
+      );
       if (!askMatched) {
         for (const dir of rulePatterns("follow", "path", rootDir).allow) {
           if (pathIsUnder(abs, dir)) return;

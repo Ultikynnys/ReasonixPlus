@@ -252,6 +252,7 @@ import { ensureNpxAvailable } from "../../mcp/node-runtime.js";
 import { quoteArg } from "../../mcp/stdio.js";
 import { validateTypesafeApiKeyCached } from "../../tools/jev.js";
 import { BUILTIN_ALLOWLIST } from "../../tools/shell/parse.js";
+import { coveredRuleScopes } from "../../tools/shell/rule-scope.js";
 
 import {
   ANTIGRAVITY_OAUTH_CLIENT_ID,
@@ -5660,7 +5661,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           prompt: toApprovalPrompt({
             id: req.id,
             kind: req.kind,
-            payload,
+            payload:
+              tab && req.kind !== "outlook_send"
+                ? {
+                    ...payload,
+                    coveredScopes: coveredRuleScopes("shell", payload.command ?? "", tab.rootDir),
+                  }
+                : payload,
           }),
         },
         tabId,
@@ -5687,7 +5694,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           prompt: toApprovalPrompt({
             id: req.id,
             kind: req.kind,
-            payload,
+            payload: tab
+              ? {
+                  ...payload,
+                  coveredScopes: coveredRuleScopes("path", payload.allowPrefix, tab.rootDir),
+                }
+              : payload,
           }),
         },
         tabId,
@@ -5714,7 +5726,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           prompt: toApprovalPrompt({
             id: req.id,
             kind: req.kind,
-            payload,
+            payload: tab
+              ? {
+                  ...payload,
+                  coveredScopes: coveredRuleScopes("path", payload.allowPrefix, tab.rootDir),
+                }
+              : payload,
           }),
         },
         tabId,
@@ -6786,7 +6803,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         return;
       }
       try {
-        removeRule(msg.rule, tab.rootDir);
+        const removed = removeRule(msg.rule, tab.rootDir);
+        // A row shown in the panel always maps to a stored rule, so a no-op here means the
+        // UI held a stale row; record it rather than re-emitting an unchanged list.
+        if (!removed) emitTabDiagnostic(tab, "rule.remove.noop", { rule: msg.rule });
         emitSettingsToAllTabs();
       } catch (err) {
         emit({ type: "$error", message: `rule_remove: ${(err as Error).message}` }, tab.id);

@@ -22,6 +22,7 @@ import {
   updateRule,
 } from "../src/config.js";
 import { type ConfirmationChoice, PauseGate } from "../src/core/pause-gate.js";
+import { coveredRuleScopes } from "../src/tools/shell/rule-scope.js";
 
 /** Answers every gate with a fixed verdict and records the kinds it saw. */
 class ScriptedGate extends PauseGate {
@@ -182,6 +183,132 @@ describe("approval rules store", () => {
       ask: ["npm test"],
       deny: [],
     });
+  });
+
+  it("removes a rule that came from the pre-structured allow list", () => {
+    addGlobalShellAllowed("npm test", cfgPath);
+    addProjectShellAllowed(root, "cargo publish", cfgPath);
+
+    expect(
+      removeRule(
+        { mode: "follow", effect: "allow", kind: "shell", scope: "global", pattern: "npm test" },
+        root,
+        cfgPath,
+      ),
+    ).toBe(true);
+    expect(
+      removeRule(
+        {
+          mode: "follow",
+          effect: "allow",
+          kind: "shell",
+          scope: "workspace",
+          pattern: "cargo publish",
+        },
+        root,
+        cfgPath,
+      ),
+    ).toBe(true);
+
+    // The flat entries go away, so the row cannot reappear after a delete click.
+    expect(loadGlobalShellAllowed(cfgPath)).toEqual([]);
+    expect(loadProjectShellAllowed(root, cfgPath)).toEqual([]);
+    expect(rulePatterns("follow", "shell", root, cfgPath)).toEqual({
+      allow: [],
+      ask: [],
+      deny: [],
+    });
+    // A rule that is not there is still refused.
+    expect(
+      removeRule(
+        { mode: "follow", effect: "allow", kind: "shell", scope: "global", pattern: "absent" },
+        root,
+        cfgPath,
+      ),
+    ).toBe(false);
+  });
+
+  it("fully removes a rule stored both structured and in a flat allow list", () => {
+    // The same signature can live in both stores; the panel shows it once, so one delete
+    // must clear both or the row reappears from whichever store was left behind.
+    addRule(
+      { mode: "follow", effect: "allow", kind: "shell", scope: "global", pattern: "npm test" },
+      root,
+      cfgPath,
+    );
+    addGlobalShellAllowed("npm test", cfgPath);
+    expect(loadRules(root, cfgPath)).toHaveLength(1);
+
+    expect(
+      removeRule(
+        { mode: "follow", effect: "allow", kind: "shell", scope: "global", pattern: "npm test" },
+        root,
+        cfgPath,
+      ),
+    ).toBe(true);
+
+    expect(loadRules(root, cfgPath)).toEqual([]);
+    expect(loadGlobalShellAllowed(cfgPath)).toEqual([]);
+    // A second delete is a clean no-op, not a crash or a partial rewrite.
+    expect(
+      removeRule(
+        { mode: "follow", effect: "allow", kind: "shell", scope: "global", pattern: "npm test" },
+        root,
+        cfgPath,
+      ),
+    ).toBe(false);
+  });
+
+  it("reports the scope that already carries a rule for a command", () => {
+    addRule(
+      rule({
+        mode: "follow",
+        effect: "ask",
+        kind: "shell",
+        scope: "global",
+        pattern: "git version",
+      }),
+      root,
+      cfgPath,
+    );
+    addRule(
+      rule({
+        mode: "follow",
+        effect: "allow",
+        kind: "shell",
+        scope: "workspace",
+        pattern: "npm run dev",
+      }),
+      root,
+      cfgPath,
+    );
+
+    expect(coveredRuleScopes("shell", "git version", root, cfgPath)).toEqual(["global"]);
+    expect(coveredRuleScopes("shell", "npm run dev", root, cfgPath)).toEqual(["workspace"]);
+    expect(coveredRuleScopes("shell", "cargo build", root, cfgPath)).toEqual([]);
+  });
+
+  it("counts a flat allow-list entry as a covering rule in never-ask", () => {
+    addGlobalShellAllowed("git version", cfgPath);
+    saveEditMode("never-ask", cfgPath);
+    // The allow list is stored as Follow/allow but stays in force in never-ask.
+    expect(coveredRuleScopes("shell", "git version", root, cfgPath)).toEqual(["global"]);
+  });
+
+  it("reports a covering path rule by directory containment", () => {
+    addRule(
+      rule({
+        mode: "follow",
+        effect: "ask",
+        kind: "path",
+        scope: "workspace",
+        pattern: "/opt/sdk",
+      }),
+      root,
+      cfgPath,
+    );
+    expect(coveredRuleScopes("path", "/opt/sdk/tools", root, cfgPath)).toEqual(["workspace"]);
+    expect(coveredRuleScopes("path", "/opt/other", root, cfgPath)).toEqual([]);
   });
 
   it("copies another workspace's rules of the current mode, leaving other modes alone", () => {

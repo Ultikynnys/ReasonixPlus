@@ -54,26 +54,40 @@ function denyAction(): ApprovalAction {
   };
 }
 
-/** The four rule-based prompt actions, in order: ACCEPT, DENY, ADD TO WORKSPACE
- *  RULES, ADD TO GLOBAL RULES. Shared by shell, path, and edit prompts so every
- *  rule-gated ask offers the same choices. */
-function ruleActions(acceptLabel: string): ApprovalAction[] {
-  return [
+/** Scopes the prompt is told are already covered by a rule for this target, so it drops
+ *  that scope's "add to rules" action: a duplicate rule would be a no-op. */
+function coveredScopes(payload: Record<string, unknown>): RuleScope[] {
+  const raw = payload.coveredScopes;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((s): s is RuleScope => s === "workspace" || s === "global");
+}
+
+/** The rule-based prompt actions: ACCEPT, DENY, then ADD TO WORKSPACE / GLOBAL RULES
+ *  for every scope the caller has not already covered. Shared by shell, path, and edit
+ *  prompts so every rule-gated ask offers the same choices. */
+function ruleActions(acceptLabel: string, covered: readonly RuleScope[] = []): ApprovalAction[] {
+  const skip = new Set(covered);
+  const actions: ApprovalAction[] = [
     { id: "run_once", label: acceptLabel, kind: "allow_once" },
     denyAction(),
-    {
+  ];
+  if (!skip.has("workspace")) {
+    actions.push({
       id: "allow_workspace",
       label: "Add to workspace rules",
       kind: "allow_always",
       scope: "workspace",
-    },
-    {
+    });
+  }
+  if (!skip.has("global")) {
+    actions.push({
       id: "allow_global",
       label: "Add to global rules",
       kind: "allow_always",
       scope: "global",
-    },
-  ];
+    });
+  }
+  return actions;
 }
 
 export interface ApprovalPrompt {
@@ -175,7 +189,7 @@ function shellPrompt(
           },
           denyAction(),
         ]
-      : ruleActions("Accept"),
+      : ruleActions("Accept", coveredScopes(payload)),
     data: elevated ? {} : { prefix },
   };
 }
@@ -231,7 +245,7 @@ function pathPrompt(id: number, payload: Record<string, unknown>): ApprovalPromp
     subtitle: path,
     preview: `${toolName} → ${path}`,
     meta: Object.keys(meta).length > 0 ? meta : undefined,
-    actions: ruleActions("Accept"),
+    actions: ruleActions("Accept", coveredScopes(payload)),
     data: { prefix: allowPrefix, intent },
   };
 }
@@ -256,7 +270,7 @@ function editPrompt(id: number, payload: Record<string, unknown>): ApprovalPromp
     subtitle: toolName ? `${toolName} -> ${path}` : path,
     preview,
     meta: Object.keys(meta).length > 0 ? meta : undefined,
-    actions: ruleActions("Accept"),
+    actions: ruleActions("Accept", coveredScopes(payload)),
     data: { prefix: allowPrefix, path, intent: "write" },
   };
 }
