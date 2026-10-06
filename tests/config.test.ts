@@ -54,6 +54,7 @@ import {
   loadProxyConfig,
   loadQuestionTimerEnabled,
   loadRateLimit,
+  loadRawTabEnabled,
   loadReasoningEffort,
   loadRecentWorkspaces,
   loadResolvedModelEndpoint,
@@ -92,6 +93,7 @@ import {
   saveOpenAIApiKey,
   saveOpenAIOAuth,
   saveQuestionTimerEnabled,
+  saveRawTabEnabled,
   saveReasoningEffort,
   saveSemanticEmbeddingConfig,
   saveSubagentModels,
@@ -1342,6 +1344,18 @@ describe("config", () => {
     saveQuestionTimerEnabled(false, path);
     expect(loadQuestionTimerEnabled(path)).toBe(false);
     expect(readConfig(path).questionTimerEnabled).toBe(false);
+  });
+
+  it("rawTabEnabled defaults to false and persists either state", () => {
+    expect(loadRawTabEnabled(path)).toBe(false);
+
+    saveRawTabEnabled(true, path);
+    expect(loadRawTabEnabled(path)).toBe(true);
+    expect(readConfig(path).rawTabEnabled).toBe(true);
+
+    saveRawTabEnabled(false, path);
+    expect(loadRawTabEnabled(path)).toBe(false);
+    expect(readConfig(path).rawTabEnabled).toBe(false);
   });
 
   it("loadReasoningEffort defaults to 'high' when unset (safe for vLLM / Azure)", () => {

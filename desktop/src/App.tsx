@@ -2012,6 +2012,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           elevationEnabled: ev.elevationEnabled ?? false,
           repetitionGuardEnabled: ev.repetitionGuardEnabled ?? false,
           questionTimerEnabled: ev.questionTimerEnabled ?? false,
+          rawTabEnabled: ev.rawTabEnabled ?? false,
           baseUrl: ev.baseUrl,
           apiKeyPrefix: ev.apiKeyPrefix,
           workspaceDir: ev.workspaceDir,

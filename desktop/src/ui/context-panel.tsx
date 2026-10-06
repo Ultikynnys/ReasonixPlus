@@ -2,7 +2,7 @@ import type { RuleRecord } from "@reasonix/core-utils";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import type { ActivePlan, SessionFile, Settings, UsageStats } from "../App";
 import { t, useLang } from "../i18n";
 import type { TKey } from "../i18n";
@@ -19,7 +19,18 @@ import { PanelErrorBoundary } from "./error-boundary";
 import { FileMenu } from "./file-menu";
 import { activationHandler } from "./keyboard";
 
-type Tab = "files" | "tools" | "context" | "memory" | "rules" | "plan";
+type Tab = "files" | "parameters" | "mcp" | "context" | "memory" | "rules" | "plan";
+
+/** Side-panel nav order and labels; the tab bar below maps over this one list. */
+const PANEL_TABS: ReadonlyArray<{ id: Tab; label: TKey }> = [
+  { id: "files", label: "contextPanel.filesTab" },
+  { id: "parameters", label: "contextPanel.parametersTab" },
+  { id: "mcp", label: "contextPanel.mcpTab" },
+  { id: "context", label: "contextPanel.rawTab" },
+  { id: "memory", label: "contextPanel.memoryTab" },
+  { id: "rules", label: "contextPanel.rulesTab" },
+  { id: "plan", label: "contextPanel.planTab" },
+];
 
 /** Rule effect and mode come straight off the wire type, so they cannot drift. */
 type RuleEffect = RuleRecord["effect"];
@@ -69,7 +80,7 @@ export function ContextPanel({
   usage: UsageStats;
   mcpSpecs: McpSpecInfo[];
   mcpBridged: boolean;
-  /** Per-session MCP enable/disable (Tools section) — edits THIS session, not the default. */
+  /** Per-session MCP enable/disable (MCP tab) — edits THIS session, not the default. */
   onToggleSessionMcp?: (name: string, disabled: boolean, tool?: string) => void;
   sessionFiles: SessionFile[];
   memory: MemoryEntryInfo[];
@@ -114,57 +125,24 @@ export function ContextPanel({
   const usedPct = Math.min(100, (used / ctxMax) * 100);
   const cachedPct = Math.min(100, (cached / ctxMax) * 100);
   const free = Math.max(0, ctxMax - reserved - used - cached);
+  // The Raw tab is an opt-in debugging surface — hidden unless enabled in Settings.
+  const visibleTabs = settings?.rawTabEnabled
+    ? PANEL_TABS
+    : PANEL_TABS.filter((tb) => tb.id !== "context");
   return (
     <aside className="ctx">
       <div className="ctx-tabs">
-        <div
-          className="ctx-tab"
-          data-active={tab === "files"}
-          onClick={() => setTab("files")}
-          onKeyDown={activationHandler(() => setTab("files"))}
-        >
-          {t("contextPanel.filesTab")}
-        </div>
-        <div
-          className="ctx-tab"
-          data-active={tab === "tools"}
-          onClick={() => setTab("tools")}
-          onKeyDown={activationHandler(() => setTab("tools"))}
-        >
-          {t("contextPanel.toolsTab")}
-        </div>
-        <div
-          className="ctx-tab"
-          data-active={tab === "context"}
-          onClick={() => setTab("context")}
-          onKeyDown={activationHandler(() => setTab("context"))}
-        >
-          {t("contextPanel.rawTab")}
-        </div>
-        <div
-          className="ctx-tab"
-          data-active={tab === "memory"}
-          onClick={() => setTab("memory")}
-          onKeyDown={activationHandler(() => setTab("memory"))}
-        >
-          {t("contextPanel.memoryTab")}
-        </div>
-        <div
-          className="ctx-tab"
-          data-active={tab === "rules"}
-          onClick={() => setTab("rules")}
-          onKeyDown={activationHandler(() => setTab("rules"))}
-        >
-          {t("contextPanel.rulesTab")}
-        </div>
-        <div
-          className="ctx-tab"
-          data-active={tab === "plan"}
-          onClick={() => setTab("plan")}
-          onKeyDown={activationHandler(() => setTab("plan"))}
-        >
-          {t("contextPanel.planTab")}
-        </div>
+        {visibleTabs.map((tb) => (
+          <div
+            key={tb.id}
+            className="ctx-tab"
+            data-active={tab === tb.id}
+            onClick={() => setTab(tb.id)}
+            onKeyDown={activationHandler(() => setTab(tb.id))}
+          >
+            {t(tb.label)}
+          </div>
+        ))}
       </div>
 
       <div className="ctx-body">
@@ -245,18 +223,19 @@ export function ContextPanel({
         </div>
 
         <PanelErrorBoundary key={tab} label={tab}>
-          {tab === "files" && <CtxFiles files={sessionFiles} settings={settings} />}
-          {tab === "tools" && (
-            <CtxTools
-              specs={mcpSpecs}
-              bridged={mcpBridged}
-              settings={settings}
-              usage={usage}
-              onSaveSettings={onSaveSettings}
-              onToggleSessionMcp={onToggleSessionMcp}
-            />
+          {tab === "files" && (
+            <>
+              <CtxFiles files={sessionFiles} settings={settings} />
+              <CtxGit files={sessionFiles} settings={settings} />
+            </>
           )}
-          {tab === "context" && (
+          {tab === "parameters" && (
+            <CtxParameters settings={settings} usage={usage} onSaveSettings={onSaveSettings} />
+          )}
+          {tab === "mcp" && (
+            <CtxMcp specs={mcpSpecs} bridged={mcpBridged} onToggleSessionMcp={onToggleSessionMcp} />
+          )}
+          {tab === "context" && settings?.rawTabEnabled && (
             <CtxRaw raw={rawContext ?? null} onRead={onReadContext} onWrite={onWriteContext} />
           )}
           {tab === "memory" && (
@@ -488,17 +467,49 @@ function CtxRaw({
   );
 }
 
+/** A side-panel block whose header collapses its body. */
+function CtxCollapsible({
+  title,
+  right,
+  defaultCollapsed = false,
+  children,
+}: {
+  title: string;
+  right?: ReactNode;
+  defaultCollapsed?: boolean;
+  children: ReactNode;
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  return (
+    <div className="ctx-block">
+      <div className="h">
+        <button
+          type="button"
+          className="ctx-collapse"
+          aria-expanded={!collapsed}
+          aria-label={title}
+          onClick={() => setCollapsed((c) => !c)}
+        >
+          <span className="ctx-chev" aria-hidden="true">
+            {collapsed ? "▸" : "▾"}
+          </span>
+          <span>{title}</span>
+        </button>
+        <span className="right">{right}</span>
+      </div>
+      {collapsed ? null : children}
+    </div>
+  );
+}
+
 function CtxFiles({ files, settings }: { files: SessionFile[]; settings: Settings | null }) {
   const tree = useMemo(() => buildSessionTree(files), [files]);
   const [menu, setMenu] = useState<{ x: number; y: number; path: string } | null>(null);
   return (
-    <div className="ctx-block">
-      <div className="h">
-        <span>{t("contextPanel.filesTitle")}</span>
-        <span className="right">
-          {files.length === 0 ? "-" : t("contextPanel.filesCount", { count: files.length })}
-        </span>
-      </div>
+    <CtxCollapsible
+      title={t("contextPanel.filesTitle")}
+      right={files.length === 0 ? "-" : t("contextPanel.filesCount", { count: files.length })}
+    >
       <div className="tree">
         {files.length === 0 ? (
           <div className="ctx-empty">{t("contextPanel.noFilesMsg")}</div>
@@ -585,7 +596,120 @@ function CtxFiles({ files, settings }: { files: SessionFile[]; settings: Setting
           onClose={() => setMenu(null)}
         />
       ) : null}
-    </div>
+    </CtxCollapsible>
+  );
+}
+
+type GitEntryKind = "modified" | "added" | "deleted" | "renamed" | "untracked";
+
+type GitStatusResult = {
+  isRepo: boolean;
+  entries: Array<{ path: string; kind: GitEntryKind }>;
+};
+
+const GIT_KIND_BADGE: Record<GitEntryKind, string> = {
+  modified: "M",
+  added: "A",
+  deleted: "D",
+  renamed: "R",
+  untracked: "U",
+};
+
+const GIT_KIND_LABEL: Record<GitEntryKind, TKey> = {
+  modified: "contextPanel.gitKindModified",
+  added: "contextPanel.gitKindAdded",
+  deleted: "contextPanel.gitKindDeleted",
+  renamed: "contextPanel.gitKindRenamed",
+  untracked: "contextPanel.gitKindUntracked",
+};
+
+/** The Files tab's Git section: the workspace's git status. Always rendered — a
+ *  workspace without a repo says so, so a later `git init` lights it up live.
+ *  Workspace mutations aren't pushed to the UI, so it refetches on the agent's
+ *  edits (sessionFiles) and workspace changes and polls while mounted, catching
+ *  a repo created outside the app. */
+const GIT_POLL_MS = 3000;
+
+function CtxGit({ settings, files }: { settings: Settings | null; files: SessionFile[] }) {
+  const workspaceDir = settings?.workspaceDir;
+  const [status, setStatus] = useState<GitStatusResult | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const signature = useMemo(() => files.map((f) => `${f.status}:${f.path}`).join("|"), [files]);
+
+  useEffect(() => {
+    if (!workspaceDir) {
+      setStatus(null);
+      return;
+    }
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await invoke<GitStatusResult>("git_status", { root: workspaceDir });
+        if (alive) setStatus(res ?? null);
+      } catch {
+        if (alive) setStatus(null);
+      }
+    };
+    void load();
+    const timer = setInterval(() => void load(), GIT_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [workspaceDir, signature, nonce]);
+
+  const repo = status?.isRepo === true;
+  const entries = status?.entries ?? [];
+  return (
+    <CtxCollapsible
+      title={t("contextPanel.gitTitle")}
+      right={
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {repo
+            ? entries.length === 0
+              ? t("contextPanel.gitClean")
+              : t("contextPanel.gitCount", { count: entries.length })
+            : null}
+          <button
+            type="button"
+            className="mini-btn"
+            title={t("contextPanel.gitRefresh")}
+            aria-label={t("contextPanel.gitRefresh")}
+            onClick={() => setNonce((n) => n + 1)}
+          >
+            <I.refresh size={11} />
+          </button>
+        </span>
+      }
+    >
+      {status === null ? null : !repo ? (
+        <div className="ctx-empty">{t("contextPanel.gitNoRepo")}</div>
+      ) : entries.length === 0 ? null : (
+        <div className="tree">
+          {entries.map((e) => (
+            <div
+              className="node"
+              key={`${e.kind}:${e.path}`}
+              data-kind="file"
+              title={e.path}
+              style={{ paddingLeft: 4 }}
+              onClick={() => void openContextFile(e.path, settings)}
+              onKeyDown={activationHandler(() => void openContextFile(e.path, settings))}
+            >
+              <span className="ico">
+                <I.file size={12} />
+              </span>
+              <span className="node-text">
+                <span className="nm">{e.path}</span>
+              </span>
+              <span className="git-kind" data-k={e.kind} title={t(GIT_KIND_LABEL[e.kind])}>
+                {GIT_KIND_BADGE[e.kind]}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </CtxCollapsible>
   );
 }
 
@@ -972,31 +1096,132 @@ function OllamaGenerationControls({
   );
 }
 
-function CtxTools({
-  specs,
-  bridged,
+/** One labelled range control in the Parameters tab. */
+function CtxSliderRow({
+  label,
+  value,
+  display,
+  min,
+  max,
+  step,
+  boundMin,
+  boundMax,
+  ariaLabel,
+  onChange,
+  onCommit,
+  reset,
+  desc,
+}: {
+  label: string;
+  value: number;
+  display: string;
+  min: number;
+  max: number;
+  step: number;
+  boundMin: string;
+  boundMax: string;
+  ariaLabel: string;
+  onChange: (value: number) => void;
+  onCommit: (value: number) => void;
+  reset?: ReactNode;
+  desc?: ReactNode;
+}) {
+  return (
+    <div className="ctx-block">
+      <div className="h">
+        <span>{label}</span>
+        <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span>{display}</span>
+          {reset}
+        </span>
+      </div>
+      <div className="ctx-slider-container">
+        <input
+          type="range"
+          className="ctx-slider"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          aria-label={ariaLabel}
+          onChange={(e) => onChange(Number(e.target.value))}
+          onPointerUp={(e) => onCommit(Number(e.currentTarget.value))}
+          onKeyUp={(e) => onCommit(Number(e.currentTarget.value))}
+        />
+        <div className="ctx-slider-bounds">
+          <span>{boundMin}</span>
+          <span>{boundMax}</span>
+        </div>
+      </div>
+      {desc}
+    </div>
+  );
+}
+
+/** One on/off pair with a description; omit the aria labels for an unlabelled pair. */
+function CtxToggleRow({
+  label,
+  desc,
+  onLabel,
+  offLabel,
+  enabled,
+  onToggle,
+  onAriaLabel,
+  offAriaLabel,
+}: {
+  label: string;
+  desc: ReactNode;
+  onLabel: string;
+  offLabel: string;
+  enabled: boolean;
+  onToggle: (enabled: boolean) => void;
+  onAriaLabel?: string;
+  offAriaLabel?: string;
+}) {
+  const labelled = onAriaLabel !== undefined;
+  return (
+    <div className="ctx-block">
+      <div className="h">
+        <span>{label}</span>
+        <span className="right">
+          <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
+            <button
+              type="button"
+              aria-label={onAriaLabel}
+              aria-pressed={labelled ? enabled : undefined}
+              data-on={enabled}
+              onClick={() => onToggle(true)}
+            >
+              {onLabel}
+            </button>
+            <button
+              type="button"
+              aria-label={offAriaLabel}
+              aria-pressed={labelled ? !enabled : undefined}
+              data-on={!enabled}
+              onClick={() => onToggle(false)}
+            >
+              {offLabel}
+            </button>
+          </div>
+        </span>
+      </div>
+      <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+        {desc}
+      </div>
+    </div>
+  );
+}
+
+function CtxParameters({
   settings,
   usage,
   onSaveSettings,
-  onToggleSessionMcp,
 }: {
-  specs: McpSpecInfo[];
-  bridged: boolean;
   settings: Settings | null;
   usage: UsageStats;
   onSaveSettings?: (patch: SettingsPatch) => void;
-  /** Per-session MCP enable/disable — edits THIS session, not the Settings default. */
-  onToggleSessionMcp?: (name: string, disabled: boolean, tool?: string) => void;
 }) {
-  const readyCount = specs.filter((s) => s.status === "connected").length;
-  const [expandedMcp, setExpandedMcp] = useState<Set<string>>(new Set());
-  const toggleMcpExpanded = (raw: string) =>
-    setExpandedMcp((prev) => {
-      const next = new Set(prev);
-      if (next.has(raw)) next.delete(raw);
-      else next.add(raw);
-      return next;
-    });
   const effectiveTokens = settings?.contextTokens ?? usage.ctxMax ?? 300_000;
   const clampedTokens = Math.min(1_000_000, Math.max(128_000, effectiveTokens));
   const [sliderValue, setSliderValue] = useState<number>(clampedTokens);
@@ -1038,326 +1263,209 @@ function CtxTools({
 
   return (
     <>
-      <div className="ctx-block">
-        <div className="h">
-          <span>{t("contextPanel.contextWindow")}</span>
-          <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span>
-              {fmtCompact(sliderValue)} ({sliderValue.toLocaleString()})
-            </span>
-            {settings?.contextTokens !== undefined && settings?.contextTokens !== null ? (
-              <button
-                type="button"
-                className="mini-btn"
-                title={t("contextPanel.contextWindowResetTooltip")}
-                onClick={() => onSaveSettings?.({ contextTokens: null })}
-              >
-                {t("contextPanel.contextWindowReset")}
-              </button>
-            ) : null}
-          </span>
-        </div>
-        <div className="ctx-slider-container">
-          <input
-            type="range"
-            className="ctx-slider"
-            min={128_000}
-            max={1_000_000}
-            step={1_000}
-            value={sliderValue}
-            aria-label={t("contextPanel.contextWindow")}
-            onChange={(e) => setSliderValue(Number(e.target.value))}
-            onPointerUp={(e) => commit(Number(e.currentTarget.value))}
-            onKeyUp={(e) => commit(Number(e.currentTarget.value))}
-          />
-          <div className="ctx-slider-bounds">
-            <span>128K</span>
-            <span>1M</span>
-          </div>
-        </div>
-      </div>
+      <CtxSliderRow
+        label={t("contextPanel.contextWindow")}
+        value={sliderValue}
+        display={`${fmtCompact(sliderValue)} (${sliderValue.toLocaleString()})`}
+        min={128_000}
+        max={1_000_000}
+        step={1_000}
+        boundMin="128K"
+        boundMax="1M"
+        ariaLabel={t("contextPanel.contextWindow")}
+        onChange={setSliderValue}
+        onCommit={commit}
+        reset={
+          settings?.contextTokens !== undefined && settings?.contextTokens !== null ? (
+            <button
+              type="button"
+              className="mini-btn"
+              title={t("contextPanel.contextWindowResetTooltip")}
+              onClick={() => onSaveSettings?.({ contextTokens: null })}
+            >
+              {t("contextPanel.contextWindowReset")}
+            </button>
+          ) : null
+        }
+      />
 
-      <div className="ctx-block">
-        <div className="h">
-          <span>{t("contextPanel.maxIterations")}</span>
-          <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span>{t("contextPanel.maxIterationsUnit", { count: iterValue })}</span>
-            {settings?.maxIterPerTurnOverride !== undefined &&
-            settings?.maxIterPerTurnOverride !== null ? (
-              <button
-                type="button"
-                className="mini-btn"
-                title={t("contextPanel.maxIterationsResetTooltip")}
-                onClick={() => onSaveSettings?.({ maxIterPerTurn: null })}
-              >
-                {t("contextPanel.contextWindowReset")}
-              </button>
-            ) : null}
-          </span>
-        </div>
-        <div className="ctx-slider-container">
-          <input
-            type="range"
-            className="ctx-slider"
-            min={50}
-            max={100}
-            step={1}
-            value={iterValue}
-            aria-label={t("contextPanel.maxIterations")}
-            onChange={(e) => setIterValue(Number(e.target.value))}
-            onPointerUp={(e) => commitIter(Number(e.currentTarget.value))}
-            onKeyUp={(e) => commitIter(Number(e.currentTarget.value))}
-          />
-          <div className="ctx-slider-bounds">
-            <span>50</span>
-            <span>100</span>
-          </div>
-        </div>
-      </div>
+      <CtxSliderRow
+        label={t("contextPanel.maxIterations")}
+        value={iterValue}
+        display={t("contextPanel.maxIterationsUnit", { count: iterValue })}
+        min={50}
+        max={100}
+        step={1}
+        boundMin="50"
+        boundMax="100"
+        ariaLabel={t("contextPanel.maxIterations")}
+        onChange={setIterValue}
+        onCommit={commitIter}
+        reset={
+          settings?.maxIterPerTurnOverride !== undefined &&
+          settings?.maxIterPerTurnOverride !== null ? (
+            <button
+              type="button"
+              className="mini-btn"
+              title={t("contextPanel.maxIterationsResetTooltip")}
+              onClick={() => onSaveSettings?.({ maxIterPerTurn: null })}
+            >
+              {t("contextPanel.contextWindowReset")}
+            </button>
+          ) : null
+        }
+      />
 
-      <div className="ctx-block">
-        <div className="h">
-          <span>{t("contextPanel.autoCompaction")}</span>
-          <span className="right">
-            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
-              <button
-                type="button"
-                data-on={!settings?.disableAutoCompaction}
-                onClick={() => onSaveSettings?.({ disableAutoCompaction: false })}
-              >
-                {t("contextPanel.autoCompactionEnabled")}
-              </button>
-              <button
-                type="button"
-                data-on={!!settings?.disableAutoCompaction}
-                onClick={() => onSaveSettings?.({ disableAutoCompaction: true })}
-              >
-                {t("contextPanel.autoCompactionDisabled")}
-              </button>
-            </div>
-          </span>
-        </div>
-        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
-          {settings?.disableAutoCompaction
+      <CtxToggleRow
+        label={t("contextPanel.autoCompaction")}
+        desc={
+          settings?.disableAutoCompaction
             ? t("contextPanel.autoCompactionDisabledDesc")
-            : t("contextPanel.autoCompactionEnabledDesc")}
-        </div>
-      </div>
+            : t("contextPanel.autoCompactionEnabledDesc")
+        }
+        onLabel={t("contextPanel.autoCompactionEnabled")}
+        offLabel={t("contextPanel.autoCompactionDisabled")}
+        enabled={!settings?.disableAutoCompaction}
+        onToggle={(enabled) => onSaveSettings?.({ disableAutoCompaction: !enabled })}
+      />
 
-      <div className="ctx-block">
-        <div className="h">
-          <span>{t("contextPanel.subagents")}</span>
-          <span className="right">
-            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
-              <button
-                type="button"
-                aria-label={t("contextPanel.enableSubagents")}
-                aria-pressed={settings?.enableSubagents !== false}
-                data-on={settings?.enableSubagents !== false}
-                onClick={() => onSaveSettings?.({ enableSubagents: true })}
-              >
-                {t("contextPanel.subagentsEnabled")}
-              </button>
-              <button
-                type="button"
-                aria-label={t("contextPanel.disableSubagents")}
-                aria-pressed={settings?.enableSubagents === false}
-                data-on={settings?.enableSubagents === false}
-                onClick={() => onSaveSettings?.({ enableSubagents: false })}
-              >
-                {t("contextPanel.subagentsDisabled")}
-              </button>
-            </div>
-          </span>
-        </div>
-        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
-          {settings?.enableSubagents === false
+      <CtxToggleRow
+        label={t("contextPanel.subagents")}
+        desc={
+          settings?.enableSubagents === false
             ? t("contextPanel.subagentsDisabledDesc")
-            : t("contextPanel.subagentsEnabledDesc")}
-        </div>
-      </div>
+            : t("contextPanel.subagentsEnabledDesc")
+        }
+        onLabel={t("contextPanel.subagentsEnabled")}
+        offLabel={t("contextPanel.subagentsDisabled")}
+        enabled={settings?.enableSubagents !== false}
+        onToggle={(enabled) => onSaveSettings?.({ enableSubagents: enabled })}
+        onAriaLabel={t("contextPanel.enableSubagents")}
+        offAriaLabel={t("contextPanel.disableSubagents")}
+      />
 
-      <div className="ctx-block">
-        <div className="h">
-          <span>{t("contextPanel.elevation")}</span>
-          <span className="right">
-            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
-              <button
-                type="button"
-                aria-label={t("contextPanel.enableElevation")}
-                aria-pressed={settings?.elevationEnabled === true}
-                data-on={settings?.elevationEnabled === true}
-                onClick={() => onSaveSettings?.({ elevationEnabled: true })}
-              >
-                {t("contextPanel.elevationEnabled")}
-              </button>
-              <button
-                type="button"
-                aria-label={t("contextPanel.disableElevation")}
-                aria-pressed={settings?.elevationEnabled !== true}
-                data-on={settings?.elevationEnabled !== true}
-                onClick={() => onSaveSettings?.({ elevationEnabled: false })}
-              >
-                {t("contextPanel.elevationDisabled")}
-              </button>
-            </div>
-          </span>
-        </div>
-        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
-          {settings?.elevationEnabled === true
+      <CtxToggleRow
+        label={t("contextPanel.elevation")}
+        desc={
+          settings?.elevationEnabled === true
             ? t("contextPanel.elevationEnabledDesc")
-            : t("contextPanel.elevationDisabledDesc")}
-        </div>
-      </div>
+            : t("contextPanel.elevationDisabledDesc")
+        }
+        onLabel={t("contextPanel.elevationEnabled")}
+        offLabel={t("contextPanel.elevationDisabled")}
+        enabled={settings?.elevationEnabled === true}
+        onToggle={(enabled) => onSaveSettings?.({ elevationEnabled: enabled })}
+        onAriaLabel={t("contextPanel.enableElevation")}
+        offAriaLabel={t("contextPanel.disableElevation")}
+      />
 
-      <div className="ctx-block">
-        <div className="h">
-          <span>{t("contextPanel.repetitionGuard")}</span>
-          <span className="right">
-            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
-              <button
-                type="button"
-                aria-label={t("contextPanel.enableRepetitionGuard")}
-                aria-pressed={settings?.repetitionGuardEnabled === true}
-                data-on={settings?.repetitionGuardEnabled === true}
-                onClick={() => onSaveSettings?.({ repetitionGuardEnabled: true })}
-              >
-                {t("contextPanel.repetitionGuardEnabled")}
-              </button>
-              <button
-                type="button"
-                aria-label={t("contextPanel.disableRepetitionGuard")}
-                aria-pressed={settings?.repetitionGuardEnabled !== true}
-                data-on={settings?.repetitionGuardEnabled !== true}
-                onClick={() => onSaveSettings?.({ repetitionGuardEnabled: false })}
-              >
-                {t("contextPanel.repetitionGuardDisabled")}
-              </button>
-            </div>
-          </span>
-        </div>
-        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
-          {settings?.repetitionGuardEnabled === true
+      <CtxToggleRow
+        label={t("contextPanel.repetitionGuard")}
+        desc={
+          settings?.repetitionGuardEnabled === true
             ? t("contextPanel.repetitionGuardEnabledDesc")
-            : t("contextPanel.repetitionGuardDisabledDesc")}
-        </div>
-      </div>
+            : t("contextPanel.repetitionGuardDisabledDesc")
+        }
+        onLabel={t("contextPanel.repetitionGuardEnabled")}
+        offLabel={t("contextPanel.repetitionGuardDisabled")}
+        enabled={settings?.repetitionGuardEnabled === true}
+        onToggle={(enabled) => onSaveSettings?.({ repetitionGuardEnabled: enabled })}
+        onAriaLabel={t("contextPanel.enableRepetitionGuard")}
+        offAriaLabel={t("contextPanel.disableRepetitionGuard")}
+      />
 
-      <div className="ctx-block">
-        <div className="h">
-          <span>{t("contextPanel.questionTimer")}</span>
-          <span className="right">
-            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
-              <button
-                type="button"
-                aria-label={t("contextPanel.enableQuestionTimer")}
-                aria-pressed={settings?.questionTimerEnabled === true}
-                data-on={settings?.questionTimerEnabled === true}
-                onClick={() => onSaveSettings?.({ questionTimerEnabled: true })}
-              >
-                {t("contextPanel.questionTimerEnabled")}
-              </button>
-              <button
-                type="button"
-                aria-label={t("contextPanel.disableQuestionTimer")}
-                aria-pressed={settings?.questionTimerEnabled !== true}
-                data-on={settings?.questionTimerEnabled !== true}
-                onClick={() => onSaveSettings?.({ questionTimerEnabled: false })}
-              >
-                {t("contextPanel.questionTimerDisabled")}
-              </button>
-            </div>
-          </span>
-        </div>
-        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
-          {settings?.questionTimerEnabled === true
+      <CtxToggleRow
+        label={t("contextPanel.questionTimer")}
+        desc={
+          settings?.questionTimerEnabled === true
             ? t("contextPanel.questionTimerEnabledDesc")
-            : t("contextPanel.questionTimerDisabledDesc")}
-        </div>
-      </div>
+            : t("contextPanel.questionTimerDisabledDesc")
+        }
+        onLabel={t("contextPanel.questionTimerEnabled")}
+        offLabel={t("contextPanel.questionTimerDisabled")}
+        enabled={settings?.questionTimerEnabled === true}
+        onToggle={(enabled) => onSaveSettings?.({ questionTimerEnabled: enabled })}
+        onAriaLabel={t("contextPanel.enableQuestionTimer")}
+        offAriaLabel={t("contextPanel.disableQuestionTimer")}
+      />
 
-      <div className="ctx-block">
-        <div className="h">
-          <span>{t("contextPanel.duplicateSessionLimit")}</span>
-          <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span>
-              {fmtCompact(dupTokensValue)} ({dupTokensValue.toLocaleString()})
-            </span>
-            {settings?.duplicateSessionTokens !== undefined &&
-            settings?.duplicateSessionTokens !== null ? (
-              <button
-                type="button"
-                className="mini-btn"
-                title={t("contextPanel.duplicateSessionLimitResetTooltip")}
-                onClick={() => onSaveSettings?.({ duplicateSessionTokens: null })}
-              >
-                {t("contextPanel.contextWindowReset")}
-              </button>
-            ) : null}
-          </span>
-        </div>
-        <div className="ctx-slider-container">
-          <input
-            type="range"
-            className="ctx-slider"
-            min={1_000}
-            max={1_000_000}
-            step={1_000}
-            value={dupTokensValue}
-            aria-label={t("contextPanel.duplicateSessionLimit")}
-            onChange={(e) => setDupTokensValue(Number(e.target.value))}
-            onPointerUp={(e) => commitDupTokens(Number(e.currentTarget.value))}
-            onKeyUp={(e) => commitDupTokens(Number(e.currentTarget.value))}
-          />
-          <div className="ctx-slider-bounds">
-            <span>1K</span>
-            <span>1M</span>
+      <CtxSliderRow
+        label={t("contextPanel.duplicateSessionLimit")}
+        value={dupTokensValue}
+        display={`${fmtCompact(dupTokensValue)} (${dupTokensValue.toLocaleString()})`}
+        min={1_000}
+        max={1_000_000}
+        step={1_000}
+        boundMin="1K"
+        boundMax="1M"
+        ariaLabel={t("contextPanel.duplicateSessionLimit")}
+        onChange={setDupTokensValue}
+        onCommit={commitDupTokens}
+        reset={
+          settings?.duplicateSessionTokens !== undefined &&
+          settings?.duplicateSessionTokens !== null ? (
+            <button
+              type="button"
+              className="mini-btn"
+              title={t("contextPanel.duplicateSessionLimitResetTooltip")}
+              onClick={() => onSaveSettings?.({ duplicateSessionTokens: null })}
+            >
+              {t("contextPanel.contextWindowReset")}
+            </button>
+          ) : null
+        }
+        desc={
+          <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+            {t("contextPanel.duplicateSessionLimitDesc")}
           </div>
-        </div>
-        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
-          {t("contextPanel.duplicateSessionLimitDesc")}
-        </div>
-      </div>
+        }
+      />
 
-      <div className="ctx-block">
-        <div className="h">
-          <span>{t("contextPanel.duplicateSessionAutoProceed")}</span>
-          <span className="right">
-            <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
-              <button
-                type="button"
-                aria-label={t("contextPanel.enableDuplicateSessionAutoProceed")}
-                aria-pressed={settings?.duplicateSessionAutoProceed === true}
-                data-on={settings?.duplicateSessionAutoProceed === true}
-                onClick={() => onSaveSettings?.({ duplicateSessionAutoProceed: true })}
-              >
-                {t("contextPanel.duplicateSessionAutoProceedOn")}
-              </button>
-              <button
-                type="button"
-                aria-label={t("contextPanel.disableDuplicateSessionAutoProceed")}
-                aria-pressed={settings?.duplicateSessionAutoProceed !== true}
-                data-on={settings?.duplicateSessionAutoProceed !== true}
-                onClick={() => onSaveSettings?.({ duplicateSessionAutoProceed: false })}
-              >
-                {t("contextPanel.duplicateSessionAutoProceedOff")}
-              </button>
-            </div>
-          </span>
-        </div>
-        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
-          {settings?.duplicateSessionAutoProceed === true
+      <CtxToggleRow
+        label={t("contextPanel.duplicateSessionAutoProceed")}
+        desc={
+          settings?.duplicateSessionAutoProceed === true
             ? t("contextPanel.duplicateSessionAutoProceedOnDesc")
-            : t("contextPanel.duplicateSessionAutoProceedOffDesc")}
-        </div>
-      </div>
+            : t("contextPanel.duplicateSessionAutoProceedOffDesc")
+        }
+        onLabel={t("contextPanel.duplicateSessionAutoProceedOn")}
+        offLabel={t("contextPanel.duplicateSessionAutoProceedOff")}
+        enabled={settings?.duplicateSessionAutoProceed === true}
+        onToggle={(enabled) => onSaveSettings?.({ duplicateSessionAutoProceed: enabled })}
+        onAriaLabel={t("contextPanel.enableDuplicateSessionAutoProceed")}
+        offAriaLabel={t("contextPanel.disableDuplicateSessionAutoProceed")}
+      />
 
       {settings &&
       (settings.modelEndpoint?.provider === "ollama" ||
         settings.subagentModelEndpoint?.provider === "ollama") ? (
         <OllamaGenerationControls settings={settings} onSaveSettings={onSaveSettings} />
       ) : null}
+    </>
+  );
+}
 
+function CtxMcp({
+  specs,
+  bridged,
+  onToggleSessionMcp,
+}: {
+  specs: McpSpecInfo[];
+  bridged: boolean;
+  /** Per-session MCP enable/disable — edits THIS session, not the Settings default. */
+  onToggleSessionMcp?: (name: string, disabled: boolean, tool?: string) => void;
+}) {
+  const readyCount = specs.filter((s) => s.status === "connected").length;
+  const [expandedMcp, setExpandedMcp] = useState<Set<string>>(new Set());
+  const toggleMcpExpanded = (raw: string) =>
+    setExpandedMcp((prev) => {
+      const next = new Set(prev);
+      if (next.has(raw)) next.delete(raw);
+      else next.add(raw);
+      return next;
+    });
+  return (
+    <>
       <div className="ctx-block">
         <div className="h">
           <span>{t("contextPanel.mcpTitle")}</span>

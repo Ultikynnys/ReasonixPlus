@@ -74,13 +74,24 @@ fn list_workspace_tree(root: String, max_depth: u32) -> Result<Vec<FileEntry>, S
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GitStatusEntry {
     path: String,
     kind: &'static str,
 }
 
+/// `isRepo` distinguishes "not a git repo" from "clean repo" — both yield no
+/// entries. The empty list alone cannot tell them apart, so the Files tab needs
+/// the flag to decide whether to show the Git section at all.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatus {
+    is_repo: bool,
+    entries: Vec<GitStatusEntry>,
+}
+
 #[tauri::command]
-fn git_status(root: String) -> Result<Vec<GitStatusEntry>, String> {
+fn git_status(root: String) -> Result<GitStatus, String> {
     use std::process::Command;
     let root_path = Path::new(&root);
     if !root_path.is_dir() {
@@ -94,14 +105,20 @@ fn git_status(root: String) -> Result<Vec<GitStatusEntry>, String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    let empty = || GitStatus {
+        is_repo: false,
+        entries: Vec::new(),
+    };
     let output = match cmd.output() {
         Ok(o) => o,
-        Err(_) => return Ok(Vec::new()), // not a git repo / no git on PATH — silent
+        Err(_) => return Ok(empty()), // no git on PATH
     };
+    // `git status` exits 128 inside a non-repo directory; a clean repo exits 0
+    // with no output. The exit status is what separates the two.
     if !output.status.success() {
-        return Ok(Vec::new()); // not a git repo — silent
+        return Ok(empty()); // not a git repo
     }
-    let mut out = Vec::new();
+    let mut entries = Vec::new();
     for rec in output.stdout.split(|&b| b == 0) {
         if rec.len() < 4 {
             continue;
@@ -119,9 +136,12 @@ fn git_status(root: String) -> Result<Vec<GitStatusEntry>, String> {
             _ => continue,
         };
         let path = String::from_utf8_lossy(&rec[3..]).into_owned();
-        out.push(GitStatusEntry { path, kind });
+        entries.push(GitStatusEntry { path, kind });
     }
-    Ok(out)
+    Ok(GitStatus {
+        is_repo: true,
+        entries,
+    })
 }
 
 /// Search `root` (bounded, skipping hidden entries and well-known noise

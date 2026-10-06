@@ -75,8 +75,8 @@ describe("ContextPanel plan tab", () => {
     const tabs = Array.from(container.querySelectorAll(".ctx-tab"));
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Files",
-      "Tools",
-      "Raw",
+      "Parameters",
+      "MCP",
       "Memory",
       "Rules",
       "Plan",
@@ -110,6 +110,33 @@ describe("ContextPanel plan tab", () => {
     expect(screen.getByText("done")).toBeTruthy();
   });
 
+  it("hides the Raw tab by default and shows it when enabled", () => {
+    const { container, rerender } = renderPanel();
+    const tabText = () =>
+      Array.from(container.querySelectorAll(".ctx-tab")).map((tab) => tab.textContent);
+    expect(tabText()).not.toContain("Raw");
+
+    rerender(
+      <ContextPanel
+        settings={{ ...settings, rawTabEnabled: true }}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onExportMemories={() => {}}
+        onImportMemories={() => {}}
+        onDismissMemoryResult={() => {}}
+      />,
+    );
+    expect(tabText()).toContain("Raw");
+  });
+
   it("keeps the Plan tab visible without an active plan", () => {
     const { container } = renderPanel();
     expect(
@@ -132,6 +159,17 @@ describe("ContextPanel files", () => {
     });
   });
 
+  it("collapses the Files in context tree from its header", () => {
+    const { container } = renderPanel();
+    expect(container.querySelector(".tree")).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Files in context" }));
+    expect(container.querySelector(".tree")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Files in context" }));
+    expect(container.querySelector(".tree")).not.toBeNull();
+  });
+
   it("keeps each tracked file's full path visible", () => {
     const { container } = renderPanel();
 
@@ -152,7 +190,11 @@ describe("ContextPanel files", () => {
         workspace: "/repo",
       }),
     );
-    expect(invoke).toHaveBeenCalledTimes(1);
+    // The files tab also mounts the Git section, which calls git_status once.
+    const revealCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "reveal_in_explorer");
+    expect(revealCalls).toHaveLength(1);
     expect(openPath).not.toHaveBeenCalled();
   });
 
@@ -788,7 +830,7 @@ describe("ContextPanel files", () => {
     expect(screen.queryByText("DENY")).toBeNull();
   });
 
-  it("renders context window slider in the Tools tab and commits updates", () => {
+  it("renders context window slider in the Parameters tab and commits updates", () => {
     const onSaveSettings = vi.fn();
     render(
       <ContextPanel
@@ -815,8 +857,8 @@ describe("ContextPanel files", () => {
       />,
     );
 
-    // Switch to Tools tab
-    fireEvent.click(screen.getByText("Tools"));
+    // Switch to Parameters tab
+    fireEvent.click(screen.getByText("Parameters"));
 
     const slider = screen.getByRole("slider", { name: "Context window" });
     expect(slider).toBeTruthy();
@@ -875,7 +917,7 @@ describe("ContextPanel files", () => {
         onDismissMemoryResult={() => {}}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
     expect(screen.queryByTestId("ollama-generation-settings")).toBeNull();
   });
 
@@ -917,18 +959,16 @@ describe("ContextPanel files", () => {
         onSaveSettings={onSaveSettings}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
 
     const section = screen.getByTestId("ollama-generation-settings");
     expect(section).toBeTruthy();
 
-    // Placed after Max iterations, before MCP servers.
+    // Placed after Max iterations.
     const maxIter = screen.getByRole("slider", { name: "Max iterations" });
-    const mcp = screen.getByText("MCP servers");
     expect(
       maxIter.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(section.compareDocumentPosition(mcp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     // Commit a temperature edit on blur.
     const temp = screen.getByRole("spinbutton", { name: "Temperature" });
@@ -972,7 +1012,7 @@ describe("ContextPanel files", () => {
         onSaveSettings={onSaveSettings}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
 
     const temp = screen.getByRole("spinbutton", { name: "Temperature" });
     // Change without blurring or advancing timers: the modification must reach
@@ -1016,7 +1056,7 @@ describe("ContextPanel files", () => {
         onSaveSettings={onSaveSettings}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
 
     const defaultBtn = screen.getByRole("button", { name: "Default" });
     const codingBtn = screen.getByRole("button", { name: "Coding" });
@@ -1090,7 +1130,7 @@ describe("ContextPanel files", () => {
         onDismissMemoryResult={() => {}}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
     expect(screen.getByTestId("ollama-generation-settings")).toBeTruthy();
   });
 
@@ -1119,7 +1159,7 @@ describe("ContextPanel files", () => {
         onDismissMemoryResult={() => {}}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
 
     expect(
       screen.getByRole("spinbutton", { name: "Temperature" }).getAttribute("placeholder"),
@@ -1176,7 +1216,7 @@ describe("ContextPanel files", () => {
         onDismissMemoryResult={() => {}}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
 
     expect(
       screen.getByRole("spinbutton", { name: "Temperature" }).getAttribute("placeholder"),
@@ -1192,7 +1232,7 @@ describe("ContextPanel files", () => {
     ).toBe("1.1");
   });
 
-  it("renders Auto-compaction toggle in Tools section and updates setting", () => {
+  it("renders Auto-compaction toggle in the Parameters section and updates setting", () => {
     const onSaveSettings = vi.fn();
     render(
       <ContextPanel
@@ -1213,7 +1253,7 @@ describe("ContextPanel files", () => {
         onSaveSettings={onSaveSettings}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
 
     expect(screen.getByText("Auto-compaction")).toBeTruthy();
     const enabledBtn = screen.getByRole("button", { name: "Enabled" });
@@ -1247,7 +1287,7 @@ describe("ContextPanel files", () => {
         onSaveSettings={onSaveSettings}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
 
     const autoCompaction = screen.getByText("Auto-compaction");
     const subagents = screen.getByText("Subagents");
@@ -1286,7 +1326,7 @@ describe("ContextPanel files", () => {
         onSaveSettings={onSaveSettings}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
 
     const subagents = screen.getByText("Subagents");
     const elevation = screen.getByText("Elevation (Windows UAC)");
@@ -1327,7 +1367,7 @@ describe("ContextPanel files", () => {
         onSaveSettings={onSaveSettings}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
 
     const elevation = screen.getByText("Elevation (Windows UAC)");
     const repetition = screen.getByText("Repetition guard");
@@ -1368,7 +1408,7 @@ describe("ContextPanel files", () => {
         onSaveSettings={onSaveSettings}
       />,
     );
-    fireEvent.click(screen.getByText("Tools"));
+    fireEvent.click(screen.getByText("Parameters"));
 
     const enableBtn = screen.getByRole("button", { name: "Enable question timer" });
     const disableBtn = screen.getByRole("button", { name: "Disable question timer" });
@@ -1410,7 +1450,7 @@ describe("ContextPanel raw context", () => {
   afterEach(cleanup);
 
   const base = {
-    settings,
+    settings: { ...settings, rawTabEnabled: true },
     usage,
     mcpSpecs: [],
     mcpBridged: false,
@@ -1520,5 +1560,57 @@ describe("ContextPanel raw context", () => {
     const box = screen.getByLabelText("Editable request context") as HTMLTextAreaElement;
     expect(box.disabled).toBe(true);
     expect((screen.getByText("Apply") as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("ContextPanel Git section", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+  afterEach(cleanup);
+
+  it("lists the workspace changes when the workspace is a repository", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      isRepo: true,
+      entries: [
+        { path: "src/app.ts", kind: "modified" },
+        { path: "docs/new.md", kind: "untracked" },
+      ],
+    });
+    renderPanel();
+
+    expect(await screen.findByText("Git")).toBeTruthy();
+    expect(screen.getByText("src/app.ts")).toBeTruthy();
+    expect(screen.getByText("docs/new.md")).toBeTruthy();
+    expect(screen.getByText("2 changed")).toBeTruthy();
+  });
+
+  it("reports a clean repository when there are no changes", async () => {
+    vi.mocked(invoke).mockResolvedValue({ isRepo: true, entries: [] });
+    renderPanel();
+
+    expect(await screen.findByText("Git")).toBeTruthy();
+    expect(screen.getByText("No changes")).toBeTruthy();
+  });
+
+  it("says so when the workspace is not a git repository", async () => {
+    vi.mocked(invoke).mockResolvedValue({ isRepo: false, entries: [] });
+    renderPanel();
+
+    expect(await screen.findByText("Git")).toBeTruthy();
+    expect(screen.getByText("This workspace is not a git repository.")).toBeTruthy();
+  });
+
+  it("surfaces a repo once it appears", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ isRepo: false, entries: [] });
+    renderPanel();
+    expect(await screen.findByText("This workspace is not a git repository.")).toBeTruthy();
+
+    vi.mocked(invoke).mockResolvedValue({
+      isRepo: true,
+      entries: [{ path: "src/new.ts", kind: "untracked" }],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByText("src/new.ts")).toBeTruthy();
   });
 });

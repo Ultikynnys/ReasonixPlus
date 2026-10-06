@@ -4948,6 +4948,41 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   text-transform: none;
   color: var(--fg-2);
 }
+.ctx-block .h .ctx-collapse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.ctx-block .h .ctx-chev {
+  width: 9px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted);
+}
+.ctx .git-kind {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--muted);
+}
+.ctx .git-kind[data-k="modified"] {
+  color: var(--accent);
+}
+.ctx .git-kind[data-k="deleted"] {
+  color: var(--danger);
+}
 
 /* token meter */
 .meter {

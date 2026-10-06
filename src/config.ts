@@ -439,6 +439,9 @@ export interface ReasonixConfig {
    *  degenerating model stream. Defaults to false: out of the box the loop lets
    *  repeated output through, and the guard only runs when the user opts in. */
   repetitionGuardEnabled?: boolean;
+  /** Whether the side panel shows the Raw context tab. Defaults to false; the
+   *  tab is an opt-in debugging surface, toggled from Settings → General. */
+  rawTabEnabled?: boolean;
   /** Default workspace root for the desktop client. CLI uses cwd. */
   workspaceDir?: string;
   /** Last N workspace paths the desktop client has opened, most recent first. */
@@ -2564,6 +2567,19 @@ export function saveRepetitionGuardEnabled(
 ): void {
   const cfg = readConfig(path);
   cfg.repetitionGuardEnabled = enabled;
+  writeConfig(cfg, path);
+}
+
+/** Whether the side panel shows the Raw context tab. Defaults to false: the
+ *  tab is a debugging surface and stays hidden until the user opts in. */
+export function loadRawTabEnabled(path: string = defaultConfigPath()): boolean {
+  return readConfig(path).rawTabEnabled === true;
+}
+
+/** Persist whether the side panel shows the Raw context tab. */
+export function saveRawTabEnabled(enabled: boolean, path: string = defaultConfigPath()): void {
+  const cfg = readConfig(path);
+  cfg.rawTabEnabled = enabled;
   writeConfig(cfg, path);
 }
 

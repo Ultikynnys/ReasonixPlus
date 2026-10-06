@@ -878,6 +878,8 @@ export interface SettingsEvent {
    *  degenerating stream. Defaults to false (opt-in). */
   repetitionGuardEnabled?: boolean;
   questionTimerEnabled?: boolean;
+  /** Whether the side panel shows the Raw context tab. Defaults to false. */
+  rawTabEnabled?: boolean;
   /** Duplicate-session context budget in tokens (default 50 000); null = default. */
   duplicateSessionTokens?: number | null;
   /** When true, a duplicated session auto-runs one turn to continue; default off (user proceeds manually). */
@@ -1216,6 +1218,8 @@ export interface SettingsPatch {
   /** Allow the stream repetition / "stuck re-thinking" guard to abort a degenerating stream. */
   repetitionGuardEnabled?: boolean;
   questionTimerEnabled?: boolean;
+  /** Show the Raw context tab in the side panel. Default false. */
+  rawTabEnabled?: boolean;
   /** Duplicate-session context budget in tokens, clamped to [1000, 1000000]; null/undefined = default (50 000). */
   duplicateSessionTokens?: number | null;
   /** Auto-run one continuation turn in a freshly duplicated session. Default false. */

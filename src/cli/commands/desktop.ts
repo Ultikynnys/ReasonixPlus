@@ -159,6 +159,7 @@ import {
   loadProjectShellAllowed,
   loadQuestionTimerEnabled,
   loadQuickSendId,
+  loadRawTabEnabled,
   loadReasoningEffort,
   loadRecentWorkspaces,
   loadRepetitionGuardEnabled,
@@ -203,6 +204,7 @@ import {
   saveOpenAIOAuth,
   saveQuestionTimerEnabled,
   saveQuickSendId,
+  saveRawTabEnabled,
   saveReasoningEffort,
   saveRepetitionGuardEnabled,
   saveWorkspaceDir,
@@ -1446,6 +1448,7 @@ function emitSettings(tab: Tab): void {
       repetitionGuardEnabled:
         tab.runtime?.loop.repetitionGuardEnabled ?? loadRepetitionGuardEnabled(),
       questionTimerEnabled: loadQuestionTimerEnabled(),
+      rawTabEnabled: loadRawTabEnabled(),
       duplicateSessionTokens: loadDuplicateSessionTokens(),
       duplicateSessionAutoProceed: loadDuplicateSessionAutoProceed(),
       enabledModels: loadEnabledModels(),
@@ -7546,6 +7549,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         }
         if (msg.questionTimerEnabled !== undefined) {
           saveQuestionTimerEnabled(msg.questionTimerEnabled);
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
+        if (msg.rawTabEnabled !== undefined) {
+          saveRawTabEnabled(msg.rawTabEnabled);
           for (const openTab of tabs.values()) emitSettings(openTab);
         }
         if (msg.enabledModels !== undefined) {
