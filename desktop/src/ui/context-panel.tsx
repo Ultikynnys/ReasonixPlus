@@ -111,6 +111,9 @@ export function ContextPanel({
 }) {
   useLang();
   const [tab, setTab] = useState<Tab>("files");
+  const enabledMcpServers = mcpSpecs.filter(
+    (spec) => spec.status === "connected" && !spec.sessionDisabled,
+  ).length;
   const reserved = usage.reservedTokens;
   const lastHit = usage.lastCallCacheHit ?? 0;
   const lastMiss = usage.lastCallCacheMiss ?? 0;
@@ -140,6 +143,15 @@ export function ContextPanel({
             onClick={() => setTab(tb.id)}
             onKeyDown={activationHandler(() => setTab(tb.id))}
           >
+            {tb.id === "mcp" && enabledMcpServers > 0 && (
+              <span
+                className="tab-active"
+                title={t("contextPanel.mcpEnabledServers", { count: enabledMcpServers })}
+              >
+                <span className="dot" data-state="running" aria-hidden="true" />
+                <span className="ctx-tab-count">{enabledMcpServers}</span>
+              </span>
+            )}
             {t(tb.label)}
           </div>
         ))}
@@ -147,7 +159,7 @@ export function ContextPanel({
 
       <div className="ctx-body">
         <div className="ctx-block">
-          <div className="h">
+          <div className="h ctx-token-header">
             <span>{t("contextPanel.contextTokens")}</span>
             <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {(reserved + used + cached).toLocaleString()} / {ctxMax.toLocaleString()}
@@ -491,7 +503,10 @@ function CtxCollapsible({
           onClick={() => setCollapsed((c) => !c)}
         >
           <span className="ctx-chev" aria-hidden="true">
-            {collapsed ? "▸" : "▾"}
+            <I.chevR
+              size={12}
+              style={{ transform: collapsed ? "none" : "rotate(90deg)" }}
+            />
           </span>
           <span>{title}</span>
         </button>
@@ -1539,10 +1554,13 @@ function CtxMcp({
                     <button
                       type="button"
                       className="mini-btn"
-                      style={{ fontSize: 11 }}
+                      style={{ fontSize: 11, gap: 6 }}
                       onClick={() => toggleMcpExpanded(s.raw)}
                     >
-                      {expanded ? "▾" : "▸"}{" "}
+                      <I.chevR
+                        size={12}
+                        style={{ transform: expanded ? "rotate(90deg)" : "none" }}
+                      />
                       {t("contextPanel.mcpToolsLabel", { count: tools.length })}
                     </button>
                     {expanded ? (

@@ -5,6 +5,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivePlan, Settings, UsageStats } from "../App";
+import type { McpSpecInfo } from "../protocol";
 import { ContextPanel } from "./context-panel";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -47,12 +48,16 @@ const activePlan: ActivePlan = {
   stepResults: {},
 };
 
-function renderPanel(overrides: Partial<Settings> = {}, plan: ActivePlan | null = null) {
+function renderPanel(
+  overrides: Partial<Settings> = {},
+  plan: ActivePlan | null = null,
+  mcpSpecs: McpSpecInfo[] = [],
+) {
   return render(
     <ContextPanel
       settings={{ ...settings, ...overrides }}
       usage={usage}
-      mcpSpecs={[]}
+      mcpSpecs={mcpSpecs}
       mcpBridged={false}
       sessionFiles={[{ path: "src/new-file.ts", status: "m" }]}
       memory={[]}
@@ -68,6 +73,64 @@ function renderPanel(overrides: Partial<Settings> = {}, plan: ActivePlan | null 
     />,
   );
 }
+
+describe("ContextPanel MCP tab count", () => {
+  it("shows only the MCP label when no servers are enabled", () => {
+    const { container } = renderPanel();
+    const tab = screen.getByText("MCP");
+    expect(container.querySelector(".ctx-tab-count")).toBeNull();
+    expect(tab.querySelector(".dot")).toBeNull();
+    expect(tab.textContent).toBe("MCP");
+    fireEvent.click(tab);
+    expect(tab.getAttribute("data-active")).toBe("true");
+  });
+
+  it("shows the throbber and number before the label for one enabled server", () => {
+    const { container } = renderPanel({}, null, [{
+      raw: "server",
+      name: "server",
+      transport: "stdio",
+      summary: "server",
+      status: "connected",
+      toolCount: 1,
+    }]);
+    const badge = container.querySelector(".ctx-tab-count");
+    expect(badge?.textContent).toBe("1");
+    const indicator = badge?.parentElement;
+    const tab = indicator?.parentElement;
+    expect(indicator?.className).toBe("tab-active");
+    expect(indicator?.firstElementChild?.className).toBe("dot");
+    expect(indicator?.firstElementChild?.getAttribute("data-state")).toBe("running");
+    expect(indicator?.lastElementChild).toBe(badge);
+    expect(tab?.firstChild).toBe(indicator);
+    expect(tab?.textContent).toBe("1MCP");
+    expect(indicator?.getAttribute("title")).toBe("1 enabled MCP servers in this session");
+    fireEvent.click(screen.getByText("MCP"));
+    expect(tab?.getAttribute("data-active")).toBe("true");
+  });
+
+  it("counts connected session-enabled servers independently of their tool counts", () => {
+    const spec = (name: string, patch: Partial<McpSpecInfo>): McpSpecInfo => ({
+      raw: name,
+      name,
+      transport: "stdio",
+      summary: name,
+      status: "connected",
+      ...patch,
+    });
+    const { container } = renderPanel({}, null, [
+      spec("mail", { toolCount: 19, tools: ["send", "read"], sessionDisabledTools: ["send"] }),
+      spec("other", { toolCount: 3 }),
+      spec("empty", { toolCount: 0, tools: [] }),
+      spec("disabled", { toolCount: 100, sessionDisabled: true }),
+      spec("failed", { toolCount: 100, status: "failed" }),
+      spec("pending", { toolCount: 100, status: "handshake" }),
+      spec("configured", { toolCount: 100, status: "configured" }),
+    ]);
+    expect(container.querySelector(".ctx-tab-count")?.textContent).toBe("3");
+    expect(container.querySelectorAll(".ctx-tab-count")).toHaveLength(1);
+  });
+});
 
 describe("ContextPanel plan tab", () => {
   it("appears after Rules and reflects live checklist progress", () => {

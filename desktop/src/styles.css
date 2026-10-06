@@ -702,13 +702,15 @@ html[data-platform="macos"] .app {
   width: 2px;
   background: var(--accent);
 }
-.tab .dot {
+.tab .dot,
+.ctx-tab .dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
 }
-.tab .dot[data-state="running"] {
+.tab .dot[data-state="running"],
+.ctx-tab .dot[data-state="running"] {
   background: var(--accent);
   color: var(--accent);
   animation: dot-pulse 1.6s ease-in-out infinite;
@@ -727,12 +729,14 @@ html[data-platform="macos"] .app {
 .tab .dot[data-state="idle"] {
   background: var(--border-strong);
 }
-.tab .tab-active {
+.tab .tab-active,
+.ctx-tab .tab-active {
   display: inline-flex;
   align-items: center;
   gap: 3px;
 }
-.tab .tab-active-count {
+.tab .tab-active-count,
+.ctx-tab-count {
   font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -4889,6 +4893,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 2px;
 }
 .ctx-tab {
+  position: relative;
   padding: 5px 8px;
   font-size: 13px;
   color: var(--muted);
@@ -4897,6 +4902,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   cursor: pointer;
   white-space: nowrap;
   max-width: 100%;
+}
+.ctx-tab:has(.ctx-tab-count) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .ctx-tab:hover {
   color: var(--fg);
@@ -4913,6 +4923,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   flex: 1;
   margin-right: 12px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 12px;
   padding-right: 20px;
 }
@@ -4935,6 +4946,15 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   text-transform: none;
   color: var(--fg-2);
 }
+.ctx-block .h.ctx-token-header {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.ctx-token-header > span {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 .ctx-block .h .ctx-collapse {
   display: inline-flex;
   align-items: center;
@@ -4949,9 +4969,8 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   cursor: pointer;
 }
 .ctx-block .h .ctx-chev {
-  width: 9px;
-  font-size: 10px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
   color: var(--muted);
 }
 .ctx .git-kind {
@@ -6859,9 +6878,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-.scard .mcp-remove {
-  flex: 0 0 auto;
-}
 .scard .desc {
   font-size: 14px;
   color: var(--fg-2);
@@ -6923,9 +6939,44 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .provider-head:hover {
   background: var(--panel);
 }
+/* MCP server cards: Enable/Disable + Remove live in the header row, right of
+ * the title. The title area stays its own button so clicking it toggles the
+ * card without touching the row actions. */
+.provider-head-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.provider-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  cursor: default;
+}
+.provider-head-actions .seg-ctrl {
+  font-size: 12px;
+}
+.provider-head-actions .seg-ctrl button {
+  padding: 3px 8px;
+}
+.seg-ctrl .mcp-remove {
+  color: var(--danger);
+}
 .provider-caret {
+  display: inline-flex;
+  align-items: center;
   color: var(--muted);
-  width: 12px;
   flex: 0 0 auto;
 }
 .provider-title {
@@ -7006,6 +7057,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   display: flex;
   align-items: center;
   gap: 6px;
+  max-width: calc(100% - 72px);
+  min-width: 0;
+}
+.mcard .nm .model-name {
+  white-space: nowrap;
 }
 .mcard .nm .badge {
   font-family: inherit;

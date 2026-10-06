@@ -1585,7 +1585,7 @@ function ProviderCard({
         onClick={() => setOpen((value) => !value)}
       >
         <span className="provider-caret" aria-hidden="true">
-          {open ? "\u25be" : "\u25b8"}
+          <I.chevR size={14} style={{ transform: open ? "rotate(90deg)" : "none" }} />
         </span>
         <span className="provider-title">{title}</span>
       </button>
@@ -1601,30 +1601,37 @@ function ProviderCard({
 
 /** Collapsible card for a single MCP server. Mirrors the Models page's provider
  *  card (same `.provider-card` chrome) so each server's settings sit under its
- *  own header, dropdown-style. */
+ *  own header, dropdown-style. `headActions` (Enable/Disable, Remove) renders
+ *  in the header row as a sibling of the title button, so activating it never
+ *  expands or collapses the card. */
 function McpServerCard({
   title,
+  headActions,
   defaultOpen = true,
   children,
 }: {
   title: ReactNode;
+  headActions?: ReactNode;
   defaultOpen?: boolean;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <section className="provider-card">
-      <button
-        type="button"
-        className="provider-head"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <span className="provider-caret" aria-hidden="true">
-          {open ? "\u25be" : "\u25b8"}
-        </span>
-        <span className="provider-title">{title}</span>
-      </button>
+      <div className="provider-head">
+        <button
+          type="button"
+          className="provider-head-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span className="provider-caret" aria-hidden="true">
+            <I.chevR size={14} style={{ transform: open ? "rotate(90deg)" : "none" }} />
+          </span>
+          <span className="provider-title">{title}</span>
+        </button>
+        {headActions ? <div className="provider-head-actions">{headActions}</div> : null}
+      </div>
       {open ? (
         <div className="provider-body" data-has-models="false">
           <div className="provider-col">{children}</div>
@@ -1674,6 +1681,8 @@ function ModelList({
       <div className="provider-models-scroll">
         {models.map((id) => {
           const enabled = enabledSet.has(id);
+          const displayName = modelDisplayName(id);
+          const nameFontSize = Math.max(10, Math.min(14, (14 * 18) / displayName.length));
           return (
             <div
               key={id}
@@ -1687,7 +1696,9 @@ function ModelList({
               tabIndex={onSelect ? 0 : undefined}
             >
               <div className="nm">
-                {modelDisplayName(id)}
+                <span className="model-name" style={{ fontSize: `${nameFontSize}px` }}>
+                  {displayName}
+                </span>
                 {acceptsImages(id) ? <span className="badge">vision</span> : null}
               </div>
               {onToggle ? (
@@ -2772,20 +2783,50 @@ export function PageMCP({
           const tools = s.tools ?? [];
           const isExpanded = expandedTools.has(s.raw);
           const disabledCount = s.disabledTools?.length ?? 0;
+          const headActions =
+            canToggle || !s.builtin ? (
+              <>
+                {canToggle ? (
+                  <div className="seg-ctrl">
+                    <button
+                      type="button"
+                      data-on={!s.disabled}
+                      onClick={() => onToggleServer(s.name as string, false)}
+                    >
+                      {t("settings.mcpEnable")}
+                    </button>
+                    <button
+                      type="button"
+                      data-on={s.disabled}
+                      onClick={() => onToggleServer(s.name as string, true)}
+                    >
+                      {t("settings.mcpDisable")}
+                    </button>
+                  </div>
+                ) : null}
+                {s.builtin ? null : (
+                  <div className="seg-ctrl">
+                    <button
+                      type="button"
+                      className="mcp-remove"
+                      onClick={() => onRemove(s.raw)}
+                    >
+                      {t("settings.mcpRemove")}
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : null;
           return (
             <McpServerCard
               key={s.raw}
+              headActions={headActions}
               title={
                 <>
                   {s.name ?? "(anonymous)"}
                   {s.builtin ? (
                     <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
                       · {t("settings.mcpBuiltinBadge")}
-                    </span>
-                  ) : null}
-                  {s.disabled ? (
-                    <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
-                      · {t("settings.mcpDisabledBadge")}
                     </span>
                   ) : disabledCount > 0 ? (
                     <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
@@ -2798,30 +2839,6 @@ export function PageMCP({
               <div className="sub mcp-spec-summary" title={s.summary}>
                 {s.summary}
               </div>
-              {canToggle || !s.builtin ? (
-                <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                  {canToggle ? (
-                    <button
-                      type="button"
-                      className="btn ghost"
-                      style={{ color: s.disabled ? "var(--accent)" : undefined }}
-                      onClick={() => onToggleServer(s.name as string, !s.disabled)}
-                    >
-                      {s.disabled ? t("settings.mcpEnable") : t("settings.mcpDisable")}
-                    </button>
-                  ) : null}
-                  {s.builtin ? null : (
-                    <button
-                      type="button"
-                      className="btn ghost mcp-remove"
-                      style={{ color: "var(--danger)" }}
-                      onClick={() => onRemove(s.raw)}
-                    >
-                      {t("settings.mcpRemove")}
-                    </button>
-                  )}
-                </div>
-              ) : null}
               {s.parseError ? (
                 <div className="desc" style={{ color: "var(--danger)" }}>
                   {t("settings.parseError", { error: s.parseError })}
@@ -2841,7 +2858,8 @@ export function PageMCP({
                     style={{ fontSize: 11 }}
                     onClick={() => toggleToolsExpanded(s.raw)}
                   >
-                    {isExpanded ? "▾" : "▸"} {t("settings.mcpToolsLabel", { count: tools.length })}
+                    <I.chevR size={12} style={{ transform: isExpanded ? "rotate(90deg)" : "none" }} />
+                    {t("settings.mcpToolsLabel", { count: tools.length })}
                   </button>
                   {isExpanded ? (
                     <div
