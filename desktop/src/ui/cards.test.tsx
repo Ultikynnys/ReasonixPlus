@@ -10,8 +10,10 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), openUrl: vi.fn(
 
 import { WorkspaceProvider } from "../Markdown";
 import {
+  CompactionCard,
   DiffCard,
   NoticeCard,
+  PlanCardView,
   PreText,
   ReasoningCard,
   ShellCard,
@@ -19,6 +21,7 @@ import {
   ToolCard,
   extractSubagentResultMeta,
   isSubagentTool,
+  parseEditResult,
 } from "./cards";
 import { formatDuration } from "./format";
 
@@ -882,5 +885,96 @@ describe("NoticeCard — raw text sanitization", () => {
     const body = container.querySelector(".notice-body")?.textContent ?? "";
     expect(body).not.toContain(ESC);
     expect(body).toBe("error red");
+  });
+});
+
+describe("DiffCard — terminal escape handling", () => {
+  const ESC = String.fromCharCode(27);
+
+  it("renders no escape bytes from a parsed edit result", () => {
+    const result = [
+      "# src/foo.ts",
+      "@@ -1,1 +1,1 @@",
+      `-old ${ESC}[31mred${ESC}[0m`,
+      `+new ${ESC}[32mgreen${ESC}[0m`,
+    ].join("\n");
+    const files = parseEditResult(result);
+    const { container } = render(
+      wrap(<DiffCard filename={files[0]!.filename} lines={files[0]!.lines} applied />),
+    );
+    const text = container.querySelector(".diff")?.textContent ?? "";
+    expect(text).not.toContain(ESC);
+    expect(text).toContain("old red");
+    expect(text).toContain("new green");
+  });
+});
+
+describe("CompactionCard — terminal escape handling", () => {
+  const ESC = String.fromCharCode(27);
+
+  it("strips ANSI escapes from a failure message", () => {
+    const { container } = render(
+      wrap(<CompactionCard state="failed" error={`boom ${ESC}[31mred${ESC}[0m`} />),
+    );
+    fireEvent.click(screen.getByText("Compacted history"));
+    const body = container.querySelector(".compaction-body")?.textContent ?? "";
+    expect(body).not.toContain(ESC);
+    expect(body).toContain("boom red");
+  });
+
+  it("strips ANSI escapes from a success warning", () => {
+    const { container } = render(
+      wrap(<CompactionCard summary="folded summary" warn={`note ${ESC}[33myellow${ESC}[0m`} />),
+    );
+    fireEvent.click(screen.getByText("Compacted history"));
+    const warn = container.querySelector(".compaction-warn")?.textContent ?? "";
+    expect(warn).not.toContain(ESC);
+    expect(warn).toBe("note yellow");
+  });
+});
+
+describe("SubagentCard — terminal escape handling", () => {
+  const ESC = String.fromCharCode(27);
+
+  it("strips ANSI escapes from an activity row", () => {
+    const run = {
+      runId: "run-esc",
+      task: "do it",
+      skillName: "research",
+      status: "running" as const,
+      tools: [],
+      recentRows: [{ id: "r1", kind: "process" as const, text: `${ESC}[32mgreen row${ESC}[0m` }],
+    };
+    const { container } = render(wrap(<SubagentCard name="research" runs={[run]} />));
+    const rows = [...container.querySelectorAll(".sub-activity-text")].map((el) => el.textContent);
+    expect(rows).toEqual(["green row"]);
+  });
+});
+
+describe("PlanCardView — terminal escape handling", () => {
+  const ESC = String.fromCharCode(27);
+
+  it("strips ANSI escapes from a step's text", () => {
+    const { container } = render(
+      wrap(
+        <PlanCardView items={[{ id: 1, status: "active", text: `${ESC}[36mstep one${ESC}[0m` }]} />,
+      ),
+    );
+    const text = container.querySelector(".plan-item .text")?.textContent ?? "";
+    expect(text).not.toContain(ESC);
+    expect(text).toBe("step one");
+  });
+});
+
+describe("ShellCard — command line sanitization", () => {
+  const ESC = String.fromCharCode(27);
+
+  it("strips ANSI escapes from the command text", () => {
+    const { container } = render(
+      wrap(<ShellCard command={`echo ${ESC}[31mhi${ESC}[0m`} state="running" />),
+    );
+    const cmd = container.querySelector(".shell .cmd .text")?.textContent ?? "";
+    expect(cmd).not.toContain(ESC);
+    expect(cmd).toBe("echo hi");
   });
 });

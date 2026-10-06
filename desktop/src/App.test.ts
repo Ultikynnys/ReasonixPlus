@@ -319,7 +319,7 @@ describe("Desktop App reducer — usage", () => {
       turnStatusTool: "read_file",
       settings: {
         reasoningEffort: "high",
-        editMode: "review",
+        editMode: "follow",
         workspaceDir: "/workspace",
         recentWorkspaces: [],
         model: "gpt-5.6-sol",
@@ -333,7 +333,7 @@ describe("Desktop App reducer — usage", () => {
       event: {
         type: "$settings",
         reasoningEffort: "high",
-        editMode: "review",
+        editMode: "follow",
         quickSendId: "proceed",
         quickSends: [],
         workspaceDir: "/workspace",
@@ -358,7 +358,7 @@ describe("Desktop App reducer — usage", () => {
       turnStatus: "waiting_tool",
       settings: {
         reasoningEffort: "high",
-        editMode: "review",
+        editMode: "follow",
         workspaceDir: "/workspace",
         recentWorkspaces: [],
         model: "gpt-5.6-sol",
@@ -371,7 +371,7 @@ describe("Desktop App reducer — usage", () => {
       event: {
         type: "$settings",
         reasoningEffort: "low",
-        editMode: "auto",
+        editMode: "follow",
         quickSendId: "proceed",
         quickSends: [],
         workspaceDir: "/workspace",
@@ -393,7 +393,7 @@ describe("Desktop App reducer — usage", () => {
       turnStatusTool: "read_file",
       settings: {
         reasoningEffort: "high",
-        editMode: "review",
+        editMode: "follow",
         workspaceDir: "/workspace",
         recentWorkspaces: [],
         model: "gpt-5.6-sol",
@@ -412,7 +412,7 @@ describe("Desktop App reducer — usage", () => {
       event: {
         type: "$settings",
         reasoningEffort: "high",
-        editMode: "review",
+        editMode: "follow",
         quickSendId: "proceed",
         quickSends: [],
         workspaceDir: "/workspace",
@@ -1133,7 +1133,7 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
       ...initialState(),
       settings: {
         reasoningEffort: "medium",
-        editMode: "review",
+        editMode: "follow",
         workspaceDir: "/workspace",
         recentWorkspaces: [],
         model: "deepseek-v4-flash",
@@ -1143,11 +1143,11 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
 
     const next = reduce(state, {
       t: "settings_patch",
-      patch: { reasoningEffort: "low", editMode: "auto" },
+      patch: { reasoningEffort: "low", editMode: "follow" },
     });
 
     expect(next.settings?.reasoningEffort).toBe("low");
-    expect(next.settings?.editMode).toBe("auto");
+    expect(next.settings?.editMode).toBe("follow");
   });
 
   it("stores the per-tab subagent model from $settings and settings_patch", () => {
@@ -1159,7 +1159,7 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
       event: {
         type: "$settings",
         reasoningEffort: "high",
-        editMode: "review",
+        editMode: "follow",
         quickSendId: "proceed",
         quickSends: [],
         workspaceDir: "/workspace",
@@ -1182,7 +1182,7 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
       ...initialState(),
       settings: {
         reasoningEffort: "high",
-        editMode: "review",
+        editMode: "follow",
         workspaceDir: "/workspace",
         recentWorkspaces: [],
         model: "deepseek-v4-flash",
@@ -1201,7 +1201,7 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
       event: {
         type: "$settings",
         reasoningEffort: "high",
-        editMode: "review",
+        editMode: "follow",
         quickSendId: "proceed",
         quickSends: [],
         workspaceDir: "/workspace",
@@ -1218,7 +1218,7 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
       ...initialState(),
       settings: {
         reasoningEffort: "high",
-        editMode: "review",
+        editMode: "follow",
         workspaceDir: "/workspace",
         recentWorkspaces: ["/repo/alpha", "/repo/beta", "/repo/gamma"],
         model: "deepseek-v4-flash",
@@ -2735,7 +2735,7 @@ describe("Desktop App reducer — OpenAI OAuth flow state", () => {
       event: {
         type: "$settings",
         reasoningEffort: "medium",
-        editMode: "review",
+        editMode: "follow",
         quickSendId: "proceed",
         quickSends: [],
         workspaceDir: "/workspace",
@@ -2756,7 +2756,7 @@ describe("Desktop App reducer — OpenAI OAuth flow state", () => {
       event: {
         type: "$settings",
         reasoningEffort: "medium",
-        editMode: "review",
+        editMode: "follow",
         quickSendId: "proceed",
         quickSends: [],
         workspaceDir: "/workspace",
@@ -2789,26 +2789,30 @@ describe("Desktop App reducer — OpenAI OAuth flow state", () => {
     });
   });
 
-  it("$settings carries shellAllowed and pathAllowed into settings", () => {
+  it("$settings carries workspace and global rules into settings", () => {
     const state = initialState();
     const next = reduce(state, {
       t: "incoming",
       event: {
         type: "$settings",
         reasoningEffort: "medium",
-        editMode: "yolo",
+        editMode: "never-ask",
         quickSendId: "proceed",
         quickSends: [],
         workspaceDir: "/workspace",
         recentWorkspaces: [],
         model: "deepseek-v4-flash",
-        shellAllowed: ["npm test"],
-        pathAllowed: ["/opt/tools"],
+        shellAllowedWorkspace: ["npm test"],
+        pathAllowedWorkspace: ["/opt/tools"],
+        shellAllowedGlobal: ["git"],
+        pathAllowedGlobal: ["/etc"],
         version: "0.50.1",
       },
     });
-    expect(next.settings?.shellAllowed).toEqual(["npm test"]);
-    expect(next.settings?.pathAllowed).toEqual(["/opt/tools"]);
+    expect(next.settings?.shellAllowedWorkspace).toEqual(["npm test"]);
+    expect(next.settings?.pathAllowedWorkspace).toEqual(["/opt/tools"]);
+    expect(next.settings?.shellAllowedGlobal).toEqual(["git"]);
+    expect(next.settings?.pathAllowedGlobal).toEqual(["/etc"]);
   });
 
   it("$settings without signed-in OAuth keeps oauthWaiting", () => {
@@ -2818,7 +2822,7 @@ describe("Desktop App reducer — OpenAI OAuth flow state", () => {
       event: {
         type: "$settings",
         reasoningEffort: "medium",
-        editMode: "review",
+        editMode: "follow",
         quickSendId: "proceed",
         quickSends: [],
         workspaceDir: "/workspace",

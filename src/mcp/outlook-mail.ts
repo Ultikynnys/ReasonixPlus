@@ -78,6 +78,20 @@ export function isOutlookSendCapableTool(toolName: string): boolean {
   );
 }
 
+/** Verbs that mutate mail even when they read a message first (mark-as-read, flags). */
+const OUTLOOK_MAIL_MUTATING_VERBS =
+  /(^|-)(create|update|delete|add|remove|move|copy|mark|archive|flag|import|upload|set)(-|$)/;
+
+/** Fail-safe read classifier: only list-/get-/search- verbs qualify, and never a
+ *  send-capable, account-level, or mutating tool. Read-only mode dispatches these and
+ *  refuses every other bridged tool, so an unknown upstream name can never send mail. */
+export function isOutlookReadOnlyTool(toolName: string): boolean {
+  if (OUTLOOK_MAIL_INTERNAL_TOOLS.has(toolName)) return false;
+  if (isOutlookSendCapableTool(toolName)) return false;
+  if (OUTLOOK_MAIL_MUTATING_VERBS.test(toolName)) return false;
+  return /^(list|get|search)-/.test(toolName);
+}
+
 export function isOutlookMailSpec(spec: McpServerSpec): boolean {
   if (spec.transport !== "stdio" || spec.name !== OUTLOOK_MAIL_SERVER_NAME) return false;
   return spec.args.some((arg) => /^@softeria\/ms-365-mcp-server(?:@[A-Za-z0-9._-]+)?$/.test(arg));

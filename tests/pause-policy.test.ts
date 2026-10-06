@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { PauseGate } from "../src/core/pause-gate.js";
-import { YOLO_PLAN_COUNTDOWN_MS, autoResolveVerdict } from "../src/core/pause-policy.js";
+import { NEVER_ASK_PLAN_COUNTDOWN_MS, autoResolveVerdict } from "../src/core/pause-policy.js";
 
-// Mirrors the yolo listener body in src/cli/commands/desktop.ts (the desktop
-// backend's pause-gate bridge — the TUI/ACP variants were removed with them).
+// Mirrors the never-ask listener body in src/cli/commands/desktop.ts (the
+// desktop backend's pause-gate bridge).
 function makeListener(
   opts: { yolo?: boolean; enableChoiceTimer?: boolean },
-  configEditMode: "review" | "auto" | "yolo",
+  configEditMode: "read-only" | "follow" | "never-ask",
 ) {
   return (gate: PauseGate, onBridge: (reqId: number) => void) => {
     gate.on((req) => {
-      const editMode = opts.yolo ? "yolo" : configEditMode;
+      const editMode = opts.yolo ? "never-ask" : configEditMode;
       const auto = autoResolveVerdict(req, editMode, {
         enableChoiceTimer: opts.enableChoiceTimer,
       });
@@ -26,15 +26,15 @@ function makeListener(
   };
 }
 
-describe("autoResolveVerdict (yolo mode)", () => {
+describe("autoResolveVerdict (never-ask mode)", () => {
   it("uses a 30-second manual override window for interactive gates", () => {
-    expect(YOLO_PLAN_COUNTDOWN_MS).toBe(30_000);
+    expect(NEVER_ASK_PLAN_COUNTDOWN_MS).toBe(30_000);
   });
 
-  it("auto-continues plan_checkpoint when opts.yolo is true even if config says review", async () => {
+  it("auto-continues plan_checkpoint when opts.yolo is true even if config says read-only", async () => {
     const gate = new PauseGate();
     let bridged = false;
-    makeListener({ yolo: true }, "review")(gate, () => {
+    makeListener({ yolo: true }, "read-only")(gate, () => {
       bridged = true;
     });
 
@@ -47,10 +47,10 @@ describe("autoResolveVerdict (yolo mode)", () => {
     expect(bridged).toBe(false);
   });
 
-  it("bridges plan_checkpoint to the client when opts.yolo is false and config is review", async () => {
+  it("bridges plan_checkpoint to the client when opts.yolo is false and config is read-only", async () => {
     const gate = new PauseGate();
     let bridgedReqId: number | null = null;
-    makeListener({ yolo: false }, "review")(gate, (id) => {
+    makeListener({ yolo: false }, "read-only")(gate, (id) => {
       bridgedReqId = id;
       gate.resolve(id, { type: "continue" } as never);
     });
@@ -62,7 +62,7 @@ describe("autoResolveVerdict (yolo mode)", () => {
   it("falls back to config editMode when opts.yolo is undefined", async () => {
     const gate = new PauseGate();
     let bridged = false;
-    makeListener({}, "auto")(gate, () => {
+    makeListener({}, "follow")(gate, () => {
       bridged = true;
     });
 
@@ -74,10 +74,10 @@ describe("autoResolveVerdict (yolo mode)", () => {
     expect(bridged).toBe(false);
   });
 
-  it("auto-resolves run_command (run_once) with --yolo — shell.ts's allowAll closure can't see --yolo when config still says review (#1448)", async () => {
+  it("auto-resolves run_command (run_once) with --yolo - shell.ts's allowAll closure can't see --yolo when config still says read-only (#1448)", async () => {
     const gate = new PauseGate();
     let bridged = false;
-    makeListener({ yolo: true }, "review")(gate, () => {
+    makeListener({ yolo: true }, "read-only")(gate, () => {
       bridged = true;
     });
 
@@ -86,10 +86,10 @@ describe("autoResolveVerdict (yolo mode)", () => {
     expect(bridged).toBe(false);
   });
 
-  it("never auto-resolves Outlook sends in yolo mode", async () => {
+  it("never auto-resolves Outlook sends in never-ask mode", async () => {
     const gate = new PauseGate();
     let bridgedReqId: number | null = null;
-    makeListener({ yolo: true }, "review")(gate, (id) => {
+    makeListener({ yolo: true }, "read-only")(gate, (id) => {
       bridgedReqId = id;
       gate.resolve(id, { type: "deny" } as never);
     });
@@ -114,7 +114,7 @@ describe("autoResolveVerdict (yolo mode)", () => {
   it("auto-resolves run_background (run_once) with --yolo for the same reason", async () => {
     const gate = new PauseGate();
     let bridged = false;
-    makeListener({ yolo: true }, "review")(gate, () => {
+    makeListener({ yolo: true }, "read-only")(gate, () => {
       bridged = true;
     });
 
@@ -126,10 +126,10 @@ describe("autoResolveVerdict (yolo mode)", () => {
     expect(bridged).toBe(false);
   });
 
-  it("bridges run_command to the client in auto mode (only yolo bypasses)", async () => {
+  it("bridges run_command to the client in follow mode (only never-ask bypasses)", async () => {
     const gate = new PauseGate();
     let bridgedReqId: number | null = null;
-    makeListener({ yolo: false }, "auto")(gate, (id) => {
+    makeListener({ yolo: false }, "follow")(gate, (id) => {
       bridgedReqId = id;
       gate.resolve(id, { type: "deny" } as never);
     });
@@ -138,10 +138,10 @@ describe("autoResolveVerdict (yolo mode)", () => {
     expect(bridgedReqId).not.toBeNull();
   });
 
-  it("auto-allows path_access (run_once) when yolo — mirrors shell.ts allowAll bypass", async () => {
+  it("auto-allows path_access (run_once) when yolo - mirrors shell.ts allowAll bypass", async () => {
     const gate = new PauseGate();
     let bridged = false;
-    makeListener({ yolo: true }, "review")(gate, () => {
+    makeListener({ yolo: true }, "read-only")(gate, () => {
       bridged = true;
     });
 
@@ -159,10 +159,10 @@ describe("autoResolveVerdict (yolo mode)", () => {
     expect(bridged).toBe(false);
   });
 
-  it("bridges path_access to the client in auto mode (only yolo bypasses)", async () => {
+  it("bridges path_access to the client in follow mode (only never-ask bypasses)", async () => {
     const gate = new PauseGate();
     let bridgedReqId: number | null = null;
-    makeListener({ yolo: false }, "auto")(gate, (id) => {
+    makeListener({ yolo: false }, "follow")(gate, (id) => {
       bridgedReqId = id;
       gate.resolve(id, { type: "deny" } as never);
     });
@@ -180,12 +180,12 @@ describe("autoResolveVerdict (yolo mode)", () => {
     expect(bridgedReqId).not.toBeNull();
   });
 
-  it("counts down before auto-approving plan_proposed with --yolo — the host gets a 30s window to override", async () => {
+  it("counts down before auto-approving plan_proposed with --yolo - the host gets a 30s window to override", async () => {
     vi.useFakeTimers();
     try {
       const gate = new PauseGate();
       let bridged = false;
-      makeListener({ yolo: true }, "review")(gate, () => {
+      makeListener({ yolo: true }, "read-only")(gate, () => {
         bridged = true;
       });
 
@@ -194,12 +194,12 @@ describe("autoResolveVerdict (yolo mode)", () => {
         payload: { plan: "Step 1\nStep 2", steps: [{ id: "s1" }, { id: "s2" }], summary: "do it" },
       });
 
-      // Not resolved instantly — the picker gets its full countdown window.
+      // Not resolved instantly - the picker gets its full countdown window.
       let settled = false;
       void promise.then(() => {
         settled = true;
       });
-      await vi.advanceTimersByTimeAsync(YOLO_PLAN_COUNTDOWN_MS - 1);
+      await vi.advanceTimersByTimeAsync(NEVER_ASK_PLAN_COUNTDOWN_MS - 1);
       expect(settled).toBe(false);
       expect(bridged).toBe(true);
 
@@ -211,10 +211,10 @@ describe("autoResolveVerdict (yolo mode)", () => {
     }
   });
 
-  it("bridges plan_proposed to the client in auto mode (only yolo bypasses)", async () => {
+  it("bridges plan_proposed to the client in follow mode (only never-ask bypasses)", async () => {
     const gate = new PauseGate();
     let bridgedReqId: number | null = null;
-    makeListener({ yolo: false }, "auto")(gate, (id) => {
+    makeListener({ yolo: false }, "follow")(gate, (id) => {
       bridgedReqId = id;
       gate.resolve(id, { type: "approve" } as never);
     });
@@ -226,12 +226,12 @@ describe("autoResolveVerdict (yolo mode)", () => {
     expect(bridgedReqId).not.toBeNull();
   });
 
-  it("auto-accepts plan_revision (REWRITE) after the countdown with --yolo — previously stalled forever", async () => {
+  it("auto-accepts plan_revision (REWRITE) after the countdown with --yolo - previously stalled forever", async () => {
     vi.useFakeTimers();
     try {
       const gate = new PauseGate();
       let bridged = false;
-      makeListener({ yolo: true }, "review")(gate, () => {
+      makeListener({ yolo: true }, "read-only")(gate, () => {
         bridged = true;
       });
 
@@ -240,9 +240,9 @@ describe("autoResolveVerdict (yolo mode)", () => {
         payload: { reason: "scope changed", remainingSteps: [{ id: "s2" }], summary: "rev" },
       });
 
-      // The rewrite picker used to hang indefinitely in yolo; now the first
-      // option (accept rewrite) is auto-selected once the window elapses.
-      await vi.advanceTimersByTimeAsync(YOLO_PLAN_COUNTDOWN_MS);
+      // The rewrite picker used to hang indefinitely in never-ask; now the
+      // first option (accept rewrite) is auto-selected once the window elapses.
+      await vi.advanceTimersByTimeAsync(NEVER_ASK_PLAN_COUNTDOWN_MS);
       await expect(promise).resolves.toEqual({ type: "accepted" });
       expect(bridged).toBe(true);
     } finally {
@@ -250,10 +250,10 @@ describe("autoResolveVerdict (yolo mode)", () => {
     }
   });
 
-  it("still bridges plan_revision in review mode — the countdown is yolo-only", async () => {
+  it("still bridges plan_revision in read-only mode - the countdown is never-ask-only", async () => {
     const gate = new PauseGate();
     let bridgedReqId: number | null = null;
-    makeListener({ yolo: false }, "review")(gate, (id) => {
+    makeListener({ yolo: false }, "read-only")(gate, (id) => {
       bridgedReqId = id;
       gate.resolve(id, { type: "rejected" } as never);
     });
@@ -271,7 +271,7 @@ describe("autoResolveVerdict (yolo mode)", () => {
     try {
       const gate = new PauseGate();
       let bridged = false;
-      makeListener({ yolo: true }, "review")(gate, () => {
+      makeListener({ yolo: true }, "read-only")(gate, () => {
         bridged = true;
       });
 
@@ -291,7 +291,7 @@ describe("autoResolveVerdict (yolo mode)", () => {
       void promise.then(() => {
         settled = true;
       });
-      await vi.advanceTimersByTimeAsync(YOLO_PLAN_COUNTDOWN_MS + 5_000);
+      await vi.advanceTimersByTimeAsync(NEVER_ASK_PLAN_COUNTDOWN_MS + 5_000);
       expect(settled).toBe(false);
       expect(bridged).toBe(true);
     } finally {
@@ -304,7 +304,7 @@ describe("autoResolveVerdict (yolo mode)", () => {
     try {
       const gate = new PauseGate();
       let bridged = false;
-      makeListener({ yolo: true, enableChoiceTimer: true }, "review")(gate, () => {
+      makeListener({ yolo: true, enableChoiceTimer: true }, "read-only")(gate, () => {
         bridged = true;
       });
 
@@ -324,7 +324,7 @@ describe("autoResolveVerdict (yolo mode)", () => {
       void promise.then(() => {
         settled = true;
       });
-      await vi.advanceTimersByTimeAsync(YOLO_PLAN_COUNTDOWN_MS - 1);
+      await vi.advanceTimersByTimeAsync(NEVER_ASK_PLAN_COUNTDOWN_MS - 1);
       expect(settled).toBe(false);
       expect(bridged).toBe(true);
 
@@ -340,7 +340,7 @@ describe("autoResolveVerdict (yolo mode)", () => {
     try {
       const gate = new PauseGate();
       let bridgedReqId: number | null = null;
-      makeListener({ yolo: true, enableChoiceTimer: true }, "review")(gate, (id) => {
+      makeListener({ yolo: true, enableChoiceTimer: true }, "read-only")(gate, (id) => {
         bridgedReqId = id;
       });
 
@@ -356,7 +356,7 @@ describe("autoResolveVerdict (yolo mode)", () => {
         },
       });
 
-      await vi.advanceTimersByTimeAsync(YOLO_PLAN_COUNTDOWN_MS - 1_000);
+      await vi.advanceTimersByTimeAsync(NEVER_ASK_PLAN_COUNTDOWN_MS - 1_000);
       expect(bridgedReqId).not.toBeNull();
       gate.resolve(bridgedReqId!, { type: "pick", optionId: "option-2" });
       await expect(promise).resolves.toEqual({ type: "pick", optionId: "option-2" });
@@ -371,7 +371,7 @@ describe("autoResolveVerdict (yolo mode)", () => {
   it("cancels a malformed choice (no well-formed options) rather than hanging when timer is enabled", async () => {
     const gate = new PauseGate();
     let bridged = false;
-    makeListener({ yolo: true, enableChoiceTimer: true }, "review")(gate, () => {
+    makeListener({ yolo: true, enableChoiceTimer: true }, "read-only")(gate, () => {
       bridged = true;
     });
 
@@ -383,10 +383,10 @@ describe("autoResolveVerdict (yolo mode)", () => {
     expect(bridged).toBe(false);
   });
 
-  it("bridges ask_choice to the client in auto mode (only yolo bypasses)", async () => {
+  it("bridges ask_choice to the client in follow mode (only never-ask bypasses)", async () => {
     const gate = new PauseGate();
     let bridgedReqId: number | null = null;
-    makeListener({ yolo: false }, "auto")(gate, (id) => {
+    makeListener({ yolo: false }, "follow")(gate, (id) => {
       bridgedReqId = id;
       gate.resolve(id, { type: "pick", optionId: "option-1" } as never);
     });

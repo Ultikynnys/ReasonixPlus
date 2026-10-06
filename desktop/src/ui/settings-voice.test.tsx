@@ -31,7 +31,7 @@ describe("VoiceModelSettings", () => {
   const mockSettings: Settings = {
     version: "1.0.0",
     reasoningEffort: "high",
-    editMode: "review",
+    editMode: "follow",
     workspaceDir: "/test",
     recentWorkspaces: [],
     model: "deepseek-v4-flash",

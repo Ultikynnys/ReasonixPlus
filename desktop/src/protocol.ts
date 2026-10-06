@@ -26,6 +26,7 @@ import type {
   DesktopDiagnosticLevel,
   DirectKernelWireEvent,
   EditMode,
+  EditRequiredEvent,
   JobInfo,
   JobsEvent,
   KernelCompactionFinishedEvent,
@@ -159,6 +160,7 @@ export type {
   ContextRawEvent,
   CtxBreakdownEvent,
   EditMode,
+  EditRequiredEvent,
   JobInfo,
   JobsEvent,
   LoadedMessage,
@@ -261,6 +263,7 @@ export type IncomingEvent = { tabId?: string } & (
   | DesktopDiagnosticEvent
   | ConfirmRequiredEvent
   | PathAccessRequiredEvent
+  | EditRequiredEvent
   | ChoiceRequiredEvent
   | PlanRequiredEvent
   | SessionsEvent

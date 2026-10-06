@@ -17,6 +17,7 @@ import {
   confirmOutlookSend,
   isOutlookConfirmedSendTool,
   isOutlookMailSpec,
+  isOutlookReadOnlyTool,
   isOutlookSendCapableTool,
   managedMcpToolsHiddenFromModel,
   mcpTextResult,
@@ -331,6 +332,7 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
                 hydrateOutlookAttachments(toolName, args, { workspaceDir }),
               descriptionSuffix: (toolName) =>
                 OUTLOOK_ATTACHMENT_TOOLS.has(toolName) ? outlookAttachmentGuidance : undefined,
+              readOnlyTool: isOutlookReadOnlyTool,
             }
           : {}),
         ...(playwrightTooling

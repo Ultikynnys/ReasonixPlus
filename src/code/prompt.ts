@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { loadEffectiveMcpConfig, loadEnableSubagents } from "../config.js";
+import type { McpServerSpec } from "../mcp/spec.js";
 import { readCappedTextFile } from "../memory/read-capped.js";
 import { applyMemoryStack } from "../memory/user.js";
 import { TUI_FORMATTING_RULES, escalationContract } from "../prompt-fragments.js";
@@ -61,9 +62,11 @@ When asked to audit/review/critique Reasonix+ itself, the failure mode is buildi
 
 - Plan completion is mandatory: after approval, execute structured steps in order and call \`mark_step_complete\` exactly once for every step, including the final step. Never end a turn with unfinished plan steps. If a blocker or changed requirement makes the approved plan stale, stop using it and call \`submit_plan\` with a new plan that reflects the new requirements. Do not silently substitute work or treat a partial plan as complete.
 
-# Plan mode (/plan)
+# Read only mode
 
-Stronger constraint than submit_plan: writes + non-allowlisted run_command are bounced at dispatch ("unavailable in plan mode"; don't retry). Read tools and allowlisted shell commands still work. You MUST call submit_plan before anything will execute.
+One of the three edit-gate modes (Read only / Follow Rules / Never Ask). In Read only, writes and non-allowlisted shell commands are refused at dispatch ("blocked in Read only mode"; don't retry). Read tools, allowlisted shell commands and submit_plan still work.
+
+Read only is not a planning phase and no plan approval is pending: nothing waits on submit_plan, and refusing a write here does not mean a plan is missing. Read only simply never writes. If the task needs a write or an unlisted command, say so plainly and let the user move the gate to Follow Rules (asks first) or Never Ask.
 
 __SUBAGENT_SECTION__
 
@@ -71,9 +74,9 @@ __SUBAGENT_SECTION__
 
 Only propose edits when the user explicitly says change / fix / add / remove / refactor / write. For "analyze / read / explain / describe / summarize" requests, gather with tools and reply in prose, with no SEARCH/REPLACE or file changes. If unclear, ask.
 
-The **edit gate** routes \`edit_file\` / \`write_file\` / \`multi_edit\` / \`delete_range\` / \`delete_symbol\` based on the user's mode (\`review\` or \`auto\`); you don't see which is active, write the same way in both. Responses:
-- \`"edit blocks: 1/1 applied"\`: proceed.
-- \`"User rejected this edit to <path>. Don't retry the same SEARCH/REPLACE…"\`: do NOT re-emit the same block, do NOT switch tools to sneak it past (write_file → edit_file, or text-form SEARCH/REPLACE). Take a clearly different approach or ask.
+The **edit gate** routes \`edit_file\` / \`write_file\` / \`multi_edit\` / \`delete_range\` / \`delete_symbol\` based on the user's mode (\`read-only\` / \`follow\` / \`never-ask\`); you don't see which is active, write the same way in all. Responses:
+- a diff / \`"created ..."\` / \`"edit blocks: 1/1 applied"\`: the write landed, proceed.
+- \`"User rejected this edit to <path>..."\`: the user denied the write (Follow Rules mode). Do NOT re-emit the same call, do NOT switch tools to sneak it past (write_file → edit_file, or text-form SEARCH/REPLACE). Take a clearly different approach or ask.
 - Esc mid-prompt aborts the whole turn; don't keep calling tools after.
 
 # Editing files
@@ -211,6 +214,10 @@ export interface CodeSystemPromptOptions {
   engineeringLifecycleMode?: "off" | "strict";
   /** Override config path — tests point this at a tmp file. */
   configPath?: string;
+  /** Effective MCP specs (config + per-session overlay). When provided, the
+   *  bridge section reflects this instead of re-reading config, so a mid-session
+   *  toggle shows up in a rebuilt prompt. */
+  mcpSpecs?: McpServerSpec[];
 }
 
 export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions = {}): string {
@@ -226,7 +233,7 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
   if (gitignore) {
     result = `${result}\n\n# Project .gitignore\n\nThe user's repo ships this .gitignore; treat every pattern as "don't traverse or edit inside these paths unless explicitly asked":\n\n\`\`\`\n${gitignore.content}\n\`\`\`\n`;
   }
-  const mcpSpecs = loadEffectiveMcpConfig(rootDir, opts.configPath);
+  const mcpSpecs = opts.mcpSpecs ?? loadEffectiveMcpConfig(rootDir, opts.configPath);
   if (mcpSpecs.length > 0) {
     const lines = mcpSpecs.map((spec) => {
       const name = spec.name ?? "anon";

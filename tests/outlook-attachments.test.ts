@@ -9,6 +9,7 @@ import {
   looksLikeBase64,
   looksLikeFilePath,
 } from "../src/mcp/outlook-attachments.js";
+import { isOutlookReadOnlyTool } from "../src/mcp/outlook-mail.js";
 import { bridgeMcpTools } from "../src/mcp/registry.js";
 import type { CallToolResult, McpTool } from "../src/mcp/types.js";
 
@@ -185,5 +186,29 @@ describe("bridge transformArgs hook", () => {
     );
     expect(out).toContain("not found");
     expect(called).toBe(false);
+  });
+});
+
+describe("bridge readOnlyTool hook", () => {
+  it("marks classified mail reads read-only and leaves everything else alone", async () => {
+    const names = ["list-mail-messages", "get-mail-message", "send-mail", "create-mail-folder"];
+    const client = {
+      listTools: async () => ({
+        tools: names.map(
+          (name) =>
+            ({
+              name,
+              description: name,
+              inputSchema: { type: "object", properties: {} },
+            }) as McpTool,
+        ),
+      }),
+      callTool: async (): Promise<CallToolResult> => ({ content: [{ type: "text", text: "OK!" }] }),
+    } as unknown as Parameters<typeof bridgeMcpTools>[0];
+    const { registry } = await bridgeMcpTools(client, { readOnlyTool: isOutlookReadOnlyTool });
+    expect(registry.get("list-mail-messages")?.readOnly).toBe(true);
+    expect(registry.get("get-mail-message")?.readOnly).toBe(true);
+    expect(registry.get("send-mail")?.readOnly).toBeUndefined();
+    expect(registry.get("create-mail-folder")?.readOnly).toBeUndefined();
   });
 });

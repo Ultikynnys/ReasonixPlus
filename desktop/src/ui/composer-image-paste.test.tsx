@@ -27,7 +27,7 @@ const baseProps = {
   reasoningEffort: "high",
   onModelChange: vi.fn(),
   onEffortChange: vi.fn(),
-  editMode: "review",
+  editMode: "follow",
   onEditModeChange: vi.fn(),
   onVoiceError: vi.fn(),
   textareaRef: { current: null },

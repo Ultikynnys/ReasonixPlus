@@ -324,5 +324,39 @@ describe("codeSystemPrompt", () => {
       expect(out).toContain("- blender (stdio): uvx.exe --python 3.11 blender-mcp");
       expect(out).toContain("list_mcp_bridges");
     });
+
+    it("renders supplied mcpSpecs over config (session overlay wins)", () => {
+      writeFileSync(
+        join(root, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { blender: { command: "uvx.exe", args: ["blender-mcp"] } },
+        }),
+        "utf8",
+      );
+      const out = codeSystemPrompt(root, {
+        mcpSpecs: [
+          {
+            transport: "stdio",
+            name: "blender",
+            command: "uvx.exe",
+            args: ["blender-mcp"],
+            disabled: true,
+          },
+        ],
+      });
+      expect(out).toContain("- blender (stdio [disabled]): uvx.exe blender-mcp");
+    });
+
+    it("omits the bridges block when mcpSpecs is an empty list", () => {
+      writeFileSync(
+        join(root, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { blender: { command: "uvx.exe", args: ["blender-mcp"] } },
+        }),
+        "utf8",
+      );
+      const out = codeSystemPrompt(root, { mcpSpecs: [] });
+      expect(out).not.toMatch(/# Configured MCP bridges/);
+    });
   });
 });

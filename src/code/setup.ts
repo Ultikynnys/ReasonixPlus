@@ -16,9 +16,11 @@ import {
   loadTypesafeApiKey,
   providerForModel,
   readConfig,
+  rulePatterns,
   searchEnabled,
 } from "../config.js";
 import { bootstrapSemanticSearchInCodeMode } from "../index/semantic/tool.js";
+import type { McpServerSpec } from "../mcp/spec.js";
 import { createModelClient } from "../model-client.js";
 import { hasOpenAIOAuthSession } from "../oauth.js";
 import { ToolRegistry } from "../tools.js";
@@ -85,6 +87,9 @@ export interface CodeToolsetOpts {
   /** Per-tab subagent model, resolved lazily at spawn time via a getter so a
    *  change applies to the next spawn without rebuilding the toolset. */
   subagentModel?: () => string;
+  /** Live effective MCP specs (config + session overlay) for list_mcp_bridges, so
+   *  the tool reports the session's toggle state rather than the config default. */
+  getMcpSpecs?: () => McpServerSpec[];
   onPhase?: (phase: string) => void;
 }
 
@@ -102,9 +107,9 @@ export interface CodeToolset {
   syncJevTool: (enabled: boolean) => void;
 }
 
-/** Mirror `editMode === "plan"` into the registry's dispatch gate — keeps a single source of truth (the persisted EditMode) for the read-only mode. */
+/** Mirror `editMode === "read-only"` into the registry's dispatch gate - keeps a single source of truth (the persisted EditMode) for the read-only mode. */
 export function applyPlanMode(tools: ToolRegistry, editMode: EditMode): void {
-  tools.setPlanMode(editMode === "plan");
+  tools.setPlanMode(editMode === "read-only");
 }
 
 export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeToolset> {
@@ -119,8 +124,12 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
     const cfg = readConfig();
     registerShellTools(tools, {
       rootDir: root,
-      extraAllowed: () => loadAllShellAllowed(root),
-      allowAll: () => loadEditMode() === "yolo",
+      extraAllowed: () => rulePatterns("follow", "shell", root).allow,
+      extraAsk: () =>
+        rulePatterns(loadEditMode() === "never-ask" ? "never-ask" : "follow", "shell", root).ask,
+      extraDenied: () =>
+        loadEditMode() === "never-ask" ? rulePatterns("never-ask", "shell", root).deny : [],
+      allowAll: () => loadEditMode() === "never-ask",
       elevationEnabled: () => loadElevationEnabled(),
       jobs,
       onJobsChanged: opts.onJobsChanged,
@@ -157,7 +166,7 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
   registerSeeImageTool(tools, { rootDir: opts.rootDir });
   registerScreenCaptureTool(tools, { rootDir: opts.rootDir });
   registerComputerUseTool(tools);
-  registerScaffoldTools(tools, { projectRoot: opts.rootDir });
+  registerScaffoldTools(tools, { projectRoot: opts.rootDir, getMcpSpecs: opts.getMcpSpecs });
   // OAuth-only: image generation bills the user's ChatGPT/OpenAI plan, so it is
   // registered solely when an OpenAI OAuth session is present.
   if (hasOpenAIOAuthSession(opts.configPath)) {

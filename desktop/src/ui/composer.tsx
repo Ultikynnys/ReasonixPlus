@@ -37,15 +37,24 @@ const EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh", "
 const TRANSCRIBE_TIMEOUT_MS = 60_000;
 
 const MODE_INFO: ModeEntry[] = [
-  { k: "plan", label: "editMode.plan", icon: <I.list size={11} />, hint: "editMode.planHint" },
   {
-    k: "review",
-    label: "editMode.review",
-    icon: <I.shield size={11} />,
-    hint: "editMode.reviewHint",
+    k: "read-only",
+    label: "editMode.readOnly",
+    icon: <I.list size={11} />,
+    hint: "editMode.readOnlyHint",
   },
-  { k: "auto", label: "editMode.auto", icon: <I.zap size={11} />, hint: "editMode.autoHint" },
-  { k: "yolo", label: "editMode.yolo", icon: <I.warn size={11} />, hint: "editMode.yoloHint" },
+  {
+    k: "follow",
+    label: "editMode.follow",
+    icon: <I.shield size={11} />,
+    hint: "editMode.followHint",
+  },
+  {
+    k: "never-ask",
+    label: "editMode.neverAsk",
+    icon: <I.warn size={11} />,
+    hint: "editMode.neverAskHint",
+  },
 ];
 
 export function ModeSwitch({

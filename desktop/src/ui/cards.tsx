@@ -78,6 +78,35 @@ function OpenFileButton({ path, label }: { path: string; label: string }) {
   );
 }
 
+/** Hover-revealed copy affordance pinned to a card's bottom-right. Copies the
+ *  card's own content (not a whole-turn response); flips to "copied" for ~1.2s. */
+function CopyButton({ text }: { text: string }) {
+  useLang();
+  const [copied, setCopied] = useState(false);
+  if (!text.trim()) return null;
+  return (
+    <button
+      type="button"
+      className={`card-copy ${copied ? "done" : ""}`}
+      title={t("thread.copyCard")}
+      onClick={(e) => {
+        // The pill can sit over a card header — don't let the click toggle it.
+        e.stopPropagation();
+        void navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          })
+          .catch(() => {});
+      }}
+    >
+      <I.copy size={11} />
+      {copied ? t("markdown.copied") : null}
+    </button>
+  );
+}
+
 export function Card({
   tone = "default",
   icon,
@@ -88,6 +117,7 @@ export function Card({
   compact = false,
   children,
   headRight,
+  copyText,
 }: {
   tone?: Tone;
   icon: ReactNode;
@@ -100,6 +130,8 @@ export function Card({
   compact?: boolean;
   children: ReactNode;
   headRight?: ReactNode;
+  /** Content the bottom-right hover copy button copies; empty/omitted renders none. */
+  copyText?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
@@ -116,6 +148,7 @@ export function Card({
         {headRight}
       </div>
       {open ? <div className="card-body">{children}</div> : null}
+      {copyText ? <CopyButton text={copyText} /> : null}
     </div>
   );
 }
@@ -168,12 +201,16 @@ export function PlanCardView({ items, title }: { items: PlanItem[]; title?: stri
   const resolvedTitle = title ?? t("cards.planDefaultTitle");
   const done = items.filter((x) => x.status === "done").length;
   const badge = derivePlanBadge(items);
+  const planText = items
+    .map((it) => `${it.status === "done" ? "[x]" : "[ ]"} ${it.text}`)
+    .join("\n");
   return (
     <Card
       tone="accent"
       icon={<I.list size={12} />}
       kind="plan"
       name={resolvedTitle}
+      copyText={planText}
       meta={
         <>
           <span>
@@ -189,11 +226,11 @@ export function PlanCardView({ items, title }: { items: PlanItem[]; title?: stri
           <li key={it.id} className="plan-item" data-status={it.status}>
             <span className="ck">{it.status === "done" ? <I.check size={12} /> : null}</span>
             <div>
-              <div className="text">{it.text}</div>
+              <div className="text">{sanitizeTerminalText(it.text)}</div>
               {it.tool || it.note ? (
                 <div className="sub">
-                  {it.tool ? <span className="tool">{it.tool}</span> : null}
-                  {it.note ? <span>{it.note}</span> : null}
+                  {it.tool ? <span className="tool">{sanitizeTerminalText(it.tool)}</span> : null}
+                  {it.note ? <span>{sanitizeTerminalText(it.note)}</span> : null}
                 </div>
               ) : null}
             </div>
@@ -298,6 +335,7 @@ export function ReasoningCard({
           )}
         </>
       }
+      copyText={text}
       defaultOpen={streaming}
       compact
     >
@@ -363,7 +401,8 @@ export function ShellCard({
   durationMs,
   onApprove,
   onReject,
-  onAlwaysAllow,
+  onAddWorkspaceRule,
+  onAddGlobalRule,
   onStop,
 }: {
   command: string;
@@ -381,7 +420,8 @@ export function ShellCard({
   durationMs?: number;
   onApprove?: () => void;
   onReject?: () => void;
-  onAlwaysAllow?: () => void;
+  onAddWorkspaceRule?: () => void;
+  onAddGlobalRule?: () => void;
   onStop?: () => void;
 }) {
   useLang();
@@ -394,6 +434,7 @@ export function ShellCard({
   // The settled result is raw combined stdout/stderr — strip escape sequences
   // and progress/control bytes so colored output doesn't render as mojibake.
   const outText = output ? sanitizeTerminalText(output) : undefined;
+  const copyText = outText ? `$ ${command}\n\n${outText}` : `$ ${command}`;
   return (
     <Card
       tone={tone}
@@ -401,6 +442,7 @@ export function ShellCard({
       kind="shell"
       name="shell"
       compact
+      copyText={copyText}
       defaultOpen={state !== "done"}
       meta={
         <>
@@ -422,7 +464,7 @@ export function ShellCard({
       <div className="shell">
         <div className="cmd">
           <span className="prompt">$</span>
-          <span className="text">{command}</span>
+          <span className="text">{sanitizeTerminalText(command)}</span>
         </div>
         {state === "running" && liveOutput ? <ShellLiveRows text={liveOutput} /> : null}
         {outText !== undefined ? (
@@ -453,9 +495,14 @@ export function ShellCard({
               <b>{t("cards.shellAwaiting")}</b>: {t("cards.shellExecuteHint")}
             </div>
             <div className="actions">
-              {onAlwaysAllow ? (
-                <button type="button" className="btn ghost" onClick={onAlwaysAllow}>
-                  {t("cards.shellAlwaysAllow")}
+              {onAddWorkspaceRule ? (
+                <button type="button" className="btn ghost" onClick={onAddWorkspaceRule}>
+                  {t("cards.shellAddWorkspaceRule")}
+                </button>
+              ) : null}
+              {onAddGlobalRule ? (
+                <button type="button" className="btn ghost" onClick={onAddGlobalRule}>
+                  {t("cards.shellAddGlobalRule")}
                 </button>
               ) : null}
               {onReject ? (
@@ -581,17 +628,17 @@ export function CompactionCard({
   ) : failed ? (
     <div className="compaction-body">
       {t("cards.compactionFailedBody")}
-      {error ? `: ${error}` : ""}
+      {error ? `: ${sanitizeTerminalText(error)}` : ""}
     </div>
   ) : idle ? (
     <div className="compaction-body">{t("cards.compactionNothingToFold")}</div>
   ) : summary ? (
     <div className="compaction-body">
       <Markdown source={summary} />
-      {warn ? <div className="compaction-warn">{warn}</div> : null}
+      {warn ? <div className="compaction-warn">{sanitizeTerminalText(warn)}</div> : null}
     </div>
   ) : warn ? (
-    <div className="compaction-body">{warn}</div>
+    <div className="compaction-body">{sanitizeTerminalText(warn)}</div>
   ) : null;
   return (
     <Card
@@ -600,6 +647,7 @@ export function CompactionCard({
       kind="compaction"
       name={name}
       meta={meta}
+      copyText={summary ?? warn ?? error}
       defaultOpen={running}
       compact
     >
@@ -713,6 +761,7 @@ export function ToolCard({
         </>
       }
       headRight={fileRef ? <OpenFileButton path={fileRef.path} label={fileRef.path} /> : undefined}
+      copyText={[formattedArgs, result].filter(Boolean).join("\n\n")}
     >
       <div className="tool-call">
         {args ? (
@@ -748,7 +797,9 @@ export type DiffLine =
 
 export function parseEditResult(text: string): { filename: string; lines: DiffLine[] }[] {
   const files: { filename: string; lines: DiffLine[] }[] = [];
-  const lines = text.split("\n");
+  // Diff text is file content, and a file can wrap a captured terminal — strip
+  // ANSI/control bytes at this boundary so no edit-card line renders as mojibake.
+  const lines = sanitizeTerminalText(text).split("\n");
 
   let currentFilename = "";
   let currentLines: DiffLine[] = [];
@@ -826,6 +877,14 @@ export function DiffCard({
   useLang();
   const adds = lines.filter((x) => x.t === "add").length;
   const rms = lines.filter((x) => x.t === "rm").length;
+  const diffText = lines
+    .map((ln) => {
+      if (ln.t === "add") return `+${ln.s}`;
+      if (ln.t === "rm") return `-${ln.s}`;
+      if (ln.t === "hunk") return ln.s;
+      return ` ${ln.s}`;
+    })
+    .join("\n");
   return (
     <Card
       tone={applied ? "success" : "accent"}
@@ -844,6 +903,7 @@ export function DiffCard({
         </>
       }
       headRight={<OpenFileButton path={filename} label={t("cards.showInExplorer")} />}
+      copyText={`${filename}\n\n${diffText}`}
     >
       <div className="diff">
         <div className="lines">
@@ -946,6 +1006,7 @@ export function NoticeCard({
       name={name ?? noticeName(severity)}
       defaultOpen
       compact
+      copyText={text}
     >
       <div className="notice-body pre-text" data-severity={severity}>
         {sanitizeTerminalText(text)}
@@ -1080,8 +1141,8 @@ function SubagentActivityRows({ run }: { run: import("../App").SubagentRunProgre
             }`}
           />
           <span className="sub-activity-tag">{row.kind}</span>
-          <span className="sub-activity-text" title={row.text}>
-            {row.text}
+          <span className="sub-activity-text" title={sanitizeTerminalText(row.text)}>
+            {sanitizeTerminalText(row.text)}
           </span>
         </div>
       ))}
@@ -1141,6 +1202,7 @@ export function SubagentCard({
       icon={<I.bot size={12} />}
       kind="subagent"
       name={name}
+      copyText={result ?? ""}
       meta={
         <>
           {models.length > 0 ? <span className="meta-model">{models.join(" + ")}</span> : null}
@@ -1169,7 +1231,7 @@ export function SubagentCard({
           <div className="sub-row" key={run.runId}>
             <span className="av">AI</span>
             <div className="what">
-              <div>{run.task}</div>
+              <div>{sanitizeTerminalText(run.task)}</div>
               <div className="role">
                 {run.skillName ?? "subagent"}
                 {run.model ? ` · ${run.model}` : ""}
@@ -1188,7 +1250,7 @@ export function SubagentCard({
                   <div className="role" key={tool.callId} title={tool.args}>
                     {tool.status === "running" ? "↳ …" : tool.status === "failed" ? "↳ ✕" : "↳ ✓"}{" "}
                     {tool.name}
-                    {tool.args ? ` ${tool.args}` : ""}
+                    {tool.args ? ` ${sanitizeTerminalText(tool.args)}` : ""}
                   </div>
                 ))
               )}
@@ -1210,7 +1272,7 @@ export function SubagentCard({
                   Stopped at {run.budgetExhausted === "elapsed" ? "time" : "tool-call"} budget
                 </div>
               ) : null}
-              {run.error ? <div className="role">{run.error}</div> : null}
+              {run.error ? <div className="role">{sanitizeTerminalText(run.error)}</div> : null}
             </div>
             <span className="prog">
               {run.status === "done" ? (
@@ -1246,6 +1308,7 @@ export const AssistantText = memo(function AssistantText({ text }: { text: strin
   return (
     <div className="msg-text">
       <Markdown source={text} />
+      <CopyButton text={text} />
     </div>
   );
 });

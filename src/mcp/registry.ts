@@ -42,6 +42,10 @@ export interface BridgeOptions {
   /** Bare MCP tool names (pre-prefix) that must NOT be registered — user-disabled
    *  per-tool toggles. Skipped tools land in `BridgeResult.skipped`. */
   disabledTools?: ReadonlySet<string>;
+  /** Opt-in read-only classification (bare MCP name → pure read?). Marked tools stay
+   *  dispatchable in read-only mode; every other bridged tool is refused there.
+   *  Absent → no bridged tool counts as read-only. */
+  readOnlyTool?: (toolName: string) => boolean;
   /** Hardcoded tooling duty (playwright driver + AGENTS.md) — appended to the
    *  FIRST successful tool result of this bridge so every agent driving the
    *  browser learns the maintenance contract without a schema-cost bump. */
@@ -95,6 +99,8 @@ export interface BridgeEnv {
   maxResultChars: number;
   tracker: LatencyTracker | null;
   onProgress?: BridgeOptions["onProgress"];
+  /** Read classifier forwarded from `BridgeOptions.readOnlyTool`. */
+  readOnlyTool?: BridgeOptions["readOnlyTool"];
   /** Optional readiness gate awaited before each `callTool` dispatch. */
   ready?: Promise<void>;
   /** Timeout for waiting on `ready` — milliseconds. Defaults to DEFAULT_READY_TIMEOUT_MS. */
@@ -152,6 +158,7 @@ export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string 
       stableTool.name,
     ),
     parameters: stableTool.inputSchema as JSONSchema,
+    readOnly: env.readOnlyTool?.(stableTool.name) || undefined,
     fn: async (args: Record<string, unknown>, ctx) => {
       if (env.ready) {
         await waitForReady(
@@ -279,6 +286,7 @@ export async function bridgeMcpTools(
     descriptionSuffix: opts.descriptionSuffix,
     beforeCall: opts.beforeCall,
     transformArgs: opts.transformArgs,
+    readOnlyTool: opts.readOnlyTool,
     bareNames: new Map(),
   };
   const listed = await client.listTools();

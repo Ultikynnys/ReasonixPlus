@@ -16,9 +16,11 @@ export function ApprovalCard({
   primaryLabel,
   secondaryLabel,
   tertiaryLabel,
+  quaternaryLabel,
   onPrimary,
   onSecondary,
   onTertiary,
+  onQuaternary,
   defaultOpen = true,
 }: {
   kind: string;
@@ -31,9 +33,11 @@ export function ApprovalCard({
   primaryLabel?: string;
   secondaryLabel?: string;
   tertiaryLabel?: string;
+  quaternaryLabel?: string;
   onPrimary?: () => void;
   onSecondary?: () => void;
   onTertiary?: () => void;
+  onQuaternary?: () => void;
   defaultOpen?: boolean;
 }) {
   useLang();
@@ -68,6 +72,11 @@ export function ApprovalCard({
             {onTertiary && tertiaryLabel ? (
               <button type="button" className="btn ghost" onClick={onTertiary}>
                 {tertiaryLabel}
+              </button>
+            ) : null}
+            {onQuaternary && quaternaryLabel ? (
+              <button type="button" className="btn ghost" onClick={onQuaternary}>
+                {quaternaryLabel}
               </button>
             ) : null}
             <span className="grow" />

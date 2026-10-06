@@ -366,6 +366,21 @@ export function isAllowed(
   return false;
 }
 
+/** Pattern-only match for the approval rules: the list alone decides, with no builtin
+ *  allowlist and no risky-arg or sensitive-path demotions, so a deny rule cannot be
+ *  talked out of matching by a flag in the tail. */
+export function matchesAnyRulePattern(cmd: string, patterns: readonly string[]): boolean {
+  if (patterns.length === 0) return false;
+  let argv: string[];
+  try {
+    argv = tokenizeCommand(cmd);
+  } catch {
+    return false;
+  }
+  if (argv.length === 0) return false;
+  return patterns.some((pattern) => matchesCommandPattern(pattern, argv, cmd).matched);
+}
+
 /** For chain commands, every segment must individually clear the allowlist. */
 export function isCommandAllowed(
   cmd: string,

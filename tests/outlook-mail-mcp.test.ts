@@ -10,6 +10,7 @@ import {
   extractOutlookMessageId,
   isOutlookConfirmedSendTool,
   isOutlookMailSpec,
+  isOutlookReadOnlyTool,
   isOutlookSendCapableTool,
   isTrustedMicrosoftLoginUrl,
   parseOutlookDeviceCode,
@@ -44,6 +45,23 @@ describe("managed Outlook Mail MCP", () => {
     expect(isOutlookSendCapableTool("forward-mail-message")).toBe(true);
     expect(isOutlookSendCapableTool("graph-batch")).toBe(true);
     expect(isOutlookSendCapableTool("list-mail-messages")).toBe(false);
+  });
+
+  it("classifies mail reads fail-safe for read-only mode", () => {
+    expect(isOutlookReadOnlyTool("list-mail-messages")).toBe(true);
+    expect(isOutlookReadOnlyTool("get-mail-message")).toBe(true);
+    expect(isOutlookReadOnlyTool("search-mail-messages")).toBe(true);
+    // Send-capable, account-level, and mutating verbs never pass as reads.
+    expect(isOutlookReadOnlyTool("send-mail")).toBe(false);
+    expect(isOutlookReadOnlyTool("send-draft-message")).toBe(false);
+    expect(isOutlookReadOnlyTool("reply-mail-message")).toBe(false);
+    expect(isOutlookReadOnlyTool("forward-mail-message")).toBe(false);
+    expect(isOutlookReadOnlyTool("graph-batch")).toBe(false);
+    expect(isOutlookReadOnlyTool("login")).toBe(false);
+    expect(isOutlookReadOnlyTool("create-mail-folder")).toBe(false);
+    expect(isOutlookReadOnlyTool("update-mailbox-settings")).toBe(false);
+    expect(isOutlookReadOnlyTool("delete-mail-rule")).toBe(false);
+    expect(isOutlookReadOnlyTool("add-mail-attachment")).toBe(false);
   });
 
   it("recognizes confirmed send tools", () => {

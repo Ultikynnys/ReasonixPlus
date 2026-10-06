@@ -24,6 +24,9 @@ export interface ToolCallContext {
   confirmationGate?: PauseGate;
   /** Per-session tracker of files the model has read. Filesystem tools mark on read/write, edit_file/multi_edit consult before mutating. */
   readTracker?: ReadTracker;
+  /** Set by the first filesystem write in a call so a multi-path tool (multi_edit,
+   *  move_file) opens only one Follow Rules confirmation prompt. Mutable per-call state. */
+  writeGateDone?: boolean;
   /** Data-URL image attachments of the current user turn (vision tools). */
   images?: readonly string[];
   /** Project root the turn is running in — for resolving relative paths. */
@@ -266,13 +269,13 @@ export class ToolRegistry {
     // Validation passed — this tool's malformed-args streak is broken.
     this._lastMalformed.delete(name);
 
-    // Plan-mode enforcement — runs AFTER arg parsing so a tool with a
+    // Read-only enforcement — runs AFTER arg parsing so a tool with a
     // runtime `readOnlyCheck` can inspect the actual args (e.g.
     // `run_command` is read-only iff the command matches its allowlist).
     if (this._planMode && !isReadOnlyTool(tool, args)) {
       return JSON.stringify({
-        error: `${name}: unavailable in plan mode: this is a read-only exploration phase. Use read_file / list_directory / search_files / directory_tree / web_search / allowlisted shell commands to investigate. Call submit_plan with your proposed plan when you're ready for the user's review.`,
-        rejectedReason: "plan-mode",
+        error: `${name}: blocked in Read only mode. No plan approval is pending and none is needed: this mode never writes and never runs a command outside the allowlist. Read tools, allowlisted shell commands and submit_plan still work. If the action is needed, the user switches the edit gate to Follow Rules (asks first) or Never Ask.`,
+        rejectedReason: "read-only",
       });
     }
 
@@ -474,7 +477,14 @@ function rejectedReason(name: string, result: string): string | null {
 }
 
 function plainTextRejectedReason(name: string, result: string): string | null {
-  if ((name === "edit_file" || name === "write_file") && /rejected this edit/i.test(result)) {
+  if (
+    (name === "edit_file" ||
+      name === "write_file" ||
+      name === "multi_edit" ||
+      name === "delete_range" ||
+      name === "delete_symbol") &&
+    /rejected this edit/i.test(result)
+  ) {
     return "edit-gate";
   }
   if (

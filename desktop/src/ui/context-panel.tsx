@@ -1,3 +1,4 @@
+import type { RuleRecord } from "@reasonix/core-utils";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -19,6 +20,10 @@ import { FileMenu } from "./file-menu";
 import { activationHandler } from "./keyboard";
 
 type Tab = "files" | "tools" | "context" | "memory" | "rules" | "plan";
+
+/** Rule effect and mode come straight off the wire type, so they cannot drift. */
+type RuleEffect = RuleRecord["effect"];
+type RuleMode = RuleRecord["mode"];
 
 /** Fallback until the sidecar reports the real cap via $ctx_breakdown — the V4 context
  *  window is 300K (DEEPSEEK_CONTEXT_TOKENS); never show the old 1M API ceiling. */
@@ -51,6 +56,8 @@ export function ContextPanel({
   onDismissMemoryResult,
   onCompact,
   onAddRule,
+  onUpdateRule,
+  onCopyWorkspaceRules,
   onRemoveRule,
   onSaveSettings,
   onReadContext,
@@ -80,8 +87,10 @@ export function ContextPanel({
   onImportMemories: (json: string) => void;
   onDismissMemoryResult: () => void;
   onCompact?: () => void;
-  onAddRule?: (ruleType: "shell" | "path", pattern: string) => void;
-  onRemoveRule?: (ruleType: "shell" | "path", pattern: string) => void;
+  onAddRule?: (rule: RuleRecord) => void;
+  onUpdateRule?: (from: RuleRecord, to: RuleRecord) => void;
+  onCopyWorkspaceRules?: (from: string) => void;
+  onRemoveRule?: (rule: RuleRecord) => void;
   onSaveSettings?: (patch: SettingsPatch) => void;
   /** Latest $context_raw payload — the Raw context read side. */
   rawContext?: Omit<ContextRawEvent, "type"> | null;
@@ -264,7 +273,13 @@ export function ContextPanel({
             />
           )}
           {tab === "rules" && (
-            <CtxRules settings={settings} onAddRule={onAddRule} onRemoveRule={onRemoveRule} />
+            <CtxRules
+              settings={settings}
+              onAddRule={onAddRule}
+              onUpdateRule={onUpdateRule}
+              onCopyWorkspaceRules={onCopyWorkspaceRules}
+              onRemoveRule={onRemoveRule}
+            />
           )}
           {tab === "plan" ? (
             activePlan ? <CtxPlan plan={activePlan} /> : <div className="ctx-empty">No plan history yet.</div>
@@ -1655,162 +1670,295 @@ function CtxMemory({
 function CtxRules({
   settings,
   onAddRule,
+  onUpdateRule,
+  onCopyWorkspaceRules,
   onRemoveRule,
 }: {
   settings: Settings | null;
-  onAddRule?: (ruleType: "shell" | "path", pattern: string) => void;
-  onRemoveRule?: (ruleType: "shell" | "path", pattern: string) => void;
+  onAddRule?: (rule: RuleRecord) => void;
+  onUpdateRule?: (from: RuleRecord, to: RuleRecord) => void;
+  onCopyWorkspaceRules?: (from: string) => void;
+  onRemoveRule?: (rule: RuleRecord) => void;
 }) {
-  const [ruleType, setRuleType] = useState<"shell" | "path">("shell");
+  const [effect, setEffect] = useState<RuleEffect>("allow");
   const [pattern, setPattern] = useState("");
+  const [addingTo, setAddingTo] = useState<"workspace" | "global" | null>(null);
+  const [copyOpen, setCopyOpen] = useState(false);
 
-  const editMode = settings?.editMode ?? "review";
-  const items: { p: string; allow: boolean; desc: string }[] =
-    editMode === "yolo"
-      ? [{ p: "*", allow: true, desc: t("contextPanel.ruleYolo") }]
-      : editMode === "auto"
-        ? [
-            {
-              p: "read_file, list_directory, search_files, *",
-              allow: true,
-              desc: t("contextPanel.ruleReadOnly"),
-            },
-            {
-              p: "run_command (allowlist)",
-              allow: true,
-              desc: t("contextPanel.ruleShellAllowlist"),
-            },
-            {
-              p: "edit_file, write_file, run_command (other)",
-              allow: false,
-              desc: t("contextPanel.ruleWritesAsk"),
-            },
-          ]
-        : [{ p: "*", allow: false, desc: t("contextPanel.ruleReview") }];
+  useEffect(() => {
+    if (!copyOpen) return;
+    const close = () => setCopyOpen(false);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [copyOpen]);
 
-  const shellRules = settings?.shellAllowed ?? [];
-  const pathRules = settings?.pathAllowed ?? [];
-  const totalCustom = shellRules.length + pathRules.length;
+  const editMode = settings?.editMode ?? "follow";
+  /** Read only honours no rules at all, so it shows the mode card alone. */
+  const ruleMode: RuleMode | null = editMode === "read-only" ? null : editMode;
+  /** Follow offers allow/ask; Never Ask offers deny/ask. */
+  const effects: RuleEffect[] = ruleMode === "never-ask" ? ["deny", "ask"] : ["allow", "ask"];
+  const activeEffect = effects.includes(effect) ? effect : effects[0]!;
+  type Verdict = "allow" | "ask" | "deny";
+  const list = (v: readonly string[] | undefined): string[] => (v ? [...v] : []);
+  const join = (patterns: readonly string[]): string =>
+    patterns.length > 0 ? patterns.join(" | ") : t("contextPanel.rulePatternNone");
+  const outsidePaths = t("contextPanel.ruleRowOutsidePathsPattern");
+  const outlook = t("contextPanel.ruleRowOutlookPattern");
+  const EVERYTHING: TKey = "contextPanel.ruleRowEverything";
+  /** The mode's own behaviour, never your rules: those are listed in the workspace and
+   *  global sections, so repeating them here would say the same thing twice. A row whose
+   *  list is empty is not rendered, so an empty set never shows as `none`. */
+  const CARDS: Record<
+    "read-only" | "follow" | "never-ask",
+    Array<{ label: TKey; patterns: string[]; verdict: Verdict }>
+  > = {
+    "read-only": [
+      {
+        label: "contextPanel.ruleRowReadTools",
+        patterns: list(settings?.readOnlyTools),
+        verdict: "allow",
+      },
+      {
+        label: "contextPanel.ruleRowAllowlistShell",
+        patterns: list(settings?.builtinShellAllowlist),
+        verdict: "allow",
+      },
+      { label: "contextPanel.ruleRowOutsidePaths", patterns: [outsidePaths], verdict: "ask" },
+    ],
+    follow: [
+      { label: EVERYTHING, patterns: ["*"], verdict: "ask" },
+      {
+        label: "contextPanel.ruleRowReadTools",
+        patterns: list(settings?.readOnlyTools),
+        verdict: "allow",
+      },
+      {
+        label: "contextPanel.ruleRowAllowlistShell",
+        patterns: list(settings?.builtinShellAllowlist),
+        verdict: "allow",
+      },
+      { label: "contextPanel.ruleRowOutlook", patterns: [outlook], verdict: "ask" },
+    ],
+    "never-ask": [
+      { label: EVERYTHING, patterns: ["*"], verdict: "allow" },
+      { label: "contextPanel.ruleRowOutlook", patterns: [outlook], verdict: "ask" },
+    ],
+  };
+  const VERDICT: Record<Verdict, { label: TKey; tone: string }> = {
+    allow: { label: "contextPanel.allow", tone: "" },
+    ask: { label: "contextPanel.ask", tone: "warn" },
+    deny: { label: "contextPanel.deny", tone: "deny" },
+  };
+  const rulesForMode = (settings?.rules ?? []).filter(
+    (r) => ruleMode !== null && r.mode === ruleMode,
+  );
+  /** Other workspaces that carry rules, as copy sources. Undefined means the daemon has
+   *  not reported the list yet, which must not read as "nothing to copy from". */
+  const otherWorkspaces = (settings?.workspacesWithRules ?? []).filter(
+    (w) => w.rootDir !== settings?.workspaceDir,
+  );
+  const noCopySource =
+    settings?.workspacesWithRules !== undefined && otherWorkspaces.length === 0;
+  const sections = [
+    {
+      titleKey: "contextPanel.workspaceRulesTitle" as TKey,
+      emptyKey: "contextPanel.noWorkspaceRules" as TKey,
+      scope: "workspace" as const,
+      rules: rulesForMode.filter((r) => r.scope === "workspace"),
+    },
+    {
+      titleKey: "contextPanel.globalRulesTitle" as TKey,
+      emptyKey: "contextPanel.noGlobalRules" as TKey,
+      scope: "global" as const,
+      rules: rulesForMode.filter((r) => r.scope === "global"),
+    },
+  ];
 
-  const handleAdd = (e: React.FormEvent) => {
+  const handleAdd = (e: React.FormEvent, scope: "workspace" | "global") => {
     e.preventDefault();
     const trimmed = pattern.trim();
-    if (!trimmed || !onAddRule) return;
-    onAddRule(ruleType, trimmed);
+    if (!trimmed || !onAddRule || ruleMode === null) return;
+    // Path rules are not user-creatable: every rule the panel adds is a shell pattern.
+    onAddRule({ mode: ruleMode, effect: activeEffect, kind: "shell", scope, pattern: trimmed });
     setPattern("");
   };
 
   return (
     <>
-      <div className="ctx-block">
+      <div className="ctx-block mode-rules">
         <div className="h">
-          <span>{t("contextPanel.autoApproveTitle")}</span>
-          <span className="right">{editMode}</span>
+          <span>{t("contextPanel.modeRulesTitle")}</span>
         </div>
-        {items.map((r) => (
-          <div className="rule" key={r.p}>
-            <div className="top">
-              <span className={`pat ${r.allow ? "" : "deny"}`}>{r.p}</span>
-              <span className={`sw ${r.allow ? "" : "deny"}`}>
-                {r.allow ? t("contextPanel.allow") : t("contextPanel.ask")}
+        {CARDS[editMode]
+          .filter((row) => row.patterns.length > 0)
+          .map((row) => {
+            const v = VERDICT[row.verdict];
+            return (
+              <div className="rule" key={row.label}>
+                <div className="top">
+                  <span className="pat">{t(row.label)}</span>
+                  <span className={`sw ${v.tone}`}>{t(v.label)}</span>
+                </div>
+                <div className="desc pattern">{join(row.patterns)}</div>
+              </div>
+            );
+          })}
+      </div>
+
+      {ruleMode !== null &&
+        sections.map((section) => {
+          const adding = addingTo === section.scope;
+        return (
+          <div className="ctx-block" style={{ marginTop: 14 }} key={section.scope}>
+            <div className="h">
+              <span style={{ position: "relative", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span>{t(section.titleKey)}</span>
+                {section.scope === "workspace" && onCopyWorkspaceRules && (
+                  <button
+                    type="button"
+                    className="copy-rules-btn"
+                    title={
+                      noCopySource
+                        ? t("contextPanel.copyRulesNoSource")
+                        : t("contextPanel.copyRulesHint")
+                    }
+                    aria-label={t("contextPanel.copyWorkspaceRules")}
+                    aria-expanded={copyOpen}
+                    disabled={noCopySource}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCopyOpen((open) => !open);
+                    }}
+                  >
+                    <I.folder size={12} />
+                    {t("contextPanel.copyRulesButton")}
+                  </button>
+                )}
+                {copyOpen && section.scope === "workspace" && onCopyWorkspaceRules && (
+                  <div className="rules-copy-pop">
+                    <div className="note">{t("contextPanel.copyRulesReplaceNote")}</div>
+                    {otherWorkspaces.map((w) => (
+                      <button
+                        key={w.rootDir}
+                        type="button"
+                        className="item"
+                        title={w.rootDir}
+                        onClick={() => {
+                          onCopyWorkspaceRules(w.rootDir);
+                          setCopyOpen(false);
+                        }}
+                      >
+                        {w.rootDir.split(/[\\/]/).filter(Boolean).pop() ?? w.rootDir}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </span>
+              <span
+                className="right"
+                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+              >
+                {section.rules.length}
+                {onAddRule && (
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    title={`${t("contextPanel.addRuleBtn")}: ${t(section.titleKey)}`}
+                    aria-label={`${t("contextPanel.addRuleBtn")}: ${t(section.titleKey)}`}
+                    aria-expanded={adding}
+                    onClick={() => setAddingTo(adding ? null : section.scope)}
+                  >
+                    <I.plus size={12} />
+                  </button>
+                )}
               </span>
             </div>
-            <div className="desc">{r.desc}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="ctx-block" style={{ marginTop: 14 }}>
-        <div className="h">
-          <span>{t("contextPanel.customRulesTitle")}</span>
-          <span className="right">{totalCustom}</span>
-        </div>
-
-        {shellRules.map((r) => (
-          <div className="rule" key={`shell-${r}`}>
-            <div className="top">
-              <span className="pat">{r}</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="sw">{t("contextPanel.allow")}</span>
-                {onRemoveRule && (
+            {section.rules.map((r) => (
+              <div className="rule" key={`${section.scope}-${r.kind}-${r.effect}-${r.pattern}`}>
+                <div className="top">
+                  <span className="pat">{r.pattern}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    {onUpdateRule ? (
+                      <button
+                        type="button"
+                        className={`sw ${VERDICT[r.effect].tone} editable`}
+                        title={t("contextPanel.changeEffectHint")}
+                        aria-label={`${t("contextPanel.changeEffect")}: ${r.pattern} (${t(
+                          VERDICT[r.effect].label,
+                        )})`}
+                        onClick={() =>
+                          onUpdateRule(r, {
+                            ...r,
+                            effect: effects[(effects.indexOf(r.effect) + 1) % effects.length]!,
+                          })
+                        }
+                      >
+                        {t(VERDICT[r.effect].label)}
+                      </button>
+                    ) : (
+                      <span className={`sw ${VERDICT[r.effect].tone}`}>
+                        {t(VERDICT[r.effect].label)}
+                      </span>
+                    )}
+                    {onRemoveRule && (
+                      <button
+                        type="button"
+                        className="mini-btn"
+                        title={t("contextPanel.deleteRuleTooltip")}
+                        aria-label={`Remove rule: ${r.pattern}`}
+                        onClick={() => onRemoveRule(r)}
+                      >
+                        <I.trash size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {section.rules.length === 0 && !adding && (
+              <div style={{ color: "var(--muted)", fontSize: 12, padding: "4px 0" }}>
+                {t(section.emptyKey)}
+              </div>
+            )}
+            {adding && onAddRule && (
+              <form className="rule-composer" onSubmit={(e) => handleAdd(e, section.scope)}>
+                <div className="rule-composer-row">
                   <button
                     type="button"
-                    className="mini-btn"
-                    title={t("contextPanel.deleteRuleTooltip")}
-                    aria-label={`Remove rule: ${r}`}
-                    onClick={() => onRemoveRule("shell", r)}
+                    className={`sw ${VERDICT[activeEffect].tone} editable`}
+                    title={t("contextPanel.changeEffectHint")}
+                    aria-label={`${t("contextPanel.changeEffect")}: ${t(VERDICT[activeEffect].label)}`}
+                    onClick={() =>
+                      setEffect(effects[(effects.indexOf(activeEffect) + 1) % effects.length]!)
+                    }
                   >
-                    <I.trash size={12} />
+                    {t(VERDICT[activeEffect].label)}
                   </button>
-                )}
-              </div>
-            </div>
-            <div className="desc">{t("contextPanel.ruleTypeShell")}</div>
-          </div>
-        ))}
-
-        {pathRules.map((r) => (
-          <div className="rule" key={`path-${r}`}>
-            <div className="top">
-              <span className="pat">{r}</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="sw">{t("contextPanel.allow")}</span>
-                {onRemoveRule && (
+                  <input
+                    type="text"
+                    className="rule-input"
+                    placeholder={t("contextPanel.rulePatternPlaceholder")}
+                    value={pattern}
+                    onChange={(e) => setPattern(e.target.value)}
+                    aria-label="Rule pattern"
+                    autoFocus
+                  />
                   <button
-                    type="button"
-                    className="mini-btn"
-                    title={t("contextPanel.deleteRuleTooltip")}
-                    aria-label={`Remove rule: ${r}`}
-                    onClick={() => onRemoveRule("path", r)}
+                    type="submit"
+                    className="btn small"
+                    disabled={!pattern.trim()}
+                    title={t("contextPanel.addRuleBtn")}
+                    aria-label={t("contextPanel.addRuleBtn")}
                   >
-                    <I.trash size={12} />
+                    <I.plus size={12} />
                   </button>
-                )}
-              </div>
-            </div>
-            <div className="desc">{t("contextPanel.ruleTypePath")}</div>
+                </div>
+              </form>
+            )}
           </div>
-        ))}
+        );
+      })}
 
-        {totalCustom === 0 && (
-          <div style={{ color: "var(--muted)", fontSize: 12, padding: "4px 0" }}>
-            {t("contextPanel.noCustomRules")}
-          </div>
-        )}
-
-        {onAddRule && (
-          <form className="rule-composer" onSubmit={handleAdd}>
-            <div className="rule-composer-row">
-              <select
-                className="rule-select"
-                value={ruleType}
-                onChange={(e) => setRuleType(e.target.value as "shell" | "path")}
-                aria-label="Rule type"
-              >
-                <option value="shell">{t("contextPanel.ruleTypeShell")}</option>
-                <option value="path">{t("contextPanel.ruleTypePath")}</option>
-              </select>
-              <input
-                type="text"
-                className="rule-input"
-                placeholder={t("contextPanel.rulePatternPlaceholder")}
-                value={pattern}
-                onChange={(e) => setPattern(e.target.value)}
-                aria-label="Rule pattern"
-              />
-              <button
-                type="submit"
-                className="btn small"
-                disabled={!pattern.trim()}
-                title={t("contextPanel.addRuleBtn")}
-                aria-label={t("contextPanel.addRuleBtn")}
-              >
-                <I.plus size={12} />
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
     </>
   );
 }

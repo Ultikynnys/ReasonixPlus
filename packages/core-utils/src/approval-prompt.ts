@@ -19,12 +19,14 @@ import type {
   ConfirmationChoice,
   PlanVerdict,
   RevisionVerdict,
+  RuleScope,
 } from "./permission-types.js";
 
 export type ApprovalPromptKind =
   | "shell"
   | "email"
   | "path"
+  | "edit"
   | "plan"
   | "checkpoint"
   | "revision"
@@ -36,6 +38,8 @@ export interface ApprovalAction {
   id: string;
   label: string;
   kind: "allow_once" | "allow_always" | "reject" | "custom";
+  /** For allow_always actions: which rule list the prefix persists to. */
+  scope?: RuleScope;
   /** If present, selecting this action requires secondary input (e.g., deny reason). */
   secondaryInput?: { hint: string; required: boolean };
 }
@@ -48,6 +52,28 @@ function denyAction(): ApprovalAction {
     kind: "reject",
     secondaryInput: { hint: "Reason for denial (optional)", required: false },
   };
+}
+
+/** The four rule-based prompt actions, in order: ACCEPT, DENY, ADD TO WORKSPACE
+ *  RULES, ADD TO GLOBAL RULES. Shared by shell, path, and edit prompts so every
+ *  rule-gated ask offers the same choices. */
+function ruleActions(acceptLabel: string): ApprovalAction[] {
+  return [
+    { id: "run_once", label: acceptLabel, kind: "allow_once" },
+    denyAction(),
+    {
+      id: "allow_workspace",
+      label: "Add to workspace rules",
+      kind: "allow_always",
+      scope: "workspace",
+    },
+    {
+      id: "allow_global",
+      label: "Add to global rules",
+      kind: "allow_always",
+      scope: "global",
+    },
+  ];
 }
 
 export interface ApprovalPrompt {
@@ -83,6 +109,8 @@ export function toApprovalPrompt(req: {
       return outlookSendPrompt(req.id, payload);
     case "path_access":
       return pathPrompt(req.id, payload);
+    case "edit":
+      return editPrompt(req.id, payload);
     case "plan_proposed":
       return planPrompt(req.id, payload);
     case "plan_checkpoint":
@@ -136,7 +164,7 @@ function shellPrompt(
     subtitle: command,
     preview: command,
     meta: Object.keys(meta).length > 0 ? meta : undefined,
-    // Elevated runs are a privilege change: no "always allow" action, so every
+    // Elevated runs are a privilege change: no "always allow" actions, so every
     // elevated command is re-confirmed and raises the OS UAC prompt afresh.
     actions: elevated
       ? [
@@ -147,19 +175,7 @@ function shellPrompt(
           },
           denyAction(),
         ]
-      : [
-          {
-            id: "run_once",
-            label: "Run once",
-            kind: "allow_once",
-          },
-          {
-            id: "always_allow",
-            label: `Always allow: ${prefix}`,
-            kind: "allow_always",
-          },
-          denyAction(),
-        ],
+      : ruleActions("Accept"),
     data: elevated ? {} : { prefix },
   };
 }
@@ -215,20 +231,33 @@ function pathPrompt(id: number, payload: Record<string, unknown>): ApprovalPromp
     subtitle: path,
     preview: `${toolName} → ${path}`,
     meta: Object.keys(meta).length > 0 ? meta : undefined,
-    actions: [
-      {
-        id: "run_once",
-        label: intent === "write" ? "Allow write" : "Allow read",
-        kind: "allow_once",
-      },
-      {
-        id: "always_allow",
-        label: `Always allow: ${allowPrefix}`,
-        kind: "allow_always",
-      },
-      denyAction(),
-    ],
+    actions: ruleActions("Accept"),
     data: { prefix: allowPrefix, intent },
+  };
+}
+
+/** Write/edit confirmation prompt: shown in Follow Rules mode before a filesystem
+ *  write lands. Mirrors the path prompt's four rule actions. */
+function editPrompt(id: number, payload: Record<string, unknown>): ApprovalPrompt {
+  const path = String(payload.path ?? "");
+  const toolName = String(payload.toolName ?? "");
+  const sandboxRoot = String(payload.sandboxRoot ?? "");
+  const allowPrefix = String(payload.allowPrefix ?? "");
+  const preview = payload.preview ? String(payload.preview) : undefined;
+
+  const meta: Record<string, string> = {};
+  if (sandboxRoot) meta.sandboxRoot = sandboxRoot;
+
+  return {
+    id,
+    kind: "edit",
+    tone: "warn",
+    title: `Confirm write: ${path}`,
+    subtitle: toolName ? `${toolName} -> ${path}` : path,
+    preview,
+    meta: Object.keys(meta).length > 0 ? meta : undefined,
+    actions: ruleActions("Accept"),
+    data: { prefix: allowPrefix, path, intent: "write" },
   };
 }
 
@@ -353,7 +382,8 @@ export function resolveApprovalPrompt(
   switch (prompt.kind) {
     case "shell":
     case "email":
-    case "path": {
+    case "path":
+    case "edit": {
       if (action.kind === "reject") {
         return { type: "deny", denyContext: secondaryInput };
       }
@@ -361,6 +391,7 @@ export function resolveApprovalPrompt(
         return {
           type: "always_allow",
           prefix: String(prompt.data?.prefix ?? ""),
+          scope: action.scope ?? "global",
         };
       }
       return { type: "run_once" };
@@ -393,6 +424,7 @@ function safeDefaultForKind(
     case "shell":
     case "email":
     case "path":
+    case "edit":
       return { type: "deny" };
     case "plan":
       return { type: "cancel" };

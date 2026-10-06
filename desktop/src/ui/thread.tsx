@@ -1,4 +1,5 @@
 import type { ApprovalPrompt } from "@reasonix/core-utils";
+import { sanitizeTerminalText } from "@reasonix/core-utils";
 import { isCompactionSummary, stripCompactionMarker } from "@reasonix/core-utils/compaction";
 import { derivePrefix } from "@reasonix/core-utils/derive-prefix";
 import { Copy } from "lucide-react";
@@ -153,7 +154,7 @@ export const AssistantMsg = memo(function AssistantMsg({
   time,
   onApproveConfirm,
   onRejectConfirm,
-  onAlwaysAllowConfirm,
+  onRuleConfirm,
   onStopTool,
   pendingConfirms,
   activePlan,
@@ -168,7 +169,7 @@ export const AssistantMsg = memo(function AssistantMsg({
   time?: string;
   onApproveConfirm: (id: number) => void;
   onRejectConfirm: (id: number) => void;
-  onAlwaysAllowConfirm: (id: number, prefix: string) => void;
+  onRuleConfirm: (id: number, scope: "workspace" | "global", prefix: string) => void;
   onStopTool: () => void;
   pendingConfirms: PendingConfirm[];
   activePlan?: ActivePlan;
@@ -182,20 +183,6 @@ export const AssistantMsg = memo(function AssistantMsg({
   onStopJob?: (jobId: number) => void;
   isInterventionPending?: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
-  const content = segments
-    .filter((s): s is AssistantSegment & { kind: "text" } => s.kind === "text")
-    .map((s) => s.text)
-    .join("\n\n");
-  const onCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* ignore */
-    }
-  };
   // A gate that is waiting on the user is owned by the approval strip; the
   // transcript must not stack a second (record) card for the same call. The
   // paused call is the last tool segment still missing a result.
@@ -374,11 +361,14 @@ export const AssistantMsg = memo(function AssistantMsg({
                 durationMs={jobRunning ? undefined : s.durationMs}
                 onApprove={pendingConfirm ? () => onApproveConfirm(pendingConfirm.id) : undefined}
                 onReject={pendingConfirm ? () => onRejectConfirm(pendingConfirm.id) : undefined}
-                onAlwaysAllow={
+                onAddWorkspaceRule={
                   pendingConfirm
-                    ? () => {
-                        onAlwaysAllowConfirm(pendingConfirm.id, derivePrefix(cmd));
-                      }
+                    ? () => onRuleConfirm(pendingConfirm.id, "workspace", derivePrefix(cmd))
+                    : undefined
+                }
+                onAddGlobalRule={
+                  pendingConfirm
+                    ? () => onRuleConfirm(pendingConfirm.id, "global", derivePrefix(cmd))
                     : undefined
                 }
                 onStop={
@@ -459,19 +449,6 @@ export const AssistantMsg = memo(function AssistantMsg({
             />
           );
         })}
-        {content ? (
-          <div className="msg-actions">
-            <button
-              type="button"
-              className={`copy-btn ${copied ? "done" : ""}`}
-              onClick={onCopy}
-              title={t("thread.copyResponse")}
-            >
-              <Copy size={11} />
-              {copied ? t("markdown.copied") : null}
-            </button>
-          </div>
-        ) : null}
       </div>
     </div>
   );
@@ -791,18 +768,22 @@ function mapTone(tone: ApprovalPrompt["tone"]): import("./extra-cards").Approval
 export function ConfirmApprovalCard({
   prompt,
   onAllow,
-  onAlwaysAllow,
   onDeny,
+  onAddWorkspaceRule,
+  onAddGlobalRule,
 }: {
   prompt: ApprovalPrompt;
   onAllow: () => void;
-  onAlwaysAllow: (prefix: string) => void;
   onDeny: () => void;
+  onAddWorkspaceRule?: () => void;
+  onAddGlobalRule?: () => void;
 }) {
   useLang();
-  const prefix = String(prompt.data?.prefix ?? "");
   const allowAction = prompt.actions.find((a) => a.kind === "allow_once");
-  const alwaysAllowAction = prompt.actions.find((a) => a.kind === "allow_always");
+  const ruleAction = (scope: "workspace" | "global") =>
+    prompt.actions.find((a) => a.kind === "allow_always" && a.scope === scope);
+  const workspaceRule = ruleAction("workspace");
+  const globalRule = ruleAction("global");
   const rejectAction = prompt.actions.find((a) => a.kind === "reject");
   return (
     <ApprovalCard
@@ -832,27 +813,20 @@ export function ConfirmApprovalCard({
           </>
         ) : (
           <>
-            <span style={{ color: "var(--accent)" }}>$</span> {prompt.preview ?? prompt.subtitle}
+            <span style={{ color: "var(--accent)" }}>$</span>{" "}
+            {sanitizeTerminalText(prompt.preview ?? prompt.subtitle ?? "")}
           </>
         )
       }
-      meta={
-        prompt.kind === "email"
-          ? t("thread.emailConfirmationMeta")
-          : t("thread.riskMedium", {
-              kind: prompt.kind === "shell" ? "run_command" : "run_background",
-            })
-      }
+      meta={prompt.kind === "email" ? t("thread.emailConfirmationMeta") : undefined}
       primaryLabel={allowAction?.label ?? t("thread.execute")}
       secondaryLabel={rejectAction?.label ?? t("thread.reject")}
-      tertiaryLabel={
-        prompt.kind === "email"
-          ? undefined
-          : (alwaysAllowAction?.label ?? t("thread.alwaysAllow", { prefix }))
-      }
+      tertiaryLabel={workspaceRule?.label}
+      quaternaryLabel={globalRule?.label}
       onPrimary={onAllow}
       onSecondary={onDeny}
-      onTertiary={prompt.kind === "email" ? undefined : () => onAlwaysAllow(prefix)}
+      onTertiary={workspaceRule ? onAddWorkspaceRule : undefined}
+      onQuaternary={globalRule ? onAddGlobalRule : undefined}
     />
   );
 }
@@ -860,30 +834,34 @@ export function ConfirmApprovalCard({
 export function PathAccessApprovalCard({
   prompt,
   onAllow,
-  onAlwaysAllow,
   onDeny,
+  onAddWorkspaceRule,
+  onAddGlobalRule,
 }: {
   prompt: ApprovalPrompt;
   onAllow: () => void;
-  onAlwaysAllow: (prefix: string) => void;
   onDeny: () => void;
+  onAddWorkspaceRule?: () => void;
+  onAddGlobalRule?: () => void;
 }) {
   useLang();
-  const prefix = String(prompt.data?.prefix ?? "");
   const intent = String(prompt.data?.intent ?? "read");
   const isWrite = intent === "write";
   const allowAction = prompt.actions.find((a) => a.kind === "allow_once");
-  const alwaysAllowAction = prompt.actions.find((a) => a.kind === "allow_always");
+  const ruleAction = (scope: "workspace" | "global") =>
+    prompt.actions.find((a) => a.kind === "allow_always" && a.scope === scope);
+  const workspaceRule = ruleAction("workspace");
+  const globalRule = ruleAction("global");
   const rejectAction = prompt.actions.find((a) => a.kind === "reject");
   return (
     <ApprovalCard
-      kind={t("thread.pathAccessKind")}
+      kind={prompt.kind === "edit" ? t("thread.editConfirmationKind") : t("thread.pathAccessKind")}
       tone={mapTone(prompt.tone)}
       title={prompt.title}
       sub={prompt.subtitle}
       preview={
         <>
-          <div>{prompt.preview ?? prompt.subtitle}</div>
+          <div>{sanitizeTerminalText(prompt.preview ?? prompt.subtitle ?? "")}</div>
           {prompt.meta?.sandboxRoot ? (
             <div style={{ color: "var(--muted)", marginTop: 4 }}>
               workspace: {prompt.meta.sandboxRoot}
@@ -891,18 +869,20 @@ export function PathAccessApprovalCard({
           ) : null}
         </>
       }
-      meta={t("thread.riskMedium", { kind: intent })}
       primaryLabel={
         allowAction?.label ?? (isWrite ? t("thread.allowWrite") : t("thread.allowRead"))
       }
       secondaryLabel={rejectAction?.label ?? t("thread.reject")}
-      tertiaryLabel={alwaysAllowAction?.label ?? t("thread.alwaysAllowPrefix", { prefix })}
+      tertiaryLabel={workspaceRule?.label}
+      quaternaryLabel={globalRule?.label}
       onPrimary={onAllow}
       onSecondary={onDeny}
-      onTertiary={() => onAlwaysAllow(prefix)}
+      onTertiary={workspaceRule ? onAddWorkspaceRule : undefined}
+      onQuaternary={globalRule ? onAddGlobalRule : undefined}
     />
   );
 }
+
 
 /** Countdown + per-card enable/disable toggle shared by the question (ask_choice)
  *  card and the plan cards (plan confirmation + plan revision). Owns the toggle

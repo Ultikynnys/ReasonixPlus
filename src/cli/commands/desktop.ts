@@ -33,6 +33,7 @@ import type {
   CtxBreakdownEvent,
   DesktopDiagnosticEvent,
   DirectKernelWireEvent,
+  EditRequiredEvent,
   JobInfo,
   JobsEvent,
   LoadedMessage,
@@ -114,13 +115,16 @@ import {
   addGlobalShellAllowed,
   addProjectPathAllowed,
   addProjectShellAllowed,
+  addRule,
   anyProviderConfigured,
   bridgeEndpointEnv,
+  copyWorkspaceRules,
   deriveNativeOllamaOrigin,
   isOllamaCloudEndpoint,
   isOpenAIStandardEndpoint,
   isPlausibleKey,
   isReasoningEffort,
+  listWorkspacesWithRules,
   loadAllPathAllowed,
   loadAllShellAllowed,
   loadApiKey,
@@ -139,6 +143,8 @@ import {
   loadEndpoint,
   loadEndpointForModel,
   loadExaApiKey,
+  loadGlobalPathAllowed,
+  loadGlobalShellAllowed,
   loadMaxIterPerTurn,
   loadMaxOutputTokens,
   loadMetasoApiKey,
@@ -157,6 +163,7 @@ import {
   loadRecentWorkspaces,
   loadRepetitionGuardEnabled,
   loadResolvedSkillPaths,
+  loadRules,
   loadSubagentModels,
   loadTavilyApiKey,
   loadTypesafeApiKey,
@@ -173,6 +180,7 @@ import {
   removeProjectPathAllowed,
   removeProjectShellAllowed,
   removeRecentWorkspace,
+  removeRule,
   saveAntigravityOAuth,
   saveApiKey,
   saveBaseUrl,
@@ -200,6 +208,7 @@ import {
   saveWorkspaceDir,
   setMcpServerDisabled,
   setMcpToolDisabled,
+  updateRule,
   writeConfig,
 } from "../../config.js";
 import { parseContext, serializeContext } from "../../context-plaintext.js";
@@ -242,6 +251,7 @@ import {
 import { ensureNpxAvailable } from "../../mcp/node-runtime.js";
 import { quoteArg } from "../../mcp/stdio.js";
 import { validateTypesafeApiKeyCached } from "../../tools/jev.js";
+import { BUILTIN_ALLOWLIST } from "../../tools/shell/parse.js";
 
 import {
   ANTIGRAVITY_OAUTH_CLIENT_ID,
@@ -442,6 +452,7 @@ type EmittableEvent =
   | { type: "gemini_oauth_begin_result"; url: string }
   | ConfirmRequiredEvent
   | PathAccessRequiredEvent
+  | EditRequiredEvent
   | ChoiceRequiredEvent
   | PlanRequiredEvent
   | CheckpointRequiredEvent
@@ -1408,6 +1419,15 @@ function emitSettings(tab: Tab): void {
   const recent = loadRecentWorkspaces().filter(
     (p) => !sameWorkspaceDir(p, tab.rootDir) && !sameWorkspaceDir(p, reasonixInstallDir()),
   );
+  // Sourced from the registry the dispatch gate consults, so the mode-rules card
+  // can't drift from what read-only actually refuses.
+  const toolsetTools = tab.toolset?.tools;
+  const readOnlyTools = toolsetTools
+    ? toolsetTools
+        .specs()
+        .map((spec) => spec.function.name)
+        .filter((name) => toolsetTools.get(name)?.readOnly === true)
+    : [];
   emit(
     {
       type: "$settings",
@@ -1486,8 +1506,14 @@ function emitSettings(tab: Tab): void {
             ? "Google authentication changed. Sign in again to enable Gemini free-tier quota."
             : undefined),
       },
-      shellAllowed: loadAllShellAllowed(tab.rootDir),
-      pathAllowed: loadAllPathAllowed(tab.rootDir),
+      shellAllowedWorkspace: loadProjectShellAllowed(tab.rootDir),
+      pathAllowedWorkspace: loadProjectPathAllowed(tab.rootDir),
+      shellAllowedGlobal: loadGlobalShellAllowed(),
+      pathAllowedGlobal: loadGlobalPathAllowed(),
+      rules: loadRules(tab.rootDir),
+      workspacesWithRules: listWorkspacesWithRules(),
+      builtinShellAllowlist: [...BUILTIN_ALLOWLIST],
+      readOnlyTools,
       version: VERSION,
     },
     tab.id,
@@ -3876,14 +3902,31 @@ function stampSessionModelPrefs(tab: Tab): void {
 /** Rebuild only the prompt from current tab state. Callers own runtime/prefix updates. */
 export function refreshTabSystemPrompt(
   tab: Pick<Tab, "rootDir" | "currentModel" | "system"> & {
+    currentSession?: string;
     toolset: Pick<CodeToolset, "semantic"> | null;
   },
 ): void {
   if (!tab.toolset) return;
+  // Effective specs (config + session overlay) — otherwise a mid-session MCP
+  // toggle leaves the bridge block showing the pre-toggle state.
+  const mcpSpecs = applyMcpSessionOverrides(
+    loadEffectiveMcpConfig(tab.rootDir),
+    sessionMcpOverrides(tab.currentSession ?? ""),
+  );
   tab.system = codeSystemPrompt(tab.rootDir, {
     hasSemanticSearch: tab.toolset.semantic.enabled,
     modelId: tab.currentModel,
+    mcpSpecs,
   });
+}
+
+/** Rebuild the model-facing MCP view after a bridge re-settles: refresh the
+ *  prompt's bridge block and shift the live prefix so the next turn sees the new
+ *  state (tools are hot-added/removed by the MCP runtime itself). */
+function refreshTabMcpPrompt(tab: Tab): void {
+  if (!tab.toolset) return;
+  refreshTabSystemPrompt(tab);
+  if (tab.runtime) tab.runtime.loop.prefix.replaceSystem(tab.system);
 }
 
 /** Rebind the tab's model/effort/subagent-model to the conversation's stored
@@ -4441,6 +4484,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       () =>
         buildCodeToolset({
           rootDir: tab.rootDir,
+          getMcpSpecs: () => effectiveMcpSpecs(tab),
           onSkillInstalled: () => emitSkills(tab),
           onJobsChanged: () => emitJobs(),
           onShellOutput: shellOutputFor(tab),
@@ -4471,6 +4515,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     } else {
       emitTabDiagnostic(tab, "tab.runtime.waiting-for-credential", undefined, "warn");
     }
+    // The registry exists only now, so re-emit: the first settings event carried an
+    // empty read-only tool list (the mode-rules card rendered that as "none").
+    emitSettings(tab);
     void settleTabSemantic(tab, tab.rootDir, toolset);
     emitTabDiagnostic(
       tab,
@@ -4567,6 +4614,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         .reloadFromConfig(tab.runtime.loop)
         .then(() => {
           emitTabDiagnostic(tab, "mcp.bridge.completed", { mode: "reload" });
+          refreshTabMcpPrompt(tab);
           emitMcpSpecs(tab);
         })
         .catch((err) => {
@@ -4678,6 +4726,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           failed: result.failed.length,
           summaries: result.summaries.length,
         });
+        refreshTabMcpPrompt(tab);
       })
       .catch((err) => {
         emitDiagnosticError("mcp.bridge.failed", err, {
@@ -5223,6 +5272,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     emitSettings(tab);
     const toolset = await buildCodeToolset({
       rootDir: target,
+      getMcpSpecs: () => effectiveMcpSpecs(tab),
       onSkillInstalled: () => emitSkills(tab),
       onJobsChanged: () => emitJobs(),
       onShellOutput: shellOutputFor(tab),
@@ -5232,6 +5282,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     });
     tab.toolset = toolset;
     refreshTabSystemPrompt(tab);
+    emitSettings(tab);
     // Implicitly select the workspace's most recent session (newest-first) so a
     // workspace switch lands where you left off; mint a fresh conversation only
     // when the workspace has no sessions yet. loadSessionIntoTab restores the
@@ -5448,6 +5499,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     return tab.rootDir.split(/[\\/]/).filter(Boolean).pop() ?? tab.rootDir;
   }
 
+  /** Rule writes land in the shared config, so a tab that did not perform the write keeps
+   *  a stale workspace list until it hears about it. */
+  function emitSettingsToAllTabs(): void {
+    for (const t of tabs.values()) emitSettings(t);
+  }
+
   function emitJobs(): void {
     const items: JobInfo[] = [];
     for (const t of tabs.values()) {
@@ -5645,6 +5702,33 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           toolName: payload.toolName,
           sandboxRoot: payload.sandboxRoot,
           allowPrefix: payload.allowPrefix,
+          prompt: toApprovalPrompt({
+            id: req.id,
+            kind: req.kind,
+            payload,
+          }),
+        },
+        tabId,
+      );
+      return;
+    }
+    if (req.kind === "edit") {
+      const payload = req.payload as {
+        path: string;
+        toolName: string;
+        sandboxRoot: string;
+        allowPrefix: string;
+        preview?: string;
+      };
+      emit(
+        {
+          type: "$edit_required",
+          id: req.id,
+          path: payload.path,
+          toolName: payload.toolName,
+          sandboxRoot: payload.sandboxRoot,
+          allowPrefix: payload.allowPrefix,
+          preview: payload.preview,
           prompt: toApprovalPrompt({
             id: req.id,
             kind: req.kind,
@@ -6126,8 +6210,14 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "confirm_response") {
       clearGateCountdown(msg.id);
-      forgetGate(msg.id);
+      const tab = forgetGate(msg.id);
       pauseGate.resolve(msg.id, msg.response);
+      // An always_allow persists a rule inside the tool that is still resuming, so
+      // re-emit a macrotask later — after that synchronous config write — or the
+      // panel keeps showing the rule lists it had before the click.
+      if (tab && msg.response.type === "always_allow") {
+        setTimeout(() => emitSettings(tab), 0);
+      }
       return;
     }
     if (msg.cmd === "choice_response") {
@@ -6671,38 +6761,51 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "rule_add") {
-      const pattern = msg.pattern.trim();
-      if (!pattern) {
+      if (!msg.rule.pattern.trim()) {
         emit({ type: "$error", message: "rule_add: pattern is empty" }, tab.id);
         return;
       }
       try {
-        if (msg.ruleType === "shell") {
-          addGlobalShellAllowed(pattern);
-        } else if (msg.ruleType === "path") {
-          addGlobalPathAllowed(pattern);
-        }
-        emitSettings(tab);
+        addRule(msg.rule, tab.rootDir);
+        emitSettingsToAllTabs();
       } catch (err) {
         emit({ type: "$error", message: `rule_add: ${(err as Error).message}` }, tab.id);
       }
       return;
     }
+    if (msg.cmd === "workspace_rules_copy") {
+      try {
+        copyWorkspaceRules(msg.from, tab.rootDir);
+        emitSettingsToAllTabs();
+      } catch (err) {
+        emit(
+          { type: "$error", message: `workspace_rules_copy: ${(err as Error).message}` },
+          tab.id,
+        );
+      }
+      return;
+    }
+    if (msg.cmd === "rule_update") {
+      if (!msg.to.pattern.trim()) {
+        emit({ type: "$error", message: "rule_update: pattern is empty" }, tab.id);
+        return;
+      }
+      try {
+        updateRule(msg.from, msg.to, tab.rootDir);
+        emitSettingsToAllTabs();
+      } catch (err) {
+        emit({ type: "$error", message: `rule_update: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
     if (msg.cmd === "rule_remove") {
-      const pattern = msg.pattern.trim();
-      if (!pattern) {
+      if (!msg.rule.pattern.trim()) {
         emit({ type: "$error", message: "rule_remove: pattern is empty" }, tab.id);
         return;
       }
       try {
-        if (msg.ruleType === "shell") {
-          removeGlobalShellAllowed(pattern);
-          removeProjectShellAllowed(tab.rootDir, pattern);
-        } else if (msg.ruleType === "path") {
-          removeGlobalPathAllowed(pattern);
-          removeProjectPathAllowed(tab.rootDir, pattern);
-        }
-        emitSettings(tab);
+        removeRule(msg.rule, tab.rootDir);
+        emitSettingsToAllTabs();
       } catch (err) {
         emit({ type: "$error", message: `rule_remove: ${(err as Error).message}` }, tab.id);
       }

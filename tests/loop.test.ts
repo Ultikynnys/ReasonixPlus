@@ -4667,7 +4667,7 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(customCap + 1);
   });
 
-  it("yolo mode never pauses on the iteration cap — the turn runs past it", async () => {
+  it("never-ask mode never pauses on the iteration cap — the turn runs past it", async () => {
     const cap = 3;
     const hardCap = cap + graceFor(cap);
     // Unique tool calls past the cap, then a text completion so the turn ends
@@ -4682,7 +4682,7 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
       tools,
       stream: false,
       maxIterPerTurn: cap,
-      getEditMode: () => "yolo",
+      getEditMode: () => "never-ask",
     });
 
     const events: any[] = [];
@@ -4691,8 +4691,8 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
     }
 
     // The cap fired, noted once, and the turn kept going: no pause warning,
-    // no grace grant (yolo bypasses before the grace branch), no forced summary.
-    const yoloEv = events.find((e) => e.role === "warning" && /YOLO mode/.test(e.content ?? ""));
+    // no grace grant (never-ask bypasses before the grace branch), no forced summary.
+    const yoloEv = events.find((e) => e.role === "warning" && /Never Ask/.test(e.content ?? ""));
     expect(yoloEv).toBeDefined();
     expect(yoloEv!.content).toContain(String(cap));
     expect(
@@ -4709,10 +4709,10 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(hardCap);
   });
 
-  it("yolo mode continues past the cap even if an earlier repeat-loop self-correction occurred", async () => {
-    // A prior self-correction event shouldn't prevent YOLO mode from running past
+  it("never-ask mode continues past the cap even if an earlier repeat-loop self-correction occurred", async () => {
+    // A prior self-correction event shouldn't prevent never-ask mode from running past
     // the iteration cap: three identical calls latch `_turnSelfCorrected`, but the
-    // turn then resumes productive unique tool calls. At the cap, YOLO mode bypasses
+    // turn then resumes productive unique tool calls. At the cap, never-ask mode bypasses
     // the cap instead of forcing a summary.
     const customCap = 6;
     const responses: FakeResponseShape[] = [
@@ -4747,7 +4747,7 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
       tools,
       stream: false,
       maxIterPerTurn: customCap,
-      getEditMode: () => "yolo",
+      getEditMode: () => "never-ask",
     });
 
     const events: any[] = [];
@@ -4755,8 +4755,8 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
       events.push(ev);
     }
 
-    // Must emit the YOLO cap bypass warning, not the stuck forced summary.
-    const yoloEv = events.find((e) => e.role === "warning" && /YOLO mode/.test(e.content ?? ""));
+    // Must emit the never-ask cap bypass warning, not the stuck forced summary.
+    const yoloEv = events.find((e) => e.role === "warning" && /Never Ask/.test(e.content ?? ""));
     expect(yoloEv).toBeDefined();
     expect(yoloEv!.content).toContain(String(customCap));
     expect(
@@ -4770,8 +4770,8 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(customCap + 2);
   });
 
-  it("still force-summarizes an actively repeating loop in yolo via the storm breaker", async () => {
-    // In YOLO mode, if the model ignores the self-correction nudge and repeats
+  it("still force-summarizes an actively repeating loop in never-ask via the storm breaker", async () => {
+    // In never-ask mode, if the model ignores the self-correction nudge and repeats
     // into a second all-suppressed storm, the storm-breaker guard catches it
     // and force-summarizes immediately.
     const responses: FakeResponseShape[] = [
@@ -4809,7 +4809,7 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
       tools,
       stream: false,
       maxIterPerTurn: 20,
-      getEditMode: () => "yolo",
+      getEditMode: () => "never-ask",
     });
 
     const events: any[] = [];

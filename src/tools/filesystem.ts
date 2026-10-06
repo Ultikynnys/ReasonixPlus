@@ -12,7 +12,9 @@ import {
   addGlobalPathAllowed,
   addProjectPathAllowed,
   loadAllPathAllowed,
+  loadEditMode,
   loadProjectPathAllowed,
+  rulePatterns,
 } from "../config.js";
 import { type ConfirmationChoice, pauseGate as defaultPauseGate } from "../core/pause-gate.js";
 import { DEFAULT_INDEX_EXCLUDES } from "../index/config.js";
@@ -176,8 +178,25 @@ export function registerFilesystemTools(
     toolName: string,
     ctx: ToolCallContext | undefined,
   ): Promise<void> {
-    for (const dir of loadAllPathAllowed(rootDir)) {
-      if (pathIsUnder(abs, dir)) return;
+    // Mode rules decide paths: read-only takes no rule as a grant, Never Ask refuses
+    // its deny prefixes and still prompts for its ask prefixes, Follow honours allows.
+    const mode = loadEditMode();
+    let askMatched = false;
+    if (mode !== "read-only") {
+      const denied = rulePatterns("never-ask", "path", rootDir).deny;
+      if (denied.some((dir) => pathIsUnder(abs, dir))) {
+        throw new Error(`${abs}: blocked by your Never Ask rules`);
+      }
+      askMatched = rulePatterns(
+        mode === "never-ask" ? "never-ask" : "follow",
+        "path",
+        rootDir,
+      ).ask.some((dir) => pathIsUnder(abs, dir));
+      if (!askMatched) {
+        for (const dir of rulePatterns("follow", "path", rootDir).allow) {
+          if (pathIsUnder(abs, dir)) return;
+        }
+      }
     }
     for (const dir of sessionApproved) {
       if (pathIsUnder(abs, dir)) return;
@@ -189,7 +208,14 @@ export function registerFilesystemTools(
       const gate = ctx?.confirmationGate ?? defaultPauseGate;
       pending = gate.ask({
         kind: "path_access",
-        payload: { path: abs, intent, toolName, sandboxRoot: normRoot, allowPrefix },
+        payload: {
+          path: abs,
+          intent,
+          toolName,
+          sandboxRoot: normRoot,
+          allowPrefix,
+          ...(askMatched ? { forceAsk: true } : {}),
+        },
       });
       inflightGate.set(allowPrefix, pending);
       void pending.finally(() => inflightGate.delete(allowPrefix));
@@ -201,7 +227,49 @@ export function registerFilesystemTools(
       );
     }
     if (choice.type === "always_allow") {
-      addGlobalPathAllowed(choice.prefix);
+      if (choice.scope === "workspace") addProjectPathAllowed(rootDir, choice.prefix);
+      else addGlobalPathAllowed(choice.prefix);
+    } else {
+      sessionApproved.add(allowPrefix);
+    }
+  }
+
+  /** Follow Rules in-sandbox write gate: one prompt per call (the ctx.writeGateDone
+   *  memo collapses a multi_edit batch). No-op when the mode isn't "follow" or no
+   *  interactive surface is listening, so headless callers never block on a write. */
+  async function gateWrite(
+    abs: string,
+    toolName: string,
+    ctx: ToolCallContext | undefined,
+  ): Promise<void> {
+    if (loadEditMode() !== "follow") return;
+    const gate = ctx?.confirmationGate;
+    if (!gate || !gate.hasListeners()) return;
+    if (ctx?.writeGateDone) return;
+    for (const dir of loadAllPathAllowed(rootDir)) {
+      if (pathIsUnder(abs, dir)) return;
+    }
+    for (const dir of sessionApproved) {
+      if (pathIsUnder(abs, dir)) return;
+    }
+    const allowPrefix = pathMod.dirname(abs);
+    if (ctx) ctx.writeGateDone = true;
+    const choice = await gate.ask({
+      kind: "edit",
+      payload: { path: abs, toolName, sandboxRoot: normRoot, allowPrefix },
+    });
+    if (choice.type === "deny") {
+      const rel = displayRel(rootDir, abs);
+      throw new Error(
+        `User rejected this edit to ${rel}. ${toolName} was not applied; the file is unchanged.${
+          choice.denyContext ? ` ${choice.denyContext}` : ""
+        } Don't retry the same call; take a different approach or ask the user what they want instead.`,
+      );
+    }
+    if (choice.type === "always_allow") {
+      if (choice.scope === "workspace") addProjectPathAllowed(rootDir, choice.prefix);
+      else addGlobalPathAllowed(choice.prefix);
+      sessionApproved.add(choice.prefix);
     } else {
       sessionApproved.add(allowPrefix);
     }
@@ -236,6 +304,7 @@ export function registerFilesystemTools(
         `path escapes sandbox root (${normRoot}): ${raw} : use an absolute system path like /Users/foo or C:\\Users\\foo to request approved outside-sandbox access`,
       );
     }
+    if (intent === "write") await gateWrite(resolved, toolName, ctx);
     return resolved;
   };
 

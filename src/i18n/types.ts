@@ -176,7 +176,7 @@ export interface TranslationSchema {
   app: {
     walkCancelledRemaining: string;
     walkCancelled: string;
-    editModeYolo: string;
+    editModeNeverAsk: string;
     editModeAuto: string;
     editModeReview: string;
     rejectedEdit: string;
@@ -310,7 +310,7 @@ export interface TranslationSchema {
     iterLimitReached: string;
     iterLimitGrace: string;
     iterLimitPaused: string;
-    iterLimitYolo: string;
+    iterLimitNeverAsk: string;
   };
   errors: {
     contextOverflowTooMany: string;

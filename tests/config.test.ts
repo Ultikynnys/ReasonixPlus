@@ -1106,26 +1106,45 @@ describe("config", () => {
     }
   });
 
-  it("loadEditMode defaults to 'review' when unset", () => {
-    expect(loadEditMode(path)).toBe("review");
+  it("loadEditMode defaults to 'follow' when unset", () => {
+    expect(loadEditMode(path)).toBe("follow");
   });
 
-  it("saveEditMode + loadEditMode round-trip 'auto'", () => {
-    saveEditMode("auto", path);
-    expect(loadEditMode(path)).toBe("auto");
+  it("saveEditMode + loadEditMode round-trip 'follow'", () => {
+    saveEditMode("follow", path);
+    expect(loadEditMode(path)).toBe("follow");
     // Doesn't clobber other fields in the config.
-    expect(readConfig(path).editMode).toBe("auto");
+    expect(readConfig(path).editMode).toBe("follow");
   });
 
-  it("saveEditMode + loadEditMode round-trip 'yolo' (issue #644)", () => {
-    saveEditMode("yolo", path);
-    expect(loadEditMode(path)).toBe("yolo");
-    expect(readConfig(path).editMode).toBe("yolo");
+  it("saveEditMode + loadEditMode round-trip 'never-ask'", () => {
+    saveEditMode("never-ask", path);
+    expect(loadEditMode(path)).toBe("never-ask");
+    expect(readConfig(path).editMode).toBe("never-ask");
   });
 
-  it("loadEditMode coerces unknown values back to 'review'", () => {
+  it("saveEditMode + loadEditMode round-trip 'read-only'", () => {
+    saveEditMode("read-only", path);
+    expect(loadEditMode(path)).toBe("read-only");
+    expect(readConfig(path).editMode).toBe("read-only");
+  });
+
+  it("loadEditMode coerces unknown values back to 'follow'", () => {
     writeConfig({ editMode: "garbage" as any }, path);
-    expect(loadEditMode(path)).toBe("review");
+    expect(loadEditMode(path)).toBe("follow");
+  });
+
+  it("loadEditMode migrates legacy 4-mode values onto the 3-mode dial", () => {
+    writeConfig({ editMode: "plan" as any }, path);
+    expect(loadEditMode(path)).toBe("read-only");
+    writeConfig({ editMode: "review" as any }, path);
+    expect(loadEditMode(path)).toBe("follow");
+    writeConfig({ editMode: "auto" as any }, path);
+    expect(loadEditMode(path)).toBe("follow");
+    writeConfig({ editMode: "yolo" as any }, path);
+    expect(loadEditMode(path)).toBe("never-ask");
+    writeConfig({ editMode: "ignore" as any }, path);
+    expect(loadEditMode(path)).toBe("never-ask");
   });
 
   it("loadEngineeringLifecycleMode defaults to 'off' when unset", () => {
@@ -1343,9 +1362,9 @@ describe("config", () => {
   });
 
   it("saveReasoningEffort doesn't clobber other persisted fields", () => {
-    saveEditMode("auto", path);
+    saveEditMode("follow", path);
     saveReasoningEffort("high", path);
-    expect(loadEditMode(path)).toBe("auto");
+    expect(loadEditMode(path)).toBe("follow");
     expect(loadReasoningEffort(path)).toBe("high");
   });
 
@@ -1378,9 +1397,9 @@ describe("config", () => {
   });
 
   it("saveTheme doesn't clobber other persisted fields", () => {
-    saveEditMode("auto", path);
+    saveEditMode("follow", path);
     saveTheme("light", path);
-    expect(loadEditMode(path)).toBe("auto");
+    expect(loadEditMode(path)).toBe("follow");
     expect(loadTheme(path)).toBe("light");
   });
 
@@ -1389,10 +1408,10 @@ describe("config", () => {
     markEditModeHintShown(path);
     expect(editModeHintShown(path)).toBe(true);
     // Idempotent — calling again doesn't rewrite or clobber other fields.
-    saveEditMode("auto", path);
+    saveEditMode("follow", path);
     markEditModeHintShown(path);
     expect(editModeHintShown(path)).toBe(true);
-    expect(loadEditMode(path)).toBe("auto");
+    expect(loadEditMode(path)).toBe("follow");
   });
 
   it("round-trips semantic embedding config", () => {

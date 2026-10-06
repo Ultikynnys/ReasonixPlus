@@ -161,7 +161,7 @@ export interface CacheFirstLoopOptions {
   maxOutputTokens?: number;
   /** Maximum tool-call iterations per turn. Overrides config/env. Default 50. */
   maxIterPerTurn?: number;
-  /** Live edit-mode getter — yolo never pauses on the iteration cap. Thunk
+  /** Live edit-mode getter, never-ask never pauses on the iteration cap. Thunk
    *  (not a snapshot) so a mid-session Shift+Tab flip takes effect, same
    *  pattern as shell.ts's `allowAll`. */
   getEditMode?: () => EditMode;
@@ -338,7 +338,7 @@ export class CacheFirstLoop {
   private _iterGrace = 0;
   /** True once the cap fired and the grace window latched this turn. The hard stop moves to maxIterPerTurn + _iterGrace. */
   private _iterGraceApplied = false;
-  /** True once a yolo turn bypassed the cap — the cap block is skipped for the rest of the turn. */
+  /** True once a never-ask turn bypassed the cap, the cap block is skipped for the rest of the turn. */
   private _iterCapBypassed = false;
   /** Live edit-mode getter — hosts that don't pass it keep the default pause. */
   private readonly _getEditMode: (() => EditMode) | undefined;
@@ -1240,8 +1240,8 @@ export class CacheFirstLoop {
       // Hard iteration cap — prevents runaway tool-call loops from
       // consuming unlimited API budget. What happens at the cap depends
       // on the turn's health (#2037):
-      //  - YOLO mode (`getEditMode() === "yolo"`): the cap never pauses or stops
-      //    the turn — nobody is watching to say "continue". Noted once, then the
+      //  - never-ask mode (`getEditMode() === "never-ask"`): the cap never pauses or stops
+      //    the turn - nobody is watching to say "continue". Noted once, then the
       //    turn runs without the cap. Genuine repeat loops are still caught and
       //    force-summarized in dispatch by the storm-breaker guard.
       //  - STUCK turn (storm-breaker latched `_turnSelfCorrected`): one final
@@ -1255,13 +1255,13 @@ export class CacheFirstLoop {
       //    resumes with full state.
       const hardCap = this.maxIterPerTurn + (this._iterGraceApplied ? this._iterGrace : 0);
       if (iter >= hardCap && !this._iterCapBypassed) {
-        if (this._getEditMode?.() === "yolo") {
+        if (this._getEditMode?.() === "never-ask") {
           this._iterCapBypassed = true;
           yield {
             turn: this._turn,
             role: "warning",
             severity: "low",
-            content: t("loop.iterLimitYolo", { max: this.maxIterPerTurn }),
+            content: t("loop.iterLimitNeverAsk", { max: this.maxIterPerTurn }),
           };
           continue;
         }

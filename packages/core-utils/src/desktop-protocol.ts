@@ -6,7 +6,16 @@
 import type { ApprovalPrompt } from "./approval-prompt.js";
 import type { ChoiceOption, PlanStep, ReasoningEffort } from "./permission-types.js";
 
-export type EditMode = "review" | "auto" | "yolo" | "plan";
+/** Trust dial: 3 settings, not 4.
+ *  - `read-only`  : no writes, no shell (registry plan-mode blocks mutating tools).
+ *  - `follow`     : reads + allowlisted shell auto; every write and every
+ *                   non-allowlisted command asks the user first.
+ *  - `never-ask`  : shell, paths and checkpoints run with no prompt; plan and
+ *                   choice cards still appear but auto-advance on their timer,
+ *                   and Outlook sends alone always wait for the user.
+ *  Legacy persisted values migrate in loadEditMode: plan->read-only,
+ *  review/auto->follow, yolo/ignore->never-ask. */
+export type EditMode = "read-only" | "follow" | "never-ask";
 
 /** A composer "quick send" — a one-click action that sends a message to the
  *  model. `message` is the full text sent via user_input; `shorthand` is the
@@ -322,6 +331,18 @@ export interface PathAccessRequiredEvent {
   toolName: string;
   sandboxRoot: string;
   allowPrefix: string;
+  prompt?: ApprovalPrompt;
+}
+
+/** Follow Rules mode opened a write confirmation for an in-sandbox edit. */
+export interface EditRequiredEvent {
+  type: "$edit_required";
+  id: number;
+  path: string;
+  toolName: string;
+  sandboxRoot: string;
+  allowPrefix: string;
+  preview?: string;
   prompt?: ApprovalPrompt;
 }
 
@@ -824,6 +845,15 @@ export interface SessionEmptyEvent {
 
 export type NeedsSetupEvent = { type: "$needs_setup"; reason: "no_api_key" };
 
+/** One approval rule, resolved: which mode owns it, what it does, and where it applies. */
+export interface RuleRecord {
+  mode: "follow" | "never-ask";
+  effect: "allow" | "ask" | "deny";
+  kind: "shell" | "path";
+  scope: "workspace" | "global";
+  pattern: string;
+}
+
 export interface SettingsEvent {
   type: "$settings";
   reasoningEffort: ReasoningEffort;
@@ -924,10 +954,22 @@ export interface SettingsEvent {
     /** Last OAuth flow failure — drives the status-bar Gemini auth chip until the next successful sign-in. */
     flowError?: string;
   };
-  /** Auto-approved shell command prefixes for the current project. */
-  shellAllowed?: string[];
-  /** Auto-approved outside-sandbox directory prefixes for the current project. */
-  pathAllowed?: string[];
+  /** Rule lists scoped to the current workspace (project config). */
+  shellAllowedWorkspace?: string[];
+  pathAllowedWorkspace?: string[];
+  /** Rule lists applied to every workspace (user config). */
+  shellAllowedGlobal?: string[];
+  pathAllowedGlobal?: string[];
+  /** Every rule in force for the tab's workspace, with mode, effect and scope resolved.
+   *  Follow uses allow/ask, Never Ask uses deny/ask, read-only honours none of them. */
+  rules?: RuleRecord[];
+  /** Workspaces that carry their own rules, so the panel can offer one as a copy source. */
+  workspacesWithRules?: Array<{ rootDir: string; ruleCount: number }>;
+  /** Builtin read-only shell allowlist the daemon actually enforces. Shipped so the
+   *  mode-rules card renders the real patterns rather than a hand-copied list. */
+  builtinShellAllowlist?: string[];
+  /** Tool names the registry flags `readOnly` for the current mode. */
+  readOnlyTools?: string[];
   version: string;
 }
 
@@ -1324,8 +1366,10 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "mail_signout"; provider: MailProvider }
   | { cmd: "playwright_browser_install"; browser: PlaywrightManagedBrowser }
   | { cmd: "playwright_browser_install_cancel"; browser: PlaywrightManagedBrowser }
-  | { cmd: "rule_add"; ruleType: "shell" | "path"; pattern: string }
-  | { cmd: "rule_remove"; ruleType: "shell" | "path"; pattern: string }
+  | { cmd: "rule_add"; rule: RuleRecord }
+  | { cmd: "rule_update"; from: RuleRecord; to: RuleRecord }
+  | { cmd: "workspace_rules_copy"; from: string }
+  | { cmd: "rule_remove"; rule: RuleRecord }
   | { cmd: "skills_get" }
   | { cmd: "skill_run"; name: string; args?: string }
   | { cmd: "jobs_list" }

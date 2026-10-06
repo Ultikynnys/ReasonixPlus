@@ -548,10 +548,10 @@ export const EN: TranslationSchema = {
   app: {
     walkCancelledRemaining: "▸ walk cancelled — {count} block(s) still pending.",
     walkCancelled: "▸ walk cancelled.",
-    editModeYolo:
-      "▸ edit mode: YOLO — edits AND shell commands auto-run. /undo still rolls back edits. Use carefully.",
+    editModeNeverAsk:
+      "▸ edit mode: Never Ask, shell, paths and checkpoints auto-run with no prompt; plan and choice cards auto-advance; only Outlook sends wait.",
     editModeAuto:
-      "▸ edit mode: AUTO — edits apply immediately; press u within 5s to undo (space pauses the timer). Shell commands still ask.",
+      "▸ edit mode: Follow Rules — reads and allowlisted commands run immediately; writes and other commands ask first.",
     editModeReview: "▸ edit mode: review — edits queue for /apply (or y) / /discard (or n)",
     rejectedEdit: "▸ rejected edit to {path}{context}",
     autoApprovingRest: "▸ auto-approving remaining edits for this turn",
@@ -705,8 +705,8 @@ export const EN: TranslationSchema = {
       "Reached the {max}-iteration cap, but the turn is still making progress. Continuing up to {grace} iterations. Set `maxIterPerTurn` in config or REASONIX_MAX_ITER for a higher cap.",
     iterLimitPaused:
       'Reached the {grace}-iteration hard cap. The turn paused; the conversation is intact. Say "continue" to keep going, or set `maxIterPerTurn` in config / REASONIX_MAX_ITER for a higher cap.',
-    iterLimitYolo:
-      "YOLO mode: reached the {max}-iteration cap, but the turn keeps running unattended — yolo never pauses on the iteration cap. Stuck loops still force-summarize.",
+    iterLimitNeverAsk:
+      "Never Ask mode: reached the {max}-iteration cap, but the turn keeps running unattended, never-ask never pauses on the iteration cap. Stuck loops still force-summarize.",
   },
   errors: {
     contextOverflowTooMany: "too many tokens",

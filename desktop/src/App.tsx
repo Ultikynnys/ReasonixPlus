@@ -12,6 +12,7 @@ import {
   redactDiagnosticValue,
   sanitizeFilename,
   sortSessionsByCreationDescending,
+  type RuleRecord,
 } from "@reasonix/core-utils";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -1098,7 +1099,7 @@ const AssistantRow = memo(function AssistantRow({
   activePlan,
   onApproveConfirm,
   onRejectConfirm,
-  onAlwaysAllowConfirm,
+  onRuleConfirm,
   onStopTool,
   jobs,
   tabId,
@@ -1111,7 +1112,7 @@ const AssistantRow = memo(function AssistantRow({
   activePlan?: ActivePlan;
   onApproveConfirm: (id: number) => void;
   onRejectConfirm: (id: number) => void;
-  onAlwaysAllowConfirm: (id: number, prefix: string) => void;
+  onRuleConfirm: (id: number, scope: "workspace" | "global", prefix: string) => void;
   onStopTool: () => void;
   /** Live background-job snapshots — background shell cards read their job's
    *  status from here so a running job never renders as finished. */
@@ -1129,7 +1130,7 @@ const AssistantRow = memo(function AssistantRow({
         model={model}
         onApproveConfirm={onApproveConfirm}
         onRejectConfirm={onRejectConfirm}
-        onAlwaysAllowConfirm={onAlwaysAllowConfirm}
+        onRuleConfirm={onRuleConfirm}
         onStopTool={onStopTool}
         pendingConfirms={pendingConfirms}
         activePlan={activePlan}
@@ -1711,6 +1712,24 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           },
         ],
       };
+    case "$edit_required":
+      return {
+        ...state,
+        turnStatus: "waiting_user",
+        turnStatusTool: null,
+        pendingPathAccess: [
+          ...state.pendingPathAccess,
+          {
+            id: ev.id,
+            path: ev.path,
+            intent: "write",
+            toolName: ev.toolName,
+            sandboxRoot: ev.sandboxRoot,
+            allowPrefix: ev.allowPrefix,
+            prompt: ev.prompt!,
+          },
+        ],
+      };
     case "$choice_required":
       return {
         ...state,
@@ -2015,8 +2034,14 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           openaiOAuth: ev.openaiOAuth,
           antigravityOAuth: ev.antigravityOAuth,
           mailProvider: ev.mailProvider ?? MailProvider.Outlook,
-          shellAllowed: ev.shellAllowed,
-          pathAllowed: ev.pathAllowed,
+          shellAllowedWorkspace: ev.shellAllowedWorkspace,
+          pathAllowedWorkspace: ev.pathAllowedWorkspace,
+          shellAllowedGlobal: ev.shellAllowedGlobal,
+          pathAllowedGlobal: ev.pathAllowedGlobal,
+          rules: ev.rules,
+          workspacesWithRules: ev.workspacesWithRules,
+          builtinShellAllowlist: ev.builtinShellAllowlist,
+          readOnlyTools: ev.readOnlyTools,
           version: ev.version,
         },
         oauthWaiting: ev.openaiOAuth?.signedIn ? false : state.oauthWaiting,
@@ -2911,14 +2936,17 @@ function TabRuntime({
     (provider: MailProvider) => sendRpc({ cmd: "mail_signout", provider }),
     [sendRpc],
   );
-  const addRule = useCallback(
-    (ruleType: "shell" | "path", pattern: string) =>
-      sendRpc({ cmd: "rule_add", ruleType, pattern }),
+  const addRule = useCallback((rule: RuleRecord) => sendRpc({ cmd: "rule_add", rule }), [sendRpc]);
+  const removeRule = useCallback(
+    (rule: RuleRecord) => sendRpc({ cmd: "rule_remove", rule }),
     [sendRpc],
   );
-  const removeRule = useCallback(
-    (ruleType: "shell" | "path", pattern: string) =>
-      sendRpc({ cmd: "rule_remove", ruleType, pattern }),
+  const updateRule = useCallback(
+    (from: RuleRecord, to: RuleRecord) => sendRpc({ cmd: "rule_update", from, to }),
+    [sendRpc],
+  );
+  const copyWorkspaceRules = useCallback(
+    (from: string) => sendRpc({ cmd: "workspace_rules_copy", from }),
     [sendRpc],
   );
   const newChat = useCallback(() => {
@@ -3060,8 +3088,8 @@ function TabRuntime({
   const applyEditMode = useCallback(
     (mode: Settings["editMode"]) => {
       applySettingsPatch({ editMode: mode });
-      if (mode === "yolo") {
-        appendNotice(t("app.yolo.toast"), "warning");
+      if (mode === "never-ask") {
+        appendNotice(t("app.neverAskRules.toast"), "warning");
       } else {
         appendNotice(t("app.toast.modeSwitched", { mode: mode.toUpperCase() }));
       }
@@ -3326,8 +3354,9 @@ function TabRuntime({
     (id: number) => resolveConfirm(id, { type: "deny" }),
     [resolveConfirm],
   );
-  const onAlwaysAllowConfirm = useCallback(
-    (id: number, prefix: string) => resolveConfirm(id, { type: "always_allow", prefix }),
+  const onRuleConfirm = useCallback(
+    (id: number, scope: "workspace" | "global", prefix: string) =>
+      resolveConfirm(id, { type: "always_allow", prefix, scope }),
     [resolveConfirm],
   );
   /** Stable identity — passed to memoized AssistantMsg; an inline arrow would
@@ -3801,7 +3830,7 @@ function TabRuntime({
                                 activePlan={activePlanForMessage(m, state.activePlan)}
                                 onApproveConfirm={onApproveConfirm}
                                 onRejectConfirm={onRejectConfirm}
-                                onAlwaysAllowConfirm={onAlwaysAllowConfirm}
+                                onRuleConfirm={onRuleConfirm}
                                 onStopTool={onStopTool}
                                 jobs={state.jobs}
                                 tabId={tabId}
@@ -3855,8 +3884,19 @@ function TabRuntime({
                           key={`cc-${c.id}`}
                           prompt={c.prompt}
                           onAllow={() => resolveConfirm(c.id, { type: "run_once" })}
-                          onAlwaysAllow={(prefix) =>
-                            resolveConfirm(c.id, { type: "always_allow", prefix })
+                          onAddWorkspaceRule={() =>
+                            resolveConfirm(c.id, {
+                              type: "always_allow",
+                              prefix: String(c.prompt.data?.prefix ?? ""),
+                              scope: "workspace",
+                            })
+                          }
+                          onAddGlobalRule={() =>
+                            resolveConfirm(c.id, {
+                              type: "always_allow",
+                              prefix: String(c.prompt.data?.prefix ?? ""),
+                              scope: "global",
+                            })
                           }
                           onDeny={() => resolveConfirm(c.id, { type: "deny" })}
                         />
@@ -3866,8 +3906,19 @@ function TabRuntime({
                           key={`pa-${p.id}`}
                           prompt={p.prompt}
                           onAllow={() => resolvePathAccess(p.id, { type: "run_once" })}
-                          onAlwaysAllow={(prefix) =>
-                            resolvePathAccess(p.id, { type: "always_allow", prefix })
+                          onAddWorkspaceRule={() =>
+                            resolvePathAccess(p.id, {
+                              type: "always_allow",
+                              prefix: p.allowPrefix,
+                              scope: "workspace",
+                            })
+                          }
+                          onAddGlobalRule={() =>
+                            resolvePathAccess(p.id, {
+                              type: "always_allow",
+                              prefix: p.allowPrefix,
+                              scope: "global",
+                            })
                           }
                           onDeny={() => resolvePathAccess(p.id, { type: "deny" })}
                         />
@@ -3984,7 +4035,7 @@ function TabRuntime({
                   appendNotice(t("app.toast.subagentModelSwitched", { model }));
                 }}
                 onEffortChange={applyReasoningEffort}
-                editMode={state.settings?.editMode ?? "review"}
+                editMode={state.settings?.editMode ?? "follow"}
                 onEditModeChange={applyEditMode}
                 workspaceDir={state.settings?.workspaceDir}
                 queuedSends={state.queuedSends}
@@ -4069,6 +4120,8 @@ function TabRuntime({
           onWriteContext={(text) => sendRpc({ cmd: "context_raw_set", text })}
           onAddRule={addRule}
           onRemoveRule={removeRule}
+          onUpdateRule={updateRule}
+          onCopyWorkspaceRules={copyWorkspaceRules}
           onSaveSettings={saveSettings}
           activePlan={state.activePlan}
         />

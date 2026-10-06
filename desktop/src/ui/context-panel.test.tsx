@@ -25,7 +25,7 @@ const usage: UsageStats = {
 
 const settings: Settings = {
   reasoningEffort: "high",
-  editMode: "review",
+  editMode: "follow",
   maxIterPerTurn: 50,
   maxIterPerTurnOverride: null,
   workspaceDir: "/repo",
@@ -260,14 +260,35 @@ describe("ContextPanel files", () => {
     expect(onCompact).toHaveBeenCalledOnce();
   });
 
-  it("renders custom approval rules and allows removing them", () => {
+  it("renders the mode-rules summary, workspace rules, and per-scope add buttons", () => {
     const onRemoveRule = vi.fn();
     render(
       <ContextPanel
         settings={{
           ...settings,
-          shellAllowed: ["git status", "cargo test"],
-          pathAllowed: ["/opt/sdk"],
+          rules: [
+            {
+              mode: "follow",
+              effect: "allow",
+              kind: "shell",
+              scope: "workspace",
+              pattern: "git status",
+            },
+            {
+              mode: "follow",
+              effect: "allow",
+              kind: "shell",
+              scope: "workspace",
+              pattern: "cargo test",
+            },
+            {
+              mode: "follow",
+              effect: "allow",
+              kind: "path",
+              scope: "workspace",
+              pattern: "/opt/sdk",
+            },
+          ],
         }}
         usage={usage}
         mcpSpecs={[]}
@@ -282,6 +303,7 @@ describe("ContextPanel files", () => {
         onExportMemories={() => {}}
         onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
+        onAddRule={() => {}}
         onRemoveRule={onRemoveRule}
       />,
     );
@@ -289,16 +311,30 @@ describe("ContextPanel files", () => {
     // Switch to Rules tab
     fireEvent.click(screen.getByText("Rules"));
 
+    // Mode-derived rules are labelled as the mode's; user-owned rules are per scope.
+    expect(screen.getByText("Mode rules")).toBeTruthy();
     expect(screen.getByText("git status")).toBeTruthy();
     expect(screen.getByText("cargo test")).toBeTruthy();
     expect(screen.getByText("/opt/sdk")).toBeTruthy();
 
+    // Each section carries its own plus button, so the section fixes the scope.
+    expect(screen.getByRole("button", { name: "Add Rule: Workspace rules" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add Rule: Global rules" })).toBeTruthy();
+    // The standalone composer is gone: no submit button until a plus is used.
+    expect(screen.queryByRole("button", { name: "Add Rule" })).toBeNull();
+
     const removeBtn = screen.getByRole("button", { name: "Remove rule: git status" });
     fireEvent.click(removeBtn);
-    expect(onRemoveRule).toHaveBeenCalledWith("shell", "git status");
+    expect(onRemoveRule).toHaveBeenCalledWith({
+      mode: "follow",
+      effect: "allow",
+      kind: "shell",
+      scope: "workspace",
+      pattern: "git status",
+    });
   });
 
-  it("allows adding a new rule via the form", () => {
+  it("adds a rule into the scope whose plus button opened the form", () => {
     const onAddRule = vi.fn();
     render(
       <ContextPanel
@@ -323,13 +359,433 @@ describe("ContextPanel files", () => {
     // Switch to Rules tab
     fireEvent.click(screen.getByText("Rules"));
 
-    const input = screen.getByRole("textbox", { name: "Rule pattern" });
-    fireEvent.change(input, { target: { value: "npm run build" } });
+    // No form is rendered until a section's plus button is used.
+    expect(screen.queryByRole("textbox", { name: "Rule pattern" })).toBeNull();
 
-    const addBtn = screen.getByRole("button", { name: "Add Rule" });
-    fireEvent.click(addBtn);
+    fireEvent.click(screen.getByRole("button", { name: "Add Rule: Workspace rules" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Rule pattern" }), {
+      target: { value: "npm run build" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add Rule" }));
+    expect(onAddRule).toHaveBeenCalledWith({
+      mode: "follow",
+      effect: "allow",
+      kind: "shell",
+      scope: "workspace",
+      pattern: "npm run build",
+    });
 
-    expect(onAddRule).toHaveBeenCalledWith("shell", "npm run build");
+    // Opening the Global plus retargets the form, so the rule lands in global scope.
+    fireEvent.click(screen.getByRole("button", { name: "Add Rule: Global rules" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Rule pattern" }), {
+      target: { value: "git *" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add Rule" }));
+    expect(onAddRule).toHaveBeenLastCalledWith({
+      mode: "follow",
+      effect: "allow",
+      kind: "shell",
+      scope: "global",
+      pattern: "git *",
+    });
+  });
+
+  const sideProps = {
+    usage,
+    mcpSpecs: [],
+    mcpBridged: false,
+    sessionFiles: [],
+    memory: [],
+    memoryDetail: null,
+    memoryResult: null,
+    onReadMemory: () => {},
+    onWriteMemory: () => {},
+    onDeleteMemory: () => {},
+    onExportMemories: () => {},
+    onImportMemories: () => {},
+    onDismissMemoryResult: () => {},
+    onAddRule: () => {},
+  };
+
+  it("shows no rule sections in Read only, and none of the stored rules", () => {
+    render(
+      <ContextPanel
+        settings={{
+          ...settings,
+          editMode: "read-only",
+          rules: [
+            {
+              mode: "follow",
+              effect: "allow",
+              kind: "shell",
+              scope: "workspace",
+              pattern: "git status",
+            },
+          ],
+        }}
+        {...sideProps}
+      />,
+    );
+    fireEvent.click(screen.getByText("Rules"));
+
+    expect(screen.getByText("Mode rules")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add Rule: Workspace rules" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add Rule: Global rules" })).toBeNull();
+    expect(screen.queryByText("git status")).toBeNull();
+  });
+
+  it("shows a mode its own rules, with its own effect choices", () => {
+    render(
+      <ContextPanel
+        settings={{
+          ...settings,
+          editMode: "never-ask",
+          rules: [
+            {
+              mode: "follow",
+              effect: "allow",
+              kind: "shell",
+              scope: "global",
+              pattern: "cargo test",
+            },
+            {
+              mode: "never-ask",
+              effect: "deny",
+              kind: "shell",
+              scope: "global",
+              pattern: "npm publish",
+            },
+          ],
+        }}
+        {...sideProps}
+      />,
+    );
+    fireEvent.click(screen.getByText("Rules"));
+
+    // Never Ask lists its own deny rule once, in its section, and never Follow's allow rule.
+    expect(screen.getAllByText("npm publish")).toHaveLength(1);
+    expect(screen.getAllByText("DENY")).toHaveLength(1);
+    expect(screen.queryByText("cargo test")).toBeNull();
+
+    // Its composer offers deny/ask, not Follow's allow/ask.
+    fireEvent.click(screen.getByRole("button", { name: "Add Rule: Global rules" }));
+    // One capsule toggle, the same control as a rule row's badge.
+    fireEvent.click(screen.getByRole("button", { name: "Change effect for: DENY" }));
+    expect(screen.getByRole("button", { name: "Change effect for: ASK" })).toBeTruthy();
+  });
+
+  it("draws one main rule plus its exceptions per mode, without overlap", () => {
+    const parseRows = () => {
+      const card = document.querySelector(".mode-rules");
+      return Array.from(card?.querySelectorAll(".rule") ?? []).map(
+        (r) => `${r.querySelector(".pat")?.textContent}=${r.querySelector(".sw")?.textContent}`,
+      );
+    };
+    const expectRows = (rows: string[]) => expect(parseRows()).toEqual(rows);
+    const mount = (mode: "read-only" | "follow" | "never-ask") =>
+      render(
+        <ContextPanel
+          settings={{
+            ...settings,
+            editMode: mode,
+            readOnlyTools: ["read_file"],
+            builtinShellAllowlist: ["git status"],
+            rules: [
+              {
+                mode: "follow",
+                effect: "allow",
+                kind: "shell",
+                scope: "global",
+                pattern: "npm run build",
+              },
+              {
+                mode: "follow",
+                effect: "ask",
+                kind: "shell",
+                scope: "global",
+                pattern: "git push",
+              },
+              {
+                mode: "never-ask",
+                effect: "deny",
+                kind: "shell",
+                scope: "global",
+                pattern: "npm publish",
+              },
+              {
+                mode: "never-ask",
+                effect: "ask",
+                kind: "shell",
+                scope: "global",
+                pattern: "git push --force",
+              },
+            ],
+          }}
+          usage={usage}
+          mcpSpecs={[]}
+          mcpBridged={false}
+          sessionFiles={[]}
+          memory={[]}
+          memoryDetail={null}
+          memoryResult={null}
+          onReadMemory={() => {}}
+          onWriteMemory={() => {}}
+          onDeleteMemory={() => {}}
+          onExportMemories={() => {}}
+          onImportMemories={() => {}}
+          onDismissMemoryResult={() => {}}
+        />,
+      );
+
+    const readOnly = mount("read-only");
+    fireEvent.click(screen.getByText("Rules"));
+    expectRows([
+      "Read tools=ALLOW",
+      "Shell allowlist=ALLOW",
+      "Outside-sandbox paths=ASK",
+    ]);
+    readOnly.unmount();
+
+    const follow = mount("follow");
+    fireEvent.click(screen.getByText("Rules"));
+    expectRows([
+      "Everything not listed below=ASK",
+      "Read tools=ALLOW",
+      "Shell allowlist=ALLOW",
+      "Outlook sends=ASK",
+    ]);
+    follow.unmount();
+
+    const neverAsk = mount("never-ask");
+    fireEvent.click(screen.getByText("Rules"));
+    expectRows(["Everything not listed below=ALLOW", "Outlook sends=ASK"]);
+    neverAsk.unmount();
+  });
+
+  it("does not render a rule row that has no rules", () => {
+    render(
+      <ContextPanel settings={{ ...settings, editMode: "follow" }} {...sideProps} />,
+    );
+    fireEvent.click(screen.getByText("Rules"));
+
+    // Nothing configured, so only the rules that always apply keep a row.
+    const rows = Array.from(
+      document.querySelector(".mode-rules")?.querySelectorAll(".rule .pat") ?? [],
+    ).map((el) => el.textContent);
+    expect(rows).toEqual(["Everything not listed below", "Outlook sends"]);
+  });
+
+  it("copies another workspace's rules over this one, from the Workspace rules header", () => {
+    const onCopyWorkspaceRules = vi.fn();
+    render(
+      <ContextPanel
+        settings={{
+          ...settings,
+          editMode: "follow",
+          workspaceDir: "C:\\ws\\mine",
+          workspacesWithRules: [
+            { rootDir: "C:\\ws\\mine", ruleCount: 3 },
+            { rootDir: "C:\\ws\\other", ruleCount: 5 },
+          ],
+        }}
+        {...sideProps}
+        onCopyWorkspaceRules={onCopyWorkspaceRules}
+      />,
+    );
+    fireEvent.click(screen.getByText("Rules"));
+
+    // The trigger opens a pop-up listing the other workspace only.
+    fireEvent.click(screen.getByRole("button", { name: "Copy rules from another workspace" }));
+    // The list names each workspace, with its full path kept as the tooltip.
+    expect(screen.queryByRole("button", { name: "mine" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "other" }));
+    expect(onCopyWorkspaceRules).toHaveBeenCalledWith("C:\\ws\\other");
+  });
+
+  it("keeps the copy picker with the Workspace rules label even with nothing to copy", () => {
+    render(
+      <ContextPanel
+        settings={{ ...settings, editMode: "follow", workspacesWithRules: [] }}
+        {...sideProps}
+        onCopyWorkspaceRules={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText("Rules"));
+
+    // The trigger is always beside the label, disabled with the reason in its tooltip.
+    const trigger = screen.getByRole("button", { name: "Copy rules from another workspace" });
+    expect(trigger.textContent).toBe("Copy");
+    expect((trigger as HTMLButtonElement).disabled).toBe(true);
+    expect(trigger.getAttribute("title")).toBe("No other workspace has rules yet");
+  });
+
+  it("stays clickable when the daemon has not reported the workspace list", () => {
+    render(
+      <ContextPanel
+        settings={{ ...settings, editMode: "follow" }}
+        {...sideProps}
+        onCopyWorkspaceRules={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText("Rules"));
+
+    // An absent list must never be mistaken for "there is nothing to copy from".
+    const trigger = screen.getByRole("button", { name: "Copy rules from another workspace" });
+    expect((trigger as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("changes an existing rule's effect in place, for either scope", () => {
+    const onUpdateRule = vi.fn();
+    render(
+      <ContextPanel
+        settings={{
+          ...settings,
+          editMode: "follow",
+          rules: [
+            {
+              mode: "follow",
+              effect: "allow",
+              kind: "shell",
+              scope: "workspace",
+              pattern: "npm test",
+            },
+            {
+              mode: "follow",
+              effect: "allow",
+              kind: "shell",
+              scope: "global",
+              pattern: "git push",
+            },
+          ],
+        }}
+        {...sideProps}
+        onUpdateRule={onUpdateRule}
+      />,
+    );
+    fireEvent.click(screen.getByText("Rules"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Change effect for: npm test (ALLOW)" }));
+    expect(onUpdateRule).toHaveBeenLastCalledWith(
+      { mode: "follow", effect: "allow", kind: "shell", scope: "workspace", pattern: "npm test" },
+      { mode: "follow", effect: "ask", kind: "shell", scope: "workspace", pattern: "npm test" },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Change effect for: git push (ALLOW)" }));
+    expect(onUpdateRule).toHaveBeenLastCalledWith(
+      { mode: "follow", effect: "allow", kind: "shell", scope: "global", pattern: "git push" },
+      { mode: "follow", effect: "ask", kind: "shell", scope: "global", pattern: "git push" },
+    );
+  });
+
+  it("never makes the Mode rules card editable", () => {
+    render(
+      <ContextPanel
+        settings={{ ...settings, editMode: "never-ask" }}
+        {...sideProps}
+        onUpdateRule={vi.fn()}
+        onRemoveRule={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText("Rules"));
+
+    const card = document.querySelector(".mode-rules");
+    expect(card).toBeTruthy();
+    expect(card?.querySelectorAll("select, input, button").length).toBe(0);
+  });
+
+  it("renders the daemon-shipped allowlist patterns in the mode-rules rows", () => {
+    const mount = (mode: "read-only" | "follow") =>
+      render(
+        <ContextPanel
+          settings={{
+            ...settings,
+            editMode: mode,
+            readOnlyTools: ["read_file", "glob"],
+            builtinShellAllowlist: ["git status", "npm test"],
+            rules: [
+              {
+                mode: "follow",
+                effect: "allow",
+                kind: "shell",
+                scope: "workspace",
+                pattern: "npm run build",
+              },
+              {
+                mode: "follow",
+                effect: "ask",
+                kind: "shell",
+                scope: "global",
+                pattern: "git push",
+              },
+            ],
+          }}
+          usage={usage}
+          mcpSpecs={[]}
+          mcpBridged={false}
+          sessionFiles={[]}
+          memory={[]}
+          memoryDetail={null}
+          memoryResult={null}
+          onReadMemory={() => {}}
+          onWriteMemory={() => {}}
+          onDeleteMemory={() => {}}
+          onExportMemories={() => {}}
+          onImportMemories={() => {}}
+          onDismissMemoryResult={() => {}}
+        />,
+      );
+    const patterns = () =>
+      Array.from(document.querySelectorAll(".mode-rules .desc.pattern")).map(
+        (el) => el.textContent ?? "",
+      );
+
+    const follow = mount("follow");
+    fireEvent.click(screen.getByText("Rules"));
+    const followPatterns = patterns();
+    follow.unmount();
+
+    const readOnly = mount("read-only");
+    fireEvent.click(screen.getByText("Rules"));
+    const readOnlyPatterns = patterns();
+    readOnly.unmount();
+
+    expect(followPatterns).toContain("read_file | glob");
+    // The card lists the mode's own allowlist only; your rules stay in their sections.
+    expect(followPatterns).toContain("git status | npm test");
+    expect(followPatterns).not.toContain("npm run build");
+    expect(readOnlyPatterns).toContain("git status | npm test");
+    expect(readOnlyPatterns).not.toContain("npm run build");
+  });
+
+  it("shows no rule rows on the Read only card, since that mode honours no rules", () => {
+    render(
+      <ContextPanel
+        settings={{
+          ...settings,
+          editMode: "read-only",
+          readOnlyTools: ["read_file"],
+          builtinShellAllowlist: ["git status"],
+          rules: [
+            {
+              mode: "follow",
+              effect: "allow",
+              kind: "shell",
+              scope: "global",
+              pattern: "npm publish",
+            },
+          ],
+        }}
+        {...sideProps}
+      />,
+    );
+    fireEvent.click(screen.getByText("Rules"));
+
+    const labels = Array.from(document.querySelectorAll(".mode-rules .rule .pat")).map(
+      (el) => el.textContent,
+    );
+    expect(labels).toEqual(["Read tools", "Shell allowlist", "Outside-sandbox paths"]);
+    // The stored Follow rule is not denied here: it simply does not apply.
+    expect(screen.queryByText("DENY")).toBeNull();
   });
 
   it("renders context window slider in the Tools tab and commits updates", () => {

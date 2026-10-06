@@ -405,4 +405,40 @@ describe("list_mcp_bridges", () => {
     expect(r.count).toBe(1);
     expect(r.bridges[0].name).toBe("b");
   });
+
+  it("uses getMcpSpecs so live tools win over the config default", async () => {
+    writeConfig(
+      {
+        mcpServers: { blender: { command: "uvx", args: ["blender-mcp"] } },
+      },
+      s.configPath,
+    );
+    const live = new ToolRegistry();
+    registerScaffoldTools(live, {
+      homeDir: s.home,
+      projectRoot: s.projectRoot,
+      configPath: s.configPath,
+      getMcpSpecs: () => [
+        {
+          transport: "stdio",
+          name: "blender",
+          command: "uvx",
+          args: ["blender-mcp"],
+          disabled: true,
+        },
+      ],
+    });
+    live.register({
+      name: "blender_render",
+      description: "Render",
+      parameters: { type: "object" },
+      fn: async () => "ok",
+    });
+
+    const r = await call(live, "list_mcp_bridges", {});
+
+    expect(r.bridges[0].disabled).toBe(true);
+    expect(r.bridges[0].status).toBe("connected");
+    expect(r.bridges[0].tool_count).toBe(1);
+  });
 });

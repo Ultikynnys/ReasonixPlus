@@ -2,10 +2,15 @@
  *  These types are shared between the core loop, the ACP bridge, and any
  *  future UI surface that needs to render or resolve a permission prompt. */
 
+/** Scope an "always allow" rule is persisted to. `workspace` writes to the
+ *  project's config (this workspace only); `global` writes to the user config
+ *  (every workspace). */
+export type RuleScope = "workspace" | "global";
+
 export type ConfirmationChoice =
   | { type: "deny"; denyContext?: string }
   | { type: "run_once" }
-  | { type: "always_allow"; prefix: string };
+  | { type: "always_allow"; prefix: string; scope: RuleScope };
 
 export type PlanVerdict =
   | { type: "approve"; feedback?: string }

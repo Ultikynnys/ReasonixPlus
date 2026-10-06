@@ -2450,6 +2450,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   object-fit: contain;
 }
 .msg-text {
+  position: relative;
   font-size: 14px;
   line-height: 1.72;
   color: var(--fg);
@@ -2682,6 +2683,41 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   pointer-events: none;
 }
 .msg-actions .copy-btn.done {
+  color: var(--success);
+  border-color: var(--success-soft);
+}
+
+/* Per-card copy affordance — pinned to the card's bottom-right, revealed on
+   hover. Mirrors the message-level .msg-actions pill. */
+.card-copy {
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  z-index: 6;
+}
+.card:hover .card-copy,
+.msg-text:hover .card-copy {
+  opacity: 1;
+}
+.card-copy:hover {
+  color: var(--fg-2);
+  border-color: var(--border-strong);
+}
+.card-copy.done {
   color: var(--success);
   border-color: var(--success-soft);
 }
@@ -2944,6 +2980,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
    ============================================================ */
 
 .card {
+  position: relative;
   background: var(--card);
   border-radius: var(--radius-lg);
   overflow: hidden;
@@ -5312,7 +5349,8 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .rule .pat.deny {
   color: var(--danger);
 }
-.rule .sw {
+.rule .sw,
+.rule-composer .sw {
   font-size: 14px;
   padding: 1px 6px;
   border-radius: 999px;
@@ -5320,9 +5358,104 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--success);
   font-family: inherit;
 }
-.rule .sw.deny {
+.rule .sw.deny,
+.rule-composer .sw.deny {
   background: var(--danger-soft);
   color: var(--danger);
+}
+.rule .sw.warn,
+.rule-composer .sw.warn {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+/* The composer's effect picker reuses the badge above, so it needs no rules of its own. */
+/* The composer's effect picker is the same clickable badge as a rule row. */
+.rule button.sw.editable,
+.rule-composer button.sw.editable {
+  border: 0;
+  cursor: pointer;
+  outline: 1px dashed var(--muted);
+  outline-offset: 1px;
+}
+.rule button.sw.editable:hover,
+.rule button.sw.editable:focus-visible,
+.rule-composer button.sw.editable:hover,
+.rule-composer button.sw.editable:focus-visible {
+  outline-style: solid;
+  outline-color: currentColor;
+}
+/* Workspace-rule copy pop-up: floats over the panel under the Workspace rules header. */
+.rules-copy-pop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 30;
+  margin-top: 4px;
+  min-width: 240px;
+  max-width: 360px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.rules-copy-pop .note {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 6px 6px;
+}
+.rules-copy-pop .item {
+  display: block;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.rules-copy-pop .item:hover,
+.rules-copy-pop .item:focus-visible {
+  background: var(--border);
+}
+/* Icon + label trigger in a panel header: an outlined container, inert when disabled. */
+.h .copy-rules-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+.h .copy-rules-btn:hover:not(:disabled) {
+  background: var(--border);
+}
+.h .copy-rules-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* Mode rules: the row name stays neutral; the verdict badge carries the tone. */
+.mode-rules .pat {
+  color: var(--fg);
+}
+/* Mode rules: patterns wrap in a compact mono face instead of overflowing. */
+.mode-rules .desc.pattern {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  word-break: break-word;
 }
 .rule .desc {
   margin-top: 4px;
@@ -8435,7 +8568,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 
 /* ============================================================
-   MODE SWITCH — Review / Auto / YOLO
+   MODE SWITCH — Read only / Follow Rules / Never Ask
    ============================================================ */
 .mode-switch {
   display: inline-flex;
@@ -8447,7 +8580,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   font-family: inherit;
   flex-shrink: 0;
 }
-.mode-switch[data-mode="yolo"] {
+.mode-switch[data-mode="never-ask"] {
   border-color: var(--tone-err);
   box-shadow: 0 0 0 2px oklch(68% 0.2 25 / 0.18);
   animation: yolo-pulse 1.8s ease-in-out infinite;
@@ -8474,23 +8607,19 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .ms-seg:hover {
   color: var(--fg);
 }
-.ms-seg[data-on="true"][data-k="review"] {
-  background: var(--tone-info-soft);
-  color: var(--tone-info);
-}
-.ms-seg[data-on="true"][data-k="plan"] {
-  background: var(--tone-warn-soft);
-  color: var(--tone-warn);
-}
-.ms-seg[data-on="true"][data-k="auto"] {
+.ms-seg[data-on="true"][data-k="follow"] {
   background: var(--accent-soft);
   color: var(--accent);
 }
-.ms-seg[data-on="true"][data-k="yolo"] {
+.ms-seg[data-on="true"][data-k="read-only"] {
+  background: var(--tone-info-soft);
+  color: var(--tone-info);
+}
+.ms-seg[data-on="true"][data-k="never-ask"] {
   background: var(--tone-err);
   color: oklch(99% 0 0);
 }
-[data-theme="light"] .ms-seg[data-on="true"][data-k="yolo"] {
+[data-theme="light"] .ms-seg[data-on="true"][data-k="never-ask"] {
   color: oklch(100% 0 0);
 }
 

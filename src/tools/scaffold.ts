@@ -9,7 +9,7 @@ import {
 } from "../config.js";
 import { MCP_CATALOG, catalogStdioCommand } from "../mcp/catalog.js";
 import { preflightStdioSpec } from "../mcp/preflight.js";
-import { type McpSpec, parseMcpSpec, specToRaw } from "../mcp/spec.js";
+import { type McpServerSpec, type McpSpec, parseMcpSpec, specToRaw } from "../mcp/spec.js";
 import {
   SkillStore,
   type SkillToolArgs,
@@ -24,6 +24,9 @@ export interface ScaffoldToolsOptions {
   projectRoot?: string;
   /** Override config path — tests point this at a tmp file. */
   configPath?: string;
+  /** Live spec provider (config + per-session overlay). When set, list_mcp_bridges
+   *  reflects the session's toggle state instead of re-reading config. */
+  getMcpSpecs?: () => McpServerSpec[];
 }
 
 const VALID_SERVER_NAME = /^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/;
@@ -235,7 +238,8 @@ export function registerScaffoldTools(
     },
     fn: async (args: { name?: unknown }) => {
       const filterName = typeof args.name === "string" ? args.name.trim() : undefined;
-      const configured = loadEffectiveMcpConfig(opts.projectRoot, configPath);
+      const configured =
+        opts.getMcpSpecs?.() ?? loadEffectiveMcpConfig(opts.projectRoot, configPath);
       const registeredSpecs = registry.specs();
 
       const bridges = configured
@@ -251,7 +255,9 @@ export function registerScaffoldTools(
                 }))
             : [];
           const isBridged = tools.length > 0;
-          const status = s.disabled ? "disabled" : isBridged ? "connected" : "configured";
+          // Live wins: a registered tool means the bridge is usable, even if the
+          // config default marked the server disabled (a session enabled it).
+          const status = isBridged ? "connected" : s.disabled ? "disabled" : "configured";
           const disabledTools = s.disabledTools ?? [];
           return {
             name: s.name ?? "anon",

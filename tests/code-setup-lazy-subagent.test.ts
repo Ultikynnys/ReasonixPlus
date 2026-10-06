@@ -99,7 +99,7 @@ describe("buildCodeToolset", () => {
       "write_file",
       JSON.stringify({ path: "new.txt", content: "hello" }),
     );
-    expect(JSON.parse(out).error).toMatch(/unavailable in plan mode/i);
+    expect(JSON.parse(out).error).toMatch(/blocked in Read only mode/i);
     await toolset.jobs.shutdown();
   });
 

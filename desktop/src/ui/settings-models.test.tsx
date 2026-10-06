@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 const baseSettings: Settings = {
   version: "1.0.0",
   reasoningEffort: "high",
-  editMode: "review",
+  editMode: "follow",
   workspaceDir: "/test",
   recentWorkspaces: [],
   model: "deepseek-v4-flash",

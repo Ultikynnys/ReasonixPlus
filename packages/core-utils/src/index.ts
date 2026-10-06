@@ -69,6 +69,7 @@ export {
 } from "./models.js";
 export type {
   ConfirmationChoice,
+  RuleScope,
   PlanVerdict,
   CheckpointVerdict,
   RevisionVerdict,
@@ -129,6 +130,7 @@ export type {
   DesktopDiagnosticEvent,
   ConfirmRequiredEvent,
   PathAccessRequiredEvent,
+  EditRequiredEvent,
   ChoiceRequiredEvent,
   PlanRequiredEvent,
   CheckpointRequiredEvent,
@@ -211,6 +213,7 @@ export type {
   OutgoingCommand,
   UserImageAttachment,
   QuickSend,
+  RuleRecord,
 } from "./desktop-protocol.js";
 export {
   BUILTIN_QUICK_SENDS,

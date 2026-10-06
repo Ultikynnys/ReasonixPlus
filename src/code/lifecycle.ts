@@ -231,7 +231,7 @@ function toolResultLooksSuccessful(result: string): boolean {
     // Non-JSON tool results are normal.
   }
   if (/\b0\/\d+\s+applied\b/i.test(text)) return false;
-  return !/(user rejected|rejected this edit|discarded|unavailable in plan mode|interceptor failed|\berror\b|failed)/i.test(
+  return !/(user rejected|rejected this edit|discarded|blocked in Read only mode|interceptor failed|\berror\b|failed)/i.test(
     text,
   );
 }

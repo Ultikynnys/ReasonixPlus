@@ -199,7 +199,7 @@ export function loadOllamaEndpoint(path: string = defaultConfigPath()): Resolved
 import type { EditMode, QuickSend, ReasoningEffort } from "@reasonix/core-utils";
 import { expandTilde } from "@reasonix/core-utils/expand-tilde";
 
-/** Single trust dial: review queues edits + gates shell; auto applies + gates shell; yolo skips both gates; plan blocks every non-readonly tool (write_file / edit_file / multi_edit / run_command) at dispatch. */
+/** Single trust dial: read-only blocks every non-readonly tool (write_file / edit_file / multi_edit / run_command) at dispatch; follow auto-approves reads and allowlisted shell but asks for every write and non-allowlisted command; ignore auto-approves everything. */
 export type { EditMode, ReasoningEffort };
 
 export const REASONING_EFFORT_VALUES: readonly ReasoningEffort[] = [
@@ -552,6 +552,8 @@ export interface ReasonixConfig {
   shellAllowed?: string[];
   /** Global auto-approved outside-sandbox directory prefixes. */
   pathAllowed?: string[];
+  /** Global-scope rules: each carries a mode, an effect (allow/ask/deny) and a kind. */
+  rules?: StoredRule[];
   projects?: {
     [absoluteRootDir: string]: {
       shellAllowed?: string[];
@@ -559,6 +561,8 @@ export interface ReasonixConfig {
       hooksTrusted?: boolean;
       /** Absolute directory prefixes the user pre-approved for outside-sandbox file access (#684). */
       pathAllowed?: string[];
+      /** Workspace-scope rules: same shape as the top-level `rules`, scoped to this directory. */
+      rules?: StoredRule[];
     };
   };
   /** Issue #259 — user-configurable sensitive-path prefixes and filename patterns.
@@ -2064,11 +2068,284 @@ export function loadAllPathAllowed(rootDir?: string, path: string = defaultConfi
   return Array.from(set);
 }
 
-/** Unknown values fall back to "review" so hand-edited bad config gets the safe default. */
+export type RuleMode = "follow" | "never-ask";
+export type RuleEffect = "allow" | "ask" | "deny";
+export type RuleKind = "shell" | "path";
+export type RuleScope = "workspace" | "global";
+
+/** A rule as stored. Its scope is implied by where it lives: top-level means global. */
+export interface StoredRule {
+  mode: RuleMode;
+  effect: RuleEffect;
+  kind: RuleKind;
+  pattern: string;
+}
+
+/** A rule as the UI and the wire see it, with the scope named explicitly. */
+export interface ScopedRule extends StoredRule {
+  scope: RuleScope;
+}
+
+const ruleKey = (r: ScopedRule): string =>
+  `${r.mode}\u0000${r.effect}\u0000${r.kind}\u0000${r.scope}\u0000${r.pattern}`;
+
+/** The pre-structured allow lists, read as Follow allow rules so existing configs keep working. */
+function legacyAllowRules(cfg: ReasonixConfig, rootDir: string | undefined): ScopedRule[] {
+  const out: ScopedRule[] = [];
+  const take = (scope: RuleScope, kind: RuleKind, patterns: readonly string[] | undefined) => {
+    for (const pattern of patterns ?? [])
+      out.push({ mode: "follow", effect: "allow", kind, scope, pattern });
+  };
+  take("global", "shell", cfg.shellAllowed);
+  take("global", "path", cfg.pathAllowed);
+  if (rootDir) {
+    const project = cfg.projects?.[findProjectKey(cfg, rootDir) ?? rootDir];
+    take("workspace", "shell", project?.shellAllowed);
+    take("workspace", "path", project?.pathAllowed);
+  }
+  return out;
+}
+
+/** Every rule in force for a workspace: global + that workspace's own, plus legacy allow lists. */
+export function loadRules(rootDir?: string, path: string = defaultConfigPath()): ScopedRule[] {
+  const cfg = readConfig(path);
+  const globalRules: ScopedRule[] = (cfg.rules ?? []).map((r) => ({ ...r, scope: "global" }));
+  const workspaceRules: ScopedRule[] = rootDir
+    ? (cfg.projects?.[findProjectKey(cfg, rootDir) ?? rootDir]?.rules ?? []).map((r) => ({
+        ...r,
+        scope: "workspace",
+      }))
+    : [];
+  const seen = new Set<string>();
+  const merged: ScopedRule[] = [];
+  for (const rule of [...globalRules, ...workspaceRules, ...legacyAllowRules(cfg, rootDir)]) {
+    const key = ruleKey(rule);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(rule);
+  }
+  return merged;
+}
+
+/** The stored array a rule belongs in, created on demand. */
+function ruleTarget(
+  cfg: ReasonixConfig,
+  scope: ScopedRule["scope"],
+  projectKey: string,
+): StoredRule[] {
+  if (scope === "global") {
+    cfg.rules = cfg.rules ?? [];
+    return cfg.rules;
+  }
+  cfg.projects = cfg.projects ?? {};
+  const project = cfg.projects[projectKey] ?? {};
+  project.rules = project.rules ?? [];
+  cfg.projects[projectKey] = project;
+  return project.rules;
+}
+
+/** Add a rule to the list its scope implies. Returns false when it was already there. */
+export function addRule(
+  rule: ScopedRule,
+  rootDir: string,
+  path: string = defaultConfigPath(),
+): boolean {
+  const trimmed = rule.pattern.trim();
+  if (!trimmed) return false;
+  const stored: StoredRule = {
+    mode: rule.mode,
+    effect: rule.effect,
+    kind: rule.kind,
+    pattern: trimmed,
+  };
+  const cfg = readConfig(path);
+  const target = ruleTarget(cfg, rule.scope, findProjectKey(cfg, rootDir) ?? rootDir);
+  const exists = target.some(
+    (r) =>
+      r.mode === stored.mode &&
+      r.effect === stored.effect &&
+      r.kind === stored.kind &&
+      r.pattern === stored.pattern,
+  );
+  if (exists) return false;
+  target.push(stored);
+  writeConfig(cfg, path);
+  return true;
+}
+
+/** Remove an exact rule. Returns false when it was not present. */
+export function removeRule(
+  rule: ScopedRule,
+  rootDir: string,
+  path: string = defaultConfigPath(),
+): boolean {
+  const cfg = readConfig(path);
+  const matches = (r: StoredRule) =>
+    r.mode === rule.mode &&
+    r.effect === rule.effect &&
+    r.kind === rule.kind &&
+    r.pattern === rule.pattern;
+  const target =
+    rule.scope === "global"
+      ? cfg.rules
+      : cfg.projects?.[findProjectKey(cfg, rootDir) ?? rootDir]?.rules;
+  if (!target) return false;
+  const next = target.filter((r) => !matches(r));
+  if (next.length === target.length) return false;
+  if (rule.scope === "global") cfg.rules = next;
+  else {
+    const key = findProjectKey(cfg, rootDir) ?? rootDir;
+    if (cfg.projects?.[key]) cfg.projects[key].rules = next;
+  }
+  writeConfig(cfg, path);
+  return true;
+}
+
+/** Change a stored rule in place: its effect or kind, in one config write. False when the
+ *  original is gone or the result would duplicate an existing rule. */
+export function updateRule(
+  from: ScopedRule,
+  to: ScopedRule,
+  rootDir: string,
+  path: string = defaultConfigPath(),
+): boolean {
+  const trimmed = to.pattern.trim();
+  if (!trimmed) return false;
+  const cfg = readConfig(path);
+  const projectKey = findProjectKey(cfg, rootDir) ?? rootDir;
+  const listFor = (scope: RuleScope): StoredRule[] | undefined =>
+    scope === "global" ? cfg.rules : cfg.projects?.[projectKey]?.rules;
+  const source = listFor(from.scope);
+  const index = source?.findIndex(
+    (r) =>
+      r.mode === from.mode &&
+      r.effect === from.effect &&
+      r.kind === from.kind &&
+      r.pattern === from.pattern,
+  );
+
+  // A rule read in from the pre-structured allow lists has no structured entry yet, so an
+  // explicit edit migrates that one entry: drop it from the flat list, store it structured.
+  const legacyKey: AllowListField = from.kind === "shell" ? "shellAllowed" : "pathAllowed";
+  const legacy = from.scope === "global" ? cfg[legacyKey] : cfg.projects?.[projectKey]?.[legacyKey];
+  const legacyIndex = legacy?.indexOf(from.pattern) ?? -1;
+  const fromStructured = index !== undefined && index >= 0;
+  const fromLegacy = from.mode === "follow" && from.effect === "allow" && legacyIndex >= 0;
+  if (!fromStructured && !fromLegacy) return false;
+
+  const stored: StoredRule = { mode: to.mode, effect: to.effect, kind: to.kind, pattern: trimmed };
+  const target = ruleTarget(cfg, to.scope, projectKey);
+  const duplicate = target.some(
+    (r) =>
+      r.mode === stored.mode &&
+      r.effect === stored.effect &&
+      r.kind === stored.kind &&
+      r.pattern === stored.pattern,
+  );
+  if (duplicate) return false;
+  if (fromStructured) source!.splice(index!, 1);
+  else legacy!.splice(legacyIndex, 1);
+  target.push(stored);
+  writeConfig(cfg, path);
+  return true;
+}
+
+/** Patterns for one mode and kind, split by effect, ready for the enforcement checks. */
+export function rulePatterns(
+  mode: RuleMode,
+  kind: RuleKind,
+  rootDir: string,
+  path: string = defaultConfigPath(),
+): { allow: string[]; ask: string[]; deny: string[] } {
+  const out = { allow: [] as string[], ask: [] as string[], deny: [] as string[] };
+  for (const rule of loadRules(rootDir, path)) {
+    if (rule.mode !== mode || rule.kind !== kind) continue;
+    out[rule.effect].push(rule.pattern);
+  }
+  return out;
+}
+
+/** A workspace and how many of its own rules it carries. */
+export interface WorkspaceRuleSet {
+  rootDir: string;
+  ruleCount: number;
+}
+
+/** One workspace's own rules for `mode`: structured rules of that mode, plus the
+ *  pre-structured allow lists, which only ever encode follow rules. */
+function workspaceOwnRules(cfg: ReasonixConfig, key: string, mode: EditMode): ScopedRule[] {
+  const project = cfg.projects?.[key];
+  const rules: ScopedRule[] = (project?.rules ?? [])
+    .filter((r) => r.mode === mode)
+    .map((r) => ({ ...r, scope: "workspace" }));
+  const take = (kind: RuleKind, patterns: readonly string[] | undefined): void => {
+    if (mode !== "follow") return;
+    for (const pattern of patterns ?? []) {
+      rules.push({ mode: "follow", effect: "allow", kind, scope: "workspace", pattern });
+    }
+  };
+  take("shell", project?.shellAllowed);
+  take("path", project?.pathAllowed);
+  const seen = new Set<string>();
+  return rules.filter((rule) => {
+    const key = ruleKey(rule);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Workspaces that carry workspace-scope rules for `mode`, for the copy picker. */
+export function listWorkspacesWithRules(
+  path: string = defaultConfigPath(),
+  mode: EditMode = loadEditMode(),
+): WorkspaceRuleSet[] {
+  const cfg = readConfig(path);
+  const out: WorkspaceRuleSet[] = [];
+  for (const key of Object.keys(cfg.projects ?? {})) {
+    const ruleCount = workspaceOwnRules(cfg, key, mode).length;
+    if (ruleCount > 0) out.push({ rootDir: key, ruleCount });
+  }
+  return out.sort((a, b) => a.rootDir.localeCompare(b.rootDir));
+}
+
+/** Copy the source workspace's rules for `mode` onto the target, replacing the target's rules
+ *  of that mode only. Rules of every other mode survive on the target. Returns the count. */
+export function copyWorkspaceRules(
+  from: string,
+  to: string,
+  path: string = defaultConfigPath(),
+  mode: EditMode = loadEditMode(),
+): number {
+  const cfg = readConfig(path);
+  const fromKey = findProjectKey(cfg, from) ?? from;
+  const toKey = findProjectKey(cfg, to) ?? to;
+  if (fromKey === toKey) return 0;
+  const source: StoredRule[] = workspaceOwnRules(cfg, fromKey, mode).map(
+    ({ mode: ruleMode, effect, kind, pattern }) => ({ mode: ruleMode, effect, kind, pattern }),
+  );
+  cfg.projects = cfg.projects ?? {};
+  const target = cfg.projects[toKey] ?? {};
+  cfg.projects[toKey] = target;
+  target.rules = [...(target.rules ?? []).filter((r) => r.mode !== mode), ...source];
+  if (mode === "follow") {
+    target.shellAllowed = undefined;
+    target.pathAllowed = undefined;
+  }
+  writeConfig(cfg, path);
+  return source.length;
+}
+
+/** Unknown values fall back to "follow" so hand-edited bad config gets the safe gated default. Legacy 4-mode values migrate onto the 3-mode dial. */
 export function loadEditMode(path: string = defaultConfigPath()): EditMode {
-  const v = readConfig(path).editMode;
-  if (v === "auto" || v === "yolo" || v === "plan") return v;
-  return "review";
+  // Read raw (widened to string) so legacy plan/review/auto/yolo values migrate
+  // instead of silently falling back to the default.
+  const raw = readConfig(path).editMode as string | undefined;
+  if (raw === "read-only" || raw === "follow" || raw === "never-ask") return raw;
+  if (raw === "plan") return "read-only";
+  if (raw === "review" || raw === "auto") return "follow";
+  if (raw === "yolo" || raw === "ignore") return "never-ask";
+  return "follow";
 }
 
 /** Persist the edit mode so `/mode auto` survives a relaunch. */

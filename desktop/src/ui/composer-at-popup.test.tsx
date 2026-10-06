@@ -30,7 +30,7 @@ function renderComposer(props?: Partial<React.ComponentProps<typeof Composer>>) 
       reasoningEffort="high"
       onModelChange={vi.fn()}
       onEffortChange={vi.fn()}
-      editMode="review"
+      editMode="follow"
       onEditModeChange={vi.fn()}
       onVoiceError={vi.fn()}
       textareaRef={textareaRef}

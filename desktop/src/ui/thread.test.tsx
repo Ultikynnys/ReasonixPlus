@@ -45,7 +45,13 @@ function makeShellPrompt(command: string): import("@reasonix/core-utils").Approv
     meta: {},
     actions: [
       { id: "run_once", label: "Run once", kind: "allow_once" },
-      { id: "always_allow", label: "Always allow — git", kind: "allow_always" },
+      {
+        id: "allow_workspace",
+        label: "Add to workspace rules",
+        kind: "allow_always",
+        scope: "workspace",
+      },
+      { id: "allow_global", label: "Add to global rules", kind: "allow_always", scope: "global" },
       {
         id: "deny",
         label: "Deny",
@@ -75,7 +81,13 @@ function makePathPrompt(
         label: intent === "write" ? "Allow write" : "Allow read",
         kind: "allow_once",
       },
-      { id: "always_allow", label: "Always allow — /workspace", kind: "allow_always" },
+      {
+        id: "allow_workspace",
+        label: "Add to workspace rules",
+        kind: "allow_always",
+        scope: "workspace",
+      },
+      { id: "allow_global", label: "Add to global rules", kind: "allow_always", scope: "global" },
       {
         id: "deny",
         label: "Deny",
@@ -112,12 +124,7 @@ describe("ConfirmApprovalCard — ApprovalPrompt rendering", () => {
       ],
     };
     const { container } = render(
-      <ConfirmApprovalCard
-        prompt={prompt}
-        onAllow={() => {}}
-        onAlwaysAllow={() => {}}
-        onDeny={() => {}}
-      />,
+      <ConfirmApprovalCard prompt={prompt} onAllow={() => {}} onDeny={() => {}} />,
     );
     expect(container.textContent).toContain("From: sender@outlook.com");
     expect(container.textContent).toContain("To: recipient@example.com");
@@ -135,14 +142,16 @@ describe("ConfirmApprovalCard — ApprovalPrompt rendering", () => {
       <ConfirmApprovalCard
         prompt={makeShellPrompt("git status")}
         onAllow={() => {}}
-        onAlwaysAllow={() => {}}
+        onAddWorkspaceRule={() => {}}
+        onAddGlobalRule={() => {}}
         onDeny={() => {}}
       />,
     );
     expect(container.querySelector(".card-head .name")?.textContent).toBe("Run command");
     expect(container.querySelector(".card-head .meta")?.textContent).toBe("git status");
     expect(screen.getByRole("button", { name: "Run once" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Always allow — git" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add to workspace rules" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add to global rules" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy();
   });
 
@@ -152,7 +161,8 @@ describe("ConfirmApprovalCard — ApprovalPrompt rendering", () => {
       <ConfirmApprovalCard
         prompt={makeShellPrompt("echo hi")}
         onAllow={onAllow}
-        onAlwaysAllow={() => {}}
+        onAddWorkspaceRule={() => {}}
+        onAddGlobalRule={() => {}}
         onDeny={() => {}}
       />,
     );
@@ -160,19 +170,19 @@ describe("ConfirmApprovalCard — ApprovalPrompt rendering", () => {
     expect(onAllow).toHaveBeenCalledTimes(1);
   });
 
-  it("fires onAlwaysAllow with prefix when tertiary button is clicked", () => {
-    const onAlwaysAllow = vi.fn();
+  it("fires the workspace-rule handler when the tertiary button is clicked", () => {
+    const onAddWorkspaceRule = vi.fn();
     render(
       <ConfirmApprovalCard
         prompt={makeShellPrompt("npm test")}
         onAllow={() => {}}
-        onAlwaysAllow={onAlwaysAllow}
+        onAddWorkspaceRule={onAddWorkspaceRule}
+        onAddGlobalRule={() => {}}
         onDeny={() => {}}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Always allow/ }));
-    expect(onAlwaysAllow).toHaveBeenCalledTimes(1);
-    expect(onAlwaysAllow).toHaveBeenCalledWith("npm");
+    fireEvent.click(screen.getByRole("button", { name: "Add to workspace rules" }));
+    expect(onAddWorkspaceRule).toHaveBeenCalledTimes(1);
   });
 
   it("fires onDeny when secondary button is clicked", () => {
@@ -181,7 +191,8 @@ describe("ConfirmApprovalCard — ApprovalPrompt rendering", () => {
       <ConfirmApprovalCard
         prompt={makeShellPrompt("rm -rf /")}
         onAllow={() => {}}
-        onAlwaysAllow={() => {}}
+        onAddWorkspaceRule={() => {}}
+        onAddGlobalRule={() => {}}
         onDeny={onDeny}
       />,
     );
@@ -196,7 +207,8 @@ describe("PathAccessApprovalCard — ApprovalPrompt rendering", () => {
       <PathAccessApprovalCard
         prompt={makePathPrompt("/etc/passwd", "read")}
         onAllow={() => {}}
-        onAlwaysAllow={() => {}}
+        onAddWorkspaceRule={() => {}}
+        onAddGlobalRule={() => {}}
         onDeny={() => {}}
       />,
     );
@@ -206,19 +218,19 @@ describe("PathAccessApprovalCard — ApprovalPrompt rendering", () => {
     expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy();
   });
 
-  it("fires onAlwaysAllow with prefix for path access", () => {
-    const onAlwaysAllow = vi.fn();
+  it("fires the global-rule handler for path access", () => {
+    const onAddGlobalRule = vi.fn();
     render(
       <PathAccessApprovalCard
         prompt={makePathPrompt("/tmp", "write")}
         onAllow={() => {}}
-        onAlwaysAllow={onAlwaysAllow}
+        onAddWorkspaceRule={() => {}}
+        onAddGlobalRule={onAddGlobalRule}
         onDeny={() => {}}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Always allow/ }));
-    expect(onAlwaysAllow).toHaveBeenCalledTimes(1);
-    expect(onAlwaysAllow).toHaveBeenCalledWith("/workspace");
+    fireEvent.click(screen.getByRole("button", { name: "Add to global rules" }));
+    expect(onAddGlobalRule).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -400,7 +412,7 @@ describe("user-input cards render agent markdown", () => {
       ],
     };
     const { container } = render(
-      <ConfirmApprovalCard prompt={prompt} onAllow={noop} onAlwaysAllow={noop} onDeny={noop} />,
+      <ConfirmApprovalCard prompt={prompt} onAllow={noop} onDeny={noop} />,
     );
     expect(container.querySelector(".markdown strong")?.textContent).toBe("Dear");
     expect(container.textContent).toContain("From: a@x.com");
@@ -430,7 +442,7 @@ describe("AssistantMsg - an open gate never stacks a second card", () => {
         pendingConfirms={[]}
         onApproveConfirm={noop}
         onRejectConfirm={noop}
-        onAlwaysAllowConfirm={noop}
+        onRuleConfirm={noop}
         onStopTool={noop}
         isInterventionPending={interventionPending}
       />,

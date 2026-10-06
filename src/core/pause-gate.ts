@@ -9,9 +9,17 @@ import type {
   ConfirmationChoice,
   PlanVerdict,
   RevisionVerdict,
+  RuleScope,
 } from "@reasonix/core-utils";
 
-export type { ConfirmationChoice, PlanVerdict, CheckpointVerdict, RevisionVerdict, ChoiceVerdict };
+export type {
+  ConfirmationChoice,
+  PlanVerdict,
+  CheckpointVerdict,
+  RevisionVerdict,
+  ChoiceVerdict,
+  RuleScope,
+};
 
 export type ToolConfirmationAuditEvent =
   | {
@@ -37,6 +45,7 @@ interface PauseResponseMap {
   run_background: ConfirmationChoice;
   outlook_send: ConfirmationChoice;
   path_access: ConfirmationChoice;
+  edit: ConfirmationChoice;
   plan_proposed: PlanVerdict;
   plan_checkpoint: CheckpointVerdict;
   plan_revision: RevisionVerdict;
@@ -72,6 +81,19 @@ interface PausePayloadMap {
     sandboxRoot: string;
     /** Directory prefix that would be persisted if the user picks "always allow". */
     allowPrefix: string;
+  };
+  /** In-sandbox write confirmation (Follow Rules mode). */
+  edit: {
+    /** Path the tool is about to write. */
+    path: string;
+    /** The filesystem tool calling in (write_file, edit_file, delete_file, ...). */
+    toolName: string;
+    /** Sandbox root, surfaced for context. */
+    sandboxRoot: string;
+    /** Directory prefix a workspace/global rule would persist. */
+    allowPrefix: string;
+    /** Optional human preview (diff / content head). */
+    preview?: string;
   };
   plan_proposed: { plan: string; steps?: unknown[]; summary?: string; callId?: string };
   plan_checkpoint: {
@@ -182,6 +204,13 @@ export class PauseGate {
     return this._pending.size > 0;
   }
 
+  /** True when at least one listener is registered (an interactive surface can
+   *  render a prompt). The write gate consults this so headless/library callers
+   *  with nothing to ask through never block on a write. */
+  hasListeners(): boolean {
+    return this._listeners.size > 0;
+  }
+
   /** Check if a specific pause request id is pending. */
   isPending(id: number): boolean {
     return this._pending.has(id);
@@ -234,6 +263,7 @@ function safeCancelVerdict(kind: PauseKind): unknown {
     case "run_background":
     case "outlook_send":
     case "path_access":
+    case "edit":
       return { type: "deny" };
     case "plan_proposed":
       return { type: "cancel" };

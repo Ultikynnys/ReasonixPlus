@@ -23,9 +23,15 @@ describe("toApprovalPrompt", () => {
         kind: "run_command",
         payload: { command: "npm install" },
       });
-      const always = p.actions.find((a) => a.id === "always_allow")!;
-      expect(always.label).toBe("Always allow: npm install");
+      expect(p.actions.map((a) => a.id)).toEqual([
+        "run_once",
+        "deny",
+        "allow_workspace",
+        "allow_global",
+      ]);
       expect(p.data?.prefix).toBe("npm install");
+      expect(p.actions.find((a) => a.id === "allow_workspace")!.scope).toBe("workspace");
+      expect(p.actions.find((a) => a.id === "allow_global")!.scope).toBe("global");
     });
 
     it("derives single-token prefix for unknown commands", () => {
@@ -35,7 +41,6 @@ describe("toApprovalPrompt", () => {
         payload: { command: "ls -la" },
       });
       expect(p.data?.prefix).toBe("ls");
-      expect(p.actions.find((a) => a.id === "always_allow")!.label).toBe("Always allow: ls");
     });
 
     it("includes secondaryInput on deny action", () => {
@@ -88,7 +93,7 @@ describe("toApprovalPrompt", () => {
       });
       expect(p.kind).toBe("path");
       expect(p.title).toBe("Access path: read");
-      expect(p.actions.find((a) => a.id === "run_once")!.label).toBe("Allow read");
+      expect(p.actions.find((a) => a.id === "run_once")!.label).toBe("Accept");
     });
 
     it("produces write-flavored labels", () => {
@@ -104,7 +109,7 @@ describe("toApprovalPrompt", () => {
         },
       });
       expect(p.title).toBe("Access path: write");
-      expect(p.actions.find((a) => a.id === "run_once")!.label).toBe("Allow write");
+      expect(p.actions.find((a) => a.id === "run_once")!.label).toBe("Accept");
     });
 
     it("stores allowPrefix in data", () => {
@@ -136,6 +141,34 @@ describe("toApprovalPrompt", () => {
       });
       expect(p.preview).toBe("read_file → /etc/hosts");
       expect(p.meta).toEqual({ sandboxRoot: "/home/user" });
+    });
+  });
+
+  describe("edit (in-sandbox write)", () => {
+    const p = toApprovalPrompt({
+      id: 8,
+      kind: "edit",
+      payload: {
+        path: "/home/user/src/app.ts",
+        toolName: "edit_file",
+        sandboxRoot: "/home/user",
+        allowPrefix: "/home/user/src",
+      },
+    });
+
+    it("titles the write and lists the four rule actions", () => {
+      expect(p.kind).toBe("edit");
+      expect(p.title).toBe("Confirm write: /home/user/src/app.ts");
+      expect(p.actions.map((a) => a.id)).toEqual([
+        "run_once",
+        "deny",
+        "allow_workspace",
+        "allow_global",
+      ]);
+    });
+
+    it("stores the allowPrefix in data", () => {
+      expect(p.data?.prefix).toBe("/home/user/src");
     });
   });
 
@@ -277,10 +310,19 @@ describe("resolveApprovalPrompt", () => {
       expect(resolveApprovalPrompt(shellPrompt, "run_once")).toEqual({ type: "run_once" });
     });
 
-    it("resolves always_allow with prefix from data", () => {
-      expect(resolveApprovalPrompt(shellPrompt, "always_allow")).toEqual({
+    it("resolves allow_workspace with the workspace scope", () => {
+      expect(resolveApprovalPrompt(shellPrompt, "allow_workspace")).toEqual({
         type: "always_allow",
         prefix: "npm test",
+        scope: "workspace",
+      });
+    });
+
+    it("resolves allow_global with the global scope", () => {
+      expect(resolveApprovalPrompt(shellPrompt, "allow_global")).toEqual({
+        type: "always_allow",
+        prefix: "npm test",
+        scope: "global",
       });
     });
 

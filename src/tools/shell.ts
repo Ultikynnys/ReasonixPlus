@@ -2,7 +2,12 @@
 
 import * as pathMod from "node:path";
 import { addGlobalShellAllowed, addProjectShellAllowed } from "../config.js";
-import { type PauseAskOpts, type PauseGate, pauseGate } from "../core/pause-gate.js";
+import {
+  type PauseAskOpts,
+  type PauseGate,
+  type RuleScope,
+  pauseGate,
+} from "../core/pause-gate.js";
 import { appendCommandOutputMetric, estimateOutputTokens } from "../telemetry/command-output.js";
 import type { ToolRegistry } from "../tools.js";
 import { ToolControlFlowError } from "./control-flow-error.js";
@@ -19,7 +24,12 @@ import {
   applyOutputFilter,
   commandSupportsOutputFiltering,
 } from "./shell/output-filter.js";
-import { detectShellOperator, isCommandAllowed, tokenizeCommand } from "./shell/parse.js";
+import {
+  detectShellOperator,
+  isCommandAllowed,
+  matchesAnyRulePattern,
+  tokenizeCommand,
+} from "./shell/parse.js";
 
 export {
   BUILTIN_ALLOWLIST,
@@ -28,6 +38,7 @@ export {
   isAllowed,
   isCommandAllowed,
   isDqEscape,
+  matchesAnyRulePattern,
   tokenizeCommand,
 } from "./shell/parse.js";
 export type {
@@ -111,7 +122,12 @@ export interface ShellToolsOptions {
   maxOutputChars?: number;
   /** Getter form is load-bearing — newly-persisted "always allow" prefixes MUST take effect mid-session. */
   extraAllowed?: readonly string[] | (() => readonly string[]);
-  /** Getter form lets `editMode === "yolo"` flip mid-session without re-registering tools. */
+  /** Patterns that must prompt even when the mode would auto-run: Follow's carve-outs
+   *  and Never Ask's ask rules. Getter form for the same mid-session reason. */
+  extraAsk?: readonly string[] | (() => readonly string[]);
+  /** Never Ask's deny patterns: refused outright, never prompted. */
+  extraDenied?: readonly string[] | (() => readonly string[]);
+  /** Getter form lets `editMode === "never-ask"` flip mid-session without re-registering tools. */
   allowAll?: boolean | (() => boolean);
   /** Whether `run_command` may run a command elevated via Windows UAC (`elevate: true`).
    *  Opt-in: default false. Getter form lets a mid-session config toggle take effect. */
@@ -163,13 +179,33 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
   // prefixes take effect inside the session that added them, not just
   // on the next launch. Static arrays are wrapped into a constant
   // getter so the call site below is uniform.
-  const getExtraAllowed: () => readonly string[] =
-    typeof opts.extraAllowed === "function"
-      ? opts.extraAllowed
-      : (() => {
-          const snapshot = opts.extraAllowed ?? [];
-          return () => snapshot;
-        })();
+  const asListGetter = (
+    value: readonly string[] | (() => readonly string[]) | undefined,
+  ): (() => readonly string[]) => {
+    if (typeof value === "function") return value;
+    const snapshot = value ?? [];
+    return () => snapshot;
+  };
+  const getExtraAllowed = asListGetter(opts.extraAllowed);
+  const getExtraAsk = asListGetter(opts.extraAsk);
+  const getExtraDenied = asListGetter(opts.extraDenied);
+  /** Most restrictive wins: deny refuses outright, ask always prompts. Pattern-only,
+   *  so the builtin allowlist can't be mistaken for a rule match. */
+  const ruleVerdict = (cmd: string): "deny" | "ask" | "allow" | "none" => {
+    if (!cmd) return "none";
+    if (matchesAnyRulePattern(cmd, getExtraDenied())) return "deny";
+    if (matchesAnyRulePattern(cmd, getExtraAsk())) return "ask";
+    if (matchesAnyRulePattern(cmd, getExtraAllowed())) return "allow";
+    return "none";
+  };
+  /** A deny rule never runs, and an ask rule never runs silently even in never-ask. */
+  const runsSilently = (cmd: string, elevate: boolean): boolean => {
+    if (elevate) return false;
+    const verdict = ruleVerdict(cmd);
+    if (verdict === "deny" || verdict === "ask") return false;
+    if (isAllowAll()) return true;
+    return isCommandAllowed(cmd, getExtraAllowed(), rootDir, opts.sensitivePaths);
+  };
   // Resolve dynamically so the TUI can flip yolo mode mid-session and
   // have the registry pick it up on the next dispatch. Static booleans
   // are wrapped into a thunk for uniformity.
@@ -186,17 +222,19 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
     name: "run_command",
     description:
       'Run a shell command in the project root; returns combined stdout+stderr. Allowlisted read-only / test / lint / typecheck commands run immediately; mutating / network / install commands gate on user confirmation.\n\nDO NOT use run_command for file operations: use write_file, edit_file, multi_edit, copy_file, move_file, or delete_file instead. Shell utilities (echo, cp, sed, cat, tee, perl, python -c, etc.) bypass validation, lack rollback, and will trigger user confirmation gates that waste turns.\n\nNo real shell: argv parsed natively for cross-platform parity:\n• Supported: chains `|`/`||`/`&&`/`;` (each segment allowlist-checked) and file redirects `>`/`>>`/`<`/`2>`/`2>>`/`2>&1`/`&>`.\n• Rejected: background `&`, heredoc `<<`, `$(…)`, subshells, `$VAR` expansion, glob expansion. Quote operator chars as literals (`grep "a|b" file`).\n• `cd` is rejected in chains. By default, run generated scripts from the directory where the script was written; do not assume an input/data directory is the cwd. Pass input/data paths as arguments unless the command truly depends on that cwd. For package tools, use `npm --prefix <dir>`, `git -C <dir>`, `cargo -C <dir>`.\n• Filter at source: `grep -c` / `wc -l` / narrower paths over unbounded dumps.\n\n`persistent: true` runs the command as a workspace-scoped job that survives Stop / New chat / turn-abort and appears in the Jobs panel; it stays alive until you close it with `stop_job` or the workspace/app closes. Persistent commands run as a single process (no chain operators / elevation). Default false.',
-    // Plan-mode gate: allow allowlisted commands through (git status,
-    // cargo check, ls, grep …) so the model can actually investigate
-    // during planning. Anything that would otherwise trigger a
-    // confirmation prompt is treated as "not read-only" and bounced.
+    // Read-only gate: allowlisted commands pass (git status, cargo check,
+    // ls, grep …) so Read only can still investigate. Anything that would
+    // otherwise trigger a confirmation prompt counts as "not read-only"
+    // and is refused.
     readOnlyCheck: (args: { command?: unknown; elevate?: unknown }) => {
       // Elevated runs are a privilege change — never read-only, always confirmed.
       if (args?.elevate === true) return false;
       if (isAllowAll()) return true;
       const cmd = typeof args?.command === "string" ? args.command.trim() : "";
       if (!cmd) return false;
-      return isCommandAllowed(cmd, getExtraAllowed(), rootDir, opts.sensitivePaths);
+      // User rules are deliberately NOT consulted: read-only must stay read-only
+      // even when a rule would otherwise widen what can run.
+      return isCommandAllowed(cmd, [], rootDir, opts.sensitivePaths);
     },
     parameters: {
       type: "object",
@@ -247,19 +285,23 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
       await confirmShellCommand(cmd, {
         gate: ctx?.confirmationGate ?? pauseGate,
         // Elevated runs are a privilege change: ALWAYS confirm, never allowlisted.
-        isAllowed:
-          !elevate &&
-          (isAllowAll() || isCommandAllowed(cmd, getExtraAllowed(), rootDir, opts.sensitivePaths)),
+        isAllowed: runsSilently(cmd, elevate),
+        denied: ruleVerdict(cmd) === "deny",
         ask: {
           kind: "run_command",
           payload: {
             command: cmd,
             cwd: rootDir,
             timeoutSec: effectiveTimeout,
+            // An ask rule must prompt even in never-ask, where the gate auto-resolves.
+            ...(ruleVerdict(cmd) === "ask" ? { forceAsk: true } : {}),
             ...(elevate ? { elevated: true } : {}),
           },
         },
-        onAlwaysAllow: (prefix) => addGlobalShellAllowed(prefix),
+        onAlwaysAllow: (prefix, scope) => {
+          if (scope === "workspace") addProjectShellAllowed(rootDir, prefix);
+          else addGlobalShellAllowed(prefix);
+        },
       });
 
       if (persistent) {
@@ -384,13 +426,21 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
       const cwd = resolveCwdInsideRoot(rootDir, args.cwd);
       await confirmShellCommand(cmd, {
         gate: ctx?.confirmationGate ?? pauseGate,
-        isAllowed:
-          isAllowAll() || isCommandAllowed(cmd, getExtraAllowed(), rootDir, opts.sensitivePaths),
+        isAllowed: runsSilently(cmd, false),
+        denied: ruleVerdict(cmd) === "deny",
         ask: {
           kind: "run_background",
-          payload: { command: cmd, cwd, waitSec: args.waitSec },
+          payload: {
+            command: cmd,
+            cwd,
+            waitSec: args.waitSec,
+            ...(ruleVerdict(cmd) === "ask" ? { forceAsk: true } : {}),
+          },
         },
-        onAlwaysAllow: (prefix) => addGlobalShellAllowed(prefix),
+        onAlwaysAllow: (prefix, scope) => {
+          if (scope === "workspace") addProjectShellAllowed(rootDir, prefix);
+          else addGlobalShellAllowed(prefix);
+        },
       });
       const result = await jobs.start(cmd, {
         cwd,
@@ -556,17 +606,22 @@ async function confirmShellCommand<K extends "run_command" | "run_background">(
   opts: {
     gate: PauseGate;
     isAllowed: boolean;
+    /** A deny rule refuses the command outright: no prompt, no execution. */
+    denied: boolean;
     ask: PauseAskOpts<K>;
-    onAlwaysAllow: (prefix: string) => void;
+    onAlwaysAllow: (prefix: string, scope: RuleScope) => void;
   },
 ): Promise<void> {
+  if (opts.denied) {
+    throw new Error(`${cmd}: blocked by your Never Ask rules`);
+  }
   if (opts.isAllowed) return;
   const choice = await opts.gate.ask(opts.ask);
   if (choice.type === "deny") {
     throw new Error(`user denied: ${cmd}${choice.denyContext ? `: ${choice.denyContext}` : ""}`);
   }
   if (choice.type === "always_allow") {
-    opts.onAlwaysAllow(choice.prefix);
+    opts.onAlwaysAllow(choice.prefix, choice.scope);
   }
   // "run_once" — fall through and execute
 }

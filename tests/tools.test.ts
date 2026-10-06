@@ -285,7 +285,7 @@ describe("ToolRegistry", () => {
       });
       reg.setPlanMode(true);
       const out = await reg.dispatch("edit_file", '{"path":"x"}');
-      expect(JSON.parse(out).error).toMatch(/unavailable in plan mode/);
+      expect(JSON.parse(out).error).toMatch(/blocked in Read only mode/);
       expect(interceptorCalled).toBe(false);
     });
 
@@ -767,7 +767,7 @@ describe("ToolRegistry", () => {
       const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       try {
         const out = await reg.dispatch("buggy_tool", "{}");
-        expect(JSON.parse(out).error).toMatch(/unavailable in plan mode/);
+        expect(JSON.parse(out).error).toMatch(/blocked in Read only mode/);
         const writes = writeSpy.mock.calls.map((c) => String(c[0]));
         expect(
           writes.some((w) => w.includes("readOnlyCheck for buggy_tool threw: check is buggy")),
