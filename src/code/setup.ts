@@ -17,6 +17,7 @@ import {
   loadTypesafeApiKey,
   providerForModel,
   readConfig,
+  regexRulePatterns,
   ruleModeInForce,
   rulePatterns,
   searchEnabled,
@@ -127,6 +128,9 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
     registerShellTools(tools, {
       rootDir: root,
       extraAllowed: () => rulePatterns("follow", "shell", root).allow,
+      regexAllowed: () => regexRulePatterns("follow", root).allow,
+      regexAsk: () => regexRulePatterns(ruleModeInForce(), root).ask,
+      regexDenied: () => (isNeverAskMode() ? regexRulePatterns("never-ask", root).deny : []),
       extraAsk: () => rulePatterns(ruleModeInForce(), "shell", root).ask,
       extraDenied: () => (isNeverAskMode() ? rulePatterns("never-ask", "shell", root).deny : []),
       allowAll: () => isNeverAskMode(),

@@ -114,6 +114,8 @@ export {
   LiveOutputEmitter,
 } from "./shell/exec.js";
 
+import { matchesRuleRegex } from "./shell/rule-regex.js";
+
 export interface ShellToolsOptions {
   /** Directory to run commands in. Must be an absolute path. */
   rootDir: string;
@@ -127,6 +129,9 @@ export interface ShellToolsOptions {
   extraAsk?: readonly string[] | (() => readonly string[]);
   /** Never Ask's deny patterns: refused outright, never prompted. */
   extraDenied?: readonly string[] | (() => readonly string[]);
+  regexAllowed?: readonly string[] | (() => readonly string[]);
+  regexAsk?: readonly string[] | (() => readonly string[]);
+  regexDenied?: readonly string[] | (() => readonly string[]);
   /** Getter form lets `editMode === "never-ask"` flip mid-session without re-registering tools. */
   allowAll?: boolean | (() => boolean);
   /** Whether `run_command` may run a command elevated via Windows UAC (`elevate: true`).
@@ -189,13 +194,20 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
   const getExtraAllowed = asListGetter(opts.extraAllowed);
   const getExtraAsk = asListGetter(opts.extraAsk);
   const getExtraDenied = asListGetter(opts.extraDenied);
+  const getRegexAllowed = asListGetter(opts.regexAllowed);
+  const getRegexAsk = asListGetter(opts.regexAsk);
+  const getRegexDenied = asListGetter(opts.regexDenied);
+  const matchesRegex = (cmd: string, patterns: readonly string[]) =>
+    patterns.some((pattern) => matchesRuleRegex(cmd, pattern));
   /** Most restrictive wins: deny refuses outright, ask always prompts. Pattern-only,
    *  so the builtin allowlist can't be mistaken for a rule match. */
   const ruleVerdict = (cmd: string): "deny" | "ask" | "allow" | "none" => {
     if (!cmd) return "none";
-    if (matchesAnyRulePattern(cmd, getExtraDenied())) return "deny";
-    if (matchesAnyRulePattern(cmd, getExtraAsk())) return "ask";
-    if (matchesAnyRulePattern(cmd, getExtraAllowed())) return "allow";
+    if (matchesAnyRulePattern(cmd, getExtraDenied()) || matchesRegex(cmd, getRegexDenied()))
+      return "deny";
+    if (matchesAnyRulePattern(cmd, getExtraAsk()) || matchesRegex(cmd, getRegexAsk())) return "ask";
+    if (matchesAnyRulePattern(cmd, getExtraAllowed()) || matchesRegex(cmd, getRegexAllowed()))
+      return "allow";
     return "none";
   };
   /** A deny rule never runs, and an ask rule never runs silently even in never-ask. */
@@ -204,6 +216,9 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
     const verdict = ruleVerdict(cmd);
     if (verdict === "deny" || verdict === "ask") return false;
     if (isAllowAll()) return true;
+    if (matchesRegex(cmd, getRegexAllowed())) {
+      return isCommandAllowed(cmd, ["*"], rootDir, opts.sensitivePaths);
+    }
     return isCommandAllowed(cmd, getExtraAllowed(), rootDir, opts.sensitivePaths);
   };
   // Resolve dynamically so the TUI can flip yolo mode mid-session and

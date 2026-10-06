@@ -6,10 +6,12 @@ import {
   type RuleKind,
   type RuleScope,
   defaultConfigPath,
+  loadRules,
   ruleModeInForce,
   rulePatternsByScope,
 } from "../../config.js";
 import { matchesAnyRulePattern } from "./parse.js";
+import { matchesRuleRegex } from "./rule-regex.js";
 
 /** Scopes whose rules — of the kind and mode in force — already match `target`. `target`
  *  is a shell command for `kind: "shell"`, or the directory a path rule would persist for
@@ -33,7 +35,17 @@ export function coveredRuleScopes(
   const scopes: RuleScope[] = [];
   for (const scope of ["workspace", "global"] as const) {
     const patterns = [...allow[scope].allow, ...active[scope].ask, ...active[scope].deny];
-    if (covers(patterns)) scopes.push(scope);
+    const regexCovered =
+      kind === "shell" &&
+      loadRules(rootDir, path).some(
+        (rule) =>
+          rule.scope === scope &&
+          rule.kind === "shell" &&
+          rule.match === "regex" &&
+          ((rule.mode === "follow" && rule.effect === "allow") || rule.mode === activeMode) &&
+          matchesRuleRegex(target, rule.pattern),
+      );
+    if (covers(patterns) || regexCovered) scopes.push(scope);
   }
   return scopes;
 }

@@ -18,6 +18,7 @@ import {
   isQuickSend,
   isUsableAntigravityModel,
   resolveActiveQuickSend,
+  ruleRegexError,
 } from "@reasonix/core-utils";
 import { z } from "zod";
 import { atomicWriteSync, tmpSiblingPath } from "./core/atomic-write.js";
@@ -2097,6 +2098,7 @@ export interface StoredRule {
   effect: RuleEffect;
   kind: RuleKind;
   pattern: string;
+  match?: "pattern" | "regex";
 }
 
 /** A rule as the UI and the wire see it, with the scope named explicitly. */
@@ -2105,7 +2107,7 @@ export interface ScopedRule extends StoredRule {
 }
 
 const ruleKey = (r: ScopedRule): string =>
-  `${r.mode}\u0000${r.effect}\u0000${r.kind}\u0000${r.scope}\u0000${r.pattern}`;
+  `${r.mode}\u0000${r.effect}\u0000${r.kind}\u0000${r.scope}\u0000${r.match ?? "pattern"}\u0000${r.pattern}`;
 
 /** The pre-structured allow lists, read as Follow allow rules so existing configs keep working. */
 function legacyAllowRules(cfg: ReasonixConfig, rootDir: string | undefined): ScopedRule[] {
@@ -2184,12 +2186,28 @@ function legacyList(
 
 /** Two stored rules are the same rule: same mode, effect, kind, and pattern. */
 function rulesEqual(a: StoredRule, b: StoredRule): boolean {
-  return a.mode === b.mode && a.effect === b.effect && a.kind === b.kind && a.pattern === b.pattern;
+  return (
+    a.mode === b.mode &&
+    a.effect === b.effect &&
+    a.kind === b.kind &&
+    (a.match ?? "pattern") === (b.match ?? "pattern") &&
+    a.pattern === b.pattern
+  );
 }
 
 /** The pre-structured allow lists only ever encode a Follow/allow rule. */
 function isLegacyAllowRule(rule: StoredRule): boolean {
-  return rule.mode === "follow" && rule.effect === "allow";
+  return rule.mode === "follow" && rule.effect === "allow" && rule.match !== "regex";
+}
+
+function validateRule(rule: StoredRule): void {
+  if (rule.match !== undefined && rule.match !== "pattern" && rule.match !== "regex") {
+    throw new Error("Unknown rule matching mode.");
+  }
+  if (rule.match !== "regex") return;
+  if (rule.kind !== "shell") throw new Error("Regex is only supported for command rules.");
+  const error = ruleRegexError(rule.pattern);
+  if (error) throw new Error(error);
 }
 
 /** Add a rule to the list its scope implies. Returns false when it was already there. */
@@ -2198,6 +2216,7 @@ export function addRule(
   rootDir: string,
   path: string = defaultConfigPath(),
 ): boolean {
+  validateRule(rule);
   const trimmed = rule.pattern.trim();
   if (!trimmed) return false;
   const stored: StoredRule = {
@@ -2205,6 +2224,7 @@ export function addRule(
     effect: rule.effect,
     kind: rule.kind,
     pattern: trimmed,
+    ...(rule.match === "regex" ? { match: "regex" as const } : {}),
   };
   const cfg = readConfig(path);
   const target = ruleTarget(cfg, rule.scope, findProjectKey(cfg, rootDir) ?? rootDir);
@@ -2259,6 +2279,7 @@ export function updateRule(
   rootDir: string,
   path: string = defaultConfigPath(),
 ): boolean {
+  validateRule(to);
   const trimmed = to.pattern.trim();
   if (!trimmed) return false;
   const cfg = readConfig(path);
@@ -2274,7 +2295,13 @@ export function updateRule(
   const fromLegacy = isLegacyAllowRule(from) && legacyIndex >= 0;
   if (!fromStructured && !fromLegacy) return false;
 
-  const stored: StoredRule = { mode: to.mode, effect: to.effect, kind: to.kind, pattern: trimmed };
+  const stored: StoredRule = {
+    mode: to.mode,
+    effect: to.effect,
+    kind: to.kind,
+    pattern: trimmed,
+    ...(to.match === "regex" ? { match: "regex" as const } : {}),
+  };
   const target = ruleTarget(cfg, to.scope, projectKey);
   if (target.some((r) => rulesEqual(r, stored))) return false;
   if (fromStructured) source!.splice(index!, 1);
@@ -2292,7 +2319,7 @@ function bucketByEffect(
 ): { allow: string[]; ask: string[]; deny: string[] } {
   const out = { allow: [] as string[], ask: [] as string[], deny: [] as string[] };
   for (const rule of rules) {
-    if (rule.mode !== mode || rule.kind !== kind) continue;
+    if (rule.mode !== mode || rule.kind !== kind || rule.match === "regex") continue;
     out[rule.effect].push(rule.pattern);
   }
   return out;
@@ -2306,6 +2333,20 @@ export function rulePatterns(
   path: string = defaultConfigPath(),
 ): { allow: string[]; ask: string[]; deny: string[] } {
   return bucketByEffect(loadRules(rootDir, path), mode, kind);
+}
+
+export function regexRulePatterns(
+  mode: RuleMode,
+  rootDir: string,
+  path: string = defaultConfigPath(),
+): { allow: string[]; ask: string[]; deny: string[] } {
+  const out = { allow: [] as string[], ask: [] as string[], deny: [] as string[] };
+  for (const rule of loadRules(rootDir, path)) {
+    if (rule.mode === mode && rule.kind === "shell" && rule.match === "regex") {
+      out[rule.effect].push(rule.pattern);
+    }
+  }
+  return out;
 }
 
 /** `rulePatterns`, split by scope as well: lets an approval prompt tell whether a given
@@ -2388,7 +2429,7 @@ export function copyWorkspaceRules(
   const toKey = findProjectKey(cfg, to) ?? to;
   if (fromKey === toKey) return 0;
   const source: StoredRule[] = workspaceOwnRules(cfg, fromKey, mode).map(
-    ({ mode: ruleMode, effect, kind, pattern }) => ({ mode: ruleMode, effect, kind, pattern }),
+    ({ scope: _scope, ...rule }) => rule,
   );
   cfg.projects = cfg.projects ?? {};
   const target = cfg.projects[toKey] ?? {};

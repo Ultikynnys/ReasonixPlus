@@ -1,4 +1,4 @@
-import type { RuleRecord } from "@reasonix/core-utils";
+import { type RuleRecord, ruleRegexError } from "@reasonix/core-utils";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -1808,6 +1808,9 @@ function CtxRules({
 }) {
   const [effect, setEffect] = useState<RuleEffect>("allow");
   const [pattern, setPattern] = useState("");
+  const [match, setMatch] = useState<"pattern" | "regex">("pattern");
+  const [editing, setEditing] = useState<RuleRecord | null>(null);
+  const regexError = match === "regex" && pattern.trim() ? ruleRegexError(pattern.trim()) : null;
   const [addingTo, setAddingTo] = useState<"workspace" | "global" | null>(null);
   const [copyOpen, setCopyOpen] = useState(false);
 
@@ -1903,10 +1906,13 @@ function CtxRules({
   const handleAdd = (e: React.FormEvent, scope: "workspace" | "global") => {
     e.preventDefault();
     const trimmed = pattern.trim();
-    if (!trimmed || !onAddRule || ruleMode === null) return;
-    // Path rules are not user-creatable: every rule the panel adds is a shell pattern.
-    onAddRule({ mode: ruleMode, effect: activeEffect, kind: "shell", scope, pattern: trimmed });
+    if (!trimmed || regexError || ruleMode === null) return;
+    const next: RuleRecord = { mode: ruleMode, effect: activeEffect, kind: "shell", scope,
+      pattern: trimmed, ...(match === "regex" ? { match } : {}) };
+    if (editing) onUpdateRule?.(editing, next);
+    else onAddRule?.(next);
     setPattern("");
+    setEditing(null);
   };
 
   return (
@@ -1992,7 +1998,11 @@ function CtxRules({
                     title={`${t("contextPanel.addRuleBtn")}: ${t(section.titleKey)}`}
                     aria-label={`${t("contextPanel.addRuleBtn")}: ${t(section.titleKey)}`}
                     aria-expanded={adding}
-                    onClick={() => setAddingTo(adding ? null : section.scope)}
+                    onClick={() => {
+                      setAddingTo(adding ? null : section.scope);
+                      setEditing(null);
+                      setPattern("");
+                    }}
                   >
                     <I.plus size={12} />
                   </button>
@@ -2000,9 +2010,9 @@ function CtxRules({
               </span>
             </div>
             {section.rules.map((r) => (
-              <div className="rule" key={`${section.scope}-${r.kind}-${r.effect}-${r.pattern}`}>
+              <div className="rule" key={`${section.scope}-${r.kind}-${r.effect}-${r.match ?? "pattern"}-${r.pattern}`}>
                 <div className="top">
-                  <span className="pat">{r.pattern}</span>
+                  <span className="pat">{r.match === "regex" ? `Regex: ${r.pattern}` : r.pattern}</span>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     {onUpdateRule ? (
                       <button
@@ -2026,6 +2036,19 @@ function CtxRules({
                         {t(VERDICT[r.effect].label)}
                       </span>
                     )}
+                    {onUpdateRule && r.kind === "shell" && (
+                      <button type="button" className="mini-btn"
+                        aria-label={`${t("contextPanel.editRule")}: ${r.pattern}`}
+                        onClick={() => {
+                          setEditing(r);
+                          setAddingTo(r.scope);
+                          setPattern(r.pattern);
+                          setMatch(r.match ?? "pattern");
+                          setEffect(r.effect);
+                        }}>
+                        <I.pencil size={12} />
+                      </button>
+                    )}
                     {onRemoveRule && (
                       <button
                         type="button"
@@ -2046,8 +2069,15 @@ function CtxRules({
                 {t(section.emptyKey)}
               </div>
             )}
-            {adding && onAddRule && (
+            {adding && (onAddRule || editing) && (
               <form className="rule-composer" onSubmit={(e) => handleAdd(e, section.scope)}>
+                <select aria-label={t("contextPanel.ruleMatchType")} value={match}
+                  onChange={(event) => setMatch(event.target.value as "pattern" | "regex")}>
+                  <option value="pattern">{t("contextPanel.ruleMatchPattern")}</option>
+                  <option value="regex">{t("contextPanel.ruleMatchRegex")}</option>
+                </select>
+                {match === "regex" && <div className="note">{t("contextPanel.ruleRegexHint")}</div>}
+                {regexError && <div role="alert">{regexError}</div>}
                 <div className="rule-composer-row">
                   <button
                     type="button"
@@ -2063,7 +2093,7 @@ function CtxRules({
                   <input
                     type="text"
                     className="rule-input"
-                    placeholder={t("contextPanel.rulePatternPlaceholder")}
+                    placeholder={match === "regex" ? String.raw`^(?=.*\bgit\b)(?=.*\bpush\b).*` : t("contextPanel.rulePatternPlaceholder")}
                     value={pattern}
                     onChange={(e) => setPattern(e.target.value)}
                     aria-label="Rule pattern"
@@ -2072,11 +2102,11 @@ function CtxRules({
                   <button
                     type="submit"
                     className="btn small"
-                    disabled={!pattern.trim()}
-                    title={t("contextPanel.addRuleBtn")}
-                    aria-label={t("contextPanel.addRuleBtn")}
+                    disabled={!pattern.trim() || Boolean(regexError) || (Boolean(editing) && !onUpdateRule)}
+                    title={editing ? t("contextPanel.saveRule") : t("contextPanel.addRuleBtn")}
+                    aria-label={editing ? t("contextPanel.saveRule") : t("contextPanel.addRuleBtn")}
                   >
-                    <I.plus size={12} />
+                    {editing ? t("contextPanel.saveRule") : <I.plus size={12} />}
                   </button>
                 </div>
               </form>

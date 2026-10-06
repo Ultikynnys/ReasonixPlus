@@ -495,6 +495,105 @@ describe("ContextPanel files", () => {
     });
   });
 
+  it("adds an invalid-regex-combination rule through the match-type selector", () => {
+    const onAddRule = vi.fn();
+    render(
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onExportMemories={() => {}}
+        onImportMemories={() => {}}
+        onDismissMemoryResult={() => {}}
+        onAddRule={onAddRule}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Rules"));
+    fireEvent.click(screen.getByRole("button", { name: "Add Rule: Workspace rules" }));
+
+    const pattern = screen.getByRole("textbox", { name: "Rule pattern" });
+    const submit = screen.getByRole("button", { name: "Add Rule" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Rule matching" }), {
+      target: { value: "regex" },
+    });
+
+    const combination = String.raw`^(?=.*\bgit\b)(?=.*\bpush\b).*`;
+    fireEvent.change(pattern, { target: { value: combination } });
+    fireEvent.click(submit);
+    expect(onAddRule).toHaveBeenCalledWith({
+      mode: "follow",
+      effect: "allow",
+      kind: "shell",
+      scope: "workspace",
+      pattern: combination,
+      match: "regex",
+    });
+
+    // Invalid syntax blocks the add and surfaces the error.
+    fireEvent.change(pattern, { target: { value: "[" } });
+    fireEvent.click(submit);
+    expect(onAddRule).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert").textContent).toContain("Invalid regex");
+  });
+
+  it("edits an existing rule into a regex rule in place", () => {
+    const onUpdateRule = vi.fn();
+    render(
+      <ContextPanel
+        settings={{
+          ...settings,
+          editMode: "never-ask",
+          rules: [{ mode: "never-ask", effect: "deny", kind: "shell", scope: "workspace", pattern: "git push" }],
+        }}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onExportMemories={() => {}}
+        onImportMemories={() => {}}
+        onDismissMemoryResult={() => {}}
+        onUpdateRule={onUpdateRule}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Rules"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit rule: git push" }));
+
+    const pattern = screen.getByRole("textbox", { name: "Rule pattern" });
+    expect((pattern as HTMLInputElement).value).toBe("git push");
+    fireEvent.change(screen.getByRole("combobox", { name: "Rule matching" }), {
+      target: { value: "regex" },
+    });
+    fireEvent.change(pattern, { target: { value: String.raw`^(?=.*\bgit\b)(?=.*\bpush\b).*` } });
+    fireEvent.click(screen.getByRole("button", { name: "Save rule" }));
+    expect(onUpdateRule).toHaveBeenCalledWith(
+      { mode: "never-ask", effect: "deny", kind: "shell", scope: "workspace", pattern: "git push" },
+      {
+        mode: "never-ask",
+        effect: "deny",
+        kind: "shell",
+        scope: "workspace",
+        pattern: String.raw`^(?=.*\bgit\b)(?=.*\bpush\b).*`,
+        match: "regex",
+      },
+    );
+  });
+
   const sideProps = {
     usage,
     mcpSpecs: [],

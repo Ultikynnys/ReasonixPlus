@@ -14,6 +14,7 @@ export {
 } from "./tool-paths.js";
 export type { FilePathTool } from "./tool-paths.js";
 export { derivePrefix } from "./derive-prefix.js";
+export { ruleRegexError, MAX_RULE_REGEX_LENGTH } from "./rule-regex.js";
 export {
   AT_MENTION_PATTERN,
   MAX_IMAGE_BYTES,

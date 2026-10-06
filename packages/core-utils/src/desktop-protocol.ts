@@ -852,6 +852,7 @@ export interface RuleRecord {
   kind: "shell" | "path";
   scope: "workspace" | "global";
   pattern: string;
+  match?: "pattern" | "regex";
 }
 
 export interface SettingsEvent {
