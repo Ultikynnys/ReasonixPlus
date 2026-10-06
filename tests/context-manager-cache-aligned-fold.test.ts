@@ -393,10 +393,8 @@ describe("ContextManager fold sends cache-aligned summary request", () => {
 
   it("compactModelForProvider maps each provider family to a compatible model", () => {
     expect(compactModelForProvider("gpt-5.6-sol")).toBe("gpt-5.6-luna");
-    expect(compactModelForProvider("gemini-3.7-flash")).toBe("gemini-3.7-flash");
-    expect(compactModelForProvider("claude-sonnet-4-6-thinking")).toBe(
-      "claude-sonnet-4-6-thinking",
-    );
+    expect(compactModelForProvider("gemini-3.6-flash-tiered")).toBe("gemini-3.6-flash-tiered");
+    expect(compactModelForProvider("claude-sonnet-4-6")).toBe("claude-sonnet-4-6");
     expect(compactModelForProvider("ollama/llama3.1:latest")).toBe("ollama/llama3.1:latest");
     expect(compactModelForProvider("glm-5.3")).toBe("glm-5.3-flash");
     expect(compactModelForProvider("deepseek-v4-pro")).toBe("deepseek-v4-flash");
@@ -426,7 +424,7 @@ describe("ContextManager fold sends cache-aligned summary request", () => {
     const loop = new CacheFirstLoop({
       client,
       prefix: new ImmutablePrefix({ system: SYSTEM_PROMPT, toolSpecs: TOOLS }),
-      model: "gemini-3.7-flash",
+      model: "gemini-3.6-flash-tiered",
       stream: false,
     });
     seedTurns(loop, 8);
@@ -434,7 +432,7 @@ describe("ContextManager fold sends cache-aligned summary request", () => {
     const result = await loop.compactHistory({ keepRecentTokens: 40 });
     expect(result.folded).toBe(true);
     expect(capturedBody).toBeDefined();
-    expect(capturedBody!.model).toBe("gemini-3.7-flash");
+    expect(capturedBody!.model).toBe("gemini-3.6-flash-tiered");
   });
 
   it("gemini compaction succeeds when trimmed head contains tool calls", async () => {
