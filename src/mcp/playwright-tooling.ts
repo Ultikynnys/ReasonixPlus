@@ -186,11 +186,11 @@ export function playwrightDescriptionSuffix(status: PlaywrightToolingResult): st
  *  artifacts; explicit `filename`s resolve straight against the server cwd. */
 const PLAYWRIGHT_OUTPUT_SUBDIR = ".playwright-mcp";
 
-/** File-ish tokens a Playwright result may reference: markdown-link targets and
- *  bare names with a known download/artifact extension (screenshots, PDFs, CSVs…).
- *  Unicode-aware so non-ASCII download names (e.g. `Käyttötili-….csv`) still match. */
+/** A file token in a Playwright result: a run of path characters ending in a known
+ *  download/artifact extension. Permissive (any non-delimiter char, Unicode) so names
+ *  like `Käyttötili-….csv` and Windows 8.3 short paths (`RUNNER~1`) still match. */
 const PLAYWRIGHT_FILE_RE =
-  /(?:[A-Za-z]:[\\/]|\\\\|\.{0,2}[\\/]|[\p{L}\p{N}_])[\p{L}\p{N}_@.\-\\/]*\.(?:pdf|png|jpe?g|webp|gif|bmp|svg|ya?ml|json|txt|log|md|csv|tsv|xml|html?|xlsx?|docx?|pptx?|zip|gz|tar|har|mp3|mp4|mov|wav|webm)\b/giu;
+  /[^\s"'`<>()[\]|*?]+\.(?:pdf|png|jpe?g|webp|gif|bmp|svg|ya?ml|json|txt|log|md|csv|tsv|xml|html?|xlsx?|docx?|pptx?|zip|gz|tar|har|mp3|mp4|mov|wav|webm)\b/giu;
 
 /** Absolute locations under which Playwright may have written a reported path, in
  *  preference order. Empty for URLs / non-file tokens. A leading / or \ is POSIX-style

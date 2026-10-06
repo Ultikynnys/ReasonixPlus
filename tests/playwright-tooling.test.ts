@@ -348,6 +348,17 @@ describe("playwrightWriteLocationNote", () => {
     expect(note).toContain(abs);
   });
 
+  it("matches a Windows 8.3 short path containing ~", () => {
+    const dir = tmpHome();
+    cleanups.push(dir);
+    const shortDir = join(dir, "RUNNER~1");
+    mkdirSync(shortDir, { recursive: true });
+    const abs = join(shortDir, "shot.png");
+    writeFileSync(abs, "x");
+    const note = playwrightWriteLocationNote(undefined, `saved to ${abs}`, dir);
+    expect(note).toContain(abs);
+  });
+
   it("ignores URLs, and names the expected path for a not-yet-existing filename", () => {
     const dir = tmpHome();
     cleanups.push(dir);
