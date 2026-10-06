@@ -93,7 +93,7 @@ describe("refreshTabSystemPrompt — session MCP overlay", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("marks a config-enabled server disabled when the session overlay disables it", () => {
+  it("keeps the system prompt independent of MCP server state", () => {
     writeFileSync(
       join(root, ".mcp.json"),
       JSON.stringify({
@@ -103,7 +103,7 @@ describe("refreshTabSystemPrompt — session MCP overlay", () => {
     );
     patchSessionMeta("sess-mcp", { mcp: { disabledServers: ["playwright"] } });
 
-    const tab = {
+    const disabledTab = {
       rootDir: root,
       currentModel: "deepseek-v4-pro",
       currentSession: "sess-mcp",
@@ -111,35 +111,20 @@ describe("refreshTabSystemPrompt — session MCP overlay", () => {
       toolset: { semantic: { enabled: false } },
     };
 
-    refreshTabSystemPrompt(tab);
+    refreshTabSystemPrompt(disabledTab);
+    const disabledPrompt = disabledTab.system;
 
-    expect(tab.system).toContain("- playwright (stdio [disabled]): npx -y @playwright/mcp");
-  });
-
-  it("leaves a session-enabled server unmarked even when config disables it", () => {
-    writeFileSync(
-      join(root, ".mcp.json"),
-      JSON.stringify({
-        mcpServers: {
-          playwright: { command: "npx", args: ["-y", "@playwright/mcp"], disabled: true },
-        },
-      }),
-      "utf8",
-    );
-    // Session owns its set outright — an empty overlay overrides the config default.
     patchSessionMeta("sess-mcp2", { mcp: { disabledServers: [] } });
-
-    const tab = {
-      rootDir: root,
-      currentModel: "deepseek-v4-pro",
+    const enabledTab = {
+      ...disabledTab,
       currentSession: "sess-mcp2",
       system: "stale",
-      toolset: { semantic: { enabled: false } },
     };
 
-    refreshTabSystemPrompt(tab);
+    refreshTabSystemPrompt(enabledTab);
 
-    expect(tab.system).toContain("- playwright (stdio): npx -y @playwright/mcp");
-    expect(tab.system).not.toContain("- playwright (stdio [disabled])");
+    expect(enabledTab.system).toBe(disabledPrompt);
+    expect(enabledTab.system).not.toContain("playwright");
+    expect(enabledTab.system).not.toContain("[disabled]");
   });
 });

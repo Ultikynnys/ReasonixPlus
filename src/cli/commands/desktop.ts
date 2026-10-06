@@ -3907,26 +3907,10 @@ export function refreshTabSystemPrompt(
   },
 ): void {
   if (!tab.toolset) return;
-  // Effective specs (config + session overlay) — otherwise a mid-session MCP
-  // toggle leaves the bridge block showing the pre-toggle state.
-  const mcpSpecs = applyMcpSessionOverrides(
-    loadEffectiveMcpConfig(tab.rootDir),
-    sessionMcpOverrides(tab.currentSession ?? ""),
-  );
   tab.system = codeSystemPrompt(tab.rootDir, {
     hasSemanticSearch: tab.toolset.semantic.enabled,
     modelId: tab.currentModel,
-    mcpSpecs,
   });
-}
-
-/** Rebuild the model-facing MCP view after a bridge re-settles: refresh the
- *  prompt's bridge block and shift the live prefix so the next turn sees the new
- *  state (tools are hot-added/removed by the MCP runtime itself). */
-function refreshTabMcpPrompt(tab: Tab): void {
-  if (!tab.toolset) return;
-  refreshTabSystemPrompt(tab);
-  if (tab.runtime) tab.runtime.loop.prefix.replaceSystem(tab.system);
 }
 
 /** Rebind the tab's model/effort/subagent-model to the conversation's stored
@@ -4614,7 +4598,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         .reloadFromConfig(tab.runtime.loop)
         .then(() => {
           emitTabDiagnostic(tab, "mcp.bridge.completed", { mode: "reload" });
-          refreshTabMcpPrompt(tab);
           emitMcpSpecs(tab);
         })
         .catch((err) => {
@@ -4726,7 +4709,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           failed: result.failed.length,
           summaries: result.summaries.length,
         });
-        refreshTabMcpPrompt(tab);
       })
       .catch((err) => {
         emitDiagnosticError("mcp.bridge.failed", err, {

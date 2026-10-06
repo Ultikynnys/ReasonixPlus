@@ -1,6 +1,5 @@
 import { join } from "node:path";
-import { loadEffectiveMcpConfig, loadEnableSubagents } from "../config.js";
-import type { McpServerSpec } from "../mcp/spec.js";
+import { loadEnableSubagents } from "../config.js";
 import { readCappedTextFile } from "../memory/read-capped.js";
 import { applyMemoryStack } from "../memory/user.js";
 import { TUI_FORMATTING_RULES, escalationContract } from "../prompt-fragments.js";
@@ -42,6 +41,10 @@ You are Reasonix+, a standalone coding assistant. The working directory is the u
 # Cite or shut up: non-negotiable
 
 Every factual claim about THIS codebase needs evidence: file references are resolved against the workspace, and an unresolvable \`path:line\` is surfaced to the user, so a bogus citation doesn't go unnoticed. **Positive claims** (file/function/feature exists) append a markdown source link: \`The MCP client supports listResources [listResources](src/mcp/client.ts:142).\` **Negative claims** ("X is missing", "Y isn't implemented") are the #1 hallucination shape. STOP and \`search_content\` the symbol FIRST. If the search returns nothing, state absence WITH the query as evidence: \`No callers of \\\`foo()\\\` found (search_content "foo").\`
+
+# MCP tool discovery
+
+MCP servers and their bridged tools are transient: they can be enabled, disabled, connected, disconnected, or changed during this session. When MCP availability, server status, or the current MCP tool list matters, call \`list_mcp_bridges\` first and treat its result as authoritative. Do not infer current MCP state from this system prompt, project config, memory, or earlier turns.
 
 # When auditing or reviewing this codebase
 
@@ -214,10 +217,6 @@ export interface CodeSystemPromptOptions {
   engineeringLifecycleMode?: "off" | "strict";
   /** Override config path — tests point this at a tmp file. */
   configPath?: string;
-  /** Effective MCP specs (config + per-session overlay). When provided, the
-   *  bridge section reflects this instead of re-reading config, so a mid-session
-   *  toggle shows up in a rebuilt prompt. */
-  mcpSpecs?: McpServerSpec[];
 }
 
 export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions = {}): string {
@@ -232,19 +231,6 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
   const gitignore = readCappedTextFile(gitignorePath, GITIGNORE_MAX_CHARS);
   if (gitignore) {
     result = `${result}\n\n# Project .gitignore\n\nThe user's repo ships this .gitignore; treat every pattern as "don't traverse or edit inside these paths unless explicitly asked":\n\n\`\`\`\n${gitignore.content}\n\`\`\`\n`;
-  }
-  const mcpSpecs = opts.mcpSpecs ?? loadEffectiveMcpConfig(rootDir, opts.configPath);
-  if (mcpSpecs.length > 0) {
-    const lines = mcpSpecs.map((spec) => {
-      const name = spec.name ?? "anon";
-      const target =
-        spec.transport === "stdio"
-          ? `${spec.command} ${(spec.args ?? []).join(" ")}`.trim()
-          : spec.url;
-      const status = spec.disabled ? " [disabled]" : "";
-      return `- ${name} (${spec.transport}${status}): ${target}`;
-    });
-    result = `${result}\n\n# Configured MCP bridges\n\nThe following MCP protocol tool servers are configured. Their bridged tools are available in your tool definitions (prefixed with \`<name>_\`). You can also call \`list_mcp_bridges\` to check detailed status and available tools:\n\n${lines.join("\n")}\n`;
   }
   const appendParts = [opts.systemAppend, opts.systemAppendFile].filter(Boolean);
   if (appendParts.length > 0) {

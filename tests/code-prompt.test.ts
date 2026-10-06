@@ -306,7 +306,7 @@ describe("codeSystemPrompt", () => {
   });
 
   describe("MCP bridges awareness", () => {
-    it("injects configured MCP bridges block into the system prompt", () => {
+    it("does not include configured MCP state in the system prompt", () => {
       writeFileSync(
         join(root, ".mcp.json"),
         JSON.stringify({
@@ -314,49 +314,20 @@ describe("codeSystemPrompt", () => {
             blender: {
               command: "uvx.exe",
               args: ["--python", "3.11", "blender-mcp"],
+              disabled: true,
             },
           },
         }),
         "utf8",
       );
       const out = codeSystemPrompt(root);
-      expect(out).toMatch(/# Configured MCP bridges/);
-      expect(out).toContain("- blender (stdio): uvx.exe --python 3.11 blender-mcp");
       expect(out).toContain("list_mcp_bridges");
-    });
+      expect(out).toContain("treat its result as authoritative");
+      expect(out).not.toContain("# Configured MCP bridges");
+      expect(out).not.toContain("(stdio [disabled])");
 
-    it("renders supplied mcpSpecs over config (session overlay wins)", () => {
-      writeFileSync(
-        join(root, ".mcp.json"),
-        JSON.stringify({
-          mcpServers: { blender: { command: "uvx.exe", args: ["blender-mcp"] } },
-        }),
-        "utf8",
-      );
-      const out = codeSystemPrompt(root, {
-        mcpSpecs: [
-          {
-            transport: "stdio",
-            name: "blender",
-            command: "uvx.exe",
-            args: ["blender-mcp"],
-            disabled: true,
-          },
-        ],
-      });
-      expect(out).toContain("- blender (stdio [disabled]): uvx.exe blender-mcp");
-    });
-
-    it("omits the bridges block when mcpSpecs is an empty list", () => {
-      writeFileSync(
-        join(root, ".mcp.json"),
-        JSON.stringify({
-          mcpServers: { blender: { command: "uvx.exe", args: ["blender-mcp"] } },
-        }),
-        "utf8",
-      );
-      const out = codeSystemPrompt(root, { mcpSpecs: [] });
-      expect(out).not.toMatch(/# Configured MCP bridges/);
+      rmSync(join(root, ".mcp.json"));
+      expect(out).toBe(codeSystemPrompt(root));
     });
   });
 });

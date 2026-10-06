@@ -3,6 +3,12 @@
   "private": true,
   "version": "1.0.3",
   "type": "module",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "scripts": {
     "dev": "vite",
     "dev:tauri": "npm --prefix .. run build && vite",
