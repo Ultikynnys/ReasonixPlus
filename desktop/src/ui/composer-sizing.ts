@@ -27,25 +27,3 @@ export function getComposerTextareaSizing({
     overflowY: safeRows > DEFAULT_COMPOSER_ROWS ? "auto" : "hidden",
   };
 }
-
-/** Applies the composer textarea's fixed height and overflow in place. */
-export function applyComposerTextareaSize(textarea: HTMLTextAreaElement) {
-  const style = window.getComputedStyle(textarea);
-  const lineHeightPx = Number.parseFloat(style.lineHeight);
-  const paddingTopPx = Number.parseFloat(style.paddingTop);
-  const paddingBottomPx = Number.parseFloat(style.paddingBottom);
-  const verticalPaddingPx = paddingTopPx + paddingBottomPx;
-  const measuredLineHeight = Number.isFinite(lineHeightPx) ? lineHeightPx : 20;
-
-  textarea.style.height = "auto";
-  const contentRows = Math.ceil(
-    Math.max(textarea.scrollHeight - verticalPaddingPx, measuredLineHeight) / measuredLineHeight,
-  );
-  const sizing = getComposerTextareaSizing({
-    contentRows,
-    lineHeightPx: measuredLineHeight,
-    verticalPaddingPx,
-  });
-  textarea.style.height = `${sizing.heightPx}px`;
-  textarea.style.overflowY = sizing.overflowY;
-}

@@ -9,6 +9,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import type React from "react";
 import type { QueuedSend } from "../App";
@@ -26,7 +27,8 @@ import type { EditMode, ReasoningEffort, UserImageAttachment } from "../protocol
 import { AudioRecorder } from "../voice/audio-recorder";
 import { getSelectedAudioInputDeviceId } from "../voice/device";
 import { speechTranscriber } from "../voice/transcriber";
-import { DEFAULT_COMPOSER_ROWS, applyComposerTextareaSize } from "./composer-sizing";
+import { DEFAULT_COMPOSER_ROWS } from "./composer-sizing";
+import type { ComposerDraft } from "./composer-draft";
 import { activationHandler } from "./keyboard";
 import { TimerSpan } from "./live";
 import { Shortcut } from "./shortcut";
@@ -87,6 +89,14 @@ export function ModeSwitch({
       ))}
     </div>
   );
+}
+
+export function StoredComposer({
+  draftStore,
+  ...props
+}: Omit<React.ComponentProps<typeof Composer>, "draft" | "setDraft"> & { draftStore: ComposerDraft }) {
+  const draft = useSyncExternalStore(draftStore.subscribe, draftStore.getSnapshot);
+  return <Composer {...props} draft={draft} setDraft={draftStore.setDraft} />;
 }
 
 export function Composer({
@@ -227,12 +237,6 @@ export function Composer({
   const historyRef = useRef<string[]>([]);
   const [browseIdx, setBrowseIdx] = useState(-1);
   const savedDraftRef = useRef("");
-
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    applyComposerTextareaSize(textarea);
-  });
 
   useEffect(() => {
     if (!modelMenuOpen && !subagentMenuOpen && !effortMenuOpen) return;

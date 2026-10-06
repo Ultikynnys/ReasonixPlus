@@ -4357,8 +4357,9 @@ html[data-platform="macos"] .startup-loading-overlay {
   padding: 12px 14px 6px;
   font-size: 14px;
   line-height: 1.55;
+  height: calc(2 * 1.55em + 18px);
   min-height: calc(2 * 1.55em + 18px);
-  overflow-y: hidden;
+  overflow-y: auto;
   font-family: inherit;
 }
 .composer textarea::placeholder {

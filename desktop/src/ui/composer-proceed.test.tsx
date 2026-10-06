@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -8,7 +9,8 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 afterEach(cleanup);
 
-import { Composer } from "./composer";
+import { Composer, StoredComposer } from "./composer";
+import { createComposerDraft } from "./composer-draft";
 
 const baseProps = {
   draft: "",
@@ -26,6 +28,37 @@ const baseProps = {
 } as const;
 
 describe("Composer quick send Proceed button", () => {
+  it("isolates real composer typing and sends the latest draft immediately", () => {
+    const store = createComposerDraft();
+    const parentRender = vi.fn();
+    const sent = vi.fn();
+    function Conversation() {
+      parentRender();
+      const textareaRef = useRef<HTMLTextAreaElement>(null);
+      return <StoredComposer {...baseProps} draftStore={store} textareaRef={textareaRef}
+        onSend={() => {
+          sent(store.getSnapshot());
+          store.setDraft("");
+        }} />;
+    }
+    render(<Conversation />);
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    for (const value of ["a", "ab", "a long message"]) {
+      fireEvent.change(textarea, { target: { value } });
+    }
+    expect(parentRender).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(sent).toHaveBeenCalledWith("a long message");
+    expect(textarea.value).toBe("");
+    act(() => store.setDraft("restored draft"));
+    expect(textarea.value).toBe("restored draft");
+    textarea.setSelectionRange(0, 0);
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("a long message");
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("restored draft");
+    expect(parentRender).toHaveBeenCalledTimes(1);
+  });
   it("renders the quick proceed button with label and title", () => {
     render(<Composer {...baseProps} />);
 

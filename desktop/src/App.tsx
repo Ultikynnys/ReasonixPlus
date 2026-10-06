@@ -118,7 +118,8 @@ import {
   noticeName,
   parseEditResult,
 } from "./ui/cards";
-import { Composer } from "./ui/composer";
+import { StoredComposer as Composer } from "./ui/composer";
+import { createComposerDraft } from "./ui/composer-draft";
 import { ContextPanel } from "./ui/context-panel";
 import { JobsPop } from "./ui/jobs-pop";
 import { JumpBar } from "./ui/jump-bar";
@@ -2748,7 +2749,8 @@ function TabRuntime({
   });
   useLang();
   useDisableTextAssist();
-  const [draft, setDraft] = useState("");
+  const [draftStore] = useState(createComposerDraft);
+  const { setDraft } = draftStore;
   // Vision attachments queued for the next send (ChatGPT models only).
   const [pendingImages, setPendingImages] = useState<
     Array<{ id: string; thumbnail: string; wire: UserImageAttachment }>
@@ -3168,7 +3170,7 @@ function TabRuntime({
 
   const send = useCallback(
     (override?: string | QueuedSend) => {
-      let text = draft.trim();
+      let text = draftStore.getSnapshot().trim();
       let sendImages: UserImageAttachment[] = pendingImages.map((im) => im.wire);
       let sendImageUrls: string[] = pendingImages.map((im) => im.thumbnail);
 
@@ -3219,7 +3221,8 @@ function TabRuntime({
       }
     },
     [
-      draft,
+      draftStore,
+      setDraft,
       pendingImages,
       imageCapable,
       state.ready,
@@ -3231,14 +3234,14 @@ function TabRuntime({
   );
 
   const abort = useCallback(() => {
-    const restored = restoreAbortedDraft(draft, abortDraftRef.current);
+    const restored = restoreAbortedDraft(draftStore.getSnapshot(), abortDraftRef.current);
     clearAbortDraft();
     if (restored !== null) {
       setDraft(restored);
       composerRef.current?.focus();
     }
     sendRpc({ cmd: "abort" });
-  }, [clearAbortDraft, draft, sendRpc]);
+  }, [clearAbortDraft, draftStore, setDraft, sendRpc]);
 
   useEffect(() => {
     if (!state.busy) clearAbortDraft();
@@ -3988,8 +3991,7 @@ function TabRuntime({
               </div>
 
               <Composer
-                draft={draft}
-                setDraft={setDraft}
+                draftStore={draftStore}
                 onSend={(text) => send(text)}
                 quickSend={resolveActiveQuickSend(
                   state.settings?.quickSendId,
@@ -4080,6 +4082,7 @@ function TabRuntime({
                   // Bringing a message back to edit must not destroy an
                   // in-progress draft: re-queue whatever the composer already
                   // holds (text and/or attached images) before restoring.
+                  const draft = draftStore.getSnapshot();
                   if (draft.trim() || pendingImages.length > 0) {
                     dispatch({
                       t: "enqueue_send",

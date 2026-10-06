@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -10,6 +11,15 @@ import {
 // user typed across that boundary.
 describe("desktop composer textarea never resizes", () => {
   const height = DEFAULT_COMPOSER_ROWS * 20 + 18;
+
+  it("uses CSS sizing and native overflow without per-render layout measurement", () => {
+    const css = readFileSync("desktop/src/styles.css", "utf8");
+    const composer = readFileSync("desktop/src/ui/composer.tsx", "utf8");
+    const textareaRule = css.match(/\.composer textarea \{([^}]+)\}/)?.[1];
+    expect(textareaRule).toContain("height: calc(2 * 1.55em + 18px)");
+    expect(textareaRule).toContain("overflow-y: auto");
+    expect(composer).not.toContain("applyComposerTextareaSize");
+  });
 
   it("holds the fixed height for a single line", () => {
     const sizing = getComposerTextareaSizing({
