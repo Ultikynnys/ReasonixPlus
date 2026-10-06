@@ -3529,18 +3529,9 @@ function TabRuntime({
     openSettingsAt,
   ]);
 
-  // Track how long the current turn has been stuck (no events received)
-  const [stuckSec, setStuckSec] = useState(0);
-  useEffect(() => {
-    if (!state.busy || !state.turnLastEventMs) {
-      setStuckSec(0);
-      return;
-    }
-    const id = window.setInterval(() => {
-      setStuckSec(Math.floor((Date.now() - state.turnLastEventMs) / 1000));
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [state.busy, state.turnLastEventMs]);
+  // Stuck-label seconds are rendered by <StuckLabel> with a self-contained 1s
+  // poll; keeping them out of App state avoids a whole-transcript re-render
+  // every second while a turn runs, which stuttered typing in the composer.
   const workspaceLabel = state.settings?.workspaceDir
     ? state.settings.workspaceDir.split(/[\\/]/).pop() || "workspace"
     : "Reasonix+";
@@ -4027,9 +4018,15 @@ function TabRuntime({
                                           ? t("app.status.waitingTool")
                                           : state.turnStatus === "responding"
                                             ? t("app.status.responding")
-                                            : stuckSec > 30
-                                              ? t("app.status.stuck", { sec: stuckSec })
-                                              : t("app.status.thinking")
+                                            : t("app.status.thinking")
+                    : undefined
+                }
+                stuckLabel={
+                  state.busy && state.turnLastEventMs && !state.activeSkill
+                    ? {
+                        sinceMs: state.turnLastEventMs,
+                        render: (sec: number) => t("app.status.stuck", { sec }),
+                      }
                     : undefined
                 }
                 textareaRef={composerRef}

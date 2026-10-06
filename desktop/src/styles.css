@@ -6047,6 +6047,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
+.composer-busy-stuck {
+  color: var(--warning);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
 
 .composer-queued {
   display: flex;

@@ -30,7 +30,7 @@ import { speechTranscriber } from "../voice/transcriber";
 import { DEFAULT_COMPOSER_ROWS } from "./composer-sizing";
 import type { ComposerDraft } from "./composer-draft";
 import { activationHandler } from "./keyboard";
-import { TimerSpan } from "./live";
+import { StuckLabel, TimerSpan } from "./live";
 import { Shortcut } from "./shortcut";
 export type { EditMode, ReasoningEffort };
 
@@ -108,6 +108,7 @@ export function Composer({
   disabled,
   busy,
   busyLabel,
+  stuckLabel,
   modelLabel,
   subagentModelLabel = DEFAULT_MODEL,
   reasoningEffort,
@@ -158,6 +159,9 @@ export function Composer({
   busy?: boolean;
   /** Replaces the hint-row left side while the agent is running — typically "Reasoning" or "Skill · <name>". */
   busyLabel?: string;
+  /** Renders the "stuck Ns" hint once the turn has been silent this long. The 1s
+   *  poll lives inside StuckLabel so the conversation never re-renders per second. */
+  stuckLabel?: { sinceMs: number; render: (sec: number) => React.ReactNode };
   modelLabel: string;
   /** Per-tab subagent model shown in the menu's subagent column. Defaults to the shared model default. */
   subagentModelLabel?: string;
@@ -612,6 +616,15 @@ export function Composer({
                 <span className="composer-busy-pip" />
                 <span className="composer-busy-label">{busyLabel}</span>
                 <TimerSpan active={busy ?? false} className="composer-busy-time" />
+                {stuckLabel ? (
+                  <StuckLabel
+                    active={busy ?? false}
+                    sinceMs={stuckLabel.sinceMs}
+                    render={(sec) => (
+                      <span className="composer-busy-stuck">{stuckLabel.render(sec)}</span>
+                    )}
+                  />
+                ) : null}
               </span>
               <span className="grow" />
               <ModeSwitch mode={editMode} onChange={onEditModeChange} />
