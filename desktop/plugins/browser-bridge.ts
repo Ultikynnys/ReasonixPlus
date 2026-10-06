@@ -168,9 +168,17 @@ export function browserBridge(): Plugin {
       });
 
       spawnDaemon();
+      // The browser bridge has no Tauri-side restart loop — if the daemon dies
+      // (or was killed while the dev server stayed up), respawn it so the UI
+      // reconnects instead of every rpc_send being dropped.
+      const respawnTimer = setInterval(() => {
+        if (!child) spawnDaemon();
+      }, 2000);
+      void respawnTimer;
 
       // Teardown with the dev server (Ctrl+C on dev:browser, vite restart).
       server.httpServer?.once("close", () => {
+        clearInterval(respawnTimer);
         killDaemon();
         wss.close();
       });

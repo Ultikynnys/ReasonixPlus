@@ -892,9 +892,11 @@ export interface SettingsEvent {
    *  workspace choice when a new (workspace-less) tab asks for one. */
   reasonixLocalDir?: string;
   model: string;
-  /** Ids with an explicit `models` provider mapping in config.json — offered
-   *  by the model picker alongside the catalogs, since the user declared them. */
-  customModels?: string[];
+  providerCatalogs?: Partial<Record<"deepseek" | "openai" | "zai" | "typesafe", {
+    models: string[];
+    source: "live" | "cache" | "fallback";
+    error?: string;
+  }>>;
   /** Model ids offered by every model picker (opt-in allow-list — unlisted
    *  models are hidden). Global persistent setting (`enabledModels` in
    *  config.json), edited from Settings → Models. */
@@ -1326,6 +1328,7 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "gemini_oauth_signout" }
   | { cmd: "antigravity_models_refresh" }
   | { cmd: "opencode_models_refresh"; force?: boolean }
+  | { cmd: "provider_models_refresh"; provider?: "deepseek" | "openai" | "zai" | "typesafe"; force?: boolean }
   | { cmd: "settings_get" }
   | ({ cmd: "settings_save" } & SettingsPatch)
   | { cmd: "codex_quota_get" }

@@ -29,6 +29,7 @@ import {
 import { loadDotMcpJson } from "./mcp/dot-mcp-json.js";
 import { type McpServerSpec, parseMcpSpec } from "./mcp/spec.js";
 import { isDiscoveredOpencodeModel } from "./opencode-models.js";
+import { discoveredProviderModels } from "./provider-models.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS } from "./telemetry/stats.js";
 import { type ThemeName, isThemeName, resolveThemeName } from "./theme/tokens.js";
@@ -113,6 +114,15 @@ function resolveModelAdmission(model: string, path: string): ModelAdmission {
   }
   if (id.startsWith("ollama/")) {
     return { accepted: true, provider: "ollama", discoveredAntigravity: false };
+  }
+  for (const provider of ["deepseek", "openai", "zai"] as const) {
+    const anchor = CATALOG_PROVIDERS.find((catalog) => catalog.provider === provider)!
+      .ids.values()
+      .next().value!;
+    const endpoint = loadEndpointForModel(anchor, path);
+    if (discoveredProviderModels(provider, endpoint.baseUrl!, endpoint.apiKey)?.includes(id)) {
+      return { accepted: true, provider, discoveredAntigravity: false };
+    }
   }
   return { accepted: false, provider: "deepseek", discoveredAntigravity: false };
 }
@@ -1742,17 +1752,22 @@ export function webSearchEndpoint(path: string = defaultConfigPath()): string {
 export function saveApiKey(key: string, path: string = defaultConfigPath()): void {
   const cfg = readConfig(path);
   const trimmed = key.trim();
-  cfg.apiKey = trimmed;
+  cfg.apiKey = trimmed || undefined;
   writeConfig(cfg, path);
   // A stale process env (User-level Windows env, `.env`, shell rc) shadows config in
   // loadEndpoint's fallback branch — an explicit UI save must win for the current run.
   if (trimmed) process.env.DEEPSEEK_API_KEY = trimmed;
+  // biome-ignore lint/performance/noDelete: undefined-assign leaks the string "undefined" into process.env
+  else delete process.env.DEEPSEEK_API_KEY;
 }
 
 export function saveOpenAIApiKey(key: string, path: string = defaultConfigPath()): void {
   const cfg = readConfig(path);
-  cfg.openaiApiKey = key.trim();
+  const trimmed = key.trim();
+  cfg.openaiApiKey = trimmed || undefined;
   writeConfig(cfg, path);
+  // biome-ignore lint/performance/noDelete: undefined-assign leaks the string "undefined" into process.env
+  if (!trimmed) delete process.env.OPENAI_API_KEY;
 }
 
 export function saveOpenAIOAuth(creds: OpenAIOAuthCreds, path: string = defaultConfigPath()): void {

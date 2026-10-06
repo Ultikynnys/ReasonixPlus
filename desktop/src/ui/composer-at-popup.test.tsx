@@ -108,13 +108,18 @@ describe("desktop Composer model catalog", () => {
     expect(onModelChange).not.toHaveBeenCalled();
   });
 
-  it("renders distinct category headers for DeepSeek, ChatGPT, Z.AI, Custom, and external providers", () => {
+  it("preserves an existing uncatalogued active model without a Custom entry control", () => {
+    const { container } = renderComposer({ modelLabel: "legacy-gateway-model" });
+    fireEvent.click(container.querySelector(".model-pill")!);
+    expect(container.querySelector('.popup-item[data-active="true"]')?.textContent).toContain("legacy-gateway-model");
+    expect(container.querySelector('.model-menu-list input')).toBeNull();
+  });
+
+  it("renders provider category headers without a Custom provider", () => {
     const { container } = renderComposer({
-      customModels: ["my-fine-tuned-model"],
       antigravityModels: ["gemini-3.7-flash-tiered"],
       ollamaModels: ["llama3.1:latest"],
       enabledModels: [
-        "my-fine-tuned-model",
         "gemini-3.7-flash-tiered",
         "ollama/llama3.1:latest",
         ...SUPPORTED_OFFICIAL_MODELS,
@@ -132,7 +137,6 @@ describe("desktop Composer model catalog", () => {
       "ChatGPT",
       "Z.AI",
       "OpenCode",
-      "Custom",
       "Google Antigravity",
       "Ollama",
     ]);
@@ -210,19 +214,17 @@ describe("desktop Composer model catalog", () => {
     expect(subText).toContain("Ollama");
   });
 
-  it("does not sort antigravity models into custom group even if passed in customModels", () => {
+  it("keeps discovered Antigravity models in their provider group", () => {
     const { container } = renderComposer({
-      customModels: [
+      antigravityModels: [
         "claude-opus-4-6-thinking",
         "claude-sonnet-4-6",
         "gemini-3.7-flash-tiered",
-        "my-real-custom-gateway",
       ],
       enabledModels: [
         "claude-opus-4-6-thinking",
         "claude-sonnet-4-6",
         "gemini-3.7-flash-tiered",
-        "my-real-custom-gateway",
       ],
     });
     fireEvent.click(container.querySelector(".model-pill")!);
@@ -236,8 +238,7 @@ describe("desktop Composer model catalog", () => {
       let next = groupEl.nextElementSibling;
       while (
         next &&
-        !next.classList.contains("model-menu-group") &&
-        !next.classList.contains("model-menu-custom")
+        !next.classList.contains("model-menu-group")
       ) {
         if (next.classList.contains("popup-item")) {
           items.push(next.textContent ?? "");
@@ -247,11 +248,7 @@ describe("desktop Composer model catalog", () => {
       return items;
     };
 
-    const customItems = getItemsForGroup("Custom");
-    expect(customItems.some((t) => t.includes("my-real-custom-gateway"))).toBe(true);
-    expect(customItems.some((t) => t.includes("claude-opus-4-6-thinking"))).toBe(false);
-    expect(customItems.some((t) => t.includes("claude-sonnet-4-6"))).toBe(false);
-    expect(customItems.some((t) => t.includes("gemini-3.7-flash-tiered"))).toBe(false);
+    expect(getItemsForGroup("Custom")).toEqual([]);
 
     const antigravityItems = getItemsForGroup("Google Antigravity");
     expect(antigravityItems.some((t) => t.includes("claude-opus-4-6-thinking"))).toBe(true);

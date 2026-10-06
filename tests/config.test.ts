@@ -168,6 +168,25 @@ describe("config", () => {
     expect(existsSync(path)).toBe(true);
   });
 
+  it("empty saves remove persisted DeepSeek and OpenAI keys and their process fallbacks", () => {
+    const openaiEnv = process.env.OPENAI_API_KEY;
+    try {
+      saveApiKey("sk-deepseek-test-token", path);
+      saveOpenAIApiKey("sk-openai-test-token", path);
+      process.env.OPENAI_API_KEY = "sk-stale-env-token";
+      saveApiKey("  ", path);
+      saveOpenAIApiKey("  ", path);
+      expect(readConfig(path).apiKey).toBeUndefined();
+      expect(readConfig(path).openaiApiKey).toBeUndefined();
+      expect(process.env.DEEPSEEK_API_KEY).toBeUndefined();
+      expect(process.env.OPENAI_API_KEY).toBeUndefined();
+    } finally {
+      // biome-ignore lint/performance/noDelete: undefined-assign leaks the string "undefined" into process.env
+      if (openaiEnv === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = openaiEnv;
+    }
+  });
+
   it("saveApiKey trims whitespace", () => {
     saveApiKey("  sk-test123abcdefghijkl  ", path);
     expect(readConfig(path).apiKey).toBe("sk-test123abcdefghijkl");
@@ -404,10 +423,9 @@ describe("config", () => {
       expect(providerForModel("gpt-5.6")).toBe("deepseek");
       expect(providerForModel("gpt-oss-120b-medium")).toBe("gemini");
       expect(providerForModel("claude-sonnet-4-6")).toBe("gemini");
-      expect(providerForModel("claude-sonnet-4-6-thinking")).toBe("gemini");
       expect(providerForModel("claude-opus-4-6-thinking")).toBe("gemini");
-      expect(providerForModel("gemini-3.7-flash")).toBe("gemini");
-      expect(providerForModel("gemini-3.5-flash-low")).toBe("gemini");
+      expect(providerForModel("gemini-3.6-flash-tiered")).toBe("gemini");
+      expect(providerForModel("gemini-3.6-flash-medium")).toBe("gemini");
       expect(providerForModel("glm-5.3-flash")).toBe("zai");
       expect(providerForModel("big-pickle")).toBe("opencode");
       expect(providerForModel("nemotron-3-ultra-free")).toBe("opencode");
@@ -760,7 +778,7 @@ describe("config", () => {
         expect(providerForModel(id)).toBe("gemini");
         expect(SUPPORTED_MODELS).toContain(id);
       }
-      const ep = loadEndpointForModel("claude-sonnet-4-6-thinking", path);
+      const ep = loadEndpointForModel("claude-sonnet-4-6", path);
       expect(ep.baseUrl).toBe("https://daily-cloudcode-pa.googleapis.com");
       expect(ep.apiKey).toBeUndefined();
     });

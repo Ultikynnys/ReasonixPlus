@@ -16,7 +16,12 @@ import { type TKey, t } from "../i18n";
 import { I } from "../icons";
 import { isImagePath, resolveImagePath } from "../image-attach";
 import { toWorkspaceRelative } from "../workspace-path";
-import { MODEL_CATALOG_GROUP_LABELS, deriveModelCatalog } from "../model-catalog";
+import {
+  type ProviderCatalogKey,
+  type ProviderCatalogView,
+  MODEL_CATALOG_GROUP_LABELS,
+  deriveModelCatalog,
+} from "../model-catalog";
 import type { EditMode, ReasoningEffort, UserImageAttachment } from "../protocol";
 import { AudioRecorder } from "../voice/audio-recorder";
 import { getSelectedAudioInputDeviceId } from "../voice/device";
@@ -115,8 +120,8 @@ export function Composer({
   opencodeModelsError,
   opencodeVisionModels,
   onRefreshOpencodeModels,
-  customModels,
   enabledModels,
+  providerCatalogs,
   textareaRef,
   workspaceDir,
   queuedSends,
@@ -173,9 +178,7 @@ export function Composer({
   opencodeModelsError?: string;
   opencodeVisionModels?: ReadonlySet<string>;
   onRefreshOpencodeModels?: (force?: boolean) => void;
-  /** Ids with an explicit `models` provider mapping in config.json — offered
-   *  in the general list because the user declared them. */
-  customModels?: string[];
+  providerCatalogs?: Partial<Record<ProviderCatalogKey, ProviderCatalogView>>;
   /** Model ids offered by every picker (opt-in allow-list — unlisted models
    *  are hidden). Global persistent setting (`enabledModels` in config.json),
    *  edited from Settings → Models. */
@@ -512,8 +515,8 @@ export function Composer({
     opencodeModels,
     opencodeModelsError,
     opencodeVisionModels,
-    customModels,
     enabledModels,
+    providerCatalogs,
     onRefreshOllamaModels,
     onRefreshAntigravityModels,
     onRefreshOpencodeModels,
@@ -885,8 +888,8 @@ function ModelList({
   opencodeModels,
   opencodeModelsError,
   opencodeVisionModels,
-  customModels,
   enabledModels,
+  providerCatalogs,
   onRefreshOllamaModels,
   onRefreshAntigravityModels,
   onRefreshOpencodeModels,
@@ -902,8 +905,7 @@ function ModelList({
   opencodeModels?: string[];
   opencodeModelsError?: string;
   opencodeVisionModels?: ReadonlySet<string>;
-  /** Ids with an explicit `models` provider mapping — user-declared, so offered. */
-  customModels?: string[];
+  providerCatalogs?: Partial<Record<ProviderCatalogKey, ProviderCatalogView>>;
   /** Model ids offered by the picker (opt-in allow-list). The active model
    *  always stays visible so a running tab can never strand itself. */
   enabledModels?: string[];
@@ -911,10 +913,9 @@ function ModelList({
   onRefreshAntigravityModels?: () => void;
   onRefreshOpencodeModels?: (force?: boolean) => void;
 }) {
-  const [draft, setDraft] = useState(activeModel);
   const catalog = deriveModelCatalog({
+    providerCatalogs,
     discoveredAntigravityModels: antigravityModels,
-    customModels,
     opencodeModels,
     includeAntigravity: Boolean(antigravityModels),
     ollamaVisionModels,
@@ -947,7 +948,7 @@ function ModelList({
         ...(group.key === "opencode"
           ? {
               refresh: onRefreshOpencodeModels ? () => onRefreshOpencodeModels(true) : undefined,
-              refreshTitle: t("composer.modelOpencodeRefresh"),
+              refreshTitle: t("settings.modelsRefresh"),
               error: opencodeModelsError
                 ? t("composer.modelOpencodeError", { error: opencodeModelsError })
                 : undefined,
@@ -956,7 +957,7 @@ function ModelList({
         ...(group.key === "antigravity"
           ? {
               refresh: onRefreshAntigravityModels,
-              refreshTitle: t("composer.modelAntigravityRefresh"),
+              refreshTitle: t("settings.modelsRefresh"),
               error: antigravityModelsError
                 ? t("composer.modelAntigravityError", { error: antigravityModelsError })
                 : undefined,
@@ -971,7 +972,7 @@ function ModelList({
             title: t("composer.modelAntigravityGroup"),
             models: [],
             refresh: onRefreshAntigravityModels,
-            refreshTitle: t("composer.modelAntigravityRefresh"),
+            refreshTitle: t("settings.modelsRefresh"),
             error: t("composer.modelAntigravityError", { error: antigravityModelsError }),
           },
         ]
@@ -984,7 +985,7 @@ function ModelList({
             models: (ollamaModels ?? []).map((id) => `ollama/${id}`),
             icon: I.bot,
             refresh: () => onRefreshOllamaModels?.(true),
-            refreshTitle: t("composer.modelOllamaRefresh"),
+            refreshTitle: t("settings.modelsRefresh"),
             error:
               ollamaModelsError && !ollamaGroup && activeModel.startsWith("ollama/")
                 ? t("composer.modelOllamaError", { error: ollamaModelsError })
@@ -1057,22 +1058,17 @@ function ModelList({
           </Fragment>
         );
       })}
-      <div className="model-menu-custom">
-        <input
-          className="field mono model-menu-custom-input"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="custom model id"
-        />
-        <button
-          type="button"
-          className="btn model-menu-custom-confirm"
-          disabled={!draft.trim() || draft.trim() === activeModel}
-          onClick={() => onPick(draft.trim())}
+      {!groups.some((group) => group.models.includes(activeModel)) && (
+        <div
+          className="popup-item"
+          data-active="true"
+          onClick={() => onPick(activeModel)}
+          onKeyDown={activationHandler(() => onPick(activeModel))}
         >
-          {t("composer.confirm")}
-        </button>
-      </div>
+          <span className="ico"><I.brain size={12} /></span>
+          <div className="nm"><span className="cmd">{modelDisplayName(activeModel)}</span></div>
+        </div>
+      )}
     </div>
   );
 }

@@ -88,16 +88,18 @@ export const OPENCODE_MODELS: readonly string[] = [
   "trinity-large-preview-free",
 ];
 
-/** Unified models served through Google Antigravity OAuth and Cloud Code. */
+/** Unified models served through Google Antigravity OAuth and Cloud Code.
+ *  Offline fallback only: these ids are known to be served by Cloud Code, and
+ *  non-tiered bare `gemini-3.x-flash` ids are NOT (they 404) — live discovery
+ *  via retrieveUserQuota is the source of truth when signed in. */
 export const ANTIGRAVITY_MODELS: readonly string[] = [
-  "gemini-3.5-flash-low",
-  "gemini-3.6-flash",
-  "gemini-3.7-flash",
+  "gemini-3.6-flash-low",
+  "gemini-3.6-flash-medium",
+  "gemini-3.6-flash-high",
+  "gemini-3.6-flash-tiered",
   "gemini-3.7-flash-tiered",
-  "gemini-3.8-flash",
   "gemini-3.8-flash-tiered",
   "claude-sonnet-4-6",
-  "claude-sonnet-4-6-thinking",
   "claude-opus-4-6-thinking",
   "gpt-oss-120b-medium",
 ];

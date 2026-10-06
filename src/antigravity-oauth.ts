@@ -385,8 +385,19 @@ export async function onboardAntigravity(accessToken: string): Promise<string> {
   return projectId;
 }
 
+/** Google id suffixes known to serve no traffic: deprecated 3.5 generations and
+ *  agent-internal routing ids. Verified live: 3.5 answers "no longer available"
+ *  and -lite variants 503 with no capacity, while the tiered/-low/-medium/-high
+ *  ids of the same generation work. */
+const ANTIGRAVITY_DEAD_SUFFIXES: readonly RegExp[] = [
+  /^gemini-3\.5-/,
+  /-(lite|extra-low)$/,
+  /^gemini-pro-agent$/,
+];
+
 /** Fetch the exact model ids advertised by the account's quota buckets,
- *  filtering out unusable internal chat/tab routing ids and duplicate vertex buckets. */
+ *  filtering out unusable internal chat/tab routing ids, duplicate vertex
+ *  buckets, and ids that serve no traffic despite being advertised. */
 export async function fetchAntigravityModels(
   accessToken: string,
   projectId: string,
@@ -397,7 +408,9 @@ export async function fetchAntigravityModels(
   const ids = new Set(
     (quota.buckets ?? []).flatMap((bucket) => {
       const id = bucket.modelId?.trim();
-      return id && isUsableAntigravityModel(id) ? [id] : [];
+      if (!id || !isUsableAntigravityModel(id)) return [];
+      if (ANTIGRAVITY_DEAD_SUFFIXES.some((pattern) => pattern.test(id))) return [];
+      return [id];
     }),
   );
   if (ids.size === 0) throw new Error("Antigravity quota returned no model ids");

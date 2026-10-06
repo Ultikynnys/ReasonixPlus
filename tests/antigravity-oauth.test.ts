@@ -278,16 +278,20 @@ describe("antigravity-oauth", () => {
     await expect(onboardAntigravity("at")).rejects.toThrow("Account is not eligible");
   });
 
-  it("fetchAntigravityModels returns unique usable model ids from quota buckets, dropping legacy 2.0-3.1 and chat/tab/vertex", async () => {
+  it("fetchAntigravityModels returns unique usable model ids from quota buckets, dropping legacy 2.0-3.1, chat/tab/vertex, and dead 3.5/-lite/agent ids", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({
         buckets: [
-          { modelId: "gemini-3.6-flash" },
-          { modelId: "claude-sonnet-4-6-thinking" },
-          { modelId: "gemini-3.6-flash" },
+          { modelId: "gemini-3.6-flash-tiered" },
+          { modelId: "claude-sonnet-4-6" },
+          { modelId: "gemini-3.6-flash-tiered" },
           { modelId: "gemini-2.5-pro" },
           { modelId: "gemini-3-flash" },
           { modelId: "gemini-3.1-pro-high" },
+          { modelId: "gemini-3.5-flash-low" },
+          { modelId: "gemini-3.5-flash-lite" },
+          { modelId: "gemini-3.6-flash-extra-low" },
+          { modelId: "gemini-pro-agent" },
           { modelId: "chat_20706" },
           { modelId: "chat_23310" },
           { modelId: "tab_flash_lite_preview" },
@@ -298,8 +302,8 @@ describe("antigravity-oauth", () => {
     );
 
     await expect(fetchAntigravityModels("at", "project-123")).resolves.toEqual([
-      { id: "claude-sonnet-4-6-thinking", displayName: "claude-sonnet-4-6-thinking" },
-      { id: "gemini-3.6-flash", displayName: "gemini-3.6-flash" },
+      { id: "claude-sonnet-4-6", displayName: "claude-sonnet-4-6" },
+      { id: "gemini-3.6-flash-tiered", displayName: "gemini-3.6-flash-tiered" },
     ]);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",

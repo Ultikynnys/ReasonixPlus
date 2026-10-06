@@ -256,6 +256,7 @@ import { validateTypesafeApiKeyCached } from "../../tools/jev.js";
 import { BUILTIN_ALLOWLIST } from "../../tools/shell/parse.js";
 import { coveredRuleScopes } from "../../tools/shell/rule-scope.js";
 
+import { OPENAI_MODELS, SUPPORTED_OFFICIAL_MODELS, ZAI_MODELS } from "@reasonix/core-utils";
 import {
   ANTIGRAVITY_OAUTH_CLIENT_ID,
   antigravityAccount,
@@ -341,6 +342,11 @@ import {
 } from "../../ollama-model-map.js";
 import { loadOllamaModelsCache, saveOllamaModelsCache } from "../../ollama-models-cache.js";
 import { fetchOpencodeModels } from "../../opencode-models.js";
+import {
+  type CatalogProvider,
+  type ProviderCatalog,
+  fetchProviderModels,
+} from "../../provider-models.js";
 import type { SubagentEvent } from "../../tools/subagent.js";
 
 import { SkillStore } from "../../skills.js";
@@ -1458,9 +1464,7 @@ function emitSettings(tab: Tab): void {
       recentWorkspaces: recent,
       reasonixLocalDir: reasonixDefaultWorkspaceDir(),
       model: tab.currentModel,
-      customModels: Object.keys(config.models ?? {})
-        .filter((id) => providerForModel(id) !== "gemini" && !SUPPORTED_MODELS.includes(id))
-        .sort(),
+      providerCatalogs,
       ollamaBaseUrl: config.ollamaBaseUrl,
       opencodeBaseUrl: config.opencodeBaseUrl,
       webSearchEngine: readWebSearchEngine(),
@@ -1794,6 +1798,46 @@ function emitOpencodeCatalog(snap: {
     ...(snap.error !== undefined ? { error: snap.error } : {}),
   });
 }
+
+const providerCatalogs: Partial<Record<CatalogProvider, ProviderCatalog>> = {};
+async function refreshProviderCatalogs(force = false, provider?: CatalogProvider): Promise<void> {
+  const definitions = [
+    {
+      provider: "deepseek" as const,
+      model: SUPPORTED_OFFICIAL_MODELS[0]!,
+      fallback: SUPPORTED_OFFICIAL_MODELS,
+    },
+    { provider: "openai" as const, model: OPENAI_MODELS[0]!, fallback: OPENAI_MODELS },
+    { provider: "zai" as const, model: ZAI_MODELS[0]!, fallback: ZAI_MODELS },
+    { provider: "typesafe" as const, model: "jev-latest", fallback: ["jev-latest"] },
+  ];
+  await Promise.all(
+    definitions
+      .filter((entry) => !provider || entry.provider === provider)
+      .map(async (entry) => {
+        const endpoint =
+          entry.provider === "typesafe"
+            ? { baseUrl: "https://api.typesafe.ai/v1", apiKey: loadTypesafeApiKey() }
+            : loadEndpointForModel(entry.model);
+        providerCatalogs[entry.provider] = endpoint.baseUrl
+          ? await fetchProviderModels({
+              provider: entry.provider,
+              baseUrl: endpoint.baseUrl,
+              apiKey: endpoint.apiKey,
+              fallback: entry.fallback,
+              force,
+            })
+          : {
+              provider: entry.provider,
+              models: [...entry.fallback],
+              source: "fallback" as const,
+              error: "No endpoint configured",
+            };
+      }),
+  );
+  publishProviderCatalogs();
+}
+let publishProviderCatalogs = () => {};
 
 export async function refreshOpencodeModels(force = false, tab?: Tab): Promise<void> {
   try {
@@ -4295,6 +4339,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   }
 
   const tabs = new Map<string, Tab>();
+  publishProviderCatalogs = () => {
+    for (const tab of tabs.values()) emitSettings(tab);
+  };
   const tabContext = new AsyncLocalStorage<string>();
   // Daemon-scoped shared MCP clients for browser servers — one Playwright
   // client (one browser) is reused by every tab, so switching sessions attaches
@@ -6269,7 +6316,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "setup_save_key") {
       const key = msg.key.trim();
-      if (!isPlausibleKey(key)) {
+      if (key && !isPlausibleKey(key)) {
         emit({
           type: "$error",
           message: "Key looks too short — paste the full token (16+ chars, no spaces).",
@@ -6279,6 +6326,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       try {
         saveApiKey(key);
         bridgeEndpointEnv();
+        void refreshProviderCatalogs(true, "deepseek");
         for (const tab of tabs.values()) {
           // Skeleton tabs still mid-bootstrap pick up the new key inside
           // initTabToolset's tail when buildCodeToolset settles — don't
@@ -6392,6 +6440,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // the error unless the tab's model is an Ollama model).
       void refreshOllamaModels(true);
       void refreshOpencodeModels(false);
+      void refreshProviderCatalogs();
       return;
     }
     if (msg.cmd === "jobs_list") {
@@ -7376,7 +7425,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "setup_save_openai_key") {
       const key = msg.key.trim();
-      if (!isPlausibleKey(key)) {
+      if (key && !isPlausibleKey(key)) {
         emit(
           {
             type: "$error",
@@ -7388,7 +7437,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       }
       try {
         saveOpenAIApiKey(key);
-        // A fresh OpenAI key also unblocks ChatGPT-only installs whose tab still
+        void refreshProviderCatalogs(true, "openai"); // A fresh OpenAI key also unblocks ChatGPT-only installs whose tab still
         // defaults to a DeepSeek model — build (or rebuild) every now-credentialed
         // tab ready. A tab that booted un-credentialed has a null runtime — it
         // must be built here, not just rebuilt.
@@ -7407,7 +7456,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       }
       return;
     }
+    if (msg.cmd === "provider_models_refresh") {
+      void refreshProviderCatalogs(!!msg.force, msg.provider);
+      return;
+    }
     if (msg.cmd === "settings_get") {
+      void refreshProviderCatalogs();
       emitSettings(tab);
       return;
     }
@@ -7687,6 +7741,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           }
         }
         emitSettings(tab);
+        void refreshProviderCatalogs();
         emitTabGate(tab);
       } catch (err) {
         emit(

@@ -42,7 +42,8 @@ describe("TypeSafe JEV API-key settings", () => {
     );
 
     expect(screen.getByText(/type…ret/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onSave).toHaveBeenCalledWith({ typesafeApiKey: null });
   });
 });

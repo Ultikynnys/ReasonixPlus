@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL, modelDisplayName } from "@reasonix/core-utils";
+import { modelDisplayName } from "@reasonix/core-utils";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { Settings as SettingsType } from "../App";
@@ -1249,6 +1249,54 @@ function SearxngEndpointRow({
   );
 }
 
+function SettingsEntry({
+  value, onChange, onSave, placeholder, secret = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  placeholder?: string;
+  secret?: boolean;
+}) {
+  return (
+    <div className="settings-entry">
+      <input
+        className="field mono"
+        type={secret ? "password" : "text"}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <button type="button" className="btn primary" onClick={onSave}>
+        {t("settings.apiKeySave")}
+      </button>
+    </div>
+  );
+}
+
+function ApiKeyRow({ label, hint, placeholder, onSave }: {
+  label: string;
+  hint: ReactNode;
+  placeholder?: string;
+  onSave: (key: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  return (
+    <div className="setting-row setting-row-entry">
+      <div className="l">
+        <div className="n">{label}</div>
+        <div className="h">{hint}</div>
+      </div>
+      <SettingsEntry secret value={draft} onChange={setDraft} placeholder={placeholder}
+        onSave={() => {
+          onSave(draft.trim());
+          setDraft("");
+        }}
+      />
+    </div>
+  );
+}
+
 export function ProviderApiKeyRow({
   engine,
   patchKey,
@@ -1282,13 +1330,13 @@ export function ProviderApiKeyRow({
   prefix?: string;
   onSave: (patch: SettingsPatch) => void;
 }) {
-  const [draft, setDraft] = useState("");
   const label = t(`settings.webSearchApiKey.${engine}` as const);
   return (
-    <div className="setting-row">
-      <div className="l">
-        <div className="n">{label}</div>
-        <div className="h">
+    <ApiKeyRow
+      label={label}
+      placeholder={prefix ?? ""}
+      onSave={(key) => onSave({ [patchKey]: key || null } as SettingsPatch)}
+      hint={<>
           {keyStatusText(prefix)}{" "}
           <a
             href={signupUrl}
@@ -1301,40 +1349,8 @@ export function ProviderApiKeyRow({
           >
             {t("settings.webSearchApiKeySignup")}
           </a>
-        </div>
-      </div>
-      <div style={{ display: "flex", gap: 6 }}>
-        <input
-          className="field mono"
-          type="password"
-          value={draft}
-          placeholder={prefix ?? ""}
-          onChange={(e) => setDraft(e.target.value)}
-        />
-        <button
-          type="button"
-          className="btn primary"
-          disabled={!draft.trim()}
-          onClick={() => {
-            const trimmed = draft.trim();
-            if (!trimmed) return;
-            onSave({ [patchKey]: trimmed } as SettingsPatch);
-            setDraft("");
-          }}
-        >
-          {t("settings.apiKeySave")}
-        </button>
-        {prefix ? (
-          <button
-            type="button"
-            className="btn"
-            onClick={() => onSave({ [patchKey]: null } as SettingsPatch)}
-          >
-            {t("settings.webSearchApiKeyClear")}
-          </button>
-        ) : null}
-      </div>
-    </div>
+      </>}
+    />
   );
 }
 
@@ -1349,49 +1365,22 @@ function DeepSeekSettings({
   onSave: (patch: SettingsPatch) => void;
   onSaveApiKey: (key: string) => void;
 }) {
-  const [key, setKey] = useState("");
-  const [urlDraft, setUrlDraft] = useState(baseUrl ?? "");
   return (
     <>
-      <div className="setting-row">
-        <div className="l">
-          <div className="n">{t("settings.apiKey")}</div>
-          <div className="h">{keyStatusText(apiKeyPrefix)}</div>
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <input
-            className="field mono"
-            type="password"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="sk-…"
-          />
-          <button
-            type="button"
-            className="btn primary"
-            disabled={!key}
-            onClick={() => {
-              if (!key) return;
-              onSaveApiKey(key);
-              setKey("");
-            }}
-          >
-            {t("settings.apiKeySave")}
-          </button>
-        </div>
-      </div>
-      <div className="setting-row">
-        <div className="l">
-          <div className="n">{t("settings.baseUrl")}</div>
-          <div className="h">{t("settings.baseUrlHint")}</div>
-        </div>
-        <input
-          className="field mono"
-          value={urlDraft}
-          onChange={(e) => setUrlDraft(e.target.value)}
-          onBlur={() => onSave({ baseUrl: urlDraft.trim() })}
-        />
-      </div>
+      <ApiKeyRow
+        label={t("settings.apiKey")}
+        hint={keyStatusText(apiKeyPrefix)}
+        placeholder="sk-…"
+        onSave={onSaveApiKey}
+      />
+      <ProviderBaseUrlRow
+        label={t("settings.baseUrl")}
+        hint={t("settings.baseUrlHint")}
+        placeholder="https://api.deepseek.com"
+        value={baseUrl}
+        patchKey="baseUrl"
+        onSave={onSave}
+      />
     </>
   );
 }
@@ -1416,7 +1405,6 @@ export function OpenAISection({
   onSignOut: () => void;
   onSaveApiKey: (key: string) => void;
 }) {
-  const [key, setKey] = useState("");
   return (
     <>
       {signedIn ? (
@@ -1461,33 +1449,12 @@ export function OpenAISection({
           </div>
         </div>
       ) : null}
-      <div className="setting-row">
-        <div className="l">
-          <div className="n">{t("settings.openaiApiKey")}</div>
-          <div className="h">{t("settings.openaiApiKeyHint")}</div>
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <input
-            className="field mono"
-            type="password"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="sk-…"
-          />
-          <button
-            type="button"
-            className="btn primary"
-            disabled={!key}
-            onClick={() => {
-              if (!key) return;
-              onSaveApiKey(key);
-              setKey("");
-            }}
-          >
-            {t("settings.apiKeySave")}
-          </button>
-        </div>
-      </div>
+      <ApiKeyRow
+        label={t("settings.openaiApiKey")}
+        hint={t("settings.openaiApiKeyHint")}
+        placeholder="sk-…"
+        onSave={onSaveApiKey}
+      />
     </>
   );
 }
@@ -1725,7 +1692,7 @@ function ModelList({
   );
 }
 
-/** Base-URL override row shared by the OpenCode and Ollama provider cards. */
+
 function ProviderBaseUrlRow({
   label,
   hint,
@@ -1738,39 +1705,37 @@ function ProviderBaseUrlRow({
   hint: string;
   placeholder: string;
   value?: string;
-  patchKey: "opencodeBaseUrl" | "ollamaBaseUrl";
+  patchKey: "baseUrl" | "opencodeBaseUrl" | "ollamaBaseUrl";
   onSave: (patch: SettingsPatch) => void;
 }) {
+  const [draft, setDraft] = useState(value ?? "");
   return (
-    <div className="setting-row">
+    <div className="setting-row setting-row-entry setting-row-base-url">
       <div className="l">
         <div className="n">{label}</div>
         <div className="h">{hint}</div>
       </div>
-      <input
-        className="field mono"
-        defaultValue={value ?? ""}
+      <SettingsEntry
+        value={draft}
+        onChange={setDraft}
         placeholder={placeholder}
-        onBlur={(e) => {
-          const next = e.target.value.trim();
-          if (next === (value ?? "")) return;
-          onSave({ [patchKey]: next || null } as SettingsPatch);
+        onSave={() => {
+          const next = draft.trim();
+          onSave({ [patchKey]: next || (patchKey === "baseUrl" ? "" : null) } as SettingsPatch);
         }}
       />
     </div>
   );
 }
 
-/** "Refresh / sync models" action row shared by the OpenCode and Ollama cards. */
+
 function ProviderRefreshRow({
   label,
   hint,
-  action,
   onRefresh,
 }: {
   label: string;
   hint: ReactNode;
-  action: string;
   onRefresh?: (force?: boolean) => void;
 }) {
   return (
@@ -1780,15 +1745,11 @@ function ProviderRefreshRow({
         <div className="h">{hint}</div>
       </div>
       <button type="button" className="btn" onClick={() => onRefresh?.(true)}>
-        {action}
+        {t("settings.modelsRefresh")}
       </button>
     </div>
   );
 }
-
-/** TypeSafe's only model — rendered read-only in the TypeSafe card (JEV is a
- *  tool model, not a chat model, so it is neither selectable nor toggleable). */
-const JEV_MODEL_ID = "jev-latest";
 
 function PageModels({
   settings,
@@ -1862,12 +1823,9 @@ function PageModels({
   onAntigravityCancel: () => void;
   onAntigravitySignOut: () => void;
 }) {
-  const [draft, setDraft] = useState(settings.model);
-  useEffect(() => setDraft(settings.model), [settings.model]);
-
   const catalog = deriveModelCatalog({
+    providerCatalogs: settings.providerCatalogs,
     discoveredAntigravityModels: settings.antigravityOAuth?.models,
-    customModels: settings.customModels,
     opencodeModels,
     includeAntigravity: Boolean(settings.antigravityOAuth?.signedIn),
     ollamaVisionModels,
@@ -1878,7 +1836,6 @@ function PageModels({
   );
   const groupModels = (key: ModelCatalogGroupKey): readonly string[] => modelsByKey.get(key) ?? [];
   const ollamaList = (ollamaModels ?? []).map((id) => `ollama/${id}`);
-  const isKnown = catalog.knownModelIds.has(settings.model);
   const enabledSet = new Set(settings.enabledModels ?? []);
   // Options for the top "Default model" enum: the enabled allow-list, plus the
   // active model when it isn't enabled yet (mirrors the composer picker) so the
@@ -2019,7 +1976,6 @@ function PageModels({
                   ? t("composer.modelOpencodeError", { error: opencodeModelsError })
                   : t("settings.opencodeModelsHint")
               }
-              action={t("settings.opencodeModelsRefresh")}
               onRefresh={onRefreshOpencodeModels}
             />
           </>
@@ -2054,7 +2010,6 @@ function PageModels({
                   ? t("settings.ollamaModelsError", { error: ollamaModelsError })
                   : t("settings.ollamaModelsHint")
               }
-              action={t("settings.ollamaModelsRefresh")}
               onRefresh={onRefreshOllamaModels}
             />
             {ollamaHiddenCount && ollamaHiddenCount > 0 ? (
@@ -2091,53 +2046,9 @@ function PageModels({
       />
 
       <ProviderCard
-        title={t(MODEL_CATALOG_GROUP_LABELS.custom)}
-        defaultOpen={false}
-        models={modelColumn(groupModels("custom"))}
-        settings={
-          <>
-            <div className="setting-row">
-              <div className="l">
-                <div className="n">{t("settings.modelCustom")}</div>
-                <div className="h">{t("settings.modelCustomHint")}</div>
-              </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <input
-                  className="field mono"
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder={DEFAULT_MODEL}
-                />
-                <button
-                  type="button"
-                  className="btn primary"
-                  disabled={!draft.trim() || draft.trim() === settings.model}
-                  onClick={() => onSave({ model: draft.trim() })}
-                >
-                  {t("settings.apiKeySave")}
-                </button>
-              </div>
-            </div>
-            {!isKnown ? (
-              <div className="h" style={{ marginTop: 6 }}>
-                {t("settings.modelCustomActive", { model: settings.model })}
-              </div>
-            ) : null}
-          </>
-        }
-      />
-
-      <ProviderCard
         title={t("settings.typesafeSection")}
         defaultOpen={false}
-        models={
-          <ModelList
-            models={[JEV_MODEL_ID]}
-            enabledSet={enabledSet}
-            currentModel={settings.model}
-            acceptsImages={catalog.acceptsImages}
-          />
-        }
+        models={modelColumn(groupModels("typesafe"))}
         settings={
           <>
             <div className="h" style={{ marginBottom: 8 }}>

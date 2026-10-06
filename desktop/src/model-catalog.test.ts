@@ -5,18 +5,17 @@ describe("deriveModelCatalog", () => {
   it("keeps every group label in the shared catalog definition", () => {
     expect(Object.keys(MODEL_CATALOG_GROUP_LABELS).sort()).toEqual([
       "antigravity",
-      "custom",
       "deepseek",
       "openai",
       "opencode",
+      "typesafe",
       "zai",
     ]);
   });
 
-  it("centralizes discovered catalogs and custom membership", () => {
+  it("centralizes discovered provider catalogs", () => {
     const catalog = deriveModelCatalog({
       discoveredAntigravityModels: ["gemini-account-model", "chat_internal"],
-      customModels: ["gpt-4o-custom", "claude-sonnet-4-6"],
       opencodeModels: ["dynamic-free"],
       includeAntigravity: true,
     });
@@ -26,7 +25,16 @@ describe("deriveModelCatalog", () => {
     ]);
     expect(catalog.antigravityModelIds).toContain("gemini-account-model");
     expect(catalog.antigravityModelIds).not.toContain("chat_internal");
-    expect(catalog.customModelIds).toEqual(["gpt-4o-custom"]);
+    expect(catalog.groups.map((group) => group.key)).not.toContain("custom");
+  });
+
+  it("merges provider-discovered models with the fallback catalog", () => {
+    const catalog = deriveModelCatalog({
+      providerCatalogs: {
+        deepseek: { models: ["deepseek-live"], source: "live" },
+      },
+    });
+    expect(catalog.groups.find((group) => group.key === "deepseek")?.models).toContain("deepseek-live");
   });
 
   it("uses dynamic OpenCode vision evidence", () => {

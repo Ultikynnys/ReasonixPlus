@@ -2020,7 +2020,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           recentWorkspaces: ev.recentWorkspaces,
           reasonixLocalDir: ev.reasonixLocalDir,
           model: ev.model,
-          customModels: ev.customModels,
+          providerCatalogs: ev.providerCatalogs,
           enabledModels: ev.enabledModels,
           webSearchEngine: ev.webSearchEngine,
           webSearchEndpoint: ev.webSearchEndpoint,
@@ -3595,8 +3595,8 @@ function TabRuntime({
     const enabled = new Set(state.settings?.enabledModels ?? []);
     const visible = (id: string) => enabled.size === 0 || enabled.has(id);
     const catalog = deriveModelCatalog({
+      providerCatalogs: state.settings?.providerCatalogs,
       discoveredAntigravityModels: state.settings?.antigravityOAuth?.models,
-      customModels: state.settings?.customModels,
       opencodeModels,
       includeAntigravity: Boolean(state.settings?.antigravityOAuth?.models),
       ollamaVisionModels,
@@ -3617,8 +3617,8 @@ function TabRuntime({
     return groups.filter((g) => g.ids.length > 0);
   }, [
     state.settings?.enabledModels,
+    state.settings?.providerCatalogs,
     state.settings?.antigravityOAuth?.models,
-    state.settings?.customModels,
     opencodeModels,
     ollamaModels,
     ollamaVisionModels,
@@ -4045,8 +4045,8 @@ function TabRuntime({
                 opencodeModels={opencodeModels}
                 opencodeModelsError={opencodeModelsError ?? undefined}
                 opencodeVisionModels={opencodeVisionModels}
-                customModels={state.settings?.customModels}
                 enabledModels={state.settings?.enabledModels}
+                providerCatalogs={state.settings?.providerCatalogs}
                 onRefreshOllamaModels={onRefreshOllamaModels}
                 onRefreshAntigravityModels={onRefreshAntigravityModels}
                 onRefreshOpencodeModels={onRefreshOpencodeModels}

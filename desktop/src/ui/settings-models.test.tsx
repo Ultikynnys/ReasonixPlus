@@ -67,6 +67,69 @@ describe("PageModels default-model enum", () => {
     vi.restoreAllMocks();
   });
 
+  it("stacks every provider base URL below its description and preserves saving", () => {
+    const onSave = vi.fn();
+    const { container } = render(
+      <SettingsModal {...baseProps} onSave={onSave} initialPage="models" />,
+    );
+    container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
+      if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+    });
+    expect(screen.queryByRole("button", { name: "Custom" })).toBeNull();
+    expect(screen.queryByPlaceholderText("custom model id")).toBeNull();
+    const rows = Array.from(container.querySelectorAll(".setting-row-base-url"));
+    expect(rows).toHaveLength(3);
+    const patchKeys = ["baseUrl", "opencodeBaseUrl", "ollamaBaseUrl"];
+    rows.forEach((row, index) => {
+      expect(row.firstElementChild?.className).toBe("l");
+      expect(row.firstElementChild?.querySelector(".h")).toBeTruthy();
+      expect(row.classList.contains("setting-row-entry")).toBe(true);
+      const input = row.querySelector("input") as HTMLInputElement;
+      onSave.mockClear();
+      fireEvent.change(input, { target: { value: " https://example.com/v1 " } });
+      fireEvent.blur(input);
+      expect(onSave).not.toHaveBeenCalled();
+      fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Save" }));
+      expect(onSave).toHaveBeenCalledWith({ [patchKeys[index]]: "https://example.com/v1" });
+      fireEvent.change(input, { target: { value: "" } });
+      fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Save" }));
+      expect(onSave).toHaveBeenLastCalledWith({ [patchKeys[index]]: index === 0 ? "" : null });
+    });
+  });
+
+  it("uses stacked Save-only API key entries and shared refresh wording", () => {
+    const onSaveApiKey = vi.fn();
+    const onSaveOpenAIApiKey = vi.fn();
+    const onRefreshOpencodeModels = vi.fn();
+    const onRefreshOllamaModels = vi.fn();
+    const { container } = render(
+      <SettingsModal {...baseProps} initialPage="models"
+        onSaveApiKey={onSaveApiKey} onSaveOpenAIApiKey={onSaveOpenAIApiKey}
+        onRefreshOpencodeModels={onRefreshOpencodeModels} onRefreshOllamaModels={onRefreshOllamaModels}
+      />,
+    );
+    container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
+      if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+    });
+    const inputs = container.querySelectorAll<HTMLInputElement>('input[type="password"]');
+    expect(inputs.length).toBeGreaterThan(2);
+    inputs.forEach((input) => {
+      const row = input.closest(".setting-row-entry") as HTMLElement;
+      expect(row).toBeTruthy();
+      expect(row.firstElementChild?.className).toBe("l");
+      expect(within(row).queryByRole("button", { name: "Clear" })).toBeNull();
+      fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+    });
+    expect(onSaveApiKey).toHaveBeenCalledWith("");
+    expect(onSaveOpenAIApiKey).toHaveBeenCalledWith("");
+    const refresh = screen.getAllByRole("button", { name: "Refresh" });
+    expect(refresh).toHaveLength(2);
+    refresh.forEach((button) => fireEvent.click(button));
+    expect(onRefreshOpencodeModels).toHaveBeenCalledWith(true);
+    expect(onRefreshOllamaModels).toHaveBeenCalledWith(true);
+    expect(screen.queryByRole("button", { name: "Sync models" })).toBeNull();
+  });
+
   it("lists the enabled models and switching sets both main and subagent model", () => {
     const onSave = vi.fn();
     render(

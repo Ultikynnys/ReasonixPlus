@@ -13,15 +13,23 @@ export type ModelCatalogGroupKey =
   | "openai"
   | "zai"
   | "opencode"
-  | "custom"
+  | "typesafe"
   | "antigravity";
+
+export type ProviderCatalogKey = "deepseek" | "openai" | "zai" | "typesafe";
+
+export interface ProviderCatalogView {
+  models: readonly string[];
+  source: "live" | "cache" | "fallback";
+  error?: string;
+}
 
 export const MODEL_CATALOG_GROUP_LABELS = {
   deepseek: "composer.modelDeepSeekGroup",
   openai: "composer.modelOpenAIGroup",
   zai: "composer.modelZaiGroup",
   opencode: "composer.modelOpencodeGroup",
-  custom: "composer.modelCustomGroup",
+  typesafe: "settings.typesafeSection",
   antigravity: "composer.modelAntigravityGroup",
 } as const satisfies Record<ModelCatalogGroupKey, string>;
 
@@ -31,8 +39,8 @@ export interface ModelCatalogGroup {
 }
 
 export interface ModelCatalogOptions {
+  providerCatalogs?: Partial<Record<ProviderCatalogKey, ProviderCatalogView>>;
   discoveredAntigravityModels?: readonly string[];
-  customModels?: readonly string[];
   opencodeModels?: readonly string[];
   includeAntigravity?: boolean;
   ollamaVisionModels?: ReadonlySet<string>;
@@ -41,8 +49,6 @@ export interface ModelCatalogOptions {
 
 export interface ModelCatalogView {
   groups: ModelCatalogGroup[];
-  knownModelIds: ReadonlySet<string>;
-  customModelIds: string[];
   antigravityModelIds: string[];
   acceptsImages(model: string | undefined | null): boolean;
 }
@@ -61,30 +67,24 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     options.opencodeModels && options.opencodeModels.length > 0
       ? options.opencodeModels
       : OPENCODE_MODELS;
-  const knownModelIds = new Set([
-    ...SUPPORTED_OFFICIAL_MODELS,
-    ...OPENAI_MODELS,
-    ...ZAI_MODELS,
-    ...opencodeModels,
-    ...antigravityModelIds,
-  ]);
-  const customModelIds = (options.customModels ?? []).filter((id) => !knownModelIds.has(id));
-  const includeAntigravity =
-    options.includeAntigravity === true ||
-    (options.customModels ?? []).some((id) => ANTIGRAVITY_MODELS.includes(id));
+  const includeAntigravity = options.includeAntigravity === true;
+  const catalogFor = (key: ProviderCatalogKey, fallback: readonly string[]): readonly string[] =>
+    options.providerCatalogs?.[key]
+      ? [...new Set([...options.providerCatalogs[key]!.models, ...fallback])]
+      : fallback;
   const groups: ModelCatalogGroup[] = [
-    { key: "deepseek", models: SUPPORTED_OFFICIAL_MODELS },
-    { key: "openai", models: OPENAI_MODELS },
-    { key: "zai", models: ZAI_MODELS },
+    { key: "deepseek", models: catalogFor("deepseek", SUPPORTED_OFFICIAL_MODELS) },
+    { key: "openai", models: catalogFor("openai", OPENAI_MODELS) },
+    { key: "zai", models: catalogFor("zai", ZAI_MODELS) },
     { key: "opencode", models: opencodeModels },
-    ...(customModelIds.length > 0 ? [{ key: "custom" as const, models: customModelIds }] : []),
+    ...(options.providerCatalogs?.typesafe
+      ? [{ key: "typesafe" as const, models: catalogFor("typesafe", ["jev-latest"]) }]
+      : []),
     ...(includeAntigravity ? [{ key: "antigravity" as const, models: antigravityModelIds }] : []),
   ];
 
   return {
     groups,
-    knownModelIds,
-    customModelIds,
     antigravityModelIds,
     acceptsImages: (model) =>
       modelAcceptsImages(model, options.ollamaVisionModels, options.opencodeVisionModels),
