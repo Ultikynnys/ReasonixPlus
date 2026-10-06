@@ -11,6 +11,7 @@ import {
   isPlaywrightSpec,
   playwrightDescriptionSuffix,
   playwrightToolingNotice,
+  playwrightWriteLocationNote,
   resolvePlaywrightTemplatePath,
 } from "../src/mcp/playwright-tooling.js";
 import { bridgeMcpTools } from "../src/mcp/registry.js";
@@ -309,6 +310,97 @@ describe("bridge tooling-notice + description-suffix injection", () => {
     expect(out).toBe("ran browser_tabs");
     const spec = registry.specs().find((s) => s.function.name === "playwright_browser_tabs");
     expect(spec?.function.description).not.toContain("Tooling:");
+    await client.close();
+  });
+});
+
+describe("playwrightWriteLocationNote", () => {
+  it("names the absolute path of a file written via an explicit filename argument", () => {
+    const dir = tmpHome();
+    cleanups.push(dir);
+    writeFileSync(join(dir, "verokortti-27112025.png"), "x");
+    const note = playwrightWriteLocationNote(
+      { filename: "verokortti-27112025.png" },
+      "### Result\n- [Screenshot of viewport](./verokortti-27112025.png)",
+      dir,
+    );
+    expect(note.startsWith("[wrote]")).toBe(true);
+    expect(note).toContain(join(dir, "verokortti-27112025.png"));
+    // The server cwd is named so the agent knows how relative names resolve.
+    expect(note).toContain(dir);
+  });
+
+  it("resolves an auto-named artifact under the .playwright-mcp output dir", () => {
+    const dir = tmpHome();
+    cleanups.push(dir);
+    mkdirSync(join(dir, ".playwright-mcp"), { recursive: true });
+    writeFileSync(join(dir, ".playwright-mcp", "page-123.png"), "x");
+    const note = playwrightWriteLocationNote({}, "- [Screenshot](page-123.png)", dir);
+    expect(note).toContain(join(dir, ".playwright-mcp", "page-123.png"));
+  });
+
+  it("accepts an absolute path already present in the result", () => {
+    const dir = tmpHome();
+    cleanups.push(dir);
+    const abs = join(dir, "shot.png");
+    writeFileSync(abs, "x");
+    const note = playwrightWriteLocationNote(undefined, `wrote ${abs}`, dir);
+    expect(note).toContain(abs);
+  });
+
+  it("ignores URLs, and names the expected path for a not-yet-existing filename", () => {
+    const dir = tmpHome();
+    cleanups.push(dir);
+    expect(playwrightWriteLocationNote(undefined, "- [img](https://example.com/a.png)", dir)).toBe(
+      "",
+    );
+    const note = playwrightWriteLocationNote({ filename: "ghost.png" }, "no file", dir);
+    expect(note).toContain(join(dir, "ghost.png"));
+    expect(note).toContain("not found on disk");
+  });
+
+  it("resolves a downloaded artifact with a non-ASCII name under the output dir", () => {
+    const dir = tmpHome();
+    cleanups.push(dir);
+    mkdirSync(join(dir, ".playwright-mcp"), { recursive: true });
+    const csv = join(dir, ".playwright-mcp", "Käyttötili-FI47-1146-3500-9094-00.csv");
+    writeFileSync(csv, "a,b\n");
+    const note = playwrightWriteLocationNote(
+      {},
+      "- [Download](./Käyttötili-FI47-1146-3500-9094-00.csv)",
+      dir,
+    );
+    expect(note).toContain(csv);
+  });
+
+  it("treats a POSIX-style leading-slash report as cwd-relative", () => {
+    const dir = tmpHome();
+    cleanups.push(dir);
+    mkdirSync(join(dir, ".playwright-mcp"), { recursive: true });
+    const csv = join(dir, ".playwright-mcp", "report.csv");
+    writeFileSync(csv, "x");
+    const note = playwrightWriteLocationNote(undefined, "- [Download](/report.csv)", dir);
+    expect(note).toContain(csv);
+  });
+
+  it("emits nothing for a relative path when no cwd is known", () => {
+    expect(playwrightWriteLocationNote({ filename: "shot.png" }, "", undefined)).toBe("");
+  });
+});
+
+describe("bridge transformResult injection", () => {
+  it("applies transformResult to the flattened tool result", async () => {
+    const client = new McpClient({
+      transport: new FakeMcpTransport([{ name: "browser_take_screenshot" }]),
+    });
+    await client.initialize();
+    const { registry } = await bridgeMcpTools(client, {
+      namePrefix: "playwright_",
+      transformResult: (_name, text) => `${text}\n\n[extra]`,
+    });
+    const out = await registry.dispatch("playwright_browser_take_screenshot", "{}");
+    expect(out).toContain("ran browser_take_screenshot");
+    expect(out).toContain("[extra]");
     await client.close();
   });
 });

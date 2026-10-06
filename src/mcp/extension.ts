@@ -243,16 +243,36 @@ export function configurePlaywrightArgs(
   return [...result, `--browser=${mode}`, `--user-data-dir=${playwrightWorkspaceProfileDir(mode)}`];
 }
 
-/** Ensure every managed launch uses the workspace-local persistent browser profile.
- *  Extension/CDP connections already own their profile, so leave those specs unchanged. */
-export function withPlaywrightWorkspaceProfile(spec: McpServerSpec): McpServerSpec {
+/** Replace any user `--output-dir` with an absolute, workspace-scoped one so every
+ *  Playwright artifact (downloads, screenshots, snapshots, PDFs) lands inside the sandbox. */
+export function withPlaywrightOutputDir(args: string[], outputDir: string): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--output-dir") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--output-dir=")) continue;
+    result.push(arg);
+  }
+  return [...result, `--output-dir=${outputDir}`];
+}
+
+/** Pin a Playwright spec to the workspace: managed modes get the workspace-local
+ *  profile, and every mode gets an absolute output dir under the workspace so file
+ *  outputs land inside the sandbox instead of the server's own cwd. */
+export function withPlaywrightWorkspaceProfile(
+  spec: McpServerSpec,
+  workspaceDir?: string,
+): McpServerSpec {
   if (spec.transport !== "stdio") return spec;
   const connection = parsePlaywrightConnection(spec.args);
-  if (!isPlaywrightManagedBrowser(connection.mode)) return spec;
-  return {
-    ...spec,
-    args: configurePlaywrightArgs(spec.args, connection.mode),
-  };
+  let args = isPlaywrightManagedBrowser(connection.mode)
+    ? configurePlaywrightArgs(spec.args, connection.mode)
+    : spec.args;
+  if (workspaceDir) args = withPlaywrightOutputDir(args, join(workspaceDir, ".playwright-mcp"));
+  return args === spec.args ? spec : { ...spec, args };
 }
 
 /** Normalize a user-pasted relay token. The extension's connection dialog copies

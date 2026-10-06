@@ -111,6 +111,12 @@ describe("SharedClientRegistry", () => {
     expect(mocks.FakeMcpClient.instances[0]!.initialized).toBe(1);
   });
 
+  it("records the workspace as the spawn cwd on the shared entry", async () => {
+    const registry = new SharedClientRegistry();
+    const entry = await registry.acquire(PW_SPEC, { workspaceDir: "/ws" });
+    expect(entry.cwd).toBe("/ws");
+  });
+
   it("keeps the client alive until the last holder releases it", async () => {
     const registry = new SharedClientRegistry();
     const a = await registry.acquire(PW_SPEC, { workspaceDir: "/ws" });
@@ -210,7 +216,7 @@ describe("MCP runtime — Playwright browser shared across tabs", () => {
     expect(names(tabB.tools)).toEqual(["playwright_find", "playwright_navigate"]);
   });
 
-  it("shares one client across tabs on different workspaces (global by design)", async () => {
+  it("gives Playwright its own client per workspace so its outputs stay in the sandbox", async () => {
     mocks.readConfigMock.mockReturnValue(pwCfg());
     const registry = new SharedClientRegistry();
     const tabA = buildRuntime(registry, "/ws-a");
@@ -219,9 +225,10 @@ describe("MCP runtime — Playwright browser shared across tabs", () => {
     await tabA.runtime.reloadFromConfig();
     await tabB.runtime.reloadFromConfig();
 
-    // Two distinct workspaces, one server process.
-    expect(mocks.FakeMcpClient.instances).toHaveLength(1);
-    expect(mocks.FakeMcpClient.instances[0]!.initialized).toBe(1);
+    // The workspace-scoped --output-dir makes the two specs distinct, so each
+    // workspace gets its own server (and its own output dir).
+    expect(mocks.FakeMcpClient.instances).toHaveLength(2);
+    expect(mocks.FakeMcpClient.instances.every((c) => c.initialized === 1)).toBe(true);
   });
 
   it("leaves the shared browser running when one tab closes and stops it with the last", async () => {

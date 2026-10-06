@@ -61,7 +61,9 @@ export async function reconnectMcpServer(args: ReconnectArgs): Promise<Reconnect
     };
   }
   const workspaceDir = args.host.client.workspaceRootDir;
-  const runtimeSpec = isPlaywrightSpec(parsed) ? withPlaywrightWorkspaceProfile(parsed) : parsed;
+  const runtimeSpec = isPlaywrightSpec(parsed)
+    ? withPlaywrightWorkspaceProfile(parsed, workspaceDir)
+    : parsed;
   const transport = buildTransportFromSpec(runtimeSpec, {
     env: args.env,
     headers: args.headers,

@@ -28,6 +28,7 @@ import {
   isPlaywrightSpec,
   playwrightDescriptionSuffix,
   playwrightToolingNotice,
+  playwrightWriteLocationNote,
 } from "../../mcp/playwright-tooling.js";
 import { preflightStdioSpec } from "../../mcp/preflight.js";
 import {
@@ -246,8 +247,9 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
       label = parsed.name ?? "anon";
       const matched = parsed.name ? normalized.find((s) => s.name === parsed.name) : undefined;
       const configuredSpec = overlayMatchedSpec(parsed, matched);
+      const workspaceDir = ctx.getWorkspaceDir?.();
       const spec = isPlaywrightSpec(configuredSpec)
-        ? withPlaywrightWorkspaceProfile(configuredSpec)
+        ? withPlaywrightWorkspaceProfile(configuredSpec, workspaceDir)
         : configuredSpec;
       if (spec.disabled) {
         sink({ state: "disabled", name: label });
@@ -263,7 +265,6 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
           ? (ctx.getMcpPrefix() as string)
           : "";
       if (spec.transport === "stdio") preflightStdioSpec(spec);
-      const workspaceDir = ctx.getWorkspaceDir?.();
       // Hardcoded playwright tooling contract: guarantee the durable driver +
       // AGENTS.md pair exists (create/upgrade as needed) before any agent
       // touches the browser, and surface the maintenance duty to the agent
@@ -283,6 +284,10 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
       // attaches to the running process instead of spawning a duplicate.
       let host: McpClientHost;
       let bridgeReady: Promise<void> = ready;
+      // The cwd the server actually runs in: a shared client's cwd is fixed by its
+      // first acquirer, so tools resolve the cwd-relative paths they report against
+      // this value, not the current tab's workspace.
+      let bridgeCwd = workspaceDir;
       if (ctx.browserRegistry) {
         const entry = await ctx.browserRegistry.acquire(spec, {
           workspaceDir,
@@ -292,6 +297,7 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
         sharedKey = entry.key;
         mcp = entry.client;
         host = entry.host;
+        if (entry.cwd) bridgeCwd = entry.cwd;
         resolveReady();
         bridgeReady = Promise.resolve();
       } else {
@@ -339,6 +345,12 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
           ? {
               toolingNotice: playwrightToolingNotice(playwrightTooling),
               descriptionSuffix: playwrightDescriptionSuffix(playwrightTooling),
+              // Playwright reports written files cwd-relative; always append their
+              // absolute location so see_image (and the user) can read them back.
+              transformResult: (_toolName: string, text: string, args: Record<string, unknown>) => {
+                const note = playwrightWriteLocationNote(args, text, bridgeCwd);
+                return note ? `${text}\n\n${note}` : text;
+              },
             }
           : {}),
         onProgress: (info) => ctx.progressSink.current?.(info),

@@ -1,5 +1,6 @@
 /** Playwright MCP extension — store URL, server-entry merge, status computation. */
 
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { computeMcpExtensionStatus, interpretExtensionCheck } from "../src/cli/commands/desktop.js";
 import { type ReasonixConfig, mergeMcpServerEntry, normalizeMcpConfig } from "../src/config.js";
@@ -360,6 +361,47 @@ describe("Playwright connection configuration", () => {
     expect(withPlaywrightWorkspaceProfile(extension)).toBe(extension);
     expect(withPlaywrightWorkspaceProfile(cdp)).toBe(cdp);
     expect(withPlaywrightWorkspaceProfile(remote)).toBe(remote);
+  });
+
+  it("adds an absolute workspace output dir for every mode when a workspace is known", () => {
+    const outputDir = `--output-dir=${join("/ws", ".playwright-mcp")}`;
+    const managed = withPlaywrightWorkspaceProfile(
+      {
+        transport: "stdio",
+        name: "playwright",
+        command: "npx",
+        args: ["-y", "@playwright/mcp", "--browser=chrome"],
+      },
+      "/ws",
+    );
+    expect(managed.args).toContain(outputDir);
+
+    const extension = withPlaywrightWorkspaceProfile(
+      {
+        transport: "stdio",
+        name: "playwright",
+        command: "npx",
+        args: ["-y", "@playwright/mcp", "--extension"],
+      },
+      "/ws",
+    );
+    expect(extension.args).toContain(outputDir);
+    expect(extension.args).toContain("--extension");
+  });
+
+  it("replaces a user-supplied --output-dir with the workspace one", () => {
+    const out = withPlaywrightWorkspaceProfile(
+      {
+        transport: "stdio",
+        name: "playwright",
+        command: "npx",
+        args: ["-y", "@playwright/mcp", "--output-dir=elsewhere", "--browser=chrome"],
+      },
+      "/ws",
+    );
+    expect(out.args.filter((arg) => arg.startsWith("--output-dir="))).toEqual([
+      `--output-dir=${join("/ws", ".playwright-mcp")}`,
+    ]);
   });
 
   it("treats an unqualified Playwright server as managed Chrome", () => {

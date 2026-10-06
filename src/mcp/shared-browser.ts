@@ -2,6 +2,7 @@
  *  spec, shared across every tab/workspace — an MCP server is global, not per-tab. */
 
 import { McpClient } from "./client.js";
+import { isPlaywrightSpec } from "./playwright-tooling.js";
 import type { McpClientHost } from "./registry.js";
 import { type McpServerSpec, getMcpServerEnv, getMcpServerHeaders, stableRecord } from "./spec.js";
 import { buildTransportFromSpec } from "./transport-from-spec.js";
@@ -10,6 +11,9 @@ export interface SharedClientEntry {
   key: string;
   client: McpClient;
   host: McpClientHost;
+  /** OS cwd the stdio child was spawned with (a global client's is fixed by its
+   *  first acquirer); tools resolve the cwd-relative paths they report on it. */
+  cwd: string | undefined;
   /** Number of tab runtimes currently bridging this client. */
   refCount: number;
 }
@@ -98,14 +102,19 @@ export class SharedClientRegistry {
       cwd: opts.workspaceDir,
       ...(opts.headersResolver ? { headersResolver: opts.headersResolver } : {}),
     });
-    // Global client — not bound to any single workspace, so it advertises no roots.
-    const client = new McpClient({ transport });
+    // StdioTransport defaults the child cwd to process.cwd() when workspaceDir is
+    // absent, so record the same value the OS actually used.
+    const cwd = spec.transport === "stdio" ? (opts.workspaceDir ?? process.cwd()) : undefined;
+    // A Playwright server resolves relative paths and its default output dir against
+    // a client root, so advertise the workspace for it; other servers advertise none.
+    const rootDir = isPlaywrightSpec(spec) ? opts.workspaceDir : undefined;
+    const client = new McpClient({ transport, ...(rootDir ? { workspaceDir: rootDir } : {}) });
     try {
       await client.initialize({ signal: opts.signal });
     } catch (err) {
       await client.close().catch(() => undefined);
       throw err;
     }
-    return { key, client, host: { client }, refCount: 0 };
+    return { key, client, host: { client }, cwd, refCount: 0 };
   }
 }

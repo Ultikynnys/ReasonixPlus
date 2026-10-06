@@ -68,6 +68,10 @@ export interface BridgeOptions {
     args: Record<string, unknown>,
     ctx?: ToolCallContext,
   ) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>;
+  /** Optional post-processing of the flattened result text before it is returned.
+   *  Lets a bridge surface facts the server omits (e.g. the absolute on-disk path
+   *  of a file a Playwright tool wrote relative to the server cwd). */
+  transformResult?: (toolName: string, text: string, args: Record<string, unknown>) => string;
 }
 
 /** Mutable holder so `/mcp reconnect` can swap the underlying client without re-bridging tools. */
@@ -113,6 +117,7 @@ export interface BridgeEnv {
   descriptionSuffix?: string | ((toolName: string) => string | undefined);
   beforeCall?: BridgeOptions["beforeCall"];
   transformArgs?: BridgeOptions["transformArgs"];
+  transformResult?: BridgeOptions["transformResult"];
   /** Registered (wire) name → real MCP tool name, for the per-tool toggle list
    *  once the wire name is sanitized (`sanitizeWireToolName`). In-process only. */
   bareNames?: Map<string, string>;
@@ -196,7 +201,10 @@ export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string 
           durationMs,
           details: { server: env.serverName, tool: registeredName, ok: true },
         });
-        const text = flattenMcpResult(toolResult, { maxChars: env.maxResultChars });
+        const flat = flattenMcpResult(toolResult, { maxChars: env.maxResultChars });
+        const text = env.transformResult
+          ? env.transformResult(stableTool.name, flat, params)
+          : flat;
         if (env.toolingNotice && !env.toolingNoticeSeen) {
           env.toolingNoticeSeen = true;
           return `${text}\n\n${env.toolingNotice}`;
@@ -286,6 +294,7 @@ export async function bridgeMcpTools(
     descriptionSuffix: opts.descriptionSuffix,
     beforeCall: opts.beforeCall,
     transformArgs: opts.transformArgs,
+    transformResult: opts.transformResult,
     readOnlyTool: opts.readOnlyTool,
     bareNames: new Map(),
   };
