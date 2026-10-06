@@ -1,4 +1,4 @@
-/** `/mcp reconnect` — open a fresh client, accept identity (always) and append (opt-in), refuse the rest cleanly. */
+/** MCP reconnect — open a fresh client, accept identity (always) and append (opt-in), refuse the rest cleanly. */
 
 import { McpClient } from "./client.js";
 import { classifyToolListDrift } from "./drift.js";

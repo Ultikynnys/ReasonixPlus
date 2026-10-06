@@ -165,14 +165,6 @@ export interface TranslationSchema {
     systemAppendEmpty: string;
     systemAppendFileReadError: string;
   };
-  slash: {
-    [key: string]: {
-      description: string;
-      argsHint?: string;
-      success?: string;
-      unsupported?: string;
-    };
-  };
   app: {
     walkCancelledRemaining: string;
     walkCancelled: string;
@@ -281,6 +273,7 @@ export interface TranslationSchema {
     toolUploadStatus: string;
     harvestStatus: string;
     repeatToolCallWarning: string;
+    repeatedToolFailureWarning: string;
     stormStuck: string;
     stormSuppressed: string;
     emptyResponseRetry: string;
@@ -685,32 +678,6 @@ export interface TranslationSchema {
     pickerFooter: string;
     currentLabel: string;
   };
-  slashSuggestions: {
-    noMatch: string;
-    backspaceHint: string;
-    commandCount: string;
-    commandCountPlural: string;
-    aboveLabel: string;
-    belowLabel: string;
-    advancedHint: string;
-    footerHint: string;
-    groupChat: string;
-    groupSetup: string;
-    groupInfo: string;
-    groupSession: string;
-    groupExtend: string;
-    groupCode: string;
-    groupJobs: string;
-    groupAdvanced: string;
-    groupDetailSetup: string;
-    groupDetailInfo: string;
-    groupDetailChat: string;
-    groupDetailExtend: string;
-    groupDetailSession: string;
-    groupDetailCode: string;
-    groupDetailJobs: string;
-    groupDetailAdvanced: string;
-  };
   atMentions: {
     loading: string;
     entrySingular: string;
@@ -915,13 +882,6 @@ export interface TranslationSchema {
     scrollMore: string;
     scrollPgUp: string;
     scrollCopy: string;
-  };
-  slashArgPicker: {
-    noMatch: string;
-    keepTyping: string;
-    above: string;
-    below: string;
-    footer: string;
   };
   mcpMarketplace: {
     title: string;

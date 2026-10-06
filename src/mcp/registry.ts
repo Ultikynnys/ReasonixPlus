@@ -74,7 +74,7 @@ export interface BridgeOptions {
   transformResult?: (toolName: string, text: string, args: Record<string, unknown>) => string;
 }
 
-/** Mutable holder so `/mcp reconnect` can swap the underlying client without re-bridging tools. */
+/** Mutable holder so an MCP reconnect can swap the underlying client without re-bridging tools. */
 export interface McpClientHost {
   client: McpClient;
 }
@@ -257,7 +257,7 @@ async function waitForReady(
   await withDeadline(
     () => ready,
     timeoutMs,
-    `MCP server "${serverName}" still handshaking after ${timeoutMs}ms: try /mcp reconnect or check the server logs.`,
+    `MCP server "${serverName}" still handshaking after ${timeoutMs}ms: reconnect it from the MCP settings or check the server logs.`,
     signal,
   );
 }

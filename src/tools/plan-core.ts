@@ -105,7 +105,7 @@ function registerSubmitPlan(registry: ToolRegistry, opts: PlanToolOptions): void
         },
         summary: {
           type: "string",
-          description: "Optional ~80-char plan title for the picker header and /plans listings.",
+          description: "Optional ~80-char plan title for the picker header and the plans list.",
         },
       },
       required: ["plan"],

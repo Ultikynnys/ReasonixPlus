@@ -779,7 +779,7 @@ export function registerSubagentTool(
   return parentRegistry;
 }
 
-/** Plan-mode state propagates — a subagent spawned under `/plan` MUST NOT escape it. */
+/** Plan-mode state propagates — a subagent spawned in plan mode MUST NOT escape it. */
 // Registry forks inherit the policy but start with fresh counters, preserving session-local limits.
 export function forkRegistryExcluding(
   parent: ToolRegistry,

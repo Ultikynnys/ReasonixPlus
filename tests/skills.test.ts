@@ -334,7 +334,7 @@ describe("SkillStore", () => {
     });
   });
 
-  describe("create() — /skill new scaffold (#366)", () => {
+  describe("create() — new-skill scaffold (#366)", () => {
     it("writes a project-scope stub when projectRoot is set", () => {
       const store = new SkillStore({ homeDir: home, projectRoot, disableBuiltins: true });
       const r = store.create("frontend-writer", "project");
@@ -875,7 +875,7 @@ describe("Built-in skills", () => {
     expect(sec?.runAs).toBe("subagent");
     expect(sec?.body).toMatch(/injection/i);
     expect(sec?.body).toMatch(/CRITICAL|critical/);
-    // /test is INLINE on purpose — parent must see the proposed edits.
+    // The test skill is INLINE on purpose — parent must see the proposed edits.
     const test = store.read("test");
     expect(test?.runAs).toBe("inline");
     expect(test?.body).toMatch(/run_command/);
@@ -903,7 +903,7 @@ describe("Built-in skills", () => {
     expect(out).toContain("research [subagent]");
     expect(out).toContain("review [subagent]");
     expect(out).toContain("security-review [subagent]");
-    // /test is inline → no subagent tag
+    // The test skill is inline → no subagent tag
     expect(out).toContain("test:");
     expect(out).not.toContain("test [subagent]");
   });

@@ -293,6 +293,59 @@ describe("CacheFirstLoop (non-streaming)", () => {
     expect(loop.stats.turns.length).toBe(2); // two model round-trips
   });
 
+  it("stops calling a tool after five consecutive failures and keeps the turn alive", async () => {
+    // Distinct args each call, so the identical-args repeat guard never trips —
+    // only the failure guard can catch this, which is the whole point.
+    const failingCall = (id: string, n: number): FakeResponseShape => ({
+      content: "",
+      tool_calls: [
+        { id, type: "function", function: { name: "flaky", arguments: JSON.stringify({ n }) } },
+      ],
+    });
+    // Six attempts at the same tool; the sixth is suppressed by the guard, after
+    // which the model gets a chance to answer instead of the turn dying.
+    const client = makeClient([
+      failingCall("c1", 1),
+      failingCall("c2", 2),
+      failingCall("c3", 3),
+      failingCall("c4", 4),
+      failingCall("c5", 5),
+      failingCall("c6", 6),
+      { content: "switched approach and answered" },
+    ]);
+
+    let invocations = 0;
+    const tools = new ToolRegistry();
+    tools.register({
+      name: "flaky",
+      description: "always throws",
+      parameters: { type: "object", properties: { n: { type: "integer" } } },
+      fn: async () => {
+        invocations++;
+        throw new Error("boom");
+      },
+    });
+
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: tools.specs() }),
+      tools,
+      stream: false,
+    });
+
+    const events: LoopEvent[] = [];
+    for await (const ev of loop.step("go")) events.push(ev);
+
+    // The guard stopped the tool after five failures — the sixth call never ran.
+    expect(invocations).toBe(5);
+    // ...and it steered rather than ending the conversation.
+    expect(
+      events.some((ev) => ev.role === "warning" && /failing over and over/.test(ev.content)),
+    ).toBe(true);
+    const finals = events.filter((ev) => ev.role === "assistant_final");
+    expect(finals.at(-1)?.content).toContain("switched approach and answered");
+  });
+
   it("dispatches an edit tool accidentally emitted as Markdown and hides the raw block", async () => {
     const markdownCall = [
       "Applying the change.",
@@ -1591,7 +1644,7 @@ describe("CacheFirstLoop (non-streaming)", () => {
     expect(loop.log.length).toBeLessThan(4);
   });
 
-  it("compactHistoryWithEvents yields the same card lifecycle as auto folds (user /compact path)", async () => {
+  it("compactHistoryWithEvents yields the same card lifecycle as auto folds (user compaction path)", async () => {
     const responses: FakeResponseShape[] = [
       { content: "User explored auth and billing modules; landed on session refactor plan." },
     ];

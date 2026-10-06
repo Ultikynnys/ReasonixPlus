@@ -402,7 +402,7 @@ export function raceLoopStep(
 // host closes the generator fire-and-forget, so it keeps owning the loop's
 // _compacting lock until it commits or fails open at its scaled deadline.
 // Starting a new turn while the lock is held would run the fold and the new
-// message concurrently on the same log. The /compact handler refuses that
+// message concurrently on the same log. The compaction handler refuses that
 // overlap outright, user turns must wait instead. Bounded by the fold's own
 // deadline; abort-aware so Stop / switch during the wait cancels the pending
 // turn before any request goes out. Exported for tests.
@@ -4105,7 +4105,7 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
       const billing = subagentBillingFor(model);
       return { kind: billing.kind, provider: billing.provider };
     },
-    // Live thunk (not a snapshot) so a mid-session Shift+Tab / /mode flip
+    // Live thunk (not a snapshot) so a mid-session Shift+Tab mode flip
     // stops the iteration cap from pausing the turn in yolo.
     getEditMode: () => loadEditMode(),
     hooks: tab.hooks,
@@ -4925,7 +4925,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // the loop's _compacting lock until it settles (commit or fail-open at
     // its scaled deadline). Starting this turn now would run the fold and the
     // new message concurrently on the same log — wait for the lock to clear
-    // first, the same guard /compact uses. Stop / switch during the wait
+    // first, the same guard compaction uses. Stop or switch during the wait
     // cancels before any request goes out.
     await waitForCompactionIdle(rt.loop, tab.aborter.signal);
     if (tab.aborter.signal.aborted) {
@@ -7800,7 +7800,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       })
         .then(() => emitCtxBreakdown(tab))
         .catch((err) => {
-          emit({ type: "$error", message: `/compact failed: ${(err as Error).message}` }, tab.id);
+          emit({ type: "$error", message: `compaction failed: ${(err as Error).message}` }, tab.id);
         })
         .finally(() => {
           if (tab.manualCompaction === task) tab.manualCompaction = null;
@@ -7897,7 +7897,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             (typeof reply.content === "string" ? reply.content.trim() : "") || "(no answer)";
           emit({ type: "$btw_result", question, answer }, tab.id);
         } catch (err) {
-          emit({ type: "$error", message: `/btw failed: ${(err as Error).message}` }, tab.id);
+          emit(
+            { type: "$error", message: `side question failed: ${(err as Error).message}` },
+            tab.id,
+          );
         }
       })();
       return;

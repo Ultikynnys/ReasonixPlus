@@ -563,19 +563,27 @@ button:disabled {
   pointer-events: none;
 }
 
+/* One wide, grabbable scrollbar everywhere the UI scrolls. Individual
+   scroll containers must not re-declare the width or thumb; ones that
+   deliberately hide their bar opt out with `scrollbar-width: none` plus
+   `::-webkit-scrollbar { display: none }`. */
 ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 16px;
+  height: 16px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  background-color: var(--border);
   border-radius: 999px;
+  transition: border-width 150ms, background-color 200ms;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--border-strong);
+  border-width: 0;
+  background-color: var(--border-strong);
 }
 
 /* ---------- APP SHELL ---------- */
@@ -2193,29 +2201,49 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border-color: transparent;
 }
 
+.thread-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Jump-to-top / jump-to-bottom chevrons, rendered only while the transcript
+   actually overflows (see useIsScrollable). The wrap is a flex column of three
+   rows: chevron, scroll container, chevron, so the native scrollbar track
+   physically spans only the middle row and the bare chevron glyphs sit directly
+   above and below the track instead of overlapping it. */
+.thread-rail {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding-right: 5px;
+}
+.thread-scroll-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 150ms, color 150ms;
+}
+.thread-scroll-btn:hover {
+  opacity: 1;
+  color: var(--fg);
+}
 .thread {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 28px 0 40px;
   margin-right: 5px;
+  padding: 28px 0 40px;
   scroll-padding-bottom: 24px;
-}
-.thread::-webkit-scrollbar {
-  width: 8px;
-}
-.thread::-webkit-scrollbar-thumb {
-  background-clip: content-box;
-  border: 2px solid transparent;
-  background-color: var(--border);
-  border-radius: 999px;
-  transition: border-width 150ms, background-color 200ms;
-}
-.thread::-webkit-scrollbar-thumb:hover {
-  border-width: 0;
-  background-color: var(--border-strong);
-}
-.thread::-webkit-scrollbar-track {
-  background: transparent;
 }
 .thread-inner {
   max-width: var(--thread-max-width, 740px);
@@ -2304,36 +2332,6 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   box-shadow: var(--shadow-sm);
   z-index: 21;
   pointer-events: none;
-}
-
-/* Jump-to-bottom button — shown when user has scrolled up during streaming */
-.thread-jump-bottom {
-  position: sticky;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg);
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  transition: opacity 0.15s, transform 0.15s;
-  opacity: 0.9;
-}
-.thread-jump-bottom:hover {
-  opacity: 1;
-  background: var(--bg-strong);
-  transform: translateX(-50%) scale(1.05);
-}
-[data-theme="light"] .thread-jump-bottom {
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
 }
 
 /* ---------- TURN HEADERS ---------- */
@@ -2687,8 +2685,9 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border-color: var(--success-soft);
 }
 
-/* Per-card copy affordance — pinned to the card's bottom-right, revealed on
-   hover. Mirrors the message-level .msg-actions pill. */
+/* Copy affordance, revealed on hover. On a card it sits OUTSIDE the card in the
+   right gutter (see `.card-wrap` below); on message text it pins to the
+   bottom-right. Mirrors the message-level .msg-actions pill. */
 .card-copy {
   position: absolute;
   bottom: 6px;
@@ -2709,7 +2708,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   transition: opacity 0.12s ease;
   z-index: 6;
 }
-.card:hover .card-copy,
+.card-wrap:hover .card-copy,
 .msg-text:hover .card-copy {
   opacity: 1;
 }
@@ -2720,6 +2719,22 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .card-copy.done {
   color: var(--success);
   border-color: var(--success-soft);
+}
+
+/* The copy button is a SIBLING of the card (see Card in cards.tsx), not a child,
+   so it escapes the card's `overflow: hidden` and sits in the right gutter
+   instead of overlapping the header's chevron on a collapsed compact card.
+   Right-anchored (-31px ≈ the transcript's 32px right padding) so widening to
+   "Copied" grows leftward and never spills past the padding into a scrollbar. */
+.card-wrap {
+  position: relative;
+}
+.card-wrap .card-copy {
+  top: 50%;
+  bottom: auto;
+  right: -31px;
+  left: auto;
+  transform: translateY(-50%);
 }
 
 /* ---------- DIFF STATS ---------- */
@@ -4666,23 +4681,6 @@ html[data-platform="macos"] .startup-loading-overlay {
   overflow-x: auto;
   padding: 4px;
 }
-/* Dropdown scrollbars (chat popup, model picker) are too thin at the global
-   4px — give them a wider, more grabbable thumb. */
-.popup-list::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-.popup-list::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-.popup-list::-webkit-scrollbar-thumb:hover {
-  background: var(--border-strong);
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
 /* model picker — the Ollama group alone can run to hundreds of ids, so the
    menu list gets a bounded height and scrolls instead of overflowing. */
 .model-menu-list {
@@ -4918,17 +4916,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   padding: 12px;
   padding-right: 20px;
 }
-.ctx-body::-webkit-scrollbar {
-  width: 8px;
-}
-.ctx-body::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 999px;
-}
-.ctx-body::-webkit-scrollbar-thumb:hover {
-  background: var(--border-strong);
-}
-
 .ctx-block {
   margin-bottom: 14px;
 }

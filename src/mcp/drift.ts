@@ -1,4 +1,4 @@
-/** Classifies a tool-list drift across an MCP reconnect. Drives the policy in `/mcp reconnect`. */
+/** Classifies a tool-list drift across an MCP reconnect. Drives the reconnect policy. */
 
 import type { ToolSpec } from "../types.js";
 

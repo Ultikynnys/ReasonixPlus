@@ -1423,7 +1423,7 @@ describe("Desktop App reducer — compaction card lifecycle", () => {
     });
   });
 
-  it("creates an assistant message when no assistant exists (idle /compact)", () => {
+  it("creates an assistant message when no assistant exists (idle compaction)", () => {
     const next = reduce(initialState(), {
       t: "incoming",
       event: {

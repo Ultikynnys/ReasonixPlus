@@ -28,7 +28,7 @@ describe("ContextManager fold concurrency + failure surfacing", () => {
 
   it("preserves a tool result appended while the fold summary request is in flight", async () => {
     // The fetch closure appends a tool result mid-request — exactly the
-    // /compact-during-tool-read race: the fold snapshots the log, spends
+    // Compaction-during-tool-read race: the fold snapshots the log, spends
     // seconds summarizing, and the read lands while the summarizer runs.
     const client = new DeepSeekClient({
       apiKey: "sk-test",

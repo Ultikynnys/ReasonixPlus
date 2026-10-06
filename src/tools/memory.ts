@@ -57,7 +57,7 @@ export function registerMemoryTools(
   registry.register({
     name: "remember",
     description:
-      "Save a memory for future sessions: preferences, corrections, non-obvious project facts. Not for transient task state. Loads into the system prompt on next `/new` or launch.",
+      "Save a memory for future sessions: preferences, corrections, non-obvious project facts. Not for transient task state. Loads into the system prompt on the next new session or launch.",
     parameters: {
       type: "object",
       properties: {
@@ -92,7 +92,8 @@ export function registerMemoryTools(
         expires: {
           type: "string",
           enum: ["project_end"],
-          description: "`project_end` lets /memory clear project remove this even at global scope.",
+          description:
+            "`project_end` makes this removable by a project-scope clear even at global scope.",
         },
       },
       required: ["type", "scope", "name", "description", "content"],
@@ -132,7 +133,7 @@ export function registerMemoryTools(
           "",
           "TREAT THIS AS ESTABLISHED FACT for the rest of this session.",
           "The user just told you: don't re-explore the filesystem to re-derive it.",
-          `(Saved to ${path}; pins into the system prompt on next /new or launch.)`,
+          `(Saved to ${path}; pins into the system prompt on the next new session or launch.)`,
         ].join("\n");
       } catch (err) {
         return JSON.stringify({ error: `remember failed: ${(err as Error).message}` });
@@ -158,7 +159,7 @@ export function registerMemoryTools(
       try {
         const existed = store.delete(args.scope, args.name);
         return existed
-          ? `forgot (${args.scope}/${sanitizeMemoryName(args.name)}). Re-load on next /new or launch.`
+          ? `forgot (${args.scope}/${sanitizeMemoryName(args.name)}). Re-load on the next new session or launch.`
           : `no such memory: ${args.scope}/${args.name} (nothing to forget).`;
       } catch (err) {
         return JSON.stringify({ error: `forget failed: ${(err as Error).message}` });

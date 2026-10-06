@@ -1,4 +1,4 @@
-/** CacheFirstLoop hook wiring — confirms the loop honors `hooks` and exposes a swappable list for `/hooks reload`. */
+/** CacheFirstLoop hook wiring — confirms the loop honors `hooks` and exposes a swappable list for a hook reload. */
 
 import { describe, expect, it } from "vitest";
 import type { DeepSeekClient } from "../src/client.js";
@@ -33,7 +33,7 @@ describe("CacheFirstLoop hook wiring", () => {
     expect(loop.hooks).toEqual(hooks);
   });
 
-  it("hooks field is mutable so /hooks reload can swap without rebuild", () => {
+  it("hooks field is mutable so a hook reload can swap without rebuild", () => {
     const loop = new CacheFirstLoop({
       client: makeClient([{ content: "x" }]),
       prefix: new ImmutablePrefix({ system: "s" }),

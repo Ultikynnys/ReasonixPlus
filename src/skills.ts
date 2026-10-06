@@ -503,7 +503,7 @@ function parseRunAs(
   return "inline";
 }
 
-/** Stub markdown for `/skill new` — minimal frontmatter + scaffolding the user fills in. */
+/** Stub markdown for a new skill — minimal frontmatter + scaffolding the user fills in. */
 function skillStubBody(name: string): string {
   return `---
 name: ${name}
@@ -552,7 +552,7 @@ export function applySkillsIndex(basePrompt: string, opts: SkillStoreOptions = {
     "",
     "# Skills: playbooks you can invoke",
     "",
-    'One-liner index. Each entry is either a built-in or a user-authored playbook. Call `run_skill({ name: "<skill-name>", arguments: "<task>" })`: the `name` is JUST the skill identifier (e.g. `"explore"`), NOT the `[subagent]` tag that appears after it. Entries tagged `[subagent]` spawn an **isolated subagent**, whose tool calls and reasoning never enter your context, only its final answer does. Use subagent skills for tasks that would otherwise flood your context (deep exploration, multi-step research, anything where you only need the conclusion). Plain skills are inlined: their body becomes a tool result you read and act on directly. The user can also invoke a skill via `/skill <name>`.',
+    'One-liner index. Each entry is either a built-in or a user-authored playbook. Call `run_skill({ name: "<skill-name>", arguments: "<task>" })`: the `name` is JUST the skill identifier (e.g. `"explore"`), NOT the `[subagent]` tag that appears after it. Entries tagged `[subagent]` spawn an **isolated subagent**, whose tool calls and reasoning never enter your context, only its final answer does. Use subagent skills for tasks that would otherwise flood your context (deep exploration, multi-step research, anything where you only need the conclusion). Plain skills are inlined: their body becomes a tool result you read and act on directly. The user can also invoke a skill by name.',
     "",
     "```",
     truncated,
@@ -661,7 +661,7 @@ Threat model (flag with severity):
 - Missing rate limiting on a credential / token endpoint.
 - Cross-origin / cookie-flag issues (missing \`Secure\` / \`HttpOnly\` / \`SameSite\`).
 
-Things to NOT pile on (out of scope here: the regular /review covers them):
+Things to NOT pile on (out of scope here: the separate review skill covers them):
 - Style, formatting, naming.
 - Performance, refactor opportunities, test coverage gaps that aren't security-relevant.
 - "Should be a constant" / "extract this helper": irrelevant to ship-blocking.
@@ -677,7 +677,7 @@ ${TUI_FORMATTING_RULES}
 
 The 'task' the parent gave you names what to review. Stay on it; don't redesign the feature.`;
 
-const BUILTIN_TEST_BODY = `You are running as the parent agent: this skill is INLINED, not a subagent. The user invoked /test (or asked you to "run the tests and fix failures"). Your job: run the project's test suite, diagnose any failure, propose fixes as SEARCH/REPLACE edit blocks, then re-run. Repeat until green or you hit a wall you should escalate.
+const BUILTIN_TEST_BODY = `You are running as the parent agent: this skill is INLINED, not a subagent. The user asked you to run the tests and fix failures. Your job: run the project's test suite, diagnose any failure, propose fixes as SEARCH/REPLACE edit blocks, then re-run. Repeat until green or you hit a wall you should escalate.
 
 How to operate:
 
@@ -775,7 +775,7 @@ const BUILTIN_SKILLS: readonly Skill[] = Object.freeze([
   Object.freeze<Skill>({
     name: "test",
     description:
-      "Run the project's test suite, diagnose failures, propose SEARCH/REPLACE fixes, re-run until green (or stop after 2 fix attempts on the same failure). Inlined: runs in the parent loop so you see the edit blocks and can /apply them. Detects npm/pnpm/yarn/pytest/go/cargo.",
+      "Run the project's test suite, diagnose failures, propose SEARCH/REPLACE fixes, re-run until green (or stop after 2 fix attempts on the same failure). Inlined: runs in the parent loop so you see the edit blocks and can apply them directly. Detects npm/pnpm/yarn/pytest/go/cargo.",
     body: BUILTIN_TEST_BODY,
     ...BUILTIN_SKILL_BASE,
     runAs: "inline",

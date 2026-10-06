@@ -133,12 +133,12 @@ export interface SessionMeta {
    *  token-priced APIs, plan-window % for quota APIs). Never converted between
    *  providers. Keyed by provider id ("deepseek" | "openai" | "ollama" | "gemini"). */
   costByProvider?: Record<string, SessionProviderCost>;
-  /** Cumulative cache hit / miss tokens across the session — survives resume so /status cache% isn't 0 on a fresh boot. */
+  /** Cumulative cache hit / miss tokens across the session — survives resume so the status cache% isn't 0 on a fresh boot. */
   cacheHitTokens?: number;
   cacheMissTokens?: number;
   /** Cumulative completion (output) tokens across the session. */
   totalCompletionTokens?: number;
-  /** Last turn's promptTokens — lets /status render the context bar before the next turn fires. */
+  /** Last turn's promptTokens — lets the status line render the context bar before the next turn fires. */
   lastPromptTokens?: number;
   /** Recent per-turn cache evidence. Backward-compatible: absent on sessions created before cache diagnostics. */
   cacheDiagnostics?: CacheDiagnosticEntry[];
@@ -804,7 +804,7 @@ export function rewriteSession(name: string, messages: ChatMessage[]): void {
   sessionDirectoryIndex.invalidate();
 }
 
-/** Rotate the live session folder to `<name>__archive_<ts>` so /new doesn't destroy history. Returns the archive name, or null if there was nothing to archive. */
+/** Rotate the live session folder to `<name>__archive_<ts>` so a new session doesn't destroy history. Returns the archive name, or null if there was nothing to archive. */
 export function archiveSession(name: string): string | null {
   const livePath = messagesPathForRead(name);
   if (!existsSync(livePath)) return null;

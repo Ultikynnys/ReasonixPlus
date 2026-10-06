@@ -619,7 +619,7 @@ export class ContextManager {
       summary.reasoningContent,
     );
     // Merge-at-commit: the summarizer call can run for seconds while a
-    // user-triggered /compact races an in-flight tool dispatch (the desktop
+    // user-triggered compaction races an in-flight tool dispatch (the desktop
     // compact_history IPC has no busy gate on the loop). A wholesale
     // replacement would clobber any message appended to the live log after
     // the snapshot — e.g. a tool result that landed mid-fold — orphaning it
@@ -627,7 +627,7 @@ export class ContextManager {
     // append-only detector: appends push in place, compactInPlace swaps.
     const liveEntries = this.deps.log.entries;
     if (liveEntries !== snapshotEntries) {
-      // The log was REPLACED mid-summary (a concurrent compaction, /clear, or
+      // The log was REPLACED mid-summary (a concurrent compaction, a clear, or
       // recovery path swapped the array). The snapshot boundary no longer
       // describes the live log — applying the fold would resurrect the
       // pre-replacement head and clobber whoever won the race. Refuse to

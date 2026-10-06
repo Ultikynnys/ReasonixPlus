@@ -1,5 +1,5 @@
 /** Loop-level cache invariant: consecutive model requests extend the previous request by
- *  appended messages only. Folds, /clear, and tool-set changes are deliberate misses, exempt. */
+ *  appended messages only. Folds, clears, and tool-set changes are deliberate misses, exempt. */
 
 import { describe, expect, it } from "vitest";
 import { CacheFirstLoop } from "../src/loop.js";

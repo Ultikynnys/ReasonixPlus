@@ -50,6 +50,11 @@ export const I = {
       <path d="m6 9 6 6 6-6" />
     </Ic>
   ),
+  chevU: (p: IconProps) => (
+    <Ic {...p}>
+      <path d="m6 15 6-6 6 6" />
+    </Ic>
+  ),
   chevR: (p: IconProps) => (
     <Ic {...p}>
       <path d="m9 6 6 6-6 6" />

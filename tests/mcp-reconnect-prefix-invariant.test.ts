@@ -1,4 +1,4 @@
-/** Pins down the cache-prefix claims in RFC #110 (`/mcp reconnect <name>`). */
+/** Pins down the cache-prefix claims in RFC #110 (MCP reconnect). */
 
 import { describe, expect, it } from "vitest";
 import { ImmutablePrefix } from "../src/memory/runtime.js";

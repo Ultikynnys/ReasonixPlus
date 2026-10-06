@@ -73,7 +73,7 @@ describe("event-log replay round-trip", () => {
     expect(projections.session.currentTurn).toBe(1);
   });
 
-  it("user /compact replays as compaction card + session.compacted — the conversation view is replaced", async () => {
+  it("user compaction replays as compaction card + session.compacted — the conversation view is replaced", async () => {
     const path = join(dir, "fold.events.jsonl");
     const sink = openEventSink(path);
     const eventizer = new Eventizer();
@@ -87,7 +87,7 @@ describe("event-log replay round-trip", () => {
     ))
       sink.append(out);
 
-    // User-triggered /compact runs idle: the loop yields the card pair and
+    // User-triggered compaction runs idle: the loop yields the card pair and
     // snapshots the post-fold log; the eventizer must emit session.compacted
     // so replay sees the REPLACED conversation, not the pre-fold one.
     const replacement = [
@@ -195,7 +195,7 @@ describe("event-log replay round-trip", () => {
     const sink = openEventSink(path);
     const eventizer = new Eventizer();
 
-    // Turn 1: exchange that a /retry will drop (last user message + answer).
+    // Turn 1: exchange that a retry will drop (last user message + answer).
     sink.append(eventizer.emitSessionOpened(0, "retry", 0));
     sink.append(eventizer.emitUserMessage(1, "first ask"));
     for (const out of eventizer.consume(
@@ -205,7 +205,7 @@ describe("event-log replay round-trip", () => {
       sink.append(out);
     sink.append(eventizer.emitUserMessage(2, "second ask"));
 
-    // Desktop /retry: loop truncates, handler emits the kernel replacement —
+    // Desktop retry: loop truncates, handler emits the kernel replacement —
     // replay must see the kept log only, with the dropped exchange gone.
     const kept = [{ role: "user", content: "first ask" }];
     sink.append(eventizer.emitSessionRetracted(2, "retry", 3, 1, kept));

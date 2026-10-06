@@ -26,22 +26,22 @@ describe("desktop abort draft restore", () => {
     ).toBe("rewrite everything");
   });
 
-  it("records the slash command text for skill runs", () => {
+  it("records the typed text for skill runs", () => {
     expect(
       nextAbortDraftCandidate(null, {
         type: "record",
         source: "skill_run",
-        text: "/review src/App.tsx",
+        text: "review src/App.tsx",
       }),
-    ).toBe("/review src/App.tsx");
+    ).toBe("review src/App.tsx");
   });
 
-  it("does not record /btw side questions as abort draft candidates", () => {
+  it("does not record btw side questions as abort draft candidates", () => {
     expect(
       nextAbortDraftCandidate("stale", {
         type: "record",
         source: "btw",
-        text: "/btw what is the status?",
+        text: "what is the status?",
       }),
     ).toBeNull();
   });

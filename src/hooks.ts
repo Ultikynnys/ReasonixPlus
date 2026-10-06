@@ -35,7 +35,7 @@ export interface HookConfig {
   match?: string;
   /** Shell command to run. Spawned through the platform shell. */
   command: string;
-  /** Optional human description — surfaced in `/hooks`. */
+  /** Optional human description — surfaced in the hooks list. */
   description?: string;
   /** Per-hook timeout override in ms. */
   timeout?: number;
@@ -48,7 +48,7 @@ export interface HookSettings {
   hooks?: Partial<Record<HookEvent, HookConfig[]>>;
 }
 
-/** A loaded hook with its origin scope baked in (used for ordering and `/hooks`). */
+/** A loaded hook with its origin scope baked in (used for ordering and display). */
 export interface ResolvedHook extends HookConfig {
   event: HookEvent;
   scope: HookScope;

@@ -132,4 +132,54 @@ describe("StormBreaker", () => {
       expect(sb.inspect(call("edit_file", "{}")).suppress).toBe(true);
     });
   });
+
+  describe("repeated-failure guard", () => {
+    it("trips after five consecutive failures of the same tool", () => {
+      const sb = new StormBreaker(6, 3);
+      for (let i = 0; i < 5; i++) sb.noteResult("web_search", true);
+      const verdict = sb.inspect(call("web_search", '{"query":"x"}'));
+      expect(verdict.suppress).toBe(true);
+      expect(verdict.kind).toBe("failure");
+      expect(verdict.reason).toMatch(/failed 5 times in a row/);
+    });
+
+    it("does not trip below the limit, even with different args each call", () => {
+      const sb = new StormBreaker(6, 3);
+      for (let i = 0; i < 4; i++) {
+        sb.noteResult("web_search", true);
+        expect(sb.inspect(call("web_search", `{"query":"q${i}"}`)).suppress).toBe(false);
+      }
+    });
+
+    it("a success by the same tool resets the run", () => {
+      const sb = new StormBreaker(6, 3);
+      for (let i = 0; i < 4; i++) sb.noteResult("web_search", true);
+      sb.noteResult("web_search", false);
+      for (let i = 0; i < 4; i++) sb.noteResult("web_search", true);
+      expect(sb.inspect(call("web_search", "{}")).suppress).toBe(false);
+    });
+
+    it("a different tool taking over resets the run", () => {
+      const sb = new StormBreaker(6, 3);
+      for (let i = 0; i < 5; i++) sb.noteResult("web_search", true);
+      sb.noteResult("read_file", false);
+      expect(sb.inspect(call("web_search", "{}")).suppress).toBe(false);
+    });
+
+    it("applies to storm-exempt tools too — a read that keeps erroring is still stuck", () => {
+      const exempt = new Set(["read_file"]);
+      const sb = new StormBreaker(6, 3, undefined, (c) => exempt.has(c.function?.name ?? ""));
+      for (let i = 0; i < 5; i++) sb.noteResult("read_file", true);
+      const verdict = sb.inspect(call("read_file", '{"path":"/x"}'));
+      expect(verdict.suppress).toBe(true);
+      expect(verdict.kind).toBe("failure");
+    });
+
+    it("reset clears the failure run", () => {
+      const sb = new StormBreaker(6, 3);
+      for (let i = 0; i < 5; i++) sb.noteResult("web_search", true);
+      sb.reset();
+      expect(sb.inspect(call("web_search", "{}")).suppress).toBe(false);
+    });
+  });
 });

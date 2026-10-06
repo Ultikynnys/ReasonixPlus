@@ -179,7 +179,7 @@ export interface CacheFirstLoopOptions {
   hookCwd?: string;
   /** PauseGate bridge — defaults to singleton, injectable for tests. */
   confirmationGate?: PauseGate;
-  /** Re-runs the prompt builder (applyMemoryStack / codeSystemPrompt) on /new so REASONIX.md edits take effect without a restart. Accepting a cache miss is the price. */
+  /** Re-runs the prompt builder (applyMemoryStack / codeSystemPrompt) on a new session so REASONIX.md edits take effect without a restart. Accepting a cache miss is the price. */
   rebuildSystem?: () => string;
   /** Host hook fired at the start of every compaction so live background
    *  shells can be force-cancelled before history is replaced. */
@@ -334,6 +334,10 @@ export class CacheFirstLoop {
   }
 
   private _turnSelfCorrected = false;
+  /** Failure-driven self-corrects this turn. Capped at 3 so a model that keeps
+   *  calling a broken tool can't loop forever, while still outlasting the single
+   *  repeat-driven self-correct. */
+  private _failureSteers = 0;
   /** Grace-window size granted when the iter cap fires on a productive turn. Set once per turn, at first fire. */
   private _iterGrace = 0;
   /** True once the cap fired and the grace window latched this turn. The hard stop moves to maxIterPerTurn + _iterGrace. */
@@ -392,7 +396,7 @@ export class CacheFirstLoop {
   }
 
   /** True while a compaction fold is in flight — blocks new tool dispatch.
-   *  Exposed so the host can gate /compact against a cancelled turn's
+   *  Exposed so the host can gate compaction against a cancelled turn's
    *  still-running background fold, avoiding overlapping log rewrites. */
   get isCompacting(): boolean {
     return this._compacting;
@@ -534,7 +538,7 @@ export class CacheFirstLoop {
     return this.context.fold(this.model, { ...opts, userInitiated: opts?.userInitiated ?? true });
   }
 
-  /** User-triggered /compact — same compaction card lifecycle as auto folds,
+  /** User-triggered compaction — same compaction card lifecycle as auto folds,
    *  consumed through the SAME LoopEvent stream as tool / reasoning / shell
    *  actions so every compaction form shares one pipeline. */
   async *compactHistoryWithEvents(opts?: {
@@ -606,7 +610,7 @@ export class CacheFirstLoop {
     this.scratch.reset();
     this._inflight.clear();
     this._abandonedCalls.clear();
-    // Drain leftover steer text — otherwise the first step() after /new
+    // Drain leftover steer text — otherwise the first step() after a new session
     // injects it as a user message and the next turn leaks prior intent.
     this._steerQueue.length = 0;
     this._steerConsumed = false;
@@ -637,7 +641,7 @@ export class CacheFirstLoop {
     return { dropped, archived, systemRebuilt };
   }
 
-  /** `/cwd` follow-through — archives the previous session, drops in-memory state, repoints sessionName, and rebuilds the system prompt against whatever the rebuilder closure now resolves (the caller is expected to have already updated the root the closure reads). */
+  /** Workspace-switch follow-through — archives the previous session, drops in-memory state, repoints sessionName, and rebuilds the system prompt against whatever the rebuilder closure now resolves (the caller is expected to have already updated the root the closure reads). */
   switchWorkspace(opts: { sessionName: string }): { dropped: number; archived: string | null } {
     const dropped = this.log.length;
     const archived = this.archiveCurrentSession("switch");
@@ -714,7 +718,7 @@ export class CacheFirstLoop {
     const name = call.function?.name ?? "";
     const args = call.function?.arguments ?? "{}";
     const parsedArgs = safeParseToolArgs(args);
-    // Compaction dispatch lock: while a fold / force-summary / /compact is
+    // Compaction dispatch lock: while a fold / force-summary / a user compaction is
     // running, refuse to start any new tool so nothing begins mid-compaction
     // and gets orphaned by the log replacement.
     if (this._compacting) {
@@ -1109,6 +1113,7 @@ export class CacheFirstLoop {
     // naturally as this turn's tool calls flow through.
     this.repair.resetStorm();
     this._turnSelfCorrected = false;
+    this._failureSteers = 0;
     // Grace state is per-turn too: a paused turn's "continue" starts a fresh
     // turn with the base cap restored (and a fresh grace grant if it stays
     // productive). Keeping the latch would silently raise every later turn's
@@ -1165,7 +1170,7 @@ export class CacheFirstLoop {
     // — sidebar globs .jsonl files, so an unpersisted new session vanishes
     // when the user navigates away before the model responds). A failed
     // first round-trip still leaves the message in the log; the user can
-    // /retry without re-typing.
+    // retry without re-typing.
     const turnStartLogIndex = this.log.length;
     this.appendAndPersist({ role: "user", content: buildUserContent(userInput, this._turnImages) });
     const toolSpecs = this.prefix.tools();
@@ -1213,7 +1218,7 @@ export class CacheFirstLoop {
           const discardTurn = this._discardAbortRequested;
           const stoppedMsg = discardTurn
             ? "[aborted by user (Esc): interrupted turn discarded. Ask again when ready.]"
-            : "[aborted by user (Esc): no summary produced. Ask again or /retry when ready; prior tool output is still in the log.]";
+            : "[aborted by user (Esc): no summary produced. Ask again when ready; prior tool output is still in the log.]";
           if (discardTurn) {
             const beforeDiscard = this.log.length;
             this.discardLogFrom(turnStartLogIndex);
@@ -1910,8 +1915,12 @@ export class CacheFirstLoop {
       // (so the next prompt shows what was attempted), stub tool responses to
       // keep the API contract, and continue the iter — model gets one shot to
       // self-correct before the loud-warning path takes over.
-      if (allSuppressed && !this._turnSelfCorrected) {
+      const failureSuppressed = report.failureSuppressed === true && allSuppressed;
+      const canSelfCorrect =
+        !this._turnSelfCorrected || (failureSuppressed && this._failureSteers < 3);
+      if (allSuppressed && canSelfCorrect) {
         this._turnSelfCorrected = true;
+        if (failureSuppressed) this._failureSteers++;
         this.replaceTailAssistantMessage(
           buildAssistantMessage(assistantContent, toolCalls, callModel, reasoningContent),
         );
@@ -1920,15 +1929,18 @@ export class CacheFirstLoop {
             role: "tool",
             tool_call_id: call.id ?? "",
             name: call.function?.name ?? "",
-            content:
-              "[repeat-loop guard] this call was suppressed because it was identical to a previous call in this turn. Earlier results for it are above — try a meaningfully different approach, or stop and answer if you have enough.",
+            content: failureSuppressed
+              ? "[repeated-failure guard] this call was suppressed because the tool has been failing over and over this turn. Steer to a different tool or approach, or answer with what you already have."
+              : "[repeat-loop guard] this call was suppressed because it was identical to a previous call in this turn. Earlier results for it are above — try a meaningfully different approach, or stop and answer if you have enough.",
           });
         }
         yield {
           turn: this._turn,
           role: "warning",
           severity: "low",
-          content: t("loop.repeatToolCallWarning"),
+          content: failureSuppressed
+            ? t("loop.repeatedToolFailureWarning")
+            : t("loop.repeatToolCallWarning"),
         };
         continue;
       }
@@ -2076,6 +2088,7 @@ export class CacheFirstLoop {
         inflightAdd: (id) => this._inflight.add(id),
         runOne: (call, sig) => this.runOneToolCall(call, sig),
         appendAndPersist: (m) => this.appendAndPersist(m),
+        noteToolResult: (name, failed) => this.repair.noteResult(name, failed),
         abandonedCalls: this._abandonedCalls,
         rateLimitState,
       });
@@ -2118,7 +2131,7 @@ export class CacheFirstLoop {
   }
 
   /** THE one compaction card lifecycle — every compaction form (fold, user
-   *  /compact, forced summary) yields the same compaction_start → compaction_end
+   *  a user compaction, forced summary) yields the same compaction_start → compaction_end
    *  pair; a successful fold snapshots the post-fold log for session.compacted. */
   private async *compactionEvents(
     compactionId: string,

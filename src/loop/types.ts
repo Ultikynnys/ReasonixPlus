@@ -74,7 +74,7 @@ export interface LoopEvent {
   forcedSummary?: boolean;
   /** Stable id pairing compaction_start with its compaction_end — the UI keys the card by it. */
   compactionId?: string;
-  /** Why the fold runs — "user" = /compact, "auto-context-pressure" = loop-internal fold. */
+  /** Why the fold runs — "user" = a user-triggered compaction, "auto-context-pressure" = loop-internal fold. */
   compactionReason?: "user" | "auto-context-pressure";
   /** What kind of compaction runs — "fold" (head folded into a summary message) vs
    *  "force-summary" (log trimmed + summarized in place under the context guard).

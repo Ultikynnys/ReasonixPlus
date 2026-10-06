@@ -76,7 +76,7 @@ export class Eventizer {
       this.lastTurn = ev.turn;
       this.announcedToolIdx.clear();
       // Compaction events can arrive OUTSIDE a model turn — a user-triggered
-      // /compact runs between turns or right after a session load, where a
+      // Compaction runs between turns or right after a session load, where a
       // synthesized model.turn.started would leave a phantom pending assistant
       // card that never settles. Only an auto fold that opens a brand-new turn
       // (the turn-start pre-iter fold) gets the turn-started card.
@@ -198,7 +198,7 @@ export class Eventizer {
         // tool results and assistant finals are. The reducer swaps its message
         // list on this event (the one event that doesn't append).
         //
-        // USER-triggered /compact ONLY. Auto folds (turn-start / post-response)
+        // USER-triggered compaction ONLY. Auto folds (turn-start / post-response)
         // run MID-TURN: swapping the list renumbers every message (user turns
         // become array positions, assistant turns become dense counts) while the
         // loop keeps counting absolute turns, so the rest of the live turn's

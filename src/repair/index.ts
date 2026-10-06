@@ -23,6 +23,9 @@ export interface RepairReport {
   /** Calls restored by splitting concatenated arguments (parallel-call fragments merged by the provider). */
   argsSplitCalls: number;
   stormsBroken: number;
+  /** True when at least one suppression came from the repeated-failure guard
+   *  (same tool failing N times in a row) rather than an identical-args repeat. */
+  failureSuppressed?: boolean;
   notes: string[];
 }
 
@@ -35,6 +38,8 @@ export interface ToolCallRepairOptions {
   isMutating?: IsMutating;
   /** Cheap state-inspection calls that should never trip repeat-loop suppression. */
   isStormExempt?: IsStormExempt;
+  /** Consecutive failures of one tool before the breaker steers away from it. */
+  stormFailureLimit?: number;
 }
 
 export class ToolCallRepair {
@@ -48,7 +53,13 @@ export class ToolCallRepair {
       opts.stormThreshold ?? 3,
       opts.isMutating,
       opts.isStormExempt,
+      opts.stormFailureLimit,
     );
+  }
+
+  /** Report each settled tool result so a repeatedly failing tool trips the guard. */
+  noteResult(name: string | undefined, failed: boolean): void {
+    this.storm.noteResult(name, failed);
   }
 
   /** Called at start of every user turn — fresh intent shouldn't inherit old repetition state. */
@@ -66,6 +77,7 @@ export class ToolCallRepair {
       truncationsFixed: 0,
       argsSplitCalls: 0,
       stormsBroken: 0,
+      failureSuppressed: false,
       notes: [],
     };
 
@@ -195,6 +207,7 @@ export class ToolCallRepair {
       const verdict = this.storm.inspect(call);
       if (verdict.suppress) {
         report.stormsBroken++;
+        if (verdict.kind === "failure") report.failureSuppressed = true;
         if (verdict.reason) report.notes.push(verdict.reason);
         continue;
       }

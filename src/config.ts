@@ -399,7 +399,7 @@ export interface ReasonixConfig {
   mailProvider?: MailProvider;
   /** User-owned Google OAuth client and tokens for the official Gmail MCP server. */
   gmailOAuth?: GmailOAuthCreds;
-  /** Persisted DeepSeek model id — `/model <id>` and the dashboard model picker write through this. */
+  /** Persisted DeepSeek model id — the dashboard model picker writes through this. */
   model?: string;
   /** Explicit per-model provider mapping — the authority when catalogs and discovery can't place an id.
    *  Example: `{ "gpt-4o-custom": { "provider": "openai" } }`. */
@@ -451,7 +451,7 @@ export interface ReasonixConfig {
   theme?: ThemeName | "auto";
   /** Stored as `--mcp`-format strings so one parser handles both flag and config. */
   mcp?: string[];
-  /** Names of servers in `mcp` to skip on bridge — see `/mcp disable <name>`. */
+  /** Names of servers in `mcp` to skip on bridge — each can be toggled in Settings. */
   mcpDisabled?: string[];
   /** Model ids offered by every model picker (composer menus, Settings grid).
    *  Opt-in allow-list — models not listed here are hidden. Global persistent
@@ -1729,7 +1729,7 @@ export function webSearchEngine(path: string = defaultConfigPath()): WebSearchEn
   if (cfg === "zai") return "zai";
   // Any other value (including legacy "mojeek" from configs predating the
   // engine swap) falls through to bing. Read-only — we never rewrite the
-  // user's config, so `/search-engine mojeek` later still rejects loudly.
+  // user's config, so a later engine switch still rejects loudly.
   return "bing";
 }
 
@@ -2415,7 +2415,7 @@ export function ruleModeInForce(path: string = defaultConfigPath()): RuleMode {
   return ruleModeFor(loadEditMode(path));
 }
 
-/** Persist the edit mode so `/mode auto` survives a relaunch. */
+/** Persist the edit mode so the chosen mode survives a relaunch. */
 export function saveEditMode(mode: EditMode, path: string = defaultConfigPath()): void {
   const cfg = readConfig(path);
   cfg.editMode = mode;
@@ -2702,7 +2702,7 @@ export function saveTheme(theme: ThemeName | "auto", path: string = defaultConfi
   writeConfig(cfg, path);
 }
 
-/** Persist the reasoning_effort cap so `/effort high` survives a relaunch. */
+/** Persist the reasoning_effort cap so the chosen cap survives a relaunch. */
 export function saveReasoningEffort(
   effort: ReasoningEffort,
   path: string = defaultConfigPath(),

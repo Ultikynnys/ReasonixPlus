@@ -94,7 +94,7 @@ describe("CacheFirstLoop.inflight", () => {
     expect(loop.inflight.has("call_boom")).toBe(false);
   });
 
-  it("clearLog drains the inflight set so /new can't strand a stale callId", () => {
+  it("clearLog drains the inflight set so a new session can't strand a stale callId", () => {
     const loop = new CacheFirstLoop({
       client: makeClient([{ content: "x" }]),
       prefix: new ImmutablePrefix({ system: "s" }),

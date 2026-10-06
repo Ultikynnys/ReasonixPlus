@@ -292,7 +292,7 @@ export function registerSkillTools(
   registry.register({
     name: "install_skill",
     description:
-      "Author and save a new skill: a reusable playbook future turns invoke via `run_skill`. Runnable immediately (same turn); appears in the pinned Skills index on next `/new` or launch. Skill bodies become prompts for future turns, so write what you'd want your future self to follow.",
+      "Author and save a new skill: a reusable playbook future turns invoke via `run_skill`. Runnable immediately (same turn); appears in the pinned Skills index on the next new session or launch. Skill bodies become prompts for future turns, so write what you'd want your future self to follow.",
     parameters: {
       type: "object",
       properties: {
@@ -376,7 +376,7 @@ export function registerSkillTools(
         scope,
         path: result.path,
         runAs: draft.runAs,
-        note: "Skill is callable right now via run_skill({ name }). It will appear in the pinned Skills index after the next /new or launch.",
+        note: "Skill is callable right now via run_skill({ name }). It will appear in the pinned Skills index after the next new session or launch.",
       });
     },
   });

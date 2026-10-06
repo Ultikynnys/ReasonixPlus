@@ -52,7 +52,7 @@ export interface MemoryEntry {
   createdAt: string;
   /** Explicit per-entry priority; absent → resolve from config default for `type`, else "medium". */
   priority?: MemoryPriority;
-  /** Lifecycle hint. `project_end` → cleared by `/memory clear project`. */
+  /** Lifecycle hint. `project_end` → cleared by a project-memory clear. */
   expires?: MemoryExpires;
 }
 

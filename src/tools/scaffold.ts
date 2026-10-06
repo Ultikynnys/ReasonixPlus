@@ -1,4 +1,4 @@
-/** Agent-facing tools for scaffolding skills + MCP servers from chat. Persists via the same paths the wizard / `/skill new` use. */
+/** Agent-facing tools for scaffolding skills + MCP servers from chat. Persists via the same paths the wizard uses. */
 
 import {
   defaultConfigPath,
@@ -40,7 +40,7 @@ export function registerScaffoldTools(
   registry.register({
     name: "create_skill",
     description:
-      'Scaffold a SKILL.md the user can later invoke via `/skill <name>`. Frontmatter (description / allowed_tools / run_as / model) is filled from structured args here. Use `run_as: "subagent"` for read-and-synthesize playbooks; default inline appends body to parent log. Refuses to overwrite existing skills.',
+      'Scaffold a SKILL.md the user can later invoke via `run_skill`. Frontmatter (description / allowed_tools / run_as / model) is filled from structured args here. Use `run_as: "subagent"` for read-and-synthesize playbooks; default inline appends body to parent log. Refuses to overwrite existing skills.',
     parameters: {
       type: "object",
       properties: {

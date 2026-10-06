@@ -309,6 +309,36 @@ describe("webSearch", () => {
     }
   });
 
+  it("falls back to a keyless engine when the configured backend is unreachable", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      calls.push(String(url));
+      if (calls.length === 1) throw new TypeError("fetch failed");
+      return new Response(twoResultsHtml, { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      const results = await webSearch("q", { engine: "searxng" });
+      expect(results).toHaveLength(2);
+      expect(calls[0]).toContain("localhost:8080");
+      expect(calls[1]).toContain("bing.com");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("surfaces the engine error only after every fallback also fails", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    try {
+      await expect(webSearch("q", { engine: "searxng" })).rejects.toThrow(/Cannot reach/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("returns [] on a legitimately empty 'No results' page", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(

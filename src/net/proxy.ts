@@ -63,7 +63,7 @@ export function normalizeProxyUrl(raw: string): string | null {
 }
 
 export interface NoProxyPattern {
-  /** Raw pattern text, kept for /doctor display. */
+  /** Raw pattern text, kept for the doctor report display. */
   raw: string;
   matches: (host: string) => boolean;
 }
@@ -210,7 +210,7 @@ export function resolveBypassDeepSeekDirect(
   return true;
 }
 
-/** Merge default + env + REASONIX_NO_PROXY + opts.extraNoProxy into one resolved view. Same composition as installProxyIfConfigured so /doctor can show what's actually applied. */
+/** Merge default + env + REASONIX_NO_PROXY + opts.extraNoProxy into one resolved view. Same composition as installProxyIfConfigured so the doctor report can show what's actually applied. */
 export function resolveNoProxy(
   env: NodeJS.ProcessEnv = process.env,
   opts: { extraNoProxy?: readonly string[]; bypassDeepSeekDirect?: boolean } = {},
@@ -270,7 +270,7 @@ export function installProxyIfConfigured(
 
   // Default whitelist always applies; env NO_PROXY, REASONIX_NO_PROXY, and
   // opts.extraNoProxy (config) all layer on top additively. Composition lives
-  // in resolveNoProxy() so /doctor and install can't drift.
+  // in resolveNoProxy() so the doctor report and install can't drift.
   const { all: patterns } = resolveNoProxy(env, {
     extraNoProxy: opts.extraNoProxy,
     bypassDeepSeekDirect: opts.bypassDeepSeekDirect,

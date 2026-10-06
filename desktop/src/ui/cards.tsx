@@ -78,8 +78,10 @@ function OpenFileButton({ path, label }: { path: string; label: string }) {
   );
 }
 
-/** Hover-revealed copy affordance pinned to a card's bottom-right. Copies the
- *  card's own content (not a whole-turn response); flips to "copied" for ~1.2s. */
+/** Hover-revealed copy affordance. On a card it sits outside the card in the
+ *  right gutter (see `.card-wrap` in styles.css); on message text it pins to the
+ *  bottom-right. Copies the card's own content (not a whole-turn response);
+ *  flips to "copied" for ~1.2s. */
 function CopyButton({ text }: { text: string }) {
   useLang();
   const [copied, setCopied] = useState(false);
@@ -130,24 +132,26 @@ export function Card({
   compact?: boolean;
   children: ReactNode;
   headRight?: ReactNode;
-  /** Content the bottom-right hover copy button copies; empty/omitted renders none. */
+  /** Text the hover copy button (right gutter) copies; empty/omitted renders none. */
   copyText?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className={compact ? "card is-compact" : "card"} data-tone={tone} data-open={open}>
-      <div className="card-head-row">
-        <CardHead
-          icon={icon}
-          kind={kind}
-          name={name}
-          meta={meta}
-          open={open}
-          onToggle={() => setOpen((v) => !v)}
-        />
-        {headRight}
+    <div className="card-wrap">
+      <div className={compact ? "card is-compact" : "card"} data-tone={tone} data-open={open}>
+        <div className="card-head-row">
+          <CardHead
+            icon={icon}
+            kind={kind}
+            name={name}
+            meta={meta}
+            open={open}
+            onToggle={() => setOpen((v) => !v)}
+          />
+          {headRight}
+        </div>
+        {open ? <div className="card-body">{children}</div> : null}
       </div>
-      {open ? <div className="card-body">{children}</div> : null}
       {copyText ? <CopyButton text={copyText} /> : null}
     </div>
   );

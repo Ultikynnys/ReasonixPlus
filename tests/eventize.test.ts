@@ -258,7 +258,7 @@ describe("Eventizer.consume", () => {
     expect(s.id).toBeGreaterThan(u.id);
   });
 
-  it("maps compaction_start / compaction_end into card lifecycle events (user /compact)", () => {
+  it("maps compaction_start / compaction_end into card lifecycle events (user compaction)", () => {
     const e = new Eventizer();
     e.consume(lev({ turn: 1 }), ctx); // burn turn-start
     const start = e.consume(
@@ -320,7 +320,7 @@ describe("Eventizer.consume", () => {
       prunedTokens: 4200,
       droppedFiles: ["src/dead.ts", "src/old.ts"],
     });
-    // User-triggered /compact runs idle — a folded log REPLACES the
+    // User-triggered compaction runs idle — a folded log REPLACES the
     // conversation view, so the kernel records it for replay.
     expect(end[1]).toMatchObject({
       type: "session.compacted",
@@ -377,8 +377,8 @@ describe("Eventizer.consume", () => {
     expect(out.map((k) => k.type)).toEqual(["model.turn.started", "compaction.started"]);
   });
 
-  it("user-triggered /compact never synthesizes model.turn.started (fresh load shape)", () => {
-    // Fresh eventizer = "session just loaded, user hits /compact": lastTurn is
+  it("user-triggered compaction never synthesizes model.turn.started (fresh load shape)", () => {
+    // Fresh eventizer = "session just loaded, user hits compaction": lastTurn is
     // -1 and the compaction's turn is the resumed conversation's — a phantom
     // model.turn.started would leave a pending assistant card that never settles.
     const e = new Eventizer();

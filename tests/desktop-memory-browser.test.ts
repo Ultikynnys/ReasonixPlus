@@ -97,7 +97,7 @@ describe("desktop memory browser", () => {
     expect(entry.type).toBe("feedback");
     expect(entry.priority).toBe("high");
     expect(entry.body).toContain("npm run verify");
-    // Index regenerated so the next /new pins it.
+    // Index regenerated so the next new session pins it.
     expect(store.loadIndex("project")?.content).toContain("verify-first");
   });
 

@@ -77,17 +77,16 @@ export const EN: TranslationSchema = {
     dashboardPortInvalid:
       "▲ ignoring --dashboard-port={value} (must be an integer 1–65535) — falling back to ephemeral",
     dashboardAutoStartFailed:
-      "▲ dashboard auto-start failed ({reason}) — try /dashboard, or pass --no-dashboard to silence",
+      "▲ dashboard auto-start failed ({reason}) — pass --no-dashboard to silence",
     systemAppendHint:
       "Append instructions to the code system prompt. Does NOT replace the default prompt — adds after it.",
     systemAppendFileHint:
       "Append file contents to the code system prompt. Does NOT replace the default prompt. UTF-8, relative to cwd or absolute.",
-    resumedSession:
-      '▸ resumed session "{name}" with {count} prior messages · /new to start fresh · /sessions to manage',
-    newSession: '▸ session "{name}" (new) — auto-saved as you chat · /sessions to rename or delete',
+    resumedSession: '▸ resumed session "{name}" with {count} prior messages',
+    newSession: '▸ session "{name}" (new) — auto-saved as you chat',
     ephemeralSession: "▸ ephemeral chat (no session persistence) — drop --no-session to enable",
     restoredEdits:
-      "▸ restored {count} pending edit block(s) from an interrupted prior run — /apply to commit or /discard to drop.",
+      "▸ restored {count} pending edit block(s) from an interrupted prior run — review and commit or drop them.",
     resumedPlan: "Resumed plan · {when}{summary}",
     tipEditBindings: {
       topic: "edit-gate keybindings",
@@ -103,7 +102,7 @@ export const EN: TranslationSchema = {
           ],
         },
       ],
-      footer: "Current mode shown in the bottom status bar · /keys for the full reference",
+      footer: "Current mode shown in the bottom status bar",
     },
     tipMouseClipboard: {
       topic: "mouse + clipboard",
@@ -124,7 +123,7 @@ export const EN: TranslationSchema = {
           ],
         },
       ],
-      footer: "Run /keys for the full keyboard + mouse reference",
+      footer: "Keyboard + mouse shortcuts are listed in the app",
     },
     keysReference: {
       topic: "Reasonix+ keys + mouse reference",
@@ -260,150 +259,6 @@ export const EN: TranslationSchema = {
     systemAppendFileReadError:
       'Error: cannot read --system-append-file "{filePath}": {errorDetails}\n',
   },
-  slash: {
-    help: { description: "show the full command reference" },
-    status: { description: "current model, flags, context, session" },
-    effort: {
-      description:
-        "reasoning_effort cap (low|medium|high|xhigh|max); high is the safe default for vLLM/Azure",
-      argsHint: "<low|medium|high|xhigh|max>",
-    },
-    model: { description: "switch DeepSeek model id", argsHint: "<id>" },
-    models: { description: "list available models fetched from DeepSeek /models" },
-    theme: {
-      description: "show or persist the terminal theme preference. Bare opens picker.",
-      argsHint: "[auto|dark|light|midnight|deep-blue|high-contrast]",
-    },
-    mcp: { description: "list MCP servers + tools attached to this session" },
-    resource: {
-      description: "browse + read MCP resources (no arg → list URIs; <uri> → fetch contents)",
-      argsHint: "[uri]",
-    },
-    prompt: {
-      description: "browse + fetch MCP prompts (no arg → list names; <name> → render prompt)",
-      argsHint: "[name]",
-    },
-    memory: {
-      description: "show / manage pinned memory (REASONIX.md + ~/.reasonix/memory)",
-      argsHint: "[list|show <name>|save <name> <text>|forget <name>|clear <scope> confirm]",
-    },
-    skill: {
-      description: "list / run user skills (project + custom + global + builtin)",
-      argsHint: "[list|paths|show <name>|<name> [args]]",
-    },
-    hooks: {
-      description: "list active hooks (settings.json under .reasonix/) · reload re-reads from disk",
-      argsHint: "[reload]",
-    },
-    permissions: {
-      description:
-        "show / edit shell allowlist (builtin read-only · per-project: ~/.reasonix/config.json)",
-      argsHint: "[list|add <prefix>|remove <prefix|N>|clear confirm]",
-    },
-    dashboard: {
-      description: "launch the embedded web dashboard (127.0.0.1, token-gated)",
-      argsHint: "[stop]",
-    },
-    update: { description: "show current vs latest version + the shell command to upgrade" },
-    stats: {
-      description:
-        "cross-session cost dashboard (today / week / month / all-time · cache hit · vs Claude)",
-    },
-    cost: {
-      description:
-        "bare → last turn's spend (Usage card); with text → estimate cost of sending it next (worst-case + likely-cache)",
-      argsHint: "[text]",
-    },
-    doctor: { description: "health check (api / config / api-reach / index / hooks / project)" },
-    context: { description: "show context-window breakdown (system / tools / log / input)" },
-    retry: { description: "truncate & resend your last message (fresh sample)" },
-    compact: {
-      description:
-        "narrow oversized tool results + tool-call args in the log; cap at tokens, default 4000",
-      argsHint: "[tokens]",
-    },
-    cwd: {
-      description:
-        "switch the workspace root mid-session — re-points fs / shell / memory tools, reloads project hooks, refreshes the at-mention walker",
-      argsHint: "[path]",
-    },
-    stop: { description: "abort the current model turn (typed alternative to Esc)" },
-    feedback: { description: "open a GitHub issue with diagnostic info copied to clipboard" },
-    about: { description: "project info — version, website, repo, license" },
-    keys: { description: "keyboard + mouse + copy/paste reference" },
-    plans: { description: "list this session's active + archived plans, newest first" },
-    replay: {
-      description: "load an archived plan as a read-only Time Travel snapshot (default: newest)",
-      argsHint: "[N]",
-    },
-    sessions: { description: "list saved sessions (current marked with ▸)" },
-    title: { description: "ask the model to rename this session from the conversation" },
-    setup: { description: "reminds you to reconfigure in Settings" },
-    semantic: {
-      description: "show semantic_search status — built? Ollama installed? how to enable",
-    },
-    clear: { description: "clear visible scrollback only (log/context kept)" },
-    new: { description: "start a fresh conversation (clear context + scrollback)" },
-    loop: {
-      description:
-        "auto-resubmit <prompt> every <interval> until you type something / Esc / /loop stop",
-      argsHint: "<5s..6h> <prompt>  ·  stop  ·  (no args = status)",
-    },
-    exit: { description: "quit the TUI" },
-    init: {
-      description:
-        "scan the project and synthesize a baseline REASONIX.md (model writes; review with /apply). `force` overwrites an existing file.",
-      argsHint: "[force]",
-    },
-    apply: {
-      description:
-        "commit pending edit blocks to disk (no arg → all; `1`, `1,3`, or `1-4` → that subset, rest stay pending)",
-      argsHint: "[N|N,M|N-M]",
-    },
-    discard: {
-      description: "drop pending edit blocks without writing (no arg → all; indices → that subset)",
-      argsHint: "[N|N,M|N-M]",
-    },
-    walk: {
-      description:
-        "step through pending edits one block at a time (git-add-p style: y/n per block, a apply rest, A flip AUTO)",
-    },
-    undo: { description: "roll back the last applied edit batch" },
-    history: { description: "list every edit batch this session (ids for /show, undone markers)" },
-    show: {
-      description: "dump a stored edit diff (omit id for newest non-undone)",
-      argsHint: "[id]",
-    },
-    commit: { description: "git add -A && git commit -m ...", argsHint: '"msg"' },
-    plan: {
-      description: "toggle read-only plan mode (writes bounced until submit_plan + approval)",
-      argsHint: "[on|off]",
-    },
-    mode: {
-      description:
-        "edit-gate: review (queue) · auto (apply+undo) · yolo (apply+auto-shell). Shift+Tab cycles.",
-      argsHint: "[review|auto|yolo]",
-    },
-    jobs: { description: "list background jobs started by run_background" },
-    kill: {
-      description: "stop a background job by id (SIGTERM → SIGKILL after grace)",
-      argsHint: "<id>",
-    },
-    logs: {
-      description: "tail a background job's output (default last 80 lines)",
-      argsHint: "<id> [lines]",
-    },
-    btw: {
-      description:
-        "ask a quick side question — answered from a blank slate, never added to the conversation context",
-      argsHint: "<question>",
-    },
-    "search-engine": {
-      description:
-        "switch web search backend: bing (default), searxng, metaso, tavily, perplexity, exa, brave, ollama, or zai",
-      argsHint: "<bing|searxng|metaso|tavily|perplexity|exa|brave|ollama|zai> [<key>]",
-    },
-  },
   wizard: {
     welcomeTitle: "Welcome to Reasonix+.",
     apiKeyPrompt: "Paste your DeepSeek API key to get started.",
@@ -418,7 +273,7 @@ export const EN: TranslationSchema = {
       "Could not verify this API key right now ({message}). Check your network or try again.",
     apiKeyPreview: "preview: {redacted}",
     themeTitle: "Choose a theme",
-    themeSubtitle: "Preview updates live as you navigate. Change later with /theme.",
+    themeSubtitle: "Preview updates live as you navigate. Change it later in Settings.",
     themeSampleHeading: "Sample",
     themeFooter: "[↑↓] navigate · [Enter] confirm · [Esc] cancel",
     themeCaption: {
@@ -454,7 +309,7 @@ export const EN: TranslationSchema = {
     savedFooter: "[Enter] to exit",
     selectFooter: "[↑↓] navigate · [Enter] confirm · [Esc] cancel",
     stepCounter: "Step {step}/{total} · ",
-    exitHint: "/exit to abort",
+    exitHint: "press Esc to abort",
     apiKeyPlaceholder: "sk-...",
     themeSampleReasoning: "Reasoning",
   },
@@ -552,7 +407,7 @@ export const EN: TranslationSchema = {
       "▸ edit mode: Never Ask, shell, paths and checkpoints auto-run with no prompt; plan and choice cards auto-advance; only Outlook sends wait.",
     editModeAuto:
       "▸ edit mode: Follow Rules — reads and allowlisted commands run immediately; writes and other commands ask first.",
-    editModeReview: "▸ edit mode: review — edits queue for /apply (or y) / /discard (or n)",
+    editModeReview: "▸ edit mode: review — edits queue for approval",
     rejectedEdit: "▸ rejected edit to {path}{context}",
     autoApprovingRest: "▸ auto-approving remaining edits for this turn",
     flippedAutoSession: "▸ flipped to AUTO mode for the rest of the session (persisted)",
@@ -569,9 +424,9 @@ export const EN: TranslationSchema = {
     commandFailed: "! command failed",
     steerInjected: "▸ steering queued — will be added after the current step",
     steerCommandRejected: "▸ commands are disabled while steering a busy turn",
-    btwUsage: "▸ /btw <question> — ask a side question without polluting the conversation context.",
+    btwUsage: "▸ ask a side question without polluting the conversation context.",
     btwHeader: "≫ btw",
-    btwFailed: "/btw failed",
+    btwFailed: "side question failed",
     hookUserPromptSubmit: "UserPromptSubmit hook",
     hookStop: "Stop hook",
     atMentions: "▸ @mentions: {parts}",
@@ -598,32 +453,32 @@ export const EN: TranslationSchema = {
     editHistoryNoCodeMode: "not in code mode",
     editHistoryNoEdits: "no edits recorded this session yet",
     editHistoryNoShowId:
-      "usage: /show [id] [path]   (omit id for newest; path from the per-file summary)",
-    editHistoryIdNotFound: "no edit #{id} — run /history to see valid ids",
+      "show a stored edit diff (omit the id for the newest; path from the per-file summary)",
+    editHistoryIdNotFound: "no edit #{id} — see the edit history for valid ids",
     editHistoryLookupFailed: "unexpected: history lookup failed",
     editHistoryBatchNoFile: 'batch #{id} doesn\'t include "{path}" — files in this batch: {files}',
-    editHistoryNoEdits2: "no edits recorded this session — /history is empty",
+    editHistoryNoEdits2: "no edits recorded this session",
     editHistoryStatusApplied: "applied",
     editHistoryStatusPartial: "PARTIAL",
     editHistoryStatusUndone: "UNDONE",
     editHistoryHelpShow:
-      "/show <id>            \u2192 per-file summary    \u00b7    /show <id> <path>  \u2192 full diff of one file",
+      "show <id>            \u2192 per-file summary    \u00b7    show <id> <path>  \u2192 full diff of one file",
     editHistoryHelpUndo:
-      "/undo                 \u2192 newest non-undone   \u00b7    /undo <id> [path]  \u2192 target a specific batch or file",
-    editHistoryAlreadyReverted: "(already reverted \u2014 /history shows the batch-level status)",
-    editHistoryRevertFile: "/undo {id} {path}  \u2192 revert just this file",
+      "undo                 \u2192 newest non-undone   \u00b7    undo <id> [path]  \u2192 target a specific batch or file",
+    editHistoryAlreadyReverted: "(already reverted)",
+    editHistoryRevertFile: "undo {id} {path}  \u2192 revert just this file",
     mcpFailed: "MCP {name} failed",
     mcpWarn: "MCP {name} warn",
     unknownTheme: "unknown theme: {name}\navailable: {choices}",
     themeSaved: "theme saved: {name}\nactive on next launch: {active}",
     noPendingEdits:
-      "nothing pending \u2014 the model hasn\u2019t proposed edits since the last /apply or /discard.",
+      "nothing pending \u2014 the model hasn\u2019t proposed edits since the last apply or discard.",
     noMatchedApply:
-      "\u25b8 no edits matched those indices \u2014 nothing applied. Use /apply with no args to commit them all.",
+      "\u25b8 no edits matched those indices \u2014 nothing applied. Apply with no selection to commit them all.",
     noPendingDiscard: "nothing pending to discard.",
     noMatchedDiscard: "\u25b8 no edits matched those indices \u2014 nothing discarded.",
     blocksStillPending:
-      "\u25b8 {count} edit block(s) still pending \u2014 /apply or /discard to clear them.",
+      "\u25b8 {count} edit block(s) still pending \u2014 apply or discard to clear them.",
     nothingWritten: ". Nothing was written to disk.",
     discardedCount: "\u25b8 discarded {count} pending edit block(s)",
     noEventsFor: 'no events for session "{name}"',
@@ -643,31 +498,32 @@ export const EN: TranslationSchema = {
   summary: {
     status: "summarizing what was gathered…",
     hallucinatedFallback:
-      "(model emitted fake tool-call markup instead of a prose summary — try /retry with a narrower question, or /think to inspect R1's reasoning)",
+      "(model emitted fake tool-call markup instead of a prose summary — try again with a narrower question)",
     failedAfterReason:
-      "{label} and the fallback summary call failed: {message}. The conversation is intact — try /retry or continue from here. If the iteration cap keeps tripping, raise `maxIterPerTurn` in config or set REASONIX_MAX_ITER.",
+      "{label} and the fallback summary call failed: {message}. The conversation is intact — try again or continue from here. If the iteration cap keeps tripping, raise `maxIterPerTurn` in config or set REASONIX_MAX_ITER.",
   },
   loop: {
-    proArmed: "⇧ /pro armed — this turn runs on deepseek-v4-pro (one-shot · disarms after turn)",
+    proArmed: "⇧ pro armed — this turn runs on deepseek-v4-pro (one-shot · disarms after turn)",
     toolUploadStatus: "tool result uploaded · model thinking before next response…",
     harvestStatus: "extracting plan state from reasoning…",
     repeatToolCallWarning:
       "Caught a repeated tool call — let the model see the issue and retry with a different approach.",
+    repeatedToolFailureWarning:
+      "Caught a tool failing over and over — steered the model to a different approach; the turn continues.",
     stormStuck:
-      "Stopped a stuck retry loop — the model kept calling the same tool with identical args after a self-correction nudge. Try /retry, rephrase, or rule out the underlying blocker.",
+      "Stopped a stuck retry loop — the model kept calling the same tool with identical args after a self-correction nudge. Try again, rephrase, or rule out the underlying blocker.",
     stormSuppressed: "Suppressed {count} repeated tool call(s) — same name + args fired 3+ times.",
     emptyResponseRetry:
       "The model returned an empty response (no text, no reasoning, no tool calls) — retrying once.",
     emptyResponseGiveUp:
-      "The model returned an empty response twice in a row — ending the turn without an answer. Try again or /retry.",
+      "The model returned an empty response twice in a row — ending the turn without an answer. Try again.",
     emptyResponseGiveUpReason:
-      "The model did not produce an answer — {reason}. Try again, switch models, or /retry.",
-    stoppedNoAnswer:
-      "The turn ended without producing an answer. Try again, switch models, or /retry.",
+      "The model did not produce an answer — {reason}. Try again or switch models.",
+    stoppedNoAnswer: "The turn ended without producing an answer. Try again or switch models.",
     thinkingOnlyRetry:
       "The model returned thinking without an answer or tool call: retrying once so it can finish.",
     thinkingOnlyGiveUp:
-      "The model produced only thinking without an answer or tool call: ending the turn without an answer. Try again or /retry.",
+      "The model produced only thinking without an answer or tool call: ending the turn without an answer. Try again.",
     providerErrorRetry:
       "The model provider returned an error before producing a visible response — retrying automatically.",
     providerServerErrorRetry:
@@ -677,7 +533,7 @@ export const EN: TranslationSchema = {
     truncatedContinue:
       "The model hit its output-token limit mid-response — continuing generation from where it stopped.",
     truncatedGiveUp:
-      "The model kept hitting its output-token limit after {max} continuations — ending the turn with the partial response. Raise the per-turn output cap (/max-tokens) or switch model.",
+      "The model kept hitting its output-token limit after {max} continuations — ending the turn with the partial response. Raise the per-turn output cap in Settings or switch model.",
     prematureStopNudge:
       "Your previous message stopped mid-task without completing the work. If the task is now complete, end your reply with the proper final completion message summarizing what was done. If it is not complete, continue working right now with your tools — do not stop halfway.",
     prematureStopWarning:
@@ -698,7 +554,7 @@ export const EN: TranslationSchema = {
     reasoningLoopStopping: "Stopping this turn so you can redirect from a fresh recap.",
     repeatedPatternLabel: "Repeated pattern:",
     forcingSummary:
-      "context {before}/{ctxMax} ({pct}%) — forcing summary from what was gathered. Run /compact, /clear, or /new to reset.",
+      "context {before}/{ctxMax} ({pct}%) — forcing summary from what was gathered. Start a new chat to reset.",
     iterLimitReached:
       "Reached the {max}-iteration cap for this turn — forcing a summary of what was gathered. Raise with `maxIterPerTurn` config or REASONIX_MAX_ITER, or ask again in a fresh turn.",
     iterLimitGrace:
@@ -721,7 +577,7 @@ export const EN: TranslationSchema = {
     deepseekRequest:
       "Bad request / Invalid parameter (DeepSeek): {inner}. Check the selected DeepSeek model and request parameters.",
     deepseekContext:
-      "Context overflow (DeepSeek): session history is {requested}, past the model limit (V4: 1M tokens; legacy: 131k). Start a new conversation, reduce attached/tool content, or use /sessions to remove the oversized session.",
+      "Context overflow (DeepSeek): session history is {requested}, past the model limit (V4: 1M tokens; legacy: 131k). Start a new conversation or reduce attached/tool content.",
     deepseekTimeout:
       "DeepSeek request timed out: {inner}. Check https://status.deepseek.com and retry.",
     deepseekRate:
@@ -880,7 +736,7 @@ export const EN: TranslationSchema = {
         "  #g <note>                append <note> to ~/.reasonix/REASONIX.md (global, never committed).",
       helpMemoryGlobalEx: "                             Example: #g always run pnpm not npm",
       helpMemoryPinBoth:
-        "                             Both pin into every future session's prefix. Faster than /memory.",
+        "                             Both pin into every future session's prefix.",
       helpMemoryEscape:
         "                             Use `\\#text` to send a literal `#text` to the model.",
       helpFileTitle: "File references (code mode):",
@@ -899,34 +755,32 @@ export const EN: TranslationSchema = {
       helpSessionNone: "  sessions persist automatically",
       retryNone: "nothing to retry — no prior user message in this session's log.",
       retryInfo: '▸ retrying: "{preview}"',
-      loopTuiOnly: "/loop is only available in the interactive TUI (not in run/replay).",
+      loopTuiOnly: "Looping is only available in the interactive app (not in run/replay).",
       loopStopped: "▸ loop stopped.",
       loopNoActive: "no active loop to stop.",
-      loopNoActiveHint:
-        "no active loop. Start one with `/loop <interval> <prompt>` (e.g. /loop 30s npm test).\nCancels on: /loop stop · Esc · /clear /new · any user-typed prompt.",
+      loopNoActiveHint: "no active loop. Cancels on Esc or any user-typed prompt.",
       loopStarted:
-        '▸ loop started — re-submitting "{prompt}" every {duration}. Type anything (or /loop stop) to cancel.',
-      keysNeedsTui: "/keys needs a TUI context (postKeys wired).",
+        '▸ loop started — re-submitting "{prompt}" every {duration}. Type anything to cancel.',
+      keysNeedsTui: "API-key management needs an app context (postKeys wired).",
       aboutHeader: "Reasonix+ v{version} — a cache-first multi-provider coding agent",
       aboutWebsiteLabel: "Website",
       aboutRepoLabel: "GitHub ",
       aboutLicenseLabel: "License",
-      unknownCommand: "unknown command: /{cmd} — did you mean {list}?",
-      unknownCommandShort: "unknown command: /{cmd}  (try /help)",
+      unknownCommand: "unknown command: {cmd} — did you mean {list}?",
+      unknownCommandShort: "unknown command: {cmd}",
     },
     sessions: {
-      titleUnavailable: "/title is only available in an active persisted TUI session.",
+      titleUnavailable: "Titling is only available in an active persisted session.",
       titleStarted: "▸ naming session…",
       titleFailed: "▸ session title failed: {reason}",
     },
     admin: {
-      doctorNeedsTui: "/doctor needs a TUI context (postDoctor wired).",
+      doctorNeedsTui: "Diagnostics need an app context (postDoctor wired).",
       doctorRunning: "⚕ Doctor — running health checks…",
       hooksReloadUnavailable:
-        "/hooks reload is not available in this context (no reload callback wired).",
+        "Hook reload is not available in this context (no reload callback wired).",
       hooksReloaded: "▸ reloaded hooks · {count} active",
-      hooksUsage:
-        "usage: /hooks            list active hooks\n       /hooks reload     re-read settings.json files",
+      hooksUsage: "list active hooks; reload re-reads settings.json files",
       hooksNone: "no hooks configured.",
       hooksDropHint: "drop a settings.json with a `hooks` key into either of:",
       hooksProject: "  · {path} (project)",
@@ -938,7 +792,7 @@ export const EN: TranslationSchema = {
       hooksSources: "sources: project={project} · global={global}",
       updateCurrent: "current: Reasonix+ {version}",
       updateLatestPending: "latest:  (not yet resolved — background check in flight or offline)",
-      updateRetryHint: "triggered a fresh registry fetch — retry `/update` in a few seconds,",
+      updateRetryHint: "triggered a fresh registry fetch — retry in a few seconds,",
       updateRetryHint2: "restart Reasonix+ to check again.",
       updateLatest: "latest:  Reasonix+ {version}",
       updateUpToDate: "you're on the latest. nothing to do.",
@@ -956,95 +810,89 @@ export const EN: TranslationSchema = {
       statsWillAppear: "will show up in the dashboard once you send a message.",
     },
     edits: {
-      undoCodeOnly: "/undo is only available when edit mode is active.",
-      historyCodeOnly: "/history is only available when edit mode is active.",
-      showCodeOnly: "/show is only available when edit mode is active.",
-      applyCodeOnly: "/apply is only available when edits are pending.",
-      discardCodeOnly: "/discard is only available when edits are pending.",
-      planCodeOnly: "/plan is only available in code mode.",
+      undoCodeOnly: "undo is only available when edit mode is active.",
+      historyCodeOnly: "edit history is only available when edit mode is active.",
+      showCodeOnly: "showing a stored diff is only available when edit mode is active.",
+      applyCodeOnly: "applying is only available when edits are pending.",
+      discardCodeOnly: "discarding is only available when edits are pending.",
+      planCodeOnly: "plan mode is only available in code mode.",
       planOn:
-        "▸ plan mode ON — write tools are gated; the model MUST call `submit_plan` before anything executes. (The model can also call submit_plan on its own for big tasks even when plan mode is off — this toggle is the stronger, explicit constraint.) Type /plan off to leave.",
+        "▸ plan mode ON — write tools are gated; the model MUST call `submit_plan` before anything executes. (The model can also call submit_plan on its own for big tasks even when plan mode is off — this toggle is the stronger, explicit constraint.) Turn plan mode off to leave.",
       planOff:
         "▸ plan mode OFF — write tools are live again. Model can still propose plans autonomously for large tasks.",
-      modeCodeOnly: "/mode is only available in code mode.",
-      modeUsage: "usage: /mode <review|auto|yolo>   (Shift+Tab also cycles)",
+      modeCodeOnly: "edit-mode switching is only available in code mode.",
+      modeUsage: "edit-gate modes: review · auto · yolo   (Shift+Tab also cycles)",
       modeYolo:
-        "▸ edit mode: YOLO — edits AND shell commands auto-run with no prompt. /undo still rolls back edits. Use carefully.",
+        "▸ edit mode: YOLO — edits AND shell commands auto-run with no prompt. undo still rolls back edits. Use carefully.",
       modeAuto:
-        "▸ edit mode: AUTO — edits apply immediately; press u within 5s to undo, or /undo later. Shell commands still ask.",
-      modeReview: "▸ edit mode: review — edits queue for /apply (or y) / /discard (or n)",
-      commitCodeOnly: "/commit needs a rooted git repo.",
-      commitUsage:
-        'usage: /commit "your commit message"  — runs `git add -A && git commit -m "…"` in {root}',
-      walkCodeOnly: "/walk is only available in code mode.",
-      cwdCodeOnly: "/cwd is only available in code mode.",
+        "▸ edit mode: AUTO — edits apply immediately; press u within 5s to undo, or undo later. Shell commands still ask.",
+      modeReview: "▸ edit mode: review — edits queue for approval",
+      commitCodeOnly: "committing needs a rooted git repo.",
+      commitUsage: 'commit: runs `git add -A && git commit -m "..."` in {root}',
+      walkCodeOnly: "stepping through edits is only available in code mode.",
+      cwdCodeOnly: "switching the workspace is only available in code mode.",
       cwdUsage:
-        "usage: /cwd <path>   (current root: {current}). Re-points filesystem / shell / memory tools to <path>.",
-      cwdUsageNoCurrent: "usage: /cwd <path>   re-points the workspace root to <path>.",
+        "switch the workspace root (current: {current}) — re-points filesystem / shell / memory tools.",
+      cwdUsageNoCurrent: "switch the workspace root — re-points filesystem / shell / memory tools.",
     },
     model: {
-      modelHint: "try deepseek-flash or deepseek-v4-pro — run /models to fetch the live list",
-      modelUsage: "usage: /model <id>   ({hint})",
+      modelHint: "try deepseek-flash or deepseek-v4-pro — refresh the model list in Settings",
+      modelUsage: "switch the model id   ({hint})",
       modelNotInCatalog:
-        "model → {id}   (⚠ not in the fetched catalog: {list}. If this is wrong the next call will 400 — run /models to refresh.)",
+        "model → {id}   (⚠ not in the fetched catalog: {list}. If this is wrong the next call will 400 — refresh the model list in Settings.)",
       modelSet: "model → {id}",
       effortStatus: "effort → {current}   (pick: {list})",
       effortUsage:
-        "usage: /effort <{list}>   (high is the safe default; max is a DeepSeek/GPT-5.6 extension)",
-      effortUsageNoMax: "usage: /effort <{list}>",
+        "pick reasoning effort: {list}   (high is the safe default; max is a DeepSeek/GPT-5.6 extension)",
+      effortUsageNoMax: "pick reasoning effort: {list}",
       effortSet: "effort → {effort}",
     },
     permissions: {
       mutateCodeOnly:
-        "/permissions add / remove / clear edit the project-scoped allowlist (`~/.reasonix/config.json` projects[<root>].shellAllowed).",
-      addUsage:
-        'usage: /permissions add <prefix>   (multi-token OK: /permissions add "git push origin")',
+        "The allowlist editor changes the project-scoped shell allowlist (`~/.reasonix/config.json` projects[<root>].shellAllowed).",
+      addUsage: 'add an allowed shell prefix (multi-token OK: "git push origin")',
       addAlready: "▸ already allowed: {prefix}",
       addBuiltin:
         "▸ `{prefix}` is already in the builtin allowlist — no per-project entry needed. (Builtin entries are always on.)",
       addInfo:
         "▸ added: {prefix}\n  → next `{prefix}` invocation runs without prompting in this project.",
-      removeUsage:
-        "usage: /permissions remove <prefix-or-index>   (e.g. /permissions remove 3, or /permissions remove npm)",
+      removeUsage: "remove an allowed prefix or index (e.g. 3, or npm)",
       removeEmpty: "▸ no project allowlist entries to remove.",
       removeIndexOob: "▸ index out of range: {idx} (project list has {count} entries)",
       removeNothing: "▸ nothing to remove.",
       removeBuiltin:
         "▸ `{prefix}` is in the builtin allowlist (read-only). Builtin entries can't be removed at runtime — they're baked into the binary.",
       removeInfo: "▸ removed: {prefix}",
-      removeNotFound:
-        "▸ no such project entry: {prefix}   (try /permissions list to see what's stored)",
+      removeNotFound: "▸ no such project entry: {prefix}   (see the stored allowlist)",
       clearAlready: "▸ project allowlist is already empty.",
       clearConfirm:
-        "about to drop {count} project allowlist entr{plural} for {root}. Re-run with the word 'confirm' to proceed: /permissions clear confirm",
+        "about to drop {count} project allowlist entr{plural} for {root}. Re-run with the word 'confirm' to proceed.",
       clearedNone: "▸ project allowlist was already empty — nothing changed.",
       cleared: "▸ cleared {count} project allowlist entr{plural}.",
       usage:
-        'usage: /permissions [list]                   show current state\n       /permissions add <prefix>            persist (e.g. "npm run build")\n       /permissions remove <prefix-or-N>    drop one entry\n       /permissions clear confirm           wipe every project entry',
-      modeYolo:
-        "▸ edit mode: YOLO  — every shell command auto-runs, allowlist is bypassed. /mode review to re-enable prompts.",
+        'List the allowlist, add a prefix (e.g. "npm run build"), remove one by prefix or index, or clear every project entry.',
+      modeYolo: "▸ edit mode: YOLO  — every shell command auto-runs, allowlist is bypassed.",
       modeAuto:
         "▸ edit mode: auto  — edits auto-apply, shell still gated by allowlist (or ShellConfirm prompt for non-allowlisted).",
       modeReview:
         "▸ edit mode: review — both edits and non-allowlisted shell commands ask before running.",
       projectHeader: "Project allowlist ({count}) — {root}",
       projectNone1: '  (none — pick "always allow" on a ShellConfirm prompt to add one,',
-      projectNone2: "   or `/permissions add <prefix>` directly.)",
+      projectNone2: "   or add a prefix directly.)",
       projectNoRoot: "Project allowlist — (no project root; chat mode shows builtin entries only)",
       builtinHeader: "Builtin allowlist ({count}) — read-only, baked in",
       subcommands:
-        "Subcommands: /permissions add <prefix> · /permissions remove <prefix-or-N> · /permissions clear confirm",
+        "Add a prefix to allowlist a command, remove one by prefix or index, or clear the project entries.",
     },
     dashboard: {
-      notAvailable:
-        "/dashboard is not available in this context (no startDashboard callback wired).",
-      stopNoCallback: "/dashboard stop: no stop callback wired.",
+      notAvailable: "The dashboard is not available in this context.",
+      stopNoCallback: "Dashboard stop: no stop callback wired.",
       notRunning: "▸ dashboard is not running.",
       stopping: "▸ dashboard stopping…",
       alreadyRunning: "▸ dashboard is already running:",
-      alreadyRunningHint: "Open it in any browser. Type `/dashboard stop` to tear it down.",
+      alreadyRunningHint: "Open it in any browser; stop it from the dashboard controls.",
       ready: "▸ dashboard ready:",
-      readyHint: "127.0.0.1 only · token-gated. Type `/dashboard stop` to shut down.",
+      readyHint: "127.0.0.1 only · token-gated.",
       failed: "▸ dashboard failed to start: {reason}",
       starting: "▸ starting dashboard server…",
       copied: "▸ dashboard URL copied to clipboard: {url}",
@@ -1057,12 +905,12 @@ export const EN: TranslationSchema = {
       compactNoop: "▸ nothing to fold — log already small or recent turns alone exceed the budget.",
       compactDone: "▸ folded {before} messages → {after} (summary {chars} chars). Continuing.",
       compactFailed: "▸ fold failed: {reason}",
-      costNoTurn: "no turn yet — `/cost` shows the most recent turn's token + spend breakdown.",
-      costNeedsTui: "/cost needs a TUI context (postUsage wired).",
-      costNoPricing:
-        '▸ /cost: no pricing table for model "{model}". Add one to telemetry/stats.ts.',
+      costNoTurn:
+        "no turn yet — the cost panel shows the most recent turn's token + spend breakdown.",
+      costNeedsTui: "Cost breakdown is not available in this context.",
+      costNoPricing: '▸ no pricing table for model "{model}". Add one to telemetry/stats.ts.',
       costEstimate:
-        "▸ /cost estimate · {model} · {prompt} prompt tokens (sys {sys} + tools {tools} + log {log} + msg {msg})",
+        "▸ cost estimate · {model} · {prompt} prompt tokens (sys {sys} + tools {tools} + log {log} + msg {msg})",
       costWorstCase:
         "  worst case (full miss): {input} input + ~{output} output ({avg} avg) ≈ {total}",
       costLikely: "  likely ({pct}% session cache hit): {input} input + ~{output} output ≈ {total}",
@@ -1078,7 +926,7 @@ export const EN: TranslationSchema = {
       statusWorkspace:
         "  workspace {path} · pinned at launch (relaunch with --dir <path> to switch)",
       statusMcp: "  mcp     {servers} server(s), {tools} tool(s) in registry",
-      statusEdits: "  edits   {count} pending (/apply to commit, /discard to drop)",
+      statusEdits: "  edits   {count} pending (commit or drop them)",
       statusPlan: "  plan    ON — writes gated (submit_plan + approval)",
       statusLifecycle: "  lifecycle {mode}/{state} · {progress}{evidence}",
       lifecycleNoPlan: "no plan",
@@ -1088,15 +936,15 @@ export const EN: TranslationSchema = {
       lifecycleRepeatedRejected:
         "lifecycle: repeated {tool} rejection — do not retry identical args",
       statusModeYolo:
-        "  mode    YOLO — edits + shell auto-run with no prompt (/undo still rolls back · Shift+Tab to flip)",
+        "  mode    YOLO — edits + shell auto-run with no prompt (undo still rolls back · Shift+Tab to flip)",
       statusModeAuto:
         "  mode    AUTO — edits apply immediately (u to undo within 5s · Shift+Tab to flip)",
-      statusModeReview: "  mode    review — edits queue for /apply or y  (Shift+Tab to flip)",
-      statusDash: "  dash    {url} (open in browser · /dashboard stop)",
+      statusModeReview: "  mode    review — edits queue for approval  (Shift+Tab to flip)",
+      statusDash: "  dash    {url} (open in browser)",
     },
     plans: {
       noSession:
-        "no session attached — `/plans` is per-session. Start a session in a project to use it.",
+        "no session attached — plans are per-session. Start a session in a project to use it.",
       activePlan: "▸ active plan{label} — {done}/{total} step{s} done · last touched {when}",
       activeNone: "▸ active plan: (none)",
       noArchives:
@@ -1107,44 +955,42 @@ export const EN: TranslationSchema = {
       evidenceLine: "  evidence {stepId}: {summary}",
       archivedEvidenceLine: "    evidence: {summary}",
       replayNoSession:
-        "no session attached — `/replay` is per-session. Start a session in a project to use it.",
+        "no session attached — replay is per-session. Start a session in a project to use it.",
       replayNoArchives:
-        "no archived plans yet for this session — `/replay` lights up once a plan completes (auto-archives when every step is done).",
-      replayInvalidIndex:
-        "invalid index — `/replay` takes 1..{max} (newest = 1). Use `/plans` to see the list.",
+        "no archived plans yet for this session — replay lights up once a plan completes (auto-archives when every step is done).",
+      replayInvalidIndex: "invalid index — replay takes 1..{max} (newest = 1).",
       archivedRow: "  ✓ {when}  {total} step{s} · {completion}  {label}",
       completionComplete: "complete",
       stopAborted:
         "▸ plan stopped — model aborted; type a follow-up to continue or start a new task.",
       doneUsage:
-        "usage: /plans done <stepId>  ·  /plans done all — manual override when the model forgot to call mark_step_complete",
-      doneUnavailable: "/plans done is only available inside an active session.",
+        "mark a plan step done (by id, or all) — manual override when the model forgot to call mark_step_complete",
+      doneUnavailable: "Marking a step done is only available inside an active session.",
       doneNoPlan: "no active plan — nothing to mark done.",
-      doneNotInPlan: "step `{id}` is not in the active plan. Run /plans to see the step ids.",
+      doneNotInPlan: "step `{id}` is not in the active plan.",
       doneAlready: "step `{id}` was already marked done.",
       doneOk: "▸ marked step `{id}` done.",
       doneAllNoop: "every step is already done.",
       doneAllOk: "▸ marked {count} step(s) done.",
     },
     jobs: {
-      codeOnly: "/jobs is only available in code mode.",
-      killCodeOnly: "/kill is only available in code mode.",
-      logsCodeOnly: "/logs is only available in code mode.",
+      codeOnly: "Background jobs are only available in code mode.",
+      killCodeOnly: "Stopping a job is only available in code mode.",
+      logsCodeOnly: "Job logs are only available in code mode.",
       empty:
         "◈ jobs · 0 running · 0 total\n  (run_background spawns one — dev servers, watchers, long-running scripts)",
       header: "◈ jobs · {running} running · {total} total",
       persistent: "persistent",
-      persistentHint:
-        "persistent shells survive Stop / New chat; close from the Jobs panel or /kill",
-      footer: "  /logs <id> tail · /kill <id> SIGTERM → SIGKILL",
-      killUsage: "usage: /kill <id>   (see /jobs for ids)",
+      persistentHint: "persistent shells survive Stop / New chat; close them from the Jobs panel",
+      footer: "  select a job to tail its logs or stop it",
+      killUsage: "stop a background job by id",
       killNotFound: "job {id}: not found",
       killAlreadyExited: "job {id} already exited ({code})",
       killStopping:
         "▸ stopping job {id} (tree kill: SIGTERM → SIGKILL after 2s grace; Windows: taskkill /T /F)",
       killStatus: "▸ job {id} {status}",
       killStillAlive: "still alive after SIGKILL (!) — report this as a bug",
-      logsUsage: "usage: /logs <id> [lines]   (default last 80 lines)",
+      logsUsage: "tail a job's output by id (default last 80 lines)",
       logsNotFound: "job {id}: not found",
       logsStatus: "[job {id} · {status}]\n$ {command}",
       logsRunning: "running · pid {pid}",
@@ -1156,30 +1002,29 @@ export const EN: TranslationSchema = {
       disabled:
         "memory is disabled (REASONIX_MEMORY=off in env). Unset the var to re-enable — no REASONIX.md or ~/.reasonix/memory content will be pinned in the meantime.",
       noRoot:
-        "no working directory on this session — `/memory` needs a root to resolve REASONIX.md from. (Running in a test harness?)",
+        "no working directory on this session — memory needs a root to resolve REASONIX.md from. (Running in a test harness?)",
       listEmpty:
-        "no user memories yet. Save one: /memory save <name> <text> (or ask the model to `remember` it for you).",
+        "no user memories yet. Ask the model to `remember` one, or add it from the memory panel.",
       listHeader: "User memories ({count}):",
-      listFooter:
-        "Show: /memory show <name>   Save: /memory save <name> <text>   Delete: /memory forget <name>",
-      showUsage: "usage: /memory show <name>  or  /memory show <scope>/<name>",
+      listFooter: "Show, save, and delete memories from the memory panel.",
+      showUsage: "show a memory by name, or scope/name",
       showNotFound: "no memory found: {target}",
       showFailed: "show failed: {reason}",
-      forgetUsage: "usage: /memory forget <name>  or  /memory forget <scope>/<name>",
+      forgetUsage: "forget a memory by name, or scope/name",
       forgetNotFound: "no memory found: {target}",
-      forgetInfo: "▸ forgot {scope}/{name}. Next /new or launch won't see it.",
+      forgetInfo: "▸ forgot {scope}/{name}. A new session or launch won't see it.",
       forgetFailed: "could not forget {scope}/{name} (already gone?)",
       forgetError: "forget failed: {reason}",
       notFoundSuggest: "no memory found: {target}. Did you mean: {candidates}",
       saveUsage:
-        "usage: /memory save <name> <text…>  [--scope global|project] [--type <t>] [--priority low|medium|high] [--description <one-liner>] [--expires project_end]",
+        "save a memory: <name> <text…>  [--scope global|project] [--type <t>] [--priority low|medium|high] [--description <one-liner>] [--expires project_end]",
       saveNoProject:
         "project scope unavailable in this session (no working directory). Use --scope global for cross-project memory.",
       saved: "▸ saved ({scope}/{name}): {description}",
       saveError: "save failed: {reason}",
-      clearUsage: "usage: /memory clear <global|project> confirm",
+      clearUsage: "clear every memory in a scope (requires confirmation)",
       clearConfirm:
-        "about to delete every memory in scope={scope}. Re-run with the word 'confirm' to proceed: /memory clear {scope} confirm",
+        "about to delete every memory in scope={scope}. Re-run with the word 'confirm' to proceed.",
       cleared: "▸ cleared scope={scope} — deleted {count} memory file(s).",
       noMemory: "no memory pinned in {root}.",
       layers: "Three layers are available:",
@@ -1187,20 +1032,18 @@ export const EN: TranslationSchema = {
       layerGlobal: "  2. ~/.reasonix/memory/global/ — your cross-project private memory.",
       layerProjectHash: "  3. ~/.reasonix/memory/<project-hash>/ — this project's private memory.",
       askModel:
-        "Save: /memory save <name> <text> — or ask the model to `remember` it. Remove: /memory forget <name>.",
+        "Ask the model to `remember` a memory, or add and remove them from the memory panel.",
       changesNote:
-        "Changes take effect on next /new or launch — the system prompt is hashed once per session to keep the prefix cache warm.",
-      subcommands:
-        "Subcommands: /memory list | /memory show <name> | /memory save <name> <text> | /memory forget <name> | /memory clear <scope> confirm",
-      changesNoteShort:
-        "Changes take effect on next /new or launch. Subcommands: /memory list | show <name> | save <name> <text> | forget <name> | clear",
+        "Changes take effect on the next new session or launch — the system prompt is hashed once per session to keep the prefix cache warm.",
+      subcommands: "List, show, save, forget, or clear memories (per scope).",
+      changesNoteShort: "Changes take effect on the next new session or launch.",
     },
     mcp: {
       noServers:
         'no MCP servers attached. Configure servers in the MCP settings, or launch with --mcp "<spec>". the MCP catalog lists available servers. Note: model-invoked shell commands are gated per-call (allow once / allow always / deny) — no global allow-all flag.',
       toolsLabel: "  tools     {count}",
-      resourcesHint: "`/resource` to browse+read",
-      promptsHint: "`/prompt` to browse+fetch",
+      resourcesHint: "browse + read resources",
+      promptsHint: "browse + fetch prompts",
       awarenessOnly:
         "Chat mode consumes tools today; resources+prompts are surfaced here for awareness.",
       catalogHint: "Manage MCP servers in the MCP settings.",
@@ -1208,72 +1051,25 @@ export const EN: TranslationSchema = {
       fallbackTools: "Tools in registry ({count}):",
       fallbackChange: "To change this set, use the MCP settings.",
       usageDisableEnable:
-        "usage: /mcp {action} <name>  ·  pick a name shown in /mcp (anonymous servers can't be named-toggled).",
-      usageReconnect: "usage: /mcp reconnect <name>  ·  pick a name shown in /mcp.",
+        "enable or disable an MCP server by name (anonymous servers can't be named-toggled).",
+      usageReconnect: "reconnect an MCP server by name.",
       unknownServer: 'unknown MCP server "{name}". Known: {list}.',
       noneList: "(none)",
-      reconnectNoTui: "/mcp reconnect requires the interactive TUI (postInfo not wired).",
+      reconnectNoTui: "Reconnecting an MCP server is not available in this context.",
       liveTab: "Live",
       marketplaceTab: "Marketplace",
       tabHint: "tab to switch",
     },
     init: {
       codeOnly:
-        "/init only works in code mode (it needs filesystem tools). Open the project as the workspace, then run /init.",
+        "REASONIX.md synthesis only works in code mode (it needs filesystem tools). Open the project as the workspace first.",
       exists: "▸ REASONIX.md already exists at {path}",
-      existsForce: "  /init force   regenerate from scratch (overwrites)",
+      existsForce: "  force   regenerate from scratch (overwrites)",
       existsEdit: "  Or edit it by hand — it's just markdown. The current file is",
       existsPinned: "  pinned into the system prompt every launch as-is.",
-      info: "▸ /init — model will scan the project and synthesize REASONIX.md.\n  The result lands as a pending edit; review with /apply or /walk.",
+      info: "▸ the model will scan the project and synthesize REASONIX.md.\n  The result lands as a pending edit.",
     },
-    webSearchEngine: {
-      currentEngine: "Current web search engine: {engine}",
-      endpoint: "SearXNG endpoint: {url}",
-      usageHeader: "Usage:",
-      usageBing:
-        "  /search-engine bing              use Bing (default, works from CN without proxy)",
-      usageSearxng: "  /search-engine searxng            use SearXNG at default endpoint",
-      usageSearxngUrl: "  /search-engine searxng <url>      use SearXNG at custom endpoint",
-      usageMetaso:
-        "  /search-engine metaso              use Metaso API (100/d free, configure your own API key for more)",
-      usageTavily:
-        "  /search-engine tavily              use Tavily API (LLM-friendly, free 1000/mo — set TAVILY_API_KEY or tavilyApiKey in config; get one at https://tavily.com)",
-      usagePerplexity:
-        "  /search-engine perplexity          use Perplexity AI (AI-native answer + citations — set PERPLEXITY_API_KEY or perplexityApiKey in config; get one at https://perplexity.ai/settings/api)",
-      usageExa:
-        "  /search-engine exa                 use Exa API (AI-native answer + citations, free 1000/mo — set EXA_API_KEY or exaApiKey in config; sign up at https://exa.ai)",
-      usageOllama:
-        "  /search-engine ollama              use Ollama cloud web search — set OLLAMA_API_KEY or ollamaApiKey in config; get one at https://ollama.com/settings/keys",
-      usageBrave:
-        "  /search-engine brave               use Brave Search API (independent index, free 2000/mo — set BRAVE_SEARCH_API_KEY or braveApiKey in config; get one at https://brave.com/search/api/)",
-      usageZai:
-        "  /search-engine zai                 use Z.AI search-prime; set ZAI_API_KEY or zaiApiKey in config",
-      alias: "Alias: /se",
-      searxngInfo:
-        "SearXNG is a self-hosted metasearch engine (https://github.com/searxng/searxng).",
-      searxngInstall: "Install it with:  docker run -d -p 8080:8080 searxng/searxng",
-      switched: 'Switched web search engine to "{engine}".{note}',
-      switchedSearxngNote: " Make sure SearXNG is running at {endpoint}.",
-      switchedMetasoNote:
-        " There is a daily quota of 100 (configure your own API key for higher limits).",
-      switchedTavilyNote:
-        " Set TAVILY_API_KEY or `tavilyApiKey` in config; free 1000/mo at https://tavily.com.",
-      switchedPerplexityNote:
-        " Set PERPLEXITY_API_KEY or `perplexityApiKey` in config; get one at https://perplexity.ai/settings/api.",
-      switchedExaNote: " Set EXA_API_KEY or `exaApiKey` in config; sign up at https://exa.ai.",
-      switchedOllamaNote:
-        " Set OLLAMA_API_KEY or `ollamaApiKey` in config; get one at https://ollama.com/settings/keys.",
-      switchedBraveNote:
-        " Set BRAVE_SEARCH_API_KEY (or BRAVE_API_KEY) or `braveApiKey` in config; free 2000/mo at https://brave.com/search/api/.",
-      switchedZaiNote:
-        " Set ZAI_API_KEY or `zaiApiKey` in config; get one at https://z.ai/manage-apikey/apikey-list.",
-      keyNeeded:
-        'No API key configured for "{engine}".\n\n  1. Set the {envVar} environment variable\n  2. Or provide one inline:  /search-engine {engine} <your-key>\n  3. Or add "{engine}ApiKey" to ~/.reasonix/config.json\n\nThen retry /search-engine {engine}.',
-      keySaved: " API key saved to config.",
-      confirmed:
-        'Web search engine set to "{engine}"{detail}. Next assistant turn will pick up the change.',
-      confirmedDetail: " ({endpoint})",
-    },
+
     skill: {
       listEmpty: "no skills found. Reasonix+ reads skills from:",
       listProjectScope:
@@ -1282,31 +1078,30 @@ export const EN: TranslationSchema = {
       listProjectOnly: "  (project scope is only active in code mode)",
       listFrontmatter: "Each file's frontmatter needs at least `name` and `description`.",
       listInvoke:
-        "Invoke a skill with `/skill <name> [args]` or by asking the model to call `run_skill`.",
+        "Ask the model to run a skill with `run_skill`, or invoke one from the skills panel.",
       listHeader: "User skills ({count}):",
-      listFooter: "View: /skill show <name>   Run: /skill <name> [args]   New: /skill new <name>",
+      listFooter: "View, run, or scaffold skills from the skills panel.",
       listEmptyNewHint:
-        "Scaffold one with: /skill new <name>  (project scope) — there's no remote registry yet; you author skills directly.",
-      showUsage: "usage: /skill show <name>",
+        "There's no remote registry yet — author skills directly as SKILL.md files (project scope).",
+      showUsage: "show a skill by name",
       showNotFound: "no skill found: {name}",
-      runNotFound: "no skill found: {name}  (try /skill list)",
+      runNotFound: "no skill found: {name}",
       runInfo: "▸ running skill: {name}{args}",
-      newUsage: "usage: /skill new <name> [--global]",
-      newCreated: "▸ created skill: {name}\n  {path}\n  edit it, then `/skill {name}` to invoke",
-      newError: "▲ /skill new failed: {reason}",
+      newUsage: "scaffold a skill: <name> [--global]",
+      newCreated: "▸ created skill: {name}\n  {path}\n  edit it, then run it",
+      newError: "▲ skill scaffold failed: {reason}",
       pathsHeader: "Skill paths (priority order):",
       pathsPriority:
-        "Priority: project > custom paths in config order > global > builtin. Changes affect the system prompt on next /new or new session.",
-      pathsUsage:
-        "usage: /skill paths [list]\n       /skill paths add <path>\n       /skill paths remove <path|N>",
-      pathsAddUsage: "usage: /skill paths add <path>",
-      pathsRemoveUsage: "usage: /skill paths remove <path|N>",
+        "Priority: project > custom paths in config order > global > builtin. Changes affect the system prompt on the next new session.",
+      pathsUsage: "List custom skills paths, add one, or remove one.",
+      pathsAddUsage: "add a custom skills path",
+      pathsRemoveUsage: "remove a custom skills path by path or index",
       pathsAdded: "▸ added custom skills path: {path}",
       pathsAlready: "▸ custom skills path already configured: {path}",
       pathsRemoved: "▸ removed custom skills path: {path}",
       pathsRemoveNotFound: "▸ no custom skills path matches: {target}",
       pathsRestartHint:
-        "The current session's system prompt is unchanged; run /new or start a new session to refresh the skills index.",
+        "The current session's system prompt is unchanged; start a new session to refresh the skills index.",
     },
   },
   statusBar: {
@@ -1333,8 +1128,8 @@ export const EN: TranslationSchema = {
     yolo: "YOLO",
     auto: "AUTO",
     review: "REVIEW",
-    writesGated: "   writes gated \u00b7 /plan off to leave",
-    editsShellAuto: "edits + shell auto \u00b7 /undo to roll back",
+    writesGated: "   writes gated",
+    editsShellAuto: "edits + shell auto \u00b7 undo to roll back",
     editsLandNow: "edits land now \u00b7 u to undo",
     queuedApplyDiscard: "{count} queued \u00b7 y apply \u00b7 n discard",
     editsQueued: "edits queued \u00b7 y apply \u00b7 n discard",
@@ -1396,7 +1191,7 @@ export const EN: TranslationSchema = {
     title: "Shell command",
     bgTitle: "Background process",
     subtitle: "model wants to run a shell command",
-    bgSubtitle: "long-running process \u2014 keeps running after approval, /kill to stop",
+    bgSubtitle: "long-running process \u2014 keeps running after approval",
     denyTitle: "Deny \u2014 provide context",
     optional: "optional",
     denyFooter:
@@ -1473,8 +1268,8 @@ export const EN: TranslationSchema = {
     sessions: "{count} session",
     sessionsPlural: "{count} sessions",
     current: "current",
-    pickerHint: "↑↓ pick · / search · ⏎ switch + pick session · esc quit · /cwd <path> adds one",
-    empty: "  no known workspaces yet — run /cwd <path> once to add one",
+    pickerHint: "↑↓ pick · / search · ⏎ switch + pick session · esc quit",
+    empty: "  no known workspaces yet — switch the workspace to add one",
     searchPrompt: "  search workspaces: /",
     searchHint: "  type to filter  ·  ⏎ switch + pick session  ·  esc clear",
     searchEmpty: "  no workspaces match this search",
@@ -1496,32 +1291,6 @@ export const EN: TranslationSchema = {
     pickerFooter:
       "  \u2191\u2193 pick  \u00b7  \u23ce confirm  \u00b7  [r] refresh  \u00b7  esc cancel",
     currentLabel: "  \u00b7 current",
-  },
-  slashSuggestions: {
-    noMatch: "no slash command matches that prefix",
-    backspaceHint: " \u2014 Backspace to edit, or /help for the full list",
-    commandCount: "{count} command",
-    commandCountPlural: "{count} commands",
-    aboveLabel: "   \u2191 {count} above",
-    belowLabel: "   \u2193 {count} below",
-    advancedHint: "  + {count} advanced  \u00b7  type a letter to search",
-    footerHint: "  \u2191\u2193 navigate \u00b7 Tab / \u23ce pick \u00b7 esc cancel",
-    groupChat: "CHAT",
-    groupSetup: "SETUP",
-    groupInfo: "INFO",
-    groupSession: "SESSION",
-    groupExtend: "EXTEND",
-    groupCode: "CODE",
-    groupJobs: "JOBS",
-    groupAdvanced: "ADVANCED",
-    groupDetailSetup: "model + cost",
-    groupDetailInfo: "current state",
-    groupDetailChat: "daily turn ops",
-    groupDetailExtend: "MCP, memory, skills",
-    groupDetailSession: "saved sessions",
-    groupDetailCode: "edits + plans (code mode)",
-    groupDetailJobs: "background processes (code mode)",
-    groupDetailAdvanced: "rare or set-and-forget",
   },
   atMentions: {
     loading: "loading\u2026",
@@ -1555,7 +1324,7 @@ export const EN: TranslationSchema = {
   },
   ctxBreakdown: {
     title: "\u25a3 context",
-    compactHint: "  /compact folds (auto at 75%) \u00b7 /new wipes log",
+    compactHint: "  older turns fold automatically at 75%",
     topTools: "  top tool results by cost ({count}):",
     msg: "msg",
     turnLabel: "turn",
@@ -1574,27 +1343,27 @@ export const EN: TranslationSchema = {
   },
   webErrors: {
     status:
-      "web_search {status} \u2014 try: the search backend returned an error; rephrase the query, or switch engine with /search-engine bing|bing-intl|searxng|metaso|baidu|tavily|perplexity|exa|brave",
+      "web_search {status} \u2014 try: the search backend returned an error; rephrase the query, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     rateLimit429:
       "web_search 429 \u2014 try: wait 10s before retrying, or rephrase the query; the search backend is rate-limiting this client",
     forbidden403:
-      "web_search 403 \u2014 try: the search backend is blocking this client; switch engine with /search-engine bing|bing-intl|searxng|metaso|baidu|tavily|perplexity|exa|brave, or wait and retry later",
+      "web_search 403 \u2014 try: the search backend is blocking this client; switch engines in Settings (General page), or wait and retry later. Fallback engines are tried automatically.",
     serverError5xx:
       "web_search {status} \u2014 try: open the search URL in a browser; if it loads this is transient and a retry in 30s may help",
     bingBlocked:
-      "web_search: Bing anti-bot page \u2014 rate-limited or blocked \u2014 try: wait 30s and retry, or switch engine with /search-engine bing|bing-intl|searxng|metaso|baidu|tavily|perplexity|exa|brave",
+      "web_search: Bing anti-bot page \u2014 rate-limited or blocked \u2014 try: wait 30s and retry, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     bingNoResults:
-      "web_search: 0 results but response doesn't look like a real empty page ({chars} chars, first 120: {preview}) \u2014 try: rephrase the query with simpler terms, or switch engine with /search-engine bing|bing-intl|searxng|metaso|baidu|tavily|perplexity|exa|brave",
+      "web_search: 0 results but response doesn't look like a real empty page ({chars} chars, first 120: {preview}) \u2014 try: rephrase the query with simpler terms, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     invalidEndpoint:
-      'web_search: invalid SearXNG endpoint "{endpoint}" \u2014 try: set a valid URL with /search-endpoint http://host:port',
+      'web_search: invalid SearXNG endpoint "{endpoint}" \u2014 try: set a valid base URL in Settings (General page, SearXNG endpoint)',
     endpointMustBeHttp:
-      "web_search: SearXNG endpoint must be http(s), got {protocol} \u2014 try: set a valid URL with /search-endpoint http://host:port",
+      "web_search: SearXNG endpoint must be http(s), got {protocol} \u2014 try: set a valid base URL in Settings (General page, SearXNG endpoint)",
     cannotReach:
-      "web_search: Cannot reach SearXNG server at {endpoint} \u2014 try: install and start SearXNG (https://github.com/searxng/searxng, e.g. `docker run -d -p 8080:8080 searxng/searxng`), or switch to another engine with /search-engine bing|searxng|metaso|tavily|perplexity|exa|brave",
+      "web_search: Cannot reach SearXNG server at {endpoint} \u2014 try: install and start SearXNG (https://github.com/searxng/searxng, e.g. `docker run -d -p 8080:8080 searxng/searxng`), or switch engines in Settings (General page). Fallback engines are tried automatically.",
     searxngNoResults:
-      "web_search: 0 results but SearXNG response doesn't look like an empty results page ({chars} chars) \u2014 try: rephrase the query with simpler terms, or switch engine with /search-engine bing|searxng|metaso|tavily|perplexity|exa|brave",
+      "web_search: 0 results but SearXNG response doesn't look like an empty results page ({chars} chars) \u2014 try: rephrase the query with simpler terms, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     metasoMissingKey:
-      "web_search: Metaso requires an API key \u2014 set METASO_API_KEY or configure one with /search-engine metaso <key>. Get one at https://metaso.cn/search-api/playground",
+      "web_search: Metaso requires an API key \u2014 set METASO_API_KEY or `metasoApiKey` in ~/.reasonix/config.json. Get one at https://metaso.cn/search-api/playground",
     metasoDailyLimit:
       "web_search: Metaso daily search limit reached \u2014 set METASO_API_KEY or get a key at https://metaso.cn/search-api/playground",
     metasoUnauthorized:
@@ -1602,18 +1371,18 @@ export const EN: TranslationSchema = {
     metasoRateLimit:
       "web_search: Metaso rate-limited \u2014 wait and retry, or get your own API key at https://metaso.cn/search-api/playground",
     metasoServerError:
-      "web_search: Metaso server error ({status}) \u2014 try again later, or switch engine with /search-engine bing|searxng|metaso|tavily|perplexity|exa|brave",
+      "web_search: Metaso server error ({status}) \u2014 try again later, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     metasoParseError:
       "web_search: Metaso returned unparseable response (HTTP {status}) \u2014 try again later",
     metasoApiError: "web_search: Metaso API error (code {code}: {message}) \u2014 try again later",
     baiduMissingKey:
-      "web_search: Baidu AI Search requires an API key \u2014 set BAIDU_API_KEY or QIANFAN_API_KEY env var, configure `baiduApiKey` in ~/.reasonix/config.json, or use /search-engine baidu <key>. Get one from Baidu Cloud Qianfan.",
+      "web_search: Baidu AI Search requires an API key \u2014 set BAIDU_API_KEY or QIANFAN_API_KEY env var, or configure `baiduApiKey` in ~/.reasonix/config.json. Get one from Baidu Cloud Qianfan.",
     baiduUnauthorized:
       "web_search: Baidu AI Search API key rejected \u2014 check BAIDU_API_KEY, QIANFAN_API_KEY, or `baiduApiKey`.",
     baiduRateLimit:
-      "web_search: Baidu AI Search rate-limited or quota exceeded \u2014 wait and retry, or switch engine with /search-engine bing|bing-intl|searxng|metaso|baidu|tavily|perplexity|exa|brave",
+      "web_search: Baidu AI Search rate-limited or quota exceeded \u2014 wait and retry, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     baiduServerError:
-      "web_search: Baidu AI Search server error ({status}) \u2014 try again later, or switch engine with /search-engine bing|bing-intl|searxng|metaso|baidu|tavily|perplexity|exa|brave",
+      "web_search: Baidu AI Search server error ({status}) \u2014 try again later, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     baiduParseError:
       "web_search: Baidu AI Search returned unparseable response (HTTP {status}) \u2014 try again later",
     tavilyMissingKey:
@@ -1621,9 +1390,9 @@ export const EN: TranslationSchema = {
     tavilyUnauthorized:
       "web_search: Tavily API key rejected \u2014 check TAVILY_API_KEY or get one at https://tavily.com",
     tavilyRateLimit:
-      "web_search: Tavily rate-limited or monthly quota exceeded \u2014 wait, switch engine with /search-engine bing|searxng|metaso|tavily|perplexity|exa|brave, or upgrade your Tavily plan",
+      "web_search: Tavily rate-limited or monthly quota exceeded \u2014 wait, switch engines in Settings (General page), or upgrade your Tavily plan. Fallback engines are tried automatically.",
     tavilyServerError:
-      "web_search: Tavily server error ({status}) \u2014 try again later, or switch engine with /search-engine bing|searxng|metaso|tavily|perplexity|exa|brave",
+      "web_search: Tavily server error ({status}) \u2014 try again later, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     tavilyParseError:
       "web_search: Tavily returned unparseable response (HTTP {status}) \u2014 try again later",
     perplexityMissingKey:
@@ -1631,9 +1400,9 @@ export const EN: TranslationSchema = {
     perplexityUnauthorized:
       "web_search: Perplexity API key rejected \u2014 check PERPLEXITY_API_KEY or get one at https://perplexity.ai/settings/api",
     perplexityRateLimit:
-      "web_search: Perplexity rate-limited \u2014 wait and retry, or switch engine with /search-engine bing|searxng|metaso|tavily|perplexity|exa|brave",
+      "web_search: Perplexity rate-limited \u2014 wait and retry, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     perplexityServerError:
-      "web_search: Perplexity server error ({status}) \u2014 try again later, or switch engine with /search-engine bing|searxng|metaso|tavily|perplexity|exa|brave",
+      "web_search: Perplexity server error ({status}) \u2014 try again later, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     perplexityParseError:
       "web_search: Perplexity returned unparseable response (HTTP {status}) \u2014 try again later",
     exaMissingKey:
@@ -1643,7 +1412,7 @@ export const EN: TranslationSchema = {
     exaRateLimit:
       "web_search: Exa API rate-limited or monthly quota exceeded \u2014 wait or upgrade at https://exa.ai/pricing",
     exaServerError:
-      "web_search: Exa server error ({status}) \u2014 try again later, or switch engine with /search-engine bing|searxng|metaso|tavily|perplexity|exa|brave",
+      "web_search: Exa server error ({status}) \u2014 try again later, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     exaParseError:
       "web_search: Exa returned unparseable response (HTTP {status}) \u2014 try again later",
     braveMissingKey:
@@ -1653,11 +1422,11 @@ export const EN: TranslationSchema = {
     braveRateLimit:
       "web_search: Brave Search API rate-limited or monthly quota exceeded \u2014 wait or upgrade at https://brave.com/search/api/",
     braveServerError:
-      "web_search: Brave Search server error ({status}) \u2014 try again later, or switch engine with /search-engine bing|searxng|metaso|tavily|perplexity|exa|brave",
+      "web_search: Brave Search server error ({status}) \u2014 try again later, or switch engines in Settings (General page). Fallback engines are tried automatically.",
     braveParseError:
       "web_search: Brave Search returned unparseable response (HTTP {status}) \u2014 try again later",
     zaiMissingKey:
-      "web_search: Z.AI search requires an API key. Set ZAI_API_KEY or configure zaiApiKey, then select /search-engine zai.",
+      "web_search: Z.AI search requires an API key. Set ZAI_API_KEY or configure zaiApiKey, then select zai in Settings (General page).",
     zaiUnauthorized:
       "web_search: Z.AI API key rejected. Check ZAI_API_KEY or zaiApiKey in settings.",
     zaiRateLimit:
@@ -1786,14 +1555,7 @@ export const EN: TranslationSchema = {
     scrollAbovePlural: " \u2191 {scroll} / {max} rows above",
     scrollMore: " \u2014 {remaining} more",
     scrollPgUp: " \u00b7 PgUp / wheel",
-    scrollCopy: " \u00b7 /copy enters copy mode",
-  },
-  slashArgPicker: {
-    noMatch: 'no match for "{partial}"',
-    keepTyping: " \u2014 keep typing, or Backspace to edit",
-    above: "   \u2191 {hidden} above",
-    below: "   \u2193 {hidden} below",
-    footer: "  \u2191\u2193 navigate \u00b7 Tab / \u23ce pick \u00b7 esc cancel",
+    scrollCopy: " \u00b7 copy mode available",
   },
   mcpMarketplace: {
     title: "MCP marketplace",
@@ -1838,17 +1600,17 @@ export const EN: TranslationSchema = {
   },
   mcpBrowse: {
     noResources:
-      "No resources on any connected MCP server (or no servers connected). `/mcp` shows the current set.",
-    readOne: "Read one: `/resource <uri>` \u2014 or use Tab in the picker.",
+      "No resources on any connected MCP server (or no servers connected). The MCP panel shows the current set.",
+    readOne: "Read one: select a resource \u2014 or use Tab in the picker.",
     noPrompts:
-      "No prompts on any connected MCP server (or no servers connected). `/mcp` shows the current set.",
+      "No prompts on any connected MCP server (or no servers connected). The MCP panel shows the current set.",
     fetchOne:
-      "Fetch one: `/prompt <name>` \u2014 args are not supported yet; prompts with required args will surface an error from the server.",
+      "Fetch one: select a prompt \u2014 args are not supported yet; prompts with required args will surface an error from the server.",
     noServerForResource: 'no server exposes resource "{name}"',
-    resourceHint: "`/resource` with no arg lists what's available.",
+    resourceHint: "With no argument, lists what's available.",
     readFailed: "readResource failed",
     noServerForPrompt: 'no server exposes prompt "{name}"',
-    promptHint: "`/prompt` with no arg lists what's available.",
+    promptHint: "With no argument, lists what's available.",
     fetchFailed: "getPrompt failed",
   },
   mcpLifecycle: {
@@ -1859,12 +1621,12 @@ export const EN: TranslationSchema = {
     reconnect: "reconnect\u2026",
     initDetail: "initialise \u2192 tools/list \u2192 resources/list",
     reconnectDetail: "tearing down \u00b7 re-handshake \u00b7 listing tools",
-    disabledDetail: "via /mcp disable {name}",
+    disabledDetail: "disabled",
     failedSetupHint:
       "→ remove this entry, or fix the underlying issue (missing npm package, network, etc.).",
     failedSetupConfigHint: "→ remove broken entries from your saved config.",
     abortedHint:
-      "MCP startup aborted — {count} server(s) skipped. Run /mcp to retry once you've fixed the underlying issue.",
+      "MCP startup aborted — {count} server(s) skipped. Retry from the MCP settings once the underlying issue is fixed.",
     toolsReady: "tools ready",
     warnLabel: "warn",
     slowLabel: "slow",
@@ -1916,7 +1678,7 @@ export const EN: TranslationSchema = {
       "Review the pending changes (current branch diff by default) in an isolated subagent: flags correctness, security, missing tests, hidden behavior changes; reports verdict + per-issue file:line. Read-only; the parent decides what to act on.",
     securityReview:
       "Security-focused review of the current branch diff in an isolated subagent: flags injection/authz/secrets/deserialization/path-traversal/crypto issues, severity-tagged. Read-only. Use when shipping changes that touch auth, input parsing, file IO, or external requests.",
-    test: "Run the project\u2019s test suite, diagnose failures, propose SEARCH/REPLACE fixes, re-run until green (or stop after 2 fix attempts on the same failure). Inlined: runs in the parent loop so you see the edit blocks and can /apply them. Detects npm/pnpm/yarn/pytest/go/cargo.",
+    test: "Run the project\u2019s test suite, diagnose failures, propose SEARCH/REPLACE fixes, re-run until green (or stop after 2 fix attempts on the same failure). Inlined: runs in the parent loop so you see the edit blocks and can apply them directly. Detects npm/pnpm/yarn/pytest/go/cargo.",
   },
   shortcutsHelp: {
     title: "Shortcuts",

@@ -83,6 +83,11 @@ const OLLAMA_WEB_FETCH_ENDPOINT = "https://ollama.com/api/web_fetch";
 const ZAI_WEB_SEARCH_ENDPOINT = "https://api.z.ai/api/paas/v4/web_search";
 const FETCH_MAX_REDIRECTS = 5;
 
+/** A recoverable backend failure (host unreachable, timed out, 5xx, blocked) that a
+ *  different engine might survive. Config errors stay plain Errors so webSearch surfaces
+ *  them, and only this type triggers the engine fallback. */
+class SearchBackendError extends Error {}
+
 /** Pick a status-specific webErrors key so the model gets an actionable hint, not a bare status. */
 function searchStatusError(status: number): string {
   if (status === 429) return t("webErrors.rateLimit429");
@@ -127,14 +132,14 @@ async function fetchSearchApi(
     resp = await fetch(endpoint, { ...init, signal: searchSignal(signal) });
   } catch (err) {
     if (err instanceof TypeError && (err as Error).message.includes("fetch")) {
-      throw new Error(t("webErrors.cannotReach", { endpoint }));
+      throw new SearchBackendError(t("webErrors.cannotReach", { endpoint }));
     }
     throw err;
   }
   if (!resp.ok) {
     if (resp.status === 401 || resp.status === 403) throw new Error(errMap.authError);
-    if (resp.status === 429) throw new Error(errMap.rateLimitError);
-    throw new Error(errMap.serverError(resp.status));
+    if (resp.status === 429) throw new SearchBackendError(errMap.rateLimitError);
+    throw new SearchBackendError(errMap.serverError(resp.status));
   }
   return resp;
 }
@@ -315,42 +320,61 @@ function redirectLocation(resp: Response, currentUrl: string): string | null {
   return new URL(location, currentUrl).toString();
 }
 
-/** Distinguishes "truly 0 results" from "layout changed / blocked" so callers can tell. */
+/** Engines that need neither an API key nor a local server — the last-resort
+ *  fallbacks when the configured engine's backend is unreachable. Order matters:
+ *  the international index first, then the CN-friendly default. */
+const KEYLESS_FALLBACK_ENGINES: readonly WebSearchEngineName[] = ["bing-intl", "bing"];
+
+/** Route to the engine named in `opts` (default bing). Throws on backend failure. */
+async function dispatchSearch(query: string, opts: WebSearchOptions): Promise<SearchResult[]> {
+  switch (opts.engine) {
+    case "metaso":
+      return searchMetaso(query, opts);
+    case "baidu":
+      return searchBaidu(query, opts);
+    case "searxng":
+      return searchSearxng(query, opts);
+    case "tavily":
+      return searchTavily(query, opts);
+    case "perplexity":
+      return searchPerplexity(query, opts);
+    case "exa":
+      return searchExa(query, opts);
+    case "ollama":
+      return searchOllama(query, opts);
+    case "brave":
+      return searchBrave(query, opts);
+    case "zai":
+      return searchZai(query, opts);
+    case "bing-intl":
+      return searchBing(query, opts, BING_INTL_ENDPOINT);
+    default:
+      return searchBing(query, opts);
+  }
+}
+
+/** Distinguishes "truly 0 results" from "layout changed / blocked" so callers can tell.
+ *  A failing backend falls through to the keyless engines so one outage doesn't sink
+ *  the search; "0 results" is not a failure and never triggers a fallback. */
 export async function webSearch(
   query: string,
   opts: WebSearchOptions = {},
 ): Promise<SearchResult[]> {
-  if (opts.engine === "metaso") {
-    return searchMetaso(query, opts);
+  const primary = opts.engine ?? "bing";
+  try {
+    return await dispatchSearch(query, { ...opts, engine: primary });
+  } catch (primaryError) {
+    if (!(primaryError instanceof SearchBackendError)) throw primaryError;
+    for (const engine of KEYLESS_FALLBACK_ENGINES) {
+      if (engine === primary) continue;
+      try {
+        return await dispatchSearch(query, { ...opts, engine });
+      } catch {
+        /* fall through to the next fallback */
+      }
+    }
+    throw primaryError;
   }
-  if (opts.engine === "baidu") {
-    return searchBaidu(query, opts);
-  }
-  if (opts.engine === "searxng") {
-    return searchSearxng(query, opts);
-  }
-  if (opts.engine === "tavily") {
-    return searchTavily(query, opts);
-  }
-  if (opts.engine === "perplexity") {
-    return searchPerplexity(query, opts);
-  }
-  if (opts.engine === "exa") {
-    return searchExa(query, opts);
-  }
-  if (opts.engine === "ollama") {
-    return searchOllama(query, opts);
-  }
-  if (opts.engine === "brave") {
-    return searchBrave(query, opts);
-  }
-  if (opts.engine === "zai") {
-    return searchZai(query, opts);
-  }
-  if (opts.engine === "bing-intl") {
-    return searchBing(query, opts, BING_INTL_ENDPOINT);
-  }
-  return searchBing(query, opts);
 }
 
 async function searchBing(
@@ -359,24 +383,30 @@ async function searchBing(
   endpoint = BING_ENDPOINT,
 ): Promise<SearchResult[]> {
   const topK = Math.max(1, Math.min(10, opts.topK ?? DEFAULT_TOPK));
-  const resp = await fetch(`${endpoint}?q=${encodeURIComponent(query)}`, {
-    headers: {
-      "User-Agent": USER_AGENT,
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9",
-      "Accept-Language": "en-US,en;q=0.9",
-    },
-    signal: searchSignal(opts.signal),
-    redirect: "follow",
-  });
-  if (!resp.ok) throw new Error(searchStatusError(resp.status));
+  let resp: Response;
+  try {
+    resp = await fetch(`${endpoint}?q=${encodeURIComponent(query)}`, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      signal: searchSignal(opts.signal),
+      redirect: "follow",
+    });
+  } catch (err) {
+    if (opts.signal?.aborted) throw err;
+    throw new SearchBackendError(t("webErrors.cannotReach", { endpoint }));
+  }
+  if (!resp.ok) throw new SearchBackendError(searchStatusError(resp.status));
   const html = await resp.text();
   const results = parseBingResults(html).slice(0, topK);
   if (results.length === 0) {
     if (/no results found|did not match any documents/i.test(html)) return [];
     if (/captcha|verify you are human|access denied|forbidden/i.test(html)) {
-      throw new Error(t("webErrors.bingBlocked"));
+      throw new SearchBackendError(t("webErrors.bingBlocked"));
     }
-    throw new Error(
+    throw new SearchBackendError(
       t("webErrors.bingNoResults", {
         chars: html.length,
         preview: flattenText(html.slice(0, 120)),
@@ -416,19 +446,17 @@ async function searchSearxng(query: string, opts: WebSearchOptions = {}): Promis
       signal: searchSignal(opts.signal),
     });
   } catch (err) {
-    if (err instanceof TypeError && (err as Error).message.includes("fetch")) {
-      throw new Error(
-        t("webErrors.cannotReach", { endpoint: opts.endpoint ?? "http://localhost:8080" }),
-      );
-    }
-    throw err;
+    if (opts.signal?.aborted) throw err;
+    throw new SearchBackendError(
+      t("webErrors.cannotReach", { endpoint: opts.endpoint ?? "http://localhost:8080" }),
+    );
   }
-  if (!resp.ok) throw new Error(searchStatusError(resp.status));
+  if (!resp.ok) throw new SearchBackendError(searchStatusError(resp.status));
   const html = await resp.text();
   const results = parseSearxngHtmlResults(html).slice(0, topK);
   if (results.length === 0) {
     if (/no results found|did not match any documents/i.test(html)) return [];
-    throw new Error(t("webErrors.searxngNoResults", { chars: html.length }));
+    throw new SearchBackendError(t("webErrors.searxngNoResults", { chars: html.length }));
   }
   return results;
 }
@@ -789,7 +817,7 @@ async function searchOllama(query: string, opts: WebSearchOptions = {}): Promise
   const apiKey = loadOllamaApiKey(opts.configPath);
   if (!apiKey) {
     throw new Error(
-      "web_search: Ollama web search requires an API key: set OLLAMA_API_KEY, `ollamaApiKey`, or use /search-engine ollama <key>.",
+      "web_search: Ollama web search requires an API key: set OLLAMA_API_KEY or `ollamaApiKey` in ~/.reasonix/config.json.",
     );
   }
 
@@ -889,7 +917,7 @@ async function webFetchOllama(
   const apiKey = loadOllamaApiKey(opts.configPath);
   if (!apiKey) {
     throw new Error(
-      "web_fetch: Ollama web fetch requires an API key: set OLLAMA_API_KEY, `ollamaApiKey`, or use /search-engine ollama <key>.",
+      "web_fetch: Ollama web fetch requires an API key: set OLLAMA_API_KEY or `ollamaApiKey` in ~/.reasonix/config.json.",
     );
   }
 
@@ -1247,7 +1275,7 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
       required: ["query"],
     },
     fn: async (args: { query: string; topK?: number }, ctx) => {
-      // Read at call time, not registration time — `/search-engine` mutates config mid-session (#1309).
+      // Read at call time, not registration time — the engine setting mutates config mid-session (#1309).
       const engine = loadWebSearchEngine(opts.configPath);
       const endpoint = loadWebSearchEndpoint(opts.configPath);
       const results = await webSearch(args.query, {
@@ -1288,7 +1316,7 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
       if (!/^https?:\/\//i.test(args.url)) {
         throw new Error(t("webErrors.fetchInvalidUrl"));
       }
-      // Read at call time, not registration time — `/search-engine` mutates config mid-session (#1309).
+      // Read at call time, not registration time — the engine setting mutates config mid-session (#1309).
       const engine = loadWebSearchEngine(opts.configPath);
       if (engine === "ollama") {
         const page = await webFetchOllama(args.url, {

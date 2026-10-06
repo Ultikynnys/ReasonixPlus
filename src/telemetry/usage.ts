@@ -51,7 +51,7 @@ export interface UsageRecord {
   claudeEquivUsd: number;
   /** Absent on legacy records — treat as "turn" when missing. */
   kind?: "turn" | "subagent";
-  /** Present when `kind === "subagent"`. Attribution metadata for the /stats roll-up. */
+  /** Present when `kind === "subagent"`. Attribution metadata for the stats roll-up. */
   subagent?: {
     /** Skill that spawned it, when the spawn came from a `runAs: subagent` skill. */
     skillName?: string;

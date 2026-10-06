@@ -111,7 +111,7 @@ export interface MemoryWriteInput {
 }
 
 /** Create/overwrite a structured memory via MemoryStore — regenerates MEMORY.md so the
- *  next /new or launch pins it. Throws on invalid names / empty description / body. */
+ *  next new session or launch pins it. Throws on invalid names / empty description / body. */
 export function writeMemoryEntry(
   input: MemoryWriteInput,
   projectRoot: string,

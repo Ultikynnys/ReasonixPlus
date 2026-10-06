@@ -29,7 +29,7 @@ export function sortToolSpecs(specs: readonly ToolSpec[]): ToolSpec[] {
 }
 
 export class ImmutablePrefix {
-  /** Stable across turns; rebuilt only on /new when REASONIX.md changed on disk. */
+  /** Stable across turns; rebuilt only on a new session when REASONIX.md changed on disk. */
   system: string;
   /** Each `addTool` costs one cache-miss turn — DeepSeek's prefix cache is keyed by full tool list. */
   private _toolSpecs: ToolSpec[];
@@ -181,7 +181,7 @@ export class AppendOnlyLog {
     for (const m of messages) this.append(m);
   }
 
-  /** The one append-only-breaking path — reserved for `/compact` + recovery. Use `append()` otherwise. */
+  /** The one append-only-breaking path — reserved for compaction + recovery. Use `append()` otherwise. */
   compactInPlace(replacement: ChatMessage[]): void {
     this._entries = [...replacement];
     this._rewriteVersion++;

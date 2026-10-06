@@ -149,6 +149,7 @@ import {
 import { getThreadMaxWidth } from "./ui/thread-layout";
 import { useAutoCollapse } from "./ui/useAutoCollapse";
 import { useAutoScroll } from "./ui/useAutoScroll";
+import { useIsScrollable } from "./ui/useIsScrollable";
 import { useDisableTextAssist } from "./ui/useDisableTextAssist";
 import { useResizable } from "./ui/useResizable";
 import { WorkdirPop } from "./ui/workdir-pop";
@@ -2176,7 +2177,11 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         messages: state.messages.map((m) => {
           if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
           if (ev.channel === "content") {
-            return { ...m, segments: appendTextSegment(m.segments, "text", ev.text), pending: true };
+            return {
+              ...m,
+              segments: appendTextSegment(m.segments, "text", ev.text),
+              pending: true,
+            };
           }
           if (ev.channel === "reasoning") {
             return {
@@ -2402,7 +2407,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     case "compaction.started": {
       // Compaction card joins the assistant queue like a tool card: attached to
       // the LAST assistant message (the running turn for auto folds; the previous
-      // turn for user-triggered /compact while idle).
+      // turn for user-triggered compaction while idle).
       const seg: AssistantSegment = {
         kind: "compaction",
         id: ev.compactionId,
@@ -3239,7 +3244,7 @@ function TabRuntime({
     if (!state.busy) clearAbortDraft();
   }, [clearAbortDraft, state.busy]);
 
-  // When /retry returns the last user text, set it as the composer draft.
+  // When retry returns the last user text, set it as the composer draft.
   // Only fire when retryNonce changes — retryText alone would re-fire on re-renders.
   // biome-ignore lint/correctness/useExhaustiveDependencies: retryText deliberately left out (see above)
   useEffect(() => {
@@ -3420,13 +3425,14 @@ function TabRuntime({
     return Number.isFinite(n) ? n : null;
   }, []);
 
-  const { showJumpButton, scrollToBottom } = useAutoScroll(
+  const { scrollToBottom, scrollToTop } = useAutoScroll(
     threadRef,
     threadInnerRef,
     state.busy,
     restoreScrollTop,
     active,
   );
+  const threadScrollable = useIsScrollable(threadRef, threadInnerRef);
 
   // Persist the transcript scroll offset per session so a restart reopens
   // the conversation where the user left it (#1244).
@@ -3797,170 +3803,187 @@ function TabRuntime({
                   }
                 }}
               />
-              <div className="thread" ref={threadRef}>
-                <div className="thread-inner" ref={threadInnerRef}>
-                  {active ? (
-                    <>
-                      {state.messages.length === 0 ? (
-                        <EmptyState
-                          onPick={(text) => send(text)}
-                          workspaceDir={state.settings?.workspaceDir}
-                        />
-                      ) : null}
+              <div className="thread-wrap">
+                {threadScrollable ? (
+                  <div className="thread-rail">
+                    <button
+                      type="button"
+                      className="thread-scroll-btn"
+                      onClick={() => scrollToTop(true)}
+                      title={t("app.jumpToTop") ?? "Jump to top"}
+                      aria-label={t("app.jumpToTop") ?? "Jump to top"}
+                    >
+                      <I.chevU size={14} />
+                    </button>
+                  </div>
+                ) : null}
+                <div className="thread" ref={threadRef}>
+                  <div className="thread-inner" ref={threadInnerRef}>
+                    {active ? (
+                      <>
+                        {state.messages.length === 0 ? (
+                          <EmptyState
+                            onPick={(text) => send(text)}
+                            workspaceDir={state.settings?.workspaceDir}
+                          />
+                        ) : null}
 
-                      {state.messages.map((m, i) => {
-                        if (m.kind === "user") {
-                          const dividerLabel = `turn ${m.turn}`;
-                          const prev = state.messages[i - 1];
-                          const needsDivider = !prev || prev.kind === "user";
-                          return (
-                            <div key={`u-${m.turn}`} data-turn={m.turn}>
-                              {needsDivider ? <TurnDivider label={dividerLabel} /> : null}
-                              <UserMsg text={m.text} images={m.images} skill={m.skill} />
-                            </div>
-                          );
-                        }
-                        if (m.kind === "assistant") {
-                          return (
-                            // biome-ignore lint/suspicious/noArrayIndexKey: transcript order is append-only
-                            <div key={`a-${m.turn}-${i}`}>
-                              <AssistantRow
-                                m={m}
-                                model={state.model}
-                                pendingConfirms={state.pendingConfirms}
-                                activePlan={activePlanForMessage(m, state.activePlan)}
-                                onApproveConfirm={onApproveConfirm}
-                                onRejectConfirm={onRejectConfirm}
-                                onRuleConfirm={onRuleConfirm}
-                                onStopTool={onStopTool}
-                                jobs={state.jobs}
-                                tabId={tabId}
-                                onStopJob={onStopJob}
-                                isInterventionPending={hasPendingIntervention(state)}
-                              />
-                            </div>
-                          );
-                        }
-                        if (m.kind === "notice") {
-                          return <NoticeCard key={m.id} text={m.text} severity={m.severity} />;
-                        }
-                        return null;
-                      })}
+                        {state.messages.map((m, i) => {
+                          if (m.kind === "user") {
+                            const dividerLabel = `turn ${m.turn}`;
+                            const prev = state.messages[i - 1];
+                            const needsDivider = !prev || prev.kind === "user";
+                            return (
+                              <div key={`u-${m.turn}`} data-turn={m.turn}>
+                                {needsDivider ? <TurnDivider label={dividerLabel} /> : null}
+                                <UserMsg text={m.text} images={m.images} skill={m.skill} />
+                              </div>
+                            );
+                          }
+                          if (m.kind === "assistant") {
+                            return (
+                              // biome-ignore lint/suspicious/noArrayIndexKey: transcript order is append-only
+                              <div key={`a-${m.turn}-${i}`}>
+                                <AssistantRow
+                                  m={m}
+                                  model={state.model}
+                                  pendingConfirms={state.pendingConfirms}
+                                  activePlan={activePlanForMessage(m, state.activePlan)}
+                                  onApproveConfirm={onApproveConfirm}
+                                  onRejectConfirm={onRejectConfirm}
+                                  onRuleConfirm={onRuleConfirm}
+                                  onStopTool={onStopTool}
+                                  jobs={state.jobs}
+                                  tabId={tabId}
+                                  onStopJob={onStopJob}
+                                  isInterventionPending={hasPendingIntervention(state)}
+                                />
+                              </div>
+                            );
+                          }
+                          if (m.kind === "notice") {
+                            return <NoticeCard key={m.id} text={m.text} severity={m.severity} />;
+                          }
+                          return null;
+                        })}
 
-                      {/* Pending approvals */}
-                      {state.pendingPlans.map((p) => (
-                        <PlanApprovalCard
-                          key={`pp-${p.id}`}
-                          id={p.id}
-                          plan={p.plan}
-                          summary={p.summary}
-                          steps={p.steps}
-                          countdownMs={p.countdownMs}
-                          onApprove={() => resolvePlan(p.id, { type: "approve" })}
-                          onRefine={() => resolvePlan(p.id, { type: "refine" })}
-                          onCancel={() => resolvePlan(p.id, { type: "cancel" })}
-                          onTimerToggle={(enabled) => setGateTimer(p.id, enabled)}
-                        />
-                      ))}
-                      {state.pendingCheckpoints.map((c) => (
-                        <CheckpointApprovalCard
-                          key={`cp-${c.id}`}
-                          c={c}
-                          onContinue={() => resolveCheckpoint(c.id, { type: "continue" })}
-                          onRevise={() => resolveCheckpoint(c.id, { type: "revise" })}
-                          onStop={() => resolveCheckpoint(c.id, { type: "stop" })}
-                        />
-                      ))}
-                      {state.pendingRevisions.map((r) => (
-                        <RevisionApprovalCard
-                          key={`rv-${r.id}`}
-                          r={r}
-                          onAccept={() => resolveRevision(r.id, { type: "accepted" })}
-                          onReject={() => resolveRevision(r.id, { type: "rejected" })}
-                          onTimerToggle={(enabled) => setGateTimer(r.id, enabled)}
-                        />
-                      ))}
-                      {state.pendingConfirms.map((c) => (
-                        <ConfirmApprovalCard
-                          key={`cc-${c.id}`}
-                          prompt={c.prompt}
-                          onAllow={() => resolveConfirm(c.id, { type: "run_once" })}
-                          onAddWorkspaceRule={() =>
-                            resolveConfirm(c.id, {
-                              type: "always_allow",
-                              prefix: String(c.prompt.data?.prefix ?? ""),
-                              scope: "workspace",
-                            })
-                          }
-                          onAddGlobalRule={() =>
-                            resolveConfirm(c.id, {
-                              type: "always_allow",
-                              prefix: String(c.prompt.data?.prefix ?? ""),
-                              scope: "global",
-                            })
-                          }
-                          onDeny={() => resolveConfirm(c.id, { type: "deny" })}
-                        />
-                      ))}
-                      {state.pendingPathAccess.map((p) => (
-                        <PathAccessApprovalCard
-                          key={`pa-${p.id}`}
-                          prompt={p.prompt}
-                          onAllow={() => resolvePathAccess(p.id, { type: "run_once" })}
-                          onAddWorkspaceRule={() =>
-                            resolvePathAccess(p.id, {
-                              type: "always_allow",
-                              prefix: p.allowPrefix,
-                              scope: "workspace",
-                            })
-                          }
-                          onAddGlobalRule={() =>
-                            resolvePathAccess(p.id, {
-                              type: "always_allow",
-                              prefix: p.allowPrefix,
-                              scope: "global",
-                            })
-                          }
-                          onDeny={() => resolvePathAccess(p.id, { type: "deny" })}
-                        />
-                      ))}
-                      {state.pendingChoices.map((c) => (
-                        <ChoiceApprovalCard
-                          key={`ch-${c.id}`}
-                          question={c.question}
-                          options={c.options}
-                          countdownMs={c.countdownMs}
-                          onPick={(optionId) => resolveChoice(c.id, { type: "pick", optionId })}
-                          onCancel={() => resolveChoice(c.id, { type: "cancel" })}
-                          onTimerToggle={(enabled) => setGateTimer(c.id, enabled)}
-                        />
-                      ))}
+                        {/* Pending approvals */}
+                        {state.pendingPlans.map((p) => (
+                          <PlanApprovalCard
+                            key={`pp-${p.id}`}
+                            id={p.id}
+                            plan={p.plan}
+                            summary={p.summary}
+                            steps={p.steps}
+                            countdownMs={p.countdownMs}
+                            onApprove={() => resolvePlan(p.id, { type: "approve" })}
+                            onRefine={() => resolvePlan(p.id, { type: "refine" })}
+                            onCancel={() => resolvePlan(p.id, { type: "cancel" })}
+                            onTimerToggle={(enabled) => setGateTimer(p.id, enabled)}
+                          />
+                        ))}
+                        {state.pendingCheckpoints.map((c) => (
+                          <CheckpointApprovalCard
+                            key={`cp-${c.id}`}
+                            c={c}
+                            onContinue={() => resolveCheckpoint(c.id, { type: "continue" })}
+                            onRevise={() => resolveCheckpoint(c.id, { type: "revise" })}
+                            onStop={() => resolveCheckpoint(c.id, { type: "stop" })}
+                          />
+                        ))}
+                        {state.pendingRevisions.map((r) => (
+                          <RevisionApprovalCard
+                            key={`rv-${r.id}`}
+                            r={r}
+                            onAccept={() => resolveRevision(r.id, { type: "accepted" })}
+                            onReject={() => resolveRevision(r.id, { type: "rejected" })}
+                            onTimerToggle={(enabled) => setGateTimer(r.id, enabled)}
+                          />
+                        ))}
+                        {state.pendingConfirms.map((c) => (
+                          <ConfirmApprovalCard
+                            key={`cc-${c.id}`}
+                            prompt={c.prompt}
+                            onAllow={() => resolveConfirm(c.id, { type: "run_once" })}
+                            onAddWorkspaceRule={() =>
+                              resolveConfirm(c.id, {
+                                type: "always_allow",
+                                prefix: String(c.prompt.data?.prefix ?? ""),
+                                scope: "workspace",
+                              })
+                            }
+                            onAddGlobalRule={() =>
+                              resolveConfirm(c.id, {
+                                type: "always_allow",
+                                prefix: String(c.prompt.data?.prefix ?? ""),
+                                scope: "global",
+                              })
+                            }
+                            onDeny={() => resolveConfirm(c.id, { type: "deny" })}
+                          />
+                        ))}
+                        {state.pendingPathAccess.map((p) => (
+                          <PathAccessApprovalCard
+                            key={`pa-${p.id}`}
+                            prompt={p.prompt}
+                            onAllow={() => resolvePathAccess(p.id, { type: "run_once" })}
+                            onAddWorkspaceRule={() =>
+                              resolvePathAccess(p.id, {
+                                type: "always_allow",
+                                prefix: p.allowPrefix,
+                                scope: "workspace",
+                              })
+                            }
+                            onAddGlobalRule={() =>
+                              resolvePathAccess(p.id, {
+                                type: "always_allow",
+                                prefix: p.allowPrefix,
+                                scope: "global",
+                              })
+                            }
+                            onDeny={() => resolvePathAccess(p.id, { type: "deny" })}
+                          />
+                        ))}
+                        {state.pendingChoices.map((c) => (
+                          <ChoiceApprovalCard
+                            key={`ch-${c.id}`}
+                            question={c.question}
+                            options={c.options}
+                            countdownMs={c.countdownMs}
+                            onPick={(optionId) => resolveChoice(c.id, { type: "pick", optionId })}
+                            onCancel={() => resolveChoice(c.id, { type: "cancel" })}
+                            onTimerToggle={(enabled) => setGateTimer(c.id, enabled)}
+                          />
+                        ))}
 
-                      {!backendConnected ? (
-                        <div
-                          style={{
-                            padding: 12,
-                            color: "var(--muted)",
-                            fontFamily: "Geist Mono, monospace",
-                            fontSize: 11,
-                          }}
-                        >
-                          {t("app.connecting")}
-                        </div>
-                      ) : null}
-                    </>
-                  ) : null}
+                        {!backendConnected ? (
+                          <div
+                            style={{
+                              padding: 12,
+                              color: "var(--muted)",
+                              fontFamily: "Geist Mono, monospace",
+                              fontSize: 11,
+                            }}
+                          >
+                            {t("app.connecting")}
+                          </div>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </div>
                 </div>
-                {showJumpButton ? (
-                  <button
-                    type="button"
-                    className="thread-jump-bottom"
-                    onClick={() => scrollToBottom(true)}
-                    title={t("app.jumpToBottom") ?? "Jump to bottom"}
-                    aria-label={t("app.jumpToBottom") ?? "Jump to bottom"}
-                  >
-                    <I.chev size={16} />
-                  </button>
+                {threadScrollable ? (
+                  <div className="thread-rail">
+                    <button
+                      type="button"
+                      className="thread-scroll-btn"
+                      onClick={() => scrollToBottom(true)}
+                      title={t("app.jumpToBottom") ?? "Jump to bottom"}
+                      aria-label={t("app.jumpToBottom") ?? "Jump to bottom"}
+                    >
+                      <I.chev size={14} />
+                    </button>
+                  </div>
                 ) : null}
               </div>
 

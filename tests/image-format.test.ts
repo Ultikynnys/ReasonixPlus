@@ -174,7 +174,9 @@ describe("normalizeImageToDataUrls", () => {
 
   it("splits an image taller than the vision cap into accepted tiles", async () => {
     // DeepSeek 400s on any side above 8192; a full-page screenshot can exceed it.
-    const img = new Jimp({ width: 120, height: MAX_VISION_DIMENSION + 2000, color: 0x3366ccff });
+    // Only the over-cap height matters to the assertion, so a narrow fixture keeps
+    // the pure-JS PNG codec fast (same trick as the within-cap test below).
+    const img = new Jimp({ width: 16, height: MAX_VISION_DIMENSION + 2000, color: 0x3366ccff });
     const png = await img.getBuffer("image/png");
     const res = await normalizeImageToDataUrls(png);
     expect(res.ok).toBe(true);

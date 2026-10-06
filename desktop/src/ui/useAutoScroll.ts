@@ -61,6 +61,22 @@ export function useAutoScroll(
     [containerRef],
   );
 
+  const scrollToTop = useCallback(
+    (smooth = true) => {
+      const el = containerRef.current;
+      if (!el) return;
+      // Leaving the bottom: un-pin so a concurrent ResizeObserver cannot snap the
+      // viewport back to the bottom while the user reads earlier content.
+      isPinnedRef.current = false;
+      refreshJumpButton();
+      el.scrollTo({
+        top: 0,
+        behavior: smooth ? "smooth" : "instant",
+      });
+    },
+    [containerRef, refreshJumpButton],
+  );
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -253,5 +269,5 @@ export function useAutoScroll(
     return () => clearTimeout(id);
   }, [containerRef, getRestoreScrollTop, refreshJumpButton, active]);
 
-  return { showJumpButton, scrollToBottom };
+  return { showJumpButton, scrollToBottom, scrollToTop };
 }

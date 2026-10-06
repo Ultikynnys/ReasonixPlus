@@ -28,6 +28,24 @@ export interface DispatchContext {
   abandonedCalls: Set<string>;
   /** Mutable across iter cycles — single rate-limit warning per step(). */
   rateLimitState: { shown: boolean };
+  /** Reports each settled call's outcome so the loop can steer away from a tool
+   *  that keeps failing. Fired once per call, after its result is known. */
+  noteToolResult?: (name: string, failed: boolean) => void;
+}
+
+/** A settled tool call counts as failed when it REJECTED, or when it returned a
+ *  JSON object carrying an `error` string — the two shapes tools use to report a
+ *  failure without throwing. */
+function resultLooksFailed(result: string | UserContentPart[]): boolean {
+  if (Array.isArray(result)) return false;
+  const trimmed = result.trim();
+  if (!trimmed.startsWith("{")) return false;
+  try {
+    const parsed = JSON.parse(trimmed) as { error?: unknown };
+    return typeof parsed.error === "string";
+  } catch {
+    return false;
+  }
 }
 
 function readParallelMax(): number {
@@ -128,6 +146,11 @@ export async function* dispatchToolCallsChunked(
 
       for (const w of preWarnings) yield w;
       for (const w of postWarnings) yield w;
+
+      // A rejection that isn't a user cancel, or an error-shaped JSON result,
+      // is a genuine failure — feed it to the failure guard.
+      const failed = s.status === "rejected" ? !ctx.signal.aborted : resultLooksFailed(result);
+      ctx.noteToolResult?.(name, failed);
 
       const rateLimited = typeof result === "string" ? parseRateLimitedToolResult(result) : null;
       if (rateLimited && !ctx.rateLimitState.shown) {

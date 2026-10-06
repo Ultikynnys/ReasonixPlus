@@ -98,7 +98,7 @@ describe("desktop timeline notices", () => {
 
 describe("desktop $btw_result reducer (#1470)", () => {
   it("clears busy and appends the answer as a status message", () => {
-    // /btw flips busy=true on send (via send_user echo); the answer must
+    // A btw side question flips busy=true on send (via send_user echo); the answer must
     // flip it back off or the composer stays disabled (#1470).
     const state: AppState = { ...makeState(), busy: true };
     const next = reduce(state, {

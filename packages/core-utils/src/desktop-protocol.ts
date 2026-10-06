@@ -644,7 +644,7 @@ export interface SkillsEvent {
 export interface CtxBreakdownEvent {
   type: "$ctx_breakdown";
   reservedTokens: number;
-  /** Current log token count (real-time) — sent after /compact to refresh the meter. */
+  /** Current log token count (real-time) — sent after compaction to refresh the meter. */
   logTokens?: number;
   /** Model context cap — denominator + compaction-limit ticks for the meter. */
   ctxMax?: number;

@@ -246,7 +246,7 @@ describe("SessionStats", () => {
     expect(s.totalInputCostUsd + s.totalOutputCostUsd).toBeCloseTo(s.totalCostUsd, 6);
   });
 
-  it("reset clears live and carryover totals for /new", () => {
+  it("reset clears live and carryover totals for a new session", () => {
     const stats = new SessionStats();
     stats.seedCarryover({
       totalCostUsd: 0.05,
@@ -382,7 +382,7 @@ describe("SessionStats — issue #333 resume cost carryover", () => {
 });
 
 describe("SessionStats — issue #364 resume cache + context carryover", () => {
-  it("aggregateCacheHitRatio includes carryover so /status isn't 0% on a fresh resume", () => {
+  it("aggregateCacheHitRatio includes carryover so status isn't 0% on a fresh resume", () => {
     const s = new SessionStats();
     s.seedCarryover({ cacheHitTokens: 366976, cacheMissTokens: 109 });
     // No live turns yet — ratio must come from the carryover alone.

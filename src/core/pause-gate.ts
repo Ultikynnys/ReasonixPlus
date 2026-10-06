@@ -161,7 +161,7 @@ export class PauseGate {
     p.resolve(data);
   }
 
-  /** Safe-cancel every outstanding request — frees stranded tool fns on Esc / /new. */
+  /** Safe-cancel every outstanding request — frees stranded tool fns on Esc or a new session. */
   cancelAll(): void {
     const ids = [...this._pending.keys()];
     for (const id of ids) {

@@ -19,7 +19,7 @@ describe("formatLoopError", () => {
     );
     const out = formatLoopError(raw);
     expect(out).toMatch(/Context overflow/);
-    expect(out).toMatch(/\/sessions/);
+    expect(out).toMatch(/Start a new conversation/);
     expect(out).toMatch(/929,452 tokens/); // pretty-printed from the raw JSON
   });
 

@@ -1628,7 +1628,7 @@ describe("config", () => {
     it('legacy "mojeek" config value reads back as bing (read-only migration)', () => {
       // Old configs predating the bing-default swap still have "mojeek" on disk.
       // Loader maps unknown values to bing; user's config file isn't rewritten,
-      // so an explicit `/search-engine mojeek` later still rejects loudly.
+      // so an explicit engine switch later still rejects loudly.
       writeConfig({ webSearchEngine: "mojeek" as unknown as "bing" }, path);
       expect(webSearchEngine(path)).toBe("bing");
     });

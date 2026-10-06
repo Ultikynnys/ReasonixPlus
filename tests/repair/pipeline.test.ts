@@ -199,4 +199,26 @@ describe("ToolCallRepair pipeline", () => {
     expect(calls[0]!.thoughtSignature).toBe("sig-turn-scavenge");
     expect(calls[1]!.thoughtSignature).toBe("sig-turn-scavenge");
   });
+
+  it("flags failureSuppressed when the same tool has failed five times in a row", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["web_search"]) });
+    for (let i = 0; i < 5; i++) repair.noteResult("web_search", true);
+    const { calls, report } = repair.process([call("c1", "web_search", '{"query":"q"}')], null);
+    expect(calls).toHaveLength(0);
+    expect(report.stormsBroken).toBe(1);
+    expect(report.failureSuppressed).toBe(true);
+    expect(report.notes.join("\n")).toMatch(/failed 5 times in a row/);
+  });
+
+  it("does not flag failureSuppressed for a plain identical-args repeat", () => {
+    const repair = new ToolCallRepair({
+      allowedToolNames: new Set(["x"]),
+      stormWindow: 6,
+      stormThreshold: 3,
+    });
+    for (let i = 0; i < 2; i++) repair.process([call(`c${i}`, "x", "{}")], null);
+    const { report } = repair.process([call("c3", "x", "{}")], null);
+    expect(report.stormsBroken).toBe(1);
+    expect(report.failureSuppressed).toBe(false);
+  });
 });

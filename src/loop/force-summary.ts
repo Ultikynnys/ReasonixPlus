@@ -51,7 +51,7 @@ export interface ForceSummaryContext {
   turn: number;
   /** Model to call for the summary itself — must be valid on the user's endpoint. */
   model: string;
-  /** Honour the user's /max-tokens cap on the summary call too (#2196). */
+  /** Honour the user's per-turn output cap on the summary call too (#2196). */
   maxOutputTokens?: number;
   /** System prompt — used to lift pinned constraints verbatim into the summary. */
   getSystemPrompt: () => string;
