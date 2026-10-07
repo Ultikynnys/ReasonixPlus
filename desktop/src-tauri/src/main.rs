@@ -63,14 +63,20 @@ fn walk_dir(dir: &Path, depth: u32, max_depth: u32, out: &mut Vec<FileEntry>) {
 }
 
 #[tauri::command]
-fn list_workspace_tree(root: String, max_depth: u32) -> Result<Vec<FileEntry>, String> {
-    let root_path = Path::new(&root);
-    if !root_path.is_dir() {
-        return Err(format!("not a directory: {root}"));
-    }
-    let mut out = Vec::new();
-    walk_dir(root_path, 0, max_depth.min(4), &mut out);
-    Ok(out)
+async fn list_workspace_tree(root: String, max_depth: u32) -> Result<Vec<FileEntry>, String> {
+    // Non-async Tauri commands run on the main thread; a directory walk there
+    // stalls painting (traced 60-180ms ipc.local stalls). Run on a worker.
+    tauri::async_runtime::spawn_blocking(move || {
+        let root_path = Path::new(&root);
+        if !root_path.is_dir() {
+            return Err(format!("not a directory: {root}"));
+        }
+        let mut out = Vec::new();
+        walk_dir(root_path, 0, max_depth.min(4), &mut out);
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
 }
 
 #[derive(Serialize)]
@@ -87,13 +93,22 @@ struct GitStatusEntry {
 #[serde(rename_all = "camelCase")]
 struct GitStatus {
     is_repo: bool,
+    branch: Option<String>,
     entries: Vec<GitStatusEntry>,
 }
 
 #[tauri::command]
-fn git_status(root: String) -> Result<GitStatus, String> {
+async fn git_status(root: String) -> Result<GitStatus, String> {
+    // Spawning `git` and waiting for it must not happen on the main thread:
+    // every poll froze painting for the process duration (traced 100ms+ bars).
+    tauri::async_runtime::spawn_blocking(move || git_status_blocking(&root))
+        .await
+        .map_err(|e| format!("join: {e}"))?
+}
+
+fn git_status_blocking(root: &str) -> Result<GitStatus, String> {
     use std::process::Command;
-    let root_path = Path::new(&root);
+    let root_path = Path::new(root);
     if !root_path.is_dir() {
         return Err(format!("not a directory: {root}"));
     }
@@ -107,6 +122,7 @@ fn git_status(root: String) -> Result<GitStatus, String> {
     }
     let empty = || GitStatus {
         is_repo: false,
+        branch: None,
         entries: Vec::new(),
     };
     let output = match cmd.output() {
@@ -138,8 +154,28 @@ fn git_status(root: String) -> Result<GitStatus, String> {
         let path = String::from_utf8_lossy(&rec[3..]).into_owned();
         entries.push(GitStatusEntry { path, kind });
     }
+    // Symbolic-ref fails on a detached HEAD; the status entries still matter there.
+    let mut branch_cmd = Command::new("git");
+    branch_cmd
+        .arg("symbolic-ref")
+        .arg("--short")
+        .arg("HEAD")
+        .current_dir(root_path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        branch_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let branch = branch_cmd
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
     Ok(GitStatus {
         is_repo: true,
+        branch,
         entries,
     })
 }
@@ -221,11 +257,16 @@ fn resolve_workspace_file_impl(path: &str, workspace: Option<&str>) -> Workspace
 }
 
 #[tauri::command]
-fn resolve_workspace_file(
+async fn resolve_workspace_file(
     path: String,
     workspace: Option<String>,
 ) -> Result<WorkspaceFileResolution, String> {
-    Ok(resolve_workspace_file_impl(&path, workspace.as_deref()))
+    // Filesystem search runs on a worker, same reason as git_status.
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(resolve_workspace_file_impl(&path, workspace.as_deref()))
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
 }
 
 /// Resolve an existing path for legacy reveal callers. Ambiguous basename
@@ -308,9 +349,16 @@ mod tests {
 /// opens the directory itself. Replaces the old "open in code editor"
 /// flow — no editor detection, no editor config.
 #[tauri::command]
-fn reveal_in_explorer(path: String, workspace: Option<String>) -> Result<(), String> {
+async fn reveal_in_explorer(path: String, workspace: Option<String>) -> Result<(), String> {
+    // resolve_existing does a bounded filesystem search: worker thread, not main.
+    tauri::async_runtime::spawn_blocking(move || reveal_in_explorer_blocking(&path, workspace.as_deref()))
+        .await
+        .map_err(|e| format!("join: {e}"))?
+}
+
+fn reveal_in_explorer_blocking(path: &str, workspace: Option<&str>) -> Result<(), String> {
     use std::process::{Command, Stdio};
-    let resolved = resolve_existing(&path, workspace.as_deref());
+    let resolved = resolve_existing(path, workspace);
     let is_dir = std::fs::metadata(&resolved).map(|m| m.is_dir()).unwrap_or(false);
     #[cfg(windows)]
     {
@@ -367,7 +415,14 @@ fn reveal_in_explorer(path: String, workspace: Option<String>) -> Result<(), Str
 /// On other platforms there is no portable equivalent, so fall back to the OS
 /// default handler (the `open` / `xdg-open` behaviour).
 #[tauri::command]
-fn open_with_dialog(path: String) -> Result<(), String> {
+async fn open_with_dialog(path: String) -> Result<(), String> {
+    // Process spawn is cheap but never free; keep the main thread paint-only.
+    tauri::async_runtime::spawn_blocking(move || open_with_dialog_blocking(&path))
+        .await
+        .map_err(|e| format!("join: {e}"))?
+}
+
+fn open_with_dialog_blocking(path: &str) -> Result<(), String> {
     use std::process::{Command, Stdio};
     #[cfg(windows)]
     {
@@ -402,8 +457,12 @@ fn open_with_dialog(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn write_text_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(&path, &content).map_err(|e| format!("write failed: {e}"))
+async fn write_text_file(path: String, content: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&path, &content).map_err(|e| format!("write failed: {e}"))
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
 }
 
 fn main() {

@@ -4974,6 +4974,17 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .ctx .git-kind[data-k="deleted"] {
   color: var(--danger);
 }
+.ctx .git-branch {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--accent);
+}
 
 /* token meter */
 .meter {

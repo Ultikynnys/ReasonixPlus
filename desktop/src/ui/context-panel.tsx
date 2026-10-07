@@ -75,6 +75,7 @@ export function ContextPanel({
   onWriteContext,
   rawContext,
   activePlan,
+  active = true,
 }: {
   settings: Settings | null;
   usage: UsageStats;
@@ -108,6 +109,9 @@ export function ContextPanel({
   onReadContext?: () => void;
   onWriteContext?: (text: string) => void;
   activePlan?: ActivePlan | null;
+  /** True when this tab is the visible one. Background polling (git status)
+   *  must only run for the tab the user can actually see. */
+  active?: boolean;
 }) {
   useLang();
   const [tab, setTab] = useState<Tab>("files");
@@ -238,7 +242,7 @@ export function ContextPanel({
           {tab === "files" && (
             <>
               <CtxFiles files={sessionFiles} settings={settings} />
-              <CtxGit files={sessionFiles} settings={settings} />
+              <CtxGit files={sessionFiles} settings={settings} active={active} />
             </>
           )}
           {tab === "parameters" && (
@@ -627,6 +631,7 @@ type GitEntryKind = "modified" | "added" | "deleted" | "renamed" | "untracked";
 
 type GitStatusResult = {
   isRepo: boolean;
+  branch?: string | null;
   entries: Array<{ path: string; kind: GitEntryKind }>;
 };
 
@@ -653,7 +658,15 @@ const GIT_KIND_LABEL: Record<GitEntryKind, TKey> = {
  *  a repo created outside the app. */
 const GIT_POLL_MS = 3000;
 
-function CtxGit({ settings, files }: { settings: Settings | null; files: SessionFile[] }) {
+function CtxGit({
+  settings,
+  files,
+  active,
+}: {
+  settings: Settings | null;
+  files: SessionFile[];
+  active: boolean;
+}) {
   const workspaceDir = settings?.workspaceDir;
   const [status, setStatus] = useState<GitStatusResult | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -661,9 +674,9 @@ function CtxGit({ settings, files }: { settings: Settings | null; files: Session
   const signature = useMemo(() => files.map((f) => `${f.status}:${f.path}`).join("|"), [files]);
 
   useEffect(() => {
-    // The 3s Tauri invoke is a visible periodic stall on large repos, so it only
-    // runs while the section is expanded; the header stays live via sessionFiles.
-    if (!workspaceDir || collapsed) return;
+    // The 3s Tauri invoke only runs for the visible tab while the section is
+    // expanded; hidden tabs (display:none) and the collapsed header skip it.
+    if (!workspaceDir || collapsed || !active) return;
     let alive = true;
     const load = async () => {
       try {
@@ -679,9 +692,10 @@ function CtxGit({ settings, files }: { settings: Settings | null; files: Session
       alive = false;
       clearInterval(timer);
     };
-  }, [workspaceDir, signature, nonce, collapsed]);
+  }, [workspaceDir, signature, nonce, collapsed, active]);
 
   const repo = status?.isRepo === true;
+  const branch = status?.branch;
   const entries = status?.entries ?? [];
   return (
     <CtxCollapsible
@@ -689,6 +703,7 @@ function CtxGit({ settings, files }: { settings: Settings | null; files: Session
       onCollapsedChange={setCollapsed}
       right={
         <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {repo && branch ? <span className="git-branch">{branch}</span> : null}
           {repo
             ? entries.length === 0
               ? t("contextPanel.gitClean")

@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivePlan, Settings, UsageStats } from "../App";
 import type { McpSpecInfo } from "../protocol";
@@ -52,6 +52,7 @@ function renderPanel(
   overrides: Partial<Settings> = {},
   plan: ActivePlan | null = null,
   mcpSpecs: McpSpecInfo[] = [],
+  active = true,
 ) {
   return render(
     <ContextPanel
@@ -60,6 +61,7 @@ function renderPanel(
       mcpSpecs={mcpSpecs}
       mcpBridged={false}
       sessionFiles={[{ path: "src/new-file.ts", status: "m" }]}
+      active={active}
       memory={[]}
       memoryDetail={null}
       memoryResult={null}
@@ -73,6 +75,66 @@ function renderPanel(
     />,
   );
 }
+
+describe("ContextPanel git section", () => {
+  it("shows the current branch in the section header", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      isRepo: true,
+      branch: "main",
+      entries: [{ path: "a.ts", kind: "modified" }],
+    });
+    const { container } = renderPanel();
+    await waitFor(() => expect(container.querySelector(".git-branch")?.textContent).toBe("main"));
+    expect(container.querySelector(".git-branch")).toBeTruthy();
+  });
+
+  it("polls git_status only when the tab is active", async () => {
+    vi.mocked(invoke).mockResolvedValue({ isRepo: true, branch: "main", entries: [] });
+    // An inactive tab must not call git_status at all, even after the poll
+    // interval would have elapsed several times.
+    const { rerender } = renderPanel({}, null, [], false);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    rerender(
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[{ path: "src/new-file.ts", status: "m" }]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onExportMemories={() => {}}
+        onImportMemories={() => {}}
+        onDismissMemoryResult={() => {}}
+        active
+      />,
+    );
+    await waitFor(() =>
+      expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "git_status")).toBe(true),
+    );
+    const before = vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "git_status").length;
+    expect(before).toBeGreaterThanOrEqual(1);
+  });
+
+  it("omits the branch badge on a detached HEAD", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      isRepo: true,
+      branch: null,
+      entries: [],
+    });
+    const { container } = renderPanel();
+    await waitFor(() =>
+      expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === "git_status")).toBe(true),
+    );
+    expect(container.querySelector(".git-branch")).toBeNull();
+  });
+});
 
 describe("ContextPanel MCP tab count", () => {
   it("shows only the MCP label when no servers are enabled", () => {

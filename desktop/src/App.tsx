@@ -4148,6 +4148,7 @@ function TabRuntime({
           onCopyWorkspaceRules={copyWorkspaceRules}
           onSaveSettings={saveSettings}
           activePlan={state.activePlan}
+          active={active}
         />
 
         <StatusBar
