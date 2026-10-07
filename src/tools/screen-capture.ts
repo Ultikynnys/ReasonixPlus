@@ -330,7 +330,7 @@ async function focusAppWindows(appQuery: string): Promise<FocusResult | undefine
   const sanitized = appQuery.replace(/'/g, "''");
   const script = [
     `$query = '${sanitized}';`,
-    '$code = \'using System; using System.Runtime.InteropServices; public class WinFocus { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; } [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab); [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect); }\';',
+    '$code = \'using System; using System.Runtime.InteropServices; public class WinFocus { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; } [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab); [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect); }\';',
     "Add-Type -TypeDefinition $code -ErrorAction SilentlyContinue;",
     "Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue;",
     "$procs = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($_.MainWindowTitle -or $_.ProcessName) };",
@@ -352,7 +352,17 @@ async function focusAppWindows(appQuery: string): Promise<FocusResult | undefine
     "if ([WinFocus]::IsIconic($p.MainWindowHandle)) {",
     "    [WinFocus]::ShowWindow($p.MainWindowHandle, 9) | Out-Null;",
     "}",
-    "[WinFocus]::ShowWindow($p.MainWindowHandle, 5) | Out-Null;",
+    // SW_MAXIMIZE only when not already maximized: sending it to an already-maximized
+    // window can toggle it back to its normal (windowed) size.
+    "if (-not [WinFocus]::IsZoomed($p.MainWindowHandle)) {",
+    "    [WinFocus]::ShowWindow($p.MainWindowHandle, 3) | Out-Null;",
+    "}",
+    // Raise above every other app without leaving it always-on-top: HWND_TOPMOST then
+    // HWND_NOTOPMOST. SetWindowPos works cross-process and bypasses the foreground lock,
+    // so the capture can never be obscured by whichever window holds the user's focus.
+    "[WinFocus]::SetWindowPos($p.MainWindowHandle, [IntPtr]::new(-1), 0, 0, 0, 0, 3) | Out-Null;",
+    "[WinFocus]::SetWindowPos($p.MainWindowHandle, [IntPtr]::new(-2), 0, 0, 0, 0, 3) | Out-Null;",
+    "[WinFocus]::BringWindowToTop($p.MainWindowHandle) | Out-Null;",
     "[WinFocus]::SetForegroundWindow($p.MainWindowHandle) | Out-Null;",
     "[WinFocus]::SwitchToThisWindow($p.MainWindowHandle, $true);",
     "Start-Sleep -Milliseconds 250;",
