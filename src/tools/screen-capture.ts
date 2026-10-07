@@ -55,7 +55,7 @@ export interface ScreenCaptureToolOptions {
 }
 
 const DESCRIPTION =
-  "Capture only the explicitly selected monitor, with optional top-left and bottom-right crop coordinates. The monitor is required and coordinates are relative to that monitor, never the virtual desktop. An optional app/window is focused immediately before capture; the operation fails if the focused window is reported on a different monitor. Directly feeds the capture to see_image.";
+  "Capture one monitor, with optional top-left and bottom-right crop coordinates relative to that monitor, never the virtual desktop. When an app/window is given it is focused first and the capture follows that window's own display, so no monitor index has to be guessed; pass `monitor` only to target a display explicitly when no app is given. Directly feeds the capture to see_image.";
 
 /** Common DPI-awareness preamble for Windows PowerShell operations. */
 const WIN_DPI_PREAMBLE = [
@@ -711,7 +711,7 @@ export function registerScreenCaptureTool(
         monitor: {
           type: "integer",
           description:
-            "Required: monitor index (0 for primary/first monitor, 1 for second, etc.). All coordinates are relative to this monitor.",
+            "Optional: monitor index (0 for primary/first monitor, 1 for second, etc.), used only when no app is given. When an app/window is focused the capture follows that window's own display. Coordinates are relative to the selected monitor.",
         },
         top_left_x: {
           type: "number",
@@ -774,30 +774,37 @@ export function registerScreenCaptureTool(
         }
       }
 
-      // An explicit `monitor` wins; otherwise follow the focused window's monitor so a
-      // capture of app X never lands on whatever display the user is busy with.
+      // Pick the capture display. A focused app is authoritative: the capture follows the
+      // window's own display, so the caller never has to guess (or match) a monitor index.
+      // An explicit `monitor` is consulted only when there is no focused app to derive from
+      // - it never overrides the app onto a different, wrong screen.
       const hasExplicitMonitor =
         args.monitor !== undefined && args.monitor !== null && args.monitor !== "";
-      if (!hasExplicitMonitor) {
-        return "screen_capture: monitor is required; capture is always constrained to one monitor.";
-      }
 
-      let selectedMonitor: MonitorInfo;
-      try {
-        selectedMonitor = selectMonitor(monitors, args.monitor);
-      } catch (err) {
-        return err instanceof Error ? err.message : String(err);
-      }
+      const focusedMonitorName = focusResult?.monitorName;
+      const focusedMonitor = focusedMonitorName
+        ? monitors.find(
+            (m) =>
+              m.id.toLowerCase() === focusedMonitorName.toLowerCase() ||
+              m.name.toLowerCase() === focusedMonitorName.toLowerCase(),
+          )
+        : undefined;
 
-      if (focusResult?.monitorName) {
-        const focusedMonitor = monitors.find(
-          (m) =>
-            m.id.toLowerCase() === focusResult.monitorName!.toLowerCase() ||
-            m.name.toLowerCase() === focusResult.monitorName!.toLowerCase(),
-        );
-        if (focusedMonitor && focusedMonitor.index !== selectedMonitor.index) {
-          return `screen_capture: focused app is on monitor ${focusedMonitor.index}, but monitor ${selectedMonitor.index} was requested; refusing a stale or ambiguous capture.`;
+      let selectedMonitor: MonitorInfo | undefined;
+      if (focusedMonitor) {
+        selectedMonitor = focusedMonitor;
+      } else if (hasExplicitMonitor) {
+        try {
+          selectedMonitor = selectMonitor(monitors, args.monitor);
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
         }
+      }
+
+      if (!selectedMonitor) {
+        return targetApp
+          ? `screen_capture: could not determine the display for '${targetApp}'; pass an explicit monitor.`
+          : "screen_capture: monitor is required when no app is specified; capture is always constrained to one monitor.";
       }
 
       // Parse coordinates

@@ -314,7 +314,7 @@ describe("screen_capture", () => {
     expect(capturedOptions).toHaveLength(1);
   });
 
-  it("rejects a focused app on a different monitor", async () => {
+  it("follows the focused app's own display instead of a conflicting monitor index", async () => {
     const reg = setupRegistry({
       focusRunner: async () => ({ monitorName: mockMonitors[1]!.name }),
     });
@@ -327,26 +327,33 @@ describe("screen_capture", () => {
       },
     );
 
-    expect(typeof result).toBe("string");
-    expect(result).toContain("focused app is on monitor 1");
-    expect(capturedOptions).toHaveLength(0);
+    expect(Array.isArray(result)).toBe(true);
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0]?.monitor.index).toBe(1);
   });
 
-  it("lets an explicit monitor override the focused app's monitor", async () => {
+  it("derives the display from the focused app when no monitor is passed", async () => {
     const reg = setupRegistry({
       focusRunner: async () => ({ monitorName: mockMonitors[1]!.name }),
     });
 
-    const result = await reg.dispatch(
-      "screen_capture",
-      JSON.stringify({ app: "Blender", monitor: 1 }),
-      {
-        rootDir: root,
-      },
-    );
+    const result = await reg.dispatch("screen_capture", JSON.stringify({ app: "Blender" }), {
+      rootDir: root,
+    });
 
     expect(Array.isArray(result)).toBe(true);
     expect(capturedOptions[0]?.monitor.index).toBe(1);
+  });
+
+  it("requires a monitor when no app is given to derive one from", async () => {
+    const reg = setupRegistry();
+    const result = await reg.dispatch("screen_capture", JSON.stringify({}), {
+      rootDir: root,
+    });
+
+    expect(typeof result).toBe("string");
+    expect(result).toContain("monitor is required when no app is specified");
+    expect(capturedOptions).toHaveLength(0);
   });
 
   it("does not infer a monitor from an unresolved focused app", async () => {
