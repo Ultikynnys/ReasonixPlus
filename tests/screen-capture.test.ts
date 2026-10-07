@@ -116,7 +116,8 @@ describe("screen_capture", () => {
     const imagePart = parts.find((p) => p.type === "image_url") as
       | { image_url: { url: string } }
       | undefined;
-    expect(imagePart?.image_url.url.startsWith("data:image/png;base64,")).toBe(true);
+    // Screenshots are opaque, so the pixels re-encode to JPEG for the request.
+    expect(imagePart?.image_url.url.startsWith("data:image/jpeg;base64,")).toBe(true);
 
     expect(capturedOptions).toHaveLength(1);
     expect(capturedOptions[0]?.monitor.index).toBe(0);

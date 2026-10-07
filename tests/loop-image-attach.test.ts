@@ -153,7 +153,8 @@ describe("CacheFirstLoop — image attachments (OpenAI vision parts)", () => {
       const parts = imgUserMsg?.content as Array<{ type: string; image_url?: { url: string } }>;
       expect(Array.isArray(parts)).toBe(true);
       const image = parts.find((p) => p.type === "image_url");
-      expect(image?.image_url?.url?.startsWith("data:image/png;base64,")).toBe(true);
+      // Opaque pixels are re-encoded to JPEG for a smaller request payload.
+      expect(image?.image_url?.url?.startsWith("data:image/jpeg;base64,")).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

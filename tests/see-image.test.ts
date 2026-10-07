@@ -52,7 +52,8 @@ describe("see_image", () => {
     const text = parts.find((p) => p.type === "text")?.text ?? "";
     expect(text).toContain("Image loaded at data URL");
     const image = parts.find((p) => p.type === "image_url");
-    expect(image?.image_url?.url?.startsWith("data:image/png;base64,")).toBe(true);
+    // Opaque pixels are re-encoded to JPEG for a smaller request payload.
+    expect(image?.image_url?.url?.startsWith("data:image/jpeg;base64,")).toBe(true);
   });
 
   it("loads an existing image file into an image_url part (actual pixels)", async () => {
@@ -66,8 +67,9 @@ describe("see_image", () => {
     const text = parts.find((p) => p.type === "text")?.text ?? "";
     expect(text).toContain(`Image loaded at ${join(root, "shot.png")}`);
     const image = parts.find((p) => p.type === "image_url");
-    // The data URL must carry real PNG bytes so the vision model actually sees them.
-    expect(image?.image_url?.url?.startsWith("data:image/png;base64,")).toBe(true);
+    // The data URL must carry real image bytes (opaque PNG re-encodes to JPEG)
+    // so the vision model actually sees them.
+    expect(image?.image_url?.url?.startsWith("data:image/jpeg;base64,")).toBe(true);
   });
 
   it("resolves a relative path against the tool root", async () => {

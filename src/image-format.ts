@@ -126,6 +126,25 @@ function rasterDimensions(
   return undefined;
 }
 
+/** Re-encode decoded pixels at the smallest acceptable payload: JPEG q85 for
+ *  opaque images, PNG only when any pixel is transparent (JPEG carries no
+ *  alpha). Keeps image-heavy request bodies under provider caps. */
+async function encodeVisionImage(
+  pixels: { data: ArrayLike<number> },
+  encode: (mime: "image/png" | "image/jpeg") => Promise<Buffer>,
+): Promise<{ buf: Buffer; mime: "image/png" | "image/jpeg" }> {
+  let hasAlpha = false;
+  const data = pixels.data;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i]! < 255) {
+      hasAlpha = true;
+      break;
+    }
+  }
+  if (hasAlpha) return { buf: await encode("image/png"), mime: "image/png" };
+  return { buf: await encode("image/jpeg"), mime: "image/jpeg" };
+}
+
 /** Decode a WebP's first frame to PNG pixels via sharp (lazy-imported to keep
  *  startup light — sharp is a native addon only needed on the WebP path). */
 async function decodeWebpFirstFrameToPng(buf: Buffer): Promise<Buffer | null> {
@@ -202,15 +221,17 @@ export async function normalizeImageToDataUrls(
     source = png;
     sourceFormat = "png";
   }
-  // Fast path: an accepted format already inside the dimension cap, handed back
-  // unchanged (lossless for png/gif; jpeg avoids a pointless generation loss).
-  if (sourceFormat === "png" || sourceFormat === "jpeg" || sourceFormat === "gif") {
-    const dims = rasterDimensions(sourceFormat, source);
+  // Fast path: JPEG already inside the dimension cap is handed back unchanged
+  // (re-encoding would only add generation loss). PNG and GIF fall through to
+  // the decode path: PNG re-encodes to JPEG unless it has alpha, and GIF must
+  // be decoded anyway to preserve animation frames.
+  if (sourceFormat === "jpeg") {
+    const dims = rasterDimensions("jpeg", source);
     if (dims && dims.width <= MAX_VISION_DIMENSION && dims.height <= MAX_VISION_DIMENSION) {
       return {
         ok: true,
-        dataUrls: [`data:${MIME_BY_FORMAT[sourceFormat]};base64,${source.toString("base64")}`],
-        mime: MIME_BY_FORMAT[sourceFormat],
+        dataUrls: [`data:image/jpeg;base64,${source.toString("base64")}`],
+        mime: "image/jpeg",
       };
     }
   }
@@ -219,11 +240,13 @@ export async function normalizeImageToDataUrls(
     const image = await Jimp.fromBuffer(source);
     const { width, height } = image;
     if (width <= MAX_VISION_DIMENSION && height <= MAX_VISION_DIMENSION) {
-      const png = await image.getBuffer("image/png");
+      const enc = await encodeVisionImage(image.bitmap, (mime) =>
+        mime === "image/png" ? image.getBuffer(mime) : image.getBuffer(mime, { quality: 85 }),
+      );
       return {
         ok: true,
-        dataUrls: [`data:image/png;base64,${png.toString("base64")}`],
-        mime: "image/png",
+        dataUrls: [`data:${enc.mime};base64,${enc.buf.toString("base64")}`],
+        mime: enc.mime,
       };
     }
     const cols = Math.ceil(width / MAX_VISION_DIMENSION);
@@ -241,8 +264,10 @@ export async function normalizeImageToDataUrls(
           w: Math.min(tileW, width - x),
           h: Math.min(tileH, height - y),
         });
-        const png = await tile.getBuffer("image/png");
-        dataUrls.push(`data:image/png;base64,${png.toString("base64")}`);
+        const enc = await encodeVisionImage(tile.bitmap, (mime) =>
+          mime === "image/png" ? tile.getBuffer(mime) : tile.getBuffer(mime, { quality: 85 }),
+        );
+        dataUrls.push(`data:${enc.mime};base64,${enc.buf.toString("base64")}`);
       }
     }
     return { ok: true, dataUrls, mime: "image/png" };
