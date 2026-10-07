@@ -137,6 +137,37 @@ async function decodeWebpFirstFrameToPng(buf: Buffer): Promise<Buffer | null> {
   }
 }
 
+/** Downscale a data: URL image (longest side to maxSide, never upscale) and
+ *  re-encode as JPEG q85, or PNG when any pixel is transparent; undefined when
+ *  the URL is undecodable. Lets an oversized request payload be retried. */
+export async function downscaleDataUrl(url: string, maxSide: number): Promise<string | undefined> {
+  const comma = url.indexOf(",");
+  if (!url.startsWith("data:image/") || comma < 0) return undefined;
+  let buf: Buffer;
+  try {
+    buf = Buffer.from(url.slice(comma + 1), "base64");
+  } catch {
+    return undefined;
+  }
+  if (buf.length === 0) return undefined;
+  try {
+    if (sniffImageFormat(buf) === "webp") {
+      const png = await decodeWebpFirstFrameToPng(buf);
+      if (!png) return undefined;
+      buf = png;
+    }
+    const image = await Jimp.fromBuffer(buf);
+    const longest = Math.max(image.width, image.height);
+    if (longest > maxSide) image.scaleToFit({ w: maxSide, h: maxSide });
+    const hasAlpha = image.bitmap.data.some((v, i) => i % 4 === 3 && v < 255);
+    const mime = hasAlpha ? "image/png" : "image/jpeg";
+    const out = await image.getBuffer(mime);
+    return `data:${mime};base64,${out.toString("base64")}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Normalize raw bytes into one or more vision-acceptable data URLs: accepted
  *  formats within the cap pass through, WebP is converted, garbage is re-encoded
  *  to PNG, and an overweight image is sliced into a grid of capped tiles. */

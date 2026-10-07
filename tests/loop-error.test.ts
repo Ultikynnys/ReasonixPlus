@@ -173,6 +173,14 @@ describe("formatLoopError", () => {
     expect(formatLoopError(raw)).toBe("socket hang up");
   });
 
+  it("Ollama body-too-large maps to the image-payload message, not the generic request hint", () => {
+    const raw = new Error('Ollama 400: {"error":"http: request body too large"}');
+    const out = formatLoopError(raw);
+    expect(out).toMatch(/images in context made the payload too large/);
+    expect(out).toMatch(/smaller or cropped image/);
+    expect(out).toContain("request body too large");
+  });
+
   it("tolerates an overflow error without a requested-tokens figure", () => {
     const raw = new Error("DeepSeek 400: This model's maximum context length is 131072 tokens.");
     const out = formatLoopError(raw);

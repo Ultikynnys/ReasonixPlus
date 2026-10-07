@@ -48,6 +48,14 @@ export function formatLoopError(
         inner,
       });
     }
+    // An image-heavy body over the provider's cap (Ollama daemon:
+    // `http: request body too large`) reads as an image problem, not a
+    // generic parameter problem — point the agent at smaller/cropped images.
+    if (
+      /request body too large|payload too large|entity too large|body size exceeds/i.test(inner)
+    ) {
+      return t("errors.imagePayloadTooLarge", { inner });
+    }
     return providerMessage(provider, "request", { inner });
   }
   if (status === "401") return providerMessage(provider, "auth", { inner });

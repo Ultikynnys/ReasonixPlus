@@ -284,6 +284,7 @@ export interface TranslationSchema {
     thinkingOnlyGiveUp: string;
     providerErrorRetry: string;
     providerServerErrorRetry: string;
+    imagePayloadShrunk: string;
     connectionLostWaiting: string;
     connectionRestoredResuming: string;
     truncatedContinue: string;
@@ -307,6 +308,7 @@ export interface TranslationSchema {
   };
   errors: {
     contextOverflowTooMany: string;
+    imagePayloadTooLarge: string;
     deepseekAuth: string;
     deepseekCredits: string;
     deepseekPermission: string;

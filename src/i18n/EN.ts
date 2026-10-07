@@ -528,6 +528,8 @@ export const EN: TranslationSchema = {
       "The model provider returned an error before producing a visible response — retrying automatically.",
     providerServerErrorRetry:
       "The model provider reported a temporary server error before producing a visible response: retrying automatically in 10 seconds.",
+    imagePayloadShrunk:
+      "The model provider rejected the request because the attached image(s) made it too large. The images in context were {fate}; the turn is retrying. If you need image detail, load or produce a smaller or cropped image instead of a full-size one.",
     connectionLostWaiting: "Connection lost. Waiting for connection to be re-established...",
     connectionRestoredResuming: "Connection re-established. Resuming conversation...",
     truncatedContinue:
@@ -566,6 +568,8 @@ export const EN: TranslationSchema = {
   },
   errors: {
     contextOverflowTooMany: "too many tokens",
+    imagePayloadTooLarge:
+      "The provider rejected the request because the images in context made the payload too large ({inner}), and automatic downscaling could not shrink it further. Load a smaller or cropped image instead.",
     deepseekAuth:
       "Authentication failed (DeepSeek 401): {inner}. Set a valid DEEPSEEK_API_KEY in Settings. Get one at https://platform.deepseek.com/api_keys.",
     deepseekCredits:

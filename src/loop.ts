@@ -33,6 +33,11 @@ import {
   stampMissingReasoningForThinkingMode,
 } from "./loop/healing.js";
 import { hookWarnings, safeParseToolArgs } from "./loop/hook-events.js";
+import {
+  type ShrinkLevel,
+  isPayloadTooLargeError,
+  shrinkImagePartsForRetry,
+} from "./loop/image-retry.js";
 import { buildAssistantMessage, buildSyntheticAssistantMessage } from "./loop/messages.js";
 import { looksLikePrematureStop } from "./loop/premature-stop.js";
 import { stripDroppableReasoningContent } from "./loop/reasoning-retention.js";
@@ -363,6 +368,9 @@ export class CacheFirstLoop {
   private _truncationContinuations = 0;
   /** Count of premature-stop nudges this turn — caps the finish-or-continue re-prompt loop. */
   private _prematureStopNudges = 0;
+  /** Image-shrink retries after a provider rejected the request body as too
+   *  large — caps the shrink-and-retry heal before the error surfaces. */
+  private _payloadShrinkAttempts = 0;
   /** Normalized reasoning text from the previous iteration — detects a model
    *  re-thinking the identical thought (a reasoning-only loop) when tool args
    *  drift so the storm breaker can't fire. */
@@ -1129,6 +1137,7 @@ export class CacheFirstLoop {
     this._networkReconnects = 0;
     this._truncationContinuations = 0;
     this._prematureStopNudges = 0;
+    this._payloadShrinkAttempts = 0;
     this._lastReasoningSig = null;
     this._reasoningLoopCount = 0;
     this._degenerationResumes = 0;
@@ -1540,6 +1549,37 @@ export class CacheFirstLoop {
             }
           }
           continue;
+        }
+        // A provider that rejects the whole request body as too large (Ollama's
+        // daemon: `http: request body too large`) is healable when the body is
+        // image-heavy: downscale the image parts already in the log, tell the
+        // model what happened so it prefers smaller/cropped images, and retry
+        // the iteration instead of killing the turn.
+        if (!signal.aborted && this._payloadShrinkAttempts < 2 && isPayloadTooLargeError(cause)) {
+          const level: ShrinkLevel = this._payloadShrinkAttempts === 0 ? 1 : 2;
+          this._payloadShrinkAttempts++;
+          const shrink = await shrinkImagePartsForRetry([...this.log.entries], level);
+          if (shrink.changed) {
+            this.log.compactInPlace(this.log.entries.map((m) => ({ ...m })));
+            this.persistLog([...this.log.entries]);
+            const fate =
+              shrink.dropped > 0
+                ? `downscaled and ${shrink.dropped} older image(s) removed`
+                : `downscaled (${shrink.shrunk} image(s) shrunk)`;
+            const note = t("loop.imagePayloadShrunk", { fate });
+            this.appendAndPersist({
+              role: "user",
+              synthetic: true,
+              content: note,
+            });
+            yield {
+              turn: this._turn,
+              role: "warning",
+              severity: "low",
+              content: note,
+            };
+            continue;
+          }
         }
         const streamBodyError = this.stream && phase === "stream_body_read";
         const retryable =
