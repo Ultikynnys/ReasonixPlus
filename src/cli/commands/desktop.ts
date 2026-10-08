@@ -1241,15 +1241,39 @@ export function buildLoadedMessages(records: ChatMessage[]): LoadedMessage[] {
 export function mergeNoticesIntoLoaded(
   loaded: LoadedMessage[],
   notices: readonly PersistedNotice[],
+  lastTurn?: number,
 ): LoadedMessage[] {
   if (notices.length === 0) return loaded;
   // Copy so appending warning segments never mutates the caller's arrays.
   const out: LoadedMessage[] = loaded.map((m) =>
     m.kind === "assistant" ? { ...m, segments: [...m.segments] } : m,
   );
+  // A live card's turn is the kernel's ABSOLUTE ordinal, but buildLoadedMessages
+  // renumbers the surviving user records from 1. After a fold the two diverge by
+  // the folded-away turn count, so a persisted card whose turn exceeds the user
+  // count would otherwise be dumped at the transcript tail on every reload.
+  // Rebase those turns into the reconstructed scheme; a card for a turn that no
+  // longer exists (mapped to <= 0) is dropped along with the turn it belonged to.
+  const userCount = out.reduce((n, m) => (m.kind === "user" ? n + 1 : n), 0);
+  const offset = lastTurn !== undefined ? Math.max(0, lastTurn - userCount) : 0;
+  // null = the turn no longer exists (folded away) → drop the card. Turn 0
+  // ("before the first user message") is legitimately kept.
+  const rebase = (turn: number): number | null => {
+    if (offset > 0 && turn > userCount) {
+      const mapped = turn - offset;
+      return mapped > 0 ? mapped : null;
+    }
+    return turn;
+  };
+  const seen = new Set<string>();
   for (const rec of notices) {
     if (rec.kind !== "warning") continue;
-    const host = lastAssistantOfTurn(out, rec.turn);
+    const turn = rebase(rec.turn);
+    if (turn === null) continue;
+    const key = `warning\n${turn}\n${rec.severity}\n${rec.text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const host = lastAssistantOfTurn(out, turn);
     if (!host || host.kind !== "assistant") continue;
     host.segments.push({
       kind: "warning",
@@ -1260,14 +1284,19 @@ export function mergeNoticesIntoLoaded(
   }
   for (const rec of notices) {
     if (rec.kind !== "notice") continue;
+    const turn = rebase(rec.turn);
+    if (turn === null) continue;
+    const key = `notice\n${turn}\n${rec.severity}\n${rec.text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     const notice: LoadedMessage = {
       kind: "notice",
       id: rec.id,
       text: rec.text,
       severity: rec.severity === "low" || rec.severity === "high" ? "warning" : rec.severity,
-      turn: rec.turn,
+      turn,
     };
-    out.splice(noticeInsertIndex(out, rec.turn), 0, notice);
+    out.splice(noticeInsertIndex(out, turn), 0, notice);
   }
   return out;
 }
@@ -2702,6 +2731,7 @@ function loadSessionIntoTab(
   const loadedMessages = mergeNoticesIntoLoaded(
     buildLoadedMessages(records),
     loadSessionNotices(name),
+    meta.lastTurn,
   );
   if (loadedMessages.length === 0) {
     let sizeBytes = 0;
@@ -6136,6 +6166,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             const msgs = mergeNoticesIntoLoaded(
               buildLoadedMessages(await loadSessionMessagesAsync(restore.session)),
               loadSessionNotices(restore.session),
+              loadSessionMeta(restore.session).lastTurn,
             );
             if (msgs.length > 0) restoredMessages = msgs;
           }
@@ -6494,11 +6525,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           void emitBalance(t);
           if (t.currentSession) {
             try {
+              const meta = loadSessionMeta(t.currentSession);
               const msgs = mergeNoticesIntoLoaded(
                 buildLoadedMessages(await loadSessionMessagesAsync(t.currentSession)),
                 loadSessionNotices(t.currentSession),
+                meta.lastTurn,
               );
-              const meta = loadSessionMeta(t.currentSession);
               emit(
                 {
                   type: "$session_loaded",

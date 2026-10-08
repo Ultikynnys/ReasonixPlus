@@ -70,4 +70,65 @@ describe("mergeNoticesIntoLoaded — persisted annotation cards", () => {
     const out = mergeNoticesIntoLoaded(base, notices);
     expect(out.at(-1)).toMatchObject({ kind: "notice", id: "n9" });
   });
+
+  it("rebases a card whose absolute turn exceeds the reconstructed user count", () => {
+    // Live turns are absolute kernel ordinals; after a fold the transcript is
+    // renumbered from 1, so turn 5 lands on the 2nd (last) surviving user.
+    const notices: PersistedNotice[] = [
+      { id: "n5", kind: "notice", text: "recent", severity: "success", turn: 5 },
+    ];
+    const out = mergeNoticesIntoLoaded(base, notices, 5);
+    expect(out.map((m) => (m.kind === "notice" ? m.text : m.kind))).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "recent",
+      "assistant",
+    ]);
+    const placed = out.find((m) => m.kind === "notice");
+    expect(placed && placed.kind === "notice" ? placed.turn : undefined).toBe(2);
+  });
+
+  it("drops a card for a turn that was folded away (rebased to <= 0)", () => {
+    const notices: PersistedNotice[] = [
+      { id: "n3", kind: "notice", text: "gone", severity: "info", turn: 3 },
+      { id: "n5", kind: "notice", text: "kept", severity: "info", turn: 5 },
+    ];
+    const out = mergeNoticesIntoLoaded(base, notices, 5);
+    const texts = out
+      .filter((m) => m.kind === "notice")
+      .map((m) => (m.kind === "notice" ? m.text : ""));
+    expect(texts).toEqual(["kept"]);
+  });
+
+  it("does not rebase when the transcript already numbers every turn", () => {
+    const notices: PersistedNotice[] = [
+      { id: "n2", kind: "notice", text: "in-range", severity: "info", turn: 2 },
+    ];
+    const out = mergeNoticesIntoLoaded(base, notices, 2);
+    expect(out.at(-2)).toMatchObject({ kind: "notice", text: "in-range", turn: 2 });
+  });
+
+  it("drops an exact duplicate card for the same turn", () => {
+    const notices: PersistedNotice[] = [
+      { id: "a", kind: "notice", text: "Task complete", severity: "success", turn: 2 },
+      { id: "b", kind: "notice", text: "Task complete", severity: "success", turn: 2 },
+    ];
+    const out = mergeNoticesIntoLoaded(base, notices, 2);
+    const dupes = out.filter((m) => m.kind === "notice" && m.text === "Task complete");
+    expect(dupes).toHaveLength(1);
+  });
+
+  it("rebases a warning's absolute turn onto its reconstructed assistant card", () => {
+    const notices: PersistedNotice[] = [
+      { id: "w5", kind: "warning", text: "degeneration", severity: "high", turn: 5 },
+    ];
+    const out = mergeNoticesIntoLoaded(base, notices, 5);
+    expect(out).toHaveLength(base.length);
+    const assistant = out[3];
+    expect(assistant?.kind === "assistant" ? assistant.segments.at(-1) : undefined).toMatchObject({
+      kind: "warning",
+      id: "w5",
+    });
+  });
 });
