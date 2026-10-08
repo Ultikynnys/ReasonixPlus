@@ -2227,48 +2227,141 @@ async function emitCodexQuota(tab: Tab, options: { force?: boolean } = {}): Prom
   emit({ type: "$codex_quota", quota: null, ...(reason ? { reason } : {}) }, tab.id);
 }
 
-/** Ollama cloud usage — `GET {origin}/api/usage` with the chat key. The API
- *  reports `limits.session` (5 h) and `limits.weekly` (7 d) usage as fractions
- *  of the plan's limit (the absolute cap is not exposed). Undefined on failure. */
-export async function fetchOllamaUsage(
+/** One window from `GET {origin}/api/balance` — the % still available and its
+ *  reset time. */
+export interface OllamaBalanceWindow {
+  remainingPct: number;
+  resetsAt: number | null;
+}
+
+/** Parse one `included.*` window, or null when the field is absent/malformed. */
+function parseOllamaBalanceWindow(raw: unknown): OllamaBalanceWindow | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.remaining_percent !== "number") return null;
+  const reset = typeof r.resets_at === "string" ? Date.parse(r.resets_at) : Number.NaN;
+  return { remainingPct: r.remaining_percent, resetsAt: Number.isFinite(reset) ? reset : null };
+}
+
+/** Ollama Cloud plan balance — `GET {origin}/api/balance` (Bearer key). Holds
+ *  the limit the statusbar needs: `included.session/weekly.remaining_percent`
+ *  plus `purchased.balance_usd`. Undefined on any failure. */
+export async function fetchOllamaBalance(
   baseUrl: string,
   apiKey: string,
   timeoutMs = 10_000,
-): Promise<{ session?: number; weekly?: number } | undefined> {
+): Promise<OllamaBalance | undefined> {
   try {
-    const resp = await fetch(`${new URL(baseUrl).origin}/api/usage`, {
+    const resp = await fetch(`${new URL(baseUrl).origin}/api/balance`, {
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!resp.ok) return undefined;
-    const data = (await resp.json()) as {
-      limits?: { session?: { usage?: unknown }; weekly?: { usage?: unknown } };
-    };
-    const session = data.limits?.session?.usage;
-    const weekly = data.limits?.weekly?.usage;
-    if (typeof session !== "number" && typeof weekly !== "number") return undefined;
+    const data = (await resp.json()) as { included?: unknown; purchased?: unknown };
+    const included = (data.included ?? {}) as Record<string, unknown>;
+    const session = parseOllamaBalanceWindow(included.session);
+    const weekly = parseOllamaBalanceWindow(included.weekly);
+    if (!session && !weekly) return undefined;
+    const purchased = (data.purchased ?? {}) as Record<string, unknown>;
     return {
-      ...(typeof session === "number" ? { session } : {}),
-      ...(typeof weekly === "number" ? { weekly } : {}),
+      session,
+      weekly,
+      purchasedUsd: typeof purchased.balance_usd === "number" ? purchased.balance_usd : null,
     };
   } catch {
     return undefined;
   }
 }
 
+interface OllamaBalance {
+  session: OllamaBalanceWindow | null;
+  weekly: OllamaBalanceWindow | null;
+  purchasedUsd: number | null;
+}
+
 /** Last API-reported Ollama session usage % — the delta to the next fetch is
- *  the percent points of the session window consumed since (each
- *  $turn_complete refetches; the window resets every 5 h). */
+ *  the percent points of the session window consumed since. */
 let lastOllamaSessionUsagePct: number | null = null;
+
+/** The balance is account-scoped, so one shared request serves every tab and a
+ *  caller inside the TTL reuses the last result (only a click passes force).
+ *  This is what keeps the statusbar from bursting one fetch per open tab. */
+const OLLAMA_BALANCE_TTL_MS = 60_000;
+let ollamaBalanceCache: {
+  balance: OllamaBalance | undefined;
+  turnUsedPct: number | null;
+  fetchedAt: number;
+} | null = null;
+let ollamaBalanceInflight: Promise<{
+  balance: OllamaBalance | undefined;
+  turnUsedPct: number | null;
+  fetchedAt: number;
+}> | null = null;
+
+/** Reset the shared balance cache + baseline (tests only). */
+export function resetOllamaBalanceCacheForTest(): void {
+  ollamaBalanceCache = null;
+  ollamaBalanceInflight = null;
+  lastOllamaSessionUsagePct = null;
+}
+
+/** Session-% consumed since the previous fetch. Computed once per network fetch
+ *  so cache followers report the same delta instead of re-deriving a zero. */
+function computeTurnUsedPct(balance: OllamaBalance | undefined): number | null {
+  if (!balance?.session) return null;
+  const sessionPct = 100 - balance.session.remainingPct;
+  const previous = lastOllamaSessionUsagePct;
+  lastOllamaSessionUsagePct = sessionPct;
+  // Rollover (session window reset) makes the delta go backwards — report none.
+  return previous !== null && sessionPct >= previous ? sessionPct - previous : null;
+}
+
+/** One coalesced, TTL-cached balance fetch shared across every tab. Concurrent
+ *  callers join a single in-flight request; a fresh cache is reused unless
+ *  `force`. `fetched` marks the caller that actually hit the network. */
+export async function ollamaBalanceSnapshot(
+  baseUrl: string,
+  apiKey: string,
+  force: boolean,
+): Promise<{
+  balance: OllamaBalance | undefined;
+  turnUsedPct: number | null;
+  fetchedAt: number;
+  fetched: boolean;
+}> {
+  if (
+    !force &&
+    ollamaBalanceCache &&
+    Date.now() - ollamaBalanceCache.fetchedAt < OLLAMA_BALANCE_TTL_MS
+  ) {
+    return { ...ollamaBalanceCache, fetched: false };
+  }
+  if (ollamaBalanceInflight) {
+    return { ...(await ollamaBalanceInflight), fetched: false };
+  }
+  const run = (async () => {
+    const balance = await fetchOllamaBalance(baseUrl, apiKey);
+    return { balance, turnUsedPct: computeTurnUsedPct(balance), fetchedAt: Date.now() };
+  })();
+  ollamaBalanceInflight = run;
+  let result: { balance: OllamaBalance | undefined; turnUsedPct: number | null; fetchedAt: number };
+  try {
+    result = await run;
+  } finally {
+    ollamaBalanceInflight = null;
+  }
+  ollamaBalanceCache = result;
+  return { ...result, fetched: true };
+}
 /** Last Antigravity active-model used fraction (0..1) — the delta to the next
  *  fetch is the fraction of the window consumed since (each $turn_complete
  *  refetches; windows reset periodically). */
 let lastAntigravityUsedFraction: number | null = null;
-/** Cloud Ollama usage for the signed-in account — Ollama-provider tabs with a
- *  key only. Local daemons have no usage endpoint; the fetch mirrors the
- *  Codex quota fetch and scales the API's fraction to percent. */
-async function emitOllamaQuota(tab: Tab): Promise<void> {
+/** Cloud Ollama plan usage for the signed-in account — Ollama-provider tabs
+ *  with a key only. The balance is account-scoped, so every tab shares one
+ *  TTL-cached fetch; only a chip click (force) or the 1-min poll refetches. */
+async function emitOllamaQuota(tab: Tab, force = false): Promise<void> {
   const ep = loadOllamaEndpoint();
   const apiKey = ep.apiKey;
   if (providerForModel(tab.currentModel) !== "ollama") {
@@ -2283,43 +2376,43 @@ async function emitOllamaQuota(tab: Tab): Promise<void> {
     emit({ type: "$ollama_quota", quota: null, reason: "ollama-no-api-key" }, tab.id);
     return;
   }
-  emitTabDiagnostic(tab, "quota.fetch.started");
-  const usage = await fetchOllamaUsage(ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL, apiKey);
-  if (!usage) {
-    emitTabDiagnostic(tab, "quota.fetch.failed", { reason: "usage-unavailable" }, "error");
+  emitTabDiagnostic(tab, "quota.fetch.started", { force });
+  const snap = await ollamaBalanceSnapshot(ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL, apiKey, force);
+  const balance = snap.balance;
+  if (!balance) {
+    emitTabDiagnostic(
+      tab,
+      "quota.fetch.failed",
+      { reason: "usage-unavailable", shared: !snap.fetched },
+      "error",
+    );
     emit({ type: "$ollama_quota", quota: null, reason: "usage-unavailable" }, tab.id);
     return;
   }
-  const sessionWindow =
-    usage.session !== undefined
-      ? { usagePct: usage.session * 100, remainingPct: Math.max(0, 100 - usage.session * 100) }
+  const toWindow = (w: OllamaBalanceWindow | null) =>
+    w
+      ? { usagePct: 100 - w.remainingPct, remainingPct: w.remainingPct, resetsAt: w.resetsAt }
       : null;
-  const weeklyWindow =
-    usage.weekly !== undefined
-      ? { usagePct: usage.weekly * 100, remainingPct: Math.max(0, 100 - usage.weekly * 100) }
-      : null;
-  let turnUsedPct: number | null = null;
-  const sessionPct = sessionWindow?.usagePct ?? null;
-  const previous = lastOllamaSessionUsagePct;
-  if (sessionPct !== null) {
-    // Rollover (session window reset) makes the delta go backwards — report
-    // no turn cost for this fetch and adopt the new baseline.
-    if (previous !== null && sessionPct >= previous) turnUsedPct = sessionPct - previous;
-    lastOllamaSessionUsagePct = sessionPct;
-  }
   emitTabDiagnostic(tab, "quota.fetch.succeeded", {
-    session: usage.session,
-    weekly: usage.weekly,
-    previousSessionPct: previous,
-    currentSessionPct: sessionPct,
-    turnUsedPct,
+    sessionRemainingPct: balance.session?.remainingPct,
+    weeklyRemainingPct: balance.weekly?.remainingPct,
+    purchasedUsd: balance.purchasedUsd,
+    turnUsedPct: snap.turnUsedPct,
+    shared: !snap.fetched,
   });
-  // Native unit: cloud Ollama bills plan-window %, not dollars.
-  accumulateQuotaIntoSession(tab, "ollama", turnUsedPct);
+  // The delta is account-scoped: fold it into the session once, on the fetch
+  // that measured it, so cache followers don't double-count.
+  if (snap.fetched) accumulateQuotaIntoSession(tab, "ollama", snap.turnUsedPct);
   emit(
     {
       type: "$ollama_quota",
-      quota: { session: sessionWindow, weekly: weeklyWindow, turnUsedPct, fetchedAt: Date.now() },
+      quota: {
+        session: toWindow(balance.session),
+        weekly: toWindow(balance.weekly),
+        purchasedUsd: balance.purchasedUsd,
+        turnUsedPct: snap.turnUsedPct,
+        fetchedAt: snap.fetchedAt,
+      },
     },
     tab.id,
   );
@@ -2514,8 +2607,8 @@ function subagentBillingFor(model: string): import("../../code/setup.js").Subage
         provider: "ollama",
         measureQuota: async () => {
           if (!apiKey) return null;
-          const usage = await fetchOllamaUsage(baseUrl, apiKey, 8000);
-          return usage?.session !== undefined ? usage.session * 100 : null;
+          const balance = await fetchOllamaBalance(baseUrl, apiKey, 8000);
+          return balance?.session ? 100 - balance.session.remainingPct : null;
         },
       };
     }
@@ -6144,12 +6237,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   // Account-wide quotas change underneath us (other devices, window resets) -
   // poll so the statusbar chips are never stale. Skipped mid-turn so the
   // $turn_complete fetch stays the authoritative turn-cost measurement.
-  // Polling uses a 5-minute interval and pauses after 15 minutes of idle
-  // time to conserve bandwidth on metered and poor connections.
-  const QUOTA_POLL_INTERVAL_MS = 5 * 60 * 1000;
+  // The Ollama balance refreshes every minute (its /api/balance caps at
+  // 10 req/min); Codex/Antigravity refresh every 5th tick. Pauses after 15
+  // minutes of idle to conserve bandwidth on metered and poor connections.
+  const QUOTA_POLL_INTERVAL_MS = 60 * 1000;
+  const QUOTA_SLOW_POLL_EVERY = 5;
   const QUOTA_POLL_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
   let lastUserActivityAt = Date.now();
   let quotaPolling = false;
+  let quotaPollTick = 0;
   quotaTimer = setInterval(() => {
     if (quotaPolling) return;
     if (Date.now() - lastUserActivityAt > QUOTA_POLL_IDLE_TIMEOUT_MS) {
@@ -6173,12 +6269,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       });
       return;
     }
-    emitTabDiagnostic(tab, "quota.poll.started", { intervalMs: QUOTA_POLL_INTERVAL_MS });
+    quotaPollTick += 1;
+    const slow = quotaPollTick % QUOTA_SLOW_POLL_EVERY === 0;
+    emitTabDiagnostic(tab, "quota.poll.started", { intervalMs: QUOTA_POLL_INTERVAL_MS, slow });
     quotaPolling = true;
     void Promise.allSettled([
-      emitCodexQuota(tab, { force: false }),
-      emitOllamaQuota(tab),
-      emitAntigravityQuota(tab),
+      emitOllamaQuota(tab, true),
+      ...(slow ? [emitCodexQuota(tab, { force: false }), emitAntigravityQuota(tab)] : []),
     ]).finally(() => {
       quotaPolling = false;
       emitTabDiagnostic(tab, "quota.poll.completed");
@@ -7476,7 +7573,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "ollama_quota_get") {
-      void emitOllamaQuota(tab);
+      void emitOllamaQuota(tab, true);
       return;
     }
     if (msg.cmd === "antigravity_quota_get") {

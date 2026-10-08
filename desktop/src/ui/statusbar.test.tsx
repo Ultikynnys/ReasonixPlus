@@ -490,6 +490,17 @@ describe("StatusBar quota display", () => {
     expect(screen.queryByText(/\$ 0\.0000/)).toBeNull();
   });
 
+  it("shows the reset countdowns in the Ollama plan tooltip", () => {
+    renderBar({
+      settings: { model: "ollama/gpt-oss:20b" } as Settings,
+      ollamaQuota: {
+        ...OLLAMA_QUOTA,
+        weekly: { ...OLLAMA_QUOTA.weekly!, resetsAt: Date.now() + 3 * 60 * 60 * 1000 },
+      },
+    });
+    expect(screen.getByTitle(/resets in 3h/)).toBeTruthy();
+  });
+
   it("shows an em dash for this turn until a second Ollama measurement exists", () => {
     renderBar({
       settings: { model: "ollama/gpt-oss:20b" } as Settings,

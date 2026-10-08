@@ -223,14 +223,17 @@ export function StatusBar({
   const ollamaTurnPct = ollamaQuotaData?.turnUsedPct ?? null;
   // The "set an API key" hint is correct ONLY when the key is genuinely absent
   // (the daemon flags that with the `ollama-no-api-key` reason). A keyed account
-  // whose usage endpoint is unreachable, or a proxied/local endpoint with no
-  // /api/usage, must never be told to set a key it already has.
+  // whose balance endpoint is unreachable, or a proxied/local endpoint with no
+  // /api/balance, must never be told to set a key it already has.
   const ollamaKeyMissing = ollamaQuotaReason === "ollama-no-api-key";
   const ollamaQuotaTitle =
     ollamaQuotaData && ollamaWeekly
       ? t("statusbar.ollamaQuotaTitle", {
           left: Math.round(ollamaWeekly.remainingPct),
+          weeklyResets: ollamaWeekly.resetsAt ? formatReset(new Date(ollamaWeekly.resetsAt)) : "-",
           session: ollamaSession ? Math.round(ollamaSession.remainingPct) : "-",
+          sessionResets:
+            ollamaSession?.resetsAt ? formatReset(new Date(ollamaSession.resetsAt)) : "-",
         })
       : ollamaQuotaData || (ollamaQuotaReason && !ollamaKeyMissing)
         ? t("statusbar.ollamaNoDataUnavailable")

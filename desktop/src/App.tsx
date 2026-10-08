@@ -4162,6 +4162,7 @@ function TabRuntime({
           ollamaQuotaRefreshing={state.ollamaQuotaRefreshing}
           ollamaQuotaReason={state.ollamaQuotaReason}
           onRefreshOllamaQuota={refreshOllamaQuota}
+          ollamaPlan={ollamaPlan}
           antigravityQuota={state.antigravityQuota}
           antigravityQuotaRefreshing={state.antigravityQuotaRefreshing}
           antigravityQuotaReason={state.antigravityQuotaReason}

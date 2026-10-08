@@ -3,12 +3,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   detectOllamaVision,
+  fetchOllamaBalance,
   fetchOllamaPlan,
-  fetchOllamaUsage,
   isSubscriptionGatedResponse,
+  ollamaBalanceSnapshot,
   probeOllamaModel,
   probeOllamaVision,
   refreshOllamaModels,
+  resetOllamaBalanceCacheForTest,
   resetOllamaCatalogCacheForTest,
   showPayloadIsVision,
   showPayloadVisionCapability,
@@ -401,7 +403,7 @@ describe("probeOllamaVision / detectOllamaVision", () => {
   });
 });
 
-describe("fetchOllamaUsage", () => {
+describe("fetchOllamaBalance", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   beforeEach(() => {
     fetchMock = vi.fn();
@@ -411,57 +413,123 @@ describe("fetchOllamaUsage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("GETs {origin}/api/usage with the Bearer key and parses both windows", async () => {
+  it("GETs {origin}/api/balance with the Bearer key and maps both windows", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
-        activity: { cost: "0.00000", period: { type: "last_4_weeks" }, models: [] },
-        limits: {
-          session: { usage: 0.003, models: [{ name: "gpt-oss:20b", request_count: 14 }] },
-          weekly: { usage: 0.001, models: [] },
+        included: {
+          session: { remaining_percent: 71.9, resets_at: "2026-10-08T04:00:00Z" },
+          weekly: { remaining_percent: 32.33, resets_at: "2026-10-12T00:00:00Z" },
         },
+        purchased: { balance_usd: 0 },
       }),
     );
-    await expect(fetchOllamaUsage("https://ollama.com/v1", "key-1")).resolves.toEqual({
-      session: 0.003,
-      weekly: 0.001,
+    await expect(fetchOllamaBalance("https://ollama.com/v1", "key-1")).resolves.toEqual({
+      session: { remainingPct: 71.9, resetsAt: Date.parse("2026-10-08T04:00:00Z") },
+      weekly: { remainingPct: 32.33, resetsAt: Date.parse("2026-10-12T00:00:00Z") },
+      purchasedUsd: 0,
     });
     const [, init] = fetchMock.mock.calls[0]!;
     const url = new URL(String(fetchMock.mock.calls[0]![0]));
     expect(url.origin).toBe("https://ollama.com");
-    expect(url.pathname).toBe("/api/usage");
+    expect(url.pathname).toBe("/api/balance");
     expect(init).toMatchObject({
       method: "GET",
       headers: { Authorization: "Bearer key-1" },
     });
   });
 
-  it("returns only the windows the payload carries", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ limits: { session: { usage: 0.5 } } }));
-    await expect(fetchOllamaUsage("https://ollama.com/v1", "key-1")).resolves.toEqual({
-      session: 0.5,
+  it("returns only the windows the payload carries (session-only)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ included: { session: { remaining_percent: 50 } } }),
+    );
+    await expect(fetchOllamaBalance("https://ollama.com/v1", "key-1")).resolves.toEqual({
+      session: { remainingPct: 50, resetsAt: null },
+      weekly: null,
+      purchasedUsd: null,
     });
   });
 
-  it("ignores non-numeric usage values", async () => {
+  it("ignores a non-numeric remaining_percent", async () => {
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ limits: { session: { usage: "0.5" }, weekly: { usage: null } } }),
+      jsonResponse({ included: { session: { remaining_percent: "50" }, weekly: {} } }),
     );
-    await expect(fetchOllamaUsage("https://ollama.com/v1", "key-1")).resolves.toBeUndefined();
+    await expect(fetchOllamaBalance("https://ollama.com/v1", "key-1")).resolves.toBeUndefined();
   });
 
   it("returns undefined when neither window parses", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ activity: { cost: "0" } }));
-    await expect(fetchOllamaUsage("https://ollama.com/v1", "key-1")).resolves.toBeUndefined();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ purchased: { balance_usd: 5 } }));
+    await expect(fetchOllamaBalance("https://ollama.com/v1", "key-1")).resolves.toBeUndefined();
   });
 
   it("returns undefined on non-ok status", async () => {
     fetchMock.mockResolvedValueOnce(textResponse("not found", 404));
-    await expect(fetchOllamaUsage("https://gateway.example/v1", "key-1")).resolves.toBeUndefined();
+    await expect(
+      fetchOllamaBalance("https://gateway.example/v1", "key-1"),
+    ).resolves.toBeUndefined();
   });
 
   it("returns undefined on network errors", async () => {
     fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
-    await expect(fetchOllamaUsage("https://ollama.com/v1", "key-1")).resolves.toBeUndefined();
+    await expect(fetchOllamaBalance("https://ollama.com/v1", "key-1")).resolves.toBeUndefined();
+  });
+});
+
+describe("ollamaBalanceSnapshot — coalesced, TTL-cached account fetch", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    resetOllamaBalanceCacheForTest();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetOllamaBalanceCacheForTest();
+  });
+  const ok = () =>
+    jsonResponse({
+      included: { session: { remaining_percent: 40 } },
+      purchased: { balance_usd: 0 },
+    });
+
+  it("coalesces concurrent callers onto a single request", async () => {
+    fetchMock.mockResolvedValueOnce(ok());
+    const [a, b] = await Promise.all([
+      ollamaBalanceSnapshot("https://ollama.com/v1", "k", false),
+      ollamaBalanceSnapshot("https://ollama.com/v1", "k", false),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(a.fetched).toBe(true);
+    expect(b.fetched).toBe(false);
+    expect(a.balance?.session?.remainingPct).toBe(40);
+  });
+
+  it("reuses the cached value within the TTL — no second request", async () => {
+    fetchMock.mockResolvedValueOnce(ok());
+    await ollamaBalanceSnapshot("https://ollama.com/v1", "k", false);
+    const second = await ollamaBalanceSnapshot("https://ollama.com/v1", "k", false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(second.fetched).toBe(false);
+  });
+
+  it("force bypasses the cache", async () => {
+    fetchMock.mockResolvedValueOnce(ok()).mockResolvedValueOnce(ok());
+    await ollamaBalanceSnapshot("https://ollama.com/v1", "k", false);
+    const forced = await ollamaBalanceSnapshot("https://ollama.com/v1", "k", true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(forced.fetched).toBe(true);
+  });
+
+  it("caches a failure so a tab burst retries at most once per TTL", async () => {
+    fetchMock.mockResolvedValueOnce(textResponse("too many requests", 429));
+    const first = await ollamaBalanceSnapshot("https://ollama.com/v1", "k", false);
+    expect(first.balance).toBeUndefined();
+    expect(first.fetched).toBe(true);
+    const second = await ollamaBalanceSnapshot("https://ollama.com/v1", "k", false);
+    expect(second.fetched).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockResolvedValueOnce(ok());
+    await ollamaBalanceSnapshot("https://ollama.com/v1", "k", true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

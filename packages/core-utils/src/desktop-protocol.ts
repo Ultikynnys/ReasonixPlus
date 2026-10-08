@@ -1057,26 +1057,28 @@ export interface CodexQuotaEvent {
   reason?: string;
 }
 
-/** One Ollama cloud usage window (`GET {origin}/api/usage`). The API reports
- *  usage as a fraction of the plan's limit (session window resets every 5 h,
- *  weekly every 7 d) but never the absolute cap — the daemon scales the
- *  fraction to percent, mirroring how the Codex quota reports usedPercent. */
+/** One Ollama Cloud plan window (`GET {origin}/api/balance`). The API reports
+ *  the % of the window's limit still available; the daemon derives the consumed
+ *  % to mirror how the Codex quota reports usedPercent. */
 export interface OllamaQuotaWindow {
-  /** API-reported usage in this window as a percentage of the plan's limit (usage × 100). */
+  /** % of the plan's limit consumed in this window (100 - remainingPct). */
   usagePct: number;
-  /** 100 - usagePct — the statusbar's "% left". */
+  /** % of the plan's limit still available (the statusbar's "% left"). */
   remainingPct: number;
+  /** Epoch-ms reset time, or null when the API omits it. */
+  resetsAt?: number | null;
 }
 
-/** Cloud Ollama usage for the signed-in account (daemon source: `GET
- *  {origin}/api/usage` with the same Bearer key as chat). `null` payload means
- *  "no data" — no key, local daemon, or fetch failure — the UI degrades to a
- *  dash instead of a wrong number. */
+/** Cloud Ollama plan/usage for the signed-in account (daemon source: `GET
+ *  {origin}/api/balance` with the same Bearer key as chat). `null` payload means
+ *  "no data" — no key, local daemon, or fetch failure — the UI shows a dash. */
 export interface OllamaQuota {
   /** 5-hour session window (resets every 5 h). */
   session: OllamaQuotaWindow | null;
   /** 7-day weekly window (resets every 7 d). */
   weekly: OllamaQuotaWindow | null;
+  /** Purchased (extra) credit balance in USD, when the account reports it. */
+  purchasedUsd?: number | null;
   /** Percentage points of the session window consumed since the previous
    *  fetch (fetches fire on every $turn_complete). Null until a second
    *  measurement exists. */
