@@ -2128,7 +2128,8 @@ export class CacheFirstLoop {
         inflightAdd: (id) => this._inflight.add(id),
         runOne: (call, sig) => this.runOneToolCall(call, sig),
         appendAndPersist: (m) => this.appendAndPersist(m),
-        noteToolResult: (name, failed) => this.repair.noteResult(name, failed),
+        noteToolResult: (name, failed, args, result) =>
+          this.repair.noteResult(name, failed, args, result),
         abandonedCalls: this._abandonedCalls,
         rateLimitState,
       });

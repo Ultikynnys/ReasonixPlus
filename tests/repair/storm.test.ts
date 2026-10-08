@@ -32,6 +32,37 @@ describe("StormBreaker", () => {
     expect(verdict.suppress).toBe(false);
   });
 
+  it("excuses an identical-args repeat whose OUTPUT changed (a polling loop)", () => {
+    const sb = new StormBreaker(6, 3);
+    // Same call re-issued while a job makes progress — each result differs, so
+    // it must never read as stuck (the polling case that false-tripped).
+    for (let i = 0; i < 12; i++) {
+      expect(sb.inspect(call("poll", "{}")).suppress).toBe(false);
+      sb.noteResult("poll", false, "{}", `progress ${i}/105`);
+    }
+  });
+
+  it("still trips when identical args keep returning the SAME output", () => {
+    const sb = new StormBreaker(6, 3);
+    sb.inspect(call("x", "{}"));
+    sb.noteResult("x", false, "{}", "same");
+    sb.inspect(call("x", "{}"));
+    sb.noteResult("x", false, "{}", "same");
+    const verdict = sb.inspect(call("x", "{}"));
+    expect(verdict.suppress).toBe(true);
+    expect(verdict.kind).toBe("repeat");
+  });
+
+  it("a changing result also resets an exempt tool's consecutive run", () => {
+    const exempt = new Set(["wait_for_job"]);
+    const sb = new StormBreaker(6, 3, undefined, (c) => exempt.has(c.function?.name ?? ""));
+    const args = '{"jobId":1}';
+    for (let i = 0; i < 12; i++) {
+      expect(sb.inspect(call("wait_for_job", args)).suppress).toBe(false);
+      sb.noteResult("wait_for_job", false, args, `tick ${i}`);
+    }
+  });
+
   it("forgets old calls beyond window", () => {
     const sb = new StormBreaker(3, 3);
     sb.inspect(call("x", "{}"));

@@ -57,9 +57,10 @@ export class ToolCallRepair {
     );
   }
 
-  /** Report each settled tool result so a repeatedly failing tool trips the guard. */
-  noteResult(name: string | undefined, failed: boolean): void {
-    this.storm.noteResult(name, failed);
+  /** Report each settled tool result so a repeatedly failing tool trips the guard,
+   *  and a repeat that returned new output is excused as progress, not a storm. */
+  noteResult(name: string | undefined, failed: boolean, args?: string, result?: string): void {
+    this.storm.noteResult(name, failed, args, result);
   }
 
   /** Called at start of every user turn — fresh intent shouldn't inherit old repetition state. */

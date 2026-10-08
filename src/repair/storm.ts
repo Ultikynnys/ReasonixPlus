@@ -15,7 +15,7 @@ interface RecentEntry {
   readOnly: boolean;
 }
 
-/** Tracks (name, args) repeats; mutating calls clear read-only entries. Exempt tools are counted separately so a long identical-args repeat still reads as a stuck loop without disturbing non-exempt detection. */
+/** Tracks (name, args) repeats; mutating calls clear read-only entries. Exempt tools are counted separately so a long identical-args repeat still reads as a stuck loop without disturbing non-exempt detection. A repeat that returns CHANGED output is progress (a poll), so it clears its run too. */
 export class StormBreaker {
   private readonly windowSize: number;
   private readonly threshold: number;
@@ -34,6 +34,9 @@ export class StormBreaker {
    *  by that tool, or a different tool taking over, resets the run. */
   private failureName: string | null = null;
   private failureCount = 0;
+  /** Last result fingerprint per `name::args` — a repeat whose output changed
+   *  is progress (a poll), not a stuck loop, so its run is reset below. */
+  private readonly lastResult = new Map<string, string>();
 
   constructor(
     windowSize = 6,
@@ -117,8 +120,13 @@ export class StormBreaker {
   /** Records a settled tool result so consecutive failures of one tool
    *  accumulate. A success by that tool, or any call to a different tool,
    *  resets the run — only an unbroken streak trips the guard. */
-  noteResult(name: string | undefined, failed: boolean): void {
+  noteResult(name: string | undefined, failed: boolean, args?: string, result?: string): void {
     if (!name) return;
+    // A successful repeat that returned NEW output is a poll making progress,
+    // not a stuck loop — clear its run so the repeat window starts fresh.
+    if (!failed && args !== undefined && result !== undefined) {
+      this.noteProductiveResult(name, args, result);
+    }
     if (this.failureName !== name) {
       this.failureName = failed ? name : null;
       this.failureCount = failed ? 1 : 0;
@@ -132,11 +140,41 @@ export class StormBreaker {
     }
   }
 
+  /** A repeated call whose result changed is progress, not a storm — drop its
+   *  prior identical-args entries (mirrors the mutating-call reset). */
+  private noteProductiveResult(name: string, args: string, result: string): void {
+    const key = `${name}::${args}`;
+    const sig = resultFingerprint(result);
+    const prev = this.lastResult.get(key);
+    this.lastResult.set(key, sig);
+    if (prev === undefined || prev === sig) return;
+    for (let i = this.recent.length - 1; i >= 0; i--) {
+      const e = this.recent[i]!;
+      if (e.name === name && e.args === args) this.recent.splice(i, 1);
+    }
+    if (this.exemptRunKey === key) {
+      this.exemptRunKey = null;
+      this.exemptRunCount = 0;
+    }
+  }
+
   reset(): void {
     this.recent.length = 0;
     this.exemptRunKey = null;
     this.exemptRunCount = 0;
     this.failureName = null;
     this.failureCount = 0;
+    this.lastResult.clear();
   }
+}
+
+/** Cheap FNV-1a fingerprint so a repeating call that returns NEW output reads as
+ *  a poll making progress, while a byte-identical repeat still reads as stuck. */
+function resultFingerprint(result: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < result.length; i++) {
+    h ^= result.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `${result.length}:${h >>> 0}`;
 }

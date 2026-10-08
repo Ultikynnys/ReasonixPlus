@@ -29,8 +29,9 @@ export interface DispatchContext {
   /** Mutable across iter cycles — single rate-limit warning per step(). */
   rateLimitState: { shown: boolean };
   /** Reports each settled call's outcome so the loop can steer away from a tool
-   *  that keeps failing. Fired once per call, after its result is known. */
-  noteToolResult?: (name: string, failed: boolean) => void;
+   *  that keeps failing, and so a repeat that returned new output is excused as
+   *  progress. Fired once per call, after its result is known. */
+  noteToolResult?: (name: string, failed: boolean, args?: string, result?: string) => void;
 }
 
 /** A settled tool call counts as failed when it REJECTED, or when it returned a
@@ -150,7 +151,7 @@ export async function* dispatchToolCallsChunked(
       // A rejection that isn't a user cancel, or an error-shaped JSON result,
       // is a genuine failure — feed it to the failure guard.
       const failed = s.status === "rejected" ? !ctx.signal.aborted : resultLooksFailed(result);
-      ctx.noteToolResult?.(name, failed);
+      ctx.noteToolResult?.(name, failed, args, typeof result === "string" ? result : undefined);
 
       const rateLimited = typeof result === "string" ? parseRateLimitedToolResult(result) : null;
       if (rateLimited && !ctx.rateLimitState.shown) {
