@@ -59,6 +59,8 @@ export interface FilesystemToolsOptions {
   outlineThresholdBytes?: number;
   /** Cap on total bytes from listing/grep tools — bounds tree-as-one-string accidents. */
   maxListBytes?: number;
+  /** Unscoped reads of files larger than this are refused; scoped reads (range/head/tail) still stream. Default 32 MiB. */
+  hardMaxFileBytes?: number;
 }
 
 /** 64 KiB covers ~99% of source files; larger ones (generated bundles, lockfiles, novels) outline-mode by default to keep the cache prefix slim. */
@@ -75,13 +77,16 @@ const SOURCE_DEST_SCHEMA: JSONSchema = {
   required: ["source", "destination"],
 };
 
-/** Refuse load above this; outline-mode would have to slurp the whole file to scan it. */
+/** Unscoped reads of files larger than this are refused. Scoped reads stream a bounded window, so they are never gated by size. */
 const HARD_MAX_FILE_BYTES = 32 * 1024 * 1024;
 
 /** Lines shown for orientation when a file is too big for full content. */
 const OUTLINE_HEAD_LINES = 80;
 /** Bound outline discovery so a no-symbol file does not force a full-file scan. */
 const OUTLINE_SCAN_LINES = 2000;
+
+/** Shape of the `range` argument ("A-B"). Also used to detect a scoped read, which streams a bounded window and therefore stays available at any file size. */
+const LINE_RANGE_RE = /^\d+\s*-\s*\d+$/;
 
 // Skipped unless `include_deps:true`. Derived from the semantic indexer's exclude
 // list, minus `.reasonix` — the indexer shouldn't embed session logs / cache, but
@@ -140,6 +145,7 @@ export function registerFilesystemTools(
   const allowWriting = opts.allowWriting !== false;
   const outlineThresholdBytes = opts.outlineThresholdBytes ?? DEFAULT_OUTLINE_THRESHOLD_BYTES;
   const maxListBytes = opts.maxListBytes ?? DEFAULT_MAX_LIST_BYTES;
+  const hardMaxFileBytes = opts.hardMaxFileBytes ?? HARD_MAX_FILE_BYTES;
   /** Ripgrep presence at registration — drives the engine-variant search_content description. */
   const rgEngine = ripgrepAvailable();
 
@@ -320,7 +326,7 @@ export function registerFilesystemTools(
     name: "read_file",
     parallelSafe: true,
     skipTruncationSave: true,
-    description: `Read a file. Relative paths resolve under the sandbox root; a true absolute path outside it requires user approval. A leading / or \\ is treated as sandbox-root-relative. Default returns FULL CONTENT for files ≤ ${Math.round(DEFAULT_OUTLINE_THRESHOLD_BYTES / 1024)} KiB. Optional scoping: head/tail (N lines), range "A-B" (1-indexed inclusive). Larger files auto-switch to outline mode (metadata + head + symbol outline for TS/JS/Python/Go/Rust/Markdown/Protobuf/text): drill in with range or search_content. Files over ${Math.round(HARD_MAX_FILE_BYTES / (1024 * 1024))} MiB and binaries are refused: use get_file_info for stat.`,
+    description: `Read a file. Relative paths resolve under the sandbox root; a true absolute path outside it requires user approval. A leading / or \\ is treated as sandbox-root-relative. Default returns FULL CONTENT for files ≤ ${Math.round(DEFAULT_OUTLINE_THRESHOLD_BYTES / 1024)} KiB. Optional scoping: head/tail (N lines), range "A-B" (1-indexed inclusive). Larger files auto-switch to outline mode (metadata + head + symbol outline for TS/JS/Python/Go/Rust/Markdown/Protobuf/text): drill in with range or search_content. Scoped reads (range/head/tail) stream a bounded window and work at any size; only an unscoped read of a file over ${Math.round(hardMaxFileBytes / (1024 * 1024))} MiB is refused, and binaries are refused. Use get_file_info for stat.`,
     readOnly: true,
     stormExempt: true,
     parameters: {
@@ -356,13 +362,21 @@ export function registerFilesystemTools(
           throw new Error(`not a file: ${args.path} (it's a directory)`);
         }
         const sizeBytes = stat.size;
-        if (sizeBytes > HARD_MAX_FILE_BYTES) {
+        const scoped =
+          (typeof args.range === "string" && LINE_RANGE_RE.test(args.range)) ||
+          (typeof args.head === "number" && args.head > 0) ||
+          (typeof args.tail === "number" && args.tail > 0);
+        // Scoped reads (range/head/tail) stream a bounded window, so they stay
+        // available at any size. Only an unscoped load of an oversized file is
+        // refused, and that refusal must not advertise range/head/tail: the old
+        // check short-circuited before them, so those commands were refused too.
+        if (sizeBytes > hardMaxFileBytes && !scoped) {
           return [
-            `[refused: ${rel} is ${formatBytes(sizeBytes)} (> ${formatBytes(HARD_MAX_FILE_BYTES)} hard ceiling): too large to load]`,
-            "Use one of:",
-            `  - search_content path:"${rel}" pattern:"<your regex>": grep within the file`,
+            `[refused: ${rel} is ${formatBytes(sizeBytes)} (> ${formatBytes(hardMaxFileBytes)} hard ceiling): unscoped read is too large to load]`,
+            "Read a bounded window instead:",
             `  - read_file path:"${rel}" range:"A-B"                   : read a specific 1-indexed line range`,
             `  - read_file path:"${rel}" head:N  /  tail:N             : read N lines at the start or end`,
+            `  - search_content path:"${rel}" pattern:"<your regex>": grep within the file`,
           ].join("\n");
         }
 
@@ -382,7 +396,7 @@ export function registerFilesystemTools(
           let lines = text.split(/\r?\n/);
           if (lines.length > 0 && lines[lines.length - 1] === "") lines = lines.slice(0, -1);
           const totalLines = lines.length;
-          if (typeof args.range === "string" && /^\d+\s*-\s*\d+$/.test(args.range)) {
+          if (typeof args.range === "string" && LINE_RANGE_RE.test(args.range)) {
             const { start, end } = parseLineRange(args.range, totalLines);
             return withSubdirMemory(
               abs,
@@ -410,7 +424,7 @@ export function registerFilesystemTools(
 
         // range wins over head/tail. Stop one line after the requested window
         // so reading 20 lines from a huge file does not scan to EOF.
-        if (typeof args.range === "string" && /^\d+\s*-\s*\d+$/.test(args.range)) {
+        if (typeof args.range === "string" && LINE_RANGE_RE.test(args.range)) {
           const { start, end } = parseLineRange(args.range);
           const window = await readLineWindow(fh, inspection, start, end - start + 1);
           const actualEnd = window.lines.length === 0 ? start : start + window.lines.length - 1;

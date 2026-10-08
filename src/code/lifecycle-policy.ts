@@ -37,7 +37,6 @@ const SAFE_TOOL_NAMES = new Set([
 ]);
 
 const HIGH_RISK_TOOL_NAMES = new Set([
-  "multi_edit",
   "delete_range",
   "delete_symbol",
   "move_file",
@@ -49,8 +48,13 @@ const HIGH_RISK_TOOL_NAMES = new Set([
   "stop_job",
 ]);
 
-// Every high-risk tool is also a mutation; add the two write tools that are not high-risk.
-const MUTATION_TOOL_NAMES = new Set([...HIGH_RISK_TOOL_NAMES, "edit_file", "write_file"]);
+// Every high-risk tool is also a mutation; add the write tools that are not high-risk.
+const MUTATION_TOOL_NAMES = new Set([
+  ...HIGH_RISK_TOOL_NAMES,
+  "edit_file",
+  "write_file",
+  "multi_edit",
+]);
 
 export function classifyLifecycleToolCall(
   toolName: string,
@@ -65,6 +69,15 @@ export function classifyLifecycleToolCall(
   if (toolName === "write_file" || toolName === "edit_file") {
     const path = typeof args.path === "string" ? args.path : "";
     if (isPackageOrConfigPath(path)) {
+      return decision(toolName, "high-risk", "package-or-config-path");
+    }
+    return decision(toolName, "mutation", "mutation-tool");
+  }
+  if (toolName === "multi_edit") {
+    // A batch edit is only as risky as the files it touches: escalate to
+    // high-risk when any target is a package/config file, otherwise treat it
+    // like a single edit_file instead of blanket-blocking the tool.
+    if (editsTouchPackageOrConfig(args)) {
       return decision(toolName, "high-risk", "package-or-config-path");
     }
     return decision(toolName, "mutation", "mutation-tool");
@@ -101,6 +114,14 @@ function isPackageOrConfigPath(path: string): boolean {
     /(^|\/)biome\.json$/.test(normalized) ||
     normalized.startsWith(".github/workflows/")
   );
+}
+
+function editsTouchPackageOrConfig(args: Record<string, unknown>): boolean {
+  const edits = Array.isArray(args.edits) ? args.edits : [];
+  return edits.some((edit) => {
+    const path = edit && typeof edit === "object" ? (edit as { path?: unknown }).path : undefined;
+    return typeof path === "string" && isPackageOrConfigPath(path);
+  });
 }
 
 function isHighRiskCommand(command: string): boolean {

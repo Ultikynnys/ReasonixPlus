@@ -8,6 +8,7 @@ import { lineDiff, registerFilesystemTools } from "../src/tools/filesystem.js";
 import { compileNameFilter, displayRel } from "../src/tools/filesystem.js";
 import { __setRipgrepForTesting, rgArgs, rgRelOf, ripgrepAvailable } from "../src/tools/fs/rg.js";
 import { clampTimeoutSeconds } from "../src/tools/fs/search.js";
+import { ReadTracker } from "../src/tools/read-tracker.js";
 
 describe("filesystem tools (built-in, sandbox-enforced)", () => {
   let root: string;
@@ -224,6 +225,45 @@ describe("filesystem tools (built-in, sandbox-enforced)", () => {
       expect(out).toContain("line 3\nline 4\nline 5");
       expect(out).not.toContain("line 6");
       expect(out).not.toContain("line 10000");
+    });
+
+    it("refuses only the UNscoped read of an oversized file; scoped reads stream and unlock the edit", async () => {
+      const reg = new ToolRegistry();
+      registerFilesystemTools(reg, {
+        rootDir: root,
+        outlineThresholdBytes: 200,
+        hardMaxFileBytes: 300,
+      });
+      const readTracker = new ReadTracker();
+      const lines = Array.from({ length: 50 }, (_, i) => `line ${i + 1} of the oversized file`);
+      await fs.writeFile(join(root, "oversized.txt"), lines.join("\n"));
+
+      // A bare read refuses (its outline scan would be pointless and the message
+      // must not point at range/head/tail, which the old version also refused).
+      const unscoped = await reg.dispatch("read_file", { path: "oversized.txt" }, { readTracker });
+      expect(unscoped).toMatch(/unscoped read is too large to load/);
+      expect(readTracker.hasRead(join(root, "oversized.txt"))).toBe(false);
+
+      // A scoped read streams the window and registers the file as read.
+      const ranged = await reg.dispatch(
+        "read_file",
+        { path: "oversized.txt", range: "3-5" },
+        { readTracker },
+      );
+      expect(ranged).toContain("line 3 of the oversized file");
+      expect(readTracker.hasRead(join(root, "oversized.txt"))).toBe(true);
+
+      // So the edit gate is satisfied — the exact dead-end from the report.
+      const edited = await reg.dispatch(
+        "edit_file",
+        {
+          path: "oversized.txt",
+          search: "line 3 of the oversized file",
+          replace: "line 3 CHANGED",
+        },
+        { readTracker },
+      );
+      expect(edited).toMatch(/edited/);
     });
 
     it("returns full content for small files at or below the threshold", async () => {

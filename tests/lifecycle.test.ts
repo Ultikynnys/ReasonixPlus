@@ -8,7 +8,7 @@ describe("engineering lifecycle high-risk tool detection", () => {
     expect(isHighRiskLifecycleToolCall("search_content", { pattern: "foo" })).toBe(false);
   });
 
-  it("treats batch edits and destructive filesystem calls as high risk", () => {
+  it("treats ordinary batch edits as mutation but destructive filesystem calls as high risk", () => {
     expect(
       isHighRiskLifecycleToolCall("multi_edit", {
         edits: [
@@ -16,8 +16,19 @@ describe("engineering lifecycle high-risk tool detection", () => {
           { path: "src/b.ts", search: "a", replace: "b" },
         ],
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(isHighRiskLifecycleToolCall("delete_file", { path: "src/a.ts" })).toBe(true);
+  });
+
+  it("treats a batch edit touching a package/config file as high risk", () => {
+    expect(
+      isHighRiskLifecycleToolCall("multi_edit", {
+        edits: [
+          { path: "src/a.ts", search: "a", replace: "b" },
+          { path: "package.json", search: "a", replace: "b" },
+        ],
+      }),
+    ).toBe(true);
   });
 
   it("does not treat ordinary read-like shell paths as high risk", () => {
@@ -50,12 +61,7 @@ describe("EngineeringLifecycleRuntime", () => {
     const lifecycle = new EngineeringLifecycleRuntime({ mode: "strict" });
     lifecycle.observeUserPrompt("Refactor the shell and filesystem tool gates");
 
-    const out = lifecycle.guardToolCall("multi_edit", {
-      edits: [
-        { path: "src/a.ts", search: "a", replace: "b" },
-        { path: "src/b.ts", search: "a", replace: "b" },
-      ],
-    });
+    const out = lifecycle.guardToolCall("delete_file", { path: "src/old.ts" });
 
     expect(out).not.toBeNull();
     const parsed = JSON.parse(out!);
@@ -89,14 +95,7 @@ describe("EngineeringLifecycleRuntime", () => {
       },
     ]);
 
-    expect(
-      lifecycle.guardToolCall("multi_edit", {
-        edits: [
-          { path: "src/a.ts", search: "a", replace: "b" },
-          { path: "src/b.ts", search: "a", replace: "b" },
-        ],
-      }),
-    ).toBeNull();
+    expect(lifecycle.guardToolCall("delete_file", { path: "src/old.ts" })).toBeNull();
 
     const rejected = lifecycle.guardToolCall("mark_step_complete", {
       stepId: "step-1",

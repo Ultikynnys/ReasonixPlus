@@ -39,11 +39,23 @@ describe("lifecycle risk policy", () => {
       reason: "mutation-tool",
     },
     {
-      name: "batch edit",
+      name: "batch source edit",
       toolName: "multi_edit",
       args: { edits: [{ path: "src/a.ts", search: "a", replace: "b" }] },
+      risk: "mutation",
+      reason: "mutation-tool",
+    },
+    {
+      name: "batch edit touching package.json",
+      toolName: "multi_edit",
+      args: {
+        edits: [
+          { path: "src/a.ts", search: "a", replace: "b" },
+          { path: "package.json", search: "x", replace: "y" },
+        ],
+      },
       risk: "high-risk",
-      reason: "high-risk-tool",
+      reason: "package-or-config-path",
     },
     {
       name: "file move",
@@ -212,5 +224,12 @@ describe("lifecycle risk policy", () => {
     expect(isLifecycleMutationToolCall("write_file", { path: "src/app.ts" })).toBe(true);
     expect(isHighRiskLifecycleToolCall("write_file", { path: "pnpm-lock.yaml" })).toBe(true);
     expect(isLifecycleMutationToolCall("run_command", { command: "npm test" })).toBe(false);
+    // multi_edit is a mutation like edit_file, escalating only for package/config targets.
+    const editArgs = { edits: [{ path: "src/a.ts" }] };
+    expect(isHighRiskLifecycleToolCall("multi_edit", editArgs)).toBe(false);
+    expect(isLifecycleMutationToolCall("multi_edit", editArgs)).toBe(true);
+    expect(isHighRiskLifecycleToolCall("multi_edit", { edits: [{ path: "package.json" }] })).toBe(
+      true,
+    );
   });
 });

@@ -377,7 +377,7 @@ describe("ToolRegistry", () => {
           args: {
             edits: [
               { path: "src/a.ts", search: "a", replace: "b" },
-              { path: "src/b.ts", search: "a", replace: "b" },
+              { path: "package.json", search: "a", replace: "b" },
             ],
           },
         },
