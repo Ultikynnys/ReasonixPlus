@@ -221,13 +221,20 @@ export function StatusBar({
   const ollamaWeekly = ollamaQuotaData?.weekly ?? null;
   const ollamaSession = ollamaQuotaData?.session ?? null;
   const ollamaTurnPct = ollamaQuotaData?.turnUsedPct ?? null;
+  // The "set an API key" hint is correct ONLY when the key is genuinely absent
+  // (the daemon flags that with the `ollama-no-api-key` reason). A keyed account
+  // whose usage endpoint is unreachable, or a proxied/local endpoint with no
+  // /api/usage, must never be told to set a key it already has.
+  const ollamaKeyMissing = ollamaQuotaReason === "ollama-no-api-key";
   const ollamaQuotaTitle =
     ollamaQuotaData && ollamaWeekly
       ? t("statusbar.ollamaQuotaTitle", {
           left: Math.round(ollamaWeekly.remainingPct),
           session: ollamaSession ? Math.round(ollamaSession.remainingPct) : "-",
         })
-      : t("statusbar.ollamaNoData");
+      : ollamaQuotaData || (ollamaQuotaReason && !ollamaKeyMissing)
+        ? t("statusbar.ollamaNoDataUnavailable")
+        : t("statusbar.ollamaNoData");
   // Antigravity (Gemini Code Assist): plan + the active model's used fraction.
   const geminiTab = provider === "gemini";
   const deepseekTab = ep ? ep.provider === "deepseek" : provider === "deepseek";
@@ -294,9 +301,10 @@ export function StatusBar({
     !zaiQuotaData && zaiQuotaReason
       ? `${zaiQuotaTitle}\n${t("statusbar.codexReason", { reason: zaiQuotaReason })}`
       : zaiQuotaTitle;
-  // A failed fetch stays diagnosable: append the reason to the tooltip.
+  // A failed fetch stays diagnosable: append the reason to the tooltip, except
+  // for the no-key slug the base hint already spells out.
   const ollamaQuotaTitleWithReason =
-    !ollamaQuotaData && ollamaQuotaReason
+    !ollamaQuotaData && ollamaQuotaReason && !ollamaKeyMissing
       ? `${ollamaQuotaTitle}\n${t("statusbar.codexReason", { reason: ollamaQuotaReason })}`
       : ollamaQuotaTitle;
   const quotaTitle = quotaWeekly

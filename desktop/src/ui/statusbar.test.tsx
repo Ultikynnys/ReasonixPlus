@@ -520,6 +520,28 @@ describe("StatusBar quota display", () => {
     expect(screen.getByTitle(/usage-unavailable/)).toBeTruthy();
   });
 
+  it("does not claim an API key is missing when one is set but the fetch failed", () => {
+    renderBar({
+      settings: { model: "ollama/gpt-oss:20b" } as Settings,
+      ollamaQuota: null,
+      ollamaQuotaReason: "usage-unavailable",
+    });
+    expect(screen.getByText("plan usage")).toBeTruthy();
+    expect(screen.queryByTitle(/set an API key/)).toBeNull();
+    expect(screen.getByTitle(/an API key is set/)).toBeTruthy();
+    expect(screen.getByTitle(/usage-unavailable/)).toBeTruthy();
+  });
+
+  it("shows the set-an-API-key hint only when the daemon reports a missing key", () => {
+    renderBar({
+      settings: { model: "ollama/gpt-oss:20b" } as Settings,
+      ollamaQuota: null,
+      ollamaQuotaReason: "ollama-no-api-key",
+    });
+    expect(screen.getByTitle(/set an API key/)).toBeTruthy();
+    expect(screen.queryByTitle(/an API key is set/)).toBeNull();
+  });
+
   it("shows only quota percentages for an Antigravity tab", () => {
     renderBar({
       settings: { model: "gemini-3.6-flash" } as Settings,

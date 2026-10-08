@@ -2271,10 +2271,16 @@ let lastAntigravityUsedFraction: number | null = null;
 async function emitOllamaQuota(tab: Tab): Promise<void> {
   const ep = loadOllamaEndpoint();
   const apiKey = ep.apiKey;
-  if (providerForModel(tab.currentModel) !== "ollama" || !apiKey) {
-    emitTabDiagnostic(tab, "quota.skipped", {
-      reason: !apiKey ? "ollama-no-api-key" : "non-ollama-provider",
-    });
+  if (providerForModel(tab.currentModel) !== "ollama") {
+    emitTabDiagnostic(tab, "quota.skipped", { reason: "non-ollama-provider" });
+    return;
+  }
+  if (!apiKey) {
+    // A keyless endpoint still shows the chip; emit the reason (not just a
+    // diagnostic) so the statusbar renders the set-an-API-key hint and clears
+    // its refresh spinner instead of leaving a silent dash.
+    emitTabDiagnostic(tab, "quota.skipped", { reason: "ollama-no-api-key" });
+    emit({ type: "$ollama_quota", quota: null, reason: "ollama-no-api-key" }, tab.id);
     return;
   }
   emitTabDiagnostic(tab, "quota.fetch.started");
