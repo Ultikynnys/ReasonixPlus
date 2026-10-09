@@ -585,6 +585,12 @@ button:disabled {
   border-width: 0;
   background-color: var(--border-strong);
 }
+/* The square where two bars meet, painted only when both are present. Left
+   undefined it falls back to the browser's opaque default, which reads as a
+   white box against the transparent tracks. */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
 
 /* ---------- APP SHELL ---------- */
 
