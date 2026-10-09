@@ -63,7 +63,9 @@ function parsePresentedFile(result: string): PresentedFile | null {
 function PresentedFileCard({ file }: { file: PresentedFile }) {
   useLang();
   const [message, setMessage] = useState("");
+  const [volume, setVolume] = useState(1);
   const isImage = /\.(?:avif|bmp|gif|jpe?g|png|webp)$/i.test(file.name);
+  const isAudio = /\.(?:aac|flac|m4a|mp3|oga|ogg|opus|wav|weba)$/i.test(file.name);
   const copyImage = async () => {
     try {
       const response = await fetch(convertFileSrc(file.path));
@@ -98,6 +100,39 @@ function PresentedFileCard({ file }: { file: PresentedFile }) {
   };
   return (
     <div className="presented-file">
+      {isAudio ? (
+        <div className="presented-file-audio">
+          {/* biome-ignore lint/a11y/useMediaCaption: Captions are not available for arbitrary user-presented audio files. */}
+          <audio
+            controls
+            preload="metadata"
+            src={convertFileSrc(file.path)}
+            aria-label={file.name}
+            ref={(element) => {
+              if (element) element.volume = volume;
+            }}
+          />
+          <label>
+            <span>{t("thread.audioVolume")}</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={volume}
+              aria-label={t("thread.audioVolume")}
+              onChange={(event) => {
+                const value = Number(event.currentTarget.value);
+                setVolume(value);
+                const audio = event.currentTarget
+                  .closest(".presented-file")
+                  ?.querySelector("audio");
+                if (audio) audio.volume = value;
+              }}
+            />
+          </label>
+        </div>
+      ) : null}
       {isImage ? (
         <img className="presented-file-preview" src={convertFileSrc(file.path)} alt={file.name} />
       ) : null}

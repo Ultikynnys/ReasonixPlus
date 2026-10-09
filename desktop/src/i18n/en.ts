@@ -1041,6 +1041,7 @@ export const en = {
     copyResponse: "Copy this response",
     copyCard: "Copy this card",
     downloadImage: "Download image",
+    audioVolume: "Volume",
     copyImage: "Copy image",
     imageCopied: "Image copied.",
     imageCopyFailed: "Could not copy this image.",

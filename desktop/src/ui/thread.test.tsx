@@ -487,6 +487,34 @@ describe("AssistantMsg - presented files", () => {
     );
   });
 
+  it("renders inline audio playback and an adjustable volume control", () => {
+    const audio = {
+      ...segment,
+      result: JSON.stringify({
+        path: "C:/repo/voice sample.mp3",
+        name: "voice sample.mp3",
+        size: 4096,
+      }),
+    };
+    const { container } = render(
+      <AssistantMsg
+        segments={[audio]}
+        pending={false}
+        pendingConfirms={[]}
+        onApproveConfirm={noop}
+        onRejectConfirm={noop}
+        onRuleConfirm={noop}
+        onStopTool={noop}
+      />,
+    );
+    const player = container.querySelector("audio");
+    expect(player?.getAttribute("src")).toBe("asset://localhost/C:/repo/voice sample.mp3");
+    expect(player?.getAttribute("controls")).not.toBeNull();
+    const volume = screen.getByRole("slider", { name: "Volume" }) as HTMLInputElement;
+    fireEvent.change(volume, { target: { value: "0.35" } });
+    expect(volume.value).toBe("0.35");
+  });
+
   it("copies image pixels separately from copying the file", async () => {
     const write = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write } });

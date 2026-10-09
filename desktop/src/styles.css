@@ -2469,6 +2469,27 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border-radius: 8px;
   background: var(--card);
 }
+.presented-file-audio {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(100%, 440px);
+}
+.presented-file-audio audio {
+  width: 100%;
+}
+.presented-file-audio label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.presented-file-audio input[type="range"] {
+  width: 110px;
+  accent-color: var(--accent);
+}
 .presented-file-preview {
   grid-column: 1 / -1;
   max-width: min(100%, 520px);
