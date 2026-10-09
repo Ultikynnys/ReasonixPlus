@@ -896,6 +896,7 @@ export const en = {
     allow: "ALLOW",
     ask: "ASK",
     deny: "DENY",
+    ignore: "IGNORE",
     workspaceRulesTitle: "Workspace rules",
     globalRulesTitle: "Global rules",
     noWorkspaceRules: "No workspace rules yet.",

@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Jimp } from "jimp";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { extractImageMentions } from "../src/cli/commands/desktop.js";
+import { extractImageMentions, resolveUserImages } from "../src/cli/commands/desktop.js";
 
 describe("extractImageMentions — auto-parse @image mentions (OpenAI models)", () => {
   let root: string;
@@ -14,6 +15,20 @@ describe("extractImageMentions — auto-parse @image mentions (OpenAI models)", 
   });
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it("saves clipboard image attachments to a workspace path for model tools", async () => {
+    const png = await new Jimp({ width: 2, height: 2, color: 0xff0000ff }).getBuffer("image/png");
+    const images = await resolveUserImages(
+      [{ source: "clipboard", dataUrl: `data:image/png;base64,${png.toString("base64")}` }],
+      root,
+    );
+    expect(images).toHaveLength(1);
+    expect(images[0]!.path).toBeDefined();
+    expect(images[0]!.path!.startsWith(join(root, ".reasonix", "attachments"))).toBe(true);
+    expect(readFileSync(images[0]!.path!)).toEqual(
+      Buffer.from(images[0]!.url.slice(images[0]!.url.indexOf(",") + 1), "base64"),
+    );
   });
 
   it("converts an existing image mention into a file attachment and strips the token", async () => {

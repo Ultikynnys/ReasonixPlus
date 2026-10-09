@@ -1851,10 +1851,10 @@ function CtxRules({
   const editMode = settings?.editMode ?? "follow";
   /** Read only honours no rules at all, so it shows the mode card alone. */
   const ruleMode: RuleMode | null = editMode === "read-only" ? null : editMode;
-  /** Follow offers allow/ask; Never Ask offers deny/ask. */
-  const effects: RuleEffect[] = ruleMode === "never-ask" ? ["deny", "ask"] : ["allow", "ask"];
+  const effects: RuleEffect[] =
+    ruleMode === "never-ask" ? ["deny", "ask", "ignore"] : ["allow", "ask", "ignore"];
   const activeEffect = effects.includes(effect) ? effect : effects[0]!;
-  type Verdict = "allow" | "ask" | "deny";
+  type Verdict = RuleEffect;
   const list = (v: readonly string[] | undefined): string[] => (v ? [...v] : []);
   const join = (patterns: readonly string[]): string =>
     patterns.length > 0 ? patterns.join(" | ") : t("contextPanel.rulePatternNone");
@@ -1904,6 +1904,7 @@ function CtxRules({
     allow: { label: "contextPanel.allow", tone: "" },
     ask: { label: "contextPanel.ask", tone: "warn" },
     deny: { label: "contextPanel.deny", tone: "deny" },
+    ignore: { label: "contextPanel.ignore", tone: "ignore" },
   };
   const rulesForMode = (settings?.rules ?? []).filter(
     (r) => ruleMode !== null && r.mode === ruleMode,

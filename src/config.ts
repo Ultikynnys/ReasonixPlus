@@ -2088,7 +2088,7 @@ export function loadAllPathAllowed(rootDir?: string, path: string = defaultConfi
 }
 
 export type RuleMode = "follow" | "never-ask";
-export type RuleEffect = "allow" | "ask" | "deny";
+export type RuleEffect = "allow" | "ask" | "deny" | "ignore";
 export type RuleKind = "shell" | "path";
 export type RuleScope = "workspace" | "global";
 
@@ -2319,7 +2319,13 @@ function bucketByEffect(
 ): { allow: string[]; ask: string[]; deny: string[] } {
   const out = { allow: [] as string[], ask: [] as string[], deny: [] as string[] };
   for (const rule of rules) {
-    if (rule.mode !== mode || rule.kind !== kind || rule.match === "regex") continue;
+    if (
+      rule.mode !== mode ||
+      rule.kind !== kind ||
+      rule.match === "regex" ||
+      rule.effect === "ignore"
+    )
+      continue;
     out[rule.effect].push(rule.pattern);
   }
   return out;
@@ -2342,7 +2348,12 @@ export function regexRulePatterns(
 ): { allow: string[]; ask: string[]; deny: string[] } {
   const out = { allow: [] as string[], ask: [] as string[], deny: [] as string[] };
   for (const rule of loadRules(rootDir, path)) {
-    if (rule.mode === mode && rule.kind === "shell" && rule.match === "regex") {
+    if (
+      rule.mode === mode &&
+      rule.kind === "shell" &&
+      rule.match === "regex" &&
+      rule.effect !== "ignore"
+    ) {
       out[rule.effect].push(rule.pattern);
     }
   }

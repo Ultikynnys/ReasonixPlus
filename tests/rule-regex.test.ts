@@ -61,6 +61,18 @@ describe("regex command rules", () => {
     expect(removeRule({ ...rule, effect: "ask" }, root, config)).toBe(true);
     expect(loadRules(root, config)).toHaveLength(1);
   });
+  it("keeps ignored regex rules stored but omits them from enforcement patterns", () => {
+    const ignored = { ...rule, effect: "ignore" as const };
+    addRule(ignored, root, config);
+
+    expect(loadRules(root, config)).toContainEqual(ignored);
+    expect(regexRulePatterns("never-ask", root, config)).toEqual({
+      allow: [],
+      ask: [],
+      deny: [],
+    });
+  });
+
   it("rejects invalid syntax and path regex before writing", () => {
     expect(() => addRule({ ...rule, pattern: "[" }, root, config)).toThrow("Invalid regex");
     expect(() => addRule({ ...rule, kind: "path" }, root, config)).toThrow("command rules");

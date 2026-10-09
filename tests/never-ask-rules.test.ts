@@ -97,6 +97,18 @@ describe("approval rules store", () => {
     expect(rulePatterns("never-ask", "path", root, cfgPath).deny).toEqual(["/etc"]);
   });
 
+  it("keeps ignored rules stored but omits them from enforcement patterns", () => {
+    const ignored = rule({ effect: "ignore", pattern: "git push" });
+    addRule(ignored, root, cfgPath);
+
+    expect(loadRules(root, cfgPath)).toContainEqual(ignored);
+    expect(rulePatterns("never-ask", "shell", root, cfgPath)).toEqual({
+      allow: [],
+      ask: [],
+      deny: [],
+    });
+  });
+
   it("removes only a whole-rule match", () => {
     addRule(rule({}), root, cfgPath);
     addRule(rule({ effect: "ask" }), root, cfgPath);

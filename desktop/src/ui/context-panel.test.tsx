@@ -922,6 +922,13 @@ describe("ContextPanel files", () => {
               scope: "global",
               pattern: "git push",
             },
+            {
+              mode: "follow",
+              effect: "ask",
+              kind: "shell",
+              scope: "workspace",
+              pattern: "npm publish",
+            },
           ],
         }}
         {...sideProps}
@@ -934,6 +941,11 @@ describe("ContextPanel files", () => {
     expect(onUpdateRule).toHaveBeenLastCalledWith(
       { mode: "follow", effect: "allow", kind: "shell", scope: "workspace", pattern: "npm test" },
       { mode: "follow", effect: "ask", kind: "shell", scope: "workspace", pattern: "npm test" },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Change effect for: npm publish (ASK)" }));
+    expect(onUpdateRule).toHaveBeenLastCalledWith(
+      { mode: "follow", effect: "ask", kind: "shell", scope: "workspace", pattern: "npm publish" },
+      { mode: "follow", effect: "ignore", kind: "shell", scope: "workspace", pattern: "npm publish" },
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Change effect for: git push (ALLOW)" }));

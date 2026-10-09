@@ -1076,8 +1076,9 @@ function elideLoadedMessages(messages: LoadedMessage[]): LoadedMessage[] {
 }
 
 /** Clipboard data URLs pass through; dropped files are read, sniffed and re-encoded. */
-async function resolveUserImages(
+export async function resolveUserImages(
   attachments: ReadonlyArray<UserImageAttachment>,
+  rootDir: string,
 ): Promise<TurnImage[]> {
   const out: TurnImage[] = [];
   for (const att of attachments) {
@@ -1092,7 +1093,16 @@ async function resolveUserImages(
       const b64 = comma >= 0 ? att.dataUrl.slice(comma + 1) : "";
       const normalized = await normalizeImageToDataUrls(Buffer.from(b64, "base64"));
       if (!normalized.ok) throw new Error(normalized.message);
-      for (const url of normalized.dataUrls) out.push({ url });
+      const attachmentDir = join(rootDir, ".reasonix", "attachments");
+      mkdirSync(attachmentDir, { recursive: true });
+      for (const url of normalized.dataUrls) {
+        const match = /^data:image\/([a-z0-9.+-]+);base64,(.+)$/i.exec(url);
+        if (!match) throw new Error("normalized clipboard image is not a base64 data URL");
+        const extension = match[1]!.toLowerCase() === "jpeg" ? "jpg" : match[1]!.toLowerCase();
+        const path = join(attachmentDir, `${randomUUID()}.${extension}`);
+        writeFileSync(path, Buffer.from(match[2]!, "base64"));
+        out.push({ url, path });
+      }
       continue;
     }
     const stat = statSync(att.path);
@@ -8117,7 +8127,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         let images: TurnImage[] | undefined;
         if (attachments.length > 0) {
           try {
-            images = await resolveUserImages(attachments);
+            images = await resolveUserImages(attachments, tab.rootDir);
           } catch (err) {
             emit(
               { type: "$error", message: `Image attach failed: ${(err as Error).message}` },

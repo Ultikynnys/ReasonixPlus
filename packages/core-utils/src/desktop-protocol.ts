@@ -848,7 +848,7 @@ export type NeedsSetupEvent = { type: "$needs_setup"; reason: "no_api_key" };
 /** One approval rule, resolved: which mode owns it, what it does, and where it applies. */
 export interface RuleRecord {
   mode: "follow" | "never-ask";
-  effect: "allow" | "ask" | "deny";
+  effect: "allow" | "ask" | "deny" | "ignore";
   kind: "shell" | "path";
   scope: "workspace" | "global";
   pattern: string;

@@ -5411,6 +5411,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--warning-soft);
   color: var(--warning);
 }
+.rule .sw.ignore,
+.rule-composer .sw.ignore {
+  background: var(--bg-2);
+  color: var(--muted);
+}
 /* The composer's effect picker reuses the badge above, so it needs no rules of its own. */
 /* The composer's effect picker is the same clickable badge as a rule row. */
 .rule button.sw.editable,
