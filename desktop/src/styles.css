@@ -2457,6 +2457,46 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   max-height: 420px;
   object-fit: contain;
 }
+.presented-file {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+.presented-file-preview {
+  grid-column: 1 / -1;
+  max-width: min(100%, 520px);
+  max-height: 360px;
+  object-fit: contain;
+  border-radius: 5px;
+}
+.presented-file-info {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.presented-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.presented-file-size,
+.presented-file-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+.presented-file-actions {
+  display: flex;
+  gap: 4px;
+}
 .msg-text {
   position: relative;
   font-size: 14px;

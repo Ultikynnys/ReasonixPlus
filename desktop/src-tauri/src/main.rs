@@ -288,7 +288,7 @@ fn resolve_existing(path: &str, workspace: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{WorkspaceFileResolution, resolve_workspace_file_impl};
+    use super::{WorkspaceFileResolution, resolve_workspace_file_impl, validate_regular_file};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -301,6 +301,16 @@ mod tests {
         std::fs::create_dir_all(root.join("one")).expect("create one");
         std::fs::create_dir_all(root.join("two")).expect("create two");
         root
+    }
+
+    #[test]
+    fn validates_copy_source_is_a_regular_file() {
+        let root = fixture();
+        let file = root.join("one").join("copy.bin");
+        std::fs::write(&file, [0, 1, 2, 255]).expect("write fixture file");
+        assert!(validate_regular_file(file.to_str().expect("UTF-8 fixture path")).is_ok());
+        assert!(validate_regular_file(root.to_str().expect("UTF-8 fixture path")).is_err());
+        std::fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]
@@ -456,6 +466,108 @@ fn open_with_dialog_blocking(path: &str) -> Result<(), String> {
     }
 }
 
+fn validate_regular_file(path: &str) -> Result<(), String> {
+    let metadata = std::fs::metadata(path).map_err(|e| format!("could not read source file: {e}"))?;
+    if !metadata.is_file() {
+        return Err("source path is not a regular file".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn copy_file_to_path(source: String, destination: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_regular_file(&source)?;
+        if let Some(parent) = Path::new(&destination).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("could not create destination directory: {e}"))?;
+        }
+        std::fs::copy(&source, &destination).map(|_| ()).map_err(|e| format!("copy failed: {e}"))
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
+#[cfg(windows)]
+#[tauri::command]
+async fn copy_file_to_clipboard(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_regular_file(&path)?;
+        windows_file_clipboard(&path)
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+async fn copy_file_to_clipboard(_path: String) -> Result<(), String> {
+    Err("copying files to the clipboard is supported on Windows only".into())
+}
+
+#[cfg(windows)]
+fn windows_file_clipboard(path: &str) -> Result<(), String> {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::null_mut;
+
+    #[repr(C)]
+    struct DropFiles {
+        p_files: u32,
+        x: i32,
+        y: i32,
+        f_nc: i32,
+        f_wide: i32,
+    }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn OpenClipboard(hwnd: *mut c_void) -> i32;
+        fn EmptyClipboard() -> i32;
+        fn SetClipboardData(format: u32, memory: *mut c_void) -> *mut c_void;
+        fn CloseClipboard() -> i32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalAlloc(flags: u32, bytes: usize) -> *mut c_void;
+        fn GlobalLock(memory: *mut c_void) -> *mut c_void;
+        fn GlobalUnlock(memory: *mut c_void) -> i32;
+        fn GlobalFree(memory: *mut c_void) -> *mut c_void;
+    }
+
+    const CF_HDROP: u32 = 15;
+    const GMEM_MOVEABLE: u32 = 0x0002;
+    let mut wide: Vec<u16> = std::path::Path::new(path).as_os_str().encode_wide().collect();
+    wide.push(0);
+    wide.push(0);
+    let data_offset = std::mem::size_of::<DropFiles>();
+    let total = data_offset + wide.len() * std::mem::size_of::<u16>();
+    unsafe {
+        let memory = GlobalAlloc(GMEM_MOVEABLE, total);
+        if memory.is_null() { return Err("clipboard allocation failed".into()); }
+        let ptr = GlobalLock(memory);
+        if ptr.is_null() { GlobalFree(memory); return Err("clipboard lock failed".into()); }
+        let header = ptr.cast::<DropFiles>();
+        (*header).p_files = data_offset as u32;
+        (*header).x = 0;
+        (*header).y = 0;
+        (*header).f_nc = 0;
+        (*header).f_wide = 1;
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr.cast::<u8>().add(data_offset).cast::<u16>(), wide.len());
+        GlobalUnlock(memory);
+        if OpenClipboard(null_mut()) == 0 {
+            GlobalFree(memory);
+            return Err("could not open Windows clipboard".into());
+        }
+        if EmptyClipboard() == 0 || SetClipboardData(CF_HDROP, memory).is_null() {
+            CloseClipboard();
+            GlobalFree(memory);
+            return Err("could not set file on Windows clipboard".into());
+        }
+        CloseClipboard();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn write_text_file(path: String, content: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -498,6 +610,8 @@ fn main() {
             open_with_dialog,
             list_workspace_tree,
             git_status,
+            copy_file_to_path,
+            copy_file_to_clipboard,
             write_text_file
         ])
         .setup(|app| {

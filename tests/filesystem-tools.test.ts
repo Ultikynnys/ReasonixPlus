@@ -1001,6 +1001,23 @@ describe("filesystem tools (built-in, sandbox-enforced)", () => {
     });
   });
 
+  describe("present_file", () => {
+    it("returns a stable absolute file reference for the chat attachment card", async () => {
+      const out = await tools.dispatch("present_file", JSON.stringify({ path: "hello.txt" }));
+      expect(JSON.parse(out)).toMatchObject({
+        path: join(root, "hello.txt"),
+        name: "hello.txt",
+        size: (await fs.stat(join(root, "hello.txt"))).size,
+      });
+    });
+
+    it("rejects directories", async () => {
+      await expect(
+        tools.dispatch("present_file", JSON.stringify({ path: "src" })),
+      ).resolves.toContain("regular files");
+    });
+  });
+
   describe("get_file_info", () => {
     it("returns type + size + mtime as JSON", async () => {
       const out = await tools.dispatch("get_file_info", JSON.stringify({ path: "hello.txt" }));

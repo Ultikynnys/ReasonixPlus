@@ -1,7 +1,10 @@
 import type { ApprovalAction, ApprovalPrompt } from "@reasonix/core-utils";
 import { sanitizeTerminalText } from "@reasonix/core-utils";
+import { formatBytes } from "@reasonix/core-utils";
 import { isCompactionSummary, stripCompactionMarker } from "@reasonix/core-utils/compaction";
 import { derivePrefix } from "@reasonix/core-utils/derive-prefix";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Copy } from "lucide-react";
 import { Fragment, memo, useState } from "react";
 import type {
@@ -40,6 +43,86 @@ function downloadImage(dataUrl: string, mimeType: string): void {
   a.href = dataUrl;
   a.download = `generated.${ext}`;
   a.click();
+}
+
+type PresentedFile = { path: string; name: string; size: number };
+
+function parsePresentedFile(result: string): PresentedFile | null {
+  try {
+    const value = JSON.parse(result) as Partial<PresentedFile>;
+    return typeof value.path === "string" &&
+      typeof value.name === "string" &&
+      typeof value.size === "number"
+      ? { path: value.path, name: value.name, size: value.size }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function PresentedFileCard({ file }: { file: PresentedFile }) {
+  useLang();
+  const [message, setMessage] = useState("");
+  const isImage = /\.(?:avif|bmp|gif|jpe?g|png|webp)$/i.test(file.name);
+  const copyImage = async () => {
+    try {
+      const response = await fetch(convertFileSrc(file.path));
+      if (!response.ok) throw new Error("image could not be loaded");
+      const blob = await response.blob();
+      if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+        throw new Error("image clipboard is unavailable");
+      }
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
+      setMessage(t("thread.imageCopied"));
+    } catch {
+      setMessage(t("thread.imageCopyFailed"));
+    }
+  };
+  const copyFile = async () => {
+    try {
+      await invoke("copy_file_to_clipboard", { path: file.path });
+      setMessage(t("thread.fileCopied"));
+    } catch {
+      setMessage(t("thread.fileCopyFailed"));
+    }
+  };
+  const saveFile = async () => {
+    try {
+      const destination = await saveDialog({ defaultPath: file.name });
+      if (!destination) return;
+      await invoke("copy_file_to_path", { source: file.path, destination });
+      setMessage(t("thread.fileSaved"));
+    } catch {
+      setMessage(t("thread.fileSaveFailed"));
+    }
+  };
+  return (
+    <div className="presented-file">
+      {isImage ? (
+        <img className="presented-file-preview" src={convertFileSrc(file.path)} alt={file.name} />
+      ) : null}
+      <div className="presented-file-info">
+        <span className="presented-file-name" title={file.path}>
+          {file.name}
+        </span>
+        <span className="presented-file-size">{formatBytes(file.size)}</span>
+      </div>
+      <div className="presented-file-actions">
+        {isImage ? (
+          <button type="button" className="mini-btn" onClick={() => void copyImage()}>
+            {t("thread.copyImage")}
+          </button>
+        ) : null}
+        <button type="button" className="mini-btn" onClick={() => void copyFile()}>
+          {t("thread.copyFile")}
+        </button>
+        <button type="button" className="mini-btn" onClick={() => void saveFile()}>
+          {t("thread.saveFile")}
+        </button>
+      </div>
+      {message ? <output className="presented-file-status">{message}</output> : null}
+    </div>
+  );
 }
 
 const AssistantImage = memo(function AssistantImage({
@@ -378,6 +461,10 @@ export const AssistantMsg = memo(function AssistantMsg({
                 }
               />
             );
+          }
+          if (s.name === "present_file" && s.result) {
+            const file = parsePresentedFile(s.result);
+            return file ? <PresentedFileCard key={s.callId ?? `file-${i}`} file={file} /> : null;
           }
           if (s.name === "submit_plan") {
             if (activePlan?.callId !== undefined && s.callId === activePlan.callId) {
@@ -888,7 +975,6 @@ export function PathAccessApprovalCard({
     />
   );
 }
-
 
 /** Countdown + per-card enable/disable toggle shared by the question (ask_choice)
  *  card and the plan cards (plan confirmation + plan revision). Owns the toggle

@@ -1,7 +1,15 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+  convertFileSrc: (path: string) => `asset://localhost/${path}`,
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  save: vi.fn().mockResolvedValue("C:/downloads/output.bin"),
+}));
 
 vi.mock("./cards", () => ({
   AssistantText: () => null,
@@ -20,6 +28,8 @@ vi.mock("./cards", () => ({
   parseEditResult: () => [],
 }));
 
+import { invoke } from "@tauri-apps/api/core";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AssistantSegment } from "../App";
 import { ApprovalCard } from "./extra-cards";
 import {
@@ -431,6 +441,111 @@ describe("user-input cards render agent markdown", () => {
     );
     expect(container.querySelector(".markdown strong")?.textContent).toBe("Dear");
     expect(container.textContent).toContain("From: a@x.com");
+  });
+});
+
+describe("AssistantMsg - presented files", () => {
+  const noop = () => {};
+  const segment: AssistantSegment = {
+    kind: "tool",
+    callId: "file-call",
+    name: "present_file",
+    args: JSON.stringify({ path: "assets/report.bin" }),
+    result: JSON.stringify({ path: "C:/repo/assets/report.bin", name: "report.bin", size: 2048 }),
+    startedAt: 0,
+  };
+
+  it("renders arbitrary files and invokes copy-file and save-as actions", async () => {
+    const { container } = render(
+      <AssistantMsg
+        segments={[segment]}
+        pending={false}
+        pendingConfirms={[]}
+        onApproveConfirm={noop}
+        onRejectConfirm={noop}
+        onRuleConfirm={noop}
+        onStopTool={noop}
+      />,
+    );
+    expect(container.querySelector(".presented-file-name")?.textContent).toBe("report.bin");
+    expect(screen.getByText("2.0 KB")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy file" }));
+    await waitFor(() =>
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("copy_file_to_clipboard", {
+        path: "C:/repo/assets/report.bin",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save as…" }));
+    await waitFor(() =>
+      expect(vi.mocked(saveDialog)).toHaveBeenCalledWith({ defaultPath: "report.bin" }),
+    );
+    await waitFor(() =>
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("copy_file_to_path", {
+        source: "C:/repo/assets/report.bin",
+        destination: "C:/downloads/output.bin",
+      }),
+    );
+  });
+
+  it("copies image pixels separately from copying the file", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write } });
+    vi.stubGlobal(
+      "ClipboardItem",
+      class {
+        constructor(public readonly items: Record<string, Blob>) {}
+      },
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        blob: async () => new Blob(["png"], { type: "image/png" }),
+      }),
+    );
+    const image = {
+      ...segment,
+      result: JSON.stringify({ path: "C:/repo/chart.png", name: "chart.png", size: 12 }),
+    };
+    render(
+      <AssistantMsg
+        segments={[image]}
+        pending={false}
+        pendingConfirms={[]}
+        onApproveConfirm={noop}
+        onRejectConfirm={noop}
+        onRuleConfirm={noop}
+        onStopTool={noop}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy image" }));
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    expect(
+      (write.mock.calls[0]![0] as Array<{ items: Record<string, Blob> }>)[0]!.items["image/png"],
+    ).toBeInstanceOf(Blob);
+    vi.unstubAllGlobals();
+  });
+
+  it("renders an inline image preview for presented images", () => {
+    const image = {
+      ...segment,
+      result: JSON.stringify({ path: "C:/repo/chart.png", name: "chart.png", size: 12 }),
+    };
+    const { container } = render(
+      <AssistantMsg
+        segments={[image]}
+        pending={false}
+        pendingConfirms={[]}
+        onApproveConfirm={noop}
+        onRejectConfirm={noop}
+        onRuleConfirm={noop}
+        onStopTool={noop}
+      />,
+    );
+    expect(container.querySelector(".presented-file-preview")?.getAttribute("src")).toBe(
+      "asset://localhost/C:/repo/chart.png",
+    );
+    expect(screen.getByRole("button", { name: "Copy image" })).toBeTruthy();
   });
 });
 

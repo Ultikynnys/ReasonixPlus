@@ -775,6 +775,26 @@ export function registerFilesystemTools(
   });
 
   registry.register({
+    name: "present_file",
+    parallelSafe: true,
+    skipTruncationSave: true,
+    description:
+      "Present a file from the workspace to the user in the chat so they can preview, copy, or save it. Pass a path relative to the project root or an absolute path. Outside-workspace files require user approval. Use after creating or locating a file the user should receive.",
+    readOnly: true,
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string", description: "File path to present." } },
+      required: ["path"],
+    },
+    fn: async (args: { path: string }, ctx?: ToolCallContext) => {
+      const abs = await safePath(args.path, "present_file", ctx);
+      const st = await fs.stat(abs);
+      if (!st.isFile()) throw new Error("present_file only accepts regular files");
+      return JSON.stringify({ path: abs, name: pathMod.basename(abs), size: st.size });
+    },
+  });
+
+  registry.register({
     name: "get_file_info",
     parallelSafe: true,
     skipTruncationSave: true,
