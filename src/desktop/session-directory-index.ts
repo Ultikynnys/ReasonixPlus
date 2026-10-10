@@ -159,11 +159,9 @@ export class SessionDirectoryIndex<M> {
     private readonly ttlMs = 30_000,
     private readonly now: () => number = Date.now,
     private readonly maxFiles = MAX_SESSION_FILES,
-    /** Cache file path. A getter keeps it in lockstep with `directory` — both
-     *  must resolve the same home — so a run that re-homes the sessions dir
-     *  (tests, an alternate REASONIX_HOME) can never persist a foreign
-     *  directory's records into the real cache and force the next launch into a
-     *  full cold scan of every transcript. */
+    /** Cache file path. A getter keeps it in lockstep with `directory` so a
+     *  re-homed sessions dir (tests, alternate REASONIX_HOME) never persists a
+     *  foreign directory's cache and forces a full cold scan. */
     private readonly cacheFile?: string | (() => string),
   ) {}
 

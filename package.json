@@ -15,6 +15,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "biome check src tests",
+    "lint:comments": "node scripts/check-comment-policy.mjs",
     "lint:fix": "biome check --write src tests",
     "format": "biome format --write src tests",
     "typecheck": "tsc --noEmit",
@@ -23,7 +24,7 @@
     "prepare": "simple-git-hooks || true"
   },
   "simple-git-hooks": {
-    "pre-commit": "npm run lint"
+    "pre-commit": "npm run lint && npm run lint:comments"
   },
   "keywords": [
     "agent",

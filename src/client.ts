@@ -649,9 +649,8 @@ export class DeepSeekClient {
   }
 
   /** Stable per-conversation id for OpenCode's x-opencode-session header.
-   *  `opencodeSessionOverride` wins once the gateway has rejected the configured
-   *  session id (see prepareRequest) — it stays fixed for the client's lifetime
-   *  so prompt-cache routing is stable across turns. */
+   *  `opencodeSessionOverride` wins once the gateway rejects the configured id
+   *  (see prepareRequest); it stays fixed for prompt-cache routing stability. */
   private resolveOpencodeSessionId(): string {
     if (this.opencodeSessionOverride) return this.opencodeSessionOverride;
     if (this.sessionId) return this.sessionId;
