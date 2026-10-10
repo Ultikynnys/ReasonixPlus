@@ -8,6 +8,7 @@ import {
   DEFAULT_ZAI_CHAT_URL,
   DEFAULT_ZAI_CODING_CHAT_URL,
   deriveNativeOllamaOrigin,
+  effectiveReasoningEffort,
   loadOllamaGenerationSettings,
   loadOllamaNumCtx,
   loadRateLimit,
@@ -910,11 +911,15 @@ export class DeepSeekClient {
     transport: ResolvedTransport | null,
     ollamaNumCtx?: number,
   ) {
+    // Clamp once, up front: the effort a provider(model) accepts, or undefined
+    // when the model has no effort ladder (toggle/budget-only) so both payload
+    // builders omit the field instead of sending an invalid value.
+    const reasoningEffort = effectiveReasoningEffort(opts.model, opts.reasoningEffort);
     // The ChatGPT Codex backend speaks the Responses API — chat-completions
     // fields (messages, stream_options, max_tokens, ...) are rejected with a
     // 400, so the whole payload is converted.
     if (transport?.api === "responses") {
-      return buildResponsesPayload(opts, stream);
+      return buildResponsesPayload({ ...opts, reasoningEffort }, stream);
     }
     // Ollama speaks its native `/api/chat` wire format — `options.num_ctx`,
     // `keep_alive` and `think` are all silently dropped by the OpenAI-compat
@@ -973,14 +978,7 @@ export class DeepSeekClient {
     ) {
       payload.extra_body = { thinking: { type: opts.thinking } };
     }
-    if (opts.reasoningEffort && !isOllama) {
-      payload.reasoning_effort =
-        provider === "zai" && opts.reasoningEffort === "medium"
-          ? "high"
-          : provider === "zai" && opts.reasoningEffort === "xhigh"
-            ? "max"
-            : opts.reasoningEffort;
-    }
+    if (reasoningEffort && !isOllama) payload.reasoning_effort = reasoningEffort;
     return payload;
   }
 

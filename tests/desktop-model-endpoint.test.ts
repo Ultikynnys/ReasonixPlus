@@ -4,7 +4,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { modelEndpointFor } from "../src/cli/commands/desktop.js";
 import { writeConfig } from "../src/config.js";
 
@@ -26,6 +26,11 @@ describe("desktop modelEndpointFor (#1529)", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "reasonix-endpoint-"));
     path = join(dir, "config.json");
+    // Isolate the home dir so the resolver reads no real models.dev cache;
+    // native/opencode providers then use their static fallback sets.
+    vi.stubEnv("USERPROFILE", dir);
+    vi.stubEnv("HOME", dir);
+    vi.spyOn(require("node:os"), "homedir").mockReturnValue(dir);
     for (const name of ENV_NAMES) {
       originalEnv[name] = process.env[name];
       delete process.env[name];
@@ -49,6 +54,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
     expect(modelEndpointFor("deepseek-v4-flash", path)).toEqual({
       provider: "deepseek",
       baseUrl: "https://api.deepseek.com",
+      reasoningEfforts: ["low", "high", "max"],
     });
   });
 
@@ -57,6 +63,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
     expect(modelEndpointFor("deepseek-v4-flash", path)).toEqual({
       provider: "deepseek",
       baseUrl: "https://gateway.example.com/v1",
+      reasoningEfforts: ["low", "high", "max"],
     });
   });
 
@@ -66,24 +73,28 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://api.openai.com/v1",
       billingKind: "usd",
       openaiAuth: "none",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     });
     expect(modelEndpointFor("gpt-6-sol", path)).toEqual({
       provider: "openai",
       baseUrl: "https://api.openai.com/v1",
       billingKind: "usd",
       openaiAuth: "none",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     });
     expect(modelEndpointFor("gpt-6-luna", path)).toEqual({
       provider: "openai",
       baseUrl: "https://api.openai.com/v1",
       billingKind: "usd",
       openaiAuth: "none",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     });
     expect(modelEndpointFor("gpt-5.6-sol", path)).toEqual({
       provider: "openai",
       baseUrl: "https://api.openai.com/v1",
       billingKind: "usd",
       openaiAuth: "none",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     });
   });
 
@@ -94,6 +105,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://api.openai.com/v1",
       billingKind: "usd",
       openaiAuth: "apiKey",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     });
   });
 
@@ -115,6 +127,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       billingKind: "quota",
       openaiAuth: "oauth",
       oauthAccount: "u@example.com",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     });
   });
 
@@ -142,6 +155,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://openai-proxy.example.com/v1",
       billingKind: "usd",
       openaiAuth: "apiKey",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     });
   });
 
@@ -155,6 +169,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://gateway.example.com/v1",
       billingKind: "usd",
       openaiAuth: "apiKey",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     });
   });
 
@@ -164,6 +179,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://ollama.com/v1",
       billingKind: "none",
       deployment: "cloud",
+      reasoningEfforts: ["low", "medium", "high", "max"],
     });
   });
 
@@ -174,6 +190,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://ollama.com/v1",
       billingKind: "quota",
       deployment: "cloud",
+      reasoningEfforts: ["low", "medium", "high", "max"],
     });
   });
 
@@ -188,6 +205,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://ollama.com/v1",
       billingKind: "none",
       deployment: "cloud",
+      reasoningEfforts: ["low", "medium", "high", "max"],
     });
   });
 
@@ -204,6 +222,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "http://localhost:11434",
       billingKind: "none",
       deployment: "local",
+      reasoningEfforts: ["low", "medium", "high", "max"],
     });
   });
 
@@ -214,6 +233,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://ollama.example.com/v1",
       billingKind: "none",
       deployment: "local",
+      reasoningEfforts: ["low", "medium", "high", "max"],
     });
   });
 
@@ -224,6 +244,21 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://env.ollama.example.com",
       billingKind: "none",
       deployment: "local",
+      reasoningEfforts: ["low", "medium", "high", "max"],
     });
+  });
+
+  it("opencode model with no synced options reports the provider default ladder", () => {
+    const ep = modelEndpointFor("big-pickle", path);
+    expect(ep.provider).toBe("opencode");
+    expect(ep.reasoningEfforts).toEqual(["low", "medium", "high"]);
+  });
+
+  it("tags a free OpenCode model with the free quota type", () => {
+    expect(modelEndpointFor("big-pickle", path).opencodePlan).toBe("free");
+  });
+
+  it("tags a Go OpenCode model with the go quota type", () => {
+    expect(modelEndpointFor("mimo-v2.6-pro", path).opencodePlan).toBe("go");
   });
 });

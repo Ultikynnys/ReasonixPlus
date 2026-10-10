@@ -29,7 +29,11 @@ import {
 } from "./index/config.js";
 import { loadDotMcpJson } from "./mcp/dot-mcp-json.js";
 import { type McpServerSpec, parseMcpSpec } from "./mcp/spec.js";
-import { isDiscoveredOpencodeModel, isOpencodeGoModel } from "./opencode-models.js";
+import {
+  isDiscoveredOpencodeModel,
+  isOpencodeGoModel,
+  reasoningEffortsForModel,
+} from "./opencode-models.js";
 import { discoveredProviderModels } from "./provider-models.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS } from "./telemetry/stats.js";
@@ -57,7 +61,7 @@ export const SUPPORTED_MODELS: readonly string[] = KNOWN_MODELS;
 /** Which provider a model id routes to — resolved from positive evidence, never
  *  the id's name shape (a name doesn't imply its provider). Resolution order:
  *  `models` config > Antigravity discovery > catalogs > `ollama/` scheme > DeepSeek default. */
-export type ModelProvider = "deepseek" | "openai" | "ollama" | "gemini" | "zai" | "opencode";
+export type ModelProvider = ProviderID; // aliased to core-utils ProviderID (shared reasoning-effort map)
 
 /** Valid ModelProvider literals — config validation for the `models` map. */
 const PROVIDER_IDS: readonly ModelProvider[] = [
@@ -140,6 +144,27 @@ export function providerForModel(
   return resolveModelAdmission(model, path).provider;
 }
 
+/** Reasoning-effort levels the model's endpoint accepts: the per-model values
+ *  from the synced models.dev catalog when known (deepseek/openai/zai/opencode),
+ *  else the provider's static fallback set. `[]` = no effort control. */
+export function supportedReasoningEfforts(
+  model: string,
+  path: string = defaultConfigPath(),
+): readonly ReasoningEffort[] {
+  const provider = providerForModel(model, path);
+  return reasoningEffortsFor(provider, reasoningEffortsForModel(provider, model));
+}
+
+/** The requested effort clamped to what the model accepts, or undefined when the
+ *  model has no effort ladder (toggle/budget-only) so callers omit the field. */
+export function effectiveReasoningEffort(
+  model: string,
+  requested: ReasoningEffort | undefined,
+): ReasoningEffort | undefined {
+  if (!requested) return undefined;
+  return clampReasoningEffort(supportedReasoningEfforts(model), requested) ?? undefined;
+}
+
 /** True when positive evidence places a model id: a `models` mapping, server
  *  discovery, a catalog entry, or the `ollama/` scheme — a name shape alone
  *  proves nothing. */
@@ -215,19 +240,18 @@ export function loadOllamaEndpoint(path: string = defaultConfigPath()): Resolved
   return { baseUrl: DEFAULT_OLLAMA_CHAT_URL, apiKey: loadOllamaApiKey(path) };
 }
 
-import type { EditMode, QuickSend, ReasoningEffort } from "@reasonix/core-utils";
+import {
+  REASONING_EFFORT_ORDER,
+  clampReasoningEffort,
+  reasoningEffortsFor,
+} from "@reasonix/core-utils";
+import type { EditMode, ProviderID, QuickSend, ReasoningEffort } from "@reasonix/core-utils";
 import { expandTilde } from "@reasonix/core-utils/expand-tilde";
 
 /** Single trust dial: read-only blocks every non-readonly tool (write_file / edit_file / multi_edit / run_command) at dispatch; follow auto-approves reads and allowlisted shell but asks for every write and non-allowlisted command; ignore auto-approves everything. */
 export type { EditMode, ReasoningEffort };
 
-export const REASONING_EFFORT_VALUES: readonly ReasoningEffort[] = [
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
+export const REASONING_EFFORT_VALUES: readonly ReasoningEffort[] = REASONING_EFFORT_ORDER;
 
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return (

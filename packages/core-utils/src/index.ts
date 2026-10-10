@@ -108,6 +108,13 @@ export type {
   PlanStep,
 } from "./permission-types.js";
 export {
+  REASONING_EFFORT_ORDER,
+  PROVIDER_REASONING_EFFORTS,
+  reasoningEffortsFor,
+  clampReasoningEffort,
+} from "./reasoning-efforts.js";
+export type { ProviderID } from "./reasoning-efforts.js";
+export {
   toApprovalPrompt,
   resolveApprovalPrompt,
 } from "./approval-prompt.js";

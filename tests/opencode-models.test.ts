@@ -5,9 +5,11 @@ import {
   OPENCODE_MODELS_CACHE_TTL_MS,
   fetchOpencodeModels,
   isDiscoveredOpencodeModel,
+  isOpencodeFreeModel,
   isOpencodeGoModel,
   loadOpencodeModelsCache,
   opencodeModelsCachePath,
+  reasoningEffortsForModel,
   writeOpencodeModelsCache,
 } from "../src/opencode-models.js";
 
@@ -127,6 +129,7 @@ describe("opencode-models", () => {
         freeModels: ["cached-model"],
         visionModels: ["cached-model"],
         goModels: [],
+        reasoningEfforts: {},
         checkedAt: Date.now() - 1000,
       },
       TEST_DIR,
@@ -151,6 +154,7 @@ describe("opencode-models", () => {
         freeModels: ["old-cached-model"],
         visionModels: [],
         goModels: [],
+        reasoningEfforts: {},
         checkedAt: Date.now() - 1000,
       },
       TEST_DIR,
@@ -227,6 +231,7 @@ describe("opencode-models", () => {
         freeModels: ["custom-discovered-model"],
         visionModels: [],
         goModels: [],
+        reasoningEfforts: {},
         checkedAt: Date.now(),
       },
       TEST_DIR,
@@ -235,7 +240,107 @@ describe("opencode-models", () => {
     expect(isDiscoveredOpencodeModel("custom-discovered-model", TEST_DIR)).toBe(true);
   });
 
+  it("classifies free vs Go OpenCode models for the quota-type UI", () => {
+    // A static free Zen id is free; static Go-only ids are Go, never free.
+    expect(isOpencodeFreeModel("big-pickle", TEST_DIR)).toBe(true);
+    expect(isOpencodeFreeModel("mimo-v2.6-pro", TEST_DIR)).toBe(false);
+    expect(isOpencodeFreeModel("glm-5.3", TEST_DIR)).toBe(false);
+  });
+
+  it("classifies discovered free and Go models for the quota-type UI", () => {
+    writeOpencodeModelsCache(
+      {
+        models: ["new-free-model", "go-only", "paid-zen"],
+        freeModels: ["new-free-model"],
+        visionModels: [],
+        goModels: ["go-only"],
+        reasoningEfforts: {},
+        checkedAt: Date.now(),
+      },
+      TEST_DIR,
+    );
+    expect(isOpencodeFreeModel("new-free-model", TEST_DIR)).toBe(true);
+    expect(isOpencodeFreeModel("go-only", TEST_DIR)).toBe(false);
+    expect(isOpencodeFreeModel("paid-zen", TEST_DIR)).toBe(false);
+  });
+
   it("uses the documented cache TTL", () => {
     expect(OPENCODE_MODELS_CACHE_TTL_MS).toBe(12 * 60 * 60 * 1000);
+  });
+
+  it("captures per-model reasoning effort values from models.dev", async () => {
+    const fakeData = {
+      opencode: {
+        models: {
+          "effort-free": {
+            cost: { input: 0 },
+            reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+          },
+          "toggle-model": { cost: { input: 0 }, reasoning_options: [{ type: "toggle" }] },
+          "noopts-model": { cost: { input: 0 } },
+        },
+      },
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(fakeData), { status: 200 }));
+
+    const snapshot = await fetchOpencodeModels({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      homeDir: TEST_DIR,
+      force: true,
+    });
+
+    expect(snapshot.reasoningEfforts.opencode?.["effort-free"]).toEqual(["low", "high", "max"]);
+    // Options exist but no effort ladder -> empty (toggle/budget-only).
+    expect(snapshot.reasoningEfforts.opencode?.["toggle-model"]).toEqual([]);
+    // No declared options -> key absent (provider default applies).
+    expect(snapshot.reasoningEfforts.opencode?.["noopts-model"]).toBeUndefined();
+
+    expect(reasoningEffortsForModel("opencode", "effort-free", TEST_DIR)).toEqual([
+      "low",
+      "high",
+      "max",
+    ]);
+    expect(reasoningEffortsForModel("opencode", "toggle-model", TEST_DIR)).toEqual([]);
+    expect(reasoningEffortsForModel("opencode", "unknown-model", TEST_DIR)).toBeUndefined();
+  });
+
+  it("captures reasoning options for native providers from the same sync", async () => {
+    const fakeData = {
+      opencode: { models: { "big-pickle": { reasoning_options: [{ type: "toggle" }] } } },
+      deepseek: {
+        models: {
+          "deepseek-flash": {
+            reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+          },
+        },
+      },
+      zai: {
+        models: {
+          "glm-5.2": { reasoning_options: [{ type: "effort", values: ["high", "max"] }] },
+          "glm-4.7": { reasoning_options: [{ type: "toggle" }] },
+        },
+      },
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(fakeData), { status: 200 }));
+
+    const snapshot = await fetchOpencodeModels({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      homeDir: TEST_DIR,
+      force: true,
+    });
+
+    expect(snapshot.reasoningEfforts.deepseek?.["deepseek-flash"]).toEqual(["low", "high", "max"]);
+    expect(snapshot.reasoningEfforts.zai?.["glm-5.2"]).toEqual(["high", "max"]);
+    expect(snapshot.reasoningEfforts.zai?.["glm-4.7"]).toEqual([]);
+    // Native ids never leak into the OpenCode picker.
+    expect(snapshot.models).not.toContain("deepseek-flash");
+
+    expect(reasoningEffortsForModel("zai", "glm-5.2", TEST_DIR)).toEqual(["high", "max"]);
+    // A provider mismatch resolves to undefined even when the id exists elsewhere.
+    expect(reasoningEffortsForModel("opencode", "glm-5.2", TEST_DIR)).toBeUndefined();
   });
 });

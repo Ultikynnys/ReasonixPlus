@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL, modelDisplayName } from "@reasonix/core-utils";
+import { DEFAULT_MODEL, clampReasoningEffort, modelDisplayName } from "@reasonix/core-utils";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   type ChangeEvent,
@@ -112,6 +112,7 @@ export function Composer({
   modelLabel,
   subagentModelLabel = DEFAULT_MODEL,
   reasoningEffort,
+  supportedEfforts,
   onModelChange,
   onSubagentModelChange = () => {},
   onEffortChange,
@@ -166,6 +167,10 @@ export function Composer({
   /** Per-tab subagent model shown in the menu's subagent column. Defaults to the shared model default. */
   subagentModelLabel?: string;
   reasoningEffort: ReasoningEffort;
+  /** Effort levels the active model accepts. The menu offers only these and
+   *  the pill shows the clamped value. Undefined = all levels apply; empty =
+   *  the model has no effort control (pill disabled). */
+  supportedEfforts?: readonly ReasoningEffort[];
   onModelChange: (model: string) => void;
   /** Called when the user picks a model in the subagent column. */
   onSubagentModelChange?: (model: string) => void;
@@ -229,6 +234,12 @@ export function Composer({
    *  disabled (grayed out) when none are installed. */
   voiceAvailable?: boolean;
 }) {
+  const effortControlDisabled = supportedEfforts !== undefined && supportedEfforts.length === 0;
+  const efforts = supportedEfforts && supportedEfforts.length > 0 ? supportedEfforts : EFFORTS;
+  const displayEffort =
+    supportedEfforts && supportedEfforts.length > 0
+      ? (clampReasoningEffort(supportedEfforts, reasoningEffort) ?? reasoningEffort)
+      : reasoningEffort;
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [subagentMenuOpen, setSubagentMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
@@ -768,7 +779,9 @@ export function Composer({
               <button
                 type="button"
                 className="model-pill effort-pill"
+                disabled={effortControlDisabled}
                 onClick={() => {
+                  if (effortControlDisabled) return;
                   setEffortMenuOpen((v) => !v);
                   setModelMenuOpen(false);
                   setSubagentMenuOpen(false);
@@ -776,21 +789,21 @@ export function Composer({
                 title={t("composer.switchEffort")}
               >
                 <I.cpu size={12} />
-                <span>{reasoningEffort}</span>
+                <span>{displayEffort}</span>
                 <I.chev size={10} />
               </button>
-              {effortMenuOpen ? (
+              {effortMenuOpen && !effortControlDisabled ? (
                 <MenuPop width={320}>
                   <div className="ph">
                     <span className="tok">E</span>
                     <span>{t("composer.switchEffort")}</span>
                   </div>
                   <div className="popup-list effort-menu-list">
-                    {EFFORTS.map((e) => (
+                    {efforts.map((e) => (
                       <div
                         key={e}
                         className="popup-item"
-                        data-active={e === reasoningEffort}
+                        data-active={e === displayEffort}
                         onClick={() => {
                           onEffortChange(e);
                           setEffortMenuOpen(false);

@@ -712,6 +712,10 @@ export const en = {
     opencodeTurnQuotaTitle: "This turn used {pct}% of the OpenCode Go 5-hour quota",
     opencodeNoData:
       "OpenCode Go usage · no data: sign in to OpenCode (Settings → OpenCode) with a Go subscription to see plan usage · click to retry",
+    opencodeFree: "plan usage",
+    opencodeFreeTier: "free",
+    opencodeFreeTitle:
+      "OpenCode free tier · no plan quota (rate-limited per IP, daily) · click to open settings",
     offPeak: "off-peak",
     peak: "peak",
     offPeakTitle:

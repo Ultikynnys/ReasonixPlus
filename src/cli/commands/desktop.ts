@@ -215,6 +215,7 @@ import {
   saveWorkspaceDir,
   setMcpServerDisabled,
   setMcpToolDisabled,
+  supportedReasoningEfforts,
   updateRule,
   writeConfig,
 } from "../../config.js";
@@ -346,7 +347,11 @@ import {
   visionModelsFor,
 } from "../../ollama-model-map.js";
 import { loadOllamaModelsCache, saveOllamaModelsCache } from "../../ollama-models-cache.js";
-import { fetchOpencodeModels } from "../../opencode-models.js";
+import {
+  fetchOpencodeModels,
+  isOpencodeFreeModel,
+  isOpencodeGoModel,
+} from "../../opencode-models.js";
 import {
   type OpencodeDeviceFlow,
   beginOpencodeDeviceFlow,
@@ -1426,12 +1431,14 @@ async function refreshAntigravityModels(tab: Tab): Promise<void> {
 export function modelEndpointFor(model: string, path?: string): ModelEndpointInfo {
   const provider = providerForModel(model, path);
   const billing = billingContextForModel(model, path);
+  const reasoningEfforts = supportedReasoningEfforts(model, path);
   if (provider === "ollama") {
     const oep = loadOllamaEndpoint(path);
     const baseUrl = oep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL;
     return {
       provider: "ollama",
       baseUrl,
+      reasoningEfforts,
       billingKind: billing.kind,
       deployment: isOllamaCloudEndpoint(baseUrl) ? "cloud" : oep.apiKey ? "custom" : "local",
     };
@@ -1442,6 +1449,7 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
     return {
       provider: "gemini",
       baseUrl: oep.baseUrl ?? DEFAULT_GEMINI_CHAT_URL,
+      reasoningEfforts,
       antigravityAuth: oauth?.accessToken ? "oauth" : "none",
       antigravityAccount: oauth?.account,
     };
@@ -1451,6 +1459,7 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
     return {
       provider: "zai",
       baseUrl: ep.baseUrl ?? DEFAULT_ZAI_CHAT_URL,
+      reasoningEfforts,
     };
   }
   if (provider === "opencode") {
@@ -1460,8 +1469,16 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
     return {
       provider: "opencode",
       baseUrl: ep.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL,
+      reasoningEfforts,
       opencodeAuth: oauth?.accessToken ? "oauth" : key && key !== "public" ? "apiKey" : "none",
       opencodeAccount: oauth?.account,
+      // Go models bill the Go plan windows; free/anon Zen models have no usage
+      // API and paid Zen has no price table here — both fall back to no chip.
+      opencodePlan: isOpencodeGoModel(model, path)
+        ? "go"
+        : isOpencodeFreeModel(model, path)
+          ? "free"
+          : undefined,
     };
   }
   if (provider !== "openai") {
@@ -1469,6 +1486,7 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
       provider: "deepseek",
       // Mirrors the client's default (src/client.ts) when nothing is configured.
       baseUrl: loadEndpoint(path).baseUrl ?? "https://api.deepseek.com",
+      reasoningEfforts,
     };
   }
   const oep = loadEndpointForModel(model, path);
@@ -1476,6 +1494,7 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
   return {
     provider: "openai",
     baseUrl: oep.baseUrl ?? "https://api.openai.com/v1",
+    reasoningEfforts,
     billingKind: billing.kind,
     openaiAuth: oauth?.accessToken ? "oauth" : oep.apiKey ? "apiKey" : "none",
     oauthAccount: oauth?.account,
@@ -2680,6 +2699,15 @@ let lastOpencodeRollingUsedPct: number | null = null;
 async function emitOpencodeQuota(tab: Tab): Promise<void> {
   if (providerForModel(tab.currentModel) !== "opencode") {
     emitTabDiagnostic(tab, "quota.skipped", { reason: "non-opencode-provider" });
+    return;
+  }
+  // Only Go-subscription models have a usage API. Free/anon Zen models are
+  // rate-limited per-IP with no usage endpoint, so there is nothing to fetch —
+  // the statusbar keys its chip off the model's quota type, not a number.
+  if (!isOpencodeGoModel(tab.currentModel)) {
+    emitTabDiagnostic(tab, "quota.skipped", {
+      reason: isOpencodeFreeModel(tab.currentModel) ? "opencode-free-tier" : "opencode-not-go",
+    });
     return;
   }
   const ep = loadEndpointForModel(tab.currentModel);

@@ -1004,6 +1004,10 @@ export type SettingsPayload = Omit<SettingsEvent, "type" | "quickSendId" | "quic
 export interface ModelEndpointInfo {
   provider: "deepseek" | "openai" | "ollama" | "gemini" | "zai" | "opencode";
   baseUrl: string;
+  /** Reasoning-effort levels this model accepts, resolved by the daemon (native
+   *  providers from a static set; OpenCode from the model's models.dev
+   *  `reasoning_options`). Empty = the model has no effort control. */
+  reasoningEfforts?: readonly ReasoningEffort[];
   /** Native billing unit resolved by the daemon for this endpoint. */
   billingKind?: "usd" | "quota" | "none";
   /** Ollama endpoint deployment classification; absent for other providers. */
@@ -1020,6 +1024,10 @@ export interface ModelEndpointInfo {
   opencodeAuth?: "oauth" | "apiKey" | "none";
   /** Masked OpenCode account email when signed in via Console OAuth. */
   opencodeAccount?: string;
+  /** Quota type of the tab's CURRENT OpenCode model: `go` bills the Go
+   *  subscription's usage windows, `free` is the anonymous per-IP tier with no
+   *  usage API. Absent for non-opencode providers and for paid Zen models. */
+  opencodePlan?: "go" | "free";
 }
 
 export interface BalanceInfoItem {

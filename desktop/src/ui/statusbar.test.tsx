@@ -39,11 +39,19 @@ function endpointFor(model: string): ModelEndpointInfo {
   )
     return { provider: "gemini", baseUrl: "https://daily-cloudcode-pa.googleapis.com" };
   if (model.startsWith("glm-")) return { provider: "zai", baseUrl: "https://api.z.ai/api/v1" };
+  if (model === "opencode/big-pickle")
+    return {
+      provider: "opencode",
+      baseUrl: "https://opencode.ai/zen/v1",
+      opencodeAuth: "oauth",
+      opencodePlan: "free",
+    };
   if (model.startsWith("opencode/"))
     return {
       provider: "opencode",
       baseUrl: "https://opencode.ai/zen/go/v1",
       opencodeAuth: "oauth",
+      opencodePlan: "go",
     };
   return { provider: "deepseek", baseUrl: "https://api.deepseek.com" };
 }
@@ -617,6 +625,21 @@ describe("StatusBar quota display", () => {
     });
     expect(screen.getByText("Go usage")).toBeTruthy();
     expect(screen.getByTitle(/usage-unavailable/)).toBeTruthy();
+    expect(screen.queryByText("balance")).toBeNull();
+  });
+
+  it("shows a free-tier chip (not Go usage) for a free OpenCode model", () => {
+    renderBar({
+      settings: { model: "opencode/big-pickle" } as Settings,
+      usage: { totalCostUsd: 0, lastCallCostUsd: 0 } as unknown as UsageStats,
+    });
+    expect(screen.getByText("plan usage")).toBeTruthy();
+    expect(screen.getByText("free")).toBeTruthy();
+    expect(screen.queryByText("Go usage")).toBeNull();
+    // Free models leave the quota path, so the cost chips still render (as
+    // $0.00) instead of being suppressed by a quota chip.
+    expect(screen.getByText("this turn")).toBeTruthy();
+    expect(screen.getByText("This session cost")).toBeTruthy();
     expect(screen.queryByText("balance")).toBeNull();
   });
 });

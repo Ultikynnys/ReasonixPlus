@@ -218,9 +218,10 @@ export function StatusBar({
   // Z.AI GLM Coding Plan tabs bill plan-window % (fetched from the monitor
   // endpoint), never dollars — the chip replaces the DeepSeek balance.
   const zaiQuotaBilling = provider === "zai";
-  // OpenCode Go tabs bill plan-window % (fetched from the Go usage endpoint),
-  // never dollars — the chip replaces the DeepSeek balance.
-  const opencodeQuotaBilling = provider === "opencode";
+  // Only Go-subscription OpenCode models bill plan-window % (fetched from the
+  // Go usage endpoint); free/anon Zen has no usage API, so it gets a tier chip.
+  const opencodeQuotaBilling = provider === "opencode" && ep?.opencodePlan === "go";
+  const opencodeFreeBilling = provider === "opencode" && ep?.opencodePlan === "free";
   const sessionQuotaProvider =
     openaiQuotaBilling
       ? "openai"
@@ -735,6 +736,17 @@ export function StatusBar({
             planFallback={quotaChipPlanFallback}
             onRefresh={quotaChipRefresh}
           />
+        ) : opencodeFreeBilling ? (
+          <span
+            className="seg"
+            title={t("statusbar.opencodeFreeTitle")}
+            onClick={onOpenSettings}
+            onKeyDown={activationHandler(onOpenSettings)}
+          >
+            <I.coin size={11} style={{ color: "var(--accent)" }} />
+            <span>{t("statusbar.opencodeFree")}</span>
+            <span className="v ok">{t("statusbar.opencodeFreeTier")}</span>
+          </span>
         ) : (
           <span
             className="seg"

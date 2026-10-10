@@ -2084,6 +2084,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         codexQuota: ev.modelEndpoint?.provider === "openai" ? state.codexQuota : null,
         ollamaQuota: ev.modelEndpoint?.provider === "ollama" ? state.ollamaQuota : null,
         antigravityQuota: ev.modelEndpoint?.provider === "gemini" ? state.antigravityQuota : null,
+        // Only a Go model has Go plan windows; drop stale numbers for free/paid Zen.
+        opencodeQuota: ev.modelEndpoint?.opencodePlan === "go" ? state.opencodeQuota : null,
       };
     }
     case "$session_loaded": {
@@ -4081,6 +4083,7 @@ function TabRuntime({
                   state.settings?.subagentModel ?? state.settings?.model ?? DEFAULT_MODEL
                 }
                 reasoningEffort={state.settings?.reasoningEffort ?? "high"}
+                supportedEfforts={state.settings?.modelEndpoint?.reasoningEfforts}
                 ollamaModels={ollamaModels}
                 ollamaModelsError={ollamaModelsError ?? undefined}
                 ollamaHiddenCount={ollamaHiddenCount}
