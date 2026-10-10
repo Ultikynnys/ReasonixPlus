@@ -145,6 +145,37 @@ describe("Desktop App reducer — usage", () => {
     expect(next.usage.lastCallCacheMiss).toBe(1234);
   });
 
+  it("surfaces OpenCode Zen cache hits carried by the normalized model.final event", () => {
+    // eventize emits prompt_cache_hit_tokens/miss from the client's normalized
+    // Usage; Zen reports cache under prompt_tokens_details.cached_tokens, which
+    // Usage.fromApi maps into that field. The statusbar chip reads these totals.
+    const next = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "model.final",
+        id: 1,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        content: "ok",
+        toolCalls: [],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 20,
+          total_tokens: 1020,
+          prompt_cache_hit_tokens: 800,
+          prompt_cache_miss_tokens: 200,
+        },
+        costUsd: 0,
+      },
+    });
+
+    expect(next.usage.totalPromptTokens).toBe(1000);
+    expect(next.usage.cacheHitTokens).toBe(800);
+    expect(next.usage.cacheMissTokens).toBe(200);
+    expect(next.usage.lastCallCacheHit).toBe(800);
+    expect(next.usage.lastCallCacheMiss).toBe(200);
+  });
+
   it("settles the pending assistant message when an error ends the turn (#1660)", () => {
     const base = initialState();
     const state = {

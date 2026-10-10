@@ -60,6 +60,9 @@ export class Usage {
       // OpenAI Responses API usage names (codex backend / /v1/responses).
       typeof u.input_tokens === "number" ||
       typeof u.output_tokens === "number" ||
+      typeof u.input_tokens_details?.cached_tokens === "number" ||
+      // OpenAI Chat Completions cache detail (OpenCode Zen / openai-compatible chat).
+      typeof u.prompt_tokens_details?.cached_tokens === "number" ||
       // Google Antigravity / Gemini usageMetadata names.
       typeof u.promptTokenCount === "number" ||
       typeof u.candidatesTokenCount === "number" ||
@@ -77,6 +80,7 @@ export class Usage {
       u.completion_tokens ?? u.eval_count ?? u.output_tokens ?? u.candidatesTokenCount ?? 0;
     const cacheHitTokens =
       u.prompt_cache_hit_tokens ??
+      u.prompt_tokens_details?.cached_tokens ??
       u.input_tokens_details?.cached_tokens ??
       u.cachedContentTokenCount ??
       u.cached_content_token_count ??
@@ -1178,6 +1182,7 @@ export class DeepSeekClient {
       usage.cachedContentTokenCount ??
       usage.cached_content_token_count ??
       usage.prompt_cache_hit_tokens ??
+      usage.prompt_tokens_details?.cached_tokens ??
       usage.input_tokens_details?.cached_tokens ??
       0;
     const cacheMissTokens =
