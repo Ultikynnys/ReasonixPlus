@@ -89,10 +89,9 @@ export interface RawUsage {
   input_tokens?: number;
   output_tokens?: number;
   input_tokens_details?: { cached_tokens?: number };
-  /** OpenAI Chat Completions usage names — OpenCode Zen (and other
-   *  openai-compatible `/chat/completions` endpoints) report cached input
-   *  under `prompt_tokens_details.cached_tokens`, a different path from the
-   *  Responses API spelling above. */
+  /** Chat Completions usage names (OpenCode Zen, openai-compatible endpoints):
+   *  cached input is reported under `prompt_tokens_details.cached_tokens`, a
+   *  different path from the Responses API spelling above. */
   prompt_tokens_details?: { cached_tokens?: number };
   /** Google Antigravity / Gemini usageMetadata names. */
   promptTokenCount?: number;
