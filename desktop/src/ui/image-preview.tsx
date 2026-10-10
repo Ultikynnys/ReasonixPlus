@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { t, useLang } from "../i18n";
 
@@ -21,6 +21,7 @@ function ImageViewer({ src, name, onClose }: { src: string; name: string; onClos
   const viewport = useRef<HTMLDivElement>(null);
   const image = useRef<HTMLImageElement>(null);
   const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const zoomAnchor = useRef<{ x: number; y: number; imageX: number; imageY: number; previousZoom: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [failed, setFailed] = useState(false);
@@ -31,6 +32,34 @@ function ImageViewer({ src, name, onClose }: { src: string; name: string; onClos
     const scale = Math.min(1, (container.clientWidth - 24) / element.naturalWidth, (container.clientHeight - 24) / element.naturalHeight);
     setSize({ width: Math.max(1, element.naturalWidth * scale), height: Math.max(1, element.naturalHeight * scale) });
   };
+  const changeZoom = (next: number, point?: { clientX: number; clientY: number }) => {
+    const container = viewport.current;
+    if (container && image.current) {
+      const rect = container.getBoundingClientRect();
+      const imageRect = image.current.getBoundingClientRect();
+      const x = point ? point.clientX - rect.left : container.clientWidth / 2;
+      const y = point ? point.clientY - rect.top : container.clientHeight / 2;
+      zoomAnchor.current = {
+        x, y,
+        imageX: x + rect.left - imageRect.left,
+        imageY: y + rect.top - imageRect.top,
+        previousZoom: zoom,
+      };
+    }
+    setZoom(Math.max(0.1, Math.min(16, next)));
+  };
+  useLayoutEffect(() => {
+    const container = viewport.current;
+    const anchor = zoomAnchor.current;
+    if (!container || !anchor || !size.width) return;
+    const factor = zoom / anchor.previousZoom;
+    const viewportRect = container.getBoundingClientRect();
+    const imageRect = image.current?.getBoundingClientRect();
+    if (!imageRect) return;
+    container.scrollLeft += imageRect.left - viewportRect.left + anchor.imageX * factor - anchor.x;
+    container.scrollTop += imageRect.top - viewportRect.top + anchor.imageY * factor - anchor.y;
+    zoomAnchor.current = null;
+  }, [zoom, size]);
   useEffect(() => {
     dialog.current?.showModal();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
@@ -48,17 +77,18 @@ function ImageViewer({ src, name, onClose }: { src: string; name: string; onClos
     onClick={(event) => { if (event.target === event.currentTarget) close(); }}>
     <div className="preview-toolbar">
       <span className="image-viewer-name">{name}</span>
-      <button type="button" disabled={zoom <= 0.25} onClick={() => setZoom(Math.max(0.25, zoom - 0.25))}>{t("thread.zoomOut")}</button>
+      <button type="button" disabled={zoom <= 0.1} onClick={() => changeZoom(zoom / 1.25)}>{t("thread.zoomOut")}</button>
       <output>{Math.round(zoom * 100)}%</output>
-      <button type="button" disabled={zoom >= 8} onClick={() => setZoom(Math.min(8, zoom + 0.25))}>{t("thread.zoomIn")}</button>
-      <button type="button" onClick={() => { setZoom(1); fit(); viewport.current?.scrollTo?.(0, 0); }}>{t("thread.resetZoom")}</button>
+      <button type="button" disabled={zoom >= 16} onClick={() => changeZoom(zoom * 1.25)}>{t("thread.zoomIn")}</button>
+      <button type="button" onClick={() => { changeZoom(1); fit(); }}>{t("thread.resetZoom")}</button>
       <button type="button" autoFocus onClick={close}>{t("thread.closePreview")}</button>
     </div>
     <div ref={viewport} className="image-viewer-viewport"
       onWheel={(event) => {
-        if (!event.ctrlKey) return;
         event.preventDefault();
-        setZoom((value) => Math.max(0.25, Math.min(8, value + (event.deltaY < 0 ? 0.25 : -0.25))));
+        const delta = event.deltaY;
+        const factor = Math.exp(-delta * (event.deltaMode === 1 ? 0.02 : event.deltaMode === 2 ? 0.5 : 0.0015));
+        changeZoom(zoom * factor, event);
       }}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
@@ -71,9 +101,9 @@ function ImageViewer({ src, name, onClose }: { src: string; name: string; onClos
         event.currentTarget.scrollTop = drag.current.top - (event.clientY - drag.current.y);
       }}
       onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
-      {failed ? <output role="alert">{t("thread.imagePreviewFailed")}</output> : <img ref={image} src={src} alt={name} draggable={false}
+      {failed ? <output role="alert">{t("thread.imagePreviewFailed")}</output> : <div className="image-viewer-image-stage" style={size.width ? { minWidth: `max(100%, ${size.width * zoom}px)`, minHeight: `max(100%, ${size.height * zoom}px)` } : undefined}><img ref={image} src={src} alt={name} draggable={false}
         onLoad={fit} onError={() => setFailed(true)}
-        style={size.width ? { width: size.width * zoom, height: size.height * zoom } : { maxWidth: "100%", maxHeight: "100%" }} />}
+        style={size.width ? { width: size.width * zoom, height: size.height * zoom } : { maxWidth: "100%", maxHeight: "100%" }} /></div>}
     </div>
   </dialog>, document.body);
 }

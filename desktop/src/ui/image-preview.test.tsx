@@ -23,6 +23,23 @@ describe("ZoomableImage", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
+  it("zooms with the regular mouse wheel and keeps the pointer location anchored", () => {
+    render(<ZoomableImage src="chart.png" alt="chart.png" />);
+    fireEvent.click(screen.getByRole("button", { name: "View image: chart.png" }));
+    const stage = screen.getByRole("dialog").querySelector(".image-viewer-viewport") as HTMLDivElement;
+    Object.defineProperty(stage, "clientWidth", { configurable: true, value: 500 });
+    Object.defineProperty(stage, "clientHeight", { configurable: true, value: 400 });
+    stage.getBoundingClientRect = () => ({ left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400, x: 0, y: 0, toJSON: () => ({}) });
+    const image = stage.querySelector("img")!;
+    Object.defineProperty(image, "naturalWidth", { configurable: true, value: 100 });
+    Object.defineProperty(image, "naturalHeight", { configurable: true, value: 80 });
+    fireEvent.load(image);
+    fireEvent.wheel(stage, { deltaY: -120, clientX: 300, clientY: 200 });
+    expect(screen.getByText("120%")).toBeTruthy();
+    expect(stage.scrollLeft).toBeGreaterThan(0);
+    expect(stage.scrollTop).toBeGreaterThan(0);
+    expect(screen.getByRole("dialog").querySelector(".image-viewer-image-stage")).toBeTruthy();
+  });
   it("dismisses on the native Escape cancel event", () => {
     render(<ZoomableImage src="chart.png" />);
     fireEvent.click(screen.getByRole("button", { name: "View image" }));

@@ -2589,14 +2589,22 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .image-viewer-name { margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 30%; }
 .image-viewer-viewport {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   padding: 12px;
+  overscroll-behavior: contain;
   cursor: grab;
-  touch-action: none;
 }
 .image-viewer-viewport:active { cursor: grabbing; }
-.image-viewer-viewport img { display: block; max-width: none; max-height: none; margin: auto; user-select: none; }
+.image-viewer-image-stage {
+  display: grid;
+  place-items: center;
+  width: max-content;
+  height: max-content;
+  margin: auto;
+}
+.image-viewer-image-stage img { display: block; max-width: none; max-height: none; margin: 0; user-select: none; pointer-events: none; }
 .presented-file-info {
   display: flex;
   min-width: 0;
