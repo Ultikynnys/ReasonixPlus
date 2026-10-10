@@ -6745,6 +6745,22 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .setting-row button {
   flex-shrink: 0;
 }
+/* A provider card's settings column is only half a card wide, so a description
+ * and a button can never share one row: side by side the button overflows the
+ * column and clips at the card edge. Any row in that column holding a button
+ * stacks instead — the description spans the full width and its controls drop
+ * to their own line below, where they always fit. */
+.provider-col .setting-row:has(button) {
+  flex-direction: column;
+  align-items: stretch;
+}
+.provider-col .setting-row:has(button) > .l {
+  flex: 0 0 auto;
+  width: 100%;
+}
+.provider-col .setting-row:has(button) > :not(.l) {
+  align-self: flex-start;
+}
 .setting-row .l .n {
   font-size: 14px;
   font-weight: 500;

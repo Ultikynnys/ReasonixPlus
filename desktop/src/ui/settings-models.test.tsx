@@ -136,6 +136,23 @@ describe("PageModels default-model enum", () => {
     expect(screen.queryByRole("button", { name: "Sync models" })).toBeNull();
   });
 
+  it("keeps provider-column button rows where the stacking rule applies", () => {
+    const { container } = render(<SettingsModal {...baseProps} initialPage="models" />);
+    container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
+      if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+    });
+    // The OpenCode/OpenAI "Sign in" and "Refresh" rows sit in the half-width
+    // settings column, so `.provider-col .setting-row:has(button)` must match
+    // them (and stack them) rather than the rule going stale against markup.
+    const buttonRows = Array.from(
+      container.querySelectorAll(".provider-col .setting-row:has(button)"),
+    );
+    expect(buttonRows.length).toBeGreaterThan(0);
+    buttonRows.forEach((row) => {
+      expect(row.firstElementChild?.className).toBe("l");
+    });
+  });
+
   it("lists the enabled models and switching sets both main and subagent model", () => {
     const onSave = vi.fn();
     render(
