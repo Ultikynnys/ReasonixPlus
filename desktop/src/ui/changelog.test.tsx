@@ -49,11 +49,10 @@ describe("PageChangelog", () => {
     expect(screen.getAllByText("installed")).toHaveLength(1);
   });
 
-  it("hides maintenance commits until the toggle is switched on", () => {
+  it("renders maintenance commits without a toggle", () => {
     render(<PageChangelog changelog={state()} onRefresh={vi.fn()} />);
 
-    expect(screen.queryByText("bump a dependency")).toBeNull();
-    fireEvent.click(screen.getByRole("checkbox"));
+    expect(screen.queryByRole("checkbox")).toBeNull();
     expect(screen.getByText("bump a dependency")).toBeTruthy();
     expect(screen.getByText("Maintenance")).toBeTruthy();
   });

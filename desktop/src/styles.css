@@ -7388,15 +7388,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .changelog-toolbar .grow {
   flex: 1;
 }
-.changelog-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--muted);
-  cursor: pointer;
-  user-select: none;
-}
 .changelog-stale {
   font-size: 12px;
   color: var(--warn, var(--muted));

@@ -405,7 +405,6 @@ export const en = {
     breaking: "breaking",
     entryCount: "{count} changes",
     noUserChanges: "Maintenance only.",
-    showChores: "Show chores & maintenance",
     section: {
       feat: "Added",
       fix: "Fixed",

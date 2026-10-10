@@ -32,7 +32,6 @@ export function PageChangelog({
   /** `true` bypasses the backend cache. */
   onRefresh: (force?: boolean) => void;
 }) {
-  const [showChores, setShowChores] = useState(false);
   // Explicit open/closed choices only. A release with no entry here falls back
   // to the newest-N default, so toggling one release never changes the others.
   const [overrides, setOverrides] = useState<Readonly<Record<string, boolean>>>({});
@@ -93,14 +92,6 @@ export function PageChangelog({
   return (
     <section className="section">
       <div className="changelog-toolbar">
-        <label className="changelog-toggle">
-          <input
-            type="checkbox"
-            checked={showChores}
-            onChange={(e) => setShowChores(e.target.checked)}
-          />
-          <span>{t("changelog.showChores")}</span>
-        </label>
         <span className="grow" />
         {changelog.error ? <span className="changelog-stale">{t("changelog.stale")}</span> : null}
         <button
@@ -120,9 +111,7 @@ export function PageChangelog({
         const open = isOpen(key, index);
         const date = formatDate(release.date);
         const isInstalled = release.version !== null && release.version.replace(/^v/, "") === installed;
-        const sections = groupSections(release).filter(
-          (s) => showChores || s.kind !== "chore",
-        );
+        const sections = groupSections(release);
         return (
           <div key={key} className="changelog-release" data-open={open}>
             <div
