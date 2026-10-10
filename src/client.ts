@@ -463,6 +463,10 @@ export interface DeepSeekClientOptions {
    *  opencode requests. Unset → one uuid per client instance, so the header is
    *  never missing and each subagent client maps to its own conversation. */
   sessionId?: string;
+  /** OpenCode Console organization id for the signed-in session, sent as
+   *  x-opencode-org-id on opencode inference. Required with a Console session
+   *  token (a plain API key has no org). Undefined → header omitted. */
+  opencodeOrgResolver?: () => Promise<string | undefined> | string | undefined;
 }
 
 // DeepSeek's strict JSON parser rejects lone UTF-16 surrogate escapes
@@ -519,6 +523,8 @@ export class DeepSeekClient {
   private readonly minChatIntervalMs: number;
   private readonly apiKeyResolver?: () => Promise<string | undefined>;
   private readonly transportResolver?: () => Promise<ResolvedTransport | null>;
+  /** OpenCode Console org id for session-scoped inference (x-opencode-org-id). */
+  private readonly opencodeOrgResolver?: () => Promise<string | undefined> | string | undefined;
   /** Resolved Z.AI endpoint after a key/endpoint mismatch forced a swap, so
    *  later requests skip the wrong endpoint (and its retries). */
   private zaiResolvedBase: string | null = null;
@@ -566,6 +572,7 @@ export class DeepSeekClient {
     this.apiKey = apiKey ?? "";
     this.apiKeyResolver = opts.apiKeyResolver;
     this.transportResolver = opts.transportResolver;
+    this.opencodeOrgResolver = opts.opencodeOrgResolver;
     this.geminiAuthResolver = opts.geminiAuthResolver;
     this.sessionId = opts.sessionId ?? null;
     // A configured Antigravity auth resolver declares this client's endpoint
@@ -643,6 +650,18 @@ export class DeepSeekClient {
     return this._generatedSessionId;
   }
 
+  /** Console org id for the current session token — undefined for static API
+   *  keys (no org) or when resolution fails. The gateway rejects a session
+   *  token that isn't scoped to its org with a 401 "Invalid API key". */
+  private async resolveOpencodeOrgId(): Promise<string | undefined> {
+    if (!this.opencodeOrgResolver) return undefined;
+    try {
+      return (await this.opencodeOrgResolver()) || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Authorization header when a key exists — omitted entirely for keyless
    *  endpoints (Ollama's local daemon ignores auth, so `Bearer ` would be noise). */
   private async authHeaders(): Promise<Record<string, string>> {
@@ -697,6 +716,11 @@ export class DeepSeekClient {
     if (providerForModel(opts.model) === "opencode") {
       headers["x-opencode-session"] ??= this.resolveOpencodeSessionId();
       headers["User-Agent"] ??= `reasonix/${VERSION}`;
+      // A Console session token is org-scoped: without this header the gateway
+      // can't resolve the org and answers 401 "Invalid API key". A static API
+      // key has no org, so the resolver returns undefined and we omit it.
+      const orgId = await this.resolveOpencodeOrgId();
+      if (orgId) headers["x-opencode-org-id"] ??= orgId;
     }
     const isOllama = providerForModel(opts.model) === "ollama";
     const endpoint =

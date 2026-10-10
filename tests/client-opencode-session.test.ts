@@ -81,6 +81,52 @@ describe("OpenCode session headers (opencode.ai/docs/go)", () => {
     expect(headers()[0]?.["x-opencode-session"]).toBeUndefined();
     expect(headers()[0]?.["User-Agent"]).toBeUndefined();
   });
+
+  it("sends x-opencode-org-id when a Console session org is available", async () => {
+    const { fetch, headers } = headerCapturingFetch();
+    const client = new DeepSeekClient({
+      apiKey: "public",
+      baseUrl: "https://opencode.ai/zen/v1",
+      allowMissingKey: true,
+      opencodeOrgResolver: () => "org-42",
+      fetch,
+    });
+
+    await client.chat({ model: "glm-5-free", messages: [{ role: "user", content: "hi" }] });
+
+    expect(headers()[0]?.["x-opencode-org-id"]).toBe("org-42");
+  });
+
+  it("omits x-opencode-org-id for a static API key with no org", async () => {
+    const { fetch, headers } = headerCapturingFetch();
+    const client = new DeepSeekClient({
+      apiKey: "sk-service-key",
+      baseUrl: "https://opencode.ai/zen/v1",
+      allowMissingKey: true,
+      opencodeOrgResolver: () => undefined,
+      fetch,
+    });
+
+    await client.chat({ model: "glm-5-free", messages: [{ role: "user", content: "hi" }] });
+
+    expect(headers()[0]?.["x-opencode-org-id"]).toBeUndefined();
+  });
+
+  it("does not send x-opencode-org-id for non-opencode providers", async () => {
+    const { fetch, headers } = headerCapturingFetch();
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      opencodeOrgResolver: () => "org-42",
+      fetch,
+    });
+
+    await client.chat({
+      model: "deepseek-v4-flash",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(headers()[0]?.["x-opencode-org-id"]).toBeUndefined();
+  });
 });
 
 /** Zen reports cache hits in the Chat Completions `prompt_tokens_details`

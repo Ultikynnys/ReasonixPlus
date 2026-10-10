@@ -7,6 +7,7 @@ import {
   isOpenAIStandardEndpoint,
   loadEndpointForModel,
   providerForModel,
+  readConfig,
 } from "./config.js";
 import { resolveOpenAIToken } from "./oauth.js";
 import { resolveOpencodeToken } from "./opencode-oauth.js";
@@ -33,6 +34,8 @@ export function modelClientOptions(opts: ResolvedModelClientOptions): DeepSeekCl
       : provider === "opencode"
         ? () => resolveOpencodeToken(opts.configPath)
         : undefined,
+    opencodeOrgResolver:
+      provider === "opencode" ? () => readConfig(opts.configPath).opencodeOAuth?.orgId : undefined,
     transportResolver: openAIStandard
       ? () => resolveCodexTransport()
       : provider === "opencode" && opts.model.startsWith("muse-")

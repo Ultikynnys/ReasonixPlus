@@ -398,7 +398,9 @@ export interface OpencodeOAuthCreds {
   expiresAt: number;
   /** Account email from the Console `/api/user` endpoint — shown masked in settings, never shipped over the bridge. */
   account?: string;
-  /** Active Console organization id (sent as `x-org-id` on Console requests). */
+  /** Active Console organization id — sent as `x-opencode-org-id` on inference
+   *  so a session token is scoped to this org (the gateway rejects an unscoped
+   *  session token with 401). Unused for static API keys. */
   orgId?: string;
   /** Active Console organization display name. */
   orgName?: string;
