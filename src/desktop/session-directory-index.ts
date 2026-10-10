@@ -159,8 +159,17 @@ export class SessionDirectoryIndex<M> {
     private readonly ttlMs = 30_000,
     private readonly now: () => number = Date.now,
     private readonly maxFiles = MAX_SESSION_FILES,
-    private readonly cacheFile?: string,
+    /** Cache file path. A getter keeps it in lockstep with `directory` — both
+     *  must resolve the same home — so a run that re-homes the sessions dir
+     *  (tests, an alternate REASONIX_HOME) can never persist a foreign
+     *  directory's records into the real cache and force the next launch into a
+     *  full cold scan of every transcript. */
+    private readonly cacheFile?: string | (() => string),
   ) {}
+
+  private cacheFilePath(): string | undefined {
+    return typeof this.cacheFile === "function" ? this.cacheFile() : this.cacheFile;
+  }
 
   load(): { value: Promise<readonly SessionDirectoryRecord<M>[]>; cache: SessionIndexCache } {
     if (this.loaded && this.refreshedAt + this.ttlMs > this.now()) {
@@ -185,7 +194,7 @@ export class SessionDirectoryIndex<M> {
   remove(name: string): void {
     this.records.delete(join(this.directory(), name, SESSION_MESSAGES_FILENAME));
     this.invalidate();
-    if (this.cacheFile !== undefined) void this.persistIndex(this.records);
+    if (this.cacheFilePath() !== undefined) void this.persistIndex(this.records);
   }
 
   private async refresh(generation: number): Promise<readonly SessionDirectoryRecord<M>[]> {
@@ -237,14 +246,14 @@ export class SessionDirectoryIndex<M> {
     }
     if (next.size !== this.records.size) changed = true;
     this.publish(generation, next);
-    if (changed && generation === this.generation && this.cacheFile !== undefined) {
+    if (changed && generation === this.generation && this.cacheFilePath() !== undefined) {
       await this.persistIndex(next);
     }
     return [...next.values()];
   }
 
   private async seedFromCache(): Promise<void> {
-    const cacheFile = this.cacheFile;
+    const cacheFile = this.cacheFilePath();
     if (this.cacheLoaded || cacheFile === undefined) return;
     this.cacheLoaded = true;
     const cached = await readJsonFileSilentlyAsync(cacheFile, isPersistedSessionIndex);
@@ -266,7 +275,7 @@ export class SessionDirectoryIndex<M> {
   }
 
   private async persistIndex(records: Map<string, SessionDirectoryRecord<M>>): Promise<void> {
-    const cacheFile = this.cacheFile;
+    const cacheFile = this.cacheFilePath();
     if (cacheFile === undefined) return;
     try {
       const body = JSON.stringify(this.serialize(records));

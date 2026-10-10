@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { messageOf } from "@reasonix/core-utils";
 import { type EventSourceMessage, createParser } from "eventsource-parser";
 import { ANTIGRAVITY_CLOUD_CODE_URL, antigravityHeaders } from "./antigravity-oauth.js";
@@ -16,6 +18,7 @@ import { tryParseJson } from "./core/parse-json.js";
 import { recordDiagnostic } from "./diagnostics.js";
 import { createLogger } from "./logging.js";
 import { showPayloadContextLength } from "./ollama-model-map.js";
+import { reasonixHome } from "./reasonix-home.js";
 import { buildResponsesPayload } from "./responses-api.js";
 import { type RetryOptions, fetchWithRetry } from "./retry.js";
 import { DEFAULT_CONTEXT_TOKENS } from "./telemetry/stats.js";
@@ -540,6 +543,9 @@ export class DeepSeekClient {
    *  uncataloged ids carry no provider signal, so the name never routes. */
   private readonly geminiMode: boolean;
   private _generatedSessionId: string | null = null;
+  /** Set after the OpenCode gateway rejects the configured session id — a fresh,
+   *  gateway-accepted id reused for every later request on this client. */
+  private opencodeSessionOverride: string | null = null;
   private nextChatRequestAt = 0;
 
   /** What was last sent per Ollama model, for cache-prefix inference. */
@@ -642,12 +648,28 @@ export class DeepSeekClient {
     return /insufficient balance|no resource package|please recharge/i.test(body);
   }
 
-  /** Stable per-conversation id for OpenCode's x-opencode-session header —
-   *  the configured session identity when present, else one uuid per client. */
+  /** Stable per-conversation id for OpenCode's x-opencode-session header.
+   *  `opencodeSessionOverride` wins once the gateway has rejected the configured
+   *  session id (see prepareRequest) — it stays fixed for the client's lifetime
+   *  so prompt-cache routing is stable across turns. */
   private resolveOpencodeSessionId(): string {
+    if (this.opencodeSessionOverride) return this.opencodeSessionOverride;
     if (this.sessionId) return this.sessionId;
     this._generatedSessionId ??= randomUUID();
     return this._generatedSessionId;
+  }
+
+  /** True for the OpenCode Go gateway's opaque session-routing 400, whose body
+   *  is exactly `{"model":"<id>"}` (no error envelope). */
+  private async isOpencodeSessionRejection(resp: Response): Promise<boolean> {
+    if (resp.status !== 400) return false;
+    const body = (
+      await resp
+        .clone()
+        .text()
+        .catch(() => "")
+    ).trim();
+    return /^\{\s*"model"\s*:\s*"[^"]*"\s*\}$/.test(body);
   }
 
   /** Console org id for the current session token — undefined for static API
@@ -776,6 +798,66 @@ export class DeepSeekClient {
           resp = chatResp;
           transport = null;
         }
+      }
+      // The OpenCode Go gateway rejects some `x-opencode-session` values with an
+      // opaque 400 whose body is exactly `{"model":"<id>"}` — its session-routing
+      // check is format-dependent, and stable ids like `desktop-<ts>-<counter>`
+      // (an all-digit tail) are refused. Regenerate the session id and retry a
+      // few times; the accepted value is retained for the conversation so
+      // prompt-cache routing stays stable across turns.
+      if (providerForModel(opts.model) === "opencode") {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          if (!(await this.isOpencodeSessionRejection(resp))) break;
+          this.opencodeSessionOverride = `reasonix-${randomUUID().replace(/-/g, "")}`;
+          headers["x-opencode-session"] = this.opencodeSessionOverride;
+          log.verbose(
+            `opencode 400 on ${endpoint} — retrying with a fresh session id (attempt ${attempt + 1})`,
+          );
+          resp = await fetchWithRetry(this._fetch, endpoint, init, { ...this.retry, signal });
+        }
+      }
+      if (!resp.ok) {
+        const errBody = await resp
+          .clone()
+          .text()
+          .catch(() => "");
+        let payloadKeys = "";
+        let toolNames = "";
+        try {
+          const p = JSON.parse(String(init.body)) as Record<string, unknown>;
+          payloadKeys = Object.keys(p).join(",");
+          const tools = p.tools as Array<{ function?: { name?: string } }> | undefined;
+          toolNames = (tools ?? [])
+            .map((tool) => tool?.function?.name ?? "?")
+            .join(",")
+            .slice(0, 800);
+        } catch {
+          payloadKeys = "unparsable";
+        }
+        // Full request body dump for offline bisection of gateway 400s.
+        try {
+          writeFileSync(
+            join(reasonixHome(), "cache", "opencode-error-request.json"),
+            typeof init.body === "string" ? init.body : "",
+          );
+        } catch {
+          void 0;
+        }
+        recordDiagnostic("model.error.body", {
+          level: "error",
+          details: {
+            model: opts.model,
+            provider: providerForModel(opts.model),
+            status: resp.status,
+            body: errBody.slice(0, 1200),
+            payloadKeys,
+            toolNames,
+            bodyBytes: typeof init.body === "string" ? init.body.length : -1,
+            endpoint,
+            authPrefix: (headers.Authorization ?? "").slice(0, 10),
+            orgHeader: headers["x-opencode-org-id"] ?? null,
+          },
+        });
       }
       recordDiagnostic("model.response.headers", {
         durationMs: performance.now() - startedAt,

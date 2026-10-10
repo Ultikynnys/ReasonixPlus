@@ -2685,8 +2685,10 @@ async function emitOpencodeQuota(tab: Tab): Promise<void> {
   const ep = loadEndpointForModel(tab.currentModel);
   const baseUrl = ep.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL;
   // A Go subscription is required; the free public tier has no usage to show,
-  // so no credential (or a custom proxy base) simply yields no chip.
-  const token = (await resolveOpencodeToken()) ?? loadOpencodeApiKey();
+  // so no credential (or a custom proxy base) simply yields no chip. The Go
+  // usage API accepts the workspace service key, not a Console OAuth session
+  // token (that 401s), so prefer the key and fall back to the session.
+  const token = loadOpencodeApiKey() ?? (await resolveOpencodeToken());
   if (!token || token === "public") {
     emitTabDiagnostic(tab, "quota.skipped", { reason: "opencode-no-credential" });
     return;
@@ -4753,7 +4755,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     };
   }
 
-  const bootstrapGate = new ConcurrencyGate(2);
+  const bootstrapGate = new ConcurrencyGate(6);
 
   async function initTabToolset(tab: Tab, priority = 0): Promise<void> {
     const bootstrapStartedAt = performance.now();
@@ -4790,7 +4792,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       tab.runtime = buildRuntimeFor(tab);
       if (priority > 0) markPhase("first_runtime_ready");
       emitTabDiagnostic(tab, "tab.runtime.ready", undefined, "info");
-      void bridgeTabMcp(tab);
+      // Bridge MCP eagerly for the initially-focused tab only; other restored
+      // tabs bridge lazily on first activation (see the tab_activate handler).
+      // Bridging every tab at startup re-registered the full MCP tool set once
+      // per tab (hundreds of tools each) and dominated startup.
+      if (tab === first) void bridgeTabMcp(tab);
     } else {
       emitTabDiagnostic(tab, "tab.runtime.waiting-for-credential", undefined, "warn");
     }
@@ -4815,7 +4821,14 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     tab: Tab,
     sessionsInitialized: Promise<void>,
   ): Promise<void> {
-    await Promise.all([tab.initialization, sessionsInitialized]);
+    // The sidebar session list is NOT a prerequisite for a usable workspace.
+    // Awaiting the session-directory index here gated the "Loading workspaces"
+    // splash on a full index refresh, which on a large store (thousands of
+    // sessions, transcripts being revalidated while MCP servers warm up) takes
+    // tens of seconds. Fire it in the background — `$sessions` streams in when
+    // it resolves — and clear the splash as soon as the toolset/runtime is ready.
+    void sessionsInitialized.catch(() => undefined);
+    await tab.initialization;
     emit({ type: "$workspace_initialized", revision: ++tab.initializationRevision }, tab.id);
   }
 
@@ -6188,23 +6201,27 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       },
       tab.id,
     );
-    emitSettings(tab);
     // A pending (workspace-less) tab has no session, toolset, hooks or sidebar
     // to build — it exists only so the UI can prompt for a workspace. Assigning
     // one runs switchWorkspace, which does the full build. Do NOT emit $ready,
     // so the composer stays disabled until a workspace is chosen.
     if (restore?.pending) {
+      emitSettings(tab);
       emit({ type: "$workspace_initialized", revision: ++tab.initializationRevision }, tab.id);
       emitTabDiagnostic(tab, "tab.bootstrap.pending", undefined, "info");
       return tab;
     }
-    emitMcpSpecs(tab);
-    emitSkills(tab);
-    // Defer the heavy per-tab work (session jsonl read+parse, sessions/memory
-    // scans, toolset build) so all tabs open before any of it runs. Session
-    // reads use the async loader so they overlap across tabs instead of
-    // serializing on the event loop.
+    // Defer ALL per-tab work off the synchronous open path. An async function
+    // runs synchronously up to its first await, so we yield with `setImmediate`
+    // before emitSettings/emitMcpSpecs/emitSkills (settings build, config read,
+    // filesystem skill scan) and the toolset build. Doing that work inline for
+    // every restored tab blocked the tab-creation loop on the event loop and
+    // held the "Loading workspaces" splash until the last tab was constructed.
     void (async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      emitSettings(tab);
+      emitMcpSpecs(tab);
+      emitSkills(tab);
       // Restore the conversation's stored model/effort FIRST — it's a cheap
       // meta.json read, but the runtime (built inside initTabToolset) reads
       // `tab.currentModel` / `tab.currentSession` at build time, so it must
@@ -6376,8 +6393,16 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     ? dedupedTabs.find((t) => sameWorkspaceDir(t.dir, startupDir))
     : dedupedTabs[0];
   const pendingRestores = dedupedTabs.filter((t) => t !== startupTab);
-  void firstBootstrapSettled.then(() => {
-    for (const saved of pendingRestores) bootstrapTab(saved.dir, saved);
+  void firstBootstrapSettled.then(async () => {
+    for (const saved of pendingRestores) {
+      bootstrapTab(saved.dir, saved);
+      // Yield to the event loop between tabs. Bootstrapping every restored tab
+      // in one synchronous loop blocked the loop for the entire burst, which
+      // starved the toolset gate and MCP handshakes and held the "Loading
+      // workspaces" splash until the whole set had been constructed. A macrotask
+      // boundary lets the gate, MCP bridges, and the RPC reader make progress.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
     persistOpenTabs();
   });
   first = bootstrapTab(opts.dir ?? dedupedTabs[0]?.dir, startupTab);
@@ -6496,6 +6521,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         void emitOllamaQuota(activated);
         void emitAntigravityQuota(activated);
         void emitOpencodeQuota(activated);
+        // Lazily bridge MCP on first activation: non-focused restored tabs skip
+        // the per-tab MCP tool registration at startup and pay it only when the
+        // user actually opens them.
+        if (activated.toolset && !activated.mcpRuntime) void bridgeTabMcp(activated);
         void emitSessions(activated);
       } else {
         emitDiagnostic(
@@ -6603,25 +6632,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // WebView reloads keep the daemon alive, so replay transport state and
       // cheap tab state first. Disk scans are deferred until startup settles.
       emit({ type: "$connected" });
-      for (const t of tabs.values()) {
-        emit(
-          {
-            type: "$tab_opened",
-            workspaceDir: t.rootDir,
-            active: t.id === lastActiveTabId,
-            groupId: t.groupId,
-            sessions: [t.currentSession],
-            activeSession: t.currentSession,
-          },
-          t.id,
-        );
-        emitSettings(t);
-        if (t.pending) continue;
-        emitMcpSpecs(t);
-        emitSkills(t);
-        if (!tabHasCredential(t)) emit({ type: "$needs_setup", reason: "no_api_key" }, t.id);
-        else if (t.toolset) emit({ type: "$ready" }, t.id);
-      }
+      // Publish the authoritative tab set FIRST: the frontend needs it to know
+      // which workspaces to expect, and the per-tab settings/MCP/skills
+      // re-emission below is synchronous and non-trivial for large tab sets —
+      // doing it before the snapshot delayed the frontend's startup bookkeeping.
       emit({
         type: "$tabs_snapshot",
         tabs: Array.from(tabs.values()).map((t) => ({
@@ -6632,57 +6646,91 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           activeSession: t.currentSession,
         })),
       });
-      void firstBootstrapSettled.then(async () => {
+      // Replay per-tab state in yielding batches. Emitting $settings + MCP +
+      // skills for every tab in one synchronous loop froze the event loop long
+      // enough to starve tab creation and the toolset gate — the bulk of the
+      // "Loading workspaces" delay. Yielding every few tabs keeps the loop live.
+      void (async () => {
+        let n = 0;
+        for (const t of tabs.values()) {
+          emit(
+            {
+              type: "$tab_opened",
+              workspaceDir: t.rootDir,
+              active: t.id === lastActiveTabId,
+              groupId: t.groupId,
+              sessions: [t.currentSession],
+              activeSession: t.currentSession,
+            },
+            t.id,
+          );
+          emitSettings(t);
+          if (!t.pending) {
+            emitMcpSpecs(t);
+            emitSkills(t);
+            if (!tabHasCredential(t)) emit({ type: "$needs_setup", reason: "no_api_key" }, t.id);
+            else if (t.toolset) emit({ type: "$ready" }, t.id);
+          }
+          if ((n++ & 3) === 3) await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      })();
+      void firstBootstrapSettled.then(() => {
         for (const t of tabs.values()) {
           if (t.pending) {
-            await emitWorkspaceInitialized(t, Promise.resolve());
+            void emitWorkspaceInitialized(t, Promise.resolve());
             continue;
           }
           const sessionsInitialized = emitSessions(t);
           emitMemory(t);
           void emitBalance(t);
-          if (t.currentSession) {
-            try {
-              const meta = loadSessionMeta(t.currentSession);
-              const msgs = mergeNoticesIntoLoaded(
-                buildLoadedMessages(await loadSessionMessagesAsync(t.currentSession)),
-                loadSessionNotices(t.currentSession),
-                meta.lastTurn,
-              );
-              emit(
-                {
-                  type: "$session_loaded",
-                  name: t.currentSession,
-                  messages: msgs,
-                  carryover: sessionCarryover(meta),
-                  resync: true,
-                },
-                t.id,
-              );
-              emitRestoredPlan(t, msgs.length > 0);
-            } catch (err) {
-              emitDiagnosticError("session.resync.failed", err, {
-                tabId: t.id,
-                details: tabDiagnosticState(t),
-              });
-              process.stderr.write(
-                `reasonix: session load for resync failed — ${messageOf(err)}\n`,
-              );
-              emit(
-                {
-                  type: "$session_loaded",
-                  name: t.currentSession,
-                  messages: [],
-                  carryover: emptySessionCarryover(),
-                  resync: true,
-                },
-                t.id,
-              );
-              emit({ type: "$error", message: `session resync failed: ${messageOf(err)}` }, t.id);
+          // Restoring the transcript is display work and must NOT gate
+          // $workspace_initialized (and therefore the "Loading workspaces"
+          // splash). Awaiting it here made the splash wait for every restored
+          // tab's session file to be read and parsed, one after another.
+          void (async () => {
+            if (t.currentSession) {
+              try {
+                const meta = loadSessionMeta(t.currentSession);
+                const msgs = mergeNoticesIntoLoaded(
+                  buildLoadedMessages(await loadSessionMessagesAsync(t.currentSession)),
+                  loadSessionNotices(t.currentSession),
+                  meta.lastTurn,
+                );
+                emit(
+                  {
+                    type: "$session_loaded",
+                    name: t.currentSession,
+                    messages: msgs,
+                    carryover: sessionCarryover(meta),
+                    resync: true,
+                  },
+                  t.id,
+                );
+                emitRestoredPlan(t, msgs.length > 0);
+              } catch (err) {
+                emitDiagnosticError("session.resync.failed", err, {
+                  tabId: t.id,
+                  details: tabDiagnosticState(t),
+                });
+                process.stderr.write(
+                  `reasonix: session load for resync failed — ${messageOf(err)}\n`,
+                );
+                emit(
+                  {
+                    type: "$session_loaded",
+                    name: t.currentSession,
+                    messages: [],
+                    carryover: emptySessionCarryover(),
+                    resync: true,
+                  },
+                  t.id,
+                );
+                emit({ type: "$error", message: `session resync failed: ${messageOf(err)}` }, t.id);
+              }
             }
-          }
-          await emitWorkspaceInitialized(t, sessionsInitialized);
-          emitCtxBreakdown(t);
+            emitCtxBreakdown(t);
+          })();
+          void emitWorkspaceInitialized(t, sessionsInitialized);
         }
       });
       // Auto-refresh the Ollama catalog once per launch/WebView reload — the

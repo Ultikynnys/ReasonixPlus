@@ -6,6 +6,7 @@ import {
   DEFAULT_ZAI_RESPONSES_URL,
   isOpenAIStandardEndpoint,
   loadEndpointForModel,
+  loadOpencodeApiKey,
   providerForModel,
   readConfig,
 } from "./config.js";
@@ -32,7 +33,12 @@ export function modelClientOptions(opts: ResolvedModelClientOptions): DeepSeekCl
     apiKeyResolver: openAIStandard
       ? () => resolveOpenAIToken(opts.configPath)
       : provider === "opencode"
-        ? () => resolveOpencodeToken(opts.configPath)
+        ? // OpenCode Go / Go+ inference authenticates with the workspace service
+          // key (`oc_sk…`) against the Go gateway. A Console OAuth session token
+          // is a different credential and is rejected by the Go/Zen gateways
+          // (401 "Invalid API key"), so it must only be a fallback when no
+          // service key is configured.
+          async () => loadOpencodeApiKey(opts.configPath) ?? resolveOpencodeToken(opts.configPath)
         : undefined,
     opencodeOrgResolver:
       provider === "opencode" ? () => readConfig(opts.configPath).opencodeOAuth?.orgId : undefined,

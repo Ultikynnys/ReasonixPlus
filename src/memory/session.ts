@@ -559,7 +559,11 @@ const sessionDirectoryIndex = new SessionDirectoryIndex<SessionMeta>(
   undefined,
   undefined,
   undefined,
-  join(reasonixHome(), "cache", "session-directory-index.json"),
+  // Resolve lazily through reasonixHome() so the cache path follows the same
+  // home as `sessionsDir` at call time. Capturing it eagerly let a re-homed run
+  // (tests stubbing HOME/USERPROFILE) persist a foreign directory's records into
+  // the real cache, forcing the next launch into a full cold scan.
+  () => join(reasonixHome(), "cache", "session-directory-index.json"),
 );
 
 export function listSessionsForWorkspaceAsync(workspace: string): {
