@@ -1,6 +1,6 @@
 {
   "name": "reasonix-plus",
-  "version": "1.0.30",
+  "version": "1.0.31",
   "description": "Reasonix+ desktop app: a multi-provider coding agent (DeepSeek, OpenAI, Ollama, Z.AI, Gemini) with a cache-first loop, flash-first cost control, and tool-call repair.",
   "type": "module",
   "workspaces": [
