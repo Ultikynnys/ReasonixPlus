@@ -36,6 +36,8 @@ import {
   parseEditResult,
 } from "./cards";
 import { ApprovalCard, TaskCard, type TaskStepView } from "./extra-cards";
+import { PdfPreview } from "./pdf-preview";
+import { ZoomableImage } from "./image-preview";
 
 function downloadImage(dataUrl: string, mimeType: string): void {
   const ext = mimeType.split("/")[1] || "png";
@@ -227,14 +229,14 @@ function PresentedFileCard({ file }: { file: PresentedFile }) {
         <PresentedAudio key={src} src={src} name={file.name} onError={() => setPreviewFailed(true)} />
       ) : null}
       {isImage && !previewFailed ? (
-        <img className="presented-file-preview" src={src} alt={file.name} onError={() => setPreviewFailed(true)} />
+        <ZoomableImage className="presented-file-preview" src={src} alt={file.name} onError={() => setPreviewFailed(true)} />
       ) : null}
       {isVideo ? (
         // biome-ignore lint/a11y/useMediaCaption: Agent-provided videos do not necessarily include caption tracks.
         <video className="presented-file-preview" controls preload="metadata" src={src} aria-label={file.name} onError={() => setPreviewFailed(true)} />
       ) : null}
       {isPdf ? (
-        <iframe className="presented-file-document" src={src} title={file.name} sandbox="" onError={() => setPreviewFailed(true)} />
+        <PdfPreview src={src} name={file.name} />
       ) : null}
       {isText ? <PresentedTextPreview src={src} /> : null}
       {previewFailed ? <output className="presented-file-status" role="alert">{t("thread.previewFailed")}</output> : null}
@@ -281,7 +283,7 @@ const AssistantImage = memo(function AssistantImage({
   useLang();
   return (
     <div className="msg-image-wrap">
-      <img className="msg-image" src={dataUrl} alt="" loading="eager" />
+      <ZoomableImage className="msg-image" src={dataUrl} loading="eager" />
       <button
         type="button"
         className="copy-btn"
@@ -345,7 +347,7 @@ export const UserMsg = memo(function UserMsg({
           <div className="msg-images">
             {images.map((src, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: per-message image list is immutable
-              <img key={i} className="msg-image" src={src} alt="" loading="eager" />
+              <ZoomableImage key={i} className="msg-image" src={src} loading="eager" />
             ))}
           </div>
         ) : null}

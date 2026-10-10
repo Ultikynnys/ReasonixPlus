@@ -31,6 +31,7 @@ bun.lock
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/src-tauri/binaries/
+desktop/public/pdfjs/
 
 # Design mock-up reference (local, not part of repo)
 .design-ref/

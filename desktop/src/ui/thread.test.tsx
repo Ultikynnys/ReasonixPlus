@@ -486,14 +486,14 @@ describe("AssistantMsg - presented files", () => {
     expect(screen.getByRole("button", { name: name.endsWith("png") ? "Copy image" : "Copy file" })).toBeTruthy();
   });
 
-  it("renders video controls and a sandboxed PDF viewer", () => {
+  it("renders video controls and a canvas PDF viewer without a native iframe", () => {
     const video = renderFile("clip.mp4");
     expect(video.container.querySelector("video")?.hasAttribute("controls")).toBe(true);
     video.unmount();
     const pdf = renderFile("report.pdf");
-    const frame = pdf.container.querySelector("iframe");
-    expect(frame?.getAttribute("sandbox")).toBe("");
-    expect(frame?.getAttribute("src")).toBe("http://asset.localhost/C%3A%2Frepo%2Freport.pdf");
+    expect(pdf.container.querySelector("iframe")).toBeNull();
+    expect(pdf.container.querySelector("canvas")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Next page" })).toBeTruthy();
   });
 
   it("renders HTML as inert text and bounds the preview to 64 KiB", async () => {
