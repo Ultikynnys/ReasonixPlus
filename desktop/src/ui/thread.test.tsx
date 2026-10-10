@@ -483,7 +483,7 @@ describe("AssistantMsg - presented files", () => {
     fireEvent.error(container.querySelector("img, audio, video")!);
     expect(screen.getByRole("alert").textContent).toContain("Preview could not be loaded");
     expect(screen.getByRole("button", { name: "Save as…" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy file" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: name.endsWith("png") ? "Copy image" : "Copy file" })).toBeTruthy();
   });
 
   it("renders video controls and a sandboxed PDF viewer", () => {
@@ -575,13 +575,25 @@ describe("AssistantMsg - presented files", () => {
     );
     const player = container.querySelector("audio");
     expect(player?.getAttribute("src")).toBe("http://asset.localhost/C%3A%2Frepo%2Fvoice%20sample.mp3");
-    expect(player?.getAttribute("controls")).not.toBeNull();
+    expect(player?.getAttribute("controls")).toBeNull();
+    expect(screen.getByRole("button", { name: "Play audio" })).toBeTruthy();
+    Object.defineProperty(player, "duration", { configurable: true, value: 125 });
+    fireEvent.loadedMetadata(player!);
+    const seek = screen.getByRole("slider", { name: "Seek audio" }) as HTMLInputElement;
+    expect(seek.max).toBe("125");
+    fireEvent.change(seek, { target: { value: "30" } });
+    expect(player?.currentTime).toBe(30);
+    fireEvent.play(player!);
+    expect(screen.getByRole("button", { name: "Pause audio" })).toBeTruthy();
+    fireEvent.pause(player!);
+    expect(screen.getByRole("button", { name: "Play audio" })).toBeTruthy();
     const volume = screen.getByRole("slider", { name: "Volume" }) as HTMLInputElement;
     fireEvent.change(volume, { target: { value: "0.35" } });
     expect(volume.value).toBe("0.35");
+    expect(player?.volume).toBe(0.35);
   });
 
-  it("copies image pixels separately from copying the file", async () => {
+  it("offers only one copy action for images and copies their pixels", async () => {
     const write = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write } });
     vi.stubGlobal(
@@ -612,6 +624,8 @@ describe("AssistantMsg - presented files", () => {
         onStopTool={noop}
       />,
     );
+    expect(screen.queryByRole("button", { name: "Copy file" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: /^Copy/ })).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Copy image" }));
     await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
     expect(

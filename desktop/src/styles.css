@@ -2472,23 +2472,86 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .presented-file-audio {
   grid-column: 1 / -1;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: min(100%, 440px);
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  background: var(--bg);
 }
 .presented-file-audio audio {
-  width: 100%;
+  display: none;
 }
-.presented-file-audio label {
+.presented-audio-toggle {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--accent);
+  background: var(--card);
+  cursor: pointer;
+}
+.presented-audio-toggle:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.presented-audio-toggle:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.presented-audio-timeline {
+  flex: 1;
+  min-width: 0;
+}
+.presented-audio-time {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  margin-top: 6px;
   color: var(--muted);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.presented-audio-volume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
 }
 .presented-file-audio input[type="range"] {
-  width: 110px;
-  accent-color: var(--accent);
+  display: block;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  margin: 6px 0;
+  border-radius: 2px;
+  background: var(--border);
+  cursor: pointer;
+}
+.presented-file-audio input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.presented-file-audio input[type="range"]::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.presented-audio-volume input[type="range"] {
+  width: 64px;
+}
+.presented-file-audio input:focus-visible,
+.presented-audio-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 .presented-file-preview {
   grid-column: 1 / -1;

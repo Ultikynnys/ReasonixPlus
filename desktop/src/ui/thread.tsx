@@ -5,8 +5,8 @@ import { isCompactionSummary, stripCompactionMarker } from "@reasonix/core-utils
 import { derivePrefix } from "@reasonix/core-utils/derive-prefix";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { Copy } from "lucide-react";
-import { Fragment, memo, useEffect, useState } from "react";
+import { Copy, Pause, Play, Volume2 } from "lucide-react";
+import { Fragment, memo, useEffect, useRef, useState } from "react";
 import type {
   ActivePlan,
   AssistantSegment,
@@ -116,11 +116,72 @@ function PresentedTextPreview({ src }: { src: string }) {
   );
 }
 
+function audioTime(seconds: number): string {
+  const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function PresentedAudio({ src, name, onError }: { src: string; name: string; onError: () => void }) {
+  const audio = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [position, setPosition] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [failed, setFailed] = useState(false);
+  const fail = () => {
+    setFailed(true);
+    setPlaying(false);
+    onError();
+  };
+  return (
+    <div className="presented-file-audio">
+      {/* biome-ignore lint/a11y/useMediaCaption: Arbitrary audio files do not include captions. */}
+      <audio ref={audio} src={src} preload="metadata" aria-label={name}
+        onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+        onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+        onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
+        onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}
+        onError={fail}
+      />
+      <button type="button" className="presented-audio-toggle" disabled={failed}
+        aria-label={playing ? t("thread.audioPause") : t("thread.audioPlay")}
+        onClick={() => {
+          const element = audio.current;
+          if (!element) return;
+          if (element.paused) void element.play().catch(fail);
+          else element.pause();
+        }}>
+        {playing ? <Pause size={16} /> : <Play size={16} />}
+      </button>
+      <div className="presented-audio-timeline">
+        <input type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration)}
+          disabled={!duration || failed} aria-label={t("thread.audioSeek")}
+          aria-valuetext={`${audioTime(position)} / ${audioTime(duration)}`}
+          style={{ background: `linear-gradient(to right, var(--accent) ${duration ? position / duration * 100 : 0}%, var(--border) 0%)` }}
+          onChange={(event) => {
+            const value = Number(event.currentTarget.value);
+            if (audio.current) audio.current.currentTime = value;
+            setPosition(value);
+          }} />
+        <div className="presented-audio-time"><span>{audioTime(position)}</span><span>{audioTime(duration)}</span></div>
+      </div>
+      <label className="presented-audio-volume">
+        <Volume2 size={14} aria-hidden="true" />
+        <input type="range" min="0" max="1" step="0.01" value={volume} aria-label={t("thread.audioVolume")}
+          onChange={(event) => {
+            const value = Number(event.currentTarget.value);
+            setVolume(value);
+            if (audio.current) audio.current.volume = value;
+          }} />
+      </label>
+    </div>
+  );
+}
+
 function PresentedFileCard({ file }: { file: PresentedFile }) {
   useLang();
   const [message, setMessage] = useState("");
   const [previewFailed, setPreviewFailed] = useState(false);
-  const [volume, setVolume] = useState(1);
   const src = convertFileSrc(file.path);
   const isImage = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp|ico)$/i.test(file.name);
   const isAudio = /\.(?:aac|flac|m4a|mp3|oga|ogg|opus|wav|weba)$/i.test(file.name);
@@ -163,38 +224,7 @@ function PresentedFileCard({ file }: { file: PresentedFile }) {
   return (
     <div className="presented-file">
       {isAudio ? (
-        <div className="presented-file-audio">
-          {/* biome-ignore lint/a11y/useMediaCaption: Captions are not available for arbitrary user-presented audio files. */}
-          <audio
-            controls
-            preload="metadata"
-            src={src}
-            onError={() => setPreviewFailed(true)}
-            aria-label={file.name}
-            ref={(element) => {
-              if (element) element.volume = volume;
-            }}
-          />
-          <label>
-            <span>{t("thread.audioVolume")}</span>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={volume}
-              aria-label={t("thread.audioVolume")}
-              onChange={(event) => {
-                const value = Number(event.currentTarget.value);
-                setVolume(value);
-                const audio = event.currentTarget
-                  .closest(".presented-file")
-                  ?.querySelector("audio");
-                if (audio) audio.volume = value;
-              }}
-            />
-          </label>
-        </div>
+        <PresentedAudio key={src} src={src} name={file.name} onError={() => setPreviewFailed(true)} />
       ) : null}
       {isImage && !previewFailed ? (
         <img className="presented-file-preview" src={src} alt={file.name} onError={() => setPreviewFailed(true)} />
@@ -227,10 +257,11 @@ function PresentedFileCard({ file }: { file: PresentedFile }) {
           <button type="button" className="mini-btn" onClick={() => void copyImage()}>
             {t("thread.copyImage")}
           </button>
-        ) : null}
-        <button type="button" className="mini-btn" onClick={() => void copyFile()}>
-          {t("thread.copyFile")}
-        </button>
+        ) : (
+          <button type="button" className="mini-btn" onClick={() => void copyFile()}>
+            {t("thread.copyFile")}
+          </button>
+        )}
         <button type="button" className="mini-btn" onClick={() => void saveFile()}>
           {t("thread.saveFile")}
         </button>
