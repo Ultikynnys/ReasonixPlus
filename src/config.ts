@@ -29,7 +29,7 @@ import {
 } from "./index/config.js";
 import { loadDotMcpJson } from "./mcp/dot-mcp-json.js";
 import { type McpServerSpec, parseMcpSpec } from "./mcp/spec.js";
-import { isDiscoveredOpencodeModel } from "./opencode-models.js";
+import { isDiscoveredOpencodeModel, isOpencodeGoModel } from "./opencode-models.js";
 import { discoveredProviderModels } from "./provider-models.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS } from "./telemetry/stats.js";
@@ -105,13 +105,17 @@ function resolveModelAdmission(model: string, path: string): ModelAdmission {
   if (discoveredAntigravity) {
     return { accepted: true, provider: "gemini", discoveredAntigravity: true };
   }
-  if (isDiscoveredOpencodeModel(id)) {
-    return { accepted: true, provider: "opencode", discoveredAntigravity: false };
-  }
+  // Explicit provider catalogs win over OpenCode discovery: OpenCode Zen/Go
+  // resell models that other providers also serve natively (gpt-6-luna,
+  // glm-5.3, deepseek-v4-pro, …), and those ids must keep routing to their
+  // native endpoint unless the user pins them in the `models` config map.
   for (const catalog of CATALOG_PROVIDERS) {
     if (catalog.ids.has(id)) {
       return { accepted: true, provider: catalog.provider, discoveredAntigravity: false };
     }
+  }
+  if (isDiscoveredOpencodeModel(id)) {
+    return { accepted: true, provider: "opencode", discoveredAntigravity: false };
   }
   if (id.startsWith("ollama/")) {
     return { accepted: true, provider: "ollama", discoveredAntigravity: false };
@@ -168,6 +172,10 @@ export const DEFAULT_ZAI_RESPONSES_URL = "https://api.z.ai/api/v1";
 
 /** OpenCode Zen OpenAI-compatible endpoint used for free/paid OpenCode models. */
 export const DEFAULT_OPENCODE_CHAT_URL = "https://opencode.ai/zen/v1";
+
+/** OpenCode Go OpenAI-compatible endpoint — the subscription tier. Go model ids
+ *  route here; everything else stays on the Zen endpoint. */
+export const DEFAULT_OPENCODE_GO_CHAT_URL = "https://opencode.ai/zen/go/v1";
 
 /** Positive endpoint evidence that an Ollama provider request targets Ollama Cloud. */
 export function isOllamaCloudEndpoint(baseUrl: string | undefined): boolean {
@@ -380,6 +388,24 @@ export interface GmailOAuthCreds {
   account?: string;
 }
 
+/** OpenCode Console device-flow tokens — set by the settings "Sign in with
+ *  OpenCode" flow. The access token authenticates Zen + Go inference, so it
+ *  unlocks the paid/subscription model catalog the same way an API key does. */
+export interface OpencodeOAuthCreds {
+  accessToken: string;
+  refreshToken: string;
+  /** ms epoch — Console access tokens are short-lived; refreshed from refreshToken when within 5 min of expiry. */
+  expiresAt: number;
+  /** Account email from the Console `/api/user` endpoint — shown masked in settings, never shipped over the bridge. */
+  account?: string;
+  /** Active Console organization id (sent as `x-org-id` on Console requests). */
+  orgId?: string;
+  /** Active Console organization display name. */
+  orgName?: string;
+  /** Console server origin the tokens were issued by (defaults to opencode.ai/console). */
+  server?: string;
+}
+
 /** A per-model provider declaration from the `models` config map. */
 export interface ModelProviderConfig {
   /** Which provider's endpoint family serves the model id. */
@@ -406,6 +432,9 @@ export interface ReasonixConfig {
   /** Google Antigravity OAuth tokens — set by the "Sign in with Google" flow;
    *  powers gemini-* models on the Antigravity quota. */
   antigravityOAuth?: AntigravityOAuthCreds;
+  /** OpenCode Console device-flow tokens — set by the "Sign in with OpenCode"
+   *  flow; unlocks the OpenCode Zen/Go paid + subscription model catalog. */
+  opencodeOAuth?: OpencodeOAuthCreds;
   /** Selected managed mail integration. Outlook remains the default for existing installs. */
   mailProvider?: MailProvider;
   /** User-owned Google OAuth client and tokens for the official Gmail MCP server. */
@@ -748,6 +777,14 @@ export function loadOpencodeApiKey(path: string = defaultConfigPath()): string |
   const cfg = readConfig(path).opencodeApiKey;
   if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
   return undefined;
+}
+
+/** True when the user holds a usable OpenCode credential — a non-`public` API
+ *  key (env or config) or a Console OAuth session. Gates the paid + Go catalog. */
+export function hasOpencodeCredential(path: string = defaultConfigPath()): boolean {
+  const key = loadOpencodeApiKey(path);
+  if (key && key !== "public") return true;
+  return Boolean(readConfig(path).opencodeOAuth?.accessToken);
 }
 
 /** Ollama cloud API key — env > config > undefined. */
@@ -1449,8 +1486,10 @@ export function loadEndpointForModel(
     if (cfg.opencodeBaseUrl?.trim()) {
       return { baseUrl: cfg.opencodeBaseUrl.trim(), apiKey: cfg.opencodeApiKey ?? "public" };
     }
+    // Go subscription ids live on their own endpoint. An explicit base URL
+    // override above intentionally owns every OpenCode model (custom gateway).
     return {
-      baseUrl: DEFAULT_OPENCODE_CHAT_URL,
+      baseUrl: isOpencodeGoModel(model) ? DEFAULT_OPENCODE_GO_CHAT_URL : DEFAULT_OPENCODE_CHAT_URL,
       apiKey: loadOpencodeApiKey(path) ?? "public",
     };
   }
@@ -1478,6 +1517,7 @@ export function anyProviderConfigured(path: string = defaultConfigPath()): boole
   if (process.env.OLLAMA_API_KEY || cfg.ollamaApiKey) return true;
   if (process.env.ZAI_API_KEY || cfg.zaiApiKey) return true;
   if (process.env.OPENCODE_API_KEY || cfg.opencodeApiKey || cfg.opencodeBaseUrl) return true;
+  if (cfg.opencodeOAuth?.accessToken) return true;
   if (cfg.antigravityOAuth?.accessToken) return true;
   return !!process.env.OLLAMA_BASE_URL || !!cfg.ollamaBaseUrl;
 }
@@ -1801,6 +1841,22 @@ export function clearAntigravityOAuth(path: string = defaultConfigPath()): void 
   const cfg = readConfig(path);
   if (!cfg.antigravityOAuth) return;
   const { antigravityOAuth: _drop, ...rest } = cfg;
+  writeConfig(rest, path);
+}
+
+export function saveOpencodeOAuth(
+  creds: OpencodeOAuthCreds,
+  path: string = defaultConfigPath(),
+): void {
+  const cfg = readConfig(path);
+  cfg.opencodeOAuth = creds;
+  writeConfig(cfg, path);
+}
+
+export function clearOpencodeOAuth(path: string = defaultConfigPath()): void {
+  const cfg = readConfig(path);
+  if (!cfg.opencodeOAuth) return;
+  const { opencodeOAuth: _drop, ...rest } = cfg;
   writeConfig(rest, path);
 }
 

@@ -965,6 +965,16 @@ export interface SettingsEvent {
     /** Last OAuth flow failure — drives the status-bar Gemini auth chip until the next successful sign-in. */
     flowError?: string;
   };
+  /** OpenCode Console device-flow OAuth state — unlocks the paid + Go
+   *  subscription catalog. Never ships tokens, only the masked account. */
+  opencodeOAuth?: {
+    signedIn: boolean;
+    account?: string;
+    /** Active Console organization name, when the account has one. */
+    orgName?: string;
+    /** Last OAuth flow failure — shown in the OpenCode settings card until the next successful sign-in. */
+    flowError?: string;
+  };
   /** Rule lists scoped to the current workspace (project config). */
   shellAllowedWorkspace?: string[];
   pathAllowedWorkspace?: string[];
@@ -1006,6 +1016,10 @@ export interface ModelEndpointInfo {
   antigravityAuth?: "oauth" | "none";
   /** Masked Google account email when signed in via Antigravity OAuth. */
   antigravityAccount?: string;
+  /** Auth source for OpenCode endpoints (Zen/Go). */
+  opencodeAuth?: "oauth" | "apiKey" | "none";
+  /** Masked OpenCode account email when signed in via Console OAuth. */
+  opencodeAccount?: string;
 }
 
 export interface BalanceInfoItem {
@@ -1201,11 +1215,15 @@ export interface OllamaModelsEvent {
   error?: string;
 }
 
-/** Dynamically fetched free model list for the OpenCode provider from models.dev. */
+/** Dynamically fetched model list for the OpenCode provider from models.dev.
+ *  Free Zen models are always included; the paid Zen + Go subscription catalog
+ *  is included when the daemon holds an OpenCode credential. */
 export interface OpencodeModelsEvent {
   type: "$opencode_models";
   models: string[];
   visionModels?: string[];
+  /** Whether a credential (API key / Console OAuth) gated the paid catalog. */
+  credentialed?: boolean;
   error?: string;
 }
 
@@ -1348,6 +1366,9 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "gemini_oauth_begin" }
   | { cmd: "gemini_oauth_cancel" }
   | { cmd: "gemini_oauth_signout" }
+  | { cmd: "opencode_oauth_begin" }
+  | { cmd: "opencode_oauth_cancel" }
+  | { cmd: "opencode_oauth_signout" }
   | { cmd: "antigravity_models_refresh" }
   | { cmd: "opencode_models_refresh"; force?: boolean }
   | {

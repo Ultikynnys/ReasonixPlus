@@ -313,6 +313,7 @@ export type IncomingEvent = { tabId?: string } & (
   | BtwResultEvent
   | { type: "oauth_begin_result"; url: string }
   | { type: "gemini_oauth_begin_result"; url: string }
+  | { type: "opencode_oauth_begin_result"; url: string; userCode: string }
 );
 
 /** Send one command to the desktop backend over the Tauri JSON-RPC bridge. */

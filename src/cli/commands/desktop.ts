@@ -122,6 +122,7 @@ import {
   bridgeEndpointEnv,
   copyWorkspaceRules,
   deriveNativeOllamaOrigin,
+  hasOpencodeCredential,
   isOllamaCloudEndpoint,
   isOpenAIStandardEndpoint,
   isPlausibleKey,
@@ -204,6 +205,7 @@ import {
   saveOllamaGenerationPatch,
   saveOpenAIApiKey,
   saveOpenAIOAuth,
+  saveOpencodeOAuth,
   saveQuestionTimerEnabled,
   saveQuickSendId,
   saveRawTabEnabled,
@@ -345,6 +347,11 @@ import {
 import { loadOllamaModelsCache, saveOllamaModelsCache } from "../../ollama-models-cache.js";
 import { fetchOpencodeModels } from "../../opencode-models.js";
 import {
+  type OpencodeDeviceFlow,
+  beginOpencodeDeviceFlow,
+  signOutOpencode,
+} from "../../opencode-oauth.js";
+import {
   type CatalogProvider,
   type ProviderCatalog,
   fetchProviderModels,
@@ -461,6 +468,7 @@ type EmittableEvent =
   | DesktopDiagnosticEvent
   | { type: "oauth_begin_result"; url: string }
   | { type: "gemini_oauth_begin_result"; url: string }
+  | { type: "opencode_oauth_begin_result"; url: string; userCode: string }
   | ConfirmRequiredEvent
   | PathAccessRequiredEvent
   | EditRequiredEvent
@@ -1382,6 +1390,12 @@ let pendingAntigravityOAuth: OAuthFlow | null = null;
  *  auth chip until the next successful sign-in clears it. */
 let lastAntigravityOAuthError: string | null = null;
 
+let opencodeOAuthGen = 0;
+let pendingOpencodeOAuth: OpencodeDeviceFlow | null = null;
+/** Last OpenCode OAuth flow failure — shown in the OpenCode settings card until
+ *  the next successful sign-in clears it. */
+let lastOpencodeOAuthError: string | null = null;
+
 async function refreshAntigravityModels(tab: Tab): Promise<void> {
   try {
     const auth = await resolveGeminiAuth();
@@ -1437,9 +1451,13 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
   }
   if (provider === "opencode") {
     const ep = loadEndpointForModel(model, path);
+    const oauth = readConfig(path).opencodeOAuth;
+    const key = loadOpencodeApiKey(path);
     return {
       provider: "opencode",
       baseUrl: ep.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL,
+      opencodeAuth: oauth?.accessToken ? "oauth" : key && key !== "public" ? "apiKey" : "none",
+      opencodeAccount: oauth?.account,
     };
   }
   if (provider !== "openai") {
@@ -1464,6 +1482,7 @@ function emitSettings(tab: Tab): void {
   const config = readConfig();
   const oauth = config.openaiOAuth;
   const antigravityOAuth = config.antigravityOAuth;
+  const opencodeOAuth = config.opencodeOAuth;
   const ep = loadEndpoint();
   const editMode = loadEditMode();
   if (tab.toolset) applyPlanMode(tab.toolset.tools, editMode);
@@ -1555,6 +1574,12 @@ function emitSettings(tab: Tab): void {
           antigravityOAuth.clientId !== ANTIGRAVITY_OAUTH_CLIENT_ID
             ? "Google authentication changed. Sign in again to enable Gemini free-tier quota."
             : undefined),
+      },
+      opencodeOAuth: {
+        signedIn: !!opencodeOAuth?.accessToken,
+        account: opencodeOAuth?.account,
+        orgName: opencodeOAuth?.orgName,
+        flowError: lastOpencodeOAuthError ?? undefined,
       },
       shellAllowedWorkspace: loadProjectShellAllowed(tab.rootDir),
       pathAllowedWorkspace: loadProjectPathAllowed(tab.rootDir),
@@ -1831,12 +1856,14 @@ function emitOllamaCatalog(snap: OllamaCatalogSnapshot): void {
 function emitOpencodeCatalog(snap: {
   models: string[];
   visionModels?: string[];
+  credentialed?: boolean;
   error?: string;
 }): void {
   emit({
     type: "$opencode_models",
     models: snap.models,
     ...(snap.visionModels !== undefined ? { visionModels: snap.visionModels } : {}),
+    ...(snap.credentialed !== undefined ? { credentialed: snap.credentialed } : {}),
     ...(snap.error !== undefined ? { error: snap.error } : {}),
   });
 }
@@ -1898,15 +1925,16 @@ export async function refreshChangelog(force = false, tab?: Tab): Promise<void> 
 }
 
 export async function refreshOpencodeModels(force = false, tab?: Tab): Promise<void> {
+  const credentialed = hasOpencodeCredential();
   try {
-    const snap = await fetchOpencodeModels({ force });
-    emitOpencodeCatalog(snap);
+    const snap = await fetchOpencodeModels({ force, credentialed });
+    emitOpencodeCatalog({ ...snap, credentialed });
     if (tab && snap.error) {
       emit({ type: "$error", message: `OpenCode model sync warning: ${snap.error}` }, tab.id);
     }
   } catch (err) {
     const message = `OpenCode model sync failed: ${(err as Error).message}`;
-    emitOpencodeCatalog({ models: [...OPENCODE_MODELS], error: message });
+    emitOpencodeCatalog({ models: [...OPENCODE_MODELS], credentialed, error: message });
     if (tab) emit({ type: "$error", message }, tab.id);
   }
 }
@@ -7587,6 +7615,79 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         });
       return;
     }
+    if (msg.cmd === "opencode_oauth_begin") {
+      opencodeOAuthGen++;
+      if (pendingOpencodeOAuth) pendingOpencodeOAuth.cancel();
+      const gen = opencodeOAuthGen;
+      void beginOpencodeDeviceFlow()
+        .then((flow) => {
+          pendingOpencodeOAuth = flow;
+          emit(
+            { type: "opencode_oauth_begin_result", url: flow.url, userCode: flow.userCode },
+            tab.id,
+          );
+          void flow.done
+            .then((creds) => {
+              if (gen !== opencodeOAuthGen) return; // superseded by a newer begin/signout
+              pendingOpencodeOAuth = null;
+              saveOpencodeOAuth(creds);
+              lastOpencodeOAuthError = null;
+              // A fresh credential unlocks the paid + Go catalog and may make
+              // previously unusable tabs usable — build (or rebuild) them, then
+              // resync the model list so subscription ids appear.
+              for (const t of tabs.values()) {
+                if (t.toolset) {
+                  t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
+                  if (t.runtime) emit({ type: "$ready" }, t.id);
+                }
+              }
+              void refreshOpencodeModels(true, tab);
+              emitSettings(tab);
+            })
+            .catch((err: Error) => {
+              if (gen !== opencodeOAuthGen) return;
+              pendingOpencodeOAuth = null;
+              lastOpencodeOAuthError = err.message;
+              emit({ type: "$error", message: err.message }, tab.id);
+              emitSettings(tab);
+            });
+        })
+        .catch((err: Error) => {
+          lastOpencodeOAuthError = err.message;
+          emit({ type: "$error", message: `opencode_oauth_begin failed: ${err.message}` }, tab.id);
+          emitSettings(tab);
+        });
+      return;
+    }
+    if (msg.cmd === "opencode_oauth_cancel") {
+      opencodeOAuthGen++;
+      if (pendingOpencodeOAuth) {
+        pendingOpencodeOAuth.cancel();
+        pendingOpencodeOAuth = null;
+      }
+      return;
+    }
+    if (msg.cmd === "opencode_oauth_signout") {
+      opencodeOAuthGen++;
+      lastOpencodeOAuthError = null;
+      if (pendingOpencodeOAuth) {
+        pendingOpencodeOAuth.cancel();
+        pendingOpencodeOAuth = null;
+      }
+      void signOutOpencode()
+        .then(() => {
+          // The catalog shrinks back to the keyless tier — resync so paid/Go ids drop out.
+          void refreshOpencodeModels(true, tab);
+          emitSettings(tab);
+        })
+        .catch((err: Error) => {
+          emit(
+            { type: "$error", message: `opencode_oauth_signout failed: ${err.message}` },
+            tab.id,
+          );
+        });
+      return;
+    }
     if (msg.cmd === "setup_save_openai_key") {
       const key = msg.key.trim();
       if (key && !isPlausibleKey(key)) {
@@ -7845,6 +7946,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             cfg.opencodeBaseUrl = msg.opencodeBaseUrl?.trim() || undefined;
           }
           writeConfig(cfg);
+          if (msg.opencodeApiKey !== undefined) {
+            // Adding/removing a key flips the catalog between the keyless free
+            // tier and the paid Zen + Go catalog.
+            void refreshOpencodeModels(true, tab);
+          }
         }
         if (msg.subagentModel !== undefined) {
           const next = msg.subagentModel.trim();

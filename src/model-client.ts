@@ -9,6 +9,7 @@ import {
   providerForModel,
 } from "./config.js";
 import { resolveOpenAIToken } from "./oauth.js";
+import { resolveOpencodeToken } from "./opencode-oauth.js";
 
 export interface ResolvedModelClientOptions {
   model: string;
@@ -27,13 +28,21 @@ export function modelClientOptions(opts: ResolvedModelClientOptions): DeepSeekCl
     baseUrl: endpoint.baseUrl,
     sessionId: opts.sessionId,
     allowMissingKey: provider === "ollama" || provider === "opencode",
-    apiKeyResolver: openAIStandard ? () => resolveOpenAIToken(opts.configPath) : undefined,
+    apiKeyResolver: openAIStandard
+      ? () => resolveOpenAIToken(opts.configPath)
+      : provider === "opencode"
+        ? () => resolveOpencodeToken(opts.configPath)
+        : undefined,
     transportResolver: openAIStandard
       ? () => resolveCodexTransport()
       : provider === "opencode" && opts.model.startsWith("muse-")
         ? async () => ({
             endpoint: `${endpoint.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL}/responses`,
-            headers: { Authorization: `Bearer ${endpoint.apiKey ?? "public"}` },
+            headers: {
+              Authorization: `Bearer ${
+                (await resolveOpencodeToken(opts.configPath)) ?? endpoint.apiKey ?? "public"
+              }`,
+            },
             api: "responses" as const,
           })
         : provider === "zai"

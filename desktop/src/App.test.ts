@@ -2841,6 +2841,69 @@ describe("Desktop App reducer — OpenAI OAuth flow state", () => {
   });
 });
 
+describe("Desktop App reducer — OpenCode OAuth flow state", () => {
+  it("opencode_oauth_begin_result sets opencodeOAuthWaiting", () => {
+    const next = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "opencode_oauth_begin_result",
+        url: "https://opencode.ai/console/device?user_code=ABCD-EFGH",
+        userCode: "ABCD-EFGH",
+      },
+    });
+    expect(next.opencodeOAuthWaiting).toBe(true);
+  });
+
+  it("$error with an OpenCode message clears opencodeOAuthWaiting", () => {
+    const state = { ...initialState(), opencodeOAuthWaiting: true };
+    const next = reduce(state, {
+      t: "incoming",
+      event: { type: "$error", message: "OpenCode sign-in failed: access_denied" },
+    });
+    expect(next.opencodeOAuthWaiting).toBe(false);
+  });
+
+  it("unrelated $error keeps opencodeOAuthWaiting", () => {
+    const state = { ...initialState(), opencodeOAuthWaiting: true };
+    const next = reduce(state, {
+      t: "incoming",
+      event: { type: "$error", message: "settings_save failed: boom" },
+    });
+    expect(next.opencodeOAuthWaiting).toBe(true);
+  });
+
+  it("$settings with signed-in OpenCode OAuth clears opencodeOAuthWaiting", () => {
+    const state = { ...initialState(), opencodeOAuthWaiting: true };
+    const next = reduce(state, {
+      t: "incoming",
+      event: {
+        type: "$settings",
+        reasoningEffort: "medium",
+        editMode: "follow",
+        quickSendId: "proceed",
+        quickSends: [],
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "mimo-v2.6-pro",
+        opencodeOAuth: { signedIn: true, account: "u@example.com", orgName: "Acme" },
+        version: "0.50.1",
+      },
+    });
+    expect(next.opencodeOAuthWaiting).toBe(false);
+    expect(next.settings?.opencodeOAuth).toEqual({
+      signedIn: true,
+      account: "u@example.com",
+      orgName: "Acme",
+    });
+  });
+
+  it("opencode_oauth_waiting action sets the flag directly (cancel button)", () => {
+    const state = { ...initialState(), opencodeOAuthWaiting: true };
+    const next = reduce(state, { t: "opencode_oauth_waiting", waiting: false });
+    expect(next.opencodeOAuthWaiting).toBe(false);
+  });
+});
+
 describe("Desktop App reducer — image attachments", () => {
   it("send_user with images attaches them to the optimistic user message", () => {
     const next = reduce(initialState(), {

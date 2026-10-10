@@ -88,6 +88,45 @@ export const OPENCODE_MODELS: readonly string[] = [
   "trinity-large-preview-free",
 ];
 
+/** OpenCode Go subscription models served through the dedicated Go endpoint
+ *  (`https://opencode.ai/zen/go/v1`). Offline fallback only — the live catalog
+ *  is synced from models.dev. Ids that also appear in OPENCODE_MODELS route to
+ *  the Zen endpoint (the subscription/paid split is disambiguated by the
+ *  OpenCode Console config, which the models.dev source cannot see). */
+export const OPENCODE_GO_MODELS: readonly string[] = [
+  "mimo-v2.6-pro",
+  "mimo-v2.5",
+  "grok-4.7",
+  "longcat-2.5-preview-free",
+  "glm-5.3-flash",
+  "qwen3.8-max",
+  "kimi-k3",
+  "deepseek-v4.1-flash",
+  "deepseek-v4-flash-vision-exp",
+  "longcat-2.0",
+  "space-bunny",
+  "minimax-m2.7",
+  "mimo-v2.5-pro",
+  "mimo-v2.6-flash",
+  "minimax-m3",
+  "gpt-5.6-luna",
+  "qwen3.8-flash",
+  "glm-5.2",
+  "hy3",
+  "muse-spark-1.2-contributor",
+  "claude-haiku-5-5",
+  "gpt-6-luna",
+  "deepseek-v4-pro",
+  "hy4-preview",
+  "muse-spark-1.3-contributor",
+  "step-5-preview-free",
+  "glm-5.3",
+  "kimi-k2.7-code",
+  "grok-4.6",
+  "qwen3.7-plus",
+  "deepseek-v4-flash",
+];
+
 /** Unified models served through Google Antigravity OAuth and Cloud Code.
  *  Offline fallback only: these ids are known to be served by Cloud Code, and
  *  non-tiered bare `gemini-3.x-flash` ids are NOT (they 404) — live discovery

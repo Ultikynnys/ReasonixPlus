@@ -520,6 +520,8 @@ type State = {
   oauthWaiting: boolean;
   /** True between gemini_oauth_begin_result and the flow's terminal state — settings card spinner. */
   antigravityOAuthWaiting: boolean;
+  /** True between opencode_oauth_begin_result and the flow's terminal state — settings card spinner. */
+  opencodeOAuthWaiting: boolean;
   /** Current turn's activity status — shown as a live indicator below the streaming assistant message. */
   turnStatus:
     | "thinking"
@@ -577,6 +579,7 @@ type Action =
   | { t: "workspace_recent_removed"; path: string }
   | { t: "oauth_waiting"; waiting: boolean }
   | { t: "antigravity_oauth_waiting"; waiting: boolean }
+  | { t: "opencode_oauth_waiting"; waiting: boolean }
   | { t: "codex_quota_refreshing" }
   | { t: "ollama_quota_refreshing" }
   | { t: "antigravity_quota_refreshing" }
@@ -814,6 +817,8 @@ export function reduce(state: State, action: Action): State {
       return { ...state, oauthWaiting: action.waiting };
     case "antigravity_oauth_waiting":
       return { ...state, antigravityOAuthWaiting: action.waiting };
+    case "opencode_oauth_waiting":
+      return { ...state, opencodeOAuthWaiting: action.waiting };
     case "codex_quota_refreshing":
       return { ...state, codexQuotaRefreshing: true };
     case "ollama_quota_refreshing":
@@ -2038,6 +2043,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           subagentModelEndpoint: ev.subagentModelEndpoint,
           openaiOAuth: ev.openaiOAuth,
           antigravityOAuth: ev.antigravityOAuth,
+          opencodeOAuth: ev.opencodeOAuth,
           mailProvider: ev.mailProvider ?? MailProvider.Outlook,
           shellAllowedWorkspace: ev.shellAllowedWorkspace,
           pathAllowedWorkspace: ev.pathAllowedWorkspace,
@@ -2053,6 +2059,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         antigravityOAuthWaiting: ev.antigravityOAuth?.signedIn
           ? false
           : state.antigravityOAuthWaiting,
+        opencodeOAuthWaiting: ev.opencodeOAuth?.signedIn ? false : state.opencodeOAuthWaiting,
         // Quota is only meaningful while its provider's models are active —
         // drop stale numbers the moment the daemon-resolved provider changes.
         // The provider comes from the resolved endpoint, never the model name.
@@ -2148,6 +2155,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turnStatus: null,
         turnStatusTool: null,
         oauthWaiting: ev.message.includes("OAuth") ? false : state.oauthWaiting,
+        opencodeOAuthWaiting:
+          ev.message.includes("OpenCode") || ev.message.includes("opencode_oauth")
+            ? false
+            : state.opencodeOAuthWaiting,
         messages: appendNoticeMessage(settled, notice),
       };
     }
@@ -2155,6 +2166,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return { ...state, oauthWaiting: true };
     case "gemini_oauth_begin_result":
       return { ...state, antigravityOAuthWaiting: true };
+    case "opencode_oauth_begin_result":
+      return { ...state, opencodeOAuthWaiting: true };
     case "model.turn.started":
       // Duplicate-delivery dedupe only: ordinals are monotonic daemon-side,
       // so this can no longer swallow a post-compaction turn (fixed at source).
@@ -2749,6 +2762,7 @@ function TabRuntime({
     retryNonce: 0,
     oauthWaiting: false,
     antigravityOAuthWaiting: false,
+    opencodeOAuthWaiting: false,
     turnStatus: null,
     turnStatusTool: null,
     turnLastEventMs: 0,
@@ -4261,6 +4275,13 @@ function TabRuntime({
               sendRpc({ cmd: "gemini_oauth_cancel" });
             }}
             onAntigravityOAuthSignOut={() => sendRpc({ cmd: "gemini_oauth_signout" })}
+            opencodeOAuthWaiting={state.opencodeOAuthWaiting}
+            onOpencodeOAuthBegin={() => sendRpc({ cmd: "opencode_oauth_begin" })}
+            onOpencodeOAuthCancel={() => {
+              dispatch({ t: "opencode_oauth_waiting", waiting: false });
+              sendRpc({ cmd: "opencode_oauth_cancel" });
+            }}
+            onOpencodeOAuthSignOut={() => sendRpc({ cmd: "opencode_oauth_signout" })}
             onAddMcpSpec={addMcpSpec}
             onRemoveMcpSpec={removeMcpSpec}
             onToggleMcpServer={toggleMcpServer}
@@ -5870,6 +5891,10 @@ export function App() {
             }
 
             if (ev.type === "gemini_oauth_begin_result") {
+              void openUrl(ev.url).catch((err) => console.error("openUrl failed", err));
+            }
+
+            if (ev.type === "opencode_oauth_begin_result") {
               void openUrl(ev.url).catch((err) => console.error("openUrl failed", err));
             }
 

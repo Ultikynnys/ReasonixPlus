@@ -108,6 +108,10 @@ export function SettingsModal({
   onAntigravityOAuthBegin,
   onAntigravityOAuthCancel,
   onAntigravityOAuthSignOut,
+  opencodeOAuthWaiting,
+  onOpencodeOAuthBegin,
+  onOpencodeOAuthCancel,
+  onOpencodeOAuthSignOut,
   ollamaBaseUrl,
   ollamaModels,
   ollamaModelsError,
@@ -182,6 +186,10 @@ export function SettingsModal({
   onAntigravityOAuthBegin: () => void;
   onAntigravityOAuthCancel: () => void;
   onAntigravityOAuthSignOut: () => void;
+  opencodeOAuthWaiting: boolean;
+  onOpencodeOAuthBegin: () => void;
+  onOpencodeOAuthCancel: () => void;
+  onOpencodeOAuthSignOut: () => void;
   onAddMcpSpec: (spec: string) => void;
   onRemoveMcpSpec: (spec: string) => void;
   onToggleMcpServer: (name: string, disabled: boolean) => void;
@@ -315,6 +323,14 @@ export function SettingsModal({
                 onAntigravityBegin={onAntigravityOAuthBegin}
                 onAntigravityCancel={onAntigravityOAuthCancel}
                 onAntigravitySignOut={onAntigravityOAuthSignOut}
+                opencodeSignedIn={settings.opencodeOAuth?.signedIn ?? false}
+                opencodeAccount={settings.opencodeOAuth?.account}
+                opencodeOrgName={settings.opencodeOAuth?.orgName}
+                opencodeFlowError={settings.opencodeOAuth?.flowError}
+                opencodeWaiting={opencodeOAuthWaiting}
+                onOpencodeBegin={onOpencodeOAuthBegin}
+                onOpencodeCancel={onOpencodeOAuthCancel}
+                onOpencodeSignOut={onOpencodeOAuthSignOut}
               />
             )}
             {page === "mcp" && (
@@ -1537,6 +1553,90 @@ export function AntigravitySection({
   );
 }
 
+export function OpencodeSection({
+  signedIn,
+  account,
+  orgName,
+  flowError,
+  waiting,
+  onBegin,
+  onCancel,
+  onSignOut,
+  apiKeyPrefix,
+  onSave,
+}: {
+  signedIn: boolean;
+  account?: string;
+  /** Active Console organization name, when the account has one. */
+  orgName?: string;
+  /** Last OAuth flow failure — shown so a failed sign-in is visible instead of just "not signed in". */
+  flowError?: string;
+  waiting: boolean;
+  onBegin: () => void;
+  onCancel: () => void;
+  onSignOut: () => void;
+  apiKeyPrefix?: string;
+  onSave: (patch: SettingsPatch) => void;
+}) {
+  return (
+    <>
+      {signedIn ? (
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.opencodeSignedIn")}</div>
+            <div className="h">
+              {account
+                ? orgName
+                  ? t("settings.opencodeAccountOrg", { account, org: orgName })
+                  : t("settings.opencodeAccount", { account })
+                : t("settings.opencodeTokenSet")}
+            </div>
+          </div>
+          <button type="button" className="btn" onClick={onSignOut} disabled={waiting}>
+            {t("settings.opencodeSignOut")}
+          </button>
+        </div>
+      ) : (
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.opencodeSignInTitle")}</div>
+            <div className="h">
+              {waiting ? t("settings.opencodeWaiting") : t("settings.opencodeSignInHint")}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {waiting && (
+              <button type="button" className="btn" onClick={onCancel}>
+                {t("settings.opencodeCancel")}
+              </button>
+            )}
+            <button type="button" className="btn primary" onClick={onBegin} disabled={waiting}>
+              {t("settings.opencodeSignIn")}
+            </button>
+          </div>
+        </div>
+      )}
+      {flowError ? (
+        <div className="setting-row" style={{ borderColor: "var(--danger)" }}>
+          <div className="l">
+            <div className="n">{t("settings.opencodeFlowFailed")}</div>
+            <div className="h" style={{ color: "var(--danger)" }}>
+              {flowError}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <ProviderApiKeyRow
+        engine="opencode"
+        patchKey="opencodeApiKey"
+        signupUrl="https://opencode.ai/auth"
+        prefix={apiKeyPrefix}
+        onSave={onSave}
+      />
+    </>
+  );
+}
+
 /** One collapsible card on the Models page. The header toggles a two-column
  *  body: the left `models` column (a scrollable per-provider model list) and the
  *  right `settings` column (that provider's keys, base URLs and auth). Cards
@@ -1793,6 +1893,14 @@ function PageModels({
   onAntigravityBegin,
   onAntigravityCancel,
   onAntigravitySignOut,
+  opencodeSignedIn,
+  opencodeAccount,
+  opencodeOrgName,
+  opencodeFlowError,
+  opencodeWaiting,
+  onOpencodeBegin,
+  onOpencodeCancel,
+  onOpencodeSignOut,
 }: {
   settings: SettingsType;
   onSave: (patch: SettingsPatch) => void;
@@ -1832,6 +1940,14 @@ function PageModels({
   onAntigravityBegin: () => void;
   onAntigravityCancel: () => void;
   onAntigravitySignOut: () => void;
+  opencodeSignedIn: boolean;
+  opencodeAccount?: string;
+  opencodeOrgName?: string;
+  opencodeFlowError?: string;
+  opencodeWaiting: boolean;
+  onOpencodeBegin: () => void;
+  onOpencodeCancel: () => void;
+  onOpencodeSignOut: () => void;
 }) {
   const catalog = deriveModelCatalog({
     providerCatalogs: settings.providerCatalogs,
@@ -1972,11 +2088,16 @@ function PageModels({
               patchKey="opencodeBaseUrl"
               onSave={onSave}
             />
-            <ProviderApiKeyRow
-              engine="opencode"
-              patchKey="opencodeApiKey"
-              signupUrl="https://opencode.ai/auth"
-              prefix={settings.webSearchApiKeys?.opencode}
+            <OpencodeSection
+              signedIn={opencodeSignedIn}
+              account={opencodeAccount}
+              orgName={opencodeOrgName}
+              flowError={opencodeFlowError}
+              waiting={opencodeWaiting}
+              onBegin={onOpencodeBegin}
+              onCancel={onOpencodeCancel}
+              onSignOut={onOpencodeSignOut}
+              apiKeyPrefix={settings.webSearchApiKeys?.opencode}
               onSave={onSave}
             />
             <ProviderRefreshRow

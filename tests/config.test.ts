@@ -1835,6 +1835,21 @@ describe("config", () => {
         apiKey: "opencode-key-123",
       });
     });
+
+    it("routes OpenCode Go subscription ids to the Go endpoint", () => {
+      writeConfig({}, path);
+      expect(providerForModel("mimo-v2.6-pro")).toBe("opencode");
+      expect(loadEndpointForModel("mimo-v2.6-pro", path)).toEqual({
+        baseUrl: "https://opencode.ai/zen/go/v1",
+        apiKey: "public",
+      });
+      // An explicit base URL override owns every OpenCode model, Go included.
+      writeConfig({ opencodeBaseUrl: "https://custom.example.com/v1" }, path);
+      expect(loadEndpointForModel("mimo-v2.6-pro", path)).toEqual({
+        baseUrl: "https://custom.example.com/v1",
+        apiKey: "public",
+      });
+    });
   });
 
   describe("subagentModels", () => {

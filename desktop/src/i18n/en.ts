@@ -239,16 +239,28 @@ export const en = {
     ollamaModelsHint: "Fetched live from the endpoint; pick one to use it.",
     modelsRefresh: "Refresh",
     ollamaModelsError: "Couldn't fetch models: {error}",
-    opencodeModels: "OpenCode Free Models",
+    opencodeModels: "OpenCode Models",
     opencodeModelsHint:
-      "Synced from OpenCode Zen and models.dev. Zero-cost free tier with public auth.",
-    opencodeSection: "OpenCode Zen",
+      "Synced from OpenCode Zen and OpenCode Go via models.dev. Free models work with public auth; paid and Go subscription models appear after you sign in or add an API key.",
+    opencodeSection: "OpenCode Zen & Go",
     opencodeBaseUrl: "OpenCode base URL",
     opencodeBaseUrlHint:
-      "OpenAI-compatible endpoint override. Defaults to https://opencode.ai/zen/v1.",
+      "OpenAI-compatible endpoint override for all OpenCode models. Defaults to Zen (https://opencode.ai/zen/v1); Go models use https://opencode.ai/zen/go/v1 unless overridden here.",
     opencodeApiKey: "OpenCode API key",
     opencodeApiKeyHint:
-      "Optional. Without a key, requests use the shared public tier. Paste an API key from opencode.ai/auth for dedicated quota.",
+      "Optional. Without a key, requests use the shared public tier. Paste an API key from opencode.ai/auth for dedicated quota and the paid + Go catalog.",
+    opencodeSignedIn: "Signed in to OpenCode",
+    opencodeAccount: "Signed in as {account}",
+    opencodeAccountOrg: "Signed in as {account} · {org}",
+    opencodeTokenSet: "Console token stored",
+    opencodeSignOut: "Sign out",
+    opencodeSignInTitle: "OpenCode Console",
+    opencodeSignInHint:
+      "Sign in with your OpenCode account to unlock the paid Zen and Go subscription models. A browser tab opens with a device code.",
+    opencodeWaiting: "Waiting for approval in the browser…",
+    opencodeSignIn: "Sign in",
+    opencodeCancel: "Cancel",
+    opencodeFlowFailed: "OpenCode sign-in failed",
     typesafeSection: "TypeSafe JEV",
     typesafeHint:
       "Validates your key with TypeSafe before enabling jev_evaluate. Models only receive the JEV tool after validation succeeds; missing, rejected, or unreachable credentials keep it unavailable. JEV is not a chat model.",
