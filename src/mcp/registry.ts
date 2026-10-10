@@ -8,6 +8,7 @@ import type { ToolCallContext } from "../tools.js";
 import type { JSONSchema } from "../types.js";
 import type { McpClient } from "./client.js";
 import { LatencyTracker, type SlowEvent } from "./latency.js";
+import { derefJsonSchema } from "./schema-deref.js";
 import { pruneMcpToolSchema } from "./schema-prune.js";
 import type { CallToolResult, McpContentBlock, McpTool } from "./types.js";
 
@@ -324,7 +325,10 @@ export async function bridgeMcpTools(
  *  arrays (`required`, `dependentRequired`) so the registry's tool-list hash is
  *  stable across server responses, reconnects, and sessions. Prefix-cache safety. */
 export function canonicalizeMcpToolForCache(tool: McpTool): McpTool {
-  const prunedSchema = pruneMcpToolSchema(tool.inputSchema as JSONSchema);
+  // Inline `$ref`/`$defs` first (zod v4 servers emit `#/$defs/__schemaN`): a
+  // dangling ref is a hard provider 400, and prune/flatten would otherwise drop
+  // the `$defs` block while leaving the `$ref` behind. Then prune, then sort.
+  const prunedSchema = pruneMcpToolSchema(derefJsonSchema(tool.inputSchema as JSONSchema));
   return {
     ...tool,
     inputSchema: canonicalizeSchemaForCache(prunedSchema) as McpTool["inputSchema"],
