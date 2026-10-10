@@ -79,6 +79,8 @@ describe("VoiceModelSettings", () => {
     onConnectMail: vi.fn(),
     onCancelMail: vi.fn(),
     onSignOutMail: vi.fn(),
+    changelog: { releases: [], version: "", error: null, loaded: true },
+    onRefreshChangelog: vi.fn(),
   };
 
   it("renders the model options with correct initial state", async () => {

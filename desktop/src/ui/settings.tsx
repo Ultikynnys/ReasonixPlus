@@ -47,6 +47,7 @@ import {
   isVoiceModelDownloaded,
 } from "../voice/models";
 import { speechTranscriber } from "../voice/transcriber";
+import { type ChangelogState, PageChangelog } from "./changelog";
 import { activationHandler, escapeHandler } from "./keyboard";
 import { Shortcut, type ShortcutKey } from "./shortcut";
 
@@ -74,12 +75,13 @@ function keyStatusText(prefix: string | undefined): string {
   return prefix ? t("settings.apiKeySet", { prefix }) : t("settings.apiKeyNotSet");
 }
 
-export type PageId = "general" | "models" | "mcp" | "shortcuts";
+export type PageId = "general" | "models" | "mcp" | "changelog" | "shortcuts";
 
 const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
   { id: "general", icon: "cog" },
   { id: "models", icon: "brain" },
   { id: "mcp", icon: "wrench" },
+  { id: "changelog", icon: "history" },
   { id: "shortcuts", icon: "cpu" },
 ];
 
@@ -137,6 +139,8 @@ export function SettingsModal({
   onConnectMail,
   onCancelMail,
   onSignOutMail,
+  changelog,
+  onRefreshChangelog,
 }: {
   settings: SettingsType;
   fontScale: FontScale;
@@ -203,6 +207,9 @@ export function SettingsModal({
   onConnectMail: (provider: MailProvider) => void;
   onCancelMail: (provider: MailProvider) => void;
   onSignOutMail: (provider: MailProvider) => void;
+  /** Repo commit history grouped per release, plus a forced-refetch trigger. */
+  changelog: ChangelogState;
+  onRefreshChangelog: (force?: boolean) => void;
 }) {
   const [page, setPage] = useState<PageId>(initialPage ?? "general");
   useEffect(() => {
@@ -335,6 +342,9 @@ export function SettingsModal({
                 onCancelMail={onCancelMail}
                 onSignOutMail={onSignOutMail}
               />
+            )}
+            {page === "changelog" && (
+              <PageChangelog changelog={changelog} onRefresh={onRefreshChangelog} />
             )}
             {page === "shortcuts" && <PageShortcuts />}
           </div>

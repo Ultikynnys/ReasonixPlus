@@ -59,6 +59,8 @@ const baseProps = {
   onConnectMail: vi.fn(),
   onCancelMail: vi.fn(),
   onSignOutMail: vi.fn(),
+  changelog: { releases: [], version: "", error: null, loaded: true },
+  onRefreshChangelog: vi.fn(),
 };
 
 describe("PageModels default-model enum", () => {

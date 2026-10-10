@@ -25,6 +25,7 @@ import type {
   AntigravityQuotaEvent,
   BalanceEvent,
   BtwResultEvent,
+  ChangelogEvent,
   CheckpointRequiredEvent,
   ChoiceRequiredEvent,
   CodexQuotaEvent,
@@ -91,6 +92,7 @@ import {
   parseAtQuery,
   rankPickerCandidates,
 } from "../../at-mentions.js";
+import { fetchChangelog } from "../../changelog.js";
 import { pickPrimaryBalance } from "../../client.js";
 import {
   archivePlanState,
@@ -479,6 +481,7 @@ type EmittableEvent =
   | OllamaQuotaEvent
   | OllamaModelsEvent
   | OpencodeModelsEvent
+  | ChangelogEvent
   | AntigravityQuotaEvent
   | ZaiQuotaEvent
   | MentionResultsEvent
@@ -1877,6 +1880,22 @@ async function refreshProviderCatalogs(force = false, provider?: CatalogProvider
   publishProviderCatalogs();
 }
 let publishProviderCatalogs = () => {};
+
+/** Fetch the repo history for the Settings changelog page. Broadcast tabId-less
+ *  (like $opencode_models): it depends on no tab state, so one fetch serves every
+ *  tab. The backend cache absorbs repeat visits. */
+export async function refreshChangelog(force = false, tab?: Tab): Promise<void> {
+  const snap = await fetchChangelog({ force });
+  emit({
+    type: "$changelog",
+    releases: snap.releases,
+    version: VERSION,
+    ...(snap.error !== undefined ? { error: snap.error } : {}),
+  });
+  if (tab && snap.error && snap.releases.length === 0) {
+    emit({ type: "$error", message: `Changelog unavailable: ${snap.error}` }, tab.id);
+  }
+}
 
 export async function refreshOpencodeModels(force = false, tab?: Tab): Promise<void> {
   try {
@@ -7639,6 +7658,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "opencode_models_refresh") {
       void refreshOpencodeModels(!!msg.force, tab);
+      return;
+    }
+    if (msg.cmd === "changelog_get") {
+      void refreshChangelog(!!msg.force, tab);
       return;
     }
     if (msg.cmd === "settings_save") {

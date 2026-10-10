@@ -27,6 +27,24 @@ export {
 } from "./image-attach.js";
 export type { ImageMention } from "./image-attach.js";
 export { formatBytes } from "./format.js";
+export {
+  SECTION_ORDER,
+  findRelease,
+  groupReleases,
+  groupSections,
+  isMergeCommit,
+  parseCommitSubject,
+  releaseVersion,
+  shortHash,
+  toReleases,
+} from "./changelog.js";
+export type {
+  ChangelogCommit,
+  ChangelogEntry,
+  ChangelogKind,
+  ChangelogRelease,
+  ChangelogSection,
+} from "./changelog.js";
 export { messageOf } from "./error.js";
 export { asRecord } from "./object.js";
 export { DAY_MS, abortReason, sleep } from "./time.js";
@@ -200,6 +218,7 @@ export type {
   CodexQuotaEvent,
   CodexQuotaWindow,
   ModelEndpointInfo,
+  ChangelogEvent,
   OllamaGenerationPatch,
   OllamaGenerationSettings,
   OllamaModelsEvent,

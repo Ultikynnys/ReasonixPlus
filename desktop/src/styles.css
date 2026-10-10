@@ -7362,6 +7362,161 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--success);
 }
 
+/* changelog */
+.changelog-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.changelog-toolbar .grow {
+  flex: 1;
+}
+.changelog-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.changelog-stale {
+  font-size: 12px;
+  color: var(--warn, var(--muted));
+}
+.changelog-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--fg-2);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.changelog-retry:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.changelog-retry:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.changelog-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--muted);
+  padding: 10px 0;
+}
+.changelog-release {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  margin-bottom: 6px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.changelog-release[data-open="true"] {
+  border-color: var(--border-strong);
+}
+.changelog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.changelog-head:hover {
+  background: var(--panel);
+}
+.changelog-head .grow {
+  flex: 1;
+}
+.changelog-caret {
+  display: inline-flex;
+  color: var(--muted-2);
+}
+.changelog-version {
+  font-weight: 600;
+  font-family: var(--mono, monospace);
+}
+.changelog-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.changelog-date,
+.changelog-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+.changelog-body {
+  padding: 2px 11px 11px 30px;
+}
+.changelog-section {
+  margin-top: 8px;
+}
+.changelog-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-2);
+  margin-bottom: 4px;
+}
+.changelog-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.changelog-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 3px 0;
+  font-size: 13px;
+  color: var(--fg-2);
+  line-height: 1.45;
+}
+.changelog-scope {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-family: var(--mono, monospace);
+  color: var(--muted-2);
+  background: var(--panel);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.changelog-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.changelog-breaking {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--danger, var(--warn, red));
+}
+.changelog-hash {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted-2);
+  background: none;
+  padding: 0;
+}
+.changelog-empty {
+  font-size: 13px;
+  color: var(--muted-2);
+  padding: 6px 0 2px;
+}
+
 /* shortcut grid */
 .kbd-grid {
   display: grid;

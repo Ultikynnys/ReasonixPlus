@@ -15,6 +15,7 @@ import type {
   ChoiceOption,
   ChoiceRequiredEvent,
   ChoiceVerdict,
+  ChangelogEvent,
   CodexQuota,
   CodexQuotaEvent,
   ConfirmRequiredEvent,
@@ -148,6 +149,7 @@ export type {
   OllamaQuotaEvent,
   OllamaQuotaWindow,
   OpencodeModelsEvent,
+  ChangelogEvent,
   CheckpointRequiredEvent,
   CheckpointVerdict,
   ChoiceOption,
@@ -277,6 +279,7 @@ export type IncomingEvent = { tabId?: string } & (
   | OllamaQuotaEvent
   | OllamaModelsEvent
   | OpencodeModelsEvent
+  | ChangelogEvent
   | AntigravityQuotaEvent
   | ZaiQuotaEvent
   | CheckpointRequiredEvent

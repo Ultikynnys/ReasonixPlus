@@ -1,5 +1,6 @@
 import {
   DEFAULT_MODEL,
+  type ChangelogRelease,
   clipText,
   extractPathsFromArgs,
   flattenText,
@@ -124,6 +125,7 @@ import { ContextPanel } from "./ui/context-panel";
 import { JobsPop } from "./ui/jobs-pop";
 import { JumpBar } from "./ui/jump-bar";
 import { activationHandler, escapeHandler } from "./ui/keyboard";
+import { type ChangelogState } from "./ui/changelog";
 import { SettingsModal, type PageId as SettingsPageId } from "./ui/settings";
 import { localizeShortcutText } from "./ui/shortcut";
 import { Sidebar } from "./ui/sidebar";
@@ -2631,6 +2633,9 @@ interface TabRuntimeProps {
   opencodeModelsError: string | null;
   opencodeVisionModels: ReadonlySet<string>;
   onRefreshOpencodeModels: (force?: boolean) => void;
+  /** Repo commit history grouped per release, plus a forced-refetch trigger. */
+  changelog: ChangelogState;
+  onRefreshChangelog: (force?: boolean) => void;
   tabsList: {
     id: string;
     workspaceDir?: string;
@@ -2683,6 +2688,8 @@ function TabRuntime({
   opencodeModelsError,
   opencodeVisionModels,
   onRefreshOpencodeModels,
+  changelog,
+  onRefreshChangelog,
   tabsList,
   activeTabId,
   setActiveTabId,
@@ -4237,6 +4244,8 @@ function TabRuntime({
             opencodeModelsError={opencodeModelsError ?? undefined}
             opencodeVisionModels={opencodeVisionModels}
             onRefreshOpencodeModels={onRefreshOpencodeModels}
+            changelog={changelog}
+            onRefreshChangelog={onRefreshChangelog}
             oauthWaiting={state.oauthWaiting}
             onOAuthBegin={() => sendRpc({ cmd: "oauth_begin" })}
             onOAuthCancel={() => {
@@ -5304,6 +5313,14 @@ export function App() {
     visionModels: Set<string>;
     error: string | null;
   }>({ models: [], visionModels: new Set(), error: null });
+  // Changelog from the repo's commit history, grouped per release by the
+  // backend. `loaded` distinguishes "not fetched yet" from "fetched, empty".
+  const [changelog, setChangelog] = useState<{
+    releases: ChangelogRelease[];
+    version: string;
+    error: string | null;
+    loaded: boolean;
+  }>({ releases: [], version: "", error: null, loaded: false });
   const [startupRetryNonce, setStartupRetryNonce] = useState(0);
   const dispatchersRef = useRef<Map<string, TabDispatcher>>(new Map());
   const pendingEventsRef = useRef<Map<string, TabAction[]>>(new Map());
@@ -5349,6 +5366,12 @@ export function App() {
       cmd: "opencode_models_refresh",
       force,
     }).catch((err) => console.error("opencode_models_refresh failed", err));
+  }, []);
+
+  const requestChangelog = useCallback((force?: boolean) => {
+    rpcSend({ tabId: activeTabIdRef.current, cmd: "changelog_get", force }).catch((err) =>
+      console.error("changelog_get failed", err),
+    );
   }, []);
 
   const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
@@ -5888,6 +5911,18 @@ export function App() {
               return;
             }
 
+            // App-global like $opencode_models: the history belongs to the repo,
+            // not to any tab.
+            if (ev.type === "$changelog") {
+              setChangelog({
+                releases: ev.releases,
+                version: ev.version,
+                error: ev.error ?? null,
+                loaded: true,
+              });
+              return;
+            }
+
             if (ev.type === "$sessions" && tabId) {
               tracker.mark("sessions_list_received", {
                 tabId,
@@ -6202,6 +6237,8 @@ export function App() {
           opencodeModelsError={opencodeCatalog.error}
           opencodeVisionModels={opencodeCatalog.visionModels}
           onRefreshOpencodeModels={requestOpencodeModels}
+          changelog={changelog}
+          onRefreshChangelog={requestChangelog}
           tabsList={tabs}
           activeTabId={activeTabId}
           setActiveTabId={setActiveTabId}

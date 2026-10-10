@@ -4,6 +4,7 @@
  *  two sides of the JSON-RPC bridge. */
 
 import type { ApprovalPrompt } from "./approval-prompt.js";
+import type { ChangelogRelease } from "./changelog.js";
 import type { ChoiceOption, PlanStep, ReasoningEffort } from "./permission-types.js";
 
 /** Trust dial: 3 settings, not 4.
@@ -893,11 +894,16 @@ export interface SettingsEvent {
    *  workspace choice when a new (workspace-less) tab asks for one. */
   reasonixLocalDir?: string;
   model: string;
-  providerCatalogs?: Partial<Record<"deepseek" | "openai" | "zai" | "typesafe", {
-    models: string[];
-    source: "live" | "cache" | "fallback";
-    error?: string;
-  }>>;
+  providerCatalogs?: Partial<
+    Record<
+      "deepseek" | "openai" | "zai" | "typesafe",
+      {
+        models: string[];
+        source: "live" | "cache" | "fallback";
+        error?: string;
+      }
+    >
+  >;
   /** Model ids offered by every model picker (opt-in allow-list — unlisted
    *  models are hidden). Global persistent setting (`enabledModels` in
    *  config.json), edited from Settings → Models. */
@@ -1203,6 +1209,19 @@ export interface OpencodeModelsEvent {
   error?: string;
 }
 
+/** Commit history from the public repo, grouped per release. Broadcast
+ *  app-globally (like $opencode_models) because it depends on no tab state.
+ *  `version` is the running build, so the page can mark which group is
+ *  installed without a second round trip. */
+export interface ChangelogEvent {
+  type: "$changelog";
+  releases: ChangelogRelease[];
+  /** Running desktop version, for the "installed" marker. */
+  version: string;
+  /** Set when the fetch failed and this is a cached (possibly stale) copy. */
+  error?: string;
+}
+
 // ---- commands ----
 
 export interface SettingsPatch {
@@ -1331,7 +1350,11 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "gemini_oauth_signout" }
   | { cmd: "antigravity_models_refresh" }
   | { cmd: "opencode_models_refresh"; force?: boolean }
-  | { cmd: "provider_models_refresh"; provider?: "deepseek" | "openai" | "zai" | "typesafe"; force?: boolean }
+  | {
+      cmd: "provider_models_refresh";
+      provider?: "deepseek" | "openai" | "zai" | "typesafe";
+      force?: boolean;
+    }
   | { cmd: "settings_get" }
   | ({ cmd: "settings_save" } & SettingsPatch)
   | { cmd: "codex_quota_get" }
@@ -1339,6 +1362,8 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "antigravity_quota_get" }
   | { cmd: "zai_quota_get" }
   | { cmd: "ollama_models_list"; force?: boolean }
+  /** Fetch the repo commit history for the Settings changelog page. */
+  | { cmd: "changelog_get"; force?: boolean }
   | { cmd: "mention_query"; query: string; nonce: number }
   | { cmd: "mention_preview"; path: string; nonce: number }
   | { cmd: "mention_picked"; path: string }
