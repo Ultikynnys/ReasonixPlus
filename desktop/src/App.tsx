@@ -86,6 +86,7 @@ import {
   type TurnOutcome,
   type UserImageAttachment,
   type ZaiQuota,
+  type OpencodeQuota,
   resolveActiveQuickSend,
   rpcSend,
 } from "./protocol";
@@ -487,6 +488,12 @@ type State = {
   zaiQuotaRefreshing: boolean;
   /** Why the last Z.AI usage fetch produced no data — shown in the chip tooltip. */
   zaiQuotaReason: string | null;
+  /** OpenCode Go plan usage (5-hour + weekly + monthly) for opencode-provider tabs. */
+  opencodeQuota: OpencodeQuota | null;
+  /** True between a statusbar chip click and the $opencode_quota reply. */
+  opencodeQuotaRefreshing: boolean;
+  /** Why the last OpenCode usage fetch produced no data — shown in the chip tooltip. */
+  opencodeQuotaReason: string | null;
   mentionResults: MentionResults | null;
   mentionPreview: MentionPreviewState | null;
   mcpSpecs: McpSpecInfo[];
@@ -584,6 +591,7 @@ type Action =
   | { t: "ollama_quota_refreshing" }
   | { t: "antigravity_quota_refreshing" }
   | { t: "zai_quota_refreshing" }
+  | { t: "opencode_quota_refreshing" }
   | { t: "push_notice"; text: string; severity?: NoticeSeverity };
 
 export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
@@ -827,6 +835,8 @@ export function reduce(state: State, action: Action): State {
       return { ...state, antigravityQuotaRefreshing: true };
     case "zai_quota_refreshing":
       return { ...state, zaiQuotaRefreshing: true };
+    case "opencode_quota_refreshing":
+      return { ...state, opencodeQuotaRefreshing: true };
     case "batch_delta": {
       const collapsed: DeltaBatchItem[] = [];
       for (const item of action.items) {
@@ -1982,6 +1992,14 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         zaiQuotaRefreshing: false,
         usage: applyQuotaDelta(state.usage, "zai", ev.quota?.turnUsedPct ?? null),
       };
+    case "$opencode_quota":
+      return {
+        ...state,
+        opencodeQuota: ev.quota,
+        opencodeQuotaReason: ev.reason ?? null,
+        opencodeQuotaRefreshing: false,
+        usage: applyQuotaDelta(state.usage, "opencode", ev.quota?.turnUsedPct ?? null),
+      };
     case "$settings": {
       const prevWs = state.settings?.workspaceDir;
       const wsChanged = prevWs !== undefined && prevWs !== ev.workspaceDir;
@@ -2740,6 +2758,9 @@ function TabRuntime({
     zaiQuota: null,
     zaiQuotaRefreshing: false,
     zaiQuotaReason: null,
+    opencodeQuota: null,
+    opencodeQuotaRefreshing: false,
+    opencodeQuotaReason: null,
     mentionResults: null,
     mentionPreview: null,
     mcpSpecs: [],
@@ -2871,6 +2892,10 @@ function TabRuntime({
   const refreshZaiQuota = useCallback(() => {
     dispatch({ t: "zai_quota_refreshing" });
     sendRpc({ cmd: "zai_quota_get" });
+  }, [sendRpc]);
+  const refreshOpencodeQuota = useCallback(() => {
+    dispatch({ t: "opencode_quota_refreshing" });
+    sendRpc({ cmd: "opencode_quota_get" });
   }, [sendRpc]);
   // Fetch the Ollama catalog whenever the tab's model is an Ollama model — the
   // composer menu and the Models settings page render the fetched list. The
@@ -4192,6 +4217,10 @@ function TabRuntime({
           zaiQuotaRefreshing={state.zaiQuotaRefreshing}
           zaiQuotaReason={state.zaiQuotaReason}
           onRefreshZaiQuota={refreshZaiQuota}
+          opencodeQuota={state.opencodeQuota}
+          opencodeQuotaRefreshing={state.opencodeQuotaRefreshing}
+          opencodeQuotaReason={state.opencodeQuotaReason}
+          onRefreshOpencodeQuota={refreshOpencodeQuota}
           usage={state.usage}
           busy={state.busy}
           ready={state.ready}

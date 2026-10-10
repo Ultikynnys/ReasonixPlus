@@ -58,6 +58,7 @@ import type {
   OllamaModelsEvent,
   OllamaQuotaEvent,
   OpencodeModelsEvent,
+  OpencodeQuotaEvent,
   PathAccessRequiredEvent,
   PlanClearedEvent,
   PlanRequiredEvent,
@@ -349,8 +350,10 @@ import { fetchOpencodeModels } from "../../opencode-models.js";
 import {
   type OpencodeDeviceFlow,
   beginOpencodeDeviceFlow,
+  resolveOpencodeToken,
   signOutOpencode,
 } from "../../opencode-oauth.js";
+import { fetchOpencodeQuota } from "../../opencode-quota.js";
 import {
   type CatalogProvider,
   type ProviderCatalog,
@@ -492,6 +495,7 @@ type EmittableEvent =
   | ChangelogEvent
   | AntigravityQuotaEvent
   | ZaiQuotaEvent
+  | OpencodeQuotaEvent
   | MentionResultsEvent
   | MentionPreviewEvent
   | RetryResultEvent
@@ -2663,6 +2667,60 @@ async function emitZaiQuota(tab: Tab): Promise<void> {
   // Native unit: the GLM Coding Plan bills plan-window %, not dollars.
   accumulateQuotaIntoSession(tab, "zai", turnUsedPct);
   emit({ type: "$zai_quota", quota: { ...quota, turnUsedPct, fetchedAt: Date.now() } }, tab.id);
+}
+
+/** Last API-reported OpenCode Go 5-hour (rolling) usage % — the delta to the
+ *  next fetch is the percent points of the window consumed since (each
+ *  $turn_complete refetches; the rolling window resets on a rolling basis). */
+let lastOpencodeRollingUsedPct: number | null = null;
+
+/** OpenCode Go plan usage for an `opencode`-provider tab with a credential —
+ *  fetches /zen/go/v1/usage and accumulates the measured rolling-window delta
+ *  as the session's native-unit quota %. */
+async function emitOpencodeQuota(tab: Tab): Promise<void> {
+  if (providerForModel(tab.currentModel) !== "opencode") {
+    emitTabDiagnostic(tab, "quota.skipped", { reason: "non-opencode-provider" });
+    return;
+  }
+  const ep = loadEndpointForModel(tab.currentModel);
+  const baseUrl = ep.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL;
+  // A Go subscription is required; the free public tier has no usage to show,
+  // so no credential (or a custom proxy base) simply yields no chip.
+  const token = (await resolveOpencodeToken()) ?? loadOpencodeApiKey();
+  if (!token || token === "public") {
+    emitTabDiagnostic(tab, "quota.skipped", { reason: "opencode-no-credential" });
+    return;
+  }
+  emitTabDiagnostic(tab, "quota.fetch.started");
+  const quota = await fetchOpencodeQuota(baseUrl, token);
+  if (!quota) {
+    emitTabDiagnostic(tab, "quota.fetch.failed", { reason: "usage-unavailable" }, "error");
+    emit({ type: "$opencode_quota", quota: null, reason: "usage-unavailable" }, tab.id);
+    return;
+  }
+  // The 5-hour rolling window is the primary value (finer resolution than the
+  // weekly/monthly windows). A rollover makes the delta go backwards — report
+  // no turn cost for this fetch and adopt the new baseline.
+  const rollingPct = quota.rolling?.usagePct ?? null;
+  const turnUsedPct =
+    lastOpencodeRollingUsedPct !== null &&
+    rollingPct !== null &&
+    rollingPct >= lastOpencodeRollingUsedPct
+      ? rollingPct - lastOpencodeRollingUsedPct
+      : null;
+  if (rollingPct !== null) lastOpencodeRollingUsedPct = rollingPct;
+  emitTabDiagnostic(tab, "quota.fetch.succeeded", {
+    rolling: rollingPct,
+    weekly: quota.weekly?.usagePct,
+    monthly: quota.monthly?.usagePct,
+    turnUsedPct,
+  });
+  // Native unit: the Go plan bills plan-window %, not dollars.
+  accumulateQuotaIntoSession(tab, "opencode", turnUsedPct);
+  emit(
+    { type: "$opencode_quota", quota: { ...quota, turnUsedPct, fetchedAt: Date.now() } },
+    tab.id,
+  );
 }
 
 /** Provider-aware billing for subagent and main-loop model calls. */
@@ -5373,6 +5431,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           void emitOllamaQuota(tab);
           void emitAntigravityQuota(tab);
           void emitZaiQuota(tab);
+          void emitOpencodeQuota(tab);
           if (tab.hooks.some((h) => h.event === "Stop")) {
             const stopReport = await runHooks({
               hooks: tab.hooks,
@@ -6277,6 +6336,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       void emitOllamaQuota(tab);
       void emitAntigravityQuota(tab);
       void emitZaiQuota(tab);
+      void emitOpencodeQuota(tab);
     })();
     return tab;
   }
@@ -6435,6 +6495,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         void emitCodexQuota(activated, { force: true });
         void emitOllamaQuota(activated);
         void emitAntigravityQuota(activated);
+        void emitOpencodeQuota(activated);
         void emitSessions(activated);
       } else {
         emitDiagnostic(
@@ -7744,6 +7805,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "zai_quota_get") {
       void emitZaiQuota(tab);
+      return;
+    }
+    if (msg.cmd === "opencode_quota_get") {
+      void emitOpencodeQuota(tab);
       return;
     }
     if (msg.cmd === "ollama_models_list") {

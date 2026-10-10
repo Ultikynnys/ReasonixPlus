@@ -1153,6 +1153,46 @@ export interface ZaiQuotaEvent {
   reason?: string;
 }
 
+/** One OpenCode Go plan usage window (`GET {origin}/zen/go/v1/usage`). The API
+ *  reports each window's consumed share directly as `percent` (0-100) plus an
+ *  ISO reset timestamp; `limited` mirrors the server's `status:
+ *  "rate-limited"` flag. */
+export interface OpencodeQuotaWindow {
+  /** % of the window's limit consumed (the server's `percent`). */
+  usagePct: number;
+  /** 100 - usagePct — the statusbar's "% left". */
+  remainingPct: number;
+  /** ISO timestamp when the window resets, or null when the server omitted it. */
+  resetsAt: string | null;
+  /** True when the server reported the window as `rate-limited`. */
+  limited: boolean;
+}
+
+/** OpenCode Go subscription usage (daemon source: the Go endpoint's own
+ *  `/zen/go/v1/usage` — 5-hour rolling, weekly and monthly windows). `null`
+ *  payload means "no data" — no credential, no Go subscription (403), or a
+ *  fetch failure — the UI degrades to a dash, never a wrong number. */
+export interface OpencodeQuota {
+  /** 5-hour rolling window — the primary ribbon value. */
+  rolling: OpencodeQuotaWindow | null;
+  /** Weekly window. */
+  weekly: OpencodeQuotaWindow | null;
+  /** Monthly window. */
+  monthly: OpencodeQuotaWindow | null;
+  /** Percentage points of the rolling window consumed since the previous fetch
+   *  (fetches fire on every $turn_complete). Null until a second measurement.
+   */
+  turnUsedPct?: number | null;
+  fetchedAt: number;
+}
+
+export interface OpencodeQuotaEvent {
+  type: "$opencode_quota";
+  quota: OpencodeQuota | null;
+  /** Why quota is null — surfaced in the statusbar tooltip. */
+  reason?: string;
+}
+
 /** The account's Google Antigravity (Gemini Code Assist) plan, from
  *  loadCodeAssist.currentTier. */
 export interface AntigravityPlan {
@@ -1382,6 +1422,7 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "ollama_quota_get" }
   | { cmd: "antigravity_quota_get" }
   | { cmd: "zai_quota_get" }
+  | { cmd: "opencode_quota_get" }
   | { cmd: "ollama_models_list"; force?: boolean }
   /** Fetch the repo commit history for the Settings changelog page. */
   | { cmd: "changelog_get"; force?: boolean }

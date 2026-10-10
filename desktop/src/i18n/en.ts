@@ -707,6 +707,12 @@ export const en = {
     zaiTurnQuotaTitle: "This turn used {pct}% of the GLM 5-hour quota",
     zaiNoData:
       "GLM usage · no data: set a Z.AI API key (Settings → Z.AI / GLM) to see plan usage · click to retry",
+    opencodeQuota: "Go usage",
+    opencodeQuotaTitle:
+      "OpenCode Go plan · 5h: {rolling}% left · weekly: {weekly}% left · monthly: {monthly}% left · click to refresh",
+    opencodeTurnQuotaTitle: "This turn used {pct}% of the OpenCode Go 5-hour quota",
+    opencodeNoData:
+      "OpenCode Go usage · no data: sign in to OpenCode (Settings → OpenCode) with a Go subscription to see plan usage · click to retry",
     offPeak: "off-peak",
     peak: "peak",
     offPeakTitle:

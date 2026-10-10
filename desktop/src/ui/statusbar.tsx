@@ -10,7 +10,14 @@ import type { Balance, Settings, UsageStats } from "../App";
 import { t } from "../i18n";
 import { I } from "../icons";
 import { isOffPeak, minutesUntilRateChange, rateMultiplier } from "../peak-hours";
-import type { AntigravityQuota, CodexQuota, JobInfo, OllamaQuota, ZaiQuota } from "../protocol";
+import type {
+  AntigravityQuota,
+  CodexQuota,
+  JobInfo,
+  OllamaQuota,
+  OpencodeQuota,
+  ZaiQuota,
+} from "../protocol";
 import { THEME, THEME_STYLES, type Theme, type ThemeStyle, themeForStyle } from "../theme";
 import { hitPercent, tokenLabel } from "./format";
 import { formatMoney } from "../money";
@@ -48,6 +55,10 @@ export function StatusBar({
   onRefreshZaiQuota,
   zaiQuotaRefreshing,
   zaiQuotaReason,
+  opencodeQuota,
+  onRefreshOpencodeQuota,
+  opencodeQuotaRefreshing,
+  opencodeQuotaReason,
   usage,
   busy,
   ready,
@@ -87,6 +98,11 @@ export function StatusBar({
   onRefreshZaiQuota?: () => void;
   zaiQuotaRefreshing?: boolean;
   zaiQuotaReason?: string | null;
+  /** OpenCode Go plan usage (5-hour + weekly + monthly) — mirrors the Z.AI chip. */
+  opencodeQuota: OpencodeQuota | null;
+  onRefreshOpencodeQuota?: () => void;
+  opencodeQuotaRefreshing?: boolean;
+  opencodeQuotaReason?: string | null;
   usage: UsageStats;
   busy: boolean;
   ready: boolean;
@@ -151,6 +167,9 @@ export function StatusBar({
   // Z.AI GLM Coding Plan tabs bill plan-window % (fetched from the monitor
   // endpoint), never dollars — the chip replaces the DeepSeek balance.
   const zaiQuotaBilling = provider === "zai";
+  // OpenCode Go tabs bill plan-window % (fetched from the Go usage endpoint),
+  // never dollars — the chip replaces the DeepSeek balance.
+  const opencodeQuotaBilling = provider === "opencode";
   const sessionQuotaProvider =
     openaiQuotaBilling
       ? "openai"
@@ -160,7 +179,9 @@ export function StatusBar({
         ? "ollama"
         : zaiQuotaBilling
           ? "zai"
-          : null;
+          : opencodeQuotaBilling
+            ? "opencode"
+            : null;
   const sessionQuotaCost =
     sessionQuotaProvider !== null ? usage.costByProvider?.[sessionQuotaProvider] : undefined;
   const sessionQuotaPct = sessionQuotaCost?.quotaUsedPct ?? null;
@@ -304,6 +325,27 @@ export function StatusBar({
     !zaiQuotaData && zaiQuotaReason
       ? `${zaiQuotaTitle}\n${t("statusbar.codexReason", { reason: zaiQuotaReason })}`
       : zaiQuotaTitle;
+  // OpenCode Go plan usage: the 5-hour rolling window is the primary ribbon
+  // value (finer resolution than weekly/monthly), falling back to weekly then
+  // monthly for payloads that omit a window.
+  const opencodeQuotaData = opencodeQuota && opencodeQuotaBilling ? opencodeQuota : null;
+  const opencodeRolling = opencodeQuotaData?.rolling ?? null;
+  const opencodeWeekly = opencodeQuotaData?.weekly ?? null;
+  const opencodeMonthly = opencodeQuotaData?.monthly ?? null;
+  const opencodePrimaryWindow = opencodeRolling ?? opencodeWeekly ?? opencodeMonthly ?? null;
+  const opencodeTurnPct = opencodeQuotaData?.turnUsedPct ?? null;
+  const opencodeQuotaTitle =
+    opencodeQuotaData && opencodePrimaryWindow
+      ? t("statusbar.opencodeQuotaTitle", {
+          rolling: opencodeRolling ? Math.round(opencodeRolling.remainingPct) : "-",
+          weekly: opencodeWeekly ? Math.round(opencodeWeekly.remainingPct) : "-",
+          monthly: opencodeMonthly ? Math.round(opencodeMonthly.remainingPct) : "-",
+        })
+      : t("statusbar.opencodeNoData");
+  const opencodeQuotaTitleWithReason =
+    !opencodeQuotaData && opencodeQuotaReason
+      ? `${opencodeQuotaTitle}\n${t("statusbar.codexReason", { reason: opencodeQuotaReason })}`
+      : opencodeQuotaTitle;
   // A failed fetch stays diagnosable: append the reason to the tooltip, except
   // for the no-key slug the base hint already spells out.
   const ollamaQuotaTitleWithReason =
@@ -459,7 +501,9 @@ export function StatusBar({
                   ? t("statusbar.antigravityTurnQuotaTitle", { pct: agTurnPct.toFixed(1) })
                   : zaiTurnPct != null
                     ? t("statusbar.zaiTurnQuotaTitle", { pct: zaiTurnPct.toFixed(1) })
-                    : undefined
+                    : opencodeTurnPct != null
+                      ? t("statusbar.opencodeTurnQuotaTitle", { pct: opencodeTurnPct.toFixed(1) })
+                      : undefined
           }
         >
           <I.coin size={11} />
@@ -488,6 +532,12 @@ export function StatusBar({
             ) : (
               <span className="v ok">-</span>
             )
+          ) : opencodeQuotaBilling ? (
+            opencodeTurnPct != null ? (
+              <span className="v ok">{opencodeTurnPct.toFixed(1)}%</span>
+            ) : (
+              <span className="v ok">-</span>
+            )
           ) : (
             <span className="v ok">
               {turnCost}
@@ -501,7 +551,8 @@ export function StatusBar({
       !openaiQuotaBilling &&
       !ollamaQuotaBilling &&
       !geminiTab &&
-      !zaiQuotaBilling ? (
+      !zaiQuotaBilling &&
+      !opencodeQuotaBilling ? (
         <span className="seg" title={t("settings.sessionCost")}>
           <I.coin size={11} />
           <span>{t("settings.sessionCost")}</span>
@@ -672,6 +723,38 @@ export function StatusBar({
                 <span className="conv">{zaiQuotaData.plan ?? "GLM"}</span>
               </>
             ) : zaiQuotaRefreshing ? (
+              <span className="v acc">{t("statusbar.codexRefreshing")}</span>
+            ) : (
+              <span className="v acc">-</span>
+            )}
+          </span>
+        ) : opencodeQuotaBilling ? (
+          <span
+            className="seg"
+            title={opencodeQuotaTitleWithReason}
+            style={onRefreshOpencodeQuota ? { cursor: "pointer" } : undefined}
+            onClick={onRefreshOpencodeQuota}
+            onKeyDown={
+              onRefreshOpencodeQuota ? activationHandler(onRefreshOpencodeQuota) : undefined
+            }
+          >
+            <I.coin size={11} style={{ color: "var(--accent)" }} />
+            <span>{t("statusbar.opencodeQuota")}</span>
+            {opencodeQuotaData && opencodePrimaryWindow ? (
+              <>
+                {opencodeRolling && opencodeWeekly ? (
+                  <span className="v acc">
+                    5h {Math.round(opencodeRolling.remainingPct)}% · wk{" "}
+                    {Math.round(opencodeWeekly.remainingPct)}% {t("statusbar.codexLeft")}
+                  </span>
+                ) : (
+                  <span className="v acc">
+                    {Math.round(opencodePrimaryWindow.remainingPct)}% {t("statusbar.codexLeft")}
+                  </span>
+                )}
+                <span className="conv">Go</span>
+              </>
+            ) : opencodeQuotaRefreshing ? (
               <span className="v acc">{t("statusbar.codexRefreshing")}</span>
             ) : (
               <span className="v acc">-</span>

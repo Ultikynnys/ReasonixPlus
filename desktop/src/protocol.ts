@@ -81,6 +81,9 @@ import type {
   OllamaQuotaEvent,
   OllamaQuotaWindow,
   OpencodeModelsEvent,
+  OpencodeQuota,
+  OpencodeQuotaEvent,
+  OpencodeQuotaWindow,
   OutgoingCommand,
   PathAccessRequiredEvent,
   PersistedNotice,
@@ -149,6 +152,9 @@ export type {
   OllamaQuotaEvent,
   OllamaQuotaWindow,
   OpencodeModelsEvent,
+  OpencodeQuota,
+  OpencodeQuotaEvent,
+  OpencodeQuotaWindow,
   ChangelogEvent,
   CheckpointRequiredEvent,
   CheckpointVerdict,
@@ -282,6 +288,7 @@ export type IncomingEvent = { tabId?: string } & (
   | ChangelogEvent
   | AntigravityQuotaEvent
   | ZaiQuotaEvent
+  | OpencodeQuotaEvent
   | CheckpointRequiredEvent
   | RevisionRequiredEvent
   | StepCompletedEvent

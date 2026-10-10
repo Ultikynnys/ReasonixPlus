@@ -8,6 +8,7 @@ import type {
   CodexQuota,
   ModelEndpointInfo,
   OllamaQuota,
+  OpencodeQuota,
   ZaiQuota,
 } from "../protocol";
 import { THEME, THEME_STYLES } from "../theme";
@@ -38,6 +39,12 @@ function endpointFor(model: string): ModelEndpointInfo {
   )
     return { provider: "gemini", baseUrl: "https://daily-cloudcode-pa.googleapis.com" };
   if (model.startsWith("glm-")) return { provider: "zai", baseUrl: "https://api.z.ai/api/v1" };
+  if (model.startsWith("opencode/"))
+    return {
+      provider: "opencode",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      opencodeAuth: "oauth",
+    };
   return { provider: "deepseek", baseUrl: "https://api.deepseek.com" };
 }
 
@@ -55,6 +62,7 @@ function renderBar(overrides: Partial<Parameters<typeof StatusBar>[0]> = {}) {
     ollamaQuota: null,
     antigravityQuota: null,
     zaiQuota: null,
+    opencodeQuota: null,
     usage: { totalCostUsd: 0, lastCallCostUsd: 0 } as unknown as UsageStats,
     busy: false,
     ready: true,
@@ -575,6 +583,38 @@ describe("StatusBar quota display", () => {
     expect(screen.getByText("plan usage")).toBeTruthy();
     expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByTitle(/sign in to Google Antigravity/)).toBeTruthy();
+    expect(screen.queryByText("balance")).toBeNull();
+  });
+
+  it("shows the Go plan '% left' chip for an opencode tab", () => {
+    const OPENCODE_QUOTA: OpencodeQuota = {
+      rolling: { usagePct: 30, remainingPct: 70, resetsAt: null, limited: false },
+      weekly: { usagePct: 12, remainingPct: 88, resetsAt: null, limited: false },
+      monthly: { usagePct: 5, remainingPct: 95, resetsAt: null, limited: false },
+      turnUsedPct: 1.2,
+      fetchedAt: 0,
+    };
+    renderBar({
+      settings: { model: "opencode/qwen3.8-max" } as Settings,
+      opencodeQuota: OPENCODE_QUOTA,
+      usage: { totalCostUsd: 1.5, lastCallCostUsd: 0.25 } as unknown as UsageStats,
+    });
+    expect(screen.getByText("Go usage")).toBeTruthy();
+    expect(screen.getByText(/5h 70% · wk 88% left/)).toBeTruthy();
+    expect(screen.getByText("Go")).toBeTruthy();
+    expect(screen.getByText(/1\.2%/)).toBeTruthy();
+    expect(screen.queryByText("balance")).toBeNull();
+    expect(screen.queryByText(/\$ 0\./)).toBeNull();
+  });
+
+  it("shows a dash + reason for the opencode chip with no usage data", () => {
+    renderBar({
+      settings: { model: "opencode/qwen3.8-max" } as Settings,
+      opencodeQuota: null,
+      opencodeQuotaReason: "usage-unavailable",
+    });
+    expect(screen.getByText("Go usage")).toBeTruthy();
+    expect(screen.getByTitle(/usage-unavailable/)).toBeTruthy();
     expect(screen.queryByText("balance")).toBeNull();
   });
 });
