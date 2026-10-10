@@ -6,7 +6,7 @@ import { derivePrefix } from "@reasonix/core-utils/derive-prefix";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Copy } from "lucide-react";
-import { Fragment, memo, useState } from "react";
+import { Fragment, memo, useEffect, useState } from "react";
 import type {
   ActivePlan,
   AssistantSegment,
@@ -60,15 +60,77 @@ function parsePresentedFile(result: string): PresentedFile | null {
   }
 }
 
+const TEXT_PREVIEW_LIMIT = 64 * 1024;
+
+function PresentedTextPreview({ src }: { src: string }) {
+  const [text, setText] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [truncated, setTruncated] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    setText(null);
+    setFailed(false);
+    setTruncated(false);
+    void (async () => {
+      try {
+        const response = await fetch(src, { signal: controller.signal });
+        if (!response.ok || !response.body) throw new Error("preview unavailable");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let content = "";
+        let bytes = 0;
+        let clipped = false;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const remaining = TEXT_PREVIEW_LIMIT - bytes;
+            content += decoder.decode(value.subarray(0, remaining), { stream: true });
+            bytes += value.byteLength;
+            if (bytes > TEXT_PREVIEW_LIMIT) {
+              clipped = true;
+              break;
+            }
+          }
+          content += decoder.decode();
+        } finally {
+          await reader.cancel();
+        }
+        if (!controller.signal.aborted) {
+          setText(content);
+          setTruncated(clipped);
+        }
+      } catch {
+        if (!controller.signal.aborted) setFailed(true);
+      }
+    })();
+    return () => controller.abort();
+  }, [src]);
+  if (failed) return <output className="presented-file-status" role="alert">{t("thread.previewFailed")}</output>;
+  if (text === null) return <output className="presented-file-status">{t("thread.previewLoading")}</output>;
+  return (
+    <div className="presented-file-text">
+      <pre>{text}</pre>
+      {truncated ? <output className="presented-file-status">{t("thread.previewTruncated")}</output> : null}
+    </div>
+  );
+}
+
 function PresentedFileCard({ file }: { file: PresentedFile }) {
   useLang();
   const [message, setMessage] = useState("");
+  const [previewFailed, setPreviewFailed] = useState(false);
   const [volume, setVolume] = useState(1);
-  const isImage = /\.(?:avif|bmp|gif|jpe?g|png|webp)$/i.test(file.name);
+  const src = convertFileSrc(file.path);
+  const isImage = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp|ico)$/i.test(file.name);
   const isAudio = /\.(?:aac|flac|m4a|mp3|oga|ogg|opus|wav|weba)$/i.test(file.name);
+  const isVideo = /\.(?:mp4|m4v|webm|ogv|mov)$/i.test(file.name);
+  const isPdf = /\.pdf$/i.test(file.name);
+  const isText = /\.(?:txt|md|mdx|csv|tsv|json|jsonl|ya?ml|toml|xml|html?|css|[cm]?[jt]sx?|py|rs|go|java|c|h|cpp|hpp|sh|ps1|sql|log|ini|cfg)$/i.test(file.name);
+  useEffect(() => setPreviewFailed(false), [src]);
   const copyImage = async () => {
     try {
-      const response = await fetch(convertFileSrc(file.path));
+      const response = await fetch(src);
       if (!response.ok) throw new Error("image could not be loaded");
       const blob = await response.blob();
       if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
@@ -106,7 +168,8 @@ function PresentedFileCard({ file }: { file: PresentedFile }) {
           <audio
             controls
             preload="metadata"
-            src={convertFileSrc(file.path)}
+            src={src}
+            onError={() => setPreviewFailed(true)}
             aria-label={file.name}
             ref={(element) => {
               if (element) element.volume = volume;
@@ -133,8 +196,20 @@ function PresentedFileCard({ file }: { file: PresentedFile }) {
           </label>
         </div>
       ) : null}
-      {isImage ? (
-        <img className="presented-file-preview" src={convertFileSrc(file.path)} alt={file.name} />
+      {isImage && !previewFailed ? (
+        <img className="presented-file-preview" src={src} alt={file.name} onError={() => setPreviewFailed(true)} />
+      ) : null}
+      {isVideo ? (
+        // biome-ignore lint/a11y/useMediaCaption: Agent-provided videos do not necessarily include caption tracks.
+        <video className="presented-file-preview" controls preload="metadata" src={src} aria-label={file.name} onError={() => setPreviewFailed(true)} />
+      ) : null}
+      {isPdf ? (
+        <iframe className="presented-file-document" src={src} title={file.name} sandbox="" onError={() => setPreviewFailed(true)} />
+      ) : null}
+      {isText ? <PresentedTextPreview src={src} /> : null}
+      {previewFailed ? <output className="presented-file-status" role="alert">{t("thread.previewFailed")}</output> : null}
+      {!isImage && !isAudio && !isVideo && !isPdf && !isText ? (
+        <output className="presented-file-status">{t("thread.previewUnsupported")}</output>
       ) : null}
       <div className="presented-file-info">
         <span className="presented-file-name" title={file.path}>
@@ -143,6 +218,11 @@ function PresentedFileCard({ file }: { file: PresentedFile }) {
         <span className="presented-file-size">{formatBytes(file.size)}</span>
       </div>
       <div className="presented-file-actions">
+        <button type="button" className="mini-btn" onClick={() => {
+          void invoke("open_with_dialog", { path: file.path }).catch(() => setMessage(t("thread.fileOpenFailed")));
+        }}>
+          {t("thread.openFile")}
+        </button>
         {isImage ? (
           <button type="button" className="mini-btn" onClick={() => void copyImage()}>
             {t("thread.copyImage")}

@@ -1051,6 +1051,12 @@ export const en = {
     fileCopyFailed: "Could not copy this file.",
     fileSaved: "File saved.",
     fileSaveFailed: "Could not save this file.",
+    openFile: "Open with…",
+    fileOpenFailed: "Could not open this file.",
+    previewLoading: "Loading preview…",
+    previewFailed: "Preview could not be loaded. The file may be missing or its format unsupported. Use Open with or Save as to view it externally.",
+    previewUnsupported: "No inline preview for this format. Use Open with or Save as.",
+    previewTruncated: "Preview limited to the first 64 KiB. Save or open the file to see the rest.",
   },
   live: {
     reasoning: "live · reasoning",
