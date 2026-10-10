@@ -70,6 +70,15 @@ export {
 } from "./rate-periods.js";
 export type { RateSchedule } from "./rate-periods.js";
 export {
+  antigravityUsageView,
+  codexUsageView,
+  ollamaUsageView,
+  opencodeUsageView,
+  quotaWindowsSummary,
+  zaiUsageView,
+} from "./provider-usage.js";
+export type { ProviderUsageView, QuotaWindowKey, QuotaWindowView } from "./provider-usage.js";
+export {
   ANTIGRAVITY_MODELS,
   DEFAULT_MODEL,
   GEMINI_MODELS,

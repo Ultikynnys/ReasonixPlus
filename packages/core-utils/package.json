@@ -14,7 +14,8 @@
     "./path-utils": "./src/path-utils.ts",
     "./permission-types": "./src/permission-types.ts",
     "./approval-prompt": "./src/approval-prompt.ts",
-    "./rate-periods": "./src/rate-periods.ts"
+    "./rate-periods": "./src/rate-periods.ts",
+    "./provider-usage": "./src/provider-usage.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

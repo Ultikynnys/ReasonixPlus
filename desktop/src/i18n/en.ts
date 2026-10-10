@@ -681,11 +681,11 @@ export const en = {
     codexQuotaTitle:
       "Codex weekly quota · {left}% left · resets {resets} · plan {plan} · click to refresh",
     codexFiveHourTitle: "5-hour window: {left}% left",
-    codexRefreshing: "…",
+    quotaRefreshing: "…",
     codexReason: "Last refresh failed: {reason}",
     codexNoData:
       "Codex quota · no data: sign in with ChatGPT (Settings → OpenAI) to see plan usage · click to retry",
-    codexLeft: "left",
+    quotaLeft: "left",
     thisTurnQuotaTitle: "This turn used {pct}% of the weekly Codex quota",
     ollamaQuota: "plan usage",
     ollamaQuotaTitle:

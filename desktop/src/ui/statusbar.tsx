@@ -2,9 +2,16 @@ import {
   DEEPSEEK_RATE_SCHEDULE,
   OLLAMA_RATE_SCHEDULE,
   ZAI_RATE_SCHEDULE,
+  antigravityUsageView,
+  codexUsageView,
   isOllamaPeakPricedModel,
   modelDisplayName,
+  ollamaUsageView,
+  opencodeUsageView,
+  quotaWindowsSummary,
+  zaiUsageView,
 } from "@reasonix/core-utils";
+import type { ProviderUsageView } from "@reasonix/core-utils";
 import { useEffect, useRef, useState } from "react";
 import type { Balance, Settings, UsageStats } from "../App";
 import { t } from "../i18n";
@@ -33,6 +40,50 @@ function formatReset(d: Date): string {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+/** One chip for every quota-billed provider. Each provider normalizes to a
+ *  ProviderUsageView, so the ribbon ("5h 70% · wk 88% left") renders through a
+ *  single code path instead of one bespoke chip per provider. */
+function QuotaChip({
+  label,
+  title,
+  view,
+  refreshing,
+  planFallback,
+  onRefresh,
+}: {
+  label: string;
+  title: string;
+  view: ProviderUsageView | null;
+  refreshing?: boolean;
+  planFallback: string;
+  onRefresh?: () => void;
+}) {
+  return (
+    <span
+      className="seg"
+      title={title}
+      style={onRefresh ? { cursor: "pointer" } : undefined}
+      onClick={onRefresh}
+      onKeyDown={onRefresh ? activationHandler(onRefresh) : undefined}
+    >
+      <I.coin size={11} style={{ color: "var(--accent)" }} />
+      <span>{label}</span>
+      {view && view.windows.length > 0 ? (
+        <>
+          <span className="v acc">
+            {quotaWindowsSummary(view.windows)} {t("statusbar.quotaLeft")}
+          </span>
+          <span className="conv">{view.plan ?? planFallback}</span>
+        </>
+      ) : refreshing ? (
+        <span className="v acc">{t("statusbar.quotaRefreshing")}</span>
+      ) : (
+        <span className="v acc">-</span>
+      )}
+    </span>
+  );
 }
 
 export function StatusBar({
@@ -284,7 +335,6 @@ export function StatusBar({
     null;
   const agRemainingPct =
     agActive && agActive.usedFraction < 1 ? Math.round((1 - agActive.usedFraction) * 100) : null;
-  const agTurnPct = antigravityQuotaData?.turnUsedPct ?? null;
   const antigravityQuotaTitle =
     antigravityQuotaData && agActive
       ? t("statusbar.antigravityQuotaTitle", {
@@ -306,7 +356,6 @@ export function StatusBar({
   const zaiFiveHour = zaiQuotaData?.fiveHour ?? null;
   const zaiWeekly = zaiQuotaData?.weekly ?? null;
   const zaiWindow = zaiFiveHour ?? zaiWeekly ?? null;
-  const zaiTurnPct = zaiQuotaData?.turnUsedPct ?? null;
   const zaiQuotaTitle =
     zaiQuotaData && (zaiFiveHour || zaiWeekly)
       ? zaiFiveHour && zaiWeekly
@@ -333,7 +382,6 @@ export function StatusBar({
   const opencodeWeekly = opencodeQuotaData?.weekly ?? null;
   const opencodeMonthly = opencodeQuotaData?.monthly ?? null;
   const opencodePrimaryWindow = opencodeRolling ?? opencodeWeekly ?? opencodeMonthly ?? null;
-  const opencodeTurnPct = opencodeQuotaData?.turnUsedPct ?? null;
   const opencodeQuotaTitle =
     opencodeQuotaData && opencodePrimaryWindow
       ? t("statusbar.opencodeQuotaTitle", {
@@ -367,6 +415,81 @@ export function StatusBar({
     !showQuota && codexQuotaReason
       ? `${quotaTitle}\n${t("statusbar.codexReason", { reason: codexQuotaReason })}`
       : quotaTitle;
+  // Every quota-billed provider normalizes to one window model, so a single
+  // QuotaChip renders them all: the active provider's view feeds the ribbon and
+  // its label/title/refresh/plan fallback come from one place.
+  const activeQuotaView: ProviderUsageView | null = openaiQuotaBilling
+    ? quota
+      ? codexUsageView(quota)
+      : null
+    : ollamaQuotaBilling
+      ? ollamaQuotaData
+        ? ollamaUsageView(ollamaQuotaData, ollamaPlan ?? null)
+        : null
+      : geminiTab
+        ? antigravityQuotaData
+          ? antigravityUsageView(antigravityQuotaData, settings?.model)
+          : null
+        : zaiQuotaBilling
+          ? zaiQuotaData
+            ? zaiUsageView(zaiQuotaData)
+            : null
+          : opencodeQuotaBilling
+            ? opencodeQuotaData
+              ? opencodeUsageView(opencodeQuotaData)
+              : null
+            : null;
+  const quotaBilling =
+    openaiQuotaBilling ||
+    ollamaQuotaBilling ||
+    geminiTab ||
+    zaiQuotaBilling ||
+    opencodeQuotaBilling;
+  const quotaChipLabel = openaiQuotaBilling
+    ? t("statusbar.codexQuota")
+    : ollamaQuotaBilling
+      ? t("statusbar.ollamaQuota")
+      : geminiTab
+        ? t("statusbar.antigravityQuota")
+        : zaiQuotaBilling
+          ? t("statusbar.zaiQuota")
+          : t("statusbar.opencodeQuota");
+  const quotaChipTitle = openaiQuotaBilling
+    ? quotaTitleWithReason
+    : ollamaQuotaBilling
+      ? ollamaQuotaTitleWithReason
+      : geminiTab
+        ? antigravityQuotaTitleWithReason
+        : zaiQuotaBilling
+          ? zaiQuotaTitleWithReason
+          : opencodeQuotaTitleWithReason;
+  const quotaChipRefreshing = openaiQuotaBilling
+    ? codexQuotaRefreshing
+    : ollamaQuotaBilling
+      ? ollamaQuotaRefreshing
+      : geminiTab
+        ? antigravityQuotaRefreshing
+        : zaiQuotaBilling
+          ? zaiQuotaRefreshing
+          : opencodeQuotaRefreshing;
+  const quotaChipRefresh = openaiQuotaBilling
+    ? onRefreshCodexQuota
+    : ollamaQuotaBilling
+      ? onRefreshOllamaQuota
+      : geminiTab
+        ? onRefreshAntigravityQuota
+        : zaiQuotaBilling
+          ? onRefreshZaiQuota
+          : onRefreshOpencodeQuota;
+  const quotaChipPlanFallback = openaiQuotaBilling
+    ? (quota?.plan ?? "ChatGPT")
+    : ollamaQuotaBilling
+      ? (ollamaPlan ?? "free")
+      : geminiTab
+        ? "Antigravity"
+        : zaiQuotaBilling
+          ? (zaiQuotaData?.plan ?? "GLM")
+          : "Go";
   useEffect(() => {
     const renderState = {
       openaiTab,
@@ -493,48 +616,27 @@ export function StatusBar({
         <span
           className="seg"
           title={
-            quotaTurnPct != null
-              ? t("statusbar.thisTurnQuotaTitle", { pct: quotaTurnPct.toFixed(1) })
-              : ollamaTurnPct != null
-                ? t("statusbar.ollamaTurnQuotaTitle", { pct: ollamaTurnPct.toFixed(1) })
-                : agTurnPct != null
-                  ? t("statusbar.antigravityTurnQuotaTitle", { pct: agTurnPct.toFixed(1) })
-                  : zaiTurnPct != null
-                    ? t("statusbar.zaiTurnQuotaTitle", { pct: zaiTurnPct.toFixed(1) })
-                    : opencodeTurnPct != null
-                      ? t("statusbar.opencodeTurnQuotaTitle", { pct: opencodeTurnPct.toFixed(1) })
-                      : undefined
+            activeQuotaView?.turnUsedPct != null
+              ? t(
+                  openaiQuotaBilling
+                    ? "statusbar.thisTurnQuotaTitle"
+                    : ollamaQuotaBilling
+                      ? "statusbar.ollamaTurnQuotaTitle"
+                      : geminiTab
+                        ? "statusbar.antigravityTurnQuotaTitle"
+                        : zaiQuotaBilling
+                          ? "statusbar.zaiTurnQuotaTitle"
+                          : "statusbar.opencodeTurnQuotaTitle",
+                  { pct: activeQuotaView.turnUsedPct.toFixed(1) },
+                )
+              : undefined
           }
         >
           <I.coin size={11} />
           <span>{t("statusbar.thisTurn")}</span>
-          {openaiQuotaBilling ? (
-            quotaTurnPct != null ? (
-              <span className="v ok">{quotaTurnPct.toFixed(1)}%</span>
-            ) : (
-              <span className="v ok">-</span>
-            )
-          ) : ollamaQuotaBilling ? (
-            ollamaTurnPct != null ? (
-              <span className="v ok">{ollamaTurnPct.toFixed(1)}%</span>
-            ) : (
-              <span className="v ok">-</span>
-            )
-          ) : geminiTab ? (
-            agTurnPct != null ? (
-              <span className="v ok">{agTurnPct.toFixed(1)}%</span>
-            ) : (
-              <span className="v ok">-</span>
-            )
-          ) : zaiQuotaBilling ? (
-            zaiTurnPct != null ? (
-              <span className="v ok">{zaiTurnPct.toFixed(1)}%</span>
-            ) : (
-              <span className="v ok">-</span>
-            )
-          ) : opencodeQuotaBilling ? (
-            opencodeTurnPct != null ? (
-              <span className="v ok">{opencodeTurnPct.toFixed(1)}%</span>
+          {quotaBilling ? (
+            activeQuotaView?.turnUsedPct != null ? (
+              <span className="v ok">{activeQuotaView.turnUsedPct.toFixed(1)}%</span>
             ) : (
               <span className="v ok">-</span>
             )
@@ -624,142 +726,15 @@ export function StatusBar({
         <span className="v">{settings?.reasoningEffort ?? "high"}</span>
       </span>
       {showBalance ? (
-        openaiQuotaBilling ? (
-          <span
-            className="seg"
-            title={quotaTitleWithReason}
-            style={onRefreshCodexQuota ? { cursor: "pointer" } : undefined}
-            onClick={onRefreshCodexQuota}
-            onKeyDown={onRefreshCodexQuota ? activationHandler(onRefreshCodexQuota) : undefined}
-          >
-            <I.coin size={11} style={{ color: "var(--accent)" }} />
-            <span>{t("statusbar.codexQuota")}</span>
-            {showQuota && quotaWeekly ? (
-              <>
-                <span className="v acc">
-                  {quotaLeftPct}% {t("statusbar.codexLeft")}
-                </span>
-                <span className="conv">{quota?.plan ?? "ChatGPT"}</span>
-              </>
-            ) : codexQuotaRefreshing ? (
-              <span className="v acc">{t("statusbar.codexRefreshing")}</span>
-            ) : (
-              <span className="v acc">-</span>
-            )}
-          </span>
-        ) : geminiTab ? (
-          <span
-            className="seg"
-            title={antigravityQuotaTitleWithReason}
-            style={onRefreshAntigravityQuota ? { cursor: "pointer" } : undefined}
-            onClick={onRefreshAntigravityQuota}
-            onKeyDown={
-              onRefreshAntigravityQuota ? activationHandler(onRefreshAntigravityQuota) : undefined
-            }
-          >
-            <I.coin size={11} style={{ color: "var(--accent)" }} />
-            <span>{t("statusbar.antigravityQuota")}</span>
-            {antigravityQuotaData && agActive ? (
-              <>
-                <span className="v acc">
-                  {agRemainingPct ?? 0}% {t("statusbar.codexLeft")}
-                </span>
-                <span className="conv">
-                  {antigravityQuotaData.plan?.name ??
-                    antigravityQuotaData.plan?.tierId ??
-                    "Antigravity"}
-                </span>
-              </>
-            ) : antigravityQuotaRefreshing ? (
-              <span className="v acc">{t("statusbar.codexRefreshing")}</span>
-            ) : (
-              <span className="v acc">-</span>
-            )}
-          </span>
-        ) : ollamaQuotaBilling ? (
-          <span
-            className="seg"
-            title={ollamaQuotaTitleWithReason}
-            style={onRefreshOllamaQuota ? { cursor: "pointer" } : undefined}
-            onClick={onRefreshOllamaQuota}
-            onKeyDown={onRefreshOllamaQuota ? activationHandler(onRefreshOllamaQuota) : undefined}
-          >
-            <I.coin size={11} style={{ color: "var(--accent)" }} />
-            <span>{t("statusbar.ollamaQuota")}</span>
-            {ollamaQuotaData && ollamaWeekly ? (
-              <>
-                <span className="v acc">
-                  {Math.round(ollamaWeekly.remainingPct)}% {t("statusbar.codexLeft")}
-                </span>
-                <span className="conv">{ollamaPlan ?? "free"}</span>
-              </>
-            ) : ollamaQuotaRefreshing ? (
-              <span className="v acc">{t("statusbar.codexRefreshing")}</span>
-            ) : (
-              <span className="v acc">-</span>
-            )}
-          </span>
-        ) : zaiQuotaBilling ? (
-          <span
-            className="seg"
-            title={zaiQuotaTitleWithReason}
-            style={onRefreshZaiQuota ? { cursor: "pointer" } : undefined}
-            onClick={onRefreshZaiQuota}
-            onKeyDown={onRefreshZaiQuota ? activationHandler(onRefreshZaiQuota) : undefined}
-          >
-            <I.coin size={11} style={{ color: "var(--accent)" }} />
-            <span>{t("statusbar.zaiQuota")}</span>
-            {zaiQuotaData && (zaiFiveHour || zaiWeekly) ? (
-              <>
-                {zaiFiveHour && zaiWeekly ? (
-                  <span className="v acc">
-                    5h {Math.round(zaiFiveHour.remainingPct)}% · wk {Math.round(zaiWeekly.remainingPct)}% {t("statusbar.codexLeft")}
-                  </span>
-                ) : (
-                  <span className="v acc">
-                    {Math.round(zaiWindow!.remainingPct)}% {t("statusbar.codexLeft")}
-                  </span>
-                )}
-                <span className="conv">{zaiQuotaData.plan ?? "GLM"}</span>
-              </>
-            ) : zaiQuotaRefreshing ? (
-              <span className="v acc">{t("statusbar.codexRefreshing")}</span>
-            ) : (
-              <span className="v acc">-</span>
-            )}
-          </span>
-        ) : opencodeQuotaBilling ? (
-          <span
-            className="seg"
-            title={opencodeQuotaTitleWithReason}
-            style={onRefreshOpencodeQuota ? { cursor: "pointer" } : undefined}
-            onClick={onRefreshOpencodeQuota}
-            onKeyDown={
-              onRefreshOpencodeQuota ? activationHandler(onRefreshOpencodeQuota) : undefined
-            }
-          >
-            <I.coin size={11} style={{ color: "var(--accent)" }} />
-            <span>{t("statusbar.opencodeQuota")}</span>
-            {opencodeQuotaData && opencodePrimaryWindow ? (
-              <>
-                {opencodeRolling && opencodeWeekly ? (
-                  <span className="v acc">
-                    5h {Math.round(opencodeRolling.remainingPct)}% · wk{" "}
-                    {Math.round(opencodeWeekly.remainingPct)}% {t("statusbar.codexLeft")}
-                  </span>
-                ) : (
-                  <span className="v acc">
-                    {Math.round(opencodePrimaryWindow.remainingPct)}% {t("statusbar.codexLeft")}
-                  </span>
-                )}
-                <span className="conv">Go</span>
-              </>
-            ) : opencodeQuotaRefreshing ? (
-              <span className="v acc">{t("statusbar.codexRefreshing")}</span>
-            ) : (
-              <span className="v acc">-</span>
-            )}
-          </span>
+        quotaBilling ? (
+          <QuotaChip
+            label={quotaChipLabel}
+            title={quotaChipTitle}
+            view={activeQuotaView}
+            refreshing={quotaChipRefreshing}
+            planFallback={quotaChipPlanFallback}
+            onRefresh={quotaChipRefresh}
+          />
         ) : (
           <span
             className="seg"

@@ -314,11 +314,12 @@ describe("StatusBar quota display", () => {
     expect(screen.queryByText(/1x|2x/)).toBeNull();
   });
 
-  it("shows weekly quota % left + plan and this-turn % for gpt-5.6 tabs", () => {
+  it("shows the 5h + weekly quota ribbon, plan, and this-turn % for gpt-5.6 tabs", () => {
     renderBar({
       settings: { model: "gpt-5.6-sol" } as Settings,
       codexQuota: GPT_QUOTA,
     });
+    expect(screen.getByText(/5h 50% · wk 58% left/)).toBeTruthy();
     expect(screen.getByText(/58%\s*left/)).toBeTruthy();
     expect(screen.getByText("plus")).toBeTruthy();
     expect(screen.getByText(/2\.5%/)).toBeTruthy();
@@ -484,12 +485,13 @@ describe("StatusBar quota display", () => {
     expect(screen.queryByText(/¥/)).toBeNull();
   });
 
-  it("shows weekly % left + plan + this-turn % for quota-billed Ollama tabs", () => {
+  it("shows the 5h + weekly ribbon, plan, and this-turn % for quota-billed Ollama tabs", () => {
     renderBar({
       settings: { model: "ollama/gpt-oss:20b" } as Settings,
       ollamaQuota: OLLAMA_QUOTA,
       ollamaPlan: "free",
     });
+    expect(screen.getByText(/5h 75% · wk 88% left/)).toBeTruthy();
     expect(screen.getByText(/88%\s*left/)).toBeTruthy();
     expect(screen.getByText("free")).toBeTruthy();
     expect(screen.getByText(/0\.1%/)).toBeTruthy();
@@ -600,7 +602,7 @@ describe("StatusBar quota display", () => {
       usage: { totalCostUsd: 1.5, lastCallCostUsd: 0.25 } as unknown as UsageStats,
     });
     expect(screen.getByText("Go usage")).toBeTruthy();
-    expect(screen.getByText(/5h 70% · wk 88% left/)).toBeTruthy();
+    expect(screen.getByText(/5h 70% · wk 88% · mo 95% left/)).toBeTruthy();
     expect(screen.getByText("Go")).toBeTruthy();
     expect(screen.getByText(/1\.2%/)).toBeTruthy();
     expect(screen.queryByText("balance")).toBeNull();
