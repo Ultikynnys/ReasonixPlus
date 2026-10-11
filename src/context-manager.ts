@@ -100,6 +100,8 @@ export function compactModelForProvider(activeModel: string): string {
       return "gpt-5.6-luna";
     case "zai":
       return "glm-5.3-flash";
+    case "mimo":
+      return "mimo-v2.6-flash";
     case "gemini":
     case "ollama":
     case "opencode":

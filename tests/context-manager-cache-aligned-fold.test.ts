@@ -398,6 +398,40 @@ describe("ContextManager fold sends cache-aligned summary request", () => {
     expect(compactModelForProvider("ollama/llama3.1:latest")).toBe("ollama/llama3.1:latest");
     expect(compactModelForProvider("glm-5.3")).toBe("glm-5.3-flash");
     expect(compactModelForProvider("deepseek-v4-pro")).toBe("deepseek-v4-flash");
+    expect(compactModelForProvider("mimo-v2.6-pro")).toBe("mimo-v2.6-flash");
+    expect(compactModelForProvider("mimo-v2.6-pro-ultraspeed")).toBe("mimo-v2.6-flash");
+    expect(compactModelForProvider("mimo-v2.6-flash")).toBe("mimo-v2.6-flash");
+  });
+
+  it("summary request runs on a MiMo-served model when the session is on the mimo provider", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    const fetchMock = vi.fn(async (_url: unknown, init?: { body?: string }) => {
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body) as Record<string, unknown>;
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "compact prose summary." } }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    const client = new DeepSeekClient({
+      baseUrl: "https://api.xiaomimimo.com/v1",
+      apiKey: "sk-test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: SYSTEM_PROMPT, toolSpecs: TOOLS }),
+      model: "mimo-v2.6-pro",
+      stream: false,
+    });
+    seedTurns(loop, 8);
+
+    const result = await loop.compactHistory({ keepRecentTokens: 40 });
+    expect(result.folded).toBe(true);
+    // The MiMo endpoint 400s foreign ids ("Unsupported model …"), so the fold
+    // body must carry a model its catalog serves.
+    expect(capturedBody?.model).toBe("mimo-v2.6-flash");
   });
 
   it("summary request uses active Antigravity model when running on Gemini provider", async () => {
