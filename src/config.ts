@@ -515,6 +515,12 @@ export interface ReasonixConfig {
    *  [128000, 1000000] at load; an explicit value is honored up to that ceiling by
    *  resolveContextTokens, even above the model's default window. */
   contextTokens?: number;
+  /** Whether the conversation auto-compacts before a turn once the estimated
+   *  request reaches the trigger ratio of the context window. Defaults to true. */
+  autoCompact?: boolean;
+  /** Fraction of the context window at which auto-compaction fires. Defaults
+   *  to 0.8; clamped to [MIN_AUTO_COMPACT_TRIGGER, MAX_AUTO_COMPACT_TRIGGER]. */
+  autoCompactTrigger?: number;
   /** Token budget for a duplicated session's retained context (newest-first). Default 50 000. */
   duplicateSessionTokens?: number;
   /** When true, a duplicated session auto-runs one continuation turn. Default false. */
@@ -1166,6 +1172,17 @@ export function readConfig(path: string = defaultConfigPath()): ReasonixConfig {
       if (cfg.mailProvider !== MailProvider.Outlook && cfg.mailProvider !== MailProvider.Gmail) {
         // undefined so JSON.stringify omits the persisted key entirely.
         cfg.mailProvider = undefined;
+      }
+      if (cfg.autoCompact !== undefined && typeof cfg.autoCompact !== "boolean") {
+        // Hand-edited JSON can leave a non-boolean; treat it as absent.
+        cfg.autoCompact = undefined;
+      }
+      if (cfg.autoCompactTrigger !== undefined) {
+        // Non-number → absent; a number is clamped so display and behavior agree.
+        cfg.autoCompactTrigger =
+          typeof cfg.autoCompactTrigger === "number"
+            ? clampAutoCompactTrigger(cfg.autoCompactTrigger)
+            : undefined;
       }
       const result = cfg as ReasonixConfig;
       _configCache.set(path, { mtimeMs: st.mtimeMs, cfg: result });
@@ -2760,6 +2777,48 @@ export function saveRepetitionGuardEnabled(
 ): void {
   const cfg = readConfig(path);
   cfg.repetitionGuardEnabled = enabled;
+  writeConfig(cfg, path);
+}
+
+/** Whether pre-turn auto-compaction runs. Defaults to true: the conversation
+ *  compacts before a turn when the request estimate nears the context window. */
+export function loadAutoCompact(path: string = defaultConfigPath()): boolean {
+  return readConfig(path).autoCompact !== false;
+}
+
+/** Persist whether pre-turn auto-compaction runs. */
+export function saveAutoCompact(enabled: boolean, path: string = defaultConfigPath()): void {
+  const cfg = readConfig(path);
+  cfg.autoCompact = enabled;
+  writeConfig(cfg, path);
+}
+
+/** Auto-compaction trigger bounds + default (fraction of the context window).
+ *  The default matches AUTO_COMPACT_TRIGGER_RATIO in loop/compaction.ts. */
+export const MIN_AUTO_COMPACT_TRIGGER = 0.5;
+export const MAX_AUTO_COMPACT_TRIGGER = 0.95;
+export const DEFAULT_AUTO_COMPACT_TRIGGER = 0.8;
+
+/** Clamp a trigger fraction to the supported range (non-finite → default). */
+export function clampAutoCompactTrigger(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_AUTO_COMPACT_TRIGGER;
+  return Math.min(MAX_AUTO_COMPACT_TRIGGER, Math.max(MIN_AUTO_COMPACT_TRIGGER, value));
+}
+
+/** Fraction of the context window at which pre-turn auto-compaction fires.
+ *  Defaults to 0.8 when unset; a persisted value is clamped to [0.5, 0.95]. */
+export function loadAutoCompactTrigger(path: string = defaultConfigPath()): number {
+  const raw = readConfig(path).autoCompactTrigger;
+  return typeof raw === "number" ? clampAutoCompactTrigger(raw) : DEFAULT_AUTO_COMPACT_TRIGGER;
+}
+
+/** Persist the auto-compaction trigger fraction. `null` clears the override. */
+export function saveAutoCompactTrigger(
+  ratio: number | null,
+  path: string = defaultConfigPath(),
+): void {
+  const cfg = readConfig(path);
+  cfg.autoCompactTrigger = ratio === null ? undefined : clampAutoCompactTrigger(ratio);
   writeConfig(cfg, path);
 }
 

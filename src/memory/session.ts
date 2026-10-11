@@ -379,6 +379,27 @@ export function appendSessionMessage(name: string, message: ChatMessage): void {
   sessionDirectoryIndex.invalidate();
 }
 
+/** Durable pre-mutation snapshot of the live transcript (e.g. compaction
+ *  checkpoint). Lives beside messages.jsonl so the session folder and its meta
+ *  survive; returns the snapshot path or null when there was nothing to save. */
+export function checkpointSessionMessages(
+  name: string,
+  messages: ChatMessage[],
+  label: string,
+): string | null {
+  if (messages.length === 0) return null;
+  try {
+    const dir = ensureSessionDir(name);
+    const path = join(dir, `messages.${label}-${timestampSuffix()}.jsonl`);
+    const body = messages.map((m) => JSON.stringify(m)).join("\n");
+    writeFileSync(path, `${body}\n`, { flag: "w" });
+    chmodPrivate(path);
+    return path;
+  } catch {
+    return null;
+  }
+}
+
 /** Shape guard for one persisted annotation card (notice or warning). */
 function isPersistedNotice(value: unknown): value is PersistedNotice {
   if (!value || typeof value !== "object") return false;

@@ -823,15 +823,15 @@ export interface SessionProviderCost {
   quotaUsedPct?: number;
 }
 
-/** A retry, rewind, abort-discard, or raw-context edit replaced the live
- *  conversation. The replacement uses the same LoadedMessage wire shape as
- *  session loading, while retaining the edit reason. */
+/** A retry, rewind, abort-discard, raw-context edit, or context compaction
+ *  replaced the live conversation. The replacement uses the same LoadedMessage
+ *  wire shape as session loading, while retaining the edit reason. */
 export interface SessionRetractedEvent {
   type: "session.retracted";
   id: number;
   ts: string;
   turn: number;
-  kind: "retry" | "rewind" | "abort-discard" | "context-edit";
+  kind: "retry" | "rewind" | "abort-discard" | "context-edit" | "compact";
   beforeMessages: number;
   afterMessages: number;
   replacementMessages: LoadedMessage[];
@@ -876,6 +876,10 @@ export interface SettingsEvent {
   /** Whether the stream repetition / "stuck re-thinking" guard may abort a
    *  degenerating stream. Defaults to false (opt-in). */
   repetitionGuardEnabled?: boolean;
+  /** Whether the conversation auto-compacts before a turn. Defaults to true. */
+  autoCompact?: boolean;
+  /** Auto-compaction trigger fraction; null = default (0.8). */
+  autoCompactTrigger?: number | null;
   questionTimerEnabled?: boolean;
   /** Whether the side panel shows the Raw context tab. Defaults to false. */
   rawTabEnabled?: boolean;
@@ -1323,6 +1327,10 @@ export interface SettingsPatch {
   contextTokens?: number | null;
   /** Per-turn iteration cap, clamped to [50, 100]; null/undefined = default (50). */
   maxIterPerTurn?: number | null;
+  /** Turn pre-turn auto-compaction on/off. */
+  autoCompact?: boolean;
+  /** Auto-compaction trigger fraction, clamped to [0.5, 0.95]; null/undefined = default (0.8). */
+  autoCompactTrigger?: number | null;
   /** Allow dedicated and skill-based subagents to run. */
   enableSubagents?: boolean;
   /** Allow `run_command` to run commands elevated via Windows UAC. */
@@ -1526,6 +1534,9 @@ export type OutgoingCommand = { tabId?: string } & (
   /** Replace the live context (system prompt + messages) from edited plaintext.
    *  Refused while a turn is in flight; re-healed server-side before applying. */
   | { cmd: "context_raw_set"; text: string }
+  /** Fold/summarize the conversation to reclaim context space (manual
+   *  compaction). Refused while a turn is in flight. */
+  | { cmd: "context_compact" }
   /** Duplicate the current conversation as a new truncated session opened on the
    *  chosen models. `markdown` is the current session's export body; the daemon
    *  trims it to the last `duplicateSessionTokens` tokens and seeds the new

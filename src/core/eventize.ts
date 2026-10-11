@@ -191,7 +191,7 @@ export class Eventizer {
    *  side-channel for non-turn-stream actions. */
   emitSessionRetracted(
     turn: number,
-    kind: "retry" | "rewind" | "abort-discard" | "context-edit",
+    kind: "retry" | "rewind" | "abort-discard" | "context-edit" | "compact",
     before: number,
     after: number,
     replacementMessages: ReadonlyArray<ChatMessage>,
@@ -201,7 +201,7 @@ export class Eventizer {
 
   private sessionRetractedEvent(
     turn: number,
-    kind: "retry" | "rewind" | "abort-discard" | "context-edit",
+    kind: "retry" | "rewind" | "abort-discard" | "context-edit" | "compact",
     before: number,
     after: number,
     replacementMessages: ReadonlyArray<ChatMessage>,

@@ -548,6 +548,10 @@ export const EN: TranslationSchema = {
       "The model is stuck re-thinking the same point without making progress: it repeated the same reasoning across {count} consecutive iterations.",
     reasoningLoopStopping: "Stopping this turn so you can redirect from a fresh prompt.",
     repeatedPatternLabel: "Repeated pattern:",
+    compacted: "Context compacted ({method}): {before} tokens -> {after} tokens.",
+    compactNothing: "Nothing to compact; the context is already small.",
+    compactedRecovery:
+      "Context window exceeded. Compacted the conversation ({before} -> {after} tokens) and retrying.",
     iterLimitReached:
       "Reached the {max}-iteration cap for this turn — stopping this turn. Raise with `maxIterPerTurn` config or REASONIX_MAX_ITER, or ask again in a fresh turn.",
     iterLimitGrace:

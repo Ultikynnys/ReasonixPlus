@@ -294,6 +294,9 @@ export interface TranslationSchema {
     reasoningLoopRepeated: string;
     reasoningLoopStopping: string;
     repeatedPatternLabel: string;
+    compacted: string;
+    compactNothing: string;
+    compactedRecovery: string;
     iterLimitReached: string;
     iterLimitGrace: string;
     iterLimitPaused: string;

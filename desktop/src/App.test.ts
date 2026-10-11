@@ -1181,6 +1181,75 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
     expect(next.settings?.editMode).toBe("follow");
   });
 
+  it("stores the auto-compaction settings from $settings", () => {
+    const state = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$settings",
+        reasoningEffort: "high",
+        editMode: "follow",
+        quickSendId: "proceed",
+        quickSends: [],
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "deepseek-v4-pro",
+        autoCompact: false,
+        autoCompactTrigger: 0.6,
+        version: "0.50.1",
+      },
+    });
+    expect(state.settings?.autoCompact).toBe(false);
+    expect(state.settings?.autoCompactTrigger).toBe(0.6);
+
+    // Absent fields fall back to the daemon defaults (on, 80%).
+    const defaults = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$settings",
+        reasoningEffort: "high",
+        editMode: "follow",
+        quickSendId: "proceed",
+        quickSends: [],
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "deepseek-v4-pro",
+        version: "0.50.1",
+      },
+    });
+    expect(defaults.settings?.autoCompact).toBe(true);
+    expect(defaults.settings?.autoCompactTrigger).toBeNull();
+  });
+
+  it("appends a $notice event below the turn as a notice card", () => {
+    const base = {
+      ...initialState(),
+      messages: [
+        { kind: "user" as const, text: "test?", clientId: "1", turn: 1 },
+        {
+          kind: "assistant" as const,
+          turn: 1,
+          segments: [{ kind: "text" as const, text: "hello" }],
+          pending: false,
+        },
+      ],
+    };
+    const next = reduce(base, {
+      t: "incoming",
+      event: {
+        type: "$notice",
+        text: "Nothing to compact; the context is already small.",
+        severity: "info",
+      },
+    });
+    // Creation-ordered: below the assistant card, not anchored at turn start.
+    expect(next.messages.findIndex((m) => m.kind === "notice")).toBe(2);
+    expect(next.messages.at(-1)).toMatchObject({
+      kind: "notice",
+      severity: "info",
+      text: "Nothing to compact; the context is already small.",
+    });
+  });
+
   it("stores the per-tab subagent model from $settings and settings_patch", () => {
     // Each tab has its own reducer state — this locks in that the subagent
     // model is a per-tab field (not global), so different tabs can hold

@@ -2022,6 +2022,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           enableSubagents: ev.enableSubagents ?? true,
           elevationEnabled: ev.elevationEnabled ?? false,
           repetitionGuardEnabled: ev.repetitionGuardEnabled ?? false,
+          autoCompact: ev.autoCompact ?? true,
+          autoCompactTrigger: ev.autoCompactTrigger ?? null,
           questionTimerEnabled: ev.questionTimerEnabled ?? false,
           rawTabEnabled: ev.rawTabEnabled ?? false,
           baseUrl: ev.baseUrl,
@@ -2451,6 +2453,18 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     case "status":
       return state;
+    case "$notice": {
+      // A completed action (manual compaction), not a turn status — append in
+      // creation order so it sits below the turn, not above its assistant card.
+      const notice: ChatMessage = {
+        kind: "notice",
+        id: nextNoticeId(),
+        text: ev.text,
+        severity: ev.severity,
+        turn: currentTurnForNotice(state.messages),
+      };
+      return { ...state, messages: appendNoticeMessage(state.messages, notice) };
+    }
     case "warning": {
       // High-severity only — eventize already drops "low".
       if (ev.severity !== "high") return state;
@@ -4167,6 +4181,7 @@ function TabRuntime({
           onImportMemories={(json) => sendRpc({ cmd: "memory_import", json })}
           onDismissMemoryResult={() => dispatch({ t: "dismiss_memory_result" })}
           rawContext={state.contextRaw}
+          onCompact={() => sendRpc({ cmd: "context_compact" })}
           onReadContext={() => sendRpc({ cmd: "context_raw_get" })}
           onWriteContext={(text) => sendRpc({ cmd: "context_raw_set", text })}
           onAddRule={addRule}

@@ -174,8 +174,8 @@ export interface SessionOpenedEvent extends EventBase {
  *  sidecar yields the truncated conversation. */
 export interface SessionRetractedEvent extends EventBase {
   type: typeof EventType.sessionRetracted;
-  /** What session edit truncated the log. */
-  kind: "retry" | "rewind" | "abort-discard" | "context-edit";
+  /** What session edit truncated or compacted the log. */
+  kind: "retry" | "rewind" | "abort-discard" | "context-edit" | "compact";
   beforeMessages: number;
   afterMessages: number;
   /** Post-truncation message list — REPLACES the conversation view. */

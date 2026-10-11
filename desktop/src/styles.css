@@ -5260,6 +5260,21 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .meter .rsvd {
   background: var(--warning);
 }
+/* Dotted overlay marking where pre-turn auto-compaction fires: the trigger
+   line plus the fill beyond it that forces compaction. */
+.meter .compact-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed var(--warning);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--warning) 0 1px,
+    transparent 1px 4px
+  );
+  opacity: 0.65;
+  pointer-events: none;
+}
 .legend {
   display: flex;
   gap: 12px;

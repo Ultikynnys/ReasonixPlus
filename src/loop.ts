@@ -1,7 +1,12 @@
 import { flattenText, messageOf, sleep } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "./client.js";
 import { type SessionPlanRepository, sessionPlanRepository } from "./code/session-plans.js";
-import { type EditMode, type ReasoningEffort, providerForModel } from "./config.js";
+import {
+  type EditMode,
+  type ReasoningEffort,
+  clampAutoCompactTrigger,
+  providerForModel,
+} from "./config.js";
 import { tryParseJson } from "./core/parse-json.js";
 import type { PauseGate } from "./core/pause-gate.js";
 import { pauseGate as defaultPauseGate } from "./core/pause-gate.js";
@@ -10,12 +15,25 @@ import { DEFAULT_MAX_RESULT_CHARS, DEFAULT_MAX_RESULT_TOKENS } from "./mcp/regis
 
 import { InflightSet } from "./core/inflight.js";
 import { t } from "./i18n/index.js";
+import {
+  AUTO_COMPACT_TRIGGER_RATIO,
+  COMPACT_TARGET_RATIO,
+  type CompactionPlan,
+  type CompactionResult,
+  SUMMARIZER_OUTPUT_HEADROOM,
+  buildCompactionRequest,
+  buildVerificationRequest,
+  planCompaction,
+  renderDeterministic,
+  renderWithSummary,
+} from "./loop/compaction.js";
 import { contentPartsToString, dispatchToolCallsChunked } from "./loop/dispatch.js";
 import {
   errorMeta,
   formatLoopError,
   is4xxError,
   is5xxError,
+  isContextOverflowError,
   isDeepSeekHost,
   isNetworkConnectionError,
   probeDeepSeekReachable,
@@ -54,6 +72,7 @@ import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory/r
 import {
   appendSessionMessage,
   archiveSession,
+  checkpointSessionMessages,
   loadSessionMessages,
   loadSessionMeta,
   patchSessionMeta,
@@ -73,8 +92,9 @@ import {
   SessionStats,
   type TurnStats,
   billingContextForModel,
+  resolveContextTokens,
 } from "./telemetry/stats.js";
-import { countTokensBounded, tokensForMessage } from "./tokenizer.js";
+import { countTokensBounded, estimateRequestTokens, tokensForMessage } from "./tokenizer.js";
 import { ToolRegistry, isReadOnlyTool } from "./tools.js";
 import { ReadTracker } from "./tools/read-tracker.js";
 import { USER_CANCEL_NOTE } from "./tools/shell.js";
@@ -183,6 +203,12 @@ export interface CacheFirstLoopOptions {
   /** User-configured context-window cap (tokens). Undefined = per-model default.
    *  Hot-applied via configure(). */
   ctxMaxOverride?: number;
+  /** Auto-compact the conversation before a turn once the estimated request
+   *  reaches the trigger ratio of the context window. Defaults to true. */
+  autoCompact?: boolean;
+  /** Fraction of the context window at which auto-compaction fires. Defaults
+   *  to AUTO_COMPACT_TRIGGER_RATIO; clamped to [0.5, 0.95]. */
+  autoCompactTriggerRatio?: number;
   session?: string;
   /** PreToolUse + PostToolUse only — UserPromptSubmit / Stop live at the App boundary. */
   hooks?: ResolvedHook[];
@@ -208,6 +234,10 @@ export interface ReconfigurableOptions {
   maxOutputTokens?: number | null;
   /** Context-window cap override (tokens); undefined = per-model default. `null` = clear a set override. */
   ctxMaxOverride?: number | null;
+  /** Toggle pre-turn auto-compaction. undefined = keep current. */
+  autoCompact?: boolean;
+  /** Auto-compaction trigger fraction; `null` = reset to default. undefined = keep current. */
+  autoCompactTriggerRatio?: number | null;
   /** Per-turn iteration cap; undefined = keep current, `null` = reset to default (50). */
   maxIterPerTurn?: number | null;
   /** Toggle the stream repetition / "stuck re-thinking" guard. undefined = keep current. */
@@ -217,6 +247,23 @@ export interface ReconfigurableOptions {
 export interface LoopAbortOptions {
   /** Explicit user interrupts can discard the unfinished turn so the next prompt starts clean. */
   discardCurrentTurn?: boolean;
+}
+
+export type CompactionTrigger = "auto" | "manual" | "overflow";
+
+export interface CompactionOutcome {
+  status: "done" | "noop";
+  trigger: CompactionTrigger;
+  /** "summary" = LLM rolling summary; "fold" = deterministic dropped-work fold. */
+  method?: "summary" | "fold";
+  tokensBefore?: number;
+  tokensAfter?: number;
+  messagesBefore?: number;
+  messagesAfter?: number;
+  /** On-disk pre-compaction checkpoint, when a session is attached. */
+  checkpoint?: string | null;
+  /** session_retracted + notice events, for callers to forward to their UI. */
+  events: LoopEvent[];
 }
 
 interface CacheShapeSnapshot {
@@ -269,6 +316,10 @@ export class CacheFirstLoop {
   maxIterPerTurn: number;
   /** Context-window cap override (tokens) — mutable via configure(); undefined = per-model default. */
   ctxMaxOverride: number | undefined;
+  /** Pre-turn auto-compaction toggle. */
+  autoCompact: boolean;
+  /** Auto-compaction trigger fraction (clamped to [0.5, 0.95]). */
+  autoCompactTriggerRatio: number;
   sessionName: string | null;
 
   hooks: ResolvedHook[];
@@ -363,6 +414,7 @@ export class CacheFirstLoop {
   private _prematureStopNudges = 0;
   /** Image-shrink retries after a provider rejected the request body as too
    *  large — caps the shrink-and-retry heal before the error surfaces. */
+  private _compactRecoveries = 0;
   private _payloadShrinkAttempts = 0;
   /** Normalized reasoning text from the previous iteration — detects a model
    *  re-thinking the identical thought (a reasoning-only loop) when tool args
@@ -402,6 +454,10 @@ export class CacheFirstLoop {
     this._getEditMode = opts.getEditMode;
     this._repetitionGuardEnabled = Boolean(opts.repetitionGuardEnabled);
     this.ctxMaxOverride = opts.ctxMaxOverride;
+    this.autoCompact = opts.autoCompact ?? true;
+    this.autoCompactTriggerRatio = clampAutoCompactTrigger(
+      opts.autoCompactTriggerRatio ?? AUTO_COMPACT_TRIGGER_RATIO,
+    );
 
     this.hooks = opts.hooks ?? [];
     this.hookCwd = opts.hookCwd ?? process.cwd();
@@ -606,6 +662,14 @@ export class CacheFirstLoop {
     }
     if (opts.ctxMaxOverride !== undefined) {
       this.ctxMaxOverride = opts.ctxMaxOverride ?? undefined;
+    }
+    if (opts.autoCompact !== undefined) {
+      this.autoCompact = opts.autoCompact;
+    }
+    if (opts.autoCompactTriggerRatio !== undefined) {
+      this.autoCompactTriggerRatio = clampAutoCompactTrigger(
+        opts.autoCompactTriggerRatio ?? AUTO_COMPACT_TRIGGER_RATIO,
+      );
     }
     if (opts.maxIterPerTurn !== undefined) {
       this.maxIterPerTurn = opts.maxIterPerTurn ?? CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN;
@@ -986,6 +1050,97 @@ export class CacheFirstLoop {
     return { systemChanged, dropped: messages.length - stamped.length };
   }
 
+  /** Compact the log: LLM rolling summary of the folded span plus a
+   *  verification probe, falling back to a deterministic fold. Overflow
+   *  recovery is fold-only (an estimated summarizer call could overflow). */
+  async compactNow(
+    opts: { trigger?: CompactionTrigger; signal?: AbortSignal } = {},
+  ): Promise<CompactionOutcome> {
+    const trigger = opts.trigger ?? "manual";
+    const signal = opts.signal ?? this._turnAbort.signal;
+    const events: LoopEvent[] = [];
+    const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);
+    const targetTokens = Math.max(1_000, Math.round(ctxMax * COMPACT_TARGET_RATIO));
+    const plan = planCompaction(this.log.entries, { targetTokens });
+    if (!plan) return { status: "noop", trigger, events };
+    let result: CompactionResult | null = null;
+    let method: "summary" | "fold" = "fold";
+    if (trigger !== "overflow") {
+      result = await this.summarizeForCompaction(plan, signal);
+      if (result) method = "summary";
+    }
+    if (!result) result = renderDeterministic(plan);
+    if (!result) return { status: "noop", trigger, events };
+    const checkpoint = this.sessionName
+      ? checkpointSessionMessages(this.sessionName, [...this.log.entries], "precompact")
+      : null;
+    this.log.compactInPlace(result.messages);
+    this.persistLog(result.messages);
+    events.push({
+      turn: this._turn,
+      role: "session_retracted",
+      content: "",
+      sessionRetractedKind: "compact",
+      beforeMessages: result.messagesBefore,
+      afterMessages: result.messagesAfter,
+      replacementMessages: result.messages,
+    });
+    events.push({
+      turn: this._turn,
+      role: "warning",
+      severity: "high",
+      content: t(trigger === "overflow" ? "loop.compactedRecovery" : "loop.compacted", {
+        before: result.tokensBefore.toLocaleString(),
+        after: result.tokensAfter.toLocaleString(),
+        method,
+      }),
+    });
+    return {
+      status: "done",
+      trigger,
+      method,
+      tokensBefore: result.tokensBefore,
+      tokensAfter: result.tokensAfter,
+      messagesBefore: result.messagesBefore,
+      messagesAfter: result.messagesAfter,
+      checkpoint,
+      events,
+    };
+  }
+
+  private async summarizeForCompaction(
+    plan: CompactionPlan,
+    signal: AbortSignal,
+  ): Promise<CompactionResult | null> {
+    const chat = (messages: ChatMessage[]) =>
+      this.client.chat({
+        model: this.model,
+        messages,
+        signal,
+        thinking: thinkingModeForModel(this.model),
+        reasoningEffort: this.reasoningEffort,
+        maxTokens: SUMMARIZER_OUTPUT_HEADROOM,
+      });
+    try {
+      const resp = await chat(buildCompactionRequest(plan));
+      let summary = (resp.content ?? "").trim();
+      if (!summary) return null;
+      try {
+        const probe = await chat(buildVerificationRequest(plan, summary));
+        const improved = (probe.content ?? "").trim();
+        if (improved) summary = improved;
+      } catch (probeErr) {
+        // Verification probe is best-effort; keep the candidate summary.
+        process.stderr.write(
+          `reasonix: compaction verification probe failed — ${messageOf(probeErr)}\n`,
+        );
+      }
+      return renderWithSummary(plan, summary);
+    } catch {
+      return null;
+    }
+  }
+
   async *step(
     userInput: string,
     images?: ReadonlyArray<string | TurnImage>,
@@ -1056,6 +1211,7 @@ export class CacheFirstLoop {
     this._networkReconnects = 0;
     this._truncationContinuations = 0;
     this._prematureStopNudges = 0;
+    this._compactRecoveries = 0;
     this._payloadShrinkAttempts = 0;
     this._lastReasoningSig = null;
     this._reasoningLoopCount = 0;
@@ -1098,6 +1254,20 @@ export class CacheFirstLoop {
     // when the user navigates away before the model responds). A failed
     // first round-trip still leaves the message in the log; the user can
     // retry without re-typing.
+    // Auto-compaction runs before the new prompt is logged (Codex pre-turn
+    // phase): the fresh user message can never be folded away, and at most one
+    // prompt-cache reset lands per turn.
+    if (this.autoCompact) {
+      const estimate = estimateRequestTokens(
+        [...this.prefix.toMessages(), ...this.log.entries],
+        this.prefix.tools(),
+      );
+      const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);
+      if (estimate >= this.autoCompactTriggerRatio * ctxMax) {
+        const outcome = await this.compactNow({ trigger: "auto", signal });
+        for (const ev of outcome.events) yield ev;
+      }
+    }
     const turnStartLogIndex = this.log.length;
     this.appendAndPersist({ role: "user", content: buildUserContent(userInput, this._turnImages) });
     const toolSpecs = this.prefix.tools();
@@ -1434,6 +1604,15 @@ export class CacheFirstLoop {
             };
             continue;
           }
+        }
+        // Context-overflow recovery folds deterministically (no summarizer
+        // call): the estimator just undercounted, so an estimated LLM call
+        // could overflow the same window again. Fold, then retry the iteration.
+        if (!signal.aborted && this._compactRecoveries < 2 && isContextOverflowError(cause)) {
+          this._compactRecoveries++;
+          const outcome = await this.compactNow({ trigger: "overflow", signal });
+          for (const ev of outcome.events) yield ev;
+          if (outcome.status === "done") continue;
         }
         const streamBodyError = this.stream && phase === "stream_body_read";
         const retryable =

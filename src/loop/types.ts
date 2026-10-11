@@ -73,6 +73,6 @@ export interface LoopEvent {
   /** session_retracted: the post-truncation log — lets the eventizer emit
    *  session.retracted so the kernel conversation view stays replayable. */
   replacementMessages?: ReadonlyArray<ChatMessage>;
-  /** session_retracted: which session edit truncated the log. */
-  sessionRetractedKind?: "retry" | "rewind" | "abort-discard";
+  /** session_retracted: which session edit truncated or compacted the log. */
+  sessionRetractedKind?: "retry" | "rewind" | "abort-discard" | "compact";
 }

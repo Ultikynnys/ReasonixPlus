@@ -70,6 +70,7 @@ export function ContextPanel({
   onCopyWorkspaceRules,
   onRemoveRule,
   onSaveSettings,
+  onCompact,
   onReadContext,
   onWriteContext,
   rawContext,
@@ -107,6 +108,8 @@ export function ContextPanel({
   onCopyWorkspaceRules?: (from: string) => void;
   onRemoveRule?: (rule: RuleRecord) => void;
   onSaveSettings?: (patch: SettingsPatch) => void;
+  /** Compact now button beside the context meter — runs manual compaction. */
+  onCompact?: () => void;
   /** Latest $context_raw payload — the Raw context read side. */
   rawContext?: Omit<ContextRawEvent, "type"> | null;
   onReadContext?: () => void;
@@ -140,6 +143,11 @@ export function ContextPanel({
   const usedPct = Math.min(100, (used / ctxMax) * 100);
   const cachedPct = Math.min(100, (cached / ctxMax) * 100);
   const free = Math.max(0, ctxMax - reserved - used - cached);
+  // Where pre-turn auto-compaction fires, as a % of the window (null when off).
+  const compactTriggerPct =
+    settings?.autoCompact === false
+      ? null
+      : Math.min(95, Math.max(50, Math.round((settings?.autoCompactTrigger ?? 0.8) * 100)));
   // The Raw tab is an opt-in debugging surface — hidden unless enabled in Settings.
   const visibleTabs = settings?.rawTabEnabled
     ? PANEL_TABS
@@ -175,12 +183,30 @@ export function ContextPanel({
             <span>{t("contextPanel.contextTokens")}</span>
             <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {(reserved + used + cached).toLocaleString()} / {ctxMax.toLocaleString()}
+              {onCompact && (
+                <button
+                  type="button"
+                  className="mini-btn"
+                  title={t("contextPanel.compactNowTooltip")}
+                  onClick={() => onCompact()}
+                >
+                  {t("contextPanel.compactNow")}
+                </button>
+              )}
             </span>
           </div>
           <div className="meter">
             <span className="rsvd" style={{ width: `${reservedPct}%` }} />
             <span className="cached" style={{ width: `${cachedPct}%` }} />
             <span className="used" style={{ width: `${usedPct}%` }} />
+            {compactTriggerPct !== null && (
+              <span
+                className="compact-zone"
+                data-testid="compact-threshold"
+                title={t("contextPanel.compactThresholdTooltip", { pct: compactTriggerPct })}
+                style={{ left: `${compactTriggerPct}%`, width: `${100 - compactTriggerPct}%` }}
+              />
+            )}
           </div>
           <div className="legend">
             <span className="l">
@@ -1290,6 +1316,19 @@ function CtxParameters({
     onSaveSettings?.({ contextTokens: next });
   };
 
+  const effectiveTriggerPct = Math.round((settings?.autoCompactTrigger ?? 0.8) * 100);
+  const clampedTriggerPct = Math.min(95, Math.max(50, effectiveTriggerPct));
+  const [triggerPct, setTriggerPct] = useState<number>(clampedTriggerPct);
+
+  useEffect(() => {
+    setTriggerPct(clampedTriggerPct);
+  }, [clampedTriggerPct]);
+
+  const commitTrigger = (pct: number) => {
+    const next = Math.min(95, Math.max(50, pct));
+    onSaveSettings?.({ autoCompactTrigger: next / 100 });
+  };
+
   const effectiveMaxIter = settings?.maxIterPerTurn ?? 50;
   const clampedMaxIter = Math.min(100, Math.max(50, effectiveMaxIter));
   const [iterValue, setIterValue] = useState<number>(clampedMaxIter);
@@ -1337,6 +1376,47 @@ function CtxParameters({
               className="mini-btn"
               title={t("contextPanel.contextWindowResetTooltip")}
               onClick={() => onSaveSettings?.({ contextTokens: null })}
+            >
+              {t("contextPanel.contextWindowReset")}
+            </button>
+          ) : null
+        }
+      />
+
+      <CtxToggleRow
+        label={t("contextPanel.autoCompact")}
+        desc={
+          settings?.autoCompact === false
+            ? t("contextPanel.autoCompactDisabledDesc")
+            : t("contextPanel.autoCompactEnabledDesc")
+        }
+        onLabel={t("contextPanel.autoCompactEnabled")}
+        offLabel={t("contextPanel.autoCompactDisabled")}
+        enabled={settings?.autoCompact !== false}
+        onToggle={(enabled) => onSaveSettings?.({ autoCompact: enabled })}
+        onAriaLabel={t("contextPanel.enableAutoCompact")}
+        offAriaLabel={t("contextPanel.disableAutoCompact")}
+      />
+
+      <CtxSliderRow
+        label={t("contextPanel.autoCompactTrigger")}
+        value={triggerPct}
+        display={t("contextPanel.autoCompactTriggerValue", { pct: triggerPct })}
+        min={50}
+        max={95}
+        step={5}
+        boundMin="50%"
+        boundMax="95%"
+        ariaLabel={t("contextPanel.autoCompactTrigger")}
+        onChange={setTriggerPct}
+        onCommit={commitTrigger}
+        reset={
+          settings?.autoCompactTrigger !== undefined && settings?.autoCompactTrigger !== null ? (
+            <button
+              type="button"
+              className="mini-btn"
+              title={t("contextPanel.autoCompactTriggerResetTooltip")}
+              onClick={() => onSaveSettings?.({ autoCompactTrigger: null })}
             >
               {t("contextPanel.contextWindowReset")}
             </button>

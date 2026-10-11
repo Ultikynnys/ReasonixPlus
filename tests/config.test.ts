@@ -3,10 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  DEFAULT_AUTO_COMPACT_TRIGGER,
   DEFAULT_DUPLICATE_SESSION_TOKENS,
   DEFAULT_MODEL,
   type DesktopOpenTab,
   GEMINI_MODELS,
+  MAX_AUTO_COMPACT_TRIGGER,
+  MIN_AUTO_COMPACT_TRIGGER,
   SUPPORTED_MODELS,
   addGlobalPathAllowed,
   addGlobalShellAllowed,
@@ -25,6 +28,8 @@ import {
   loadAllPathAllowed,
   loadAllShellAllowed,
   loadApiKey,
+  loadAutoCompact,
+  loadAutoCompactTrigger,
   loadBaiduApiKey,
   loadBaseUrl,
   loadBraveApiKey,
@@ -80,6 +85,8 @@ import {
   resolveThemePreference,
   saveAntigravityOAuth,
   saveApiKey,
+  saveAutoCompact,
+  saveAutoCompactTrigger,
   saveBaseUrl,
   saveContextTokens,
   saveDesktopOpenTabs,
@@ -1335,6 +1342,49 @@ describe("config", () => {
     saveEnableSubagents(true, path);
     expect(loadEnableSubagents(path)).toBe(true);
     expect(readConfig(path).enableSubagents).toBe(true);
+  });
+
+  it("autoCompact defaults to true and persists either state", () => {
+    expect(loadAutoCompact(path)).toBe(true);
+
+    saveAutoCompact(false, path);
+    expect(loadAutoCompact(path)).toBe(false);
+    expect(readConfig(path).autoCompact).toBe(false);
+
+    saveAutoCompact(true, path);
+    expect(loadAutoCompact(path)).toBe(true);
+    expect(readConfig(path).autoCompact).toBe(true);
+  });
+
+  it("autoCompact sanitizes non-boolean values to absent", () => {
+    writeConfig({ autoCompact: "yes" } as any, path);
+    expect(readConfig(path).autoCompact).toBeUndefined();
+    expect(loadAutoCompact(path)).toBe(true);
+  });
+
+  it("autoCompactTrigger defaults to 0.8 and clamps out-of-range values", () => {
+    expect(loadAutoCompactTrigger(path)).toBe(DEFAULT_AUTO_COMPACT_TRIGGER);
+
+    saveAutoCompactTrigger(0.6, path);
+    expect(loadAutoCompactTrigger(path)).toBe(0.6);
+    expect(readConfig(path).autoCompactTrigger).toBe(0.6);
+
+    saveAutoCompactTrigger(MIN_AUTO_COMPACT_TRIGGER - 0.4, path);
+    expect(loadAutoCompactTrigger(path)).toBe(MIN_AUTO_COMPACT_TRIGGER);
+
+    saveAutoCompactTrigger(MAX_AUTO_COMPACT_TRIGGER + 0.4, path);
+    expect(loadAutoCompactTrigger(path)).toBe(MAX_AUTO_COMPACT_TRIGGER);
+
+    // null clears the override back to the default.
+    saveAutoCompactTrigger(null, path);
+    expect(readConfig(path).autoCompactTrigger).toBeUndefined();
+    expect(loadAutoCompactTrigger(path)).toBe(DEFAULT_AUTO_COMPACT_TRIGGER);
+  });
+
+  it("autoCompactTrigger sanitizes non-number values to absent", () => {
+    writeConfig({ autoCompactTrigger: "soon" } as any, path);
+    expect(readConfig(path).autoCompactTrigger).toBeUndefined();
+    expect(loadAutoCompactTrigger(path)).toBe(DEFAULT_AUTO_COMPACT_TRIGGER);
   });
 
   it("questionTimerEnabled defaults to false and persists either state", () => {

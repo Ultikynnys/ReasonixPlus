@@ -41,11 +41,40 @@ export type {
 } from "./at-mentions.js";
 export type {
   CacheFirstLoopOptions,
+  CompactionOutcome,
+  CompactionTrigger,
   LoopAbortOptions,
   LoopEvent,
   EventRole,
   ReconfigurableOptions,
 } from "./loop.js";
+
+export {
+  AUTO_COMPACT_TRIGGER_RATIO,
+  COMPACT_TARGET_RATIO,
+  COMPACTION_SUMMARY_PREFIX,
+  DROPPED_WORK_NOTICE_PREFIX,
+  PRESERVE_RECENT_TOKENS,
+  SUMMARIZER_INPUT_MAX_TOKENS,
+  SUMMARIZER_OUTPUT_HEADROOM,
+  USER_RETENTION_TOKENS,
+  buildCompactionRequest,
+  buildDroppedWorkNotice,
+  buildVerificationRequest,
+  digestHasWork,
+  isCompactionSummary,
+  isDroppedWorkNotice,
+  planCompaction,
+  renderDeterministic,
+  renderWithSummary,
+  toolActivityDigest,
+} from "./loop/compaction.js";
+export type {
+  CompactionPlan,
+  CompactionResult,
+  PlanCompactionOptions,
+  ToolActivityDigest,
+} from "./loop/compaction.js";
 
 export { ImmutablePrefix, AppendOnlyLog, VolatileScratch } from "./memory/runtime.js";
 export type { ImmutablePrefixOptions } from "./memory/runtime.js";
@@ -232,6 +261,7 @@ export type {
 
 export {
   appendSessionMessage,
+  checkpointSessionMessages,
   deleteSession,
   listSessions,
   loadSessionMessages,

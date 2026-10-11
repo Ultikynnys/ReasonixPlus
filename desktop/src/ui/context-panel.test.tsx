@@ -1782,3 +1782,117 @@ describe("ContextPanel Git section", () => {
     expect(await screen.findByText("src/new.ts")).toBeTruthy();
   });
 });
+
+describe("Compact now button", () => {
+  it("triggers the compaction callback from beside the context meter", () => {
+    const onCompact = vi.fn();
+    render(
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onExportMemories={() => {}}
+        onImportMemories={() => {}}
+        onDismissMemoryResult={() => {}}
+        onCompact={onCompact}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
+    expect(onCompact).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the button when no handler is wired", () => {
+    renderPanel();
+    expect(screen.queryByRole("button", { name: "Compact now" })).toBeNull();
+  });
+});
+
+describe("Automatic compaction settings", () => {
+  it("renders the automatic compaction toggle and updates the setting", () => {
+    const onSaveSettings = vi.fn();
+    render(
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onExportMemories={() => {}}
+        onImportMemories={() => {}}
+        onDismissMemoryResult={() => {}}
+        onSaveSettings={onSaveSettings}
+      />,
+    );
+    fireEvent.click(screen.getByText("Parameters"));
+
+    expect(screen.getByText("Automatic compaction")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Disable automatic compaction" }));
+    expect(onSaveSettings).toHaveBeenCalledWith({ autoCompact: false });
+    fireEvent.click(screen.getByRole("button", { name: "Enable automatic compaction" }));
+    expect(onSaveSettings).toHaveBeenCalledWith({ autoCompact: true });
+  });
+
+  it("renders the auto-compact trigger slider and commits updates", () => {
+    const onSaveSettings = vi.fn();
+    render(
+      <ContextPanel
+        settings={{ ...settings, autoCompactTrigger: 0.6 }}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onExportMemories={() => {}}
+        onImportMemories={() => {}}
+        onDismissMemoryResult={() => {}}
+        onSaveSettings={onSaveSettings}
+      />,
+    );
+    fireEvent.click(screen.getByText("Parameters"));
+
+    const slider = screen.getByRole("slider", { name: "Auto-compact at" });
+    expect(slider.getAttribute("min")).toBe("50");
+    expect(slider.getAttribute("max")).toBe("95");
+    expect((slider as HTMLInputElement).value).toBe("60");
+    expect(screen.getByText("60% of window")).toBeTruthy();
+
+    fireEvent.change(slider, { target: { value: "90" } });
+    fireEvent.pointerUp(slider);
+    expect(onSaveSettings).toHaveBeenCalledWith({ autoCompactTrigger: 0.9 });
+
+    fireEvent.click(screen.getByTitle("Reset to default (80%)"));
+    expect(onSaveSettings).toHaveBeenCalledWith({ autoCompactTrigger: null });
+  });
+
+  it("marks the auto-compaction threshold on the context meter", () => {
+    renderPanel({ autoCompactTrigger: 0.8 });
+    const marker = screen.getByTestId("compact-threshold");
+    expect(marker.style.left).toBe("80%");
+    expect(marker.style.width).toBe("20%");
+    expect(marker.getAttribute("title")).toBe("Auto-compaction fires at 80% of the window");
+  });
+
+  it("hides the compaction threshold when automatic compaction is off", () => {
+    renderPanel({ autoCompact: false });
+    expect(screen.queryByTestId("compact-threshold")).toBeNull();
+  });
+});

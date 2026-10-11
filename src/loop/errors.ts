@@ -89,6 +89,16 @@ export function is4xxError(err: unknown): boolean {
   return new RegExp(`^${PROVIDER_ERROR_PREFIX} 4\\d{2}:`).test(err.message ?? "");
 }
 
+/** True when the provider rejected the request for exceeding the context
+ *  window. Recoverable by compaction; mirrors the message patterns that
+ *  formatLoopError classifies as the "context" error kind. */
+export function isContextOverflowError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /maximum context length|context window|prompt too long|reduce the length/i.test(
+    err.message ?? "",
+  );
+}
+
 const NETWORK_ERROR_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",

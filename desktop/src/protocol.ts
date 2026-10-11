@@ -261,6 +261,7 @@ export type IncomingEvent = { tabId?: string } & (
   | ConnectedEvent
   | ReadyEvent
   | ProtocolErrorEvent
+  | { type: "$notice"; text: string; severity: "info" | "success" | "warning" | "error" }
   | TurnCompleteEvent
   | DesktopDiagnosticEvent
   | ConfirmRequiredEvent

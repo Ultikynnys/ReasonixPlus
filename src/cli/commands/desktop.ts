@@ -135,6 +135,7 @@ import {
   loadAllPathAllowed,
   loadAllShellAllowed,
   loadApiKey,
+  loadAutoCompact,
   loadBraveApiKey,
   loadContextTokens,
   loadCustomQuickSends,
@@ -192,6 +193,8 @@ import {
   removeRule,
   saveAntigravityOAuth,
   saveApiKey,
+  saveAutoCompact,
+  saveAutoCompactTrigger,
   saveBaseUrl,
   saveContextTokens,
   saveCustomQuickSends,
@@ -286,6 +289,7 @@ import {
   type LoopEvent,
 } from "../../index.js";
 import { createLogger } from "../../logging.js";
+import { COMPACTION_SUMMARY_PREFIX } from "../../loop/compaction.js";
 import { MCP_CATALOG, catalogStdioCommand } from "../../mcp/catalog.js";
 import {
   GMAIL_MAIL_SERVER_NAME,
@@ -494,6 +498,7 @@ type EmittableEvent =
   | { type: "$connected" }
   | { type: "$ready" }
   | { type: "$error"; message: string }
+  | { type: "$notice"; text: string; severity: "info" | "success" | "warning" | "error" }
   | TurnCompleteEvent
   | DesktopDiagnosticEvent
   | { type: "oauth_begin_result"; url: string }
@@ -1532,6 +1537,8 @@ function emitSettings(tab: Tab): void {
       elevationEnabled: loadElevationEnabled(),
       repetitionGuardEnabled:
         tab.runtime?.loop.repetitionGuardEnabled ?? loadRepetitionGuardEnabled(),
+      autoCompact: tab.runtime?.loop.autoCompact ?? loadAutoCompact(),
+      autoCompactTrigger: config.autoCompactTrigger ?? null,
       questionTimerEnabled: loadQuestionTimerEnabled(),
       rawTabEnabled: loadRawTabEnabled(),
       duplicateSessionTokens: loadDuplicateSessionTokens(),
@@ -3916,6 +3923,45 @@ function emitContextRaw(tab: Tab, notice?: string): void {
   emit(contextRawPayload(tab, notice), tab.id);
 }
 
+/** Manual compaction for the desktop "Compact now" button: runs the loop's
+ *  compaction and converts its loop events to kernel events for chat.
+ *  Exported for tests. */
+export async function compactTabContext(tab: Tab): Promise<KernelEvent[]> {
+  const runtime = tab.runtime;
+  if (!runtime) return [];
+  const outcome = await runtime.loop.compactNow({ trigger: "manual" });
+  const events: KernelEvent[] = [];
+  for (const ev of outcome.events) {
+    for (const kev of runtime.eventizer.consume(ev, runtime.ctx)) events.push(kev);
+  }
+  return events;
+}
+
+/** Chat card for a manual compaction: the header plus the rolled-up summary
+ *  that replaced the folded context, or a "nothing to compact" note when the
+ *  log was already below the budget. Exported for tests. */
+export function manualCompactNotice(events: KernelEvent[]): {
+  text: string;
+  severity: "info" | "success";
+} {
+  const compacted = events.find(
+    (e): e is Extract<KernelEvent, { type: "warning" }> => e.type === "warning",
+  );
+  if (!compacted) return { text: t("loop.compactNothing"), severity: "info" };
+  const retracted = events.find(
+    (e): e is Extract<KernelEvent, { type: "session.retracted" }> =>
+      e.type === "session.retracted" && e.kind === "compact",
+  );
+  const summary = (retracted?.replacementMessages ?? [])
+    .map((m) => (typeof m.content === "string" ? m.content.trimStart() : ""))
+    .find((c) => c.startsWith(COMPACTION_SUMMARY_PREFIX));
+  const body = summary ? summary.slice(COMPACTION_SUMMARY_PREFIX.length).trim() : "";
+  return {
+    text: body ? `${compacted.text}\n\n${body}` : compacted.text,
+    severity: "success",
+  };
+}
+
 function emitSkills(tab: Tab): void {
   try {
     const store = new SkillStore({
@@ -4445,6 +4491,7 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
     reasoningEffort,
     maxIterPerTurn: loadMaxIterPerTurn(),
     maxOutputTokens: loadMaxOutputTokens(),
+    autoCompact: loadAutoCompact(),
     repetitionGuardEnabled: loadRepetitionGuardEnabled(),
     // Provider and billing unit come from resolved endpoint/config evidence.
     billingContextFor: (model) => {
@@ -7990,6 +8037,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             emitSettings(openTab);
           }
         }
+        if (msg.autoCompact !== undefined) {
+          saveAutoCompact(msg.autoCompact);
+          for (const openTab of tabs.values()) {
+            openTab.runtime?.loop.configure({ autoCompact: msg.autoCompact });
+            emitSettings(openTab);
+          }
+        }
+        if (msg.autoCompactTrigger !== undefined) {
+          saveAutoCompactTrigger(msg.autoCompactTrigger);
+          for (const openTab of tabs.values()) {
+            openTab.runtime?.loop.configure({ autoCompactTriggerRatio: msg.autoCompactTrigger });
+            emitSettings(openTab);
+          }
+        }
         if (msg.duplicateSessionTokens !== undefined) {
           saveDuplicateSessionTokens(msg.duplicateSessionTokens);
           for (const openTab of tabs.values()) emitSettings(openTab);
@@ -8342,6 +8403,36 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           : undefined,
       );
       emitCtxBreakdown(tab);
+      return;
+    }
+    if (msg.cmd === "context_compact") {
+      if (!tab.runtime) {
+        emit({ type: "$error", message: "No active agent to compact context for." }, tab.id);
+        return;
+      }
+      // Compaction rewrites the log; a rewrite mid-turn would race the
+      // in-flight request — require idle (same rule as context_raw_set).
+      if (tab.aborter !== null) {
+        emit(
+          { type: "$error", message: "Context is locked while a turn is running; stop first." },
+          tab.id,
+        );
+        return;
+      }
+      void compactTabContext(tab)
+        .then((events) => {
+          const notice = manualCompactNotice(events);
+          for (const kev of events) {
+            // The warning segment is surfaced as the standalone card below instead.
+            if (kev.type === "warning") continue;
+            emitKernelEvent(kev, tab.id);
+          }
+          emit({ type: "$notice", text: notice.text, severity: notice.severity }, tab.id);
+          emitCtxBreakdown(tab);
+        })
+        .catch((err) => {
+          emit({ type: "$error", message: `compact failed: ${(err as Error).message}` }, tab.id);
+        });
       return;
     }
     if (msg.cmd === "retry") {
