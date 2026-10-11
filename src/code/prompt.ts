@@ -223,8 +223,6 @@ export interface CodeSystemPromptOptions {
   systemAppendFile?: string;
   /** Model the loop will run on — interpolated into the escalation contract so the model can name itself correctly when asked (#582). */
   modelId?: string;
-  /** Back-compat no-op: lifecycle is runtime-only so strict/off do not change the cache prefix. */
-  engineeringLifecycleMode?: "off" | "strict";
   /** Override config path — tests point this at a tmp file. */
   configPath?: string;
 }

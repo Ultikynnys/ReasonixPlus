@@ -14,9 +14,9 @@ export const SESSION_EVENTS_FILENAME = "events.jsonl";
 /** UI annotation cards (notice + warning) persisted so no transcript card is
  *  transient — a single JSON array replaced on every notices_sync. */
 export const SESSION_NOTICES_FILENAME = "notices.json";
-/** Active plan state (written by plan-store). */
+/** Legacy per-session plan file — read once to migrate into plans/history.json. */
 export const SESSION_PLAN_FILENAME = "plan.json";
-/** Completed-plan archives live under this subfolder. */
+/** Plan storage: holds the unified `history.json` plus legacy `.done.json` archives. */
 export const SESSION_PLANS_DIRNAME = "plans";
 
 export function sessionsRootDir(): string {
@@ -24,7 +24,7 @@ export function sessionsRootDir(): string {
 }
 
 /** Historical name for the sessions root — kept because every caller (session.ts,
- *  plan-store, tests) already imports it by this name. */
+ *  the plan repository, tests) already imports it by this name. */
 export function sessionsDir(): string {
   return sessionsRootDir();
 }

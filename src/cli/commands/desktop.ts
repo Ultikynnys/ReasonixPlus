@@ -95,13 +95,6 @@ import {
 } from "../../at-mentions.js";
 import { fetchChangelog } from "../../changelog.js";
 import { pickPrimaryBalance } from "../../client.js";
-import {
-  archivePlanState,
-  clearPlanState,
-  isPlanComplete,
-  loadPlanState,
-  savePlanState,
-} from "../../code/plan-store.js";
 import { codeSystemPrompt } from "../../code/prompt.js";
 import { sessionPlanRepository } from "../../code/session-plans.js";
 import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
@@ -806,159 +799,77 @@ function wireEventDetails(ev: EmittableEvent): Record<string, unknown> {
       return {};
   }
 }
+/** The session plan repository (session-plans.ts) is the ONE plan store; the daemon
+ *  only projects its state into UI events and keeps no plan mirror of its own. */
 
-/** Adopt a freshly-proposed plan onto the tab: full steps, markdown body, and
- *  summary, with progress reset. Persisted later on approval. */
-
-/** Structural subset of Tab that the plan-persistence helpers touch — lets the
- *  helpers be unit-tested without constructing a full daemon tab. */
-export interface PlanTrackingTab {
-  currentSession: string;
-  planSteps: PlanStep[];
-  planBody: string | null;
-  planSummary: string | null;
-  completedStepIds: Set<string>;
-  planTotalSteps: number;
-  planStepCompletions: Map<string, StepCompletion>;
-  planPendingRevisionSteps: PlanStep[] | null;
+function stepResultsOf(completions: Record<string, StepCompletion>): Record<string, string> {
+  const results: Record<string, string> = {};
+  for (const [id, completion] of Object.entries(completions)) results[id] = completion.result;
+  return results;
 }
 
-export function adoptProposedPlan(
-  tab: PlanTrackingTab,
-  payload: { plan: string; steps?: PlanStep[]; summary?: string },
-): void {
-  tab.planSteps = payload.steps ?? [];
-  tab.planBody = payload.plan || null;
-  tab.planSummary = payload.summary ?? null;
-  tab.completedStepIds = new Set<string>();
-  tab.planStepCompletions = new Map<string, StepCompletion>();
-  tab.planTotalSteps = tab.planSteps.length;
-}
-
-/** Mark a plan step complete in the tab's tracking (id + result for restore). */
-export function recordPlanStepCompletion(
-  tab: PlanTrackingTab,
-  payload: { stepId: string; title?: string; result: string; notes?: string },
-): void {
-  tab.completedStepIds.add(payload.stepId);
-  const completion: StepCompletion = {
-    kind: "step_completed",
-    stepId: payload.stepId,
-    result: payload.result,
+/** Accepted step counts for the in-flight plan (0/0 when none is running). */
+function planCounts(tab: { currentSession: string }): { completed: number; total: number } {
+  const active = tab.currentSession ? sessionPlanRepository(tab.currentSession).active() : null;
+  return {
+    completed: active ? Object.keys(active.completions).length : 0,
+    total: active?.steps.length ?? 0,
   };
-  if (payload.title) completion.title = payload.title;
-  if (payload.notes) completion.notes = payload.notes;
-  tab.planStepCompletions.set(payload.stepId, completion);
 }
 
-/** Persist the tab's in-flight plan to plan.json. No-op without a session or a
- *  structured plan — pure-markdown plans have no progress to restore. */
-export function persistPlanState(tab: PlanTrackingTab): void {
-  if (!tab.currentSession || tab.planSteps.length === 0) return;
-  const extras: {
-    body?: string;
-    summary?: string;
-    stepCompletions?: Map<string, StepCompletion>;
-  } = {};
-  if (tab.planBody) extras.body = tab.planBody;
-  if (tab.planSummary) extras.summary = tab.planSummary;
-  if (tab.planStepCompletions.size > 0) extras.stepCompletions = tab.planStepCompletions;
-  savePlanState(tab.currentSession, tab.planSteps, tab.completedStepIds, extras);
+/** Project an accepted mark_step_complete result into the rail's progress tick.
+ *  Only JSON results carry a stepId; error/stop strings parse to nothing. */
+function emitAcceptedStep(tab: Tab, result: string): void {
+  let parsed: { stepId?: unknown; result?: unknown };
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return;
+  }
+  if (typeof parsed.stepId !== "string") return;
+  emit(
+    {
+      type: "$step_completed",
+      stepId: parsed.stepId,
+      result: typeof parsed.result === "string" ? parsed.result : "",
+    },
+    tab.id,
+  );
 }
 
-/** Reset the tab's in-memory plan tracking without touching plan.json — used on
- *  abort/session-switch so the persisted plan can still be restored later. */
-export function resetPlanTracking(tab: PlanTrackingTab): void {
-  tab.completedStepIds.clear();
-  tab.planTotalSteps = 0;
-  tab.planSteps = [];
-  tab.planBody = null;
-  tab.planSummary = null;
-  tab.planStepCompletions.clear();
-}
-
-/** Forget the in-flight plan and delete its persisted plan.json (cancel/stop). */
-export function clearPlanForTab(tab: PlanTrackingTab): void {
-  if (tab.currentSession) clearPlanState(tab.currentSession);
-  resetPlanTracking(tab);
-}
-
-/** Archive a fully-completed plan to the plans/ folder and reset the tab. */
-export function archivePlanForTab(tab: PlanTrackingTab): void {
-  if (tab.currentSession) archivePlanState(tab.currentSession);
-  resetPlanTracking(tab);
-}
-
-/** Merge an accepted plan_revision into the tab's steps (kept-done prefix +
- *  remaining tail) and persist — shared by the RPC and YOLO countdown paths. */
-export function applyPlanRevision(tab: PlanTrackingTab): void {
-  if (!tab.planPendingRevisionSteps) return;
-  const doneIds = new Set(tab.completedStepIds);
-  const keptDone = tab.planSteps.filter((step) => doneIds.has(step.id));
-  tab.planSteps = [...keptDone, ...tab.planPendingRevisionSteps];
-  tab.planTotalSteps = tab.planSteps.length;
-  tab.planPendingRevisionSteps = null;
-  persistPlanState(tab);
-}
-
-/** Persist hook for a YOLO countdown that auto-resolves a plan gate without a
- *  plan_response/revision_response RPC. */
-function countdownPlanPersist(kind: string, tab: Tab | undefined): (() => void) | undefined {
-  if (!tab) return undefined;
-  if (kind === "plan_proposed") return () => persistPlanState(tab);
-  if (kind === "plan_revision") return () => applyPlanRevision(tab);
-  return undefined;
-}
-
-/** Restore a persisted plan into the tab's tracking on session load, returning
- *  the hydrate event to emit. A finished leftover is archived instead of
- *  resurrected (issue #1355); null when there is nothing to restore. */
+/** Build the $plan_restored hydrate event from the repository's active plan — null
+ *  when no plan is in flight (a finished/cancelled plan remains history only). */
 export function restorePlanForTab(
-  tab: PlanTrackingTab,
+  tab: { currentSession: string },
   hasPriorMessages: boolean,
 ): PlanRestoredEvent | null {
   if (!tab.currentSession || !hasPriorMessages) return null;
   const active = sessionPlanRepository(tab.currentSession).active();
-  const restored = active
-    ? {
-        version: 2 as const,
-        steps: active.steps,
-        completedStepIds: Object.keys(active.completions),
-        updatedAt: active.updatedAt,
-        body: active.body,
-        summary: active.summary,
-        stepCompletions: active.completions,
-      }
-    : null;
-  if (!restored || restored.steps.length === 0) return null;
-  if (isPlanComplete(restored)) {
-    archivePlanState(tab.currentSession);
-    return null;
-  }
-  tab.planSteps = restored.steps;
-  tab.planBody = restored.body ?? null;
-  tab.planSummary = restored.summary ?? null;
-  tab.completedStepIds = new Set(restored.completedStepIds);
-  tab.planTotalSteps = restored.steps.length;
-  tab.planStepCompletions = new Map(Object.entries(restored.stepCompletions ?? {}));
-  const stepResults: Record<string, string> = {};
-  for (const [id, completion] of tab.planStepCompletions) stepResults[id] = completion.result;
+  if (!active || active.steps.length === 0) return null;
   return {
     type: "$plan_restored",
-    plan: restored.body ?? "",
-    summary: restored.summary,
-    steps: restored.steps,
-    completedStepIds: restored.completedStepIds,
-    stepResults,
+    plan: active.body,
+    summary: active.summary,
+    steps: active.steps,
+    completedStepIds: Object.keys(active.completions),
+    stepResults: stepResultsOf(active.completions),
     status: "active",
   };
 }
 
-/** Restore hook for session load — mutates the tab and emits $plan_restored. */
+/** Emit the plan history, then the active-plan hydrate — or a clear when the session
+ *  has past plans but none is in flight. The repository is the single source. */
 function emitRestoredPlan(tab: Tab, hasPriorMessages: boolean): void {
   emitPlanHistory(tab);
-  const event = restorePlanForTab(tab, hasPriorMessages);
-  if (event) emit(event, tab.id);
+  if (!hasPriorMessages || !tab.currentSession) return;
+  const event = restorePlanForTab(tab, true);
+  if (event) {
+    emit(event, tab.id);
+    return;
+  }
+  if (sessionPlanRepository(tab.currentSession).list().length > 0) {
+    emit({ type: "$plan_cleared" }, tab.id);
+  }
 }
 
 function emitPlanHistory(tab: Tab): void {
@@ -4009,19 +3920,6 @@ interface Tab {
   recentMentions: string[];
   /** Pause-gate ids waiting on this tab — abort uses these to free stranded plan_checkpoint / plan_revision / shell-confirm callers. */
   pendingGateIds: Set<number>;
-  /** Step ids already marked complete in the in-flight plan — also tells UI when a plan is "active". */
-  completedStepIds: Set<string>;
-  /** Total steps in the in-flight plan (0 = no active plan / steps not provided). */
-  planTotalSteps: number;
-  /** Full steps of the in-flight plan — persisted to plan.json so a reload can restore it. */
-  planSteps: PlanStep[];
-  /** Markdown body + human summary of the in-flight plan (persisted with planSteps). */
-  planBody: string | null;
-  planSummary: string | null;
-  /** Per-step results from completed checkpoints, persisted for restore. */
-  planStepCompletions: Map<string, StepCompletion>;
-  /** Remaining steps from a pending plan_revision, merged into planSteps on acceptance. */
-  planPendingRevisionSteps: PlanStep[] | null;
   mcpRuntime: McpRuntime | null;
   mcpStatuses: Map<string, { kind: McpSpecStatus; reason?: string; toolCount?: number }>;
   mcpBridgePromise: Promise<void> | null;
@@ -4067,7 +3965,7 @@ function tabDiagnosticState(tab: Tab): Record<string, unknown> {
     busy: tab.aborter !== null,
     switching: tab.switching,
     pendingGateCount: tab.pendingGateIds.size,
-    plan: { totalSteps: tab.planTotalSteps, completedSteps: tab.completedStepIds.size },
+    plan: { totalSteps: planCounts(tab).total, completedSteps: planCounts(tab).completed },
     mcp: { configured: mcpStatusCounts, runtimeReady: tab.mcpRuntime !== null },
     indexes: {
       fileReady: tab.fileIndex !== null,
@@ -4736,13 +4634,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       symbolBuilding: null,
       recentMentions: [],
       pendingGateIds: new Set<number>(),
-      completedStepIds: new Set<string>(),
-      planTotalSteps: 0,
-      planSteps: [],
-      planBody: null,
-      planSummary: null,
-      planStepCompletions: new Map<string, StepCompletion>(),
-      planPendingRevisionSteps: null,
       mcpRuntime: null,
       mcpStatuses: new Map(),
       mcpBridgePromise: null,
@@ -5413,6 +5304,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
               ev.toolName ?? "",
             )
           ) {
+            // The plan tools just wrote the repository — project its accepted state.
+            if (ev.toolName === "mark_step_complete") emitAcceptedStep(tab, ev.content);
             emitRestoredPlan(tab, true);
           }
           if (ev.role === "tool" && (ev.toolName === "remember" || ev.toolName === "forget")) {
@@ -5492,15 +5385,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           emitTabDiagnostic(
             tab,
             "turn.complete.emitted",
-            {
-              planProgress: { completed: tab.completedStepIds.size, total: tab.planTotalSteps },
-            },
+            { planProgress: planCounts(tab) },
             "info",
           );
-          if (tab.planTotalSteps > 0 && tab.completedStepIds.size >= tab.planTotalSteps) {
-            archivePlanForTab(tab);
-            emit({ type: "$plan_cleared" }, tab.id);
-          }
           void emitSessions(tab);
           void emitBalance(tab);
           void emitCodexQuota(tab, { force: true });
@@ -5913,7 +5800,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   }
 
   function cancelPendingGates(tab: Tab): void {
-    const hadActivePlan = tab.planTotalSteps > 0 || tab.completedStepIds.size > 0;
+    const hadActivePlan =
+      tab.currentSession.length > 0 && sessionPlanRepository(tab.currentSession).active() !== null;
     const ids = [...tab.pendingGateIds];
     tab.pendingGateIds.clear();
     for (const id of ids) {
@@ -5921,7 +5809,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       pauseGate.cancel(id);
     }
     if (hadActivePlan) {
-      resetPlanTracking(tab);
       emit({ type: "$plan_cleared" }, tab.id);
     }
   }
@@ -5967,44 +5854,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       enableChoiceTimer: loadQuestionTimerEnabled(),
     });
     if (auto?.kind === "instant") {
-      // plan_checkpoint specifically needs the step-completed signal to flow
-      // through so the rail progress ticks. Emit it before resolving.
-      if (req.kind === "plan_checkpoint") {
-        const payload = req.payload as {
-          stepId: string;
-          title?: string;
-          result: string;
-          notes?: string;
-        };
-        if (tab) {
-          recordPlanStepCompletion(tab, payload);
-          persistPlanState(tab);
-        }
-        emit(
-          {
-            type: "$step_completed",
-            stepId: payload.stepId,
-            title: payload.title,
-            result: payload.result,
-            notes: payload.notes,
-          },
-          tabId,
-        );
-      }
-      // plan_proposed auto-approved in yolo — clear any prior plan state and
-      // track step count so $step_completed progress-to-clear still works.
-      if (req.kind === "plan_proposed") {
-        const payload = req.payload as {
-          plan: string;
-          steps?: PlanStep[];
-          summary?: string;
-          callId?: string;
-        };
-        if (tab) {
-          adoptProposedPlan(tab, payload);
-          persistPlanState(tab);
-        }
-      }
+      // Plan state is written by the tools themselves; the daemon only projects
+      // it (see the tool-result handler) — no tab mirror to keep in sync here.
       if (tab) tab.pendingGateIds.delete(req.id);
       pauseGate.resolve(req.id, auto.verdict);
       return;
@@ -6016,7 +5867,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // via `gate_timer`, so pausing the UI clock also pauses auto-resolve.
     const countdownMs = auto?.kind === "countdown" ? auto.ms : undefined;
     if (auto?.kind === "countdown") {
-      armGateCountdown(req.id, auto.verdict, auto.ms, countdownPlanPersist(req.kind, tab));
+      armGateCountdown(req.id, auto.verdict, auto.ms);
     }
     if (
       req.kind === "run_command" ||
@@ -6141,7 +5992,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         summary?: string;
         callId?: string;
       };
-      if (tab) adoptProposedPlan(tab, payload);
       emit(
         {
           type: "$plan_required",
@@ -6171,8 +6021,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           title: payload.title,
           result: payload.result,
           notes: payload.notes,
-          completed: tab?.completedStepIds.size ?? 0,
-          total: tab?.planTotalSteps ?? 0,
+          completed: tab ? planCounts(tab).completed : 0,
+          total: tab ? planCounts(tab).total : 0,
         },
         tabId,
       );
@@ -6184,7 +6034,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         remainingSteps: PlanStep[];
         summary?: string;
       };
-      if (tab) tab.planPendingRevisionSteps = payload.remainingSteps;
       emit(
         {
           type: "$revision_required",
@@ -6615,10 +6464,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       clearGateCountdown(msg.id);
       const tab = forgetGate(msg.id);
       if (tab && msg.response.type === "cancel") {
-        clearPlanForTab(tab);
+        // submit_plan records the cancelled verdict itself; just clear the rail.
         emit({ type: "$plan_cleared" }, tab.id);
-      } else if (tab && msg.response.type === "approve") {
-        persistPlanState(tab);
       }
       pauseGate.resolve(msg.id, msg.response);
       return;
@@ -6632,8 +6479,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (msg.cmd === "revision_response") {
       clearGateCountdown(msg.id);
       const tab = forgetGate(msg.id);
-      if (tab && msg.response.type === "accepted") applyPlanRevision(tab);
-      if (tab) tab.planPendingRevisionSteps = null;
+      // revise_plan records the accepted revision itself; nothing to mirror here.
       pauseGate.resolve(msg.id, msg.response);
       return;
     }

@@ -36,7 +36,6 @@ import {
   loadEnableSubagents,
   loadEndpoint,
   loadEndpointForModel,
-  loadEngineeringLifecycleMode,
   loadFilesystemOutlineThresholdBytes,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
@@ -1165,22 +1164,6 @@ describe("config", () => {
     expect(loadEditMode(path)).toBe("never-ask");
     writeConfig({ editMode: "ignore" as any }, path);
     expect(loadEditMode(path)).toBe("never-ask");
-  });
-
-  it("loadEngineeringLifecycleMode defaults to 'off' when unset", () => {
-    expect(loadEngineeringLifecycleMode(path)).toBe("off");
-  });
-
-  it("loadEngineeringLifecycleMode accepts off and strict", () => {
-    writeConfig({ engineeringLifecycle: { mode: "off" } }, path);
-    expect(loadEngineeringLifecycleMode(path)).toBe("off");
-    writeConfig({ engineeringLifecycle: { mode: "strict" } }, path);
-    expect(loadEngineeringLifecycleMode(path)).toBe("strict");
-  });
-
-  it("loadEngineeringLifecycleMode coerces unknown values back to 'off'", () => {
-    writeConfig({ engineeringLifecycle: { mode: "garbage" as any } }, path);
-    expect(loadEngineeringLifecycleMode(path)).toBe("off");
   });
 
   it("loadFilesystemOutlineThresholdBytes returns undefined when unset (caller applies default)", () => {

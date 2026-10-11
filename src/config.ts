@@ -263,7 +263,6 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   );
 }
 
-export type EngineeringLifecycleMode = "off" | "strict";
 export type HistoryScrollMode = "auto" | "native" | "app";
 
 export type EmbeddingProvider = "ollama" | "openai-compat";
@@ -660,10 +659,6 @@ export interface ReasonixConfig {
   proxy?: ProxyConfig;
   rateLimit?: RateLimitConfig;
   toolRateLimit?: ToolRateLimitConfig;
-  /** Host-enforced engineering lifecycle. Defaults to off so opt-outs pay zero prefix cost. */
-  engineeringLifecycle?: {
-    mode?: EngineeringLifecycleMode;
-  };
   filesystem?: {
     /** read_file flips to outline mode for files above this. Default 64 KiB — keeps the cache prefix slim while covering ~99% of source files. Raise to 524288 (512 KiB) for the pre-0.46.0 "trust the cache" behavior. */
     outlineThresholdBytes?: number;
@@ -2770,15 +2765,6 @@ export function saveEnabledModels(models: string[], path: string = defaultConfig
   }
   cfg.enabledModels = seen.size > 0 ? [...seen] : undefined;
   writeConfig(cfg, path);
-}
-
-/** Unknown values fall back to "off" so bad config keeps the zero-cost default. */
-export function loadEngineeringLifecycleMode(
-  path: string = defaultConfigPath(),
-): EngineeringLifecycleMode {
-  const v = readConfig(path).engineeringLifecycle?.mode;
-  if (v === "off" || v === "strict") return v;
-  return "off";
 }
 
 /** Bytes above which `read_file` flips to outline mode. Returns `undefined` so callers can apply the registered default; non-positive / non-numeric config values fall through to the default too. */

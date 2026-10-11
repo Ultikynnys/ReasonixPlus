@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CODE_SYSTEM_PROMPT, codeSystemPrompt } from "../src/code/prompt.js";
-import { ImmutablePrefix } from "../src/memory/runtime.js";
 
 describe("codeSystemPrompt", () => {
   let root: string;
@@ -235,29 +234,6 @@ describe("codeSystemPrompt", () => {
   });
 
   describe("system append", () => {
-    it("keeps engineering lifecycle mode cache-neutral", () => {
-      const bare = codeSystemPrompt(root);
-      const off = codeSystemPrompt(root, { engineeringLifecycleMode: "off" });
-      const strict = codeSystemPrompt(root, { engineeringLifecycleMode: "strict" });
-
-      expect(bare).toBe(off);
-      expect(strict).toBe(off);
-      expect(strict).not.toMatch(/# Engineering lifecycle contract/);
-    });
-
-    it("keeps immutable prefix fingerprints identical across lifecycle modes", () => {
-      const off = new ImmutablePrefix({
-        system: codeSystemPrompt(root, { engineeringLifecycleMode: "off" }),
-        toolSpecs: [],
-      });
-      const strict = new ImmutablePrefix({
-        system: codeSystemPrompt(root, { engineeringLifecycleMode: "strict" }),
-        toolSpecs: [],
-      });
-
-      expect(strict.fingerprint).toBe(off.fingerprint);
-    });
-
     it("does not add a User System Append section when neither option is provided", () => {
       const out = codeSystemPrompt(root);
       expect(out).not.toMatch(/# User System Append/);
