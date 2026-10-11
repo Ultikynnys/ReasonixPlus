@@ -2,6 +2,7 @@ import type { ApprovalAction, ApprovalPrompt } from "@reasonix/core-utils";
 import { sanitizeTerminalText } from "@reasonix/core-utils";
 import { formatBytes } from "@reasonix/core-utils";
 import type { PlanStep } from "@reasonix/core-utils";
+import { PLAN_INTERACTIVE_TOOL_NAMES } from "@reasonix/core-utils";
 import { isCompactionSummary, stripCompactionMarker } from "@reasonix/core-utils/compaction";
 import { derivePrefix } from "@reasonix/core-utils/derive-prefix";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -378,12 +379,7 @@ export const UserMsg = memo(function UserMsg({
 /** Tool calls that pause the loop on a user gate (choice, plan confirmation,
  *  plan revision, step acknowledgement). While such a gate is open the approval
  *  strip owns the card, so the transcript must not render one too. */
-const GATED_TOOL_NAMES = new Set([
-  "ask_choice",
-  "submit_plan",
-  "revise_plan",
-  "mark_step_complete",
-]);
+const GATED_TOOL_NAMES = new Set<string>(["ask_choice", ...PLAN_INTERACTIVE_TOOL_NAMES]);
 
 export const AssistantMsg = memo(function AssistantMsg({
   segments,

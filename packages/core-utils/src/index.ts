@@ -107,6 +107,7 @@ export {
   modelAcceptsImages,
   modelDisplayName,
 } from "./models.js";
+export { PLAN_INTERACTIVE_TOOL_NAMES } from "./plan-tools.js";
 export type {
   ConfirmationChoice,
   RuleScope,

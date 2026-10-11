@@ -1,5 +1,7 @@
-/** Isolated child loop. Inherits parent registry minus spawn_subagent + submit_plan; no hooks; non-streaming. */
+/** Isolated child loop. Inherits the parent registry minus delegation entry points
+ *  and the interactive plan tools; no hooks; non-streaming. */
 
+import { PLAN_INTERACTIVE_TOOL_NAMES } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "../client.js";
 import {
   type ModelProvider,
@@ -174,10 +176,11 @@ export const DEFAULT_SUBAGENT_MODEL = "deepseek-flash";
 const DEFAULT_SUBAGENT_EFFORT: import("../config.js").ReasoningEffort = "high";
 
 const SUBAGENT_TOOL_NAME = "spawn_subagent";
-/** All delegation entry points are excluded → depth=1 hard cap; submit_plan excluded → no picker mid-parent-turn. */
+/** Delegation entry points are excluded → depth=1 hard cap; the interactive plan tools
+ *  are excluded too → a subagent must never surface a plan picker or checkpoint gate mid-parent-turn. */
 export const NEVER_INHERITED_TOOLS = new Set<string>([
   SUBAGENT_TOOL_NAME,
-  "submit_plan",
+  ...PLAN_INTERACTIVE_TOOL_NAMES,
   "run_skill",
   "explore",
   "research",

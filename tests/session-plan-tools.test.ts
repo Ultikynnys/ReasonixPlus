@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PLAN_INTERACTIVE_TOOL_NAMES } from "@reasonix/core-utils";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { PauseGate } from "../src/core/pause-gate.js";
 import { ToolRegistry } from "../src/tools.js";
@@ -22,6 +23,15 @@ function gate(type: string, optionId?: string): PauseGate {
   gate.on((request) => gate.resolve(request.id, { type, optionId } as never));
   return gate;
 }
+
+it("PLAN_INTERACTIVE_TOOL_NAMES is exactly the registered plan tools that gate", () => {
+  const tools = registerPlanTool(new ToolRegistry());
+  const gated = tools
+    .specs()
+    .map((spec) => spec.function.name)
+    .filter((name) => tools.isUserIntervention(name));
+  expect(new Set(gated)).toEqual(new Set(PLAN_INTERACTIVE_TOOL_NAMES));
+});
 it("creates, inspects, revises and completes one session-owned plan", async () => {
   const tools = registerPlanTool(new ToolRegistry());
   const sessionName = "pipeline";

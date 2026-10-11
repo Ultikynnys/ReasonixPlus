@@ -11,6 +11,7 @@ import {
   MAX_IMAGE_BYTES,
   MAX_MEDIA_BYTES,
   MailProvider,
+  PLAN_INTERACTIVE_TOOL_NAMES,
   type PersistedNotice,
   flattenText,
   isUsableAntigravityModel,
@@ -5382,12 +5383,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           // Memory tools mutate disk state behind the loop's back — the UI
           // panel won't know until we re-emit. Without this the right-hand
           // panel only updates on tab reopen.
-          if (
-            ev.role === "tool" &&
-            ["submit_plan", "revise_plan", "mark_step_complete", "abandon_plan"].includes(
-              ev.toolName ?? "",
-            )
-          ) {
+          if (ev.role === "tool" && PLAN_INTERACTIVE_TOOL_NAMES.has(ev.toolName ?? "")) {
             // The plan tools just wrote the repository — project its accepted state.
             if (ev.toolName === "mark_step_complete") emitAcceptedStep(tab, ev.content);
             emitRestoredPlan(tab, true);
