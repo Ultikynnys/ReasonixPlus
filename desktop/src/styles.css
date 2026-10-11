@@ -7299,6 +7299,31 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   font-size: 12px;
   margin-right: auto;
 }
+.provider-models-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+.provider-models-search > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.provider-models-search input {
+  background: none;
+  border: none;
+  outline: none;
+  width: 100%;
+  font-size: 13px;
+  color: inherit;
+}
+.provider-models-search input::placeholder {
+  color: var(--muted-2);
+}
 .provider-models-scroll {
   display: flex;
   flex-direction: column;

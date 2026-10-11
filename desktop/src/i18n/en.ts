@@ -231,6 +231,8 @@ export const en = {
     modelDisableAll: "Disable all",
     modelEnabledCount: "{count} of {total} enabled",
     modelListEmpty: "No models available.",
+    modelSearchPlaceholder: "Search models",
+    modelSearchEmpty: "No models match your search.",
     ollamaBaseUrl: "Ollama base URL",
     ollamaBaseUrlHint:
       "OpenAI-compatible endpoint. Empty = Ollama cloud https://ollama.com/v1 (requires the API key below); set http://localhost:11434/v1 for a local daemon.",

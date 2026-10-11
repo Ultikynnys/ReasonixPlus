@@ -204,4 +204,30 @@ describe("PageModels default-model enum", () => {
     expect(select.disabled).toBe(true);
     expect(within(select).getByText("No models have been enabled")).toBeTruthy();
   });
+
+  it("filters a provider's model list from a dedicated search row", () => {
+    const { container } = render(
+      <SettingsModal
+        {...baseProps}
+        settings={{ ...baseSettings, enabledModels: ["deepseek-v4-flash"] }}
+        initialPage="models"
+      />,
+    );
+    container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
+      if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+    });
+    const searches = screen.getAllByPlaceholderText("Search models") as HTMLInputElement[];
+    const search = searches.find(
+      (input) => (input.closest(".provider-col")?.querySelector(".mcard") ?? null) !== null,
+    );
+    expect(search).toBeTruthy();
+    // The search box sits on its own row, never inside the count / enable-all row.
+    expect(search?.closest(".provider-models-search")).toBeTruthy();
+    expect(search?.closest(".provider-models-head")).toBeNull();
+    const col = search?.closest(".provider-col") as HTMLElement;
+    expect(col.querySelectorAll(".mcard").length).toBeGreaterThan(0);
+    fireEvent.change(search as HTMLInputElement, { target: { value: "zzz-no-such-model" } });
+    expect(col.querySelectorAll(".mcard")).toHaveLength(0);
+    expect(within(col).getByText("No models match your search.")).toBeTruthy();
+  });
 });

@@ -1739,7 +1739,15 @@ function ModelList({
   onSetAll?: (enabled: boolean) => void;
   onSelect?: (id: string) => void;
 }) {
+  const [query, setQuery] = useState("");
   const enabledCount = models.filter((id) => enabledSet.has(id)).length;
+  const needle = query.trim().toLowerCase();
+  const shown = needle
+    ? models.filter(
+        (id) =>
+          modelDisplayName(id).toLowerCase().includes(needle) || id.toLowerCase().includes(needle),
+      )
+    : models;
   return (
     <>
       {onToggle ? (
@@ -1755,8 +1763,20 @@ function ModelList({
           </button>
         </div>
       ) : null}
+      {onToggle && models.length > 0 ? (
+        <div className="provider-models-search">
+          <I.search size={13} />
+          <input
+            type="search"
+            aria-label={t("settings.modelSearchPlaceholder")}
+            placeholder={t("settings.modelSearchPlaceholder")}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+      ) : null}
       <div className="provider-models-scroll">
-        {models.map((id) => {
+        {shown.map((id) => {
           const enabled = enabledSet.has(id);
           const displayName = modelDisplayName(id);
           const nameFontSize = Math.max(10, Math.min(14, (14 * 18) / displayName.length));
@@ -1796,6 +1816,8 @@ function ModelList({
         })}
         {models.length === 0 ? (
           <div className="provider-models-empty">{t("settings.modelListEmpty")}</div>
+        ) : shown.length === 0 ? (
+          <div className="provider-models-empty">{t("settings.modelSearchEmpty")}</div>
         ) : null}
       </div>
     </>
