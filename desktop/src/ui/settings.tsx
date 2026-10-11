@@ -1847,6 +1847,17 @@ function ModelList({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
+          {query ? (
+            <button
+              type="button"
+              className="provider-models-search-clear"
+              aria-label={t("settings.modelSearchClear")}
+              title={t("settings.modelSearchClear")}
+              onClick={() => setQuery("")}
+            >
+              <I.x size={12} />
+            </button>
+          ) : null}
         </div>
       ) : null}
       <div className="provider-models-scroll">

@@ -7317,9 +7317,33 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: none;
   border: none;
   outline: none;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   color: inherit;
+}
+/* Browser-native search clear is unthemed (bluish in Edge) — swap in the
+   themed I.x button below. */
+.provider-models-search input::-webkit-search-cancel-button,
+.provider-models-search input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.provider-models-search-clear {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.provider-models-search-clear:hover {
+  color: var(--fg);
+  background: var(--card-hover);
 }
 .provider-models-search input::placeholder {
   color: var(--muted-2);
