@@ -274,6 +274,14 @@ export interface KernelErrorEvent extends KernelWireEventBase {
   recoverable: boolean;
 }
 
+/** Compaction is running (pre-turn auto, mid-turn overflow recovery, or a manual
+ *  "Compact now") — the UI shows the compaction card's throbber until the run's
+ *  completion signal flips the card to its done state. */
+export interface KernelCompactionStartedEvent extends KernelWireEventBase {
+  type: "compaction.started";
+  trigger: "manual" | "auto" | "overflow";
+}
+
 export type DirectKernelWireEvent =
   | KernelUserMessageEvent
   | KernelModelTurnStartedEvent
@@ -286,7 +294,8 @@ export type DirectKernelWireEvent =
   | KernelSubagentProgressEvent
   | KernelStatusEvent
   | KernelWarningEvent
-  | KernelErrorEvent;
+  | KernelErrorEvent
+  | KernelCompactionStartedEvent;
 
 export type DesktopDiagnosticLevel = "debug" | "info" | "warn" | "error";
 

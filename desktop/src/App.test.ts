@@ -1045,6 +1045,34 @@ describe("Desktop App reducer — usage", () => {
     expect(next.usage.shellOutputRawTokens).toBe(50_000);
     expect(next.usage.shellOutputShownTokens).toBe(31_000);
   });
+
+  it("keeps the context cap through a model.final usage rebuild", () => {
+    const seeded = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$ctx_breakdown",
+        reservedTokens: 10,
+        logTokens: 100,
+        ctxMax: 736_000,
+      },
+    });
+    const next = reduce(seeded, {
+      t: "incoming",
+      event: {
+        type: "model.final",
+        id: 1,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        content: "ok",
+        toolCalls: [],
+        usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 },
+        costUsd: 0,
+      },
+    });
+
+    // Without this the context meter reverts to its 300K fallback mid-session.
+    expect(next.usage.ctxMax).toBe(736_000);
+  });
 });
 
 describe("Desktop App reducer — ApprovalPrompt integration", () => {
@@ -1446,6 +1474,196 @@ describe("desktop thread layout", () => {
 });
 
 
+
+describe("Desktop App reducer — compaction card lifecycle", () => {
+  const startedEvent = (id: number, trigger: "manual" | "auto" | "overflow" = "manual") =>
+    ({
+      type: "compaction.started",
+      id,
+      ts: "2026-05-27T00:00:00.000Z",
+      turn: 1,
+      trigger,
+    }) as const;
+
+  it("inserts the running compaction card on compaction.started", () => {
+    const next = reduce(initialState(), { t: "incoming", event: startedEvent(90) });
+    const card = next.messages.find((m) => m.kind === "notice");
+    expect(card).toMatchObject({ kind: "notice", running: true });
+  });
+
+  it("keeps a single running card when compaction.started repeats", () => {
+    const once = reduce(initialState(), { t: "incoming", event: startedEvent(90) });
+    const twice = reduce(once, { t: "incoming", event: startedEvent(91) });
+    expect(twice.messages.filter((m) => m.kind === "notice")).toHaveLength(1);
+  });
+
+  it("flips the running card in place on the manual $notice result", () => {
+    const beforeState = reduce(initialState(), { t: "incoming", event: startedEvent(90) });
+    const next = reduce(beforeState, {
+      t: "incoming",
+      event: {
+        type: "$notice",
+        text: "Context compacted (summary): 9 tokens -> 3 tokens.",
+        severity: "success",
+      },
+    });
+    const before = beforeState.messages.find((m) => m.kind === "notice");
+    const after = next.messages.find((m) => m.kind === "notice");
+    if (before?.kind !== "notice" || after?.kind !== "notice") throw new Error("missing notice");
+    expect(after.id).toBe(before.id);
+    expect(next.messages).toHaveLength(beforeState.messages.length);
+    expect(after).toMatchObject({
+      running: false,
+      severity: "success",
+      text: "Context compacted (summary): 9 tokens -> 3 tokens.",
+    });
+  });
+
+  it("flips the running card on the auto-path compaction warning", () => {
+    const beforeState = reduce(initialState(), { t: "incoming", event: startedEvent(90, "auto") });
+    const next = reduce(beforeState, {
+      t: "incoming",
+      event: {
+        type: "warning",
+        id: 91,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        text: "Context compacted (summary): 1,000 tokens -> 400 tokens.",
+        severity: "high",
+      },
+    });
+    const card = next.messages.find((m) => m.kind === "notice");
+    expect(card).toMatchObject({
+      running: false,
+      severity: "success",
+      text: "Context compacted (summary): 1,000 tokens -> 400 tokens.",
+    });
+    // The warning is the card's done text now — no assistant segment too.
+    expect(next.messages.some((m) => m.kind === "assistant")).toBe(false);
+  });
+
+  it("keeps the running card through a session.retracted rebuild", () => {
+    const beforeState = reduce(initialState(), { t: "incoming", event: startedEvent(90) });
+    const next = reduce(beforeState, {
+      t: "incoming",
+      event: {
+        type: "session.retracted",
+        id: 91,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        kind: "compact",
+        beforeMessages: 4,
+        afterMessages: 2,
+        replacementMessages: [{ kind: "user", text: "kept" }],
+      },
+    });
+    expect(next.messages[0]).toMatchObject({ kind: "user", text: "kept" });
+    const card = next.messages.find((m) => m.kind === "notice");
+    expect(card).toMatchObject({ running: true });
+  });
+
+  it("drops a stale auto card on the next primary model event", () => {
+    const beforeState = reduce(initialState(), { t: "incoming", event: startedEvent(90, "auto") });
+    const next = reduce(beforeState, {
+      t: "incoming",
+      event: {
+        type: "model.delta",
+        id: 91,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        channel: "content",
+        text: "answer",
+      },
+    });
+    expect(next.messages.some((m) => m.kind === "notice")).toBe(false);
+  });
+
+  it("keeps a manual throbber through concurrent model deltas", () => {
+    const beforeState = reduce(initialState(), { t: "incoming", event: startedEvent(90) });
+    const next = reduce(beforeState, {
+      t: "incoming",
+      event: {
+        type: "model.delta",
+        id: 91,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        channel: "content",
+        text: "answer",
+      },
+    });
+    const card = next.messages.find((m) => m.kind === "notice");
+    expect(card).toMatchObject({ running: true, trigger: "manual" });
+  });
+
+  it("keeps the in-flight assistant card through a mid-turn compaction rebuild", () => {
+    const base = {
+      ...initialState(),
+      messages: [
+        { kind: "user" as const, text: "go", clientId: "1", turn: 1 },
+        {
+          kind: "assistant" as const,
+          turn: 1,
+          segments: [{ kind: "text" as const, text: "streaming answer" }],
+          pending: true,
+        },
+      ],
+    };
+    const next = reduce(base, {
+      t: "incoming",
+      event: {
+        type: "session.retracted",
+        id: 90,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        kind: "compact",
+        beforeMessages: 4,
+        afterMessages: 2,
+        replacementMessages: [
+          { kind: "user", text: "go" },
+          {
+            kind: "assistant",
+            turn: 1,
+            segments: [
+              {
+                kind: "tool",
+                callId: "tc-1",
+                name: "read_file",
+                args: '{"path":"a.ts"}',
+                ok: true,
+                result: "body",
+              },
+            ],
+            pending: false,
+          },
+        ],
+      },
+    });
+    const assistants = next.messages.filter((m) => m.kind === "assistant");
+    // The live streaming card wins over the loaded copy of its turn.
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({
+      turn: 1,
+      pending: true,
+      segments: [{ kind: "text", text: "streaming answer" }],
+    });
+  });
+
+  it("settles the running card on $error", () => {
+    const beforeState = reduce(initialState(), { t: "incoming", event: startedEvent(90) });
+    const next = reduce(beforeState, {
+      t: "incoming",
+      event: { type: "$error", message: "compact failed: boom" },
+    });
+    const card = next.messages.find((m) => m.kind === "notice");
+    expect(card).toMatchObject({
+      running: false,
+      severity: "error",
+      text: "compact failed: boom",
+    });
+    // No second notice card beside it.
+    expect(next.messages.filter((m) => m.kind === "notice")).toHaveLength(1);
+  });
+});
 
 describe("Desktop App reducer — session.retracted file derivation", () => {
 

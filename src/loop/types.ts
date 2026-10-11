@@ -18,6 +18,9 @@ export type EventRole =
   | "status"
   /** Mid-turn steer injected as queued user guidance without aborting the current turn. */
   | "steer"
+  /** Compaction is running — emitted before the auto/overflow compactNow so UIs
+   *  can show progress for the silent summarization call. */
+  | "compaction_start"
   /** Session edit (abort-discard) truncated the log mid-turn — carries the
    *  post-truncation log so the eventizer can emit session.retracted and the
    *  kernel conversation view stays replayable. */
@@ -75,4 +78,6 @@ export interface LoopEvent {
   replacementMessages?: ReadonlyArray<ChatMessage>;
   /** session_retracted: which session edit truncated or compacted the log. */
   sessionRetractedKind?: "retry" | "rewind" | "abort-discard" | "compact";
+  /** compaction_start: which compaction path is running. */
+  compactionTrigger?: "manual" | "auto" | "overflow";
 }

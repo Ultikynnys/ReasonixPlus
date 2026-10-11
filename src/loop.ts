@@ -94,7 +94,12 @@ import {
   billingContextForModel,
   resolveContextTokens,
 } from "./telemetry/stats.js";
-import { countTokensBounded, estimateRequestTokens, tokensForMessage } from "./tokenizer.js";
+import {
+  countTokensBounded,
+  estimateConversationTokens,
+  estimateRequestTokens,
+  tokensForMessage,
+} from "./tokenizer.js";
 import { ToolRegistry, isReadOnlyTool } from "./tools.js";
 import { ReadTracker } from "./tools/read-tracker.js";
 import { USER_CANCEL_NOTE } from "./tools/shell.js";
@@ -1050,17 +1055,37 @@ export class CacheFirstLoop {
     return { systemChanged, dropped: messages.length - stamped.length };
   }
 
+  /** Serialize compactions: a manual run can overlap the mid-turn overflow
+   *  path, and two concurrent folds would race the log rewrite. */
+  private _compactLock: Promise<void> = Promise.resolve();
+
   /** Compact the log: LLM rolling summary of the folded span plus a
    *  verification probe, falling back to a deterministic fold. Overflow
    *  recovery is fold-only (an estimated summarizer call could overflow). */
   async compactNow(
     opts: { trigger?: CompactionTrigger; signal?: AbortSignal } = {},
   ): Promise<CompactionOutcome> {
+    const run = this._compactLock.then(() => this.compactNowLocked(opts));
+    this._compactLock = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async compactNowLocked(opts: {
+    trigger?: CompactionTrigger;
+    signal?: AbortSignal;
+  }): Promise<CompactionOutcome> {
     const trigger = opts.trigger ?? "manual";
     const signal = opts.signal ?? this._turnAbort.signal;
     const events: LoopEvent[] = [];
     const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);
     const targetTokens = Math.max(1_000, Math.round(ctxMax * COMPACT_TARGET_RATIO));
+    // Snapshot boundary: the summarizer call below yields the event loop, and
+    // a streaming turn can append to the log while it runs. The fold is
+    // re-based onto the live log at apply time (see `appended` below).
+    const snapshotLen = this.log.entries.length;
     const plan = planCompaction(this.log.entries, { targetTokens });
     if (!plan) return { status: "noop", trigger, events };
     let result: CompactionResult | null = null;
@@ -1074,24 +1099,30 @@ export class CacheFirstLoop {
     const checkpoint = this.sessionName
       ? checkpointSessionMessages(this.sessionName, [...this.log.entries], "precompact")
       : null;
-    this.log.compactInPlace(result.messages);
-    this.persistLog(result.messages);
+    // Re-base the fold onto the live log: replacing the log with the stale
+    // snapshot would drop anything the turn appended while the summarizer
+    // ran. Appended messages stay verbatim as the fold's tail.
+    const appended = this.log.entries.slice(snapshotLen);
+    const tailTokens = appended.length > 0 ? estimateConversationTokens(appended) : 0;
+    const merged = appended.length > 0 ? [...result.messages, ...appended] : result.messages;
+    this.log.compactInPlace(merged);
+    this.persistLog(merged);
     events.push({
       turn: this._turn,
       role: "session_retracted",
       content: "",
       sessionRetractedKind: "compact",
-      beforeMessages: result.messagesBefore,
-      afterMessages: result.messagesAfter,
-      replacementMessages: result.messages,
+      beforeMessages: result.messagesBefore + appended.length,
+      afterMessages: merged.length,
+      replacementMessages: merged,
     });
     events.push({
       turn: this._turn,
       role: "warning",
       severity: "high",
       content: t(trigger === "overflow" ? "loop.compactedRecovery" : "loop.compacted", {
-        before: result.tokensBefore.toLocaleString(),
-        after: result.tokensAfter.toLocaleString(),
+        before: (result.tokensBefore + tailTokens).toLocaleString(),
+        after: (result.tokensAfter + tailTokens).toLocaleString(),
         method,
       }),
     });
@@ -1099,10 +1130,10 @@ export class CacheFirstLoop {
       status: "done",
       trigger,
       method,
-      tokensBefore: result.tokensBefore,
-      tokensAfter: result.tokensAfter,
-      messagesBefore: result.messagesBefore,
-      messagesAfter: result.messagesAfter,
+      tokensBefore: result.tokensBefore + tailTokens,
+      tokensAfter: result.tokensAfter + tailTokens,
+      messagesBefore: result.messagesBefore + appended.length,
+      messagesAfter: merged.length,
       checkpoint,
       events,
     };
@@ -1264,6 +1295,12 @@ export class CacheFirstLoop {
       );
       const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);
       if (estimate >= this.autoCompactTriggerRatio * ctxMax) {
+        yield {
+          turn: this._turn,
+          role: "compaction_start",
+          compactionTrigger: "auto",
+          content: "",
+        };
         const outcome = await this.compactNow({ trigger: "auto", signal });
         for (const ev of outcome.events) yield ev;
       }
@@ -1610,6 +1647,12 @@ export class CacheFirstLoop {
         // could overflow the same window again. Fold, then retry the iteration.
         if (!signal.aborted && this._compactRecoveries < 2 && isContextOverflowError(cause)) {
           this._compactRecoveries++;
+          yield {
+            turn: this._turn,
+            role: "compaction_start",
+            compactionTrigger: "overflow",
+            content: "",
+          };
           const outcome = await this.compactNow({ trigger: "overflow", signal });
           for (const ev of outcome.events) yield ev;
           if (outcome.status === "done") continue;

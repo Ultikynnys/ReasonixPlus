@@ -1,6 +1,7 @@
 /** Event-log kernel types. Every transition is an appended Event; every view is a pure reducer projection (no I/O). */
 
 import type {
+  KernelCompactionStartedEvent,
   KernelErrorEvent,
   KernelModelDeltaEvent,
   KernelModelFinalEvent,
@@ -49,6 +50,7 @@ export const EventType = {
   hookFired: "hook.fired",
   sessionOpened: "session.opened",
   sessionRetracted: "session.retracted",
+  compactionStarted: "compaction.started",
   capabilityRegistered: "capability.registered",
   capabilityRemoved: "capability.removed",
   status: "status",
@@ -182,6 +184,10 @@ export interface SessionRetractedEvent extends EventBase {
   replacementMessages: ReadonlyArray<ChatMessage>;
 }
 
+/** Compaction is running — surfaces the compaction card's throbber until the
+ *  run's completion signal flips it to done. */
+export interface CompactionStartedEvent extends KernelCompactionStartedEvent {}
+
 export interface CapabilityRegisteredEvent extends EventBase {
   type: typeof EventType.capabilityRegistered;
   name: string;
@@ -232,6 +238,7 @@ export type Event =
   | HookFiredEvent
   | SessionOpenedEvent
   | SessionRetractedEvent
+  | CompactionStartedEvent
   | CapabilityRegisteredEvent
   | CapabilityRemovedEvent
   | StatusEvent

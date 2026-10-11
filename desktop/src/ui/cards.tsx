@@ -869,10 +869,15 @@ export function NoticeCard({
   text,
   severity = "info",
   name,
+  running,
 }: {
   text: string;
   severity?: NoticeSeverity;
   name?: string;
+  /** undefined = plain notice (no status icon). true/false = the compaction
+   *  card in its running (throbber) / done (check) states, mirroring the
+   *  thinking card's streaming status. */
+  running?: boolean;
 }) {
   useLang();
   const tone: Tone =
@@ -896,7 +901,17 @@ export function NoticeCard({
       tone={tone}
       icon={icon}
       kind={severity}
-      name={name ?? noticeName(severity)}
+      name={
+        name ?? (running !== undefined ? t("cards.compactionName") : noticeName(severity))
+      }
+      meta={
+        running !== undefined ? (
+          <StatusIcon
+            state={running ? "running" : "done"}
+            label={running ? t("cards.compacting") : t("cards.compactionDone")}
+          />
+        ) : undefined
+      }
       defaultOpen
       compact
       copyText={text}

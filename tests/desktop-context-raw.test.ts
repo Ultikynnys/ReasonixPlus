@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  type EmittableEvent,
+  buildLoadedMessages,
   compactTabContext,
   contextRawPayload,
   manualCompactNotice,
+  runManualCompact,
 } from "../src/cli/commands/desktop.js";
 import { parseContext } from "../src/context-plaintext.js";
 import { Eventizer } from "../src/core/eventize.js";
@@ -220,5 +223,126 @@ describe("compactTabContext", () => {
       runtime: null,
     } as unknown as TabArg);
     expect(events).toEqual([]);
+  });
+});
+
+describe("runManualCompact", () => {
+  function makeCompactTab(responses: FakeResponseShape[]) {
+    const loop = new CacheFirstLoop({
+      client: makeFakeClient(responses, { echoMessages: true }).client,
+      prefix: new ImmutablePrefix({ system: "SYS" }),
+      model: "deepseek-chat",
+      stream: false,
+    });
+    const tab = {
+      id: "tab-1",
+      aborter: null,
+      compactingManual: false,
+      runtime: {
+        loop,
+        eventizer: new Eventizer(),
+        ctx: { model: "deepseek-chat", prefixHash: "pfx", reasoningEffort: "high" },
+      },
+    } as unknown as TabArg;
+    return { tab, loop };
+  }
+
+  function seedBigLog(loop: CacheFirstLoop) {
+    for (let n = 0; n < 60 && estimateConversationTokens(loop.log.entries) < 30_000; n++) {
+      const id = `seed-${n}`;
+      loop.log.append({
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id,
+            type: "function",
+            function: { name: "run_command", arguments: `{"command":"echo ${n}"}` },
+          },
+        ],
+      });
+      loop.log.append({
+        role: "tool",
+        tool_call_id: id,
+        content: `output line for seed ${n}\n`.repeat(120),
+      });
+    }
+    loop.log.append({ role: "user", content: "latest ask" });
+  }
+
+  it("starts compaction immediately during a live turn and emits compaction.started first", async () => {
+    const { tab, loop } = makeCompactTab([
+      { content: "rolling summary" },
+      { content: "rolling summary verified" },
+    ]);
+    seedBigLog(loop);
+    // A turn is streaming: this used to be refused outright.
+    (tab as unknown as { aborter: unknown }).aborter = {};
+
+    const events: EmittableEvent[] = [];
+    await runManualCompact(tab, (ev) => {
+      events.push(ev);
+    });
+
+    expect(events[0]).toMatchObject({ type: "compaction.started", trigger: "manual" });
+    expect(events.some((e) => e.type === "session.retracted")).toBe(true);
+    expect(events.some((e) => e.type === "$notice")).toBe(true);
+  });
+
+  it("emits the retraction payload as the post-compaction live log", async () => {
+    const { tab, loop } = makeCompactTab([
+      { content: "rolling summary" },
+      { content: "rolling summary verified" },
+    ]);
+    seedBigLog(loop);
+    // Simulate a streaming turn appending after the fold applied but before
+    // the events are converted: the payload must reflect the live log, not
+    // the summarizer's snapshot.
+    const origCompact = loop.compactNow.bind(loop);
+    vi.spyOn(loop, "compactNow").mockImplementation(async (opts) => {
+      const outcome = await origCompact(opts);
+      loop.log.append({ role: "user", content: "appended after fold" });
+      return outcome;
+    });
+
+    const events: EmittableEvent[] = [];
+    await runManualCompact(tab, (ev) => {
+      events.push(ev);
+    });
+
+    const retracted = events.find(
+      (e): e is Extract<EmittableEvent, { type: "session.retracted" }> =>
+        e.type === "session.retracted",
+    );
+    // Wire projection of the live log (tool pairs merged, synthetic records
+    // skipped) — not the fold snapshot.
+    expect(retracted?.replacementMessages).toEqual(buildLoadedMessages([...loop.log.entries]));
+    expect(
+      retracted?.replacementMessages?.some((m) =>
+        JSON.stringify(m).includes("appended after fold"),
+      ),
+    ).toBe(true);
+  });
+
+  it("no-ops on a second click while compaction is running", async () => {
+    const { tab, loop } = makeCompactTab([
+      { content: "rolling summary" },
+      { content: "rolling summary verified" },
+    ]);
+    seedBigLog(loop);
+
+    const first: EmittableEvent[] = [];
+    const second: EmittableEvent[] = [];
+    const p1 = runManualCompact(tab, (ev) => {
+      first.push(ev);
+    });
+    const p2 = runManualCompact(tab, (ev) => {
+      second.push(ev);
+    });
+    await Promise.all([p1, p2]);
+
+    expect(second).toEqual([]);
+    expect(first.some((e) => e.type === "compaction.started")).toBe(true);
+    expect(first.some((e) => e.type === "$notice")).toBe(true);
   });
 });

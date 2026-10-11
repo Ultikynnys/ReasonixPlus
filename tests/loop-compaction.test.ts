@@ -6,6 +6,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DeepSeekClient } from "../src/client.js";
+import { Eventizer } from "../src/core/eventize.js";
+import { EventType } from "../src/core/events.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { COMPACTION_SUMMARY_PREFIX, DROPPED_WORK_NOTICE_PREFIX } from "../src/loop/compaction.js";
 import { AUTO_COMPACT_TRIGGER_RATIO } from "../src/loop/compaction.js";
@@ -119,6 +121,73 @@ describe("CacheFirstLoop.compactNow (manual, LLM path)", () => {
     expect(outcome.status).toBe("noop");
     expect(loop.log.length).toBe(2);
   });
+
+  it("keeps messages appended while the summarizer runs (mid-turn race)", async () => {
+    const fake = makeFakeClient([
+      { content: "rolling summary" },
+      { content: "rolling summary verified" },
+    ]);
+    const loop = new CacheFirstLoop({
+      client: fake.client,
+      prefix: new ImmutablePrefix({ system: "s" }),
+      stream: false,
+    });
+    seedLogTo(loop, 30_000, "race");
+    loop.log.append({ role: "user", content: "latest ask" });
+    const origChat = fake.client.chat.bind(fake.client);
+    let appended = false;
+    vi.spyOn(fake.client, "chat").mockImplementation(async (req) => {
+      // Simulates a streaming turn appending to the log mid-compaction.
+      if (!appended) {
+        appended = true;
+        loop.log.append({ role: "user", content: "appended mid-compact" });
+      }
+      return origChat(req);
+    });
+
+    const outcome = await loop.compactNow({ trigger: "manual" });
+
+    expect(outcome.status).toBe("done");
+    expect(loop.log.entries.some((m) => String(m.content) === "appended mid-compact")).toBe(true);
+    const retracted = outcome.events.find((e) => e.role === "session_retracted");
+    expect(
+      retracted?.replacementMessages?.some((m) => String(m.content) === "appended mid-compact"),
+    ).toBe(true);
+    expect(retracted?.afterMessages).toBe(loop.log.length);
+  });
+
+  it("serializes overlapping compactNow calls", async () => {
+    const fake = makeFakeClient([
+      { content: "rolling summary" },
+      { content: "rolling summary verified" },
+    ]);
+    const loop = new CacheFirstLoop({
+      client: fake.client,
+      prefix: new ImmutablePrefix({ system: "s" }),
+      stream: false,
+    });
+    seedLogTo(loop, 30_000, "mutex");
+    const origChat = fake.client.chat.bind(fake.client);
+    let active = 0;
+    let maxActive = 0;
+    vi.spyOn(fake.client, "chat").mockImplementation(async (req) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      try {
+        return await origChat(req);
+      } finally {
+        active--;
+      }
+    });
+
+    await Promise.all([
+      loop.compactNow({ trigger: "manual" }),
+      loop.compactNow({ trigger: "manual" }),
+    ]);
+
+    // Without the lock the two summarizer runs overlap on the same log.
+    expect(maxActive).toBe(1);
+  });
 });
 
 describe("CacheFirstLoop auto-compaction", () => {
@@ -140,6 +209,11 @@ describe("CacheFirstLoop auto-compaction", () => {
 
     const events = await drain(loop.step("continue please"));
 
+    const startIdx = events.findIndex((e) => e.role === "compaction_start");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(events[startIdx]!.compactionTrigger).toBe("auto");
+    // The start ping precedes the completion pair the UI flips its card on.
+    expect(startIdx).toBeLessThan(events.findIndex((e) => e.role === "session_retracted"));
     const retracted = events.find((e) => e.role === "session_retracted");
     expect(retracted?.sessionRetractedKind).toBe("compact");
     expect(String(loop.log.entries[0]!.content)).toContain(COMPACTION_SUMMARY_PREFIX);
@@ -170,6 +244,7 @@ describe("CacheFirstLoop auto-compaction", () => {
     const events = await drain(loop.step("hi"));
 
     expect(events.some((e) => e.role === "session_retracted")).toBe(false);
+    expect(events.some((e) => e.role === "compaction_start")).toBe(false);
     expect(fake.captured).toHaveLength(1);
     expect(String(fake.captured[0]!.messages[0]!.content)).not.toContain(
       "compacting an agent conversation",
@@ -275,6 +350,11 @@ describe("CacheFirstLoop overflow recovery", () => {
 
     const events = await drain(loop.step("keep going"));
 
+    const startIdx = events.findIndex((e) => e.role === "compaction_start");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(events[startIdx]!.compactionTrigger).toBe("overflow");
+    // The start ping precedes the completion pair the UI flips its card on.
+    expect(startIdx).toBeLessThan(events.findIndex((e) => e.role === "session_retracted"));
     const retracted = events.find((e) => e.role === "session_retracted");
     expect(retracted?.sessionRetractedKind).toBe("compact");
     const warning = events.find((e) => e.role === "warning" && e.severity === "high");
@@ -326,6 +406,26 @@ describe("compaction persistence", () => {
     expect(loadSessionMessages("compact-test").length).toBe(loop.log.length);
     const dir = join(tmp, ".reasonix", "sessions", "compact-test");
     expect(readdirSync(dir).some((f) => f.startsWith("messages.precompact-"))).toBe(true);
+  });
+});
+
+describe("compaction_start eventize mapping", () => {
+  const ctx = { model: "test-model", prefixHash: "h", reasoningEffort: "max" } as const;
+
+  it("maps the loop event to compaction.started with its trigger", () => {
+    const eventizer = new Eventizer();
+    const out = eventizer.consume(
+      { turn: 7, role: "compaction_start", compactionTrigger: "overflow", content: "" },
+      ctx,
+    );
+    const started = out.find((e) => e.type === EventType.compactionStarted);
+    expect(started).toMatchObject({ type: "compaction.started", trigger: "overflow", turn: 7 });
+  });
+
+  it("covers the manual side-channel via emitCompactionStarted", () => {
+    const eventizer = new Eventizer();
+    const ev = eventizer.emitCompactionStarted(3, "manual");
+    expect(ev).toMatchObject({ type: "compaction.started", trigger: "manual", turn: 3 });
   });
 });
 

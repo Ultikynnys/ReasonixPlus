@@ -159,6 +159,7 @@ export type {
   KernelStatusEvent,
   KernelWarningEvent,
   KernelErrorEvent,
+  KernelCompactionStartedEvent,
   ConnectedEvent,
   ReadyEvent,
   ProtocolErrorEvent,

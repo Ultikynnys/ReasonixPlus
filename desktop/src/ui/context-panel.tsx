@@ -136,9 +136,10 @@ export function ContextPanel({
   const logTokens = Math.max(usage.liveLogTokens, observedLog);
   const cached = Math.min(logTokens, Math.max(0, lastHit - reserved));
   const used = Math.max(0, logTokens - cached);
-  // Real per-model cap from the sidecar (300K for V4) — the fallback below
-  // matches it so the bar is never wrong while the first snapshot is in flight.
-  const ctxMax = usage.ctxMax ?? CONTEXT_MAX_TOKENS;
+  // Denominator must agree with the Context window slider: the sidecar's cap
+  // first (it reflects what the loop enforces), then the user's setting, then
+  // the 300K V4 default while the first snapshot is in flight.
+  const ctxMax = usage.ctxMax ?? settings?.contextTokens ?? CONTEXT_MAX_TOKENS;
   const reservedPct = Math.min(100, (reserved / ctxMax) * 100);
   const usedPct = Math.min(100, (used / ctxMax) * 100);
   const cachedPct = Math.min(100, (cached / ctxMax) * 100);

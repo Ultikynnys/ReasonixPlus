@@ -493,7 +493,7 @@ type InMessage = import("@reasonix/core-utils").OutgoingCommand;
  *  produced, not whenever the next 8 KB flushes. */
 type KernelWireBridgeEvent = DirectKernelWireEvent | SessionRetractedEvent;
 
-type EmittableEvent =
+export type EmittableEvent =
   | KernelWireBridgeEvent
   | { type: "$connected" }
   | { type: "$ready" }
@@ -983,6 +983,7 @@ export function projectKernelEvent(kev: KernelEvent): KernelWireBridgeEvent | nu
     case "status":
     case "warning":
     case "error":
+    case "compaction.started":
       return kev;
     case "slash.invoked":
     case "tool.dispatched":
@@ -3934,6 +3935,16 @@ export async function compactTabContext(tab: Tab): Promise<KernelEvent[]> {
   for (const ev of outcome.events) {
     for (const kev of runtime.eventizer.consume(ev, runtime.ctx)) events.push(kev);
   }
+  // The retraction payload must be the log as of emission: a live turn can
+  // append between the fold and here, and a stale snapshot would wipe those
+  // messages from the conversation view.
+  const live = [...runtime.loop.log.entries];
+  for (let i = 0; i < events.length; i++) {
+    const kev = events[i]!;
+    if (kev.type === "session.retracted" && kev.kind === "compact") {
+      events[i] = { ...kev, replacementMessages: live };
+    }
+  }
   return events;
 }
 
@@ -3960,6 +3971,45 @@ export function manualCompactNotice(events: KernelEvent[]): {
     text: body ? `${compacted.text}\n\n${body}` : compacted.text,
     severity: "success",
   };
+}
+
+/** Manual compaction driver behind "Compact now": runs the fold and streams
+ *  its result to chat. Never refuses — a live turn keeps streaming while the
+ *  fold runs (the loop re-bases around mid-turn appends). Exported for tests. */
+export async function runManualCompact(
+  tab: Tab,
+  emitFn: (ev: EmittableEvent, tabId?: string) => void = emit,
+): Promise<void> {
+  // One compaction at a time: the running card is the acknowledgement for
+  // repeat clicks, and a concurrent second fold would be pointless.
+  if (tab.compactingManual) return;
+  const runtime = tab.runtime;
+  if (!runtime) {
+    emitFn({ type: "$error", message: "No active agent to compact context for." }, tab.id);
+    return;
+  }
+  tab.compactingManual = true;
+  try {
+    // The summarizer call is silent for seconds — surface the throbber first.
+    const started = projectKernelEvent(
+      runtime.eventizer.emitCompactionStarted(runtime.loop.currentTurn, "manual"),
+    );
+    if (started) emitFn(started, tab.id);
+    const events = await compactTabContext(tab);
+    const notice = manualCompactNotice(events);
+    for (const kev of events) {
+      // The compaction warning becomes the result card's text below instead.
+      if (kev.type === "warning") continue;
+      const wire = projectKernelEvent(kev);
+      if (wire) emitFn(wire, tab.id);
+    }
+    emitFn({ type: "$notice", text: notice.text, severity: notice.severity }, tab.id);
+    emitCtxBreakdown(tab);
+  } catch (err) {
+    emitFn({ type: "$error", message: `compact failed: ${(err as Error).message}` }, tab.id);
+  } finally {
+    tab.compactingManual = false;
+  }
 }
 
 function emitSkills(tab: Tab): void {
@@ -4036,6 +4086,9 @@ interface Tab {
   initializationRevision: number;
   runtime: RuntimeState | null;
   aborter: AbortController | null;
+  /** True while a manual compaction runs — repeat clicks no-op instead of
+   *  racing a second fold. */
+  compactingManual: boolean;
   fileIndex: FileWithStats[] | null;
   fileIndexBuilding: Promise<FileWithStats[]> | null;
   fileIndexBuiltAt: number;
@@ -4775,6 +4828,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       initializationRevision: 0,
       runtime: null,
       aborter: null,
+      compactingManual: false,
       fileIndex: null,
       fileIndexBuilding: null,
       fileIndexBuiltAt: 0,
@@ -8406,33 +8460,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "context_compact") {
-      if (!tab.runtime) {
-        emit({ type: "$error", message: "No active agent to compact context for." }, tab.id);
-        return;
-      }
-      // Compaction rewrites the log; a rewrite mid-turn would race the
-      // in-flight request — require idle (same rule as context_raw_set).
-      if (tab.aborter !== null) {
-        emit(
-          { type: "$error", message: "Context is locked while a turn is running; stop first." },
-          tab.id,
-        );
-        return;
-      }
-      void compactTabContext(tab)
-        .then((events) => {
-          const notice = manualCompactNotice(events);
-          for (const kev of events) {
-            // The warning segment is surfaced as the standalone card below instead.
-            if (kev.type === "warning") continue;
-            emitKernelEvent(kev, tab.id);
-          }
-          emit({ type: "$notice", text: notice.text, severity: notice.severity }, tab.id);
-          emitCtxBreakdown(tab);
-        })
-        .catch((err) => {
-          emit({ type: "$error", message: `compact failed: ${(err as Error).message}` }, tab.id);
-        });
+      // Never refuse: the fold runs immediately even mid-turn (the loop
+      // re-bases around in-flight appends), and a repeat click no-ops while
+      // a compaction is already running.
+      void runManualCompact(tab);
       return;
     }
     if (msg.cmd === "retry") {

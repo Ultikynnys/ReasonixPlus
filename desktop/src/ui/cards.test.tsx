@@ -887,6 +887,30 @@ describe("NoticeCard — raw text sanitization", () => {
   });
 });
 
+describe("NoticeCard — compaction throbber states", () => {
+  it("shows the running throbber and the Compaction name while compacting", () => {
+    const { container } = render(
+      wrap(<NoticeCard text="Compacting context…" severity="info" running />),
+    );
+    expect(container.querySelector('[aria-label="Compacting"]')).toBeTruthy();
+    expect(screen.getByText("Compaction")).toBeTruthy();
+  });
+
+  it("shows the done check once compaction completes", () => {
+    const { container } = render(
+      wrap(<NoticeCard text="Context compacted." severity="success" running={false} />),
+    );
+    expect(container.querySelector('[aria-label="Compacted"]')).toBeTruthy();
+    expect(screen.getByText("Compaction")).toBeTruthy();
+  });
+
+  it("renders plain notices without a status icon", () => {
+    const { container } = render(wrap(<NoticeCard text="hi" severity="info" />));
+    expect(container.querySelector('[aria-label="Compacting"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Compacted"]')).toBeNull();
+  });
+});
+
 describe("DiffCard — terminal escape handling", () => {
   const ESC = String.fromCharCode(27);
 

@@ -3,6 +3,7 @@ import type { ChatMessage, RawUsage, ToolCall } from "../types.js";
 import { redactEventValue } from "./event-redaction.js";
 import { EventType } from "./events.js";
 import type {
+  CompactionStartedEvent,
   Event,
   ErrorEvent as KernelErrorEvent,
   ModelDeltaEvent,
@@ -132,6 +133,9 @@ export class Eventizer {
       case "status":
         out.push(this.statusEvent(ev.turn, ev.content));
         break;
+      case "compaction_start":
+        out.push(this.compactionStartedEvent(ev.turn, ev.compactionTrigger ?? "auto"));
+        break;
       // session_retracted: an abort-discard truncated the live log mid-turn —
       // record the replacement so the kernel conversation projection stays
       // replayable.
@@ -197,6 +201,15 @@ export class Eventizer {
     replacementMessages: ReadonlyArray<ChatMessage>,
   ): SessionRetractedEvent {
     return this.sessionRetractedEvent(turn, kind, before, after, replacementMessages);
+  }
+
+  /** Compaction started outside the turn stream (manual "Compact now") — emit
+   *  the kernel start signal directly as a side-channel. */
+  emitCompactionStarted(
+    turn: number,
+    trigger: "manual" | "auto" | "overflow",
+  ): CompactionStartedEvent {
+    return this.compactionStartedEvent(turn, trigger);
   }
 
   private sessionRetractedEvent(
@@ -438,6 +451,19 @@ export class Eventizer {
       ok,
       output,
       durationMs,
+    };
+  }
+
+  private compactionStartedEvent(
+    turn: number,
+    trigger: "manual" | "auto" | "overflow",
+  ): CompactionStartedEvent {
+    return {
+      id: ++this.nextId,
+      ts: new Date().toISOString(),
+      turn,
+      type: EventType.compactionStarted,
+      trigger,
     };
   }
 

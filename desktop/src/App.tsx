@@ -280,7 +280,17 @@ export type ChatMessage =
       segments: AssistantSegment[];
       pending: boolean;
     }
-  | { kind: "notice"; id: string; text: string; severity: NoticeSeverity; turn?: number };
+  | {
+      kind: "notice";
+      id: string;
+      text: string;
+      severity: NoticeSeverity;
+      turn?: number;
+      /** Compaction card state: true = in progress (throbber), false = done. */
+      running?: boolean;
+      /** Which compaction path owns the card — completion signals are keyed to it. */
+      trigger?: "manual" | "auto" | "overflow";
+    };
 
 export type PendingConfirm = {
   id: number;
@@ -1583,8 +1593,40 @@ export function applySubagentProgress(
   return result;
 }
 
+/** Primary model/tool activity means an auto/overflow compaction ended without
+ *  its own completion signal (e.g. a no-op run) — never strand its throbber.
+ *  Manual cards settle via $notice/$error and survive concurrent streaming. */
+const COMPACT_STALE_ON: ReadonlySet<IncomingEvent["type"]> = new Set([
+  "model.turn.started",
+  "model.delta",
+  "model.final",
+  "tool.preparing",
+  "tool.intent",
+  "tool.result",
+]);
+
+function dropStaleCompaction(state: State, ev: IncomingEvent): State {
+  if (!COMPACT_STALE_ON.has(ev.type)) return state;
+  const stale = (m: ChatMessage) =>
+    m.kind === "notice" && m.running === true && m.trigger !== "manual";
+  if (!state.messages.some(stale)) return state;
+  return {
+    ...state,
+    messages: state.messages.filter((m) => !stale(m)),
+  };
+}
+
+/** The turn's assistant card while it is still being built: streaming text or
+ *  a dispatched tool whose result has not landed. */
+function isLiveAssistant(m: ChatMessage): m is Extract<ChatMessage, { kind: "assistant" }> {
+  return (
+    m.kind === "assistant" &&
+    (m.pending === true || m.segments.some((s) => s.kind === "tool" && s.result === undefined))
+  );
+}
+
 export function applyIncoming(state: State, ev: IncomingEvent): State {
-  return applyIncomingInner(ensureAssistantTurn(state, ev), ev);
+  return applyIncomingInner(dropStaleCompaction(ensureAssistantTurn(state, ev), ev), ev);
 }
 
 function applyIncomingInner(state: State, ev: IncomingEvent): State {
@@ -2174,7 +2216,20 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           ev.message.includes("MiMo") || ev.message.includes("mimo_oauth")
             ? false
             : state.mimoOAuthWaiting,
-        messages: appendNoticeMessage(settled, notice),
+        // A failed compaction's card IS the error display now — settle it in
+        // place instead of leaving the throbber spinning next to a new card.
+        messages: (() => {
+          const runningIdx = settled.findIndex(
+            (m) => m.kind === "notice" && m.running === true,
+          );
+          return runningIdx >= 0
+            ? settled.map((m, i) =>
+                i === runningIdx && m.kind === "notice"
+                  ? { ...m, text: ev.message, severity: notice.severity, running: false }
+                  : m,
+              )
+            : appendNoticeMessage(settled, notice);
+        })(),
       };
     }
     case "oauth_begin_result":
@@ -2243,6 +2298,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         lastCallCacheMiss: hasCall ? callMiss : state.usage.lastCallCacheMiss,
         reservedTokens: state.usage.reservedTokens,
         liveLogTokens: state.usage.liveLogTokens,
+        // Dropping the cap here made the context meter fall back to the 300K
+        // default after every model call.
+        ctxMax: state.usage.ctxMax,
         // Per-session totals are not per-turn — carry them through the rebuild
         // (the rebuild happens within the same session).
         shellOutputRawTokens: state.usage.shellOutputRawTokens,
@@ -2436,10 +2494,25 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     }
     case "session.retracted": {
-      const loaded = mapLoadedMessages(ev.replacementMessages);
+      // Chat state, not session log: the running compaction card survives the
+      // rebuild (its completion flips it to done), and a mid-turn compaction
+      // must never erase the streaming assistant card or strand in-flight
+      // tool results. The live card holds the turn's logged history plus its
+      // not-yet-logged tail, so it wins over the loaded copies of that turn.
+      const liveAssistant =
+        ev.kind === "compact" ? state.messages.find(isLiveAssistant) : undefined;
+      const inflightTurn = liveAssistant ? liveAssistant.turn : null;
+      const loaded = mapLoadedMessages(ev.replacementMessages).filter(
+        (m) => inflightTurn === null || !(m.kind === "assistant" && m.turn === inflightTurn),
+      );
+      const live = state.messages.filter(
+        (m) =>
+          (m.kind === "notice" && m.running === true) ||
+          (liveAssistant !== undefined && m === liveAssistant),
+      );
       return {
         ...state,
-        messages: loaded,
+        messages: [...loaded, ...live],
         sessionFiles: deriveSessionFiles(loaded),
       };
     }
@@ -2453,7 +2526,33 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     case "status":
       return state;
+    case "compaction.started": {
+      if (state.messages.some((m) => m.kind === "notice" && m.running === true)) return state;
+      const notice: ChatMessage = {
+        kind: "notice",
+        id: nextNoticeId(),
+        text: t("cards.compactingBody"),
+        severity: "info",
+        turn: currentTurnForNotice(state.messages),
+        running: true,
+        trigger: ev.trigger,
+      };
+      return { ...state, messages: appendNoticeMessage(state.messages, notice) };
+    }
     case "$notice": {
+      // Manual compaction's completion signal — settles its card in place.
+      const runningIdx = state.messages.findIndex(
+        (m) => m.kind === "notice" && m.running === true && m.trigger === "manual",
+      );
+      if (runningIdx >= 0) {
+        // Manual compaction's result lands on the running card in place.
+        const messages = state.messages.map((m, i) =>
+          i === runningIdx && m.kind === "notice"
+            ? { ...m, text: ev.text, severity: ev.severity, running: false }
+            : m,
+        );
+        return { ...state, messages };
+      }
       // A completed action (manual compaction), not a turn status — append in
       // creation order so it sits below the turn, not above its assistant card.
       const notice: ChatMessage = {
@@ -2468,6 +2567,19 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     case "warning": {
       // High-severity only — eventize already drops "low".
       if (ev.severity !== "high") return state;
+      const runningIdx = state.messages.findIndex(
+        (m) => m.kind === "notice" && m.running === true && m.trigger !== "manual",
+      );
+      if (runningIdx >= 0) {
+        // Auto/overflow compaction reports through this warning — it becomes
+        // the running card's done text instead of an inline assistant segment.
+        const messages: ChatMessage[] = state.messages.map((m, i) =>
+          i === runningIdx && m.kind === "notice"
+            ? { ...m, text: ev.text, severity: "success", running: false }
+            : m,
+        );
+        return { ...state, messages };
+      }
       const seg: AssistantSegment = {
         kind: "warning",
         id: `w-${ev.id}`,
@@ -3894,7 +4006,14 @@ function TabRuntime({
                             );
                           }
                           if (m.kind === "notice") {
-                            return <NoticeCard key={m.id} text={m.text} severity={m.severity} />;
+                            return (
+                              <NoticeCard
+                                key={m.id}
+                                text={m.text}
+                                severity={m.severity}
+                                running={m.running}
+                              />
+                            );
                           }
                           return null;
                         })}

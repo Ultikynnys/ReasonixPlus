@@ -422,6 +422,35 @@ describe("ContextPanel files", () => {
     expect(screen.getByText("100")).toBeTruthy();
   });
 
+  it("uses the configured context window as the meter denominator before the sidecar reports", () => {
+    renderPanel({ contextTokens: 736_000 });
+
+    expect(screen.getByText("0 / 736,000")).toBeTruthy();
+  });
+
+  it("prefers the sidecar context cap over the configured window", () => {
+    render(
+      <ContextPanel
+        settings={{ ...settings, contextTokens: 736_000 }}
+        usage={{ ...usage, ctxMax: 500_000 }}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onExportMemories={() => {}}
+        onImportMemories={() => {}}
+        onDismissMemoryResult={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("0 / 500,000")).toBeTruthy();
+  });
+
   it("renders the mode-rules summary, workspace rules, and per-scope add buttons", () => {
     const onRemoveRule = vi.fn();
     render(
