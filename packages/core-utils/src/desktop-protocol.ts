@@ -385,6 +385,8 @@ export interface RevisionRequiredEvent {
   id: number;
   reason: string;
   remainingSteps: PlanStep[];
+  /** The plan's current remaining steps, so the card can diff the rewrite against it. */
+  previousSteps?: PlanStep[];
   summary?: string;
   /** YOLO auto-approval window (ms) — the card auto-picks accept rewrite at expiry. */
   countdownMs?: number;

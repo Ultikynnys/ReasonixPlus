@@ -39,6 +39,7 @@ import {
   ConfirmApprovalCard,
   PathAccessApprovalCard,
   PlanApprovalCard,
+  RevisionApprovalCard,
   findBackgroundJob,
   parseBackgroundJobId,
   parseSubmittedPlan,
@@ -694,5 +695,54 @@ describe("AssistantMsg - an open gate never stacks a second card", () => {
   it("renders exactly one record card once the choice is resolved", () => {
     const { container } = renderMsg({ ...choiceSegment, result: "user picked: a" }, false);
     expect(container.querySelectorAll(".approval")).toHaveLength(1);
+  });
+});
+
+describe("RevisionApprovalCard — plan rewrite diff", () => {
+  const noop = () => {};
+
+  it("diffs the rewrite against the plan's current steps", () => {
+    const { container } = render(
+      <RevisionApprovalCard
+        r={{
+          id: 1,
+          reason: "tweak the plan",
+          previousSteps: [
+            { id: "s1", title: "Alpha", action: "a" },
+            { id: "s2", title: "Beta", action: "b" },
+          ],
+          remainingSteps: [
+            { id: "s1", title: "Alpha", action: "a" },
+            { id: "s3", title: "Gamma", action: "c" },
+          ],
+        }}
+        onAccept={noop}
+        onReject={noop}
+      />,
+    );
+    const kinds = [...container.querySelectorAll(".plan-diff-row")].map((el) => el.className);
+    expect(kinds).toEqual([
+      expect.stringContaining("plan-diff-unchanged"),
+      expect.stringContaining("plan-diff-added"),
+      expect.stringContaining("plan-diff-removed"),
+    ]);
+    expect(container.textContent).toContain("Gamma");
+    expect(container.textContent).toContain("Beta");
+  });
+
+  it("falls back to a plain list when no previous steps are supplied", () => {
+    const { container } = render(
+      <RevisionApprovalCard
+        r={{
+          id: 2,
+          reason: "legacy event",
+          remainingSteps: [{ id: "s1", title: "Only", action: "x" }],
+        }}
+        onAccept={noop}
+        onReject={noop}
+      />,
+    );
+    expect(container.querySelectorAll(".plan-diff-row")).toHaveLength(0);
+    expect(container.textContent).toContain("Only");
   });
 });

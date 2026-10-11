@@ -1,6 +1,7 @@
 import type { ApprovalAction, ApprovalPrompt } from "@reasonix/core-utils";
 import { sanitizeTerminalText } from "@reasonix/core-utils";
 import { formatBytes } from "@reasonix/core-utils";
+import type { PlanStep } from "@reasonix/core-utils";
 import { isCompactionSummary, stripCompactionMarker } from "@reasonix/core-utils/compaction";
 import { derivePrefix } from "@reasonix/core-utils/derive-prefix";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -38,6 +39,12 @@ import {
 import { ApprovalCard, TaskCard, type TaskStepView } from "./extra-cards";
 import { PdfPreview } from "./pdf-preview";
 import { ZoomableImage } from "./image-preview";
+import {
+  countPlanStepDiff,
+  diffPlanSteps,
+  type PlanStepChangeKind,
+  type PlanStepFieldChange,
+} from "./plan-diff";
 
 function downloadImage(dataUrl: string, mimeType: string): void {
   const ext = mimeType.split("/")[1] || "png";
@@ -922,6 +929,136 @@ export function CheckpointApprovalCard({
   );
 }
 
+const PLAN_DIFF_MARK: Record<PlanStepChangeKind, string> = {
+  added: "+",
+  removed: "-",
+  changed: "~",
+  unchanged: " ",
+};
+
+const PLAN_DIFF_TONE: Record<PlanStepChangeKind, string> = {
+  added: "var(--tone-ok)",
+  removed: "var(--tone-err)",
+  changed: "var(--tone-warn)",
+  unchanged: "var(--muted)",
+};
+
+function riskTone(risk: PlanStep["risk"]): string {
+  return risk === "high" ? "var(--tone-err)" : risk === "med" ? "var(--tone-warn)" : "var(--muted)";
+}
+
+/** Render a `revise_plan` rewrite as a diff against the plan's current steps, so
+ *  additions, edits and drops are visible instead of only the final list. Falls
+ *  back to a plain list when the event carried no prior steps to compare. */
+function PlanRewriteDiff({
+  previousSteps,
+  steps,
+}: {
+  previousSteps?: PlanStep[];
+  steps: PlanStep[];
+}) {
+  if (!previousSteps) {
+    return (
+      <ul style={{ margin: 0, paddingLeft: 18 }}>
+        {steps.map((s) => (
+          <li key={s.id} style={{ fontSize: 12, marginBottom: 2 }}>
+            {s.title}
+            {s.risk ? (
+              <span style={{ marginLeft: 6, fontSize: 10, color: riskTone(s.risk) }}>
+                [{s.risk}]
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  const rows = diffPlanSteps(previousSteps, steps);
+  const counts = countPlanStepDiff(rows);
+  const kindLabel = (kind: PlanStepChangeKind): string =>
+    kind === "added"
+      ? t("thread.planDiffAdded")
+      : kind === "removed"
+        ? t("thread.planDiffRemoved")
+        : kind === "changed"
+          ? t("thread.planDiffChanged")
+          : t("thread.planDiffUnchanged");
+  const fieldLabel = (field: PlanStepFieldChange["field"]): string =>
+    field === "title"
+      ? t("thread.planDiffFieldTitle")
+      : field === "action"
+        ? t("thread.planDiffFieldAction")
+        : t("thread.planDiffFieldRisk");
+  return (
+    <>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>
+        {t("thread.planDiffSummary", {
+          added: counts.added,
+          changed: counts.changed,
+          removed: counts.removed,
+        })}
+      </div>
+      <ul className="plan-diff" style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
+        {rows.map((row, index) => (
+          <li
+            key={`${row.kind}-${row.step.id}-${index}`}
+            className={`plan-diff-row plan-diff-${row.kind}`}
+            style={{ display: "flex", gap: 6, fontSize: 12, marginBottom: 3, lineHeight: 1.35 }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                width: 10,
+                flexShrink: 0,
+                fontFamily: "monospace",
+                color: PLAN_DIFF_TONE[row.kind],
+              }}
+            >
+              {PLAN_DIFF_MARK[row.kind]}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div>
+                <span
+                  className="plan-diff-title"
+                  style={{
+                    color: row.kind === "unchanged" ? "var(--muted)" : undefined,
+                    textDecoration: row.kind === "removed" ? "line-through" : undefined,
+                  }}
+                >
+                  {row.step.title}
+                </span>
+                {row.kind !== "unchanged" ? (
+                  <span style={{ marginLeft: 6, fontSize: 10, color: PLAN_DIFF_TONE[row.kind] }}>
+                    {kindLabel(row.kind)}
+                  </span>
+                ) : null}
+                {row.step.risk ? (
+                  <span style={{ marginLeft: 6, fontSize: 10, color: riskTone(row.step.risk) }}>
+                    [{row.step.risk}]
+                  </span>
+                ) : null}
+              </div>
+              {row.kind === "changed" && row.fields
+                ? row.fields.map((f) => (
+                    <div
+                      key={f.field}
+                      style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}
+                    >
+                      <span style={{ color: "var(--tone-warn)" }}>{fieldLabel(f.field)}</span>
+                      {": "}
+                      <span style={{ textDecoration: "line-through" }}>{f.from}</span>{" \u2192 "}
+                      <span>{f.to}</span>
+                    </div>
+                  ))
+                : null}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 export function RevisionApprovalCard({
   r,
   onAccept,
@@ -955,29 +1092,7 @@ export function RevisionApprovalCard({
               <Markdown source={r.summary} />
             </div>
           ) : null}
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {r.remainingSteps.map((s) => (
-              <li key={s.id} style={{ fontSize: 12, marginBottom: 2 }}>
-                {s.title}
-                {s.risk ? (
-                  <span
-                    style={{
-                      marginLeft: 6,
-                      fontSize: 10,
-                      color:
-                        s.risk === "high"
-                          ? "var(--tone-err)"
-                          : s.risk === "med"
-                            ? "var(--tone-warn)"
-                            : "var(--muted)",
-                    }}
-                  >
-                    [{s.risk}]
-                  </span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
+          <PlanRewriteDiff previousSteps={r.previousSteps} steps={r.remainingSteps} />
         </>
       }
       meta={t("thread.revisionMeta")}

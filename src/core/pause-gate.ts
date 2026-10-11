@@ -115,6 +115,8 @@ interface PausePayloadMap {
   plan_revision: {
     reason: string;
     remainingSteps: unknown[];
+    /** The plan's current remaining steps, so the card can diff the rewrite. */
+    previousSteps?: unknown[];
     summary?: string;
     sessionName?: string;
     planId?: string;

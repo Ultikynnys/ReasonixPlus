@@ -354,6 +354,8 @@ export type PendingRevision = {
   id: number;
   reason: string;
   remainingSteps: PlanStep[];
+  /** The plan's current remaining steps at proposal time, for the rewrite diff. */
+  previousSteps?: PlanStep[];
   summary?: string;
   /** YOLO auto-approval window (ms) — the card auto-picks accept rewrite at expiry. */
   countdownMs?: number;
@@ -1815,6 +1817,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
             id: ev.id,
             reason: ev.reason,
             remainingSteps: ev.remainingSteps,
+            previousSteps: ev.previousSteps,
             summary: ev.summary,
             countdownMs: ev.countdownMs,
           },

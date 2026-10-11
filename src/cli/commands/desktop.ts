@@ -6032,6 +6032,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       const payload = req.payload as {
         reason: string;
         remainingSteps: PlanStep[];
+        previousSteps?: PlanStep[];
         summary?: string;
       };
       emit(
@@ -6040,6 +6041,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           id: req.id,
           reason: payload.reason,
           remainingSteps: payload.remainingSteps,
+          previousSteps: payload.previousSteps,
           summary: payload.summary,
           ...(countdownMs !== undefined ? { countdownMs } : {}),
         },

@@ -1,4 +1,4 @@
-import { sessionPlanRepository } from "../code/session-plans.js";
+import { type SessionPlan, sessionPlanRepository } from "../code/session-plans.js";
 import { pauseGate } from "../core/pause-gate.js";
 import type { ToolRegistry } from "../tools.js";
 import { coercePlanStep, sanitizeEvidence } from "./plan-sanitize.js";
@@ -80,6 +80,18 @@ function compactStepCompletion(update: StepCompletion): StepCompletion {
   const evidenceSummary = summarizeEvidence(update.evidence);
   if (evidenceSummary) compact.evidenceSummary = evidenceSummary;
   return compact;
+}
+
+/** Confirmation-card label for a plan. Never the raw UUID: prefer the one-line
+ *  summary, else the first heading/line of the body, else a neutral fallback. */
+function planLabel(plan: SessionPlan): string {
+  const summary = plan.summary?.trim();
+  if (summary) return summary;
+  const line = plan.body
+    .split("\n")
+    .map((text) => text.replace(/^#+\s*/, "").trim())
+    .find((text) => text.length > 0);
+  return line || "this plan";
 }
 
 // Individual tool registrations — one per screen
@@ -327,6 +339,9 @@ function registerRevisePlan(registry: ToolRegistry, opts: PlanToolOptions): void
         payload: {
           reason,
           remainingSteps,
+          previousSteps: active
+            ? active.steps.filter((step) => !Object.hasOwn(active.completions, step.id))
+            : [],
           summary,
           sessionName: ctx?.sessionName,
           planId: active?.id,
@@ -389,10 +404,11 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
         if (name === "open_plan") return JSON.stringify(repository.open(args.planId));
         if (isAbandon) {
           if (!args.reason?.trim()) throw new Error("Abandonment reason is required");
+          const plan = repository.open(args.planId);
           const verdict = await (ctx.confirmationGate ?? pauseGate).ask({
             kind: "choice",
             payload: {
-              question: `Abandon plan ${args.planId}: ${args.reason}?`,
+              question: `Abandon plan "${planLabel(plan)}": ${args.reason}?`,
               options: [
                 { id: "abandon", title: "Abandon plan" },
                 { id: "keep", title: "Keep plan" },
@@ -405,12 +421,13 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
           return JSON.stringify(repository.abandon(args.planId, args.reason));
         }
         // activate_plan — a completed plan is immutable, so it can never be re-activated.
-        if (repository.open(args.planId).status === "completed")
+        const plan = repository.open(args.planId);
+        if (plan.status === "completed")
           throw new Error("activate_plan: a completed plan cannot be modified or activated");
         const verdict = await (ctx.confirmationGate ?? pauseGate).ask({
           kind: "choice",
           payload: {
-            question: `Set plan ${args.planId} as the active plan?`,
+            question: `Set plan "${planLabel(plan)}" as the active plan?`,
             options: [
               { id: "activate", title: "Set active" },
               { id: "keep", title: "Keep current" },
