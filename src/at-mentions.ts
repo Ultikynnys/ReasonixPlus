@@ -4,6 +4,7 @@ import { type Dirent, existsSync, readFileSync, readdirSync, statSync } from "no
 import { readdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { AT_MENTION_PATTERN, stripTrailingMentionDots } from "@reasonix/core-utils";
+import { toPosixPath } from "@reasonix/core-utils/path-utils";
 import { TtlLruCache } from "./core/lru.js";
 import {
   type GitignoreLayer,
@@ -370,7 +371,7 @@ export interface ParsedAtQuery {
 
 /** Split `src/auth/log` → `{dir: "src/auth", filter: "log"}`; trailing slash sets `trailingSlash` and clears filter. */
 export function parseAtQuery(query: string): ParsedAtQuery {
-  const normalized = query.replace(/\\/g, "/");
+  const normalized = toPosixPath(query);
   const trailingSlash = normalized.endsWith("/");
   const trimmed = trailingSlash ? normalized.slice(0, -1) : normalized;
   const lastSlash = trimmed.lastIndexOf("/");

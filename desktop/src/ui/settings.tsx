@@ -1,4 +1,4 @@
-import { modelDisplayName } from "@reasonix/core-utils";
+import { messageOf, modelDisplayName } from "@reasonix/core-utils";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { Settings as SettingsType } from "../App";
@@ -714,7 +714,7 @@ export function AudioInputDeviceSettings() {
       setDevices(list);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(messageOf(err));
     }
   }, []);
 
@@ -763,7 +763,7 @@ export function AudioInputDeviceSettings() {
       await requestMicrophoneAccess();
       setPhase("ready");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(messageOf(err));
     } finally {
       setGranting(false);
     }
@@ -895,7 +895,7 @@ export function AudioInputDeviceTest({ deviceId }: { deviceId: string }) {
       setHasRecording(audioData.length > 0);
       playBack(audioData);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(messageOf(err));
       setState("idle");
     }
   }, [clearStopTimer, playBack]);
@@ -916,7 +916,7 @@ export function AudioInputDeviceTest({ deviceId }: { deviceId: string }) {
     } catch (err) {
       recorder.cancel();
       recorderRef.current = null;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(messageOf(err));
       setState("idle");
     }
   }, [deviceId, stopPlayback, stopRecording]);
@@ -1039,7 +1039,7 @@ export function VoiceModelSettings() {
       await refreshDownloaded();
       handleSelect(id);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = messageOf(err);
       setDownloadError(message);
     } finally {
       setDownloadingModel(null);
@@ -1054,7 +1054,7 @@ export function VoiceModelSettings() {
       await refreshDownloaded();
       setActiveModel(getActiveVoiceModelId());
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = messageOf(err);
       setDownloadError(message);
     }
   };

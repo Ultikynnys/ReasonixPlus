@@ -1,3 +1,4 @@
+import type { CompactionFoldPayload } from "@reasonix/core-utils";
 import type { LoopEvent } from "../loop.js";
 import type { ChatMessage, RawUsage, ToolCall } from "../types.js";
 import { redactEventValue } from "./event-redaction.js";
@@ -35,20 +36,10 @@ export interface EventizeContext {
 }
 
 /** Input shape shared by `emitCompactionFinished` and `compactionFinishedEvent`. */
-export interface CompactionFinishedInput {
+export type CompactionFinishedInput = {
   turn: number;
   kind?: "fold" | "force-summary";
-  folded: boolean;
-  beforeMessages: number;
-  afterMessages: number;
-  summaryChars: number;
-  summary?: string;
-  error?: string;
-  warn?: string;
-  prunedFiles?: number;
-  prunedTokens?: number;
-  droppedFiles?: string[];
-}
+} & CompactionFoldPayload;
 
 export class Eventizer {
   private nextId = 0;

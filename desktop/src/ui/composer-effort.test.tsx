@@ -9,21 +9,9 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 afterEach(cleanup);
 
 import { Composer } from "./composer";
+import { makeComposerBaseProps } from "./composer-test-fixtures";
 
-const baseProps = {
-  draft: "",
-  setDraft: vi.fn(),
-  onSend: vi.fn(),
-  onAbort: vi.fn(),
-  modelLabel: "big-pickle",
-  reasoningEffort: "medium",
-  onModelChange: vi.fn(),
-  onEffortChange: vi.fn(),
-  editMode: "follow",
-  onEditModeChange: vi.fn(),
-  onVoiceError: vi.fn(),
-  textareaRef: { current: null },
-} as const;
+const baseProps = makeComposerBaseProps({ modelLabel: "big-pickle", reasoningEffort: "medium" });
 
 function menuLabels(): string[] {
   const menu = document.querySelector(".effort-menu-list");

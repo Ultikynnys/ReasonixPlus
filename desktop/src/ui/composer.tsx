@@ -1,4 +1,9 @@
-import { DEFAULT_MODEL, clampReasoningEffort, modelDisplayName } from "@reasonix/core-utils";
+import {
+  DEFAULT_MODEL,
+  clampReasoningEffort,
+  messageOf,
+  modelDisplayName,
+} from "@reasonix/core-utils";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   type ChangeEvent,
@@ -424,7 +429,7 @@ export function Composer({
   }, [voiceError]);
 
   const reportVoiceError = (stage: string, err: unknown) => {
-    const reason = err instanceof Error ? err.message : String(err);
+    const reason = messageOf(err);
     const message = `Voice input failed during ${stage}: ${reason || "Unknown error."}`;
     setVoiceError(message);
     onVoiceError(message);

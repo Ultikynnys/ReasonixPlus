@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { toPosixPath } from "@reasonix/core-utils/path-utils";
 import { isCacheFresh, readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
 import { fetchJson } from "./net/timeout-fetch.js";
 import { reasonixHome } from "./reasonix-home.js";
@@ -153,7 +154,7 @@ export type InstallSource = "npm" | "bun" | "pnpm" | "yarn" | "npx" | "unknown";
 export function detectInstallSource(bin?: string): InstallSource {
   const raw = bin ?? process.argv[1] ?? "";
   if (!raw) return "unknown";
-  const norm = raw.replace(/\\/g, "/").toLowerCase();
+  const norm = toPosixPath(raw).toLowerCase();
   if (/\/_npx\//.test(norm)) return "npx";
   if (/\/\.pnpm\//.test(norm) && /dlx/i.test(norm)) return "npx";
   const ua = (process.env.npm_config_user_agent ?? "").toLowerCase();
@@ -174,7 +175,7 @@ export function isNpxInstall(): boolean {
 export function detectNpmInstallPrefix(bin?: string): string | null {
   const raw = bin ?? process.argv[1] ?? "";
   if (!raw) return null;
-  const norm = raw.replace(/\\/g, "/");
+  const norm = toPosixPath(raw);
   const posix = norm.match(/^(.+?)\/lib\/node_modules\/reasonix(?:\/|$)/i);
   if (posix) return posix[1] ?? null;
   const win = norm.match(/^(.+?)\/node_modules\/reasonix(?:\/|$)/i);

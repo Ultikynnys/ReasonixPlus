@@ -7,6 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { toPosixPath } from "@reasonix/core-utils/path-utils";
 
 /** Output line cap before the child is killed — mirrors upstream's 200-match cap. */
 const MAX_OUTPUT_LINES = 200;
@@ -149,7 +150,7 @@ interface RgJsonRecord {
 function normalizeRgPath(p: string): string {
   let s = p;
   if (s.startsWith("./") || s.startsWith(".\\")) s = s.slice(2);
-  return s.replaceAll("\\", "/");
+  return toPosixPath(s);
 }
 
 /** Trim the trailing newline rg appends to `lines.text`. */

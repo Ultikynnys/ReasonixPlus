@@ -32,6 +32,7 @@ export {
   stripTrailingMentionDots,
 } from "./image-attach.js";
 export type { ImageMention, MediaKind } from "./image-attach.js";
+export { COMMON_STRINGS } from "./common-strings.js";
 export { formatBytes } from "./format.js";
 export {
   SECTION_ORDER,
@@ -167,6 +168,7 @@ export type {
   KernelStatusEvent,
   KernelCompactionStartedEvent,
   KernelCompactionFinishedEvent,
+  CompactionFoldPayload,
   KernelWarningEvent,
   KernelErrorEvent,
   ConnectedEvent,
@@ -271,6 +273,7 @@ export type {
   UserImageAttachment,
   QuickSend,
   RuleRecord,
+  StatusBarToggles,
 } from "./desktop-protocol.js";
 export {
   BUILTIN_QUICK_SENDS,

@@ -1,5 +1,6 @@
 import { sleep } from "@reasonix/core-utils";
 import { loadTypesafeApiKey } from "../config.js";
+import { retryDelayMs } from "../core/retry-shared.js";
 import type { ToolRegistry } from "../tools.js";
 
 export const TYPESAFE_API_ROOT = "https://api.typesafe.ai";
@@ -234,31 +235,6 @@ function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || (status >= 500 && status <= 599);
 }
 
-/** Parse `retry-after-ms` / `Retry-After` into milliseconds (prefers the -ms header). */
-function parseRetryAfterMs(headers: Headers | undefined): number | undefined {
-  if (!headers) return undefined;
-  const msHeader = headers.get("retry-after-ms");
-  if (msHeader !== null) {
-    const ms = Number(msHeader);
-    if (Number.isFinite(ms) && ms >= 0) return ms;
-  }
-  const raw = headers.get("retry-after");
-  if (raw === null) return undefined;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1000 : undefined;
-  const date = Date.parse(raw);
-  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
-}
-
-/** Backoff for a zero-based attempt: server `Retry-After` when present, else capped
- *  exponential with jitter. */
-function retryDelayMs(attempt: number, headers?: Headers): number {
-  const serverDelay = parseRetryAfterMs(headers);
-  if (serverDelay !== undefined) return Math.min(serverDelay, TYPESAFE_RETRY_MAX_MS);
-  const exponential = Math.min(TYPESAFE_RETRY_BASE_MS * 2 ** attempt, TYPESAFE_RETRY_MAX_MS);
-  return Math.round(exponential * (0.75 + Math.random() * 0.5));
-}
-
 /** One request with bounded retry on transient failure. Each attempt gets a fresh
  *  timeout; a caller abort is re-thrown immediately (never retried). On the final
  *  attempt a retryable non-2xx response is returned for the caller to map. */
@@ -277,14 +253,24 @@ async function fetchTypesafeWithRetry(
     } catch (error) {
       if (callerSignal?.aborted) throw error;
       if (attempt >= TYPESAFE_MAX_RETRIES) throw error;
-      await sleep(retryDelayMs(attempt), callerSignal);
+      await sleep(
+        retryDelayMs(attempt, { baseMs: TYPESAFE_RETRY_BASE_MS, maxMs: TYPESAFE_RETRY_MAX_MS }),
+        callerSignal,
+      );
       continue;
     }
     if (response.ok || attempt >= TYPESAFE_MAX_RETRIES || !isRetryableStatus(response.status)) {
       return response;
     }
     await response.body?.cancel().catch(() => undefined);
-    await sleep(retryDelayMs(attempt, response.headers), callerSignal);
+    await sleep(
+      retryDelayMs(attempt, {
+        baseMs: TYPESAFE_RETRY_BASE_MS,
+        maxMs: TYPESAFE_RETRY_MAX_MS,
+        headers: response.headers,
+      }),
+      callerSignal,
+    );
   }
 }
 

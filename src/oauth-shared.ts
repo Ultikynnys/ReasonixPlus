@@ -1,6 +1,6 @@
 /** Shared OAuth plumbing for the OpenAI + Antigravity browser flows. */
 import { createHash, randomBytes } from "node:crypto";
-import { type Server, createServer } from "node:http";
+import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { escapeHtml } from "@reasonix/core-utils";
 
 export interface TokenResponse {
@@ -140,15 +140,58 @@ export interface LocalhostOAuthFlowOptions<TCreds> {
   bindErrorMessage?: string;
 }
 
-/** One-shot localhost OAuth callback server shared by both browser flows:
- *  state check, `?error` handling, code exchange, success/error pages,
- *  timeout, and cancel. `done` rejects on error, cancel, or timeout. */
-export async function beginLocalhostOAuthFlow<TCreds>(
-  opts: LocalhostOAuthFlowOptions<TCreds>,
-): Promise<LocalhostOAuthFlow<TCreds>> {
-  const state = randomOAuthState();
+export interface OneShotCallbackFlow<TCreds> {
+  /** Authorize URL to open in the system browser. */
+  url: string;
+  /** Resolves with the handled result; rejects on error / cancel / timeout. */
+  done: Promise<TCreds>;
+  cancel: () => void;
+}
+
+export interface OneShotCallbackFlowOptions<TCreds> {
+  /** Handle one callback request. Answer the response, then call `resolve` or
+   *  `reject` exactly once — either closes the server after the response flushes. */
+  handle: (
+    req: IncomingMessage,
+    res: ServerResponse,
+    ctx: {
+      url: URL;
+      /** Effective redirect URI (recomputed from the bound port when asked). */
+      redirectUri: string;
+      resolve: (value: TCreds) => void;
+      reject: (error: Error) => void;
+    },
+  ) => void;
+  /** Authorize URL for the effective redirect URI. */
+  buildUrl: (redirectUri: string) => string;
+  /** Redirect URI for the fixed port (already includes the desired port). */
+  redirectUri?: string;
+  /** Port to bind the callback server on. */
+  port: number;
+  /** Bind host. Undefined = dual-stack bind (both localhost and 127.0.0.1). */
+  host?: string;
+  /** True: fall back to an ephemeral port when `port` is taken. */
+  allowPortFallback: boolean;
+  /** Recompute the effective redirect URI from the bound port. */
+  redirectUriForPort?: (port: number) => string;
+  timeoutMs?: number;
+  /** Message for the flow-timeout rejection. */
+  timeoutMessage?: string;
+  /** Message for the cancel rejection. */
+  cancelMessage?: string;
+  /** Error when the callback port can't bind and `allowPortFallback` is false. */
+  bindErrorMessage?: string;
+}
+
+/** One-shot localhost callback server skeleton shared by every browser flow:
+ *  dual-stack bind with optional port fallback, exactly-once settle that closes
+ *  the server after the response flushes, timeout, and cancel. */
+export async function beginOneShotCallbackFlow<TCreds>(
+  opts: OneShotCallbackFlowOptions<TCreds>,
+): Promise<OneShotCallbackFlow<TCreds>> {
   const timeoutMs = opts.timeoutMs ?? OAUTH_FLOW_TIMEOUT_MS;
   const timeoutMessage = opts.timeoutMessage ?? "OAuth sign-in timed out. Retry from settings";
+  const cancelMessage = opts.cancelMessage ?? "OAuth sign-in cancelled";
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let resolveDone: (creds: TCreds) => void = () => {};
@@ -157,8 +200,6 @@ export async function beginLocalhostOAuthFlow<TCreds>(
     resolveDone = resolve;
     rejectDone = reject;
   });
-
-  let redirectUri = opts.redirectUri;
 
   const settle = (fn: () => void) => {
     if (settled) return;
@@ -171,40 +212,18 @@ export async function beginLocalhostOAuthFlow<TCreds>(
     server.close(() => {});
   };
 
+  // Assigned below once the port binds (via redirectUriForPort); declared here
+  // because the request handler closure must never observe it uninitialized.
+  let boundRedirectUri = opts.redirectUri ?? "";
+
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (url.pathname !== opts.callbackPath) {
-      res.writeHead(404).end("Not found");
-      return;
-    }
-    const q = url.searchParams;
-    if (q.get("error")) {
-      const msg = q.get("error_description") ?? q.get("error") ?? "access_denied";
-      res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-      res.end(errorPage(msg));
-      settle(() => rejectDone(new Error(`OAuth sign-in failed: ${msg}`)));
-      return;
-    }
-    const code = q.get("code");
-    if (!code || q.get("state") !== state) {
-      res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-      res.end(errorPage(opts.stateMismatchMessage));
-      settle(() => rejectDone(new Error("OAuth state mismatch")));
-      return;
-    }
-    void opts
-      .exchange(code, redirectUri)
-      .then((creds) => {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        res.end(successPage(opts.successTitle, opts.successHeading));
-        settle(() => resolveDone(creds));
-      })
-      .catch((err: unknown) => {
-        const msg = (err as Error).message;
-        res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-        res.end(errorPage(msg));
-        settle(() => rejectDone(err as Error));
-      });
+    opts.handle(req, res, {
+      url,
+      redirectUri: boundRedirectUri,
+      resolve: (value) => settle(() => resolveDone(value)),
+      reject: (err) => settle(() => rejectDone(err)),
+    });
   });
   server.on("error", () => {
     /* surfaced via the listening promise / settle-close */
@@ -240,10 +259,12 @@ export async function beginLocalhostOAuthFlow<TCreds>(
     await listen(0);
   }
   const addr = server.address();
-  if (!addr || typeof addr === "string") throw new Error("OAuth callback server failed to bind");
-  if (opts.redirectUriForPort) redirectUri = opts.redirectUriForPort(addr.port);
+  if (!addr || typeof addr === "string") {
+    throw new Error(opts.bindErrorMessage ?? "OAuth callback server failed to bind");
+  }
+  if (opts.redirectUriForPort) boundRedirectUri = opts.redirectUriForPort(addr.port);
 
-  const url = opts.buildUrl(redirectUri, state);
+  const url = opts.buildUrl(boundRedirectUri);
 
   timer = setTimeout(() => {
     settle(() => rejectDone(new Error(timeoutMessage)));
@@ -252,6 +273,60 @@ export async function beginLocalhostOAuthFlow<TCreds>(
   return {
     url,
     done,
-    cancel: () => settle(() => rejectDone(new Error("OAuth sign-in cancelled"))),
+    cancel: () => settle(() => rejectDone(new Error(cancelMessage))),
   };
+}
+
+/** One-shot localhost OAuth callback server shared by every OAuth browser flow:
+ *  state check, `?error` handling, code exchange, success/error pages,
+ *  timeout, and cancel. `done` rejects on error, cancel, or timeout. */
+export async function beginLocalhostOAuthFlow<TCreds>(
+  opts: LocalhostOAuthFlowOptions<TCreds>,
+): Promise<LocalhostOAuthFlow<TCreds>> {
+  const state = randomOAuthState();
+  return beginOneShotCallbackFlow<TCreds>({
+    redirectUri: opts.redirectUri,
+    port: opts.port,
+    host: opts.host,
+    allowPortFallback: opts.allowPortFallback,
+    redirectUriForPort: opts.redirectUriForPort,
+    timeoutMs: opts.timeoutMs,
+    timeoutMessage: opts.timeoutMessage,
+    bindErrorMessage: opts.bindErrorMessage,
+    buildUrl: (redirectUri) => opts.buildUrl(redirectUri, state),
+    handle: (_req, res, { url, redirectUri, resolve, reject }) => {
+      if (url.pathname !== opts.callbackPath) {
+        res.writeHead(404).end("Not found");
+        return;
+      }
+      const q = url.searchParams;
+      if (q.get("error")) {
+        const msg = q.get("error_description") ?? q.get("error") ?? "access_denied";
+        res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
+        res.end(errorPage(msg));
+        reject(new Error(`OAuth sign-in failed: ${msg}`));
+        return;
+      }
+      const code = q.get("code");
+      if (!code || q.get("state") !== state) {
+        res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
+        res.end(errorPage(opts.stateMismatchMessage));
+        reject(new Error("OAuth state mismatch"));
+        return;
+      }
+      void opts
+        .exchange(code, redirectUri)
+        .then((creds) => {
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+          res.end(successPage(opts.successTitle, opts.successHeading));
+          resolve(creds);
+        })
+        .catch((err: unknown) => {
+          const msg = (err as Error).message;
+          res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
+          res.end(errorPage(msg));
+          reject(err as Error);
+        });
+    },
+  });
 }

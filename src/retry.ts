@@ -1,7 +1,7 @@
 /** Client retries initial requests only; loop-level guards handle safe stream/compaction replays. */
 
 import { messageOf, sleep } from "@reasonix/core-utils";
-import { RETRYABLE_HTTP_STATUSES, isAbortError } from "./core/retry-shared.js";
+import { RETRYABLE_HTTP_STATUSES, isAbortError, retryDelayMs } from "./core/retry-shared.js";
 
 export interface RetryOptions {
   /** Maximum total attempts (including the first). Default 4. */
@@ -55,7 +55,7 @@ export async function fetchWithRetry(
       // Drain the body so the connection can be reused on the next attempt.
       await resp.text().catch(() => undefined);
 
-      const waitMs = computeWait(attempt, initial, cap, resp.headers.get("Retry-After"));
+      const waitMs = retryDelayMs(attempt, { baseMs: initial, maxMs: cap, headers: resp.headers });
       opts.onRetry?.({ attempt: attempt + 1, reason: `http ${resp.status}`, waitMs });
       await sleep(waitMs, opts.signal);
     } catch (err) {
@@ -64,7 +64,7 @@ export async function fetchWithRetry(
       if (isAbortError(err) || opts.signal?.aborted) throw err;
       if (attempt === maxAttempts - 1) throw err;
 
-      const waitMs = computeWait(attempt, initial, cap, null);
+      const waitMs = retryDelayMs(attempt, { baseMs: initial, maxMs: cap });
       opts.onRetry?.({
         attempt: attempt + 1,
         reason: `network: ${messageOf(err)}`,
@@ -75,22 +75,4 @@ export async function fetchWithRetry(
   }
 
   throw lastError ?? new Error("fetchWithRetry: loop exited unexpectedly");
-}
-
-function computeWait(
-  attempt: number,
-  initial: number,
-  cap: number,
-  retryAfter: string | null,
-): number {
-  if (retryAfter) {
-    const seconds = Number.parseFloat(retryAfter);
-    if (Number.isFinite(seconds) && seconds > 0) {
-      return Math.min(seconds * 1000, cap);
-    }
-  }
-  const exp = initial * 2 ** attempt;
-  // Jitter range [75%, 125%] to spread retries out when many clients hit 429 together.
-  const jitter = exp * (0.75 + Math.random() * 0.5);
-  return Math.min(Math.max(jitter, 0), cap);
 }

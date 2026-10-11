@@ -23,6 +23,7 @@ import {
   parseSessionTimestamp,
   sortSessionsDescending,
 } from "@reasonix/core-utils";
+import { toPosixPath } from "@reasonix/core-utils/path-utils";
 import { type ReasoningEffort, isReasoningEffort } from "../config.js";
 import { atomicWriteSync, tmpSiblingPath } from "../core/atomic-write.js";
 import { readJsonFileSilently } from "../core/json-file.js";
@@ -542,9 +543,7 @@ export function normalizeWorkspace(
   if (typeof p !== "string" || p.length === 0) return "";
   if (platform === "win32") {
     const resolved = win32Path.resolve(p);
-    return resolved
-      .replace(/\\/g, "/")
-      .replace(/^([A-Z]):/i, (_, d: string) => `${d.toLowerCase()}:`);
+    return toPosixPath(resolved).replace(/^([A-Z]):/i, (_, d: string) => `${d.toLowerCase()}:`);
   }
   return posixPath.resolve(p);
 }

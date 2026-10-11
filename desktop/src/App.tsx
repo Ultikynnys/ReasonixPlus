@@ -1,6 +1,7 @@
 import {
   DEFAULT_MODEL,
   type ChangelogRelease,
+  type CompactionFoldPayload,
   clipText,
   extractPathsFromArgs,
   flattenText,
@@ -258,7 +259,7 @@ export type AssistantSegment =
       liveOutput?: string;
       subagentRuns?: SubagentRunProgress[];
     }
-  | {
+  | ({
       kind: "compaction";
       /** compactionId pairing the started event with its finished event. */
       id: string;
@@ -268,20 +269,7 @@ export type AssistantSegment =
       /** "fold" = head folded into a summary message; "force-summary" = context-guard / stuck trim + summarize in place. */
       compactionKind?: "fold" | "force-summary";
       aggressive?: boolean;
-      beforeMessages?: number;
-      afterMessages?: number;
-      summaryChars?: number;
-      summary?: string;
-      error?: string;
-      /** Advisory warning on a successful fold — e.g. file triage failed, nothing dropped. */
-      warn?: string;
-      /** Unique file paths whose read results were pruned by the fold's prune step. */
-      prunedFiles?: number;
-      /** Tokens saved by the prune step. */
-      prunedTokens?: number;
-      /** File paths the fold's triage step classified as no longer relevant. */
-      droppedFiles?: string[];
-    }
+    } & Partial<CompactionFoldPayload>)
   | { kind: "warning"; id: string; text: string; severity?: "low" | "high" }
   | { kind: "image"; dataUrl: string; mimeType: string };
 

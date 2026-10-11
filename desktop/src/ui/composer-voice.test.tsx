@@ -52,21 +52,9 @@ afterEach(cleanup);
 import { AudioRecorder } from "../voice/audio-recorder";
 import { speechTranscriber } from "../voice/transcriber";
 import { Composer } from "./composer";
+import { makeComposerBaseProps } from "./composer-test-fixtures";
 
-const baseProps = {
-  draft: "",
-  setDraft: vi.fn(),
-  onSend: vi.fn(),
-  onAbort: vi.fn(),
-  modelLabel: "deepseek-v4-flash",
-  reasoningEffort: "high",
-  onModelChange: vi.fn(),
-  onEffortChange: vi.fn(),
-  editMode: "follow",
-  onEditModeChange: vi.fn(),
-  onVoiceError: vi.fn(),
-  textareaRef: { current: null },
-} as const;
+const baseProps = makeComposerBaseProps();
 
 describe("Composer Voice Input Button", () => {
   it("renders the voice input button with idle title", () => {

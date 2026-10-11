@@ -2,6 +2,7 @@
 
 import { homedir } from "node:os";
 import { join, parse, relative, resolve } from "node:path";
+import { toPosixPath } from "@reasonix/core-utils/path-utils";
 
 /** Returns `~/.reasonix` — the single source of truth for the Reasonix+ state directory. */
 export function reasonixHome(homeDirOverride?: string): string {
@@ -26,6 +27,6 @@ export function reasonixStateDir(rootDir: string, name?: string): string {
 /** Model-readable path for `absolute`: project-relative with forward slashes when
  *  `rootDir` is usable, otherwise the absolute path with forward slashes. */
 export function projectRelativeDisplayPath(rootDir: string, absolute: string): string {
-  if (isUnusableRootDir(rootDir)) return absolute.replaceAll("\\", "/");
-  return relative(resolve(rootDir), absolute).replaceAll("\\", "/");
+  if (isUnusableRootDir(rootDir)) return toPosixPath(absolute);
+  return toPosixPath(relative(resolve(rootDir), absolute));
 }

@@ -1,4 +1,8 @@
-import { sanitizeTerminalText, stripAnsi } from "@reasonix/core-utils";
+import {
+  type CompactionFoldPayload,
+  sanitizeTerminalText,
+  stripAnsi,
+} from "@reasonix/core-utils";
 import {
   type CSSProperties,
   type ReactNode,
@@ -569,20 +573,7 @@ export function CompactionCard({
   /** "force-summary" = context-guard / stuck trim + summarize in place (log not folded). */
   compactionKind?: "fold" | "force-summary";
   aggressive?: boolean;
-  beforeMessages?: number;
-  afterMessages?: number;
-  summaryChars?: number;
-  /** Unique file paths whose read results were pruned by the fold's prune step. */
-  prunedFiles?: number;
-  /** Tokens saved by the prune step. */
-  prunedTokens?: number;
-  /** File paths the fold's triage step classified as no longer relevant. */
-  droppedFiles?: string[];
-  summary?: string;
-  /** Advisory warning on a successful fold — e.g. file triage failed, nothing dropped. */
-  warn?: string;
-  error?: string;
-}) {
+} & Partial<CompactionFoldPayload>) {
   useLang();
   const running = state === "running";
   const failed = state === "failed";

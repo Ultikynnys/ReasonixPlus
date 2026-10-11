@@ -42,3 +42,32 @@ export function isAbortError(err: unknown): boolean {
   }
   return false;
 }
+
+/** Parse `retry-after-ms` / `Retry-After` (seconds or HTTP-date) into
+ *  milliseconds; prefers the -ms header. */
+export function parseRetryAfterMs(headers: Headers | undefined): number | undefined {
+  if (!headers) return undefined;
+  const msHeader = headers.get("retry-after-ms");
+  if (msHeader !== null) {
+    const ms = Number(msHeader);
+    if (Number.isFinite(ms) && ms >= 0) return ms;
+  }
+  const raw = headers.get("retry-after");
+  if (raw === null) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1000 : undefined;
+  const date = Date.parse(raw);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
+/** Backoff for a zero-based attempt: server `Retry-After` when present, else
+ *  capped exponential with ±25% jitter. Never exceeds `maxMs`. */
+export function retryDelayMs(
+  attempt: number,
+  opts: { baseMs: number; maxMs: number; headers?: Headers },
+): number {
+  const serverDelay = parseRetryAfterMs(opts.headers);
+  if (serverDelay !== undefined) return Math.min(serverDelay, opts.maxMs);
+  const exp = Math.min(opts.baseMs * 2 ** attempt, opts.maxMs);
+  return Math.min(Math.round(exp * (0.75 + Math.random() * 0.5)), opts.maxMs);
+}

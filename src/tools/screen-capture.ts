@@ -6,8 +6,14 @@ import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
+import { messageOf } from "@reasonix/core-utils";
 import type { ToolCallContext, ToolRegistry } from "../tools.js";
 import type { UserContentPart } from "../types.js";
+import {
+  PS_WIN_FOCUS_TYPE,
+  psMatchWindowStatements,
+  psRaiseWindowStatements,
+} from "./win-focus.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -135,9 +141,7 @@ async function listMonitorsDarwin(): Promise<MonitorInfo[]> {
     const res = await execFileAsync("system_profiler", ["SPDisplaysDataType"], { timeout: 10000 });
     stdout = res.stdout;
   } catch (err) {
-    throw new Error(
-      `screen_capture: failed to query displays on macOS: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new Error(`screen_capture: failed to query displays on macOS: ${messageOf(err)}`);
   }
 
   const monitors: MonitorInfo[] = [];
@@ -177,7 +181,7 @@ async function listMonitorsLinux(): Promise<MonitorInfo[]> {
     stdout = res.stdout;
   } catch (err) {
     throw new Error(
-      `screen_capture: xrandr command failed: ${err instanceof Error ? err.message : String(err)}. Ensure xrandr is installed and display server is active.`,
+      `screen_capture: xrandr command failed: ${messageOf(err)}. Ensure xrandr is installed and display server is active.`,
     );
   }
 
@@ -330,41 +334,10 @@ async function focusAppWindows(appQuery: string): Promise<FocusResult | undefine
   const sanitized = appQuery.replace(/'/g, "''");
   const script = [
     `$query = '${sanitized}';`,
-    '$code = \'using System; using System.Runtime.InteropServices; public class WinFocus { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; } [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab); [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect); }\';',
-    "Add-Type -TypeDefinition $code -ErrorAction SilentlyContinue;",
+    PS_WIN_FOCUS_TYPE,
     "Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue;",
-    "$procs = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($_.MainWindowTitle -or $_.ProcessName) };",
-    '$exact = $procs | Where-Object { $_.ProcessName -ieq $query -or "$($_.ProcessName).exe" -ieq $query } | Select-Object -First 1;',
-    "if ($exact) { $p = $exact }",
-    "elseif ($query -match '^\\d+$') {",
-    "    $p = $procs | Where-Object { $_.Id -eq [int]$query } | Select-Object -First 1;",
-    "}",
-    "if (-not $p) {",
-    '    $p = $procs | Where-Object { $_.ProcessName -ilike "*$query*" } | Select-Object -First 1;',
-    "}",
-    "if (-not $p) {",
-    '    $p = $procs | Where-Object { $_.MainWindowTitle -ilike "*$query*" } | Select-Object -First 1;',
-    "}",
-    "if (-not $p) {",
-    '    $avail = ($procs | Select-Object -First 8 | ForEach-Object { if ($_.MainWindowTitle) { "$($_.ProcessName): $($_.MainWindowTitle)" } else { $_.ProcessName } }) -join "; ";',
-    '    throw ("No running application or window matching \'" + $query + "\' found. Available windows: " + $avail);',
-    "}",
-    "if ([WinFocus]::IsIconic($p.MainWindowHandle)) {",
-    "    [WinFocus]::ShowWindow($p.MainWindowHandle, 9) | Out-Null;",
-    "}",
-    // SW_MAXIMIZE only when not already maximized: sending it to an already-maximized
-    // window can toggle it back to its normal (windowed) size.
-    "if (-not [WinFocus]::IsZoomed($p.MainWindowHandle)) {",
-    "    [WinFocus]::ShowWindow($p.MainWindowHandle, 3) | Out-Null;",
-    "}",
-    // Raise above every other app without leaving it always-on-top: HWND_TOPMOST then
-    // HWND_NOTOPMOST. SetWindowPos works cross-process and bypasses the foreground lock,
-    // so the capture can never be obscured by whichever window holds the user's focus.
-    "[WinFocus]::SetWindowPos($p.MainWindowHandle, [IntPtr]::new(-1), 0, 0, 0, 0, 3) | Out-Null;",
-    "[WinFocus]::SetWindowPos($p.MainWindowHandle, [IntPtr]::new(-2), 0, 0, 0, 0, 3) | Out-Null;",
-    "[WinFocus]::BringWindowToTop($p.MainWindowHandle) | Out-Null;",
-    "[WinFocus]::SetForegroundWindow($p.MainWindowHandle) | Out-Null;",
-    "[WinFocus]::SwitchToThisWindow($p.MainWindowHandle, $true);",
+    ...psMatchWindowStatements("$query"),
+    ...psRaiseWindowStatements(),
     "Start-Sleep -Milliseconds 250;",
     "try {",
     "    $rect = New-Object WinFocus+RECT;",
@@ -410,7 +383,7 @@ async function focusAppWindows(appQuery: string): Promise<FocusResult | undefine
     if (firstStderrLine?.startsWith("No running application")) {
       throw new Error(`screen_capture: ${firstStderrLine}`);
     }
-    const rawMsg = err instanceof Error ? err.message : String(err);
+    const rawMsg = messageOf(err);
     throw new Error(`screen_capture: failed to focus application '${appQuery}': ${rawMsg}`);
   }
 }
@@ -423,7 +396,7 @@ async function focusAppDarwin(appName: string): Promise<void> {
     await execFileAsync("osascript", ["-e", script], { timeout: 10000 });
   } catch (err) {
     throw new Error(
-      `screen_capture: failed to focus application '${appName}' on macOS: ${err instanceof Error ? err.message : String(err)}`,
+      `screen_capture: failed to focus application '${appName}' on macOS: ${messageOf(err)}`,
     );
   }
 }
@@ -753,7 +726,7 @@ export function registerScreenCaptureTool(
       try {
         monitors = await lister();
       } catch (err) {
-        return `screen_capture: failed to query monitors (${err instanceof Error ? err.message : String(err)})`;
+        return `screen_capture: failed to query monitors (${messageOf(err)})`;
       }
 
       // Resolve an optional target app and focus it first: the window's monitor
@@ -770,7 +743,7 @@ export function registerScreenCaptureTool(
         try {
           focusResult = await focuser(targetApp);
         } catch (err) {
-          return err instanceof Error ? err.message : String(err);
+          return messageOf(err);
         }
       }
 
@@ -797,7 +770,7 @@ export function registerScreenCaptureTool(
         try {
           selectedMonitor = selectMonitor(monitors, args.monitor);
         } catch (err) {
-          return err instanceof Error ? err.message : String(err);
+          return messageOf(err);
         }
       }
 
@@ -825,14 +798,14 @@ export function registerScreenCaptureTool(
             ? { x: x2, y: y2 }
             : parseCornerPair(args.bottom_right ?? args.bottomRight, "bottom_right");
       } catch (err) {
-        return err instanceof Error ? err.message : String(err);
+        return messageOf(err);
       }
 
       let cropArea: CaptureArea;
       try {
         cropArea = calculateCaptureArea(selectedMonitor, topLeft, bottomRight);
       } catch (err) {
-        return err instanceof Error ? err.message : String(err);
+        return messageOf(err);
       }
 
       // Determine output path
@@ -850,7 +823,7 @@ export function registerScreenCaptureTool(
           outputPath,
         });
       } catch (err) {
-        return `screen_capture: capture failed (${err instanceof Error ? err.message : String(err)})`;
+        return `screen_capture: capture failed (${messageOf(err)})`;
       }
 
       // Feed directly to see_image

@@ -1,4 +1,5 @@
 import { stripAnsi } from "@reasonix/core-utils";
+import { basenamePosix } from "@reasonix/core-utils/path-utils";
 
 export interface DeclarativeOutputFilter {
   id: string;
@@ -46,7 +47,7 @@ export function declarativeFilterMatches(
   argv: readonly string[],
 ): boolean {
   validateDeclarativeFilter(filter);
-  const executable = argv[0]?.replaceAll("\\", "/").split("/").pop();
+  const executable = basenamePosix(argv[0] ?? "");
   if (executable !== filter.executable) return false;
   return filter.subcommand === undefined || argv[1] === filter.subcommand;
 }

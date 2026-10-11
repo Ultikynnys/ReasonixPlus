@@ -10,22 +10,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 afterEach(cleanup);
 
 import { Composer, StoredComposer } from "./composer";
+import { makeComposerBaseProps } from "./composer-test-fixtures";
 import { createComposerDraft } from "./composer-draft";
 
-const baseProps = {
-  draft: "",
-  setDraft: vi.fn(),
-  onSend: vi.fn(),
-  onAbort: vi.fn(),
-  modelLabel: "deepseek-v4-flash",
-  reasoningEffort: "high",
-  onModelChange: vi.fn(),
-  onEffortChange: vi.fn(),
-  editMode: "follow",
-  onEditModeChange: vi.fn(),
-  onVoiceError: vi.fn(),
-  textareaRef: { current: null },
-} as const;
+const baseProps = makeComposerBaseProps();
 
 describe("Composer quick send Proceed button", () => {
   it("isolates real composer typing and sends the latest draft immediately", () => {

@@ -111,6 +111,18 @@ export type OllamaGenerationPatch = {
   [K in keyof OllamaGenerationSettings]?: OllamaGenerationSettings[K] | null;
 };
 
+/** Per-field visibility toggles for the bottom status row — shared by the wire
+ *  settings payload and the persisted config so the field lists cannot drift. */
+export interface StatusBarToggles {
+  showBalance?: boolean;
+  showSessionCost?: boolean;
+  showTurnCost?: boolean;
+  showCacheHit?: boolean;
+  showCtxUsage?: boolean;
+  showVersion?: boolean;
+  showFeedbackHint?: boolean;
+}
+
 // ---- events ----
 
 export type ConnectedEvent = { type: "$connected" };
@@ -258,20 +270,39 @@ export interface KernelCompactionStartedEvent extends KernelWireEventBase {
   aggressive?: boolean;
 }
 
-export interface KernelCompactionFinishedEvent extends KernelWireEventBase {
+/** Fold / force-summary outcome payload — the single source for the fold
+ *  result shape, picked by the wire event, FoldResult, the loop compaction_end
+ *  fields and the desktop compaction card. */
+export interface CompactionFoldPayload {
+  /** Whether the fold actually replaced the log. */
+  folded: boolean;
+  /** Message count before the fold. */
+  beforeMessages: number;
+  /** Message count after the fold. */
+  afterMessages: number;
+  /** Length of the synthesized summary, in characters. */
+  summaryChars: number;
+  /** The synthesized summary text (marker already stripped) — lets UIs render the recap inline. */
+  summary?: string;
+  /** Why the fold didn't happen, when the summarizer failed (as opposed to a legit nothing-to-fold noop). */
+  error?: string;
+  /** Advisory warning on a successful fold — e.g. file triage failed, nothing dropped. */
+  warn?: string;
+  /** Unique file paths whose read results were stubbed by the prune step. */
+  prunedFiles?: number;
+  /** Tokens saved by the prune step (content tokens − stub tokens). */
+  prunedTokens?: number;
+  /** File paths the triage step classified as no longer relevant — the UI drops
+   *  them from "Files in context". Absent when the triage kept everything. */
+  droppedFiles?: string[];
+}
+
+export interface KernelCompactionFinishedEvent
+  extends KernelWireEventBase,
+    CompactionFoldPayload {
   type: "compaction.finished";
   compactionId: string;
   kind?: "fold" | "force-summary";
-  folded: boolean;
-  beforeMessages: number;
-  afterMessages: number;
-  summaryChars: number;
-  summary?: string;
-  error?: string;
-  warn?: string;
-  prunedFiles?: number;
-  prunedTokens?: number;
-  droppedFiles?: string[];
 }
 
 export interface KernelWarningEvent extends KernelWireEventBase {
@@ -960,15 +991,7 @@ export interface SettingsEvent {
   /** Per-tab subagent model — the default model used when a subagent skill has no explicit `model:` frontmatter override. Absent = deepseek-v4-flash. */
   subagentModel?: string;
   /** Per-field visibility toggles for the bottom status row. Absent = all default to true. */
-  statusBar?: {
-    showBalance?: boolean;
-    showSessionCost?: boolean;
-    showTurnCost?: boolean;
-    showCacheHit?: boolean;
-    showCtxUsage?: boolean;
-    showVersion?: boolean;
-    showFeedbackHint?: boolean;
-  };
+  statusBar?: StatusBarToggles;
   /** Effective native Ollama generation values after environment/config/default resolution. */
   ollamaGeneration?: OllamaGenerationSettings;
   /** Explicit persisted values, used to expose per-field reset actions. */

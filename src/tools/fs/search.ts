@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import * as pathMod from "node:path";
+import { toPosixPath } from "@reasonix/core-utils/path-utils";
 import { looksBinary } from "./binary.js";
 import { getRegexRunner } from "./regex-runner.js";
 import { displayRel } from "./rel.js";
@@ -240,7 +241,7 @@ export async function searchContent(
       }
       const rgRun = await runRipgrep({
         rootDir: absRoot,
-        startRel: (relToRoot === "" ? "." : relToRoot).replaceAll("\\", "/"),
+        startRel: toPosixPath(relToRoot === "" ? "." : relToRoot),
         pattern: args.pattern,
         caseSensitive: args.case_sensitive,
         context: ctxLines,

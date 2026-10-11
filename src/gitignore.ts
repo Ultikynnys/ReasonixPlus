@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { toPosixPath } from "@reasonix/core-utils/path-utils";
 import ignore, { type Ignore } from "ignore";
 import { TtlLruCache } from "./core/lru.js";
 
@@ -52,7 +53,7 @@ export function ignoredByLayers(
   isDir: boolean,
 ): boolean {
   for (const layer of layers) {
-    const rel = path.relative(layer.dirAbs, abs).replaceAll("\\", "/");
+    const rel = toPosixPath(path.relative(layer.dirAbs, abs));
     if (!rel || rel.startsWith("..")) continue;
     if (layer.ig.ignores(isDir ? `${rel}/` : rel)) return true;
   }

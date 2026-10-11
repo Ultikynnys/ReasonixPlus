@@ -20,3 +20,19 @@ export function looksLikeAbsoluteSystemPath(raw: string): boolean {
     raw,
   );
 }
+
+/** Forward-slash form of a path — the display/compare form shared by relative
+ *  path rendering, search results and executable-name matching. */
+export function toPosixPath(p: string): string {
+  return p.replaceAll("\\", "/");
+}
+
+/** Basename of a path or argv[0] in either slash style (case preserved). */
+export function basenamePosix(p: string): string {
+  return toPosixPath(p).split("/").pop() ?? "";
+}
+
+/** Lowercased basename of a path or argv[0] in either slash style. */
+export function basenameLower(p: string): string {
+  return basenamePosix(p).toLowerCase();
+}

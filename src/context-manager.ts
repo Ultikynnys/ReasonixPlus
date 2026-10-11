@@ -1,5 +1,6 @@
 import {
   COMPACTION_SUMMARY_MARKER,
+  type CompactionFoldPayload,
   buildFilesDroppedMarker,
   messageOf,
 } from "@reasonix/core-utils";
@@ -214,30 +215,15 @@ export interface PostUsageDecision {
   aggressive?: boolean;
 }
 
-export interface FoldResult {
-  folded: boolean;
-  beforeMessages: number;
-  afterMessages: number;
-  summaryChars: number;
-  /** The synthesized summary text (marker already stripped) — lets UIs render the recap inline. */
-  summary?: string;
-  /** Why the fold didn't happen, when the summarizer failed (as opposed to a legit nothing-to-fold noop). */
-  error?: string;
-  /** Advisory warning on a successful fold — e.g. file triage failed, nothing dropped. */
-  warn?: string;
-  /** Unique file paths whose read results were stubbed by the prune step. */
-  prunedFiles?: number;
-  /** Tokens saved by the prune step (content tokens − stub tokens). */
-  prunedTokens?: number;
-  /** File paths the triage step classified as no longer relevant — the UI drops
-   *  them from "Files in context". Absent when the triage kept everything. */
-  droppedFiles?: string[];
+/** Fold outcome — payload fields single-sourced on CompactionFoldPayload
+ *  (core-utils); only the head-keep extras are fold-specific. */
+export type FoldResult = CompactionFoldPayload & {
   /** Earliest messages kept verbatim ahead of the summary (head-keep fold).
    *  Absent when the fold summarized from the head (no head kept). */
   keptHeadMessages?: number;
   /** Token weight of the kept head — the cache bytes the fold preserved. */
   keptHeadTokens?: number;
-}
+};
 
 // Per-message token cost. Delegates to the shared tokenizer estimator so the
 // fold budget and the API promptTokens estimate never drift apart (it counts

@@ -2,8 +2,14 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { messageOf } from "@reasonix/core-utils";
 import type { ToolCallContext, ToolRegistry } from "../tools.js";
 import type { MonitorInfo } from "./screen-capture.js";
+import {
+  PS_WIN_FOCUS_TYPE,
+  psMatchWindowStatements,
+  psRaiseWindowStatements,
+} from "./win-focus.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -70,10 +76,14 @@ async function nativeAction(action: {
   const encoded = Buffer.from(JSON.stringify(action), "utf8").toString("base64");
   const script = [
     "$ErrorActionPreference = 'Stop';",
-    'Add-Type -TypeDefinition \'using System; using System.Runtime.InteropServices; public static class RxInput { [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y); [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd); }\' -ErrorAction SilentlyContinue;',
+    'Add-Type -TypeDefinition \'using System; using System.Runtime.InteropServices; public static class RxInput { [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y); [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra); }\' -ErrorAction SilentlyContinue;',
+    PS_WIN_FOCUS_TYPE,
     `$a = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json;`,
     "if ($a.kind -eq 'click') { [RxInput]::SetCursorPos([int]$a.monitor.x + [int]$a.point.x, [int]$a.monitor.y + [int]$a.point.y) | Out-Null; [RxInput]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); [RxInput]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero); }",
-    "if ($a.kind -eq 'focus') { $p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -ieq $a.app -or $_.MainWindowTitle -like ('*' + $a.app + '*')) } | Select-Object -First 1; if (-not $p) { throw \"No window matching $($a.app)\" }; [RxInput]::ShowWindow($p.MainWindowHandle, 3) | Out-Null; [RxInput]::SetForegroundWindow($p.MainWindowHandle) | Out-Null; }",
+    "if ($a.kind -eq 'focus') {",
+    ...psMatchWindowStatements("$a.app"),
+    ...psRaiseWindowStatements(),
+    "}",
   ].join("\n");
   await execFileAsync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
     timeout: 5000,
@@ -110,7 +120,7 @@ export function registerComputerUseTool(
       try {
         monitor = selectMonitor(monitors, args.monitor);
       } catch (err) {
-        return err instanceof Error ? err.message : String(err);
+        return messageOf(err);
       }
       const action =
         args.action === "click" ? "click" : args.action === "focus" ? "focus" : undefined;
@@ -128,7 +138,7 @@ export function registerComputerUseTool(
       try {
         await (opts.actionRunner ?? nativeAction)(selected);
       } catch (err) {
-        return `computer_use: ${err instanceof Error ? err.message : String(err)}`;
+        return `computer_use: ${messageOf(err)}`;
       }
       return action === "click"
         ? `computer_use: clicked monitor ${monitor.index} at (${(selected as { point: Point }).point.x}, ${(selected as { point: Point }).point.y}) atomically.`

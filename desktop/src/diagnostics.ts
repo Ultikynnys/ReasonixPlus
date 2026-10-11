@@ -1,4 +1,4 @@
-import { redactDiagnosticValue } from "@reasonix/core-utils";
+import { messageOf, redactDiagnosticValue } from "@reasonix/core-utils";
 import { invoke } from "@tauri-apps/api/core";
 
 export type FrontendDiagnosticLevel = "error" | "warn" | "info" | "debug" | "verbose";
@@ -60,7 +60,7 @@ export function recordFrontendDiagnostic(
         details: redactDiagnosticValue(safeValue(details)),
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = messageOf(error);
       window.console.error(`[diagnostics] frontend write failed: ${message}`);
     }
   });

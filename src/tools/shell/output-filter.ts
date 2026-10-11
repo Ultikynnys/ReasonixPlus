@@ -1,3 +1,4 @@
+import { basenameLower } from "@reasonix/core-utils/path-utils";
 import { countTokensBounded } from "../../tokenizer.js";
 import { applyDeclarativeFilter, declarativeFilterMatches } from "./declarative-filter.js";
 import type { RunCommandResult } from "./exec.js";
@@ -22,7 +23,7 @@ export interface FilteredCommandResult {
 }
 
 function executable(argv: readonly string[]): string {
-  return argv[0]?.replaceAll("\\", "/").split("/").pop()?.toLowerCase() ?? "";
+  return basenameLower(argv[0] ?? "");
 }
 
 function hasAny(argv: readonly string[], prefixes: readonly string[]): boolean {

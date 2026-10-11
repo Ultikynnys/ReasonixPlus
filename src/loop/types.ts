@@ -1,3 +1,4 @@
+import type { CompactionFoldPayload } from "@reasonix/core-utils";
 import type { RepairReport } from "../repair/index.js";
 import type { CacheDiagnosticEntry } from "../telemetry/cache-diagnostics.js";
 import type { TurnStats } from "../telemetry/stats.js";
@@ -33,7 +34,24 @@ export type EventRole =
  *  TUI ignores this and renders every warning. */
 export type EventSeverity = "low" | "high";
 
-export interface LoopEvent {
+/** compaction_end fold fields — names and docs live on CompactionFoldPayload
+ *  (core-utils). foldError/foldWarn keep their prefixed names in LoopEvent
+ *  (flat per-role bag) and map to payload `error`/`warn` in the eventizer. */
+export type CompactionEndFoldFields = Partial<
+  Pick<
+    CompactionFoldPayload,
+    | "folded"
+    | "beforeMessages"
+    | "afterMessages"
+    | "summaryChars"
+    | "summary"
+    | "prunedFiles"
+    | "prunedTokens"
+    | "droppedFiles"
+  >
+>;
+
+export interface LoopEvent extends CompactionEndFoldFields {
   turn: number;
   role: EventRole;
   content: string;
@@ -86,27 +104,10 @@ export interface LoopEvent {
   replacementMessages?: ReadonlyArray<ChatMessage>;
   /** True when the fold is in the 70-85% aggressive band — user-facing messaging. */
   aggressive?: boolean;
-  /** compaction_end: whether the fold actually replaced the log. */
-  folded?: boolean;
-  /** compaction_end: message count before the fold. */
-  beforeMessages?: number;
-  /** compaction_end: message count after the fold. */
-  afterMessages?: number;
   /** session_retracted: which session edit truncated the log. */
   sessionRetractedKind?: "retry" | "rewind" | "abort-discard";
-  /** compaction_end: length of the synthesized summary, in characters. */
-  summaryChars?: number;
-  /** compaction_end: the synthesized summary text (marker already stripped by the fold). */
-  summary?: string;
-  /** compaction_end: why the fold didn't happen, when the summarizer failed. */
+  /** compaction_end: why the fold didn't happen (payload `error`), when the summarizer failed. */
   foldError?: string;
-  /** compaction_end: advisory warning on a successful fold — e.g. file triage failed, nothing dropped. */
+  /** compaction_end: advisory warning on a successful fold (payload `warn`) — e.g. file triage failed, nothing dropped. */
   foldWarn?: string;
-  /** compaction_end: unique file paths whose read results were pruned by the fold's prune step. */
-  prunedFiles?: number;
-  /** compaction_end: tokens saved by the prune step. */
-  prunedTokens?: number;
-  /** compaction_end: file paths the triage step classified as no longer
-   *  relevant — the UI drops them from "Files in context". */
-  droppedFiles?: string[];
 }

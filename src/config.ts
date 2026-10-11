@@ -257,11 +257,19 @@ import {
   clampReasoningEffort,
   reasoningEffortsFor,
 } from "@reasonix/core-utils";
-import type { EditMode, ProviderID, QuickSend, ReasoningEffort } from "@reasonix/core-utils";
+import type {
+  EditMode,
+  OllamaGenerationPatch,
+  OllamaGenerationSettings,
+  ProviderID,
+  QuickSend,
+  ReasoningEffort,
+  StatusBarToggles,
+} from "@reasonix/core-utils";
 import { expandTilde } from "@reasonix/core-utils/expand-tilde";
 
 /** Single trust dial: read-only blocks every non-readonly tool (write_file / edit_file / multi_edit / run_command) at dispatch; follow auto-approves reads and allowlisted shell but asks for every write and non-allowlisted command; ignore auto-approves everything. */
-export type { EditMode, ReasoningEffort };
+export type { EditMode, OllamaGenerationPatch, OllamaGenerationSettings, ReasoningEffort };
 
 export const REASONING_EFFORT_VALUES: readonly ReasoningEffort[] = REASONING_EFFORT_ORDER;
 
@@ -624,15 +632,7 @@ export interface ReasonixConfig {
     token?: string;
   };
   /** Per-field visibility toggles for the bottom status row. All default to true (visible). */
-  statusBar?: {
-    showBalance?: boolean;
-    showSessionCost?: boolean;
-    showTurnCost?: boolean;
-    showCacheHit?: boolean;
-    showCtxUsage?: boolean;
-    showVersion?: boolean;
-    showFeedbackHint?: boolean;
-  };
+  statusBar?: StatusBarToggles;
   /** Preferred display currency for costs (e.g. "USD" or "CNY"). When unset, defaults to USD. */
   costCurrency?: string;
   /** Global auto-approved shell command patterns (e.g. "git *", "npm test"). */
@@ -869,23 +869,6 @@ export function loadOllamaApiKey(path: string = defaultConfigPath()): string | u
   if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
   return undefined;
 }
-
-export interface OllamaGenerationSettings {
-  temperature?: number;
-  topP?: number;
-  minP?: number;
-  seed?: number;
-  keepAlive: string;
-  repeatPenalty?: number;
-  frequencyPenalty?: number;
-  presencePenalty?: number;
-  topK?: number;
-  repeatLastN?: number;
-}
-
-export type OllamaGenerationPatch = {
-  [K in keyof OllamaGenerationSettings]?: OllamaGenerationSettings[K] | null;
-};
 
 const DEFAULT_OLLAMA_GENERATION = {
   keepAlive: "30m",
