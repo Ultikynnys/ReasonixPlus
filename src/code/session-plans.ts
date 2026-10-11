@@ -307,7 +307,7 @@ export class SessionPlanRepository {
 
   verdict(id: string, status: "active" | "cancelled" | "refinement_requested"): SessionPlan {
     return this.mutate((history) => {
-      const plan = this.find(history, id);
+      const plan = this.findMutable(history, id);
       if (plan.status !== "proposed") throw new Error("Stale plan verdict");
       const now = new Date().toISOString();
       if (status === "active")
@@ -363,12 +363,35 @@ export class SessionPlanRepository {
   abandon(id: string, reason: string): SessionPlan {
     if (!reason.trim()) throw new Error("Abandonment reason is required");
     return this.mutate((history) => {
-      const plan = this.find(history, id);
+      const plan = this.findMutable(history, id);
       if (plan.status !== "active" && plan.status !== "proposed")
         throw new Error("Plan cannot be abandoned in its current state");
       plan.status = "abandoned";
       plan.dispositionReason = reason.trim();
       plan.updatedAt = new Date().toISOString();
+      return plan;
+    });
+  }
+
+  /** Make any non-completed plan the active one, superseding the current active. A
+   *  completed plan is frozen, so it can never be brought back as active. */
+  activate(id: string): SessionPlan {
+    return this.mutate((history) => {
+      const plan = this.findMutable(history, id);
+      if (plan.status === "active") return plan;
+      const now = new Date().toISOString();
+      for (const other of history.plans) {
+        if (other.id !== id && other.status === "active") {
+          other.status = "superseded";
+          other.replacedBy = id;
+          other.updatedAt = now;
+        }
+      }
+      plan.status = "active";
+      plan.finishedAt = null;
+      plan.replacedBy = undefined;
+      plan.dispositionReason = undefined;
+      plan.updatedAt = now;
       return plan;
     });
   }
@@ -379,8 +402,15 @@ export class SessionPlanRepository {
     return plan;
   }
 
-  private findActive(history: History, id: string): SessionPlan {
+  /** A completed plan is frozen for good — mutating it would falsify the record. */
+  private findMutable(history: History, id: string): SessionPlan {
     const plan = this.find(history, id);
+    if (plan.status === "completed") throw new Error("Plan is completed and cannot be modified");
+    return plan;
+  }
+
+  private findActive(history: History, id: string): SessionPlan {
+    const plan = this.findMutable(history, id);
     if (plan.status !== "active") throw new Error("Plan is no longer active");
     return plan;
   }

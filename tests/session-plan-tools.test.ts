@@ -96,3 +96,49 @@ it("requires correct plan identity and retains explicit abandonment", async () =
     JSON.parse(String(await tools.dispatch("open_plan", { planId }, { sessionName }))),
   ).toMatchObject({ status: "abandoned", dispositionReason: "New requirements", finishedAt: null });
 });
+it("activates a non-completed plan and refuses a completed one", async () => {
+  const tools = registerPlanTool(new ToolRegistry());
+  const sessionName = "activate-tools";
+  const a = await tools.dispatch(
+    "submit_plan",
+    { plan: "A", steps: [{ id: "one", title: "First", action: "Do first" }] },
+    { sessionName, confirmationGate: gate("approve") },
+  );
+  const aId = String(a).split("planId: ")[1];
+  await tools.dispatch(
+    "mark_step_complete",
+    { planId: aId, stepId: "one", result: "Done" },
+    { sessionName, confirmationGate: gate("continue") },
+  );
+  const b = await tools.dispatch(
+    "submit_plan",
+    { plan: "B" },
+    { sessionName, confirmationGate: gate("approve") },
+  );
+  const bId = String(b).split("planId: ")[1];
+
+  const activated = JSON.parse(
+    String(
+      await tools.dispatch(
+        "activate_plan",
+        { planId: bId },
+        { sessionName, confirmationGate: gate("pick", "activate") },
+      ),
+    ),
+  );
+  expect(activated).toMatchObject({ id: bId, status: "active" });
+
+  let refused = "";
+  try {
+    refused = String(
+      await tools.dispatch(
+        "activate_plan",
+        { planId: aId },
+        { sessionName, confirmationGate: gate("pick", "activate") },
+      ),
+    );
+  } catch (err) {
+    refused = String(err);
+  }
+  expect(refused).toContain("completed");
+});

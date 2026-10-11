@@ -355,7 +355,9 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
   registerSubmitPlan(registry, opts);
   registerMarkStepComplete(registry, opts);
   registerRevisePlan(registry, opts);
-  for (const name of ["list_plans", "open_plan", "abandon_plan"] as const) {
+  for (const name of ["list_plans", "open_plan", "abandon_plan", "activate_plan"] as const) {
+    const isAbandon = name === "abandon_plan";
+    const isActivate = name === "activate_plan";
     registry.register({
       name,
       description:
@@ -363,9 +365,11 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
           ? "List this session's persisted plan attempts with IDs, statuses, creation/finish dates and progress."
           : name === "open_plan"
             ? "Open a session plan by ID: full body, steps, accepted results/evidence, revisions and disposition."
-            : "Abandon a session plan by ID and reason after user approval. Retain partial work; never mark it completed.",
+            : isAbandon
+              ? "Abandon a session plan by ID and reason after user approval. Retain partial work; never mark it completed."
+              : "Make a non-completed session plan the active plan (supersedes the current one). A completed plan is immutable and cannot be activated.",
       readOnly: true,
-      userIntervention: name === "abandon_plan",
+      userIntervention: isAbandon || isActivate,
       parameters: {
         type: "object",
         properties:
@@ -373,10 +377,9 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
             ? {}
             : {
                 planId: { type: "string" },
-                ...(name === "abandon_plan" ? { reason: { type: "string" } } : {}),
+                ...(isAbandon ? { reason: { type: "string" } } : {}),
               },
-        required:
-          name === "list_plans" ? [] : name === "open_plan" ? ["planId"] : ["planId", "reason"],
+        required: name === "list_plans" ? [] : isAbandon ? ["planId", "reason"] : ["planId"],
       },
       fn: async (args: { planId?: string; reason?: string }, ctx) => {
         if (!ctx?.sessionName) throw new Error("Plan tools require an owning session");
@@ -384,21 +387,40 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
         if (name === "list_plans") return JSON.stringify(repository.list());
         if (!args.planId) throw new Error("planId is required");
         if (name === "open_plan") return JSON.stringify(repository.open(args.planId));
-        if (!args.reason?.trim()) throw new Error("Abandonment reason is required");
+        if (isAbandon) {
+          if (!args.reason?.trim()) throw new Error("Abandonment reason is required");
+          const verdict = await (ctx.confirmationGate ?? pauseGate).ask({
+            kind: "choice",
+            payload: {
+              question: `Abandon plan ${args.planId}: ${args.reason}?`,
+              options: [
+                { id: "abandon", title: "Abandon plan" },
+                { id: "keep", title: "Keep plan" },
+              ],
+              allowCustom: false,
+            },
+          });
+          if (verdict.type !== "pick" || verdict.optionId !== "abandon")
+            throw new Error("Abandonment not approved");
+          return JSON.stringify(repository.abandon(args.planId, args.reason));
+        }
+        // activate_plan — a completed plan is immutable, so it can never be re-activated.
+        if (repository.open(args.planId).status === "completed")
+          throw new Error("activate_plan: a completed plan cannot be modified or activated");
         const verdict = await (ctx.confirmationGate ?? pauseGate).ask({
           kind: "choice",
           payload: {
-            question: `Abandon plan ${args.planId}: ${args.reason}?`,
+            question: `Set plan ${args.planId} as the active plan?`,
             options: [
-              { id: "abandon", title: "Abandon plan" },
-              { id: "keep", title: "Keep plan" },
+              { id: "activate", title: "Set active" },
+              { id: "keep", title: "Keep current" },
             ],
             allowCustom: false,
           },
         });
-        if (verdict.type !== "pick" || verdict.optionId !== "abandon")
-          throw new Error("Abandonment not approved");
-        return JSON.stringify(repository.abandon(args.planId, args.reason));
+        if (verdict.type !== "pick" || verdict.optionId !== "activate")
+          throw new Error("activation cancelled");
+        return JSON.stringify(repository.activate(args.planId));
       },
     });
   }

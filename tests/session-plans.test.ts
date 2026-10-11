@@ -138,3 +138,38 @@ it("treats a sealed fully-completed active plan as complete, never in-flight", (
   expect(reread.active()).toBeNull();
   expect(reread.list()[0]?.status).toBe("completed");
 });
+it("freezes a completed plan: it cannot be completed, revised, abandoned or activated", () => {
+  const repo = new SessionPlanRepository("frozen");
+  const plan = repo.propose("Plan", steps);
+  repo.verdict(plan.id, "active");
+  repo.complete(plan.id, { kind: "step_completed", stepId: "one", result: "Done" });
+  repo.complete(plan.id, { kind: "step_completed", stepId: "two", result: "Done" });
+  expect(repo.open(plan.id).status).toBe("completed");
+  expect(() =>
+    repo.complete(plan.id, { kind: "step_completed", stepId: "one", result: "Changed" }),
+  ).toThrow(/completed/);
+  expect(() => repo.revise(plan.id, "nope", [{ id: "x", title: "t", action: "a" }])).toThrow(
+    /completed/,
+  );
+  expect(() => repo.abandon(plan.id, "nope")).toThrow(/completed/);
+  expect(() => repo.activate(plan.id)).toThrow(/completed/);
+});
+it("activates any non-completed plan, superseding the current active", () => {
+  const repo = new SessionPlanRepository("activate");
+  const first = repo.propose("First", steps);
+  repo.verdict(first.id, "active");
+  const second = repo.propose("Second", steps);
+  repo.verdict(second.id, "active");
+  expect(repo.active()?.id).toBe(second.id);
+
+  const reactivated = repo.activate(first.id);
+  expect(reactivated.status).toBe("active");
+  expect(repo.active()?.id).toBe(first.id);
+  expect(repo.open(second.id).status).toBe("superseded");
+  expect(repo.open(second.id).replacedBy).toBe(first.id);
+
+  const third = repo.propose("Third");
+  repo.verdict(third.id, "cancelled");
+  expect(repo.activate(third.id).status).toBe("active");
+  expect(repo.active()?.id).toBe(third.id);
+});
