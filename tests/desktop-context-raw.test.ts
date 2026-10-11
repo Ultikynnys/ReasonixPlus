@@ -270,19 +270,31 @@ describe("runManualCompact", () => {
     loop.log.append({ role: "user", content: "latest ask" });
   }
 
-  it("starts compaction immediately during a live turn and emits compaction.started first", async () => {
+  it("aborts a live turn and waits for cleanup before starting compaction", async () => {
     const { tab, loop } = makeCompactTab([
       { content: "rolling summary" },
       { content: "rolling summary verified" },
     ]);
     seedBigLog(loop);
-    // A turn is streaming: this used to be refused outright.
-    (tab as unknown as { aborter: unknown }).aborter = {};
-
+    const aborter = new AbortController();
+    tab.aborter = aborter;
+    let finish!: () => void;
+    tab.turnCleanup = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const abort = vi.spyOn(loop, "abort");
+    const compact = vi.spyOn(loop, "compactNow");
     const events: EmittableEvent[] = [];
-    await runManualCompact(tab, (ev) => {
+    const work = runManualCompact(tab, (ev) => {
       events.push(ev);
     });
+    await Promise.resolve();
+    expect(aborter.signal.aborted).toBe(true);
+    expect(abort).toHaveBeenCalledOnce();
+    expect(compact).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    finish();
+    await work;
 
     expect(events[0]).toMatchObject({ type: "compaction.started", trigger: "manual" });
     expect(events.some((e) => e.type === "session.retracted")).toBe(true);
@@ -322,6 +334,29 @@ describe("runManualCompact", () => {
         JSON.stringify(m).includes("appended after fold"),
       ),
     ).toBe(true);
+  });
+
+  it("waits for active work and releases the barrier after a failed fold", async () => {
+    const { tab, loop } = makeCompactTab([]);
+    let finish!: () => void;
+    tab.activeTurn = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const compact = vi.spyOn(loop, "compactNow").mockRejectedValue(new Error("fold failed"));
+    const events: EmittableEvent[] = [];
+    const work = runManualCompact(tab, (ev) => {
+      events.push(ev);
+    });
+    const barrier = tab.manualCompactDone;
+    expect(tab.compactingManual).toBe(true);
+    await Promise.resolve();
+    expect(compact).not.toHaveBeenCalled();
+    finish();
+    await work;
+    await barrier;
+    expect(events.at(-1)).toMatchObject({ type: "$error", message: "compact failed: fold failed" });
+    expect(tab.compactingManual).toBe(false);
+    expect(tab.manualCompactDone).toBeUndefined();
   });
 
   it("no-ops on a second click while compaction is running", async () => {

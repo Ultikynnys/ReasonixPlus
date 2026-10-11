@@ -1367,32 +1367,8 @@ function closeTrailingReasoning(segments: AssistantSegment[]): AssistantSegment[
   return segments;
 }
 
-// Insert an assistant card at its owning turn's boundary: right before the first
-// message whose turn is strictly greater than `turn`, or at the end when no later
-// message exists. Only used to place a late assistant record for a turn whose card
-// was never created.
-function insertMessageAtTurn(
-  messages: ChatMessage[],
-  message: ChatMessage,
-  turn: number,
-): ChatMessage[] {
-  const insertAt = messages.findIndex(
-    (candidate) => "turn" in candidate && candidate.turn !== undefined && candidate.turn > turn,
-  );
-  const idx = insertAt < 0 ? messages.length : insertAt;
-  return [...messages.slice(0, idx), message, ...messages.slice(idx)];
-}
-
-// Append a notice/error card in CREATION order — the tail of the timeline, like
-// every other card — so a burst of errors reads in the order it happened and a
-// late event never re-anchors itself above newer content. Single guard: while a
-// still-streaming assistant card is the newest entry, the notice slots just
-// above it, so a status card never pushes the in-flight answer down and content
-// being written stays newest.
 function appendNoticeMessage(messages: ChatMessage[], notice: ChatMessage): ChatMessage[] {
-  const last = messages[messages.length - 1];
-  const idx = last?.kind === "assistant" && last.pending ? messages.length - 1 : messages.length;
-  return [...messages.slice(0, idx), notice, ...messages.slice(idx)];
+  return [...messages, notice];
 }
 
 // The turn a notice belongs to (the one in flight, else the last completed
@@ -1408,38 +1384,14 @@ function currentTurnForNotice(messages: ChatMessage[]): number {
   return last;
 }
 
-// Anchor a status notice (mode switch, btw answer, exit) to its turn: slot it at
-// the START of that turn's group — right after the turn's user message, above the
-// turn's assistant card — so it reads as part of the turn instead of floating at
-// the bottom of the transcript. Notices already placed in the turn keep their
-// order (a later one goes after them). Falls back to the tail when the turn has
-// no user card yet (turn 0, or an event that lands before the user message).
-function placeNoticeAtTurnStart(messages: ChatMessage[], notice: ChatMessage): ChatMessage[] {
-  const turn = notice.turn;
-  if (turn === undefined || turn <= 0) return [...messages, notice];
-  const userIdx = messages.findIndex((m) => m.kind === "user" && m.turn === turn);
-  if (userIdx < 0) return [...messages, notice];
-  let idx = userIdx + 1;
-  while (
-    idx < messages.length &&
-    messages[idx]?.kind === "notice" &&
-    messages[idx]?.turn === turn
-  ) {
-    idx += 1;
-  }
-  return [...messages.slice(0, idx), notice, ...messages.slice(idx)];
-}
 
-// Build a status notice and anchor it to its owning turn (see
-// placeNoticeAtTurnStart). Every status notice path routes through here so the
-// turn placement applies uniformly.
 function insertNotice(
   messages: ChatMessage[],
   text: string,
   severity: NoticeSeverity = "info",
   turn?: number,
 ): ChatMessage[] {
-  return placeNoticeAtTurnStart(messages, {
+  return appendNoticeMessage(messages, {
     kind: "notice",
     id: nextNoticeId(),
     text,
@@ -1473,11 +1425,7 @@ function appendAssistantSegment(
     next[hostIndex] = { ...host, segments: [...host.segments, segment] };
     return next;
   }
-  return insertMessageAtTurn(
-    messages,
-    { kind: "assistant", turn, segments: [segment], pending: false },
-    turn,
-  );
+  return [...messages, { kind: "assistant", turn, segments: [segment], pending: false }];
 }
 
 export function applySubagentProgress(

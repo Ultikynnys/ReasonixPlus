@@ -3973,15 +3973,11 @@ export function manualCompactNotice(events: KernelEvent[]): {
   };
 }
 
-/** Manual compaction driver behind "Compact now": runs the fold and streams
- *  its result to chat. Never refuses — a live turn keeps streaming while the
- *  fold runs (the loop re-bases around mid-turn appends). Exported for tests. */
 export async function runManualCompact(
   tab: Tab,
   emitFn: (ev: EmittableEvent, tabId?: string) => void = emit,
+  stopWork?: () => Promise<void>,
 ): Promise<void> {
-  // One compaction at a time: the running card is the acknowledgement for
-  // repeat clicks, and a concurrent second fold would be pointless.
   if (tab.compactingManual) return;
   const runtime = tab.runtime;
   if (!runtime) {
@@ -3989,8 +3985,20 @@ export async function runManualCompact(
     return;
   }
   tab.compactingManual = true;
+  let release!: () => void;
+  tab.manualCompactDone = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   try {
-    // The summarizer call is silent for seconds — surface the throbber first.
+    if (tab.aborter || tab.activeTurn) {
+      tab.aborter?.abort();
+      runtime.loop.abort();
+    }
+    await stopWork?.();
+    await tab.activeTurn;
+    // Cancellation acknowledgement precedes generator cleanup; wait for both.
+    await tab.turnCleanup;
+
     const started = projectKernelEvent(
       runtime.eventizer.emitCompactionStarted(runtime.loop.currentTurn, "manual"),
     );
@@ -4009,6 +4017,8 @@ export async function runManualCompact(
     emitFn({ type: "$error", message: `compact failed: ${(err as Error).message}` }, tab.id);
   } finally {
     tab.compactingManual = false;
+    tab.manualCompactDone = undefined;
+    release();
   }
 }
 
@@ -4089,6 +4099,9 @@ interface Tab {
   /** True while a manual compaction runs — repeat clicks no-op instead of
    *  racing a second fold. */
   compactingManual: boolean;
+  manualCompactDone?: Promise<void>;
+  activeTurn?: Promise<void>;
+  turnCleanup?: Promise<void>;
   fileIndex: FileWithStats[] | null;
   fileIndexBuilding: Promise<FileWithStats[]> | null;
   fileIndexBuiltAt: number;
@@ -5298,6 +5311,24 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     images?: TurnImage[],
     clientId?: string,
   ): Promise<void> {
+    while (tab.manualCompactDone || tab.activeTurn) {
+      await (tab.manualCompactDone ?? tab.activeTurn);
+    }
+    const work = runTurnInner(tab, text, images, clientId);
+    tab.activeTurn = work;
+    try {
+      await work;
+    } finally {
+      if (tab.activeTurn === work) tab.activeTurn = undefined;
+    }
+  }
+
+  async function runTurnInner(
+    tab: Tab,
+    text: string,
+    images?: TurnImage[],
+    clientId?: string,
+  ): Promise<void> {
     // A pending tab has no workspace/session/runtime — there is nothing to run.
     if (tab.pending || !tab.rootDir) return;
     // The MCP bridge (a slow server initialize) can park the turn before its
@@ -5383,6 +5414,16 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // with; a later resume restores them even after a reinstall wiped the
     // config. Never overwrites an existing stored pair (see stampSessionModelPrefs).
     stampSessionModelPrefs(tab);
+    if (tab.compactingManual) {
+      emit({ type: "$turn_complete", outcome: "aborted" }, tab.id);
+      return;
+    }
+    await tab.turnCleanup;
+    tab.turnCleanup = undefined;
+    if (tab.compactingManual) {
+      emit({ type: "$turn_complete", outcome: "aborted" }, tab.id);
+      return;
+    }
     tab.aborter = new AbortController();
     if (tab.aborter.signal.aborted) {
       // The turn never started: nothing to settle beyond the busy flag, same
@@ -5437,7 +5478,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         if (o.decision === "pass") continue;
         emit({ type: "$error", message: formatHookOutcomeMessage(o) }, tab.id);
       }
-      if (report.blocked) {
+      if (report.blocked || tab.aborter.signal.aborted) {
         tab.aborter = null;
         emit({ type: "$turn_complete", outcome: "failed" }, tab.id);
         return;
@@ -5515,12 +5556,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         emit({ type: "$error", message: (err as Error).message }, tab.id);
       } finally {
         if (aborted) {
-          // Close the suspended generator so its finallys (per-turn abort
-          // state reset) run as soon as the pending await settles — the
-          // fold is non-interruptible, so this must NOT be awaited here.
-          // The loop itself reassigns _turnAbort fresh on the next step(),
-          // so the deferred reset can't clobber the next turn's signal.
-          void gen.return(undefined).catch(() => undefined);
+          // Manual compaction must wait for the suspended dispatch to unwind.
+          const cleanup = gen.return(undefined).then(() => undefined);
+          tab.turnCleanup = cleanup;
+          if (tab.compactingManual) await cleanup;
+          else void cleanup.catch(() => undefined);
         }
         tab.aborter = null;
         emitTabDiagnostic(
@@ -8460,10 +8500,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "context_compact") {
-      // Never refuse: the fold runs immediately even mid-turn (the loop
-      // re-bases around in-flight appends), and a repeat click no-ops while
-      // a compaction is already running.
-      void runManualCompact(tab);
+      void runManualCompact(tab, emit, async () => {
+        cancelPendingGates(tab);
+        await tab.toolset?.jobs.shutdown(1500, { keepPersistent: true });
+        emitJobs();
+      });
       return;
     }
     if (msg.cmd === "retry") {

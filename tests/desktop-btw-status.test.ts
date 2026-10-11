@@ -41,7 +41,7 @@ describe("desktop timeline notices", () => {
     expect(next.ready).toBe(state.ready);
   });
 
-  it("anchors a notice to the start of its turn's group, above that turn's reply", () => {
+  it("appends a new notice after older completed cards", () => {
     const state: AppState = {
       ...makeState(),
       messages: [
@@ -52,20 +52,11 @@ describe("desktop timeline notices", () => {
       ],
     };
     const next = reduce(state, { t: "push_notice", text: "Export failed", severity: "error" });
-    // The notice belongs to turn 2 (the last completed turn), so it slots right
-    // after that turn's user message and above its reply, keeping creation order
-    // within the turn instead of floating at the transcript tail.
-    expect(next.messages.map((m) => m.kind)).toEqual([
-      "user",
-      "assistant",
-      "user",
-      "notice",
-      "assistant",
-    ]);
-    expect(next.messages.at(-2)).toMatchObject({ kind: "notice", turn: 2 });
+    expect(next.messages.slice(0, -1)).toEqual(state.messages);
+    expect(next.messages.at(-1)).toMatchObject({ kind: "notice", turn: 2 });
   });
 
-  it("anchors a mid-turn notice to its in-flight turn, above the streaming card", () => {
+  it("appends a mid-turn notice after all previously created cards", () => {
     const state: AppState = {
       ...makeState(),
       messages: [
@@ -81,18 +72,42 @@ describe("desktop timeline notices", () => {
       text: "Image attach failed",
       severity: "error",
     });
-    // The in-flight turn (2) owns the notice: it lands right after that turn's
-    // user message, above the still-streaming card — never below the queued user
-    // message at the tail. It still records the in-flight turn.
-    expect(next.messages.map((m) => m.kind)).toEqual([
-      "user",
-      "assistant",
-      "user",
-      "notice",
-      "assistant",
-      "user",
-    ]);
-    expect(next.messages.at(-3)).toMatchObject({ kind: "notice", turn: 2 });
+    expect(next.messages.slice(0, -1)).toEqual(state.messages);
+    expect(next.messages.at(-1)).toMatchObject({ kind: "notice", turn: 2 });
+  });
+});
+
+describe("manual compaction card chronology", () => {
+  it("appends below a pending assistant and settles without moving", () => {
+    const state: AppState = {
+      ...makeState(),
+      messages: [
+        { kind: "user", text: "hi", clientId: "c1", turn: 1 },
+        { kind: "assistant", turn: 1, segments: [], pending: true },
+      ],
+    };
+    const started = reduce(state, {
+      t: "incoming",
+      event: {
+        type: "compaction.started",
+        id: 1,
+        ts: "2026-06-01T00:00:00Z",
+        turn: 1,
+        trigger: "manual",
+      },
+    });
+    expect(started.messages.slice(0, -1)).toEqual(state.messages);
+    expect(started.messages.at(-1)).toMatchObject({ kind: "notice", running: true });
+    const finished = reduce(started, {
+      t: "incoming",
+      event: { type: "$notice", text: "Compacted", severity: "success" },
+    });
+    expect(finished.messages.slice(0, -1)).toEqual(state.messages);
+    expect(finished.messages.at(-1)).toMatchObject({
+      kind: "notice",
+      running: false,
+      text: "Compacted",
+    });
   });
 });
 

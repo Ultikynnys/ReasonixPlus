@@ -601,7 +601,7 @@ describe("Desktop App reducer — usage", () => {
     expect(next.messages).toEqual([]);
   });
 
-  it("keeps an active streaming card newest and slots a mid-turn notice above it", () => {
+  it("keeps older streaming cards before newly created notices", () => {
     let s = initialState();
     const act = (action: Parameters<typeof reduce>[1]) => {
       s = reduce(s, action);
@@ -645,31 +645,29 @@ describe("Desktop App reducer — usage", () => {
     inc({ type: "model.delta", id: 5, ts: "t", turn: 2, channel: "content", text: "streaming" });
     expect(labels(s.messages)).toEqual(["user-1", "assistant-1", "user-2", "assistant-2(pending)"]);
 
-    // A mid-turn notice must slot ABOVE the active card, never below it —
-    // the active (streaming) card stays newest on the timeline.
+
     act({ t: "push_notice", text: "Model → deepseek-v4-flash", severity: "info" });
     expect(labels(s.messages)).toEqual([
       "user-1",
       "assistant-1",
       "user-2",
-      "info-2",
       "assistant-2(pending)",
+      "info-2",
     ]);
 
-    // The 429 error for the current turn settles the streaming card and lands
-    // at the end of turn 2 (its owning turn), not as a fresh bottom entry.
+
     inc({ type: "error", id: 6, ts: "t", turn: 2, message: "429 rate limit", recoverable: false });
     expect(labels(s.messages)).toEqual([
       "user-1",
       "assistant-1",
       "user-2",
-      "info-2",
       "assistant-2",
+      "info-2",
       "error-2",
     ]);
   });
 
-  it("anchors a status notice to the start of its turn, above that turn's response", () => {
+  it("places a new status notice after the already created response", () => {
     let s = initialState();
     const act = (action: Parameters<typeof reduce>[1]) => {
       s = reduce(s, action);
@@ -699,10 +697,8 @@ describe("Desktop App reducer — usage", () => {
     inc({ type: "$turn_complete", ts: "t" });
     expect(labels(s.messages)).toEqual(["user-1", "assistant-1"]);
 
-    // A mode-switch ("Mode: AUTO") notice must sit WITH turn 1 — right after its
-    // user message — not float at the bottom of the transcript below the reply.
     act({ t: "push_notice", text: "Mode: AUTO", severity: "info" });
-    expect(labels(s.messages)).toEqual(["user-1", "info-1", "assistant-1"]);
+    expect(labels(s.messages)).toEqual(["user-1", "assistant-1", "info-1"]);
   });
 
   it("keeps error cards below their own turn's user message when numbering is unified", () => {

@@ -734,6 +734,7 @@ export class CacheFirstLoop {
         },
       });
       const preWarnings = [...hookWarnings(preReport.outcomes, this._turn)];
+      if (signal.aborted) throw new DOMException("Turn aborted", "AbortError");
 
       if (preReport.blocked) {
         const blocking = preReport.outcomes[preReport.outcomes.length - 1];
@@ -908,6 +909,7 @@ export class CacheFirstLoop {
   abort(opts: LoopAbortOptions = {}): void {
     if (opts.discardCurrentTurn) this._discardAbortRequested = true;
     this._turnAbort.abort();
+    for (const controller of this._toolCancelControllers.values()) controller.abort();
   }
 
   /** Cancel the running tool call without aborting the turn. Ctrl+K / desktop
