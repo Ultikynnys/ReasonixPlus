@@ -53,6 +53,39 @@ export const ZAI_MODELS: readonly string[] = [
   "glm-4-32b-0414-128k",
 ];
 
+/** Conversational models served by Xiaomi MiMo's OpenAI-compatible endpoint.
+ *  Offline fallback only: the live catalog is fetched from GET /v1/models.
+ *  mimo-v2.5 and mimo-v2.5-pro are scheduled for deprecation (2026-10-21), so
+ *  they must not be a default. Speech ids live in MIMO_SPEECH_MODELS (they are
+ *  not chat models), and the same `mimo-*` ids resold through OpenCode route to
+ *  their native provider (CATALOG_PROVIDERS order). */
+export const MIMO_MODELS: readonly string[] = [
+  "mimo-v2.6-pro",
+  "mimo-v2.6-flash",
+  "mimo-v2.6-pro-ultraspeed",
+  "mimo-v2.5-pro",
+  "mimo-v2.5",
+];
+
+/** MiMo speech-only ids (ASR/TTS), never offered as chat models. */
+export const MIMO_SPEECH_MODELS: ReadonlySet<string> = new Set([
+  "mimo-v2.5-asr",
+  "mimo-v2.5-tts",
+  "mimo-v2.5-tts-voiceclone",
+  "mimo-v2.5-tts-voicedesign",
+]);
+
+/** MiMo's V2.6 conversational models accept images (and audio/video). */
+export const MIMO_VISION_MODELS: ReadonlySet<string> = new Set([
+  "mimo-v2.6-pro",
+  "mimo-v2.6-flash",
+  "mimo-v2.6-pro-ultraspeed",
+]);
+/** MiMo's V2.6 conversational models accept audio and video input, not just images. */
+export function modelAcceptsAudioVideo(model: string | undefined | null): boolean {
+  return typeof model === "string" && MIMO_VISION_MODELS.has(model);
+}
+
 /** Free models served through OpenCode Zen. */
 export const OPENCODE_MODELS: readonly string[] = [
   "big-pickle",
@@ -181,6 +214,7 @@ export const KNOWN_MODELS: readonly string[] = [
   ...SUPPORTED_OFFICIAL_MODELS,
   ...GPT56_MODELS,
   ...ZAI_MODELS,
+  ...MIMO_MODELS,
   ...OPENCODE_MODELS,
   ...ANTIGRAVITY_MODELS,
 ];
@@ -256,6 +290,7 @@ export function modelAcceptsImages(
   if (model.startsWith("gpt-")) return true;
   if (DEEPSEEK_FLASH_VISION_MODELS.has(model)) return true;
   if (model === "glm-5.3-flash" || /^glm-\d+(?:\.\d+)?v(?:-|$)/.test(model)) return true;
+  if (MIMO_VISION_MODELS.has(model)) return true;
   if (opencodeVision ? opencodeVision.has(model) : OPENCODE_VISION_MODELS.has(model)) return true;
   if (isAntigravityModel(model)) return true;
   if (model.startsWith("ollama/") && ollamaVision && ollamaVision.has(model)) return true;

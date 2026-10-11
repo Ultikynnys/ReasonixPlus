@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   antigravityUsageView,
   codexUsageView,
+  mimoUsageView,
   ollamaUsageView,
   opencodeUsageView,
   quotaWindowsSummary,
@@ -131,5 +132,33 @@ describe("quotaWindowsSummary", () => {
 
   it("renders nothing when there are no windows", () => {
     expect(quotaWindowsSummary([])).toBe("");
+  });
+});
+
+describe("mimoUsageView", () => {
+  it("shows the static plan chip and no window when there is no console quota", () => {
+    expect(mimoUsageView(null, "MiMo plan")).toEqual({
+      plan: "MiMo plan",
+      windows: [],
+      turnUsedPct: null,
+    });
+    expect(mimoUsageView({ status: "unsupported", source: "none" }, "MiMo plan").windows).toEqual(
+      [],
+    );
+  });
+
+  it("renders a single plan window from an available console quota", () => {
+    const view = mimoUsageView(
+      {
+        status: "available",
+        source: "console",
+        remainingPercent: 72,
+        resetsAt: "2026-11-01T00:00:00Z",
+      },
+      "MiMo plan",
+    );
+    expect(view.windows).toEqual([
+      { label: "plan", remainingPct: 72, resetsAt: Date.parse("2026-11-01T00:00:00Z") },
+    ]);
   });
 });

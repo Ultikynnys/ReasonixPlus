@@ -18,14 +18,20 @@ export { ruleRegexError, MAX_RULE_REGEX_LENGTH } from "./rule-regex.js";
 export {
   AT_MENTION_PATTERN,
   MAX_IMAGE_BYTES,
+  MAX_MEDIA_BYTES,
+  SUPPORTED_AUDIO_EXTENSIONS,
   SUPPORTED_IMAGE_EXTENSIONS,
+  SUPPORTED_VIDEO_EXTENSIONS,
   imageMimeForExtension,
+  isSupportedAudioVideoPath,
   isSupportedImagePath,
+  mediaKindForPath,
+  mediaMimeForExtension,
   scanImageMentions,
   stripMentionTokens,
   stripTrailingMentionDots,
 } from "./image-attach.js";
-export type { ImageMention } from "./image-attach.js";
+export type { ImageMention, MediaKind } from "./image-attach.js";
 export { formatBytes } from "./format.js";
 export {
   SECTION_ORDER,
@@ -72,6 +78,7 @@ export type { RateSchedule } from "./rate-periods.js";
 export {
   antigravityUsageView,
   codexUsageView,
+  mimoUsageView,
   ollamaUsageView,
   opencodeUsageView,
   quotaWindowsSummary,
@@ -84,6 +91,9 @@ export {
   GEMINI_MODELS,
   GPT56_MODELS,
   KNOWN_MODELS,
+  MIMO_MODELS,
+  MIMO_SPEECH_MODELS,
+  MIMO_VISION_MODELS,
   MODEL_DISPLAY_NAMES,
   OPENAI_MODELS,
   OPENCODE_GO_MODELS,
@@ -93,6 +103,7 @@ export {
   ZAI_MODELS,
   isAntigravityModel,
   isUsableAntigravityModel,
+  modelAcceptsAudioVideo,
   modelAcceptsImages,
   modelDisplayName,
 } from "./models.js";
@@ -246,6 +257,7 @@ export type {
   OllamaQuota,
   OllamaQuotaEvent,
   OllamaQuotaWindow,
+  MiMoQuota,
   ZaiQuota,
   ZaiQuotaEvent,
   ZaiQuotaWindow,

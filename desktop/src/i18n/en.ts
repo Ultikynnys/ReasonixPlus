@@ -63,6 +63,7 @@ export const en = {
     modelDeepSeekGroup: "DeepSeek",
     modelOpenAIGroup: "ChatGPT",
     modelZaiGroup: "Z.AI",
+    modelMimoGroup: "Xiaomi MiMo",
     modelOpencodeGroup: "OpenCode",
     modelOpencodeError: "Couldn't fetch OpenCode models: {error}",
     modelAntigravityGroup: "Google Antigravity",
@@ -73,6 +74,10 @@ export const en = {
     modelOllamaHidden: "{count} hidden (subscription)",
     confirm: "confirm",
     removeImage: "Remove image",
+    videoFps: "Frames per second (0.1–10)",
+    videoResolution: "Video detail level",
+    videoResolutionDefault: "Default",
+    videoResolutionMax: "Max",
     imageAttachFailed: "Couldn't attach the image",
     imageRequiresVision:
       "This model can't receive images. Switch to a vision-capable model to attach pasted images.",
@@ -263,6 +268,22 @@ export const en = {
     opencodeSignIn: "Sign in",
     opencodeCancel: "Cancel",
     opencodeFlowFailed: "OpenCode sign-in failed",
+    mimoBaseUrl: "MiMo base URL",
+    mimoBaseUrlHint:
+      "OpenAI-compatible endpoint override for all MiMo models. Defaults to https://api.xiaomimimo.com/v1.",
+    mimoApiKey: "MiMo API key",
+    mimoApiKeyHint:
+      "Paste a Xiaomi MiMo API key. MiMo models bill through your subscription plan, not per token.",
+    mimoSignInTitle: "Sign in with Xiaomi",
+    mimoSignInHint:
+      "Authorize Reasonix+ in your browser to provision a MiMo inference key automatically.",
+    mimoSignIn: "Sign in",
+    mimoWaiting: "Waiting for authorization in the browser…",
+    mimoCancel: "Cancel",
+    mimoSignedIn: "Signed in to Xiaomi MiMo",
+    mimoKeyStored: "A MiMo inference key is stored",
+    mimoSignOut: "Sign out",
+    mimoFlowFailed: "MiMo sign-in failed",
     typesafeSection: "TypeSafe JEV",
     typesafeHint:
       "Validates your key with TypeSafe before enabling jev_evaluate. Models only receive the JEV tool after validation succeeds; missing, rejected, or unreachable credentials keep it unavailable. JEV is not a chat model.",
@@ -717,6 +738,10 @@ export const en = {
     opencodeFree: "plan usage",
     opencodeFreeTier: "free",
     opencodeFreeTitle: "OpenCode free tier · no plan quota (rate-limited per IP, daily)",
+    mimoQuota: "MiMo plan",
+    mimoQuotaTitle:
+      "Xiaomi MiMo subscription plan. MiMo bills through your plan; per-token usage isn't reported.",
+    mimoPlan: "Token Plan",
     offPeak: "off-peak",
     peak: "peak",
     offPeakTitle:

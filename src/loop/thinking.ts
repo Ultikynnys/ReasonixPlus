@@ -15,6 +15,8 @@ export function isThinkingModeModel(model: string): boolean {
   if (isDeepSeekV4ThinkingModel(model)) return true;
   // Ollama DeepSeek R1 models (e.g. ollama/deepseek-r1:14b, deepseek-r1:7b)
   if (model.includes("deepseek-r1")) return true;
+  // Xiaomi MiMo emits reasoning_content and 400s if a tool-call turn drops it.
+  if (model.startsWith("mimo-")) return true;
   return false;
 }
 
@@ -30,6 +32,8 @@ export function thinkingModeForModel(model: string): "enabled" | "disabled" | un
   if (isDeepSeekV4ThinkingModel(model)) return "enabled";
   // Ollama DeepSeek R1 models (e.g. ollama/deepseek-r1:14b, deepseek-r1:8b)
   if (model.includes("deepseek-r1")) return "enabled";
+  // Xiaomi MiMo: thinking is on by default and toggled via `thinking: { type }`.
+  if (model.startsWith("mimo-")) return "enabled";
   return undefined;
 }
 

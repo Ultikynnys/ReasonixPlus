@@ -1,5 +1,6 @@
 import {
   ANTIGRAVITY_MODELS,
+  MIMO_MODELS,
   OPENAI_MODELS,
   OPENCODE_MODELS,
   SUPPORTED_OFFICIAL_MODELS,
@@ -12,11 +13,12 @@ export type ModelCatalogGroupKey =
   | "deepseek"
   | "openai"
   | "zai"
+  | "mimo"
   | "opencode"
   | "typesafe"
   | "antigravity";
 
-export type ProviderCatalogKey = "deepseek" | "openai" | "zai" | "typesafe";
+export type ProviderCatalogKey = "deepseek" | "openai" | "zai" | "mimo" | "typesafe";
 
 export interface ProviderCatalogView {
   models: readonly string[];
@@ -28,6 +30,7 @@ export const MODEL_CATALOG_GROUP_LABELS = {
   deepseek: "composer.modelDeepSeekGroup",
   openai: "composer.modelOpenAIGroup",
   zai: "composer.modelZaiGroup",
+  mimo: "composer.modelMimoGroup",
   opencode: "composer.modelOpencodeGroup",
   typesafe: "settings.typesafeSection",
   antigravity: "composer.modelAntigravityGroup",
@@ -76,6 +79,7 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     { key: "deepseek", models: catalogFor("deepseek", SUPPORTED_OFFICIAL_MODELS) },
     { key: "openai", models: catalogFor("openai", OPENAI_MODELS) },
     { key: "zai", models: catalogFor("zai", ZAI_MODELS) },
+    { key: "mimo", models: catalogFor("mimo", MIMO_MODELS) },
     { key: "opencode", models: opencodeModels },
     ...(options.providerCatalogs?.typesafe
       ? [{ key: "typesafe" as const, models: catalogFor("typesafe", ["jev-latest"]) }]

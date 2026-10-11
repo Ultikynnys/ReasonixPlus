@@ -38,6 +38,15 @@ export interface ToolCall {
 export type UserContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } }
+  /** Xiaomi MiMo audio input — `data` is a data URL (`data:audio/...;base64,...`). */
+  | { type: "input_audio"; input_audio: { data: string } }
+  /** Xiaomi MiMo video input — `url` is an HTTPS URL or `data:video/...` data URL. */
+  | {
+      type: "video_url";
+      video_url: { url: string };
+      fps?: number;
+      media_resolution?: "default" | "max";
+    }
   /** Model-generated image (e.g. Antigravity's inlineData part) — output-side,
    *  carried on assistant messages so history/reload/compaction preserve it. */
   | { type: "image"; data_url: string; mime_type: string };
@@ -50,6 +59,13 @@ export type Role = "system" | "user" | "assistant" | "tool";
 export interface TurnImage {
   url: string;
   path?: string;
+  /** Attachment kind — images feed image_url parts; audio/video feed MiMo's
+   *  native input_audio / video_url parts. Absent = "image". */
+  kind?: "image" | "audio" | "video";
+  /** Video-only MiMo frame sampling rate (0.1–10 fps). */
+  fps?: number;
+  /** Video-only MiMo visual detail level. */
+  mediaResolution?: "default" | "max";
 }
 
 export interface ChatMessage {

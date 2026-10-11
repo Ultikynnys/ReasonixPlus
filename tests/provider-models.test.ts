@@ -79,4 +79,32 @@ describe("provider model discovery", () => {
       }),
     ).toMatchObject({ models: ["jev-next"], source: "live" });
   });
+  it("drops excluded ids (MiMo speech models) and bakes it into the cache", async () => {
+    const homeDir = home();
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ id: "mimo-v2.6-pro" }, { id: "mimo-v2.5-asr" }, { id: "mimo-v2.5-tts" }],
+        }),
+      ),
+    );
+    const options = {
+      provider: "mimo" as const,
+      baseUrl: "https://test/v1",
+      apiKey: "key",
+      fallback: ["mimo-v2.6-pro"],
+      exclude: new Set(["mimo-v2.5-asr", "mimo-v2.5-tts"]),
+      homeDir,
+      fetchImpl,
+    };
+    expect(await fetchProviderModels(options)).toMatchObject({
+      models: ["mimo-v2.6-pro"],
+      source: "live",
+    });
+    // A later cached read stays clean — the exclusion is applied before caching.
+    expect(await fetchProviderModels(options)).toMatchObject({
+      models: ["mimo-v2.6-pro"],
+      source: "cache",
+    });
+  });
 });

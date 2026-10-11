@@ -159,4 +159,63 @@ describe("CacheFirstLoop — image attachments (OpenAI vision parts)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("builds MiMo audio/video content parts by attachment kind", async () => {
+    const { client, captured } = makeFakeClient([{ content: "ok" }]);
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "be brief" }),
+      stream: false,
+    });
+    await consume(loop, "describe these", [
+      { url: "data:audio/wav;base64,AAAA", path: "clip.wav", kind: "audio" },
+      { url: "data:video/mp4;base64,BBBB", path: "clip.mp4", kind: "video" },
+    ]);
+
+    const userMsg = captured[0]!.messages.find((m) => m.role === "user");
+    expect(userMsg?.content).toEqual([
+      { type: "text", text: "describe these" },
+      {
+        type: "text",
+        text: "Attached file(s) — you can open and modify these with your file tools:\n- clip.wav\n- clip.mp4",
+      },
+      { type: "input_audio", input_audio: { data: "data:audio/wav;base64,AAAA" } },
+      {
+        type: "video_url",
+        video_url: { url: "data:video/mp4;base64,BBBB" },
+        fps: 2,
+        media_resolution: "default",
+      },
+    ]);
+  });
+
+  it("applies MiMo video defaults (fps 2 / default) and honors per-attachment overrides", async () => {
+    const { client, captured } = makeFakeClient([{ content: "ok" }]);
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "be brief" }),
+      stream: false,
+    });
+    await consume(loop, "watch", [
+      { url: "data:video/mp4;base64,AAAA", kind: "video" },
+      { url: "data:video/mp4;base64,BBBB", kind: "video", fps: 5, mediaResolution: "max" },
+    ]);
+
+    const userMsg = captured[0]!.messages.find((m) => m.role === "user");
+    expect(userMsg?.content).toEqual([
+      { type: "text", text: "watch" },
+      {
+        type: "video_url",
+        video_url: { url: "data:video/mp4;base64,AAAA" },
+        fps: 2,
+        media_resolution: "default",
+      },
+      {
+        type: "video_url",
+        video_url: { url: "data:video/mp4;base64,BBBB" },
+        fps: 5,
+        media_resolution: "max",
+      },
+    ]);
+  });
 });

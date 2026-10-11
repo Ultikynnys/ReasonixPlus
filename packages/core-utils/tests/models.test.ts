@@ -4,11 +4,13 @@ import {
   GEMINI_MODELS,
   GPT56_MODELS,
   KNOWN_MODELS,
+  MIMO_MODELS,
   MODEL_DISPLAY_NAMES,
   OPENAI_MODELS,
   OPENCODE_MODELS,
   SUPPORTED_OFFICIAL_MODELS,
   ZAI_MODELS,
+  modelAcceptsAudioVideo,
   modelAcceptsImages,
   modelDisplayName,
 } from "../src/models.js";
@@ -44,6 +46,13 @@ describe("modelAcceptsImages", () => {
     expect(modelAcceptsImages("mimo-v2.5-free")).toBe(true);
     expect(modelAcceptsImages("muse-spark-1.3-contributor-free")).toBe(true);
     expect(modelAcceptsImages("big-pickle")).toBe(false);
+  });
+
+  it("accepts MiMo's V2.6 multimodal models and rejects its text-only ids", () => {
+    expect(modelAcceptsImages("mimo-v2.6-pro")).toBe(true);
+    expect(modelAcceptsImages("mimo-v2.6-flash")).toBe(true);
+    expect(modelAcceptsImages("mimo-v2.5-pro")).toBe(false);
+    expect(modelAcceptsImages("mimo-v2.5")).toBe(false);
   });
 
   it("accepts every Antigravity model exposed by the unified gateway", () => {
@@ -137,9 +146,20 @@ describe("KNOWN_MODELS", () => {
       ...SUPPORTED_OFFICIAL_MODELS,
       ...GPT56_MODELS,
       ...ZAI_MODELS,
+      ...MIMO_MODELS,
       ...OPENCODE_MODELS,
       ...ANTIGRAVITY_MODELS,
     ]);
+  });
+});
+
+describe("modelAcceptsAudioVideo", () => {
+  it("accepts the MiMo V2.6 family and rejects everything else", () => {
+    expect(modelAcceptsAudioVideo("mimo-v2.6-pro")).toBe(true);
+    expect(modelAcceptsAudioVideo("mimo-v2.6-pro-ultraspeed")).toBe(true);
+    expect(modelAcceptsAudioVideo("mimo-v2.5")).toBe(false);
+    expect(modelAcceptsAudioVideo("gpt-6-sol")).toBe(false);
+    expect(modelAcceptsAudioVideo(undefined)).toBe(false);
   });
 });
 

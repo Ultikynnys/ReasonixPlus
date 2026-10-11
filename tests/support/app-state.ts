@@ -80,6 +80,7 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     oauthWaiting: false,
     antigravityOAuthWaiting: false,
     opencodeOAuthWaiting: false,
+    mimoOAuthWaiting: false,
     turnStatus: null,
     turnStatusTool: null,
     turnLastEventMs: 0,

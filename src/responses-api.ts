@@ -101,15 +101,19 @@ function splitMessages(messages: ChatMessage[]): {
 export function buildResponsesPayload(
   opts: ChatRequestOptions,
   stream: boolean,
+  provider?: string,
 ): Record<string, unknown> {
   const { instructions, items } = splitMessages(opts.messages);
+  // MiMo's Responses implementation rejects unknown fields, so the Codex-only
+  // extras (store, parallel_tool_calls, reasoning.summary) are omitted for it.
+  const mimo = provider === "mimo";
   const payload: Record<string, unknown> = {
     model: opts.model,
     input: items,
     stream,
-    // The Codex CLI always sends store:false to chatgpt.com.
-    store: false,
   };
+  // The Codex CLI always sends store:false to chatgpt.com.
+  if (!mimo) payload.store = false;
   if (instructions) payload.instructions = instructions;
   if (opts.tools?.length) {
     payload.tools = opts.tools.map((t) => ({
@@ -120,13 +124,19 @@ export function buildResponsesPayload(
       // ChatGPT models default to parallel tool-call bursts; disable so the
       // model emits ONE call per response and the loop can feed its result
       // back before the next round ("thinking") starts.
-      parallel_tool_calls: false,
+      ...(mimo ? {} : { parallel_tool_calls: false }),
     }));
   }
   if (opts.reasoningEffort) {
     // Responses nests effort under `reasoning`; `summary: "concise"` mirrors
     // the Codex CLI so reasoning summaries stream back to the UI.
-    payload.reasoning = { effort: opts.reasoningEffort, summary: "concise" };
+    payload.reasoning = mimo
+      ? { effort: opts.reasoningEffort }
+      : { effort: opts.reasoningEffort, summary: "concise" };
+  } else if (mimo && opts.thinking === "disabled") {
+    // MiMo's Responses effort enum differentiates only on/off: `none` disables
+    // reasoning; omitting `reasoning` leaves MiMo's default (enabled).
+    payload.reasoning = { effort: "none" };
   }
   return payload;
 }

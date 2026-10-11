@@ -15,7 +15,7 @@ import type React from "react";
 import type { QueuedSend } from "../App";
 import { type TKey, t } from "../i18n";
 import { I } from "../icons";
-import { isImagePath, resolveImagePath } from "../image-attach";
+import { isAudioVideoPath, isImagePath, resolveImagePath } from "../image-attach";
 import { toWorkspaceRelative } from "../workspace-path";
 import {
   type ProviderCatalogKey,
@@ -39,6 +39,13 @@ export type QueuedSendItem = string | QueuedSend;
 type ModeEntry = { k: EditMode; label: TKey; icon: React.ReactNode; hint: TKey };
 
 const EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
+
+/** Clamp a video fps input to MiMo's documented 0.1–10 range (default 2). */
+function clampVideoFps(raw: string): number {
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n)) return 2;
+  return Math.min(10, Math.max(0.1, n));
+}
 
 /** Abort a transcription that has not settled within this window. */
 const TRANSCRIBE_TIMEOUT_MS = 60_000;
@@ -144,9 +151,12 @@ export function Composer({
   pendingImages,
   onRemoveImage,
   imageCapable,
+  mediaCapable,
   onPasteImage,
   onImageRejected,
   onPickImage,
+  onPickMedia,
+  onUpdateMedia,
   onVoiceError,
   voiceAvailable = true,
 }: {
@@ -228,6 +238,12 @@ export function Composer({
   onImageRejected?: () => void;
   /** Vision path for picked/dropped image paths — daemon reads the bytes. */
   onPickImage?: (path: string) => void;
+  /** True when the active model accepts MiMo audio/video attachments. */
+  mediaCapable?: boolean;
+  /** MiMo path for picked/dropped audio/video paths — daemon reads the bytes. */
+  onPickMedia?: (path: string) => void;
+  /** Updates per-attachment video settings (MiMo fps / resolution). */
+  onUpdateMedia?: (id: string, patch: { fps?: number; mediaResolution?: "default" | "max" }) => void;
   /** Surfaces every voice-input failure as a durable in-chat error notice. */
   onVoiceError: (message: string) => void;
   /** True when at least one voice model is downloaded — the voice button is
@@ -281,6 +297,10 @@ export function Composer({
       if (typeof picked !== "string" || !picked) return;
       if (imageCapable && onPickImage && isImagePath(picked)) {
         onPickImage(resolveImagePath(picked, workspaceDir));
+        return;
+      }
+      if (mediaCapable && onPickMedia && isAudioVideoPath(picked)) {
+        onPickMedia(resolveImagePath(picked, workspaceDir));
         return;
       }
       const rel = toWorkspaceRelative(picked, workspaceDir);
@@ -679,21 +699,52 @@ export function Composer({
 
           {pendingImages && pendingImages.length > 0 ? (
             <div className="composer-images">
-              {pendingImages.map((im) => (
-                <div key={im.id} className="composer-image">
-                  <img src={im.thumbnail} alt="" />
-                  {onRemoveImage ? (
-                    <button
-                      type="button"
-                      className="composer-image-remove"
-                      title={t("composer.removeImage")}
-                      onClick={() => onRemoveImage(im.id)}
-                    >
-                      <I.x size={11} />
-                    </button>
-                  ) : null}
-                </div>
-              ))}
+              {pendingImages.map((im) => {
+                const wire = im.wire;
+                const video = wire?.source === "file" && wire.kind === "video" ? wire : null;
+                return (
+                  <div key={im.id} className="composer-image">
+                    <img src={im.thumbnail} alt="" />
+                    {onRemoveImage ? (
+                      <button
+                        type="button"
+                        className="composer-image-remove"
+                        title={t("composer.removeImage")}
+                        onClick={() => onRemoveImage(im.id)}
+                      >
+                        <I.x size={11} />
+                      </button>
+                    ) : null}
+                    {video && onUpdateMedia ? (
+                      <div className="composer-video-opts">
+                        <input
+                          type="number"
+                          min={0.1}
+                          max={10}
+                          step={0.1}
+                          value={video.fps ?? 2}
+                          title={t("composer.videoFps")}
+                          onChange={(e) =>
+                            onUpdateMedia(im.id, { fps: clampVideoFps(e.target.value) })
+                          }
+                        />
+                        <select
+                          value={video.mediaResolution ?? "default"}
+                          title={t("composer.videoResolution")}
+                          onChange={(e) =>
+                            onUpdateMedia(im.id, {
+                              mediaResolution: e.target.value === "max" ? "max" : "default",
+                            })
+                          }
+                        >
+                          <option value="default">{t("composer.videoResolutionDefault")}</option>
+                          <option value="max">{t("composer.videoResolutionMax")}</option>
+                        </select>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           ) : null}
 

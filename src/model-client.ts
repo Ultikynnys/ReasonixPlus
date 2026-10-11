@@ -2,10 +2,12 @@ import { resolveGeminiAuth } from "./antigravity-oauth.js";
 import { DeepSeekClient, type DeepSeekClientOptions } from "./client.js";
 import { resolveCodexTransport } from "./codex-backend.js";
 import {
+  DEFAULT_MIMO_CHAT_URL,
   DEFAULT_OPENCODE_CHAT_URL,
   DEFAULT_ZAI_RESPONSES_URL,
   isOpenAIStandardEndpoint,
   loadEndpointForModel,
+  loadMimoProtocol,
   loadOpencodeApiKey,
   providerForModel,
   readConfig,
@@ -60,7 +62,13 @@ export function modelClientOptions(opts: ResolvedModelClientOptions): DeepSeekCl
               headers: { Authorization: `Bearer ${endpoint.apiKey ?? ""}` },
               api: "responses" as const,
             })
-          : undefined,
+          : provider === "mimo" && loadMimoProtocol() === "responses"
+            ? async () => ({
+                endpoint: `${endpoint.baseUrl ?? DEFAULT_MIMO_CHAT_URL}/responses`,
+                headers: { Authorization: `Bearer ${endpoint.apiKey ?? ""}` },
+                api: "responses" as const,
+              })
+            : undefined,
     geminiAuthResolver:
       provider === "gemini" ? () => resolveGeminiAuth(opts.configPath) : undefined,
   };

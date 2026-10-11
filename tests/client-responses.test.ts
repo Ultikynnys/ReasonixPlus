@@ -361,3 +361,94 @@ describe("Responses streaming", () => {
     ]);
   });
 });
+
+describe("MiMo Responses payload (provider=mimo)", () => {
+  const MIMO_TRANSPORT: ResolvedTransport = {
+    endpoint: "https://api.xiaomimimo.com/v1/responses",
+    headers: { Authorization: "Bearer mkey" },
+    api: "responses",
+  };
+
+  function mimoResponsesClient(fetch: typeof fetch): DeepSeekClient {
+    return new DeepSeekClient({
+      apiKey: "mkey",
+      baseUrl: "https://api.xiaomimimo.com/v1",
+      fetch,
+      transportResolver: async () => MIMO_TRANSPORT,
+      retry: { maxAttempts: 1 },
+    });
+  }
+
+  const okFetch = () =>
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify({ output: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+
+  it("omits Codex-only fields and leaves reasoning enabled by default", async () => {
+    const spy = okFetch();
+    const client = mimoResponsesClient(spy as unknown as typeof fetch);
+    await client.chat({
+      model: "mimo-v2.6-pro",
+      messages: [{ role: "user", content: "hi" }],
+      thinking: "enabled",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "noop",
+            description: "noop",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+    });
+    const [url, init] = spy.mock.calls[0]!;
+    expect(String(url)).toBe(MIMO_TRANSPORT.endpoint);
+    const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
+    expect(body.messages).toBeUndefined();
+    expect(body.store).toBeUndefined();
+    expect(body.reasoning).toBeUndefined();
+    expect(body.tools).toEqual([
+      {
+        type: "function",
+        name: "noop",
+        description: "noop",
+        parameters: { type: "object", properties: {} },
+      },
+    ]);
+    expect(body.input).toEqual([{ type: "message", role: "user", content: "hi" }]);
+  });
+
+  it("maps thinking=disabled to reasoning.effort=none", async () => {
+    const spy = okFetch();
+    const client = mimoResponsesClient(spy as unknown as typeof fetch);
+    await client.chat({
+      model: "mimo-v2.6-pro",
+      messages: [{ role: "user", content: "hi" }],
+      thinking: "disabled",
+    });
+    const [, init] = spy.mock.calls[0]!;
+    const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: "none" });
+    expect(body.store).toBeUndefined();
+  });
+
+  it("reads cached tokens from MiMo Responses usage (input_tokens_details.cached_tokens)", async () => {
+    const client = mimoResponsesClient(
+      sseFetch([
+        'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":200,"output_tokens":10,"total_tokens":210,"input_tokens_details":{"cached_tokens":150}}}}\n\n',
+      ]),
+    );
+    const resp = await client.chat({
+      model: "mimo-v2.6-pro",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(resp.usage.promptTokens).toBe(200);
+    expect(resp.usage.promptCacheHitTokens).toBe(150);
+    expect(resp.usage.promptCacheMissTokens).toBe(50);
+  });
+});

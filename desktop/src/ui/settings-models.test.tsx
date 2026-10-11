@@ -43,6 +43,10 @@ const baseProps = {
   onOpencodeOAuthBegin: vi.fn(),
   onOpencodeOAuthCancel: vi.fn(),
   onOpencodeOAuthSignOut: vi.fn(),
+  mimoOAuthWaiting: false,
+  onMiMoOAuthBegin: vi.fn(),
+  onMiMoOAuthCancel: vi.fn(),
+  onMiMoOAuthSignOut: vi.fn(),
   onAddMcpSpec: vi.fn(),
   onRemoveMcpSpec: vi.fn(),
   onToggleMcpServer: vi.fn(),
@@ -84,8 +88,8 @@ describe("PageModels default-model enum", () => {
     expect(screen.queryByRole("button", { name: "Custom" })).toBeNull();
     expect(screen.queryByPlaceholderText("custom model id")).toBeNull();
     const rows = Array.from(container.querySelectorAll(".setting-row-base-url"));
-    expect(rows).toHaveLength(3);
-    const patchKeys = ["baseUrl", "opencodeBaseUrl", "ollamaBaseUrl"];
+    expect(rows).toHaveLength(4);
+    const patchKeys = ["baseUrl", "mimoBaseUrl", "opencodeBaseUrl", "ollamaBaseUrl"];
     rows.forEach((row, index) => {
       expect(row.firstElementChild?.className).toBe("l");
       expect(row.firstElementChild?.querySelector(".h")).toBeTruthy();

@@ -5,6 +5,7 @@ import {
   antigravityUsageView,
   codexUsageView,
   isOllamaPeakPricedModel,
+  mimoUsageView,
   modelDisplayName,
   ollamaUsageView,
   opencodeUsageView,
@@ -79,6 +80,8 @@ function QuotaChip({
         </>
       ) : refreshing ? (
         <span className="v acc">{t("statusbar.quotaRefreshing")}</span>
+      ) : view?.plan ? (
+        <span className="v acc">{view.plan}</span>
       ) : (
         <span className="v acc">-</span>
       )}
@@ -222,6 +225,7 @@ export function StatusBar({
   // Go usage endpoint); free/anon Zen has no usage API, so it gets a tier chip.
   const opencodeQuotaBilling = provider === "opencode" && ep?.opencodePlan === "go";
   const opencodeFreeBilling = provider === "opencode" && ep?.opencodePlan === "free";
+  const mimoQuotaBilling = provider === "mimo";
   const sessionQuotaProvider =
     openaiQuotaBilling
       ? "openai"
@@ -439,13 +443,16 @@ export function StatusBar({
             ? opencodeQuotaData
               ? opencodeUsageView(opencodeQuotaData)
               : null
-            : null;
+            : mimoQuotaBilling
+              ? mimoUsageView(settings?.mimoQuota, t("statusbar.mimoPlan"))
+              : null;
   const quotaBilling =
     openaiQuotaBilling ||
     ollamaQuotaBilling ||
     geminiTab ||
     zaiQuotaBilling ||
-    opencodeQuotaBilling;
+    opencodeQuotaBilling ||
+    mimoQuotaBilling;
   const quotaChipLabel = openaiQuotaBilling
     ? t("statusbar.codexQuota")
     : ollamaQuotaBilling
@@ -454,7 +461,9 @@ export function StatusBar({
         ? t("statusbar.antigravityQuota")
         : zaiQuotaBilling
           ? t("statusbar.zaiQuota")
-          : t("statusbar.opencodeQuota");
+          : mimoQuotaBilling
+            ? t("statusbar.mimoQuota")
+            : t("statusbar.opencodeQuota");
   const quotaChipTitle = openaiQuotaBilling
     ? quotaTitleWithReason
     : ollamaQuotaBilling
@@ -463,7 +472,9 @@ export function StatusBar({
         ? antigravityQuotaTitleWithReason
         : zaiQuotaBilling
           ? zaiQuotaTitleWithReason
-          : opencodeQuotaTitleWithReason;
+          : mimoQuotaBilling
+            ? t("statusbar.mimoQuotaTitle")
+            : opencodeQuotaTitleWithReason;
   const quotaChipRefreshing = openaiQuotaBilling
     ? codexQuotaRefreshing
     : ollamaQuotaBilling
@@ -472,7 +483,9 @@ export function StatusBar({
         ? antigravityQuotaRefreshing
         : zaiQuotaBilling
           ? zaiQuotaRefreshing
-          : opencodeQuotaRefreshing;
+          : mimoQuotaBilling
+            ? undefined
+            : opencodeQuotaRefreshing;
   const quotaChipRefresh = openaiQuotaBilling
     ? onRefreshCodexQuota
     : ollamaQuotaBilling
@@ -481,7 +494,9 @@ export function StatusBar({
         ? onRefreshAntigravityQuota
         : zaiQuotaBilling
           ? onRefreshZaiQuota
-          : onRefreshOpencodeQuota;
+          : mimoQuotaBilling
+            ? undefined
+            : onRefreshOpencodeQuota;
   const quotaChipPlanFallback = openaiQuotaBilling
     ? (quota?.plan ?? "ChatGPT")
     : ollamaQuotaBilling
@@ -490,7 +505,9 @@ export function StatusBar({
         ? "Antigravity"
         : zaiQuotaBilling
           ? (zaiQuotaData?.plan ?? "GLM")
-          : "Go";
+          : mimoQuotaBilling
+            ? t("statusbar.mimoPlan")
+            : "Go";
   useEffect(() => {
     const renderState = {
       openaiTab,
@@ -655,7 +672,8 @@ export function StatusBar({
       !ollamaQuotaBilling &&
       !geminiTab &&
       !zaiQuotaBilling &&
-      !opencodeQuotaBilling ? (
+      !opencodeQuotaBilling &&
+      !mimoQuotaBilling ? (
         <span className="seg" title={t("settings.sessionCost")}>
           <I.coin size={11} />
           <span>{t("settings.sessionCost")}</span>

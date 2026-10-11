@@ -8,6 +8,8 @@ import {
   GEMINI_MODELS,
   GPT56_MODELS,
   KNOWN_MODELS,
+  MIMO_MODELS,
+  MIMO_SPEECH_MODELS,
   MailProvider,
   OPENAI_MODELS,
   OPENCODE_MODELS,
@@ -49,6 +51,8 @@ export {
   DEFAULT_MODEL,
   GEMINI_MODELS,
   GPT56_MODELS,
+  MIMO_MODELS,
+  MIMO_SPEECH_MODELS,
   OPENAI_MODELS,
   OPENCODE_MODELS,
   SUPPORTED_OFFICIAL_MODELS,
@@ -70,6 +74,7 @@ const PROVIDER_IDS: readonly ModelProvider[] = [
   "ollama",
   "gemini",
   "zai",
+  "mimo",
   "opencode",
 ];
 
@@ -82,6 +87,7 @@ const CATALOG_PROVIDERS: ReadonlyArray<{ ids: ReadonlySet<string>; provider: Mod
   { ids: new Set(SUPPORTED_OFFICIAL_MODELS), provider: "deepseek" },
   { ids: new Set(OPENAI_MODELS), provider: "openai" },
   { ids: new Set(ZAI_MODELS), provider: "zai" },
+  { ids: new Set(MIMO_MODELS), provider: "mimo" },
   { ids: new Set(OPENCODE_MODELS), provider: "opencode" },
   { ids: new Set(ANTIGRAVITY_MODELS), provider: "gemini" },
 ];
@@ -201,6 +207,11 @@ export const DEFAULT_OPENCODE_CHAT_URL = "https://opencode.ai/zen/v1";
 /** OpenCode Go OpenAI-compatible endpoint — the subscription tier. Go model ids
  *  route here; everything else stays on the Zen endpoint. */
 export const DEFAULT_OPENCODE_GO_CHAT_URL = "https://opencode.ai/zen/go/v1";
+
+/** Xiaomi MiMo pay-as-you-go chat endpoint. Token Plan (`tp-`) keys use a
+ *  regional host (token-plan-{cn,sgp,ams}.xiaomimimo.com); the browser flow may
+ *  return its own base URL. Override via `mimoBaseUrl` or MIMO_BASE_URL. */
+export const DEFAULT_MIMO_CHAT_URL = "https://api.xiaomimimo.com/v1";
 
 /** Positive endpoint evidence that an Ollama provider request targets Ollama Cloud. */
 export function isOllamaCloudEndpoint(baseUrl: string | undefined): boolean {
@@ -452,6 +463,10 @@ export interface ReasonixConfig {
   opencodeApiKey?: string;
   /** OpenCode OpenAI-compatible endpoint override. Falls back to OPENCODE_BASE_URL. */
   opencodeBaseUrl?: string;
+  /** Xiaomi MiMo API key for mimo-* models. Falls back to MIMO_API_KEY. */
+  mimoApiKey?: string;
+  /** MiMo OpenAI-compatible endpoint override. Falls back to MIMO_BASE_URL. */
+  mimoBaseUrl?: string;
   /** Set by the browser OAuth sign-in; auto-refreshed from refreshToken on expiry. */
   openaiOAuth?: OpenAIOAuthCreds;
   /** Google Antigravity OAuth tokens — set by the "Sign in with Google" flow;
@@ -798,6 +813,27 @@ export function loadOpencodeApiKey(path: string = defaultConfigPath()): string |
   const cfg = readConfig(path).opencodeApiKey;
   if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
   return undefined;
+}
+
+/** Xiaomi MiMo API key: env > config > undefined. */
+export function loadMimoApiKey(path: string = defaultConfigPath()): string | undefined {
+  if (process.env.MIMO_API_KEY) return process.env.MIMO_API_KEY.trim();
+  const cfg = readConfig(path).mimoApiKey;
+  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
+  return undefined;
+}
+
+/** Escape hatch for Xiaomi MiMo: Xiaomi documents reasoning text occasionally
+ *  interfering with tool-call extraction, so a tool-bearing request can opt out
+ *  of thinking via MIMO_DISABLE_THINKING_WITH_TOOLS. */
+export function loadMimoDisableThinkingWithTools(): boolean {
+  const v = process.env.MIMO_DISABLE_THINKING_WITH_TOOLS?.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+/** MiMo wire protocol: `chat` (default) or `responses` (MIMO_API_PROTOCOL). */
+export function loadMimoProtocol(): "chat" | "responses" {
+  return process.env.MIMO_API_PROTOCOL?.trim().toLowerCase() === "responses" ? "responses" : "chat";
 }
 
 /** True when the user holds a usable OpenCode credential — a non-`public` API
@@ -1498,6 +1534,15 @@ export function loadEndpointForModel(
     }
     return { baseUrl: DEFAULT_ZAI_CHAT_URL, apiKey: loadZaiApiKey(path) };
   }
+  if (providerForModel(model, path) === "mimo") {
+    const envBaseUrl = process.env.MIMO_BASE_URL?.trim();
+    if (envBaseUrl) return { baseUrl: envBaseUrl, apiKey: process.env.MIMO_API_KEY };
+    const cfg = readConfig(path);
+    if (cfg.mimoBaseUrl?.trim()) {
+      return { baseUrl: cfg.mimoBaseUrl.trim(), apiKey: cfg.mimoApiKey };
+    }
+    return { baseUrl: DEFAULT_MIMO_CHAT_URL, apiKey: loadMimoApiKey(path) };
+  }
   if (providerForModel(model, path) === "opencode") {
     const envBaseUrl = process.env.OPENCODE_BASE_URL?.trim();
     if (envBaseUrl) {
@@ -1537,6 +1582,7 @@ export function anyProviderConfigured(path: string = defaultConfigPath()): boole
   if (process.env.OPENAI_API_KEY || cfg.openaiApiKey || cfg.openaiOAuth?.accessToken) return true;
   if (process.env.OLLAMA_API_KEY || cfg.ollamaApiKey) return true;
   if (process.env.ZAI_API_KEY || cfg.zaiApiKey) return true;
+  if (process.env.MIMO_API_KEY || cfg.mimoApiKey || cfg.mimoBaseUrl) return true;
   if (process.env.OPENCODE_API_KEY || cfg.opencodeApiKey || cfg.opencodeBaseUrl) return true;
   if (cfg.opencodeOAuth?.accessToken) return true;
   if (cfg.antigravityOAuth?.accessToken) return true;
@@ -1878,6 +1924,26 @@ export function clearOpencodeOAuth(path: string = defaultConfigPath()): void {
   const cfg = readConfig(path);
   if (!cfg.opencodeOAuth) return;
   const { opencodeOAuth: _drop, ...rest } = cfg;
+  writeConfig(rest, path);
+}
+
+/** Persist the inference key issued by MiMo browser authorization (an API key,
+ *  not an OAuth token). Records the base URL the flow returned, when present. */
+export function saveMimoCredential(
+  cred: { apiKey: string; baseUrl?: string },
+  path: string = defaultConfigPath(),
+): void {
+  const cfg = readConfig(path);
+  cfg.mimoApiKey = cred.apiKey;
+  if (cred.baseUrl) cfg.mimoBaseUrl = cred.baseUrl;
+  writeConfig(cfg, path);
+}
+
+/** Sign-out drops the stored MiMo inference key (does not revoke it upstream). */
+export function clearMimoApiKey(path: string = defaultConfigPath()): void {
+  const cfg = readConfig(path);
+  if (!cfg.mimoApiKey) return;
+  const { mimoApiKey: _drop, ...rest } = cfg;
   writeConfig(rest, path);
 }
 

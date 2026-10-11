@@ -673,6 +673,20 @@ export const EN: TranslationSchema = {
     opencodeTimeout: "OpenCode request timed out: {inner}. Check network connectivity and retry.",
     opencodeRate: "OpenCode rate limit hit (429): {inner}. Wait and retry.",
     opencodeServer: "OpenCode service failure ({status}): {inner}. Retry later.",
+    mimoAuth:
+      "MiMo authentication failed (401): {inner}. Check MIMO_API_KEY or mimoApiKey in settings.",
+    mimoCredits:
+      "MiMo reports exhausted plan quota or credits: {inner}. Wait and retry, or check your MiMo subscription plan.",
+    mimoPermission:
+      "MiMo denied this request (403): {inner}. Check the MiMo key permissions and model entitlement.",
+    mimoNotFound:
+      "MiMo could not find the requested model or endpoint (404): {inner}. Check the mimo-* model ID and MIMO_BASE_URL.",
+    mimoRequest: "MiMo rejected the request: {inner}. Check parameters and tool schema.",
+    mimoContext:
+      "MiMo context overflow: session history is {requested}. Start a new conversation or reduce content.",
+    mimoTimeout: "MiMo request timed out: {inner}. Check the endpoint and retry.",
+    mimoRate: "MiMo rate limit hit (429): {inner}. Wait and retry.",
+    mimoServer: "MiMo service failure ({status}): {inner}. Retry later.",
     customAuth:
       "Authentication failed (custom model endpoint 401): {inner}. Check that endpoint's configured API key.",
     customCredits:

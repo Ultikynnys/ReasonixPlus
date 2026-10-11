@@ -320,6 +320,17 @@ const ERROR_KEYS: Record<ErrorProvider, Record<ErrorKind, keyof TranslationSchem
     rate: "opencodeRate",
     server: "opencodeServer",
   },
+  mimo: {
+    auth: "mimoAuth",
+    credits: "mimoCredits",
+    permission: "mimoPermission",
+    notFound: "mimoNotFound",
+    request: "mimoRequest",
+    context: "mimoContext",
+    timeout: "mimoTimeout",
+    rate: "mimoRate",
+    server: "mimoServer",
+  },
   upstream: {
     auth: "customAuth",
     credits: "customCredits",
@@ -353,6 +364,7 @@ function resolveErrorProvider(
   if (prefix === "Antigravity") return "gemini";
   if (prefix === "Z.AI") return "zai";
   if (prefix === "OpenCode") return "opencode";
+  if (prefix === "MiMo") return "mimo";
   if (upstreamHost) {
     try {
       const host = new URL(upstreamHost).hostname.toLowerCase();
@@ -364,6 +376,7 @@ function resolveErrorProvider(
       if (host.endsWith("googleapis.com")) return "gemini";
       if (host.endsWith("z.ai")) return "zai";
       if (host.endsWith("opencode.ai")) return "opencode";
+      if (host.endsWith("xiaomimimo.com")) return "mimo";
     } catch {
       return "upstream";
     }

@@ -259,6 +259,6 @@ describe("desktop modelEndpointFor (#1529)", () => {
   });
 
   it("tags a Go OpenCode model with the go quota type", () => {
-    expect(modelEndpointFor("mimo-v2.6-pro", path).opencodePlan).toBe("go");
+    expect(modelEndpointFor("grok-4.7", path).opencodePlan).toBe("go");
   });
 });

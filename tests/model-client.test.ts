@@ -11,11 +11,15 @@ describe("modelClientOptions — OpenCode credentials", () => {
   beforeEach(() => {
     mkdirSync(TEST_DIR, { recursive: true });
     Reflect.deleteProperty(process.env, "OPENCODE_API_KEY");
+    Reflect.deleteProperty(process.env, "MIMO_API_KEY");
+    Reflect.deleteProperty(process.env, "MIMO_BASE_URL");
   });
 
   afterEach(() => {
     rmSync(TEST_DIR, { recursive: true, force: true });
     Reflect.deleteProperty(process.env, "OPENCODE_API_KEY");
+    Reflect.deleteProperty(process.env, "MIMO_API_KEY");
+    Reflect.deleteProperty(process.env, "MIMO_BASE_URL");
   });
 
   it("wires x-opencode-org-id to the stored session org for opencode models", async () => {
@@ -67,5 +71,20 @@ describe("modelClientOptions — OpenCode credentials", () => {
 
     const opts = modelClientOptions({ model: "deepseek-v4.1-flash", configPath: CONFIG_PATH });
     expect(await opts.apiKeyResolver?.()).toBe("session-access");
+  });
+
+  it("routes mimo models to the standard client with the MiMo endpoint and key", () => {
+    writeConfig(
+      { mimoApiKey: "mimo-key", mimoBaseUrl: "https://mimo.example.com/v1" },
+      CONFIG_PATH,
+    );
+    const opts = modelClientOptions({ model: "mimo-v2.6-pro", configPath: CONFIG_PATH });
+    expect(opts.baseUrl).toBe("https://mimo.example.com/v1");
+    expect(opts.apiKey).toBe("mimo-key");
+    // MiMo requires its own key (no keyless fallback) and needs no special transport.
+    expect(opts.allowMissingKey).toBe(false);
+    expect(opts.transportResolver).toBeUndefined();
+    expect(opts.geminiAuthResolver).toBeUndefined();
+    expect(opts.opencodeOrgResolver).toBeUndefined();
   });
 });

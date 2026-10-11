@@ -80,3 +80,51 @@ export function stripMentionTokens(
   }
   return out;
 }
+
+/** Audio formats Xiaomi MiMo accepts as data-URL input. */
+export const SUPPORTED_AUDIO_EXTENSIONS = ["mp3", "wav", "flac", "m4a", "ogg"] as const;
+
+/** Video formats Xiaomi MiMo accepts as data-URL input. */
+export const SUPPORTED_VIDEO_EXTENSIONS = ["mp4", "mov", "avi", "wmv"] as const;
+
+const AUDIO_EXT_MIME: Readonly<Record<string, string>> = {
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  flac: "audio/flac",
+  m4a: "audio/mp4",
+  ogg: "audio/ogg",
+};
+
+const VIDEO_EXT_MIME: Readonly<Record<string, string>> = {
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  avi: "video/x-msvideo",
+  wmv: "video/x-ms-wmv",
+};
+
+export type MediaKind = "audio" | "video";
+
+/** "audio" | "video" for a supported media extension, else undefined. */
+export function mediaKindForPath(path: string): MediaKind | undefined {
+  const dot = path.lastIndexOf(".");
+  if (dot <= 0 || dot === path.length - 1) return undefined;
+  const ext = path.slice(dot + 1).toLowerCase();
+  if (AUDIO_EXT_MIME[ext]) return "audio";
+  if (VIDEO_EXT_MIME[ext]) return "video";
+  return undefined;
+}
+
+/** True for paths ending in a supported audio/video extension (case-insensitive). */
+export function isSupportedAudioVideoPath(path: string): boolean {
+  return mediaKindForPath(path) !== undefined;
+}
+
+/** MIME type for a supported audio/video extension (case-insensitive), or undefined. */
+export function mediaMimeForExtension(ext: string): string | undefined {
+  const e = ext.toLowerCase();
+  return AUDIO_EXT_MIME[e] ?? VIDEO_EXT_MIME[e];
+}
+
+/** Largest single audio/video the daemon reads for an attachment — MiMo caps
+ *  base64 (data-URL) input at 50 MB. */
+export const MAX_MEDIA_BYTES = 50 * 1024 * 1024;

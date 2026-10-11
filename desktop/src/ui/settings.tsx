@@ -112,6 +112,10 @@ export function SettingsModal({
   onOpencodeOAuthBegin,
   onOpencodeOAuthCancel,
   onOpencodeOAuthSignOut,
+  mimoOAuthWaiting,
+  onMiMoOAuthBegin,
+  onMiMoOAuthCancel,
+  onMiMoOAuthSignOut,
   ollamaBaseUrl,
   ollamaModels,
   ollamaModelsError,
@@ -190,6 +194,11 @@ export function SettingsModal({
   onOpencodeOAuthBegin: () => void;
   onOpencodeOAuthCancel: () => void;
   onOpencodeOAuthSignOut: () => void;
+  /** True between mimo_oauth_begin_result and the flow's terminal state. */
+  mimoOAuthWaiting: boolean;
+  onMiMoOAuthBegin: () => void;
+  onMiMoOAuthCancel: () => void;
+  onMiMoOAuthSignOut: () => void;
   onAddMcpSpec: (spec: string) => void;
   onRemoveMcpSpec: (spec: string) => void;
   onToggleMcpServer: (name: string, disabled: boolean) => void;
@@ -331,6 +340,10 @@ export function SettingsModal({
                 onOpencodeBegin={onOpencodeOAuthBegin}
                 onOpencodeCancel={onOpencodeOAuthCancel}
                 onOpencodeSignOut={onOpencodeOAuthSignOut}
+                mimoOAuthWaiting={mimoOAuthWaiting}
+                onMiMoOAuthBegin={onMiMoOAuthBegin}
+                onMiMoOAuthCancel={onMiMoOAuthCancel}
+                onMiMoOAuthSignOut={onMiMoOAuthSignOut}
               />
             )}
             {page === "mcp" && (
@@ -1553,6 +1566,67 @@ export function AntigravitySection({
   );
 }
 
+export function MiMoSection({
+  signedIn,
+  flowError,
+  waiting,
+  onBegin,
+  onCancel,
+  onSignOut,
+}: {
+  signedIn: boolean;
+  flowError?: string;
+  waiting: boolean;
+  onBegin: () => void;
+  onCancel: () => void;
+  onSignOut: () => void;
+}) {
+  return (
+    <>
+      {signedIn ? (
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.mimoSignedIn")}</div>
+            <div className="h">{t("settings.mimoKeyStored")}</div>
+          </div>
+          <button type="button" className="btn" onClick={onSignOut} disabled={waiting}>
+            {t("settings.mimoSignOut")}
+          </button>
+        </div>
+      ) : (
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.mimoSignInTitle")}</div>
+            <div className="h">
+              {waiting ? t("settings.mimoWaiting") : t("settings.mimoSignInHint")}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {waiting && (
+              <button type="button" className="btn" onClick={onCancel}>
+                {t("settings.mimoCancel")}
+              </button>
+            )}
+            <button type="button" className="btn primary" onClick={onBegin} disabled={waiting}>
+              {t("settings.mimoSignIn")}
+            </button>
+          </div>
+        </div>
+      )}
+      {flowError ? (
+        <div className="setting-row" style={{ borderColor: "var(--danger)" }}>
+          <div className="l">
+            <div className="n">{t("settings.mimoFlowFailed")}</div>
+            <div className="h" style={{ color: "var(--danger)" }}>
+              {flowError}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export function OpencodeSection({
   signedIn,
   account,
@@ -1837,7 +1911,7 @@ function ProviderBaseUrlRow({
   hint: string;
   placeholder: string;
   value?: string;
-  patchKey: "baseUrl" | "opencodeBaseUrl" | "ollamaBaseUrl";
+  patchKey: "baseUrl" | "opencodeBaseUrl" | "ollamaBaseUrl" | "mimoBaseUrl";
   onSave: (patch: SettingsPatch) => void;
 }) {
   const [draft, setDraft] = useState(value ?? "");
@@ -1923,6 +1997,10 @@ function PageModels({
   onOpencodeBegin,
   onOpencodeCancel,
   onOpencodeSignOut,
+  mimoOAuthWaiting,
+  onMiMoOAuthBegin,
+  onMiMoOAuthCancel,
+  onMiMoOAuthSignOut,
 }: {
   settings: SettingsType;
   onSave: (patch: SettingsPatch) => void;
@@ -1970,6 +2048,11 @@ function PageModels({
   onOpencodeBegin: () => void;
   onOpencodeCancel: () => void;
   onOpencodeSignOut: () => void;
+  /** True between mimo_oauth_begin_result and the flow's terminal state. */
+  mimoOAuthWaiting: boolean;
+  onMiMoOAuthBegin: () => void;
+  onMiMoOAuthCancel: () => void;
+  onMiMoOAuthSignOut: () => void;
 }) {
   const catalog = deriveModelCatalog({
     providerCatalogs: settings.providerCatalogs,
@@ -2093,6 +2176,38 @@ function PageModels({
             prefix={settings.webSearchApiKeys?.zai}
             onSave={onSave}
           />
+        }
+      />
+
+      <ProviderCard
+        title={t(MODEL_CATALOG_GROUP_LABELS.mimo)}
+        defaultOpen={false}
+        models={modelColumn(groupModels("mimo"))}
+        settings={
+          <>
+            <ApiKeyRow
+              label={t("settings.mimoApiKey")}
+              hint={t("settings.mimoApiKeyHint")}
+              placeholder="MiMo API key"
+              onSave={(key) => onSave({ mimoApiKey: key || null })}
+            />
+            <ProviderBaseUrlRow
+              label={t("settings.mimoBaseUrl")}
+              hint={t("settings.mimoBaseUrlHint")}
+              placeholder="https://api.xiaomimimo.com/v1"
+              value={settings.mimoBaseUrl}
+              patchKey="mimoBaseUrl"
+              onSave={onSave}
+            />
+            <MiMoSection
+              signedIn={settings.mimoOAuth?.signedIn ?? false}
+              flowError={settings.mimoOAuth?.flowError}
+              waiting={mimoOAuthWaiting}
+              onBegin={onMiMoOAuthBegin}
+              onCancel={onMiMoOAuthCancel}
+              onSignOut={onMiMoOAuthSignOut}
+            />
+          </>
         }
       />
 

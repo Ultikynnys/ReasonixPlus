@@ -33,6 +33,9 @@ describe("isThinkingModeModel", () => {
     expect(isThinkingModeModel("gpt-4")).toBe(false);
     expect(isThinkingModeModel("")).toBe(false);
   });
+  it("mimo models → true (reasoning_content must round-trip)", () => {
+    expect(isThinkingModeModel("mimo-v2.6-pro")).toBe(true);
+  });
 });
 
 describe("thinkingModeForModel", () => {
@@ -52,6 +55,9 @@ describe("thinkingModeForModel", () => {
   it("unknown models → undefined (let server decide)", () => {
     expect(thinkingModeForModel("gpt-4")).toBeUndefined();
     expect(thinkingModeForModel("anthropic-claude")).toBeUndefined();
+  });
+  it("mimo models → enabled (thinking on by default)", () => {
+    expect(thinkingModeForModel("mimo-v2.6-pro")).toBe("enabled");
   });
 });
 
@@ -144,6 +150,41 @@ describe("R1 reasoning_content round-trip", () => {
     );
     expect(assistantWithCalls).toBeDefined();
     expect(assistantWithCalls?.reasoning_content).toBe("I should call noop to check something.");
+  });
+
+  it("preserves mimo tool-call reasoning_content across the tool cycle", async () => {
+    const tools = new ToolRegistry();
+    tools.register({ name: "noop", readOnly: true, fn: () => "ok" });
+    const { fetch: fakeFetch, bodies } = capturingFetch([
+      {
+        content: "",
+        reasoning_content: "mimo reasoning before the tool call",
+        tool_calls: [
+          { id: "call_1", type: "function", function: { name: "noop", arguments: "{}" } },
+        ],
+      },
+      { content: "done" },
+    ]);
+    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fakeFetch });
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: tools.specs() }),
+      tools,
+      model: "mimo-v2.6-pro",
+      stream: false,
+    });
+    for await (const _ev of loop.step("please noop")) {
+      /* drain */
+    }
+    expect(bodies.length).toBe(2);
+    const assistantWithCalls = bodies[1]!.messages.find(
+      (m) => m.role === "assistant" && (m.tool_calls?.length ?? 0) > 0,
+    );
+    expect(assistantWithCalls?.reasoning_content).toBe("mimo reasoning before the tool call");
+    // MiMo's thinking toggle rides top-level (CapturedRequest.thinking only maps
+    // the nested extra_body path), and there is no effort ladder.
+    expect((bodies[0]!.body.thinking as { type?: string } | undefined)?.type).toBe("enabled");
+    expect(bodies[0]!.reasoning_effort).toBeUndefined();
   });
 
   it("omits stale reasoning_content from plain-text turns on the next user request", async () => {

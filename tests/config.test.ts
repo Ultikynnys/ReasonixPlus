@@ -42,6 +42,7 @@ import {
   loadIndexConfig,
   loadIndexUserConfig,
   loadMaxIterPerTurn,
+  loadMimoApiKey,
   loadModel,
   loadMouseWheelRows,
   loadOllamaGenerationOverrides,
@@ -1821,16 +1822,36 @@ describe("config", () => {
 
     it("routes OpenCode Go subscription ids to the Go endpoint", () => {
       writeConfig({}, path);
-      expect(providerForModel("mimo-v2.6-pro")).toBe("opencode");
-      expect(loadEndpointForModel("mimo-v2.6-pro", path)).toEqual({
+      expect(providerForModel("grok-4.7")).toBe("opencode");
+      expect(loadEndpointForModel("grok-4.7", path)).toEqual({
         baseUrl: "https://opencode.ai/zen/go/v1",
         apiKey: "public",
       });
       // An explicit base URL override owns every OpenCode model, Go included.
       writeConfig({ opencodeBaseUrl: "https://custom.example.com/v1" }, path);
-      expect(loadEndpointForModel("mimo-v2.6-pro", path)).toEqual({
+      expect(loadEndpointForModel("grok-4.7", path)).toEqual({
         baseUrl: "https://custom.example.com/v1",
         apiKey: "public",
+      });
+    });
+  });
+
+  describe("Xiaomi MiMo provider routing", () => {
+    it("routes mimo ids to the MiMo endpoint, preferring native over the OpenCode resale", () => {
+      writeConfig({}, path);
+      expect(providerForModel("mimo-v2.6-pro")).toBe("mimo");
+      expect(loadEndpointForModel("mimo-v2.6-pro", path)).toEqual({
+        baseUrl: "https://api.xiaomimimo.com/v1",
+        apiKey: undefined,
+      });
+      writeConfig(
+        { mimoApiKey: "mimo-key-123", mimoBaseUrl: "https://custom-mimo.example.com/v1" },
+        path,
+      );
+      expect(loadMimoApiKey(path)).toBe("mimo-key-123");
+      expect(loadEndpointForModel("mimo-v2.6-pro", path)).toEqual({
+        baseUrl: "https://custom-mimo.example.com/v1",
+        apiKey: "mimo-key-123",
       });
     });
   });

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
 import { reasonixHome } from "./reasonix-home.js";
 
-export type CatalogProvider = "deepseek" | "openai" | "zai" | "typesafe";
+export type CatalogProvider = "deepseek" | "openai" | "zai" | "mimo" | "typesafe";
 export interface ProviderCatalog {
   provider: CatalogProvider;
   models: string[];
@@ -48,6 +48,9 @@ export async function fetchProviderModels(options: {
   baseUrl: string;
   apiKey?: string;
   fallback: readonly string[];
+  /** Model ids to drop from the discovered catalog (e.g. speech-only models
+   *  that must never be offered as chat). Applied before caching. */
+  exclude?: ReadonlySet<string>;
   force?: boolean;
   homeDir?: string;
   fetchImpl?: typeof fetch;
@@ -85,7 +88,9 @@ export async function fetchProviderModels(options: {
             return id.trim();
           }),
         ),
-      ].sort();
+      ]
+        .filter((id) => !options.exclude?.has(id))
+        .sort();
       writeJsonFileSilently(path, { models, checkedAt: Date.now() });
       return { provider, models, source: "live" };
     } catch (error) {

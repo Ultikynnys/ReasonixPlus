@@ -53,6 +53,8 @@ function endpointFor(model: string): ModelEndpointInfo {
       opencodeAuth: "oauth",
       opencodePlan: "go",
     };
+  if (model.startsWith("mimo-"))
+    return { provider: "mimo", baseUrl: "https://api.mimo.ai/v1" };
   return { provider: "deepseek", baseUrl: "https://api.deepseek.com" };
 }
 
@@ -286,6 +288,14 @@ describe("StatusBar quota display", () => {
     expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("balance")).toBeNull();
     expect(screen.getByTitle(/set a Z\.AI API key/)).toBeTruthy();
+  });
+
+  it("renders a static MiMo plan chip for a mimo tab", () => {
+    renderBar({ settings: { model: "mimo-v2.6-pro" } as Settings });
+    expect(screen.getByText("MiMo plan")).toBeTruthy();
+    expect(screen.getByText("Token Plan")).toBeTruthy();
+    // Subscription-billed: no per-token dollar figure replaces the plan chip.
+    expect(screen.queryByText("balance")).toBeNull();
   });
 
   it("surfaces the Z.AI usage fetch failure reason in the chip tooltip", () => {

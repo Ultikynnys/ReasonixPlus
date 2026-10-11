@@ -1,6 +1,7 @@
 import type {
   AntigravityQuota,
   CodexQuota,
+  MiMoQuota,
   OllamaQuota,
   OpencodeQuota,
   ZaiQuota,
@@ -129,6 +130,26 @@ export function opencodeUsageView(quota: OpencodeQuota): ProviderUsageView {
     });
   }
   return { plan: null, windows, turnUsedPct: quota.turnUsedPct ?? null };
+}
+
+/** Xiaomi MiMo subscription usage. The console usage API needs web-session
+ *  cookies (not the inference key), so with no console session this stays a
+ *  static plan chip and NO percentage is ever fabricated. When the daemon
+ *  supplies a console-reported quota (`status: "available"`), its remaining
+ *  percent renders as a single "plan" window. */
+export function mimoUsageView(
+  quota?: MiMoQuota | null,
+  plan: string | null = null,
+): ProviderUsageView {
+  const windows: QuotaWindowView[] = [];
+  if (quota?.status === "available" && typeof quota.remainingPercent === "number") {
+    windows.push({
+      label: "plan",
+      remainingPct: Math.max(0, quota.remainingPercent),
+      resetsAt: parseIso(quota.resetsAt),
+    });
+  }
+  return { plan: quota?.plan ?? plan, windows, turnUsedPct: null };
 }
 
 /** Antigravity (Gemini Code Assist) per-model window, normalized. Only the

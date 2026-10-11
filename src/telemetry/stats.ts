@@ -95,6 +95,10 @@ function defaultPricingFor(model: string, context?: PricingContext): ModelPricin
       return OPENAI_PRICED_MODELS.has(model) ? DEEPSEEK_PRICING[model] : undefined;
     case "ollama":
       return isOllamaPeakPricedModel(model) ? OLLAMA_PRICING[ollamaPricingModel(model)] : undefined;
+    case "mimo":
+      // MiMo bills through its subscription plan, not per-token USD — no static
+      // rate. Set `pricingOverride` for a per-model estimate if one is wanted.
+      return undefined;
     default:
       return undefined;
   }

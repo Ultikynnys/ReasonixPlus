@@ -9,6 +9,7 @@ import {
   DEFAULT_ZAI_CODING_CHAT_URL,
   deriveNativeOllamaOrigin,
   effectiveReasoningEffort,
+  loadMimoDisableThinkingWithTools,
   loadOllamaGenerationSettings,
   loadOllamaNumCtx,
   loadRateLimit,
@@ -919,7 +920,11 @@ export class DeepSeekClient {
     // fields (messages, stream_options, max_tokens, ...) are rejected with a
     // 400, so the whole payload is converted.
     if (transport?.api === "responses") {
-      return buildResponsesPayload({ ...opts, reasoningEffort }, stream);
+      return buildResponsesPayload(
+        { ...opts, reasoningEffort },
+        stream,
+        providerForModel(opts.model),
+      );
     }
     // Ollama speaks its native `/api/chat` wire format — `options.num_ctx`,
     // `keep_alive` and `think` are all silently dropped by the OpenAI-compat
@@ -969,6 +974,16 @@ export class DeepSeekClient {
         payload.thinking = { type: "enabled", clear_thinking: false };
       }
       if (stream && opts.tools?.length) payload.tool_stream = true;
+    } else if (provider === "mimo") {
+      // MiMo's Chat Completions takes the thinking toggle as a top-level field
+      // (`thinking: { type }`); it has no effort ladder, so `reasoning_effort`
+      // is never sent for it (see PROVIDER_REASONING_EFFORTS.mimo). Xiaomi
+      // documents reasoning text occasionally interfering with tool-call
+      // extraction, so MIMO_DISABLE_THINKING_WITH_TOOLS forces it off on tool
+      // requests.
+      const thinking =
+        opts.tools?.length && loadMimoDisableThinkingWithTools() ? "disabled" : opts.thinking;
+      if (thinking) payload.thinking = { type: thinking };
     } else if (
       opts.thinking &&
       !this._isAzureEndpoint() &&
@@ -978,7 +993,9 @@ export class DeepSeekClient {
     ) {
       payload.extra_body = { thinking: { type: opts.thinking } };
     }
-    if (reasoningEffort && !isOllama) payload.reasoning_effort = reasoningEffort;
+    if (reasoningEffort && !isOllama && provider !== "mimo") {
+      payload.reasoning_effort = reasoningEffort;
+    }
     return payload;
   }
 
@@ -1068,6 +1085,8 @@ export class DeepSeekClient {
         return "Z.AI";
       case "opencode":
         return "OpenCode";
+      case "mimo":
+        return "MiMo";
     }
   }
 

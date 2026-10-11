@@ -9,10 +9,13 @@ import { createInterface } from "node:readline";
 import {
   ANTIGRAVITY_MODELS,
   MAX_IMAGE_BYTES,
+  MAX_MEDIA_BYTES,
   MailProvider,
   type PersistedNotice,
   flattenText,
   isUsableAntigravityModel,
+  mediaKindForPath,
+  mediaMimeForExtension,
   messageOf,
   redactDiagnosticText,
   redactDiagnosticValue,
@@ -53,6 +56,7 @@ import type {
   MemoryResultEvent,
   MentionPreviewEvent,
   MentionResultsEvent,
+  MiMoQuota,
   ModelEndpointInfo,
   NeedsSetupEvent,
   OllamaModelsEvent,
@@ -101,10 +105,13 @@ import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/se
 import { fetchCodexQuotaViaOAuth } from "../../codex-backend.js";
 import {
   DEFAULT_GEMINI_CHAT_URL,
+  DEFAULT_MIMO_CHAT_URL,
   DEFAULT_MODEL,
   DEFAULT_OLLAMA_CHAT_URL,
   DEFAULT_OPENCODE_CHAT_URL,
   DEFAULT_ZAI_CHAT_URL,
+  MIMO_MODELS,
+  MIMO_SPEECH_MODELS,
   OPENCODE_MODELS,
   type ReasonixConfig,
   SUPPORTED_MODELS,
@@ -115,6 +122,7 @@ import {
   addRule,
   anyProviderConfigured,
   bridgeEndpointEnv,
+  clearMimoApiKey,
   copyWorkspaceRules,
   deriveNativeOllamaOrigin,
   hasOpencodeCredential,
@@ -146,6 +154,7 @@ import {
   loadMaxIterPerTurn,
   loadMaxOutputTokens,
   loadMetasoApiKey,
+  loadMimoApiKey,
   loadModel,
   loadOllamaApiKey,
   loadOllamaEndpoint,
@@ -196,6 +205,7 @@ import {
   saveGmailOAuth,
   saveMailProvider,
   saveMaxIterPerTurn,
+  saveMimoCredential,
   saveModel,
   saveOllamaGenerationPatch,
   saveOpenAIApiKey,
@@ -324,6 +334,8 @@ import {
   timestampSuffix,
   writeSessionNotices,
 } from "../../memory/session.js";
+import { type MiMoLoginFlow, beginMiMoLoginFlow } from "../../mimo-auth.js";
+import { fetchMiMoQuota, readMiMoConsoleSession } from "../../mimo-quota.js";
 import { createModelClient } from "../../model-client.js";
 import { type OAuthFlow, beginOAuthFlow, oauthAccount, signOutOpenAI } from "../../oauth.js";
 import {
@@ -471,6 +483,7 @@ type EmittableEvent =
   | { type: "oauth_begin_result"; url: string }
   | { type: "gemini_oauth_begin_result"; url: string }
   | { type: "opencode_oauth_begin_result"; url: string; userCode: string }
+  | { type: "mimo_oauth_begin_result"; url: string }
   | ConfirmRequiredEvent
   | PathAccessRequiredEvent
   | EditRequiredEvent
@@ -1063,6 +1076,27 @@ export async function resolveUserImages(
       }
       continue;
     }
+    const kind =
+      att.kind === "audio" || att.kind === "video" ? att.kind : mediaKindForPath(att.path);
+    if (kind === "audio" || kind === "video") {
+      const mediaStat = statSync(att.path);
+      if (mediaStat.size > MAX_MEDIA_BYTES) {
+        throw new Error(
+          `${kind} too large (${(mediaStat.size / 1024 / 1024).toFixed(1)} MB > ${MAX_MEDIA_BYTES / 1024 / 1024} MB)`,
+        );
+      }
+      const ext = att.path.slice(att.path.lastIndexOf(".") + 1);
+      const mime = mediaMimeForExtension(ext) ?? (kind === "audio" ? "audio/mpeg" : "video/mp4");
+      const dataUrl = `data:${mime};base64,${(await readFile(att.path)).toString("base64")}`;
+      out.push({
+        url: dataUrl,
+        path: att.path,
+        kind,
+        fps: att.fps,
+        mediaResolution: att.mediaResolution,
+      });
+      continue;
+    }
     const stat = statSync(att.path);
     if (stat.size > MAX_IMAGE_BYTES) {
       throw new Error(
@@ -1343,6 +1377,15 @@ let pendingOpencodeOAuth: OpencodeDeviceFlow | null = null;
  *  the next successful sign-in clears it. */
 let lastOpencodeOAuthError: string | null = null;
 
+let mimoOAuthGen = 0;
+let pendingMiMoOAuth: MiMoLoginFlow | null = null;
+/** Last MiMo browser-flow failure — shown in the MiMo settings card until the
+ *  next successful sign-in clears it. */
+let lastMiMoOAuthError: string | null = null;
+/** Cache of the last MiMo console quota — set only when a console session is
+ *  configured (the console API is cookie-auth, unlike the inference key). */
+let mimoQuotaCache: MiMoQuota | null = null;
+
 async function refreshAntigravityModels(tab: Tab): Promise<void> {
   try {
     const auth = await resolveGeminiAuth();
@@ -1397,6 +1440,14 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
     return {
       provider: "zai",
       baseUrl: ep.baseUrl ?? DEFAULT_ZAI_CHAT_URL,
+      reasoningEfforts,
+    };
+  }
+  if (provider === "mimo") {
+    const ep = loadEndpointForModel(model, path);
+    return {
+      provider: "mimo",
+      baseUrl: ep.baseUrl ?? DEFAULT_MIMO_CHAT_URL,
       reasoningEfforts,
     };
   }
@@ -1489,6 +1540,7 @@ function emitSettings(tab: Tab): void {
       providerCatalogs,
       ollamaBaseUrl: config.ollamaBaseUrl,
       opencodeBaseUrl: config.opencodeBaseUrl,
+      mimoBaseUrl: config.mimoBaseUrl,
       webSearchEngine: readWebSearchEngine(),
       webSearchEndpoint: readConfig().webSearchEndpoint,
       webSearchApiKeys: collectWebSearchApiKeyPrefixes(),
@@ -1542,6 +1594,11 @@ function emitSettings(tab: Tab): void {
         orgName: opencodeOAuth?.orgName,
         flowError: lastOpencodeOAuthError ?? undefined,
       },
+      mimoOAuth: {
+        signedIn: !!config.mimoApiKey,
+        flowError: lastMiMoOAuthError ?? undefined,
+      },
+      mimoQuota: mimoQuotaCache,
       shellAllowedWorkspace: loadProjectShellAllowed(tab.rootDir),
       pathAllowedWorkspace: loadProjectPathAllowed(tab.rootDir),
       shellAllowedGlobal: loadGlobalShellAllowed(),
@@ -1839,6 +1896,7 @@ async function refreshProviderCatalogs(force = false, provider?: CatalogProvider
     },
     { provider: "openai" as const, model: OPENAI_MODELS[0]!, fallback: OPENAI_MODELS },
     { provider: "zai" as const, model: ZAI_MODELS[0]!, fallback: ZAI_MODELS },
+    { provider: "mimo" as const, model: MIMO_MODELS[0]!, fallback: MIMO_MODELS },
     { provider: "typesafe" as const, model: "jev-latest", fallback: ["jev-latest"] },
   ];
   await Promise.all(
@@ -1855,6 +1913,7 @@ async function refreshProviderCatalogs(force = false, provider?: CatalogProvider
               baseUrl: endpoint.baseUrl,
               apiKey: endpoint.apiKey,
               fallback: entry.fallback,
+              exclude: entry.provider === "mimo" ? MIMO_SPEECH_MODELS : undefined,
               force,
             })
           : {
@@ -2634,6 +2693,22 @@ let lastOpencodeRollingUsedPct: number | null = null;
 /** OpenCode Go plan usage for an `opencode`-provider tab with a credential —
  *  fetches /zen/go/v1/usage and accumulates the measured rolling-window delta
  *  as the session's native-unit quota %. */
+/** Refresh MiMo subscription usage. The console API needs a web-session cookie
+ *  (not the inference key), so this is a no-op without a configured session —
+ *  the statusbar then shows a static plan chip with no percentage. */
+async function emitMiMoQuota(tab: Tab): Promise<void> {
+  if (providerForModel(tab.currentModel) !== "mimo") return;
+  const session = readMiMoConsoleSession();
+  if (!session) {
+    if (mimoQuotaCache === null) return;
+    mimoQuotaCache = null;
+    emitSettings(tab);
+    return;
+  }
+  mimoQuotaCache = await fetchMiMoQuota(session);
+  emitSettings(tab);
+}
+
 async function emitOpencodeQuota(tab: Tab): Promise<void> {
   if (providerForModel(tab.currentModel) !== "opencode") {
     emitTabDiagnostic(tab, "quota.skipped", { reason: "non-opencode-provider" });
@@ -4210,6 +4285,8 @@ function notConfiguredMessage(model: string): string {
       return "Not configured yet — sign in to Google Antigravity (Settings → Google) to use Gemini models.";
     case "zai":
       return "Not configured yet — add a Z.AI API key in Settings → General to use GLM models.";
+    case "mimo":
+      return "Not configured yet — add a Xiaomi MiMo API key in Settings → Models to use MiMo models.";
     case "opencode":
       return "Not configured yet — OpenCode endpoint is unavailable.";
     default:
@@ -4238,6 +4315,9 @@ export function tabCurrentModelUsable(tab: Tab): boolean {
   }
   if (providerForModel(tab.currentModel) === "zai") {
     return !!loadZaiApiKey();
+  }
+  if (providerForModel(tab.currentModel) === "mimo") {
+    return !!loadMimoApiKey();
   }
   if (providerForModel(tab.currentModel) === "opencode") {
     return true;
@@ -4308,6 +4388,8 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
     );
   } else if (provider === "zai") {
     log.debug(`model ${tab.currentModel} → Z.AI; endpoint ${ep.baseUrl ?? DEFAULT_ZAI_CHAT_URL}`);
+  } else if (provider === "mimo") {
+    log.debug(`model ${tab.currentModel} → MiMo; endpoint ${ep.baseUrl ?? DEFAULT_MIMO_CHAT_URL}`);
   } else if (provider === "opencode") {
     log.debug(
       `model ${tab.currentModel} → OpenCode; endpoint ${ep.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL}`,
@@ -5130,9 +5212,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
               ? "Not signed in to Google Antigravity — sign in from Settings to use Gemini models."
               : provider === "zai"
                 ? `No Z.AI credential for ${tab.currentModel} — add a Z.AI key in Settings → Models.`
-                : provider === "opencode"
-                  ? `No OpenCode configuration for ${tab.currentModel}.`
-                  : "No API key configured — paste your DeepSeek API key first.";
+                : provider === "mimo"
+                  ? `No Xiaomi MiMo credential for ${tab.currentModel} — add a MiMo key in Settings → Models.`
+                  : provider === "opencode"
+                    ? `No OpenCode configuration for ${tab.currentModel}.`
+                    : "No API key configured — paste your DeepSeek API key first.";
       emit({ type: "$error", message }, tab.id);
       return;
     }
@@ -5395,6 +5479,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           void emitAntigravityQuota(tab);
           void emitZaiQuota(tab);
           void emitOpencodeQuota(tab);
+          void emitMiMoQuota(tab);
           if (tab.hooks.some((h) => h.event === "Stop")) {
             const stopReport = await runHooks({
               hooks: tab.hooks,
@@ -7694,6 +7779,63 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         });
       return;
     }
+    if (msg.cmd === "mimo_oauth_begin") {
+      mimoOAuthGen++;
+      if (pendingMiMoOAuth) pendingMiMoOAuth.cancel();
+      const gen = mimoOAuthGen;
+      void beginMiMoLoginFlow()
+        .then((flow) => {
+          pendingMiMoOAuth = flow;
+          emit({ type: "mimo_oauth_begin_result", url: flow.url }, tab.id);
+          void flow.done
+            .then((cred) => {
+              if (gen !== mimoOAuthGen) return; // superseded by a newer begin/signout
+              pendingMiMoOAuth = null;
+              saveMimoCredential({ apiKey: cred.apiKey, baseUrl: cred.baseUrl });
+              lastMiMoOAuthError = null;
+              // A fresh key makes previously unusable MiMo tabs usable — rebuild.
+              for (const t of tabs.values()) {
+                if (t.toolset) {
+                  t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
+                  if (t.runtime) emit({ type: "$ready" }, t.id);
+                }
+              }
+              emitSettings(tab);
+            })
+            .catch((err: Error) => {
+              if (gen !== mimoOAuthGen) return;
+              pendingMiMoOAuth = null;
+              lastMiMoOAuthError = err.message;
+              emit({ type: "$error", message: err.message }, tab.id);
+              emitSettings(tab);
+            });
+        })
+        .catch((err: Error) => {
+          lastMiMoOAuthError = err.message;
+          emit({ type: "$error", message: `mimo_oauth_begin failed: ${err.message}` }, tab.id);
+          emitSettings(tab);
+        });
+      return;
+    }
+    if (msg.cmd === "mimo_oauth_cancel") {
+      mimoOAuthGen++;
+      if (pendingMiMoOAuth) {
+        pendingMiMoOAuth.cancel();
+        pendingMiMoOAuth = null;
+      }
+      return;
+    }
+    if (msg.cmd === "mimo_oauth_signout") {
+      mimoOAuthGen++;
+      lastMiMoOAuthError = null;
+      if (pendingMiMoOAuth) {
+        pendingMiMoOAuth.cancel();
+        pendingMiMoOAuth = null;
+      }
+      clearMimoApiKey();
+      emitSettings(tab);
+      return;
+    }
     if (msg.cmd === "setup_save_openai_key") {
       const key = msg.key.trim();
       if (key && !isPlausibleKey(key)) {
@@ -7918,7 +8060,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           msg.braveApiKey !== undefined ||
           msg.zaiApiKey !== undefined ||
           msg.opencodeApiKey !== undefined ||
-          msg.opencodeBaseUrl !== undefined
+          msg.opencodeBaseUrl !== undefined ||
+          msg.mimoApiKey !== undefined ||
+          msg.mimoBaseUrl !== undefined
         ) {
           const cfg = readConfig();
           if (msg.webSearchEngine !== undefined) cfg.webSearchEngine = msg.webSearchEngine;
@@ -7954,6 +8098,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           }
           if (msg.opencodeBaseUrl !== undefined) {
             cfg.opencodeBaseUrl = msg.opencodeBaseUrl?.trim() || undefined;
+          }
+          if (msg.mimoApiKey !== undefined) {
+            cfg.mimoApiKey = msg.mimoApiKey?.trim() || undefined;
+          }
+          if (msg.mimoBaseUrl !== undefined) {
+            cfg.mimoBaseUrl = msg.mimoBaseUrl?.trim() || undefined;
           }
           writeConfig(cfg);
           if (msg.opencodeApiKey !== undefined) {

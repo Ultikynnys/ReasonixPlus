@@ -2,7 +2,14 @@ import type { ReasoningEffort } from "./permission-types.js";
 
 /** Provider ids that own an endpoint family. Mirrors `ModelProvider` in the
  *  daemon config — kept here so both the daemon and desktop share one list. */
-export type ProviderID = "deepseek" | "openai" | "ollama" | "gemini" | "zai" | "opencode";
+export type ProviderID =
+  | "deepseek"
+  | "openai"
+  | "ollama"
+  | "gemini"
+  | "zai"
+  | "opencode"
+  | "mimo";
 
 /** Canonical low→max ordering. Used for nearest-value clamping so a persisted
  *  global effort degrades predictably when a provider(model) drops a level. */
@@ -26,6 +33,10 @@ export const PROVIDER_REASONING_EFFORTS: Record<ProviderID, readonly ReasoningEf
   ollama: ["low", "medium", "high", "max"],
   gemini: ["low", "medium", "high"],
   opencode: ["low", "medium", "high"],
+  // Xiaomi MiMo's Chat Completions differentiates reasoning only on/off (its
+  // `thinking: { type }` toggle); its Responses effort enum is accepted but not
+  // differentiated. No ladder, so `reasoning_effort` is never sent for it.
+  mimo: [],
 };
 
 const EFFORT_SET: ReadonlySet<string> = new Set(REASONING_EFFORT_ORDER);

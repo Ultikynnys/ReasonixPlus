@@ -18,6 +18,8 @@ describe("PROVIDER_REASONING_EFFORTS", () => {
     expect(PROVIDER_REASONING_EFFORTS.zai).toEqual(["low", "high", "max"]);
     expect(PROVIDER_REASONING_EFFORTS.opencode).toEqual(["low", "medium", "high"]);
     expect(PROVIDER_REASONING_EFFORTS.openai).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    // MiMo differentiates reasoning only on/off (its `thinking` toggle) → no ladder.
+    expect(PROVIDER_REASONING_EFFORTS.mimo).toEqual([]);
   });
 });
 

@@ -15,6 +15,9 @@ const MAX_EDGE = 2048;
  *  core-utils so the frontend filters can never drift from the daemon. */
 export { isSupportedImagePath as isImagePath } from "@reasonix/core-utils";
 
+/** True for MiMo audio/video extensions — same re-export discipline. */
+export { isSupportedAudioVideoPath as isAudioVideoPath } from "@reasonix/core-utils";
+
 /** Resolve a mention path (workspace-relative or absolute) to the absolute
  *  path the daemon's file-read accept-list expects. */
 export function resolveImagePath(path: string, workspaceDir?: string): string {

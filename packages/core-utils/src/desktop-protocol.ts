@@ -953,6 +953,8 @@ export interface SettingsEvent {
     typesafe?: string;
   };
   opencodeBaseUrl?: string;
+  /** Xiaomi MiMo OpenAI-compatible endpoint override. */
+  mimoBaseUrl?: string;
   /** Per-tab subagent model — the default model used when a subagent skill has no explicit `model:` frontmatter override. Absent = deepseek-v4-flash. */
   subagentModel?: string;
   /** Per-field visibility toggles for the bottom status row. Absent = all default to true. */
@@ -1003,6 +1005,16 @@ export interface SettingsEvent {
     /** Last OAuth flow failure — shown in the OpenCode settings card until the next successful sign-in. */
     flowError?: string;
   };
+  /** Xiaomi MiMo browser-auth state — the issued inference key is stored as the
+   *  MiMo API key; never ships the key, only whether one is present. */
+  mimoOAuth?: {
+    signedIn: boolean;
+    /** Last browser-flow failure — shown in the MiMo settings card. */
+    flowError?: string;
+  };
+  /** Xiaomi MiMo subscription usage. Only populated when a console session is
+   *  configured; otherwise the UI shows a static plan chip with no percentage. */
+  mimoQuota?: MiMoQuota | null;
   /** Rule lists scoped to the current workspace (project config). */
   shellAllowedWorkspace?: string[];
   pathAllowedWorkspace?: string[];
@@ -1030,7 +1042,7 @@ export type SettingsPayload = Omit<SettingsEvent, "type" | "quickSendId" | "quic
 /** Endpoint + auth state for the tab's CURRENT model — the status bar's API
  *  chip is per tab and flips between DeepSeek, OpenAI, Ollama and Gemini with the model. */
 export interface ModelEndpointInfo {
-  provider: "deepseek" | "openai" | "ollama" | "gemini" | "zai" | "opencode";
+  provider: "deepseek" | "openai" | "ollama" | "gemini" | "zai" | "opencode" | "mimo";
   baseUrl: string;
   /** Reasoning-effort levels this model accepts, resolved by the daemon (native
    *  providers from a static set; OpenCode from the model's models.dev
@@ -1229,6 +1241,27 @@ export interface OpencodeQuotaEvent {
   reason?: string;
 }
 
+/** Xiaomi MiMo subscription usage. The console usage API
+ *  (`GET {platform}/api/v1/tokenPlan/usage`) authenticates with web-session
+ *  cookies (`api-platform_serviceToken` + `userId`) — a DIFFERENT credential
+ *  from the inference key — so this is normally `unsupported`. The daemon fills
+ *  it in only when a console session is configured, and never fabricates a
+ *  locally-counted percentage. */
+export interface MiMoQuota {
+  status: "available" | "authentication_required" | "unsupported" | "error";
+  source: "console" | "local_estimate" | "none";
+  /** % of the plan consumed (console-reported), when available. */
+  usedPercent?: number;
+  /** 100 - usedPercent, when available. */
+  remainingPercent?: number;
+  /** ISO reset timestamp, when the console reported one. */
+  resetsAt?: string | null;
+  /** Plan/tier label, when reported. */
+  plan?: string | null;
+  /** Why the status is non-available — surfaced in the statusbar tooltip. */
+  reason?: string;
+}
+
 /** The account's Google Antigravity (Gemini Code Assist) plan, from
  *  loadCodeAssist.currentTier. */
 export interface AntigravityPlan {
@@ -1367,14 +1400,24 @@ export interface SettingsPatch {
   opencodeApiKey?: string | null;
   typesafeApiKey?: string | null;
   opencodeBaseUrl?: string | null;
+  mimoApiKey?: string | null;
+  mimoBaseUrl?: string | null;
 }
 
 /** An image to attach to a user message. Clipboard paste flows ship the
  *  bytes the UI already encoded; drag-and-drop ships a path the daemon reads
  *  (the webview has no fs access for arbitrary OS paths). */
 export type UserImageAttachment =
-  | { source: "clipboard"; dataUrl: string }
-  | { source: "file"; path: string };
+  | { source: "clipboard"; dataUrl: string; kind?: "image" }
+  | {
+      source: "file";
+      path: string;
+      kind?: "image" | "audio" | "video";
+      /** Video-only MiMo frame sampling rate (0.1–10 fps). Defaults to 2. */
+      fps?: number;
+      /** Video-only MiMo visual detail level. Defaults to "default". */
+      mediaResolution?: "default" | "max";
+    };
 
 export type OutgoingCommand = { tabId?: string } & (
   | {
@@ -1445,6 +1488,9 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "opencode_oauth_begin" }
   | { cmd: "opencode_oauth_cancel" }
   | { cmd: "opencode_oauth_signout" }
+  | { cmd: "mimo_oauth_begin" }
+  | { cmd: "mimo_oauth_cancel" }
+  | { cmd: "mimo_oauth_signout" }
   | { cmd: "antigravity_models_refresh" }
   | { cmd: "opencode_models_refresh"; force?: boolean }
   | {

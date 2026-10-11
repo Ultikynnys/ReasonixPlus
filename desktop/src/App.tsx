@@ -5,7 +5,9 @@ import {
   extractPathsFromArgs,
   flattenText,
   isFilePathTool,
+  mediaKindForPath,
   messageOf,
+  modelAcceptsAudioVideo,
   modelAcceptsImages,
   modelDisplayName,
   parseFilesDroppedMarker,
@@ -160,6 +162,19 @@ import { WorkdirPop } from "./ui/workdir-pop";
 import { anyVoiceModelDownloaded } from "./voice/models";
 import { areWorkspacesLoaded } from "./workspace-loading";
 import { toWorkspaceRelative } from "./workspace-path";
+
+/** Thumbnail icons for queued audio/video attachments — real data-URL images so
+ *  the existing pending/queue <img> renders need no per-kind branches. */
+const AUDIO_ATTACH_ICON =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" rx="6" fill="#2b2b30"/><text x="20" y="27" font-family="sans-serif" font-size="20" font-weight="600" text-anchor="middle" fill="#d0d0d6">A</text></svg>',
+  );
+const VIDEO_ATTACH_ICON =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" rx="6" fill="#2b2b30"/><text x="20" y="27" font-family="sans-serif" font-size="20" font-weight="600" text-anchor="middle" fill="#d0d0d6">V</text></svg>',
+  );
 
 const RIGHT_SIDEBAR_COLLAPSE_WIDTH = 1120;
 const LEFT_SIDEBAR_COLLAPSE_WIDTH = 760;
@@ -533,6 +548,8 @@ type State = {
   antigravityOAuthWaiting: boolean;
   /** True between opencode_oauth_begin_result and the flow's terminal state — settings card spinner. */
   opencodeOAuthWaiting: boolean;
+  /** True between mimo_oauth_begin_result and the flow's terminal state — settings card spinner. */
+  mimoOAuthWaiting: boolean;
   /** Current turn's activity status — shown as a live indicator below the streaming assistant message. */
   turnStatus:
     | "thinking"
@@ -591,6 +608,7 @@ type Action =
   | { t: "oauth_waiting"; waiting: boolean }
   | { t: "antigravity_oauth_waiting"; waiting: boolean }
   | { t: "opencode_oauth_waiting"; waiting: boolean }
+  | { t: "mimo_oauth_waiting"; waiting: boolean }
   | { t: "codex_quota_refreshing" }
   | { t: "ollama_quota_refreshing" }
   | { t: "antigravity_quota_refreshing" }
@@ -610,10 +628,12 @@ export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
     zaiApiKey: _zai,
     opencodeApiKey: _opencode,
     typesafeApiKey: _typesafe,
+    mimoApiKey: _mimo,
     ollamaBaseUrl: _ollamaBaseUrl,
     ollamaGeneration: _ollamaGeneration,
     webSearchEndpoint,
     opencodeBaseUrl,
+    mimoBaseUrl,
     ...rest
   } = patch;
   const sanitized: Partial<Settings> = { ...rest };
@@ -625,6 +645,9 @@ export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
   }
   if (opencodeBaseUrl !== undefined) {
     sanitized.opencodeBaseUrl = opencodeBaseUrl ?? undefined;
+  }
+  if (mimoBaseUrl !== undefined) {
+    sanitized.mimoBaseUrl = mimoBaseUrl ?? undefined;
   }
   return sanitized;
 }
@@ -831,6 +854,8 @@ export function reduce(state: State, action: Action): State {
       return { ...state, antigravityOAuthWaiting: action.waiting };
     case "opencode_oauth_waiting":
       return { ...state, opencodeOAuthWaiting: action.waiting };
+    case "mimo_oauth_waiting":
+      return { ...state, mimoOAuthWaiting: action.waiting };
     case "codex_quota_refreshing":
       return { ...state, codexQuotaRefreshing: true };
     case "ollama_quota_refreshing":
@@ -2065,6 +2090,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           webSearchEndpoint: ev.webSearchEndpoint,
           webSearchApiKeys: ev.webSearchApiKeys,
           opencodeBaseUrl: ev.opencodeBaseUrl,
+          mimoBaseUrl: ev.mimoBaseUrl,
           subagentModel: ev.subagentModel,
           ollamaGeneration: ev.ollamaGeneration,
           ollamaGenerationOverrides: ev.ollamaGenerationOverrides,
@@ -2075,6 +2101,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           openaiOAuth: ev.openaiOAuth,
           antigravityOAuth: ev.antigravityOAuth,
           opencodeOAuth: ev.opencodeOAuth,
+          mimoOAuth: ev.mimoOAuth,
           mailProvider: ev.mailProvider ?? MailProvider.Outlook,
           shellAllowedWorkspace: ev.shellAllowedWorkspace,
           pathAllowedWorkspace: ev.pathAllowedWorkspace,
@@ -2091,6 +2118,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           ? false
           : state.antigravityOAuthWaiting,
         opencodeOAuthWaiting: ev.opencodeOAuth?.signedIn ? false : state.opencodeOAuthWaiting,
+        mimoOAuthWaiting: ev.mimoOAuth?.signedIn ? false : state.mimoOAuthWaiting,
         // Quota is only meaningful while its provider's models are active —
         // drop stale numbers the moment the daemon-resolved provider changes.
         // The provider comes from the resolved endpoint, never the model name.
@@ -2194,6 +2222,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           ev.message.includes("OpenCode") || ev.message.includes("opencode_oauth")
             ? false
             : state.opencodeOAuthWaiting,
+        mimoOAuthWaiting:
+          ev.message.includes("MiMo") || ev.message.includes("mimo_oauth")
+            ? false
+            : state.mimoOAuthWaiting,
         messages: appendNoticeMessage(settled, notice),
       };
     }
@@ -2203,6 +2235,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return { ...state, antigravityOAuthWaiting: true };
     case "opencode_oauth_begin_result":
       return { ...state, opencodeOAuthWaiting: true };
+    case "mimo_oauth_begin_result":
+      return { ...state, mimoOAuthWaiting: true };
     case "model.turn.started":
       // Duplicate-delivery dedupe only: ordinals are monotonic daemon-side,
       // so this can no longer swallow a post-compaction turn (fixed at source).
@@ -2801,6 +2835,7 @@ function TabRuntime({
     oauthWaiting: false,
     antigravityOAuthWaiting: false,
     opencodeOAuthWaiting: false,
+    mimoOAuthWaiting: false,
     turnStatus: null,
     turnStatusTool: null,
     turnLastEventMs: 0,
@@ -3114,6 +3149,7 @@ function TabRuntime({
     ollamaVisionModels,
     opencodeVisionModels,
   );
+  const mediaCapable = modelAcceptsAudioVideo(state.settings?.model);
   const attachPastedImage = useCallback(
     async (file: File) => {
       try {
@@ -3144,6 +3180,33 @@ function TabRuntime({
       },
     ]);
   }, []);
+  const attachPickedMedia = useCallback((path: string) => {
+    const kind = mediaKindForPath(path);
+    if (!kind) return;
+    setPendingImages((prev) => [
+      ...prev,
+      {
+        id: `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        thumbnail: kind === "audio" ? AUDIO_ATTACH_ICON : VIDEO_ATTACH_ICON,
+        wire:
+          kind === "video"
+            ? { source: "file", path, kind, fps: 2, mediaResolution: "default" }
+            : { source: "file", path, kind },
+      },
+    ]);
+  }, []);
+  const updatePendingMedia = useCallback(
+    (id: string, patch: { fps?: number; mediaResolution?: "default" | "max" }) => {
+      setPendingImages((prev) =>
+        prev.map((im) =>
+          im.id === id && im.wire?.source === "file"
+            ? { ...im, wire: { ...im.wire, ...patch } }
+            : im,
+        ),
+      );
+    },
+    [],
+  );
   const removePendingImage = useCallback((id: string) => {
     setPendingImages((prev) => prev.filter((im) => im.id !== id));
   }, []);
@@ -3200,9 +3263,15 @@ function TabRuntime({
             ollamaVisionModels,
             opencodeVisionModels,
           );
+          const mediaCapable = modelAcceptsAudioVideo(state.settings?.model);
           const imagePaths = imageCapable ? paths.filter(isImagePath) : [];
-          const mentionPaths = imageCapable ? paths.filter((p) => !isImagePath(p)) : paths;
+          const mediaPaths = mediaCapable
+            ? paths.filter((p) => !isImagePath(p) && mediaKindForPath(p) !== undefined)
+            : [];
           for (const p of imagePaths) attachPickedImage(p);
+          for (const p of mediaPaths) attachPickedMedia(p);
+          const handled = new Set([...imagePaths, ...mediaPaths]);
+          const mentionPaths = paths.filter((p) => !handled.has(p));
           if (mentionPaths.length > 0) {
             const mentions = mentionPaths.map((path) => toWorkspaceRelative(path, ws));
             setDraft((d) => {
@@ -3227,6 +3296,7 @@ function TabRuntime({
     state.settings?.workspaceDir,
     state.settings?.model,
     attachPickedImage,
+    attachPickedMedia,
     ollamaVisionModels,
     opencodeVisionModels,
   ]);
@@ -4169,6 +4239,9 @@ function TabRuntime({
                 onPasteImage={attachPastedImage}
                 onImageRejected={() => appendNotice(t("composer.imageRequiresVision"), "warning")}
                 onPickImage={attachPickedImage}
+                mediaCapable={mediaCapable}
+                onPickMedia={attachPickedMedia}
+                onUpdateMedia={updatePendingMedia}
                 onVoiceError={(message) => appendNotice(message, "error")}
                 voiceAvailable={voiceAvailable}
               />
@@ -4334,6 +4407,13 @@ function TabRuntime({
               sendRpc({ cmd: "opencode_oauth_cancel" });
             }}
             onOpencodeOAuthSignOut={() => sendRpc({ cmd: "opencode_oauth_signout" })}
+            mimoOAuthWaiting={state.mimoOAuthWaiting}
+            onMiMoOAuthBegin={() => sendRpc({ cmd: "mimo_oauth_begin" })}
+            onMiMoOAuthCancel={() => {
+              dispatch({ t: "mimo_oauth_waiting", waiting: false });
+              sendRpc({ cmd: "mimo_oauth_cancel" });
+            }}
+            onMiMoOAuthSignOut={() => sendRpc({ cmd: "mimo_oauth_signout" })}
             onAddMcpSpec={addMcpSpec}
             onRemoveMcpSpec={removeMcpSpec}
             onToggleMcpServer={toggleMcpServer}
@@ -5947,6 +6027,9 @@ export function App() {
             }
 
             if (ev.type === "opencode_oauth_begin_result") {
+              void openUrl(ev.url).catch((err) => console.error("openUrl failed", err));
+            }
+            if (ev.type === "mimo_oauth_begin_result") {
               void openUrl(ev.url).catch((err) => console.error("openUrl failed", err));
             }
 

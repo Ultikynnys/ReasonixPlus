@@ -124,11 +124,23 @@ function buildUserContent(
   if (paths.length > 0) {
     parts.push({
       type: "text",
-      text: `Attached image file(s) — you can open and modify these with your file tools:\n${paths.map((p) => `- ${p}`).join("\n")}`,
+      text: `Attached file(s) — you can open and modify these with your file tools:\n${paths.map((p) => `- ${p}`).join("\n")}`,
     });
   }
   for (const d of images) {
-    parts.push({ type: "image_url", image_url: { url: d.url, detail: "low" } });
+    const kind = d.kind ?? "image";
+    if (kind === "audio") {
+      parts.push({ type: "input_audio", input_audio: { data: d.url } });
+    } else if (kind === "video") {
+      parts.push({
+        type: "video_url",
+        video_url: { url: d.url },
+        fps: d.fps ?? 2,
+        media_resolution: d.mediaResolution ?? "default",
+      });
+    } else {
+      parts.push({ type: "image_url", image_url: { url: d.url, detail: "low" } });
+    }
   }
   return parts;
 }

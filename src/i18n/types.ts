@@ -363,6 +363,15 @@ export interface TranslationSchema {
     opencodeTimeout: string;
     opencodeRate: string;
     opencodeServer: string;
+    mimoAuth: string;
+    mimoCredits: string;
+    mimoPermission: string;
+    mimoNotFound: string;
+    mimoRequest: string;
+    mimoContext: string;
+    mimoTimeout: string;
+    mimoRate: string;
+    mimoServer: string;
     customAuth: string;
     customCredits: string;
     customPermission: string;
