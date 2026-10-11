@@ -93,8 +93,10 @@ describe("Session plan history", () => {
     expect(within(select).getByRole("option", { name: /Current/ })).toBeTruthy();
     fireEvent.change(select, { target: { value: "old" } });
     expect(screen.getByText("Status: superseded")).toBeTruthy();
+    // The plan renders as a formatted checklist, not raw details dumps.
+    expect(screen.getByText("Accepted first step")).toBeTruthy();
     expect(screen.getByText("Verified work")).toBeTruthy();
-    expect(screen.getByText("Original plan body")).toBeTruthy();
+    expect(screen.queryByText("Full plan")).toBeNull();
   });
 });
 

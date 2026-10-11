@@ -794,9 +794,6 @@ export const en = {
     planFinished: "Finished",
     planNotCompleted: "Not completed",
     planCreatedUnknown: "Unknown (legacy)",
-    planFullPlan: "Full plan",
-    planStepDetails: "details",
-    planRevision: "Revision",
     rawTab: "Raw",
     rawTitle: "Raw context",
     rawHelp:

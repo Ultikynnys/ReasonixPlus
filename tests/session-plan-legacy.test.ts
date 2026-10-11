@@ -58,6 +58,23 @@ describe("legacy plan migration", () => {
     expect(active?.createdAt).toBeNull();
   });
 
+  it("imports a fully-completed plan.json as completed, not in-flight", () => {
+    writeFixture(sessionPlanPath("legacy-done"), {
+      version: 2,
+      steps: [{ id: "one", title: "First", action: "Do first" }],
+      completedStepIds: ["one"],
+      updatedAt: "2026-01-09T00:00:00.000Z",
+    });
+
+    const repo = new SessionPlanRepository("legacy-done");
+    // A finished leftover must not resurrect as the active plan (that would
+    // keep re-injecting "continue the next step").
+    expect(repo.active()).toBeNull();
+    const [plan] = repo.list();
+    expect(plan?.status).toBe("completed");
+    expect(plan?.finishedAt).toBe("2026-01-09T00:00:00.000Z");
+  });
+
   it("imports .done.json archives as completed when every step is done, else abandoned", () => {
     writeFixture(archivePath("legacy-archives", "2026-01-03T00-00-00-000Z-aaaa.done.json"), {
       version: 2,
@@ -94,13 +111,15 @@ describe("legacy plan migration", () => {
         { id: "", title: "no id", action: "x" },
         null,
         { id: "ok-2", title: "also good", action: "do2" },
+        { id: "ok-3", title: "third", action: "do3" },
       ],
       completedStepIds: ["ok", null, 42, "", "ok-2"],
       updatedAt: "2026-01-05T00:00:00.000Z",
     });
 
+    // One step stays unfinished, so this leftover keeps importing as active.
     const active = new SessionPlanRepository("legacy-partial").active();
-    expect(active?.steps.map((s) => s.id)).toEqual(["ok", "ok-2"]);
+    expect(active?.steps.map((s) => s.id)).toEqual(["ok", "ok-2", "ok-3"]);
     expect(Object.keys(active?.completions ?? {})).toEqual(["ok", "ok-2"]);
   });
 

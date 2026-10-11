@@ -841,14 +841,18 @@ export class CacheFirstLoop {
       this.planRepository = this.sessionName ? sessionPlanRepository(this.sessionName) : undefined;
     }
     const active = this.planRepository?.active();
-    const planContext: ChatMessage[] = active
-      ? [
-          {
-            role: "user",
-            content: `Authoritative session plan state (not a new user request): ${JSON.stringify({ planId: active.id, summary: active.summary, status: active.status, steps: active.steps, completedStepIds: Object.keys(active.completions), nextStepId: active.steps.find((s) => !Object.hasOwn(active.completions, s.id))?.id })}\nContinue the next unfinished step in order. Supply this planId to mark_step_complete and revise_plan. Use open_plan for full accepted work and list_plans for history. Do not silently abandon or replace the plan.`,
-          },
-        ]
-      : [];
+    // Only nudge on a plan that still has an unfinished step — a finished leftover
+    // (e.g. an imported legacy plan) must not inject "continue the next step" forever.
+    const nextStep = active?.steps.find((s) => !Object.hasOwn(active.completions, s.id));
+    const planContext: ChatMessage[] =
+      active && nextStep
+        ? [
+            {
+              role: "user",
+              content: `Authoritative session plan state (not a new user request): ${JSON.stringify({ planId: active.id, summary: active.summary, status: active.status, steps: active.steps, completedStepIds: Object.keys(active.completions), nextStepId: nextStep.id })}\nContinue the next unfinished step in order. Supply this planId to mark_step_complete and revise_plan. Use open_plan for full accepted work and list_plans for history. Do not silently abandon or replace the plan.`,
+            },
+          ]
+        : [];
     return [...this.prefix.toMessages(), ...healedMessages, ...planContext];
   }
 

@@ -324,6 +324,7 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, fallback }:
         <div className="ctx-plan-progress">{history.length}</div>
       </div>
       <select
+        className="ctx-plan-select"
         aria-label={t("contextPanel.planHistoryAria")}
         value={selected}
         onChange={(event) => setSelection(event.target.value)}
@@ -342,9 +343,6 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, fallback }:
       <div className="ctx-plan-action">{t("contextPanel.planFinished")}: {detail.finishedAt ?? t("contextPanel.planNotCompleted")}</div>
       {detail.dispositionReason ? <div className="ctx-plan-result">{detail.dispositionReason}</div> : null}
       <CtxPlan plan={{ plan: detail.body, summary: detail.summary, steps: detail.steps, completedStepIds: Object.keys(detail.completions), stepResults: Object.fromEntries(Object.entries(detail.completions).map(([id, completion]) => [id, completion.result])), status: detail.status === "active" ? "active" : detail.status === "completed" ? "finished" : "cancelled" }} />
-      <details><summary>{t("contextPanel.planFullPlan")}</summary><pre style={{ whiteSpace: "pre-wrap" }}>{detail.body}</pre></details>
-      {detail.steps.map(step => <details key={step.id}><summary>{step.title}: {t("contextPanel.planStepDetails")}</summary><pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify({ step, completion: detail.completions[step.id] }, null, 2)}</pre></details>)}
-      {detail.revisions.map((revision, index) => <details key={`${revision.at}-${index}`}><summary>{t("contextPanel.planRevision")}: {revision.reason}</summary><pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(revision, null, 2)}</pre></details>)}
         </>
       ) : (
         <div className="ctx-empty">{t("contextPanel.planDetailsLoading")}</div>

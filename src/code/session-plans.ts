@@ -189,18 +189,26 @@ export class SessionPlanRepository {
     }
     const active = readLegacyActivePlan(this.session);
     if (active) {
+      // A legacy plan whose steps are all done is finished, not in-flight —
+      // otherwise it would re-inject "continue the next step" forever.
+      const activeDone =
+        active.steps.length > 0 &&
+        active.steps.every((s) => active.completedStepIds.includes(s.id));
+      const activeUpdatedAt = active.updatedAt || new Date().toISOString();
       plans.push({
         ...legacyCompletions(active.completedStepIds, active.stepCompletions),
         id: "legacy-active",
-        status: "active",
+        status: activeDone ? "completed" : "active",
         createdAt: null,
-        updatedAt: active.updatedAt || new Date().toISOString(),
-        finishedAt: null,
+        updatedAt: activeUpdatedAt,
+        finishedAt: activeDone ? activeUpdatedAt : null,
         body: active.body ?? "",
         summary: active.summary,
         steps: active.steps,
         revisions: [],
-        dispositionReason: "Imported legacy active plan; original creation date is unavailable",
+        dispositionReason: activeDone
+          ? "Imported legacy completed plan; original creation date is unavailable"
+          : "Imported legacy active plan; original creation date is unavailable",
       });
     }
     return { version: 1, revision: 0, plans };
