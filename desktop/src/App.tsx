@@ -457,6 +457,8 @@ type State = {
   pendingCheckpoints: PendingCheckpoint[];
   pendingRevisions: PendingRevision[];
   activePlan: ActivePlan | null;
+  planHistory?: import("@reasonix/core-utils").PlanHistoryItem[];
+  planDetails?: Record<string, import("@reasonix/core-utils").PlanDetail>;
   usage: UsageStats;
   sessions: SessionInfo[];
   sessionsEpoch: string;
@@ -1846,6 +1848,14 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         pendingRevisions: [],
       };
     }
+    case "$plan_history": {
+      if (state.currentSession && ev.sessionName !== state.currentSession) return state;
+      return { ...state, planHistory: ev.items, planDetails: Object.fromEntries(Object.entries(state.planDetails ?? {}).filter(([id, detail]) => ev.items.some(item => item.id === id && item.updatedAt === detail.updatedAt))) };
+    }
+    case "$plan_detail": {
+      if (state.currentSession && ev.sessionName !== state.currentSession) return state;
+      return { ...state, planDetails: { ...state.planDetails, [ev.plan.id]: ev.plan } };
+    }
     case "$plan_restored": {
       const steps = Array.isArray(ev.steps) ? (ev.steps as PlanStep[]) : [];
       return {
@@ -2105,6 +2115,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         ...state,
         busy: false,
         currentSession: sessionName,
+        planHistory: [],
+        planDetails: {},
         messages: loaded,
         pendingConfirms: [],
         pendingPathAccess: [],
@@ -4197,6 +4209,11 @@ function TabRuntime({
           onCopyWorkspaceRules={copyWorkspaceRules}
           onSaveSettings={saveSettings}
           activePlan={state.activePlan}
+          planHistory={state.planHistory}
+          planDetails={state.planDetails}
+          planSession={state.currentSession}
+          onReadPlans={() => { void rpcSend({ cmd: "plan_history_get", tabId }); }}
+          onReadPlan={(planId) => { void rpcSend({ cmd: "plan_detail_get", planId, tabId }); }}
           active={active}
         />
 

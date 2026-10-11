@@ -293,6 +293,8 @@ export type IncomingEvent = { tabId?: string } & (
   | RevisionRequiredEvent
   | StepCompletedEvent
   | PlanClearedEvent
+  | import("@reasonix/core-utils").PlanHistoryEvent
+  | import("@reasonix/core-utils").PlanDetailEvent
   | PlanRestoredEvent
   | MentionResultsEvent
   | MentionPreviewEvent

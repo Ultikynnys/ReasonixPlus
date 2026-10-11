@@ -1,5 +1,6 @@
 import { flattenText, messageOf, sleep } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "./client.js";
+import { type SessionPlanRepository, sessionPlanRepository } from "./code/session-plans.js";
 import { type EditMode, type ReasoningEffort, providerForModel } from "./config.js";
 import { tryParseJson } from "./core/parse-json.js";
 import type { PauseGate } from "./core/pause-gate.js";
@@ -782,6 +783,7 @@ export class CacheFirstLoop {
         cancelSignal: cancelController.signal,
         maxResultTokens: DEFAULT_MAX_RESULT_TOKENS,
         confirmationGate: this.confirmationGate,
+        sessionName: this.sessionName ?? undefined,
         readTracker: this.readTracker,
         rootDir: this.hookCwd,
         images: this._turnImages.map((d) => d.url),
@@ -830,9 +832,24 @@ export class CacheFirstLoop {
   /** Running count of user turns processed so far. */
   private _userTurnCount = 0;
 
+  private planRepository: SessionPlanRepository | undefined;
+  private planRepositorySession: string | null = null;
   private buildMessages(): ChatMessage[] {
     const healedMessages = this.healActiveLogBeforeSend();
-    return [...this.prefix.toMessages(), ...healedMessages];
+    if (this.sessionName !== this.planRepositorySession) {
+      this.planRepositorySession = this.sessionName;
+      this.planRepository = this.sessionName ? sessionPlanRepository(this.sessionName) : undefined;
+    }
+    const active = this.planRepository?.active();
+    const planContext: ChatMessage[] = active
+      ? [
+          {
+            role: "user",
+            content: `Authoritative session plan state (not a new user request): ${JSON.stringify({ planId: active.id, summary: active.summary, status: active.status, steps: active.steps, completedStepIds: Object.keys(active.completions), nextStepId: active.steps.find((s) => !Object.hasOwn(active.completions, s.id))?.id })}\nContinue the next unfinished step in order. Supply this planId to mark_step_complete and revise_plan. Use open_plan for full accepted work and list_plans for history. Do not silently abandon or replace the plan.`,
+          },
+        ]
+      : [];
+    return [...this.prefix.toMessages(), ...healedMessages, ...planContext];
   }
 
   private cacheShapeForRequest(

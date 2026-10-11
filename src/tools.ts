@@ -13,6 +13,7 @@ import { saveTruncatedResult, shouldSkipSave } from "./tools/truncated-result-sa
 import type { JSONSchema, ToolSpec, UserContentPart } from "./types.js";
 
 export interface ToolCallContext {
+  sessionName?: string;
   /** Turn abort signal — Esc/Stop fires this, ending the entire turn. */
   signal?: AbortSignal;
   /** Parent loop turn and stable call id, used by nested activity UIs for exact association. */
@@ -208,6 +209,7 @@ export class ToolRegistry {
     name: string,
     argumentsRaw: string | Record<string, unknown>,
     opts: {
+      sessionName?: string;
       signal?: AbortSignal;
       turn?: number;
       callId?: string;
@@ -334,6 +336,7 @@ export class ToolRegistry {
         // ctx or the handler never learns the user force-stopped it — it would
         // keep running and no cancelledByUser result would ever be appended.
         cancelSignal: opts.cancelSignal,
+        sessionName: opts.sessionName,
         confirmationGate: opts.confirmationGate,
         readTracker: opts.readTracker,
         images: opts.images,

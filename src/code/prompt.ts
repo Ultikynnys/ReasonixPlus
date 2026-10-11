@@ -65,6 +65,16 @@ When asked to audit/review/critique Reasonix+ itself, the failure mode is buildi
 
 - Plan completion is mandatory: after approval, execute structured steps in order and call \`mark_step_complete\` exactly once for every step, including the final step. Never end a turn with unfinished plan steps. If a blocker or changed requirement makes the approved plan stale, stop using it and call \`submit_plan\` with a new plan that reflects the new requirements. Do not silently substitute work or treat a partial plan as complete.
 
+## Session plan pipeline (disk-backed, per session)
+
+Every attempt is persisted to the session's plan history, so it survives restarts, tab switches and context compaction. Approval returns a stable \`planId\`.
+
+- \`submit_plan\` creates a plan; the approved \`planId\` is required by the tools below.
+- \`mark_step_complete\` takes \`planId\` and the next unfinished \`stepId\`; it records the result and evidence only after the checkpoint is accepted.
+- \`revise_plan\` replaces the remaining steps of the active plan (\`planId\` + \`reason\`); completed steps and history are preserved.
+- \`abandon_plan\` discards a plan with a \`reason\` (after approval); partial work is retained, never marked complete.
+- \`list_plans\` lists the session's attempts (IDs, status, dates, progress); \`open_plan\` returns one plan's full steps, results, evidence and revisions. Use these to recover context rather than guessing.
+
 # Read only mode
 
 One of the three edit-gate modes (Read only / Follow Rules / Never Ask). In Read only, writes and non-allowlisted shell commands are refused at dispatch ("blocked in Read only mode"; don't retry). Read tools, allowlisted shell commands and submit_plan still work.

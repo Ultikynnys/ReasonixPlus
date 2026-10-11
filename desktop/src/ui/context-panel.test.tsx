@@ -76,6 +76,22 @@ function renderPanel(
   );
 }
 
+describe("Session plan history", () => {
+  it("selects discarded plans and loads complete details on demand", async () => {
+    const onReadPlan = vi.fn();
+    const onReadPlans = vi.fn();
+    const now = "2026-01-01T00:00:00.000Z";
+    render(<ContextPanel settings={settings} usage={usage} mcpSpecs={[]} mcpBridged={false} sessionFiles={[]} memory={[]} memoryDetail={null} memoryResult={null} onReadMemory={() => {}} onWriteMemory={() => {}} onDeleteMemory={() => {}} onExportMemories={() => {}} onImportMemories={() => {}} onDismissMemoryResult={() => {}} onReadPlans={onReadPlans} onReadPlan={onReadPlan} planSession="test" planHistory={[{ id: "old", summary: "Discarded", status: "superseded", createdAt: now, updatedAt: now, finishedAt: null, totalSteps: 2, completedSteps: 1 }, { id: "new", summary: "Current", status: "active", createdAt: now, updatedAt: now, finishedAt: null, totalSteps: 1, completedSteps: 0 }]} planDetails={{ old: { id: "old", summary: "Discarded", status: "superseded", createdAt: now, updatedAt: now, finishedAt: null, body: "Original plan body", steps: [{ id: "one", title: "Accepted first step", action: "First action" }], completions: { one: { stepId: "one", result: "Verified work", notes: "Retained notes", evidence: [{ kind: "verification", summary: "Passed" }] } }, revisions: [] } }} />);
+    fireEvent.click(screen.getByText("Plan"));
+    expect(onReadPlans).toHaveBeenCalledTimes(1);
+    expect(onReadPlan).toHaveBeenCalledWith("new");
+    fireEvent.change(screen.getByRole("combobox", { name: "Session plan history" }), { target: { value: "old" } });
+    expect(screen.getByText("Status: superseded")).toBeTruthy();
+    expect(screen.getByText("Verified work")).toBeTruthy();
+    expect(screen.getByText("Original plan body")).toBeTruthy();
+  });
+});
+
 describe("ContextPanel git section", () => {
   it("shows the current branch in the section header", async () => {
     vi.mocked(invoke).mockResolvedValue({

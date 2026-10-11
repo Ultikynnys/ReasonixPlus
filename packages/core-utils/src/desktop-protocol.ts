@@ -398,6 +398,32 @@ export interface StepCompletedEvent {
   notes?: string;
 }
 
+export interface PlanHistoryItem {
+  id: string;
+  status: string;
+  createdAt: string | null;
+  updatedAt: string;
+  finishedAt: string | null;
+  summary?: string;
+  totalSteps: number;
+  completedSteps: number;
+  dispositionReason?: string;
+}
+export interface PlanDetail {
+  id: string;
+  status: string;
+  createdAt: string | null;
+  updatedAt: string;
+  finishedAt: string | null;
+  body: string;
+  summary?: string;
+  steps: PlanStep[];
+  completions: Record<string, { stepId: string; result: string; notes?: string; evidence?: Array<{ kind: string; summary: string; command?: string; paths?: string[] }> }>;
+  revisions: Array<{ at: string; reason: string; steps: PlanStep[] }>;
+  dispositionReason?: string;
+}
+export type PlanHistoryEvent = { type: "$plan_history"; sessionName: string; items: PlanHistoryItem[] };
+export type PlanDetailEvent = { type: "$plan_detail"; sessionName: string; plan: PlanDetail };
 export type PlanClearedEvent = { type: "$plan_cleared" };
 
 /** Hydrate the client's active plan from persisted disk state on session load /
@@ -1482,6 +1508,8 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "jobs_stop_all" }
   | { cmd: "compact_history" }
   /** Request the full request context as editable plaintext ($context_raw reply). */
+  | { cmd: "plan_history_get" }
+  | { cmd: "plan_detail_get"; planId: string }
   | { cmd: "context_raw_get" }
   /** Replace the live context (system prompt + messages) from edited plaintext.
    *  Refused while a turn is in flight; re-healed server-side before applying. */

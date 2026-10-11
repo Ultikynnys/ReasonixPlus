@@ -103,6 +103,7 @@ import {
   savePlanState,
 } from "../../code/plan-store.js";
 import { codeSystemPrompt } from "../../code/prompt.js";
+import { sessionPlanRepository } from "../../code/session-plans.js";
 import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
 import { fetchCodexQuotaViaOAuth } from "../../codex-backend.js";
 import {
@@ -486,6 +487,8 @@ type EmittableEvent =
   | RevisionRequiredEvent
   | StepCompletedEvent
   | PlanClearedEvent
+  | import("@reasonix/core-utils").PlanHistoryEvent
+  | import("@reasonix/core-utils").PlanDetailEvent
   | PlanRestoredEvent
   | SessionsEvent
   | SessionLoadedEvent
@@ -915,7 +918,18 @@ export function restorePlanForTab(
   hasPriorMessages: boolean,
 ): PlanRestoredEvent | null {
   if (!tab.currentSession || !hasPriorMessages) return null;
-  const restored = loadPlanState(tab.currentSession);
+  const active = sessionPlanRepository(tab.currentSession).active();
+  const restored = active
+    ? {
+        version: 2 as const,
+        steps: active.steps,
+        completedStepIds: Object.keys(active.completions),
+        updatedAt: active.updatedAt,
+        body: active.body,
+        summary: active.summary,
+        stepCompletions: active.completions,
+      }
+    : null;
   if (!restored || restored.steps.length === 0) return null;
   if (isPlanComplete(restored)) {
     archivePlanState(tab.currentSession);
@@ -942,8 +956,21 @@ export function restorePlanForTab(
 
 /** Restore hook for session load — mutates the tab and emits $plan_restored. */
 function emitRestoredPlan(tab: Tab, hasPriorMessages: boolean): void {
+  emitPlanHistory(tab);
   const event = restorePlanForTab(tab, hasPriorMessages);
   if (event) emit(event, tab.id);
+}
+
+function emitPlanHistory(tab: Tab): void {
+  if (!tab.currentSession) return;
+  emit(
+    {
+      type: "$plan_history",
+      sessionName: tab.currentSession,
+      items: sessionPlanRepository(tab.currentSession).list(),
+    },
+    tab.id,
+  );
 }
 
 function emit(ev: EmittableEvent, tabId?: string): void {
@@ -5380,6 +5407,14 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           // Memory tools mutate disk state behind the loop's back — the UI
           // panel won't know until we re-emit. Without this the right-hand
           // panel only updates on tab reopen.
+          if (
+            ev.role === "tool" &&
+            ["submit_plan", "revise_plan", "mark_step_complete", "abandon_plan"].includes(
+              ev.toolName ?? "",
+            )
+          ) {
+            emitRestoredPlan(tab, true);
+          }
           if (ev.role === "tool" && (ev.toolName === "remember" || ev.toolName === "forget")) {
             emitMemory(tab);
           }
@@ -5916,7 +5951,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   });
 
   pauseGate.on((req) => {
-    const tab = activeRunningTab();
+    const owner = (req.payload as { sessionName?: string }).sessionName;
+    const originatingTab = activeRunningTab();
+    const tab = owner
+      ? originatingTab?.currentSession === owner
+        ? originatingTab
+        : undefined
+      : originatingTab;
     const tabId = tab?.id;
     if (tab) tab.pendingGateIds.add(req.id);
     // Shared auto-resolve policy (e.g. plan_checkpoint in auto/yolo) — must
@@ -6122,20 +6163,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         result: string;
         notes?: string;
       };
-      if (tab) {
-        recordPlanStepCompletion(tab, payload);
-        persistPlanState(tab);
-      }
-      emit(
-        {
-          type: "$step_completed",
-          stepId: payload.stepId,
-          title: payload.title,
-          result: payload.result,
-          notes: payload.notes,
-        },
-        tabId,
-      );
       emit(
         {
           type: "$checkpoint_required",
@@ -6598,13 +6625,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "checkpoint_response") {
       clearGateCountdown(msg.id);
-      const tab = forgetGate(msg.id);
-      if (tab && msg.response.type === "stop") {
-        clearPlanForTab(tab);
-        emit({ type: "$plan_cleared" }, tab.id);
-      } else if (tab) {
-        persistPlanState(tab);
-      }
+      forgetGate(msg.id);
       pauseGate.resolve(msg.id, msg.response);
       return;
     }
@@ -8278,6 +8299,21 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // Claim priority synchronously before the abort completion can drain a
       // queued send. Repeated clicks coalesce on this one operation.
       tab.manualCompaction = task;
+      return;
+    }
+    if (msg.cmd === "plan_history_get") {
+      emitPlanHistory(tab);
+      return;
+    }
+    if (msg.cmd === "plan_detail_get") {
+      emit(
+        {
+          type: "$plan_detail",
+          sessionName: tab.currentSession,
+          plan: sessionPlanRepository(tab.currentSession).open(msg.planId),
+        },
+        tab.id,
+      );
       return;
     }
     if (msg.cmd === "context_raw_get") {

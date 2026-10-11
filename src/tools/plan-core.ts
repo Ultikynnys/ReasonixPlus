@@ -1,3 +1,4 @@
+import { sessionPlanRepository } from "../code/session-plans.js";
 import { pauseGate } from "../core/pause-gate.js";
 import type { ToolRegistry } from "../tools.js";
 import { coercePlanStep, sanitizeEvidence } from "./plan-sanitize.js";
@@ -118,15 +119,33 @@ function registerSubmitPlan(registry: ToolRegistry, opts: PlanToolOptions): void
       const steps = sanitizeSteps(args?.steps);
       const summary =
         typeof args?.summary === "string" ? args.summary.trim() || undefined : undefined;
+      const repository = ctx?.sessionName ? sessionPlanRepository(ctx.sessionName) : undefined;
+      const record = repository?.propose(plan, steps, summary);
       opts.onPlanSubmitted?.(plan, steps);
       // Block until the user approves, refines, or cancels
       const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
         kind: "plan_proposed",
-        payload: { plan, steps, summary, callId: ctx?.callId },
+        payload: {
+          plan,
+          steps,
+          summary,
+          callId: ctx?.callId,
+          sessionName: ctx?.sessionName,
+          planId: record?.id,
+        },
       });
       const fb = verdict.feedback?.trim();
+      if (record && repository)
+        repository.verdict(
+          record.id,
+          verdict.type === "approve"
+            ? "active"
+            : verdict.type === "refine"
+              ? "refinement_requested"
+              : "cancelled",
+        );
       if (verdict.type === "approve") {
-        return fb ? `plan approved. user's additional instructions: ${fb}` : "plan approved";
+        return `${fb ? `plan approved. user's additional instructions: ${fb}` : "plan approved"}${record ? `\nplanId: ${record.id}` : ""}`;
       }
       if (verdict.type === "refine") {
         throw new Error(fb ? `user requested refinement: ${fb}` : "user requested refinement");
@@ -145,6 +164,10 @@ function registerMarkStepComplete(registry: ToolRegistry, opts: PlanToolOptions)
     parameters: {
       type: "object",
       properties: {
+        planId: {
+          type: "string",
+          description: "Owning active plan ID returned by submit_plan or list_plans.",
+        },
         stepId: {
           type: "string",
           description: "Step id from submit_plan's steps array.",
@@ -180,6 +203,7 @@ function registerMarkStepComplete(registry: ToolRegistry, opts: PlanToolOptions)
     },
     fn: async (
       args: {
+        planId?: string;
         stepId: string;
         title?: string;
         result: string;
@@ -209,13 +233,36 @@ function registerMarkStepComplete(registry: ToolRegistry, opts: PlanToolOptions)
       if (title) update.title = title;
       if (notes) update.notes = notes;
       if (evidence) update.evidence = evidence;
-      opts.onStepCompleted?.(update);
+      const repository = ctx?.sessionName ? sessionPlanRepository(ctx.sessionName) : undefined;
+      const active = repository?.active();
+      if (repository && (!active || args.planId !== active.id))
+        throw new Error("mark_step_complete: supply the owning active planId");
+      if (
+        active?.steps.find((s) => !Object.hasOwn(active.completions, s.id))?.id !== stepId &&
+        repository
+      )
+        throw new Error("mark_step_complete: complete the next unfinished step");
       // Block until the user continues, revises, or stops
       const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
         kind: "plan_checkpoint",
-        payload: { stepId, title, result, notes, completion: update },
+        payload: {
+          stepId,
+          title,
+          result,
+          notes,
+          completion: update,
+          sessionName: ctx?.sessionName,
+          planId: active?.id,
+        },
       });
-      if (verdict.type === "continue") return JSON.stringify(compactStepCompletion(update));
+      if (verdict.type === "continue") {
+        const completed = active && repository ? repository.complete(active.id, update) : undefined;
+        opts.onStepCompleted?.(update);
+        return JSON.stringify({
+          ...compactStepCompletion(update),
+          ...(completed ? { planId: completed.id, status: completed.status } : {}),
+        });
+      }
       if (verdict.type === "revise") {
         if (verdict.feedback) return `revision requested: ${verdict.feedback}`;
         throw new Error("user requested revision at checkpoint");
@@ -234,6 +281,7 @@ function registerRevisePlan(registry: ToolRegistry, opts: PlanToolOptions): void
     parameters: {
       type: "object",
       properties: {
+        planId: { type: "string", description: "Owning active plan ID." },
         reason: {
           type: "string",
           description: "One sentence: why you're revising / what the user asked for.",
@@ -250,7 +298,10 @@ function registerRevisePlan(registry: ToolRegistry, opts: PlanToolOptions): void
       },
       required: ["reason", "remainingSteps"],
     },
-    fn: async (args: { reason: string; remainingSteps: unknown; summary?: string }, ctx) => {
+    fn: async (
+      args: { planId?: string; reason: string; remainingSteps: unknown; summary?: string },
+      ctx,
+    ) => {
       const reason = (args?.reason ?? "").trim();
       if (!reason) {
         throw new Error(
@@ -265,13 +316,33 @@ function registerRevisePlan(registry: ToolRegistry, opts: PlanToolOptions): void
       }
       const summary =
         typeof args?.summary === "string" ? args.summary.trim() || undefined : undefined;
+      const repository = ctx?.sessionName ? sessionPlanRepository(ctx.sessionName) : undefined;
+      const active = repository?.active();
+      if (repository && (!active || args.planId !== active.id))
+        throw new Error("revise_plan: supply the owning active planId");
       opts.onPlanRevisionProposed?.(reason, remainingSteps, summary);
       // Block until the user accepts, rejects, or cancels the revision
       const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
         kind: "plan_revision",
-        payload: { reason, remainingSteps, summary },
+        payload: {
+          reason,
+          remainingSteps,
+          summary,
+          sessionName: ctx?.sessionName,
+          planId: active?.id,
+        },
       });
-      if (verdict.type === "accepted") return "revision accepted";
+      if (verdict.type === "accepted") {
+        const revised =
+          active && repository ? repository.revise(active.id, reason, remainingSteps) : undefined;
+        return revised
+          ? JSON.stringify({
+              planId: revised.id,
+              status: revised.status,
+              message: "revision accepted",
+            })
+          : "revision accepted";
+      }
       if (verdict.type === "rejected") throw new Error("revision rejected");
       throw new Error("revision cancelled");
     },
@@ -284,5 +355,52 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
   registerSubmitPlan(registry, opts);
   registerMarkStepComplete(registry, opts);
   registerRevisePlan(registry, opts);
+  for (const name of ["list_plans", "open_plan", "abandon_plan"] as const) {
+    registry.register({
+      name,
+      description:
+        name === "list_plans"
+          ? "List this session's persisted plan attempts with IDs, statuses, creation/finish dates and progress."
+          : name === "open_plan"
+            ? "Open a session plan by ID: full body, steps, accepted results/evidence, revisions and disposition."
+            : "Abandon a session plan by ID and reason after user approval. Retain partial work; never mark it completed.",
+      readOnly: true,
+      userIntervention: name === "abandon_plan",
+      parameters: {
+        type: "object",
+        properties:
+          name === "list_plans"
+            ? {}
+            : {
+                planId: { type: "string" },
+                ...(name === "abandon_plan" ? { reason: { type: "string" } } : {}),
+              },
+        required:
+          name === "list_plans" ? [] : name === "open_plan" ? ["planId"] : ["planId", "reason"],
+      },
+      fn: async (args: { planId?: string; reason?: string }, ctx) => {
+        if (!ctx?.sessionName) throw new Error("Plan tools require an owning session");
+        const repository = sessionPlanRepository(ctx.sessionName);
+        if (name === "list_plans") return JSON.stringify(repository.list());
+        if (!args.planId) throw new Error("planId is required");
+        if (name === "open_plan") return JSON.stringify(repository.open(args.planId));
+        if (!args.reason?.trim()) throw new Error("Abandonment reason is required");
+        const verdict = await (ctx.confirmationGate ?? pauseGate).ask({
+          kind: "choice",
+          payload: {
+            question: `Abandon plan ${args.planId}: ${args.reason}?`,
+            options: [
+              { id: "abandon", title: "Abandon plan" },
+              { id: "keep", title: "Keep plan" },
+            ],
+            allowCustom: false,
+          },
+        });
+        if (verdict.type !== "pick" || verdict.optionId !== "abandon")
+          throw new Error("Abandonment not approved");
+        return JSON.stringify(repository.abandon(args.planId, args.reason));
+      },
+    });
+  }
   return registry;
 }

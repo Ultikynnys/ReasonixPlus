@@ -95,15 +95,30 @@ interface PausePayloadMap {
     /** Optional human preview (diff / content head). */
     preview?: string;
   };
-  plan_proposed: { plan: string; steps?: unknown[]; summary?: string; callId?: string };
+  plan_proposed: {
+    plan: string;
+    steps?: unknown[];
+    summary?: string;
+    callId?: string;
+    sessionName?: string;
+    planId?: string;
+  };
   plan_checkpoint: {
+    sessionName?: string;
+    planId?: string;
     stepId: string;
     title?: string;
     result: string;
     notes?: string;
     completion?: unknown;
   };
-  plan_revision: { reason: string; remainingSteps: unknown[]; summary?: string };
+  plan_revision: {
+    reason: string;
+    remainingSteps: unknown[];
+    summary?: string;
+    sessionName?: string;
+    planId?: string;
+  };
   choice: { question: string; options: unknown[]; allowCustom: boolean };
 }
 
