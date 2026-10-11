@@ -1,4 +1,4 @@
-/** Client retries initial requests only; loop-level guards handle safe stream/compaction replays. */
+/** Client retries initial requests only; loop-level guards handle safe stream replays. */
 
 import { messageOf, sleep } from "@reasonix/core-utils";
 import { RETRYABLE_HTTP_STATUSES, isAbortError, retryDelayMs } from "./core/retry-shared.js";

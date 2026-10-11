@@ -8,7 +8,6 @@ import { pauseGate as defaultPauseGate } from "./core/pause-gate.js";
 import { type ResolvedHook, runHooks } from "./hooks.js";
 import { DEFAULT_MAX_RESULT_CHARS, DEFAULT_MAX_RESULT_TOKENS } from "./mcp/registry.js";
 
-import { ContextManager, type FoldResult, TURN_START_FOLD_THRESHOLD } from "./context-manager.js";
 import { InflightSet } from "./core/inflight.js";
 import { t } from "./i18n/index.js";
 import { contentPartsToString, dispatchToolCallsChunked } from "./loop/dispatch.js";
@@ -22,11 +21,6 @@ import {
   probeDeepSeekReachable,
   waitForReconnection,
 } from "./loop/errors.js";
-import {
-  type ForceSummaryContext,
-  type ForceSummaryReason,
-  forceSummaryAfterIterLimit,
-} from "./loop/force-summary.js";
 import {
   fixToolCallPairing,
   healLoadedMessages,
@@ -79,9 +73,8 @@ import {
   SessionStats,
   type TurnStats,
   billingContextForModel,
-  resolveContextTokens,
 } from "./telemetry/stats.js";
-import { countTokensBounded } from "./tokenizer.js";
+import { countTokensBounded, tokensForMessage } from "./tokenizer.js";
 import { ToolRegistry, isReadOnlyTool } from "./tools.js";
 import { ReadTracker } from "./tools/read-tracker.js";
 import { USER_CANCEL_NOTE } from "./tools/shell.js";
@@ -187,8 +180,8 @@ export interface CacheFirstLoopOptions {
   billingContextFor?: (model: string) => Omit<BillingContext, "at">;
   /** @deprecated Compatibility hook. Prefer billingContextFor. */
   billingKindFor?: (model: string) => BillingKind;
-  /** User-configured context-window cap (tokens), forwarded to the ContextManager.
-   *  Undefined = per-model default. Hot-applied via configure(). */
+  /** User-configured context-window cap (tokens). Undefined = per-model default.
+   *  Hot-applied via configure(). */
   ctxMaxOverride?: number;
   session?: string;
   /** PreToolUse + PostToolUse only — UserPromptSubmit / Stop live at the App boundary. */
@@ -199,11 +192,6 @@ export interface CacheFirstLoopOptions {
   confirmationGate?: PauseGate;
   /** Re-runs the prompt builder (applyMemoryStack / codeSystemPrompt) on a new session so REASONIX.md edits take effect without a restart. Accepting a cache miss is the price. */
   rebuildSystem?: () => string;
-  /** Host hook fired at the start of every compaction so live background
-   *  shells can be force-cancelled before history is replaced. */
-  onPreCompaction?: () => void | Promise<void>;
-  /** When true, disables all automatic compaction sources (turn-start folds, post-response folds, context guards). Manual compaction remains enabled. */
-  disableAutoCompaction?: boolean;
   /** When true, the stream repetition / "stuck re-thinking" guard may abort a degenerating stream. Defaults to false (opt-in). */
   repetitionGuardEnabled?: boolean;
   /** In-memory floor for the turn counter across runtime rebuilds. Combined
@@ -222,8 +210,6 @@ export interface ReconfigurableOptions {
   ctxMaxOverride?: number | null;
   /** Per-turn iteration cap; undefined = keep current, `null` = reset to default (50). */
   maxIterPerTurn?: number | null;
-  /** When true, disable all automatic compaction (auto-fold, turn-start fold, forced summary). Manual compaction remains available. */
-  disableAutoCompaction?: boolean | null;
   /** Toggle the stream repetition / "stuck re-thinking" guard. undefined = keep current. */
   repetitionGuardEnabled?: boolean | null;
 }
@@ -258,8 +244,7 @@ export class CacheFirstLoop {
   readonly stats = new SessionStats();
   readonly repair: ToolCallRepair;
   /** Hard iteration cap per turn — prevents runaway tool-call loops from
-   *  burning unlimited API budget. The model gets one final force-summary
-   *  call when the cap fires. Override via REASONIX_MAX_ITER env var. */
+   *  burning unlimited API budget. Override via REASONIX_MAX_ITER env var. */
   static readonly DEFAULT_MAX_ITER_PER_TURN = 50;
   /** Output-token-truncation continuations allowed per turn — a model stuck
    *  regenerating a partial answer must not loop forever. */
@@ -267,14 +252,10 @@ export class CacheFirstLoop {
   /** Consecutive identical-reasoning iterations before the reasoning-loop guard
    *  collapses the turn to a forced summary. */
   static readonly REASONING_LOOP_LIMIT = 3;
-  /** Degeneration force-summaries that may auto-resume the turn. After a
-   *  reasoning-loop collapse the turn continues from the recap instead of
-   *  stopping; this caps how many times so a model that keeps looping ends. */
-  static readonly MAX_DEGENERATION_RESUMES = 2;
   /** Premature-stop nudges per turn — a model that always answers in
    *  fragments can't loop forever. */
   static readonly MAX_PREMATURE_STOP_NUDGES = 2;
-  /** Files the model has read this session; gates edit_file / multi_edit so SEARCH text matches on-disk bytes. Cleared on fold / mechanical truncate (the model's byte-level view of the elided history is gone). In-memory only — naturally empty on resume. */
+  /** Files the model has read this session; gates edit_file / multi_edit so SEARCH text matches on-disk bytes. Cleared on mechanical truncate (the model's byte-level view of the elided history is gone). In-memory only — naturally empty on resume. */
   readonly readTracker = new ReadTracker();
 
   // Mutable via configure() — slash commands in the TUI / library callers tweak
@@ -364,7 +345,6 @@ export class CacheFirstLoop {
   private _iterCapBypassed = false;
   /** Live edit-mode getter — hosts that don't pass it keep the default pause. */
   private readonly _getEditMode: (() => EditMode) | undefined;
-  private _foldedThisTurn = false;
   /** Latched once per turn — the empty-completion guard retries exactly once. */
   private _emptyResponseRetried = false;
   /** Latched once per turn — a thinking-only completion (no content, no tool call)
@@ -390,22 +370,12 @@ export class CacheFirstLoop {
   private _lastReasoningSig: string | null = null;
   /** Consecutive iterations with the same reasoning sig and no content. */
   private _reasoningLoopCount = 0;
-  /** Degeneration force-summaries already resumed this turn: bounds the
-   *  summarize-then-continue loop so a model that keeps looping still ends. */
-  private _degenerationResumes = 0;
-  private context!: ContextManager;
   /** Prefix-shape snapshot of the last sent request — next turn's churn is attributed against it. */
   private _lastCacheShape: CacheShapeSnapshot | null = null;
-  /** Stable ids for compaction card events — pairs compaction_start with compaction_end. */
-  private _compactionSeq = 0;
-  /** True while a compaction is in flight — blocks new tool dispatch. */
-  private _compacting = false;
-  /** When true, all automatic compaction sources are disabled. */
-  private _disableAutoCompaction: boolean;
   /** When true, the stream repetition / "stuck re-thinking" guard is active. */
   private _repetitionGuardEnabled: boolean;
-  /** Host hook that force-cancels background jobs before compaction. */
-  private readonly _onPreCompaction: (() => void | Promise<void>) | null;
+  /** Cached log token total for Desktop's context meter — invalidated on any log mutation. */
+  private _logTokensCache: { version: number; tokens: number } | null = null;
 
   /** Subscribe API so UI hooks can derive `running` from finally-guaranteed insertions. */
   get inflight(): InflightSet {
@@ -414,18 +384,6 @@ export class CacheFirstLoop {
 
   get currentTurn(): number {
     return this._turn;
-  }
-
-  /** True while a compaction fold is in flight — blocks new tool dispatch.
-   *  Exposed so the host can gate compaction against a cancelled turn's
-   *  still-running background fold, avoiding overlapping log rewrites. */
-  get isCompacting(): boolean {
-    return this._compacting;
-  }
-
-  /** When true, automatic compaction from all sources is disabled. */
-  get disableAutoCompaction(): boolean {
-    return this._disableAutoCompaction;
   }
 
   /** When true, the stream repetition / "stuck re-thinking" guard may abort a degenerating stream. */
@@ -442,7 +400,6 @@ export class CacheFirstLoop {
     this.maxOutputTokens = opts.maxOutputTokens;
     this.maxIterPerTurn = opts.maxIterPerTurn ?? CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN;
     this._getEditMode = opts.getEditMode;
-    this._disableAutoCompaction = Boolean(opts.disableAutoCompaction);
     this._repetitionGuardEnabled = Boolean(opts.repetitionGuardEnabled);
     this.ctxMaxOverride = opts.ctxMaxOverride;
 
@@ -458,8 +415,6 @@ export class CacheFirstLoop {
           ? { kind: opts.billingKindFor(model), provider: resolved.provider }
           : resolved;
       });
-    this._onPreCompaction = opts.onPreCompaction ?? null;
-
     this._streamPreference = opts.stream ?? true;
     this.stream = this._streamPreference;
 
@@ -501,8 +456,8 @@ export class CacheFirstLoop {
       for (const msg of messages) this.log.append(msg);
       this.resumedMessageCount = messages.length;
       // Floor on the pre-computed meta/rebuild floors: resumeTurnBaseline
-      // counts user records in the current log, which regresses after
-      // compaction and let a rebuilt runtime reissue ordinals the desktop
+      // counts user records in the current log, which regresses after a log
+      // rewrite and let a rebuilt runtime reissue ordinals the desktop
       // already rendered.
       this._turn = Math.max(this._turn, resumeTurnBaseline(messages));
       // Carry forward cumulative cost / turn count so the TUI's session
@@ -531,61 +486,25 @@ export class CacheFirstLoop {
     } else {
       this.resumedMessageCount = 0;
     }
-
-    this.context = new ContextManager({
-      client: this.client,
-      log: this.log,
-      stats: this.stats,
-      sessionName: this.sessionName,
-      ctxMaxOverride: this.ctxMaxOverride,
-      disableAutoCompaction: this._disableAutoCompaction,
-      getCurrentTurn: () => this._turn,
-      getSystemPrompt: () => this.prefix.system,
-      getToolSpecs: () => this.prefix.toolSpecs,
-      getFewShots: () => this.prefix.fewShots,
-      billingContextFor: (model) => ({ ...this._billingContextFor(model), at: Date.now() }),
-      onLogRewrite: () => this.readTracker.reset(),
-    });
   }
 
-  /** Replace older turns with one summary message; keep tail within keepRecentTokens budget
-   *  and the earliest turn(s) within keepHeadTokens (head-keep fold; undefined = derive). */
-  async compactHistory(opts?: {
-    keepRecentTokens?: number;
-    keepHeadTokens?: number;
-    protectActiveExchange?: boolean;
-    userInitiated?: boolean;
-  }): Promise<FoldResult> {
-    return this.context.fold(this.model, { ...opts, userInitiated: opts?.userInitiated ?? true });
-  }
-
-  /** User-triggered compaction — same compaction card lifecycle as auto folds,
-   *  consumed through the SAME LoopEvent stream as tool / reasoning / shell
-   *  actions so every compaction form shares one pipeline. */
-  async *compactHistoryWithEvents(opts?: {
-    keepRecentTokens?: number;
-    keepHeadTokens?: number;
-  }): AsyncGenerator<LoopEvent, FoldResult, void> {
-    return yield* this.compactionEvents(
-      `compaction-${++this._compactionSeq}`,
-      "user",
-      "fold",
-      undefined,
-      () => this.foldRun({ keepRecentTokens: opts?.keepRecentTokens, userInitiated: true }),
-    );
-  }
-
-  /** Real-time token count of the current log — forwarded to Desktop for meter refresh. */
+  /** Real-time token count of the current log — forwarded to Desktop for meter refresh.
+   *  Cached against the log version so repeated meter polls don't re-tokenize the whole log. */
   getCurrentLogTokens(): number {
-    return this.context.getLogTokens();
+    if (this._logTokensCache && this._logTokensCache.version === this.log.version) {
+      return this._logTokensCache.tokens;
+    }
+    let total = 0;
+    for (const m of this.log.entries) total += tokensForMessage(m, false);
+    this._logTokensCache = { version: this.log.version, tokens: total };
+    return total;
   }
 
   /** Detach every persistence path before an active session is deleted. The
    * in-flight generator may still unwind after abort, but can no longer recreate
-   * the removed folder through an append, rewrite, compaction, or stats update. */
+   * the removed folder through an append, rewrite, or stats update. */
   detachSessionPersistence(): void {
     this.sessionName = null;
-    this.context.detachSessionPersistence();
   }
 
   appendAndPersist(message: ChatMessage): void {
@@ -686,17 +605,10 @@ export class CacheFirstLoop {
       this.maxOutputTokens = opts.maxOutputTokens ?? undefined;
     }
     if (opts.ctxMaxOverride !== undefined) {
-      const v = opts.ctxMaxOverride ?? undefined;
-      this.ctxMaxOverride = v;
-      this.context.ctxMaxOverride = v;
+      this.ctxMaxOverride = opts.ctxMaxOverride ?? undefined;
     }
     if (opts.maxIterPerTurn !== undefined) {
       this.maxIterPerTurn = opts.maxIterPerTurn ?? CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN;
-    }
-    if (opts.disableAutoCompaction !== undefined) {
-      const v = Boolean(opts.disableAutoCompaction);
-      this._disableAutoCompaction = v;
-      this.context.disableAutoCompaction = v;
     }
     if (opts.repetitionGuardEnabled !== undefined) {
       this._repetitionGuardEnabled = Boolean(opts.repetitionGuardEnabled);
@@ -739,18 +651,6 @@ export class CacheFirstLoop {
     const name = call.function?.name ?? "";
     const args = call.function?.arguments ?? "{}";
     const parsedArgs = safeParseToolArgs(args);
-    // Compaction dispatch lock: while a fold / force-summary / a user compaction is
-    // running, refuse to start any new tool so nothing begins mid-compaction
-    // and gets orphaned by the log replacement.
-    if (this._compacting) {
-      return {
-        preWarnings: [],
-        postWarnings: [],
-        result: JSON.stringify({
-          error: "compaction in progress — tool call deferred until it completes",
-        }),
-      };
-    }
     const inflightId = this.inflightIdFor(call);
     this._inflight.add(inflightId);
     let cancelController: AbortController | null = null;
@@ -953,19 +853,6 @@ export class CacheFirstLoop {
     this._toolCancelControllers.get(callId)?.abort();
   }
 
-  /** Force-cancel in-flight tools + subagents and background shells so a
-   *  fold never orphans live work. */
-  private async cancelActiveTasks(): Promise<void> {
-    for (const ctrl of this._toolCancelControllers.values()) ctrl.abort();
-    this._lastToolCancelController?.abort();
-    try {
-      await this._onPreCompaction?.();
-    } catch (err) {
-      // Background cancellation must never block compaction, but must be LOUD.
-      process.stderr.write(`reasonix: pre-compaction cancel failed — ${messageOf(err)}\n`);
-    }
-  }
-
   private resetAbortState(): void {
     this._turnAbort = new AbortController();
     this._discardAbortRequested = false;
@@ -1109,7 +996,7 @@ export class CacheFirstLoop {
     // finally runs in every case) — a turn that ended with its own
     // controller still aborted must reset it. Leaks come from aborts
     // landing in the turn's tail: suspended at a final assistant_final /
-    // done yield, swallowed by the force-summary helper's catch, or a
+    // done yield, swallowed by a helper's catch, or a
     // desktop Stop that breaks the for-await right after the model's
     // answer. Without the reset, the next step() carries the stale
     // abort forward (carryAbort) and instantly kills the user's next
@@ -1162,7 +1049,6 @@ export class CacheFirstLoop {
     this._iterGrace = 0;
     this._iterGraceApplied = false;
     this._iterCapBypassed = false;
-    this._foldedThisTurn = false;
     this._emptyResponseRetried = false;
     this._thinkingOnlyRetried = false;
     this._thinkingOnlyPartialAppended = false;
@@ -1173,7 +1059,6 @@ export class CacheFirstLoop {
     this._payloadShrinkAttempts = 0;
     this._lastReasoningSig = null;
     this._reasoningLoopCount = 0;
-    this._degenerationResumes = 0;
     // Fresh controller for this turn: the prior step's signal has
     // already fired (or stayed clean); either way we don't want its
     // state to bleed into the new turn.
@@ -1218,33 +1103,6 @@ export class CacheFirstLoop {
     const toolSpecs = this.prefix.tools();
     const rateLimitState = { shown: false };
 
-    // Turn-start fold: covers cases the post-response check can't see — terminal
-    // prior turn (no tool_calls → no decideAfterUsage), session restore from
-    // disk, huge user paste. TURN_START_FOLD_THRESHOLD shares the post-response
-    // HISTORY_FOLD_THRESHOLD (75%), so every request ships below the fold line
-    // regardless of turn shape. The fold is non-interruptible (see
-    // summarizeForFold): an Esc pressed during it is deferred — the iter-0
-    // abort check below honors it after the compaction completes.
-    {
-      const turnStart = this.context.estimateTurnStart(
-        this.buildMessages(),
-        this.prefix.toolSpecs,
-        this.model,
-      );
-      if (!this._disableAutoCompaction && turnStart.ratio > TURN_START_FOLD_THRESHOLD) {
-        // Compaction card lifecycle — same queue as tool cards, emitted through
-        // the ONE compactionEvents helper every compaction form shares.
-        yield* this.compactionEvents(
-          `compaction-${++this._compactionSeq}`,
-          "auto-context-pressure",
-          "fold",
-          undefined,
-          () => this.foldRun({ requireTailBoundary: true }),
-        );
-        this._foldedThisTurn = true;
-      }
-    }
-
     // Any tool dispatch this turn — gates the premature-stop nudge so plain
     // Q&A answers are never re-prompted for ending without a "task complete".
     let turnHadToolActivity = false;
@@ -1265,7 +1123,7 @@ export class CacheFirstLoop {
             const beforeDiscard = this.log.length;
             this.discardLogFrom(turnStartLogIndex);
             // The truncated log REPLACES the conversation — record it so the
-            // kernel view stays replayable (same swap as session.compacted).
+            // kernel view stays replayable (same swap as session.retracted).
             yield this.abortDiscardEvent(beforeDiscard);
           } else {
             this.appendAndPersist(buildSyntheticAssistantMessage(stoppedMsg, this.model));
@@ -1289,17 +1147,15 @@ export class CacheFirstLoop {
       // on the turn's health (#2037):
       //  - never-ask mode (`getEditMode() === "never-ask"`): the cap never pauses or stops
       //    the turn - nobody is watching to say "continue". Noted once, then the
-      //    turn runs without the cap. Genuine repeat loops are still caught and
-      //    force-summarized in dispatch by the storm-breaker guard.
-      //  - STUCK turn (storm-breaker latched `_turnSelfCorrected`): one final
-      //    force-summary call, then stop — collapses the garbage loop so the
-      //    next turn starts from a recap instead of re-sending it.
+      //    turn runs without the cap. Genuine repeat loops are still caught in
+      //    dispatch by the storm-breaker guard.
+      //  - STUCK turn (storm-breaker latched `_turnSelfCorrected`): stop — the
+      //    next turn starts fresh instead of re-sending the garbage loop.
       //  - PRODUCTIVE turn (distinct calls, results flowing): the cap grants a
       //    grace window (~50% more, min 5) instead of a hard stop — killing a
-      //    healthy long task mid-flow just forces the user to re-prompt from a
-      //    compressed recap. If the grace window also exhausts, the turn pauses
-      //    NON-destructively: the log stays intact, so the next "continue"
-      //    resumes with full state.
+      //    healthy long task mid-flow just forces the user to re-prompt. If the
+      //    grace window also exhausts, the turn pauses NON-destructively: the log
+      //    stays intact, so the next "continue" resumes with full state.
       const hardCap = this.maxIterPerTurn + (this._iterGraceApplied ? this._iterGrace : 0);
       if (iter >= hardCap && !this._iterCapBypassed) {
         if (this._getEditMode?.() === "never-ask") {
@@ -1319,7 +1175,6 @@ export class CacheFirstLoop {
             severity: "high",
             content: t("loop.iterLimitReached", { max: this.maxIterPerTurn }),
           };
-          yield* this.forcedSummaryEvents(`compaction-${++this._compactionSeq}`, "stuck");
           restoreModelIfNeeded();
           this._steerQueue.length = 0;
           return;
@@ -1385,40 +1240,6 @@ export class CacheFirstLoop {
           role: "steer",
           content: steer,
         };
-      }
-
-      let requestBudget = this.context.requestBudget(messages, toolSpecs, this.model);
-      if (!requestBudget.fits) {
-        if (!this._disableAutoCompaction) {
-          yield {
-            turn: this._turn,
-            role: "warning",
-            severity: "high",
-            content: t("loop.forcingSummary", {
-              before: requestBudget.estimateTokens.toLocaleString(),
-              ctxMax: requestBudget.ctxMax.toLocaleString(),
-              pct: Math.round(requestBudget.ratio * 100),
-            }),
-          };
-          const result = yield* this.forcedSummaryEvents(
-            `compaction-${++this._compactionSeq}`,
-            "context-guard",
-          );
-          this._foldedThisTurn = true;
-          if (signal.aborted) this.resetAbortState();
-          if (!result.folded) {
-            restoreModelIfNeeded();
-            this._steerQueue.length = 0;
-            return;
-          }
-          messages = this.buildMessages();
-          requestBudget = this.context.requestBudget(messages, toolSpecs, this.model);
-          if (!requestBudget.fits) {
-            restoreModelIfNeeded();
-            this._steerQueue.length = 0;
-            return;
-          }
-        }
       }
 
       let assistantContent = "";
@@ -1649,7 +1470,7 @@ export class CacheFirstLoop {
 
       if (repetitionStall?.channel === "reasoning") {
         this.appendAndPersist(buildAssistantMessage("", [], callModel, reasoningContent));
-        const folded = yield* this.reasoningLoopEvents(
+        yield* this.reasoningLoopEvents(
           assistantContent,
           withRepeatedPattern(
             t("loop.reasoningLoopRepeatStall", {
@@ -1661,9 +1482,6 @@ export class CacheFirstLoop {
         );
         restoreModelIfNeeded();
         this._steerQueue.length = 0;
-        // Resume from the fresh recap instead of ending the turn: the user
-        // shouldn't have to re-prompt just because the model lost the thread.
-        if (this.resumeAfterDegeneration(folded)) continue;
         return;
       }
 
@@ -1815,7 +1633,7 @@ export class CacheFirstLoop {
         }
         this._lastReasoningSig = reasoningSig || null;
         if (this._reasoningLoopCount >= CacheFirstLoop.REASONING_LOOP_LIMIT) {
-          const folded = yield* this.reasoningLoopEvents(
+          yield* this.reasoningLoopEvents(
             assistantContent,
             withRepeatedPattern(
               t("loop.reasoningLoopRepeated", { count: this._reasoningLoopCount }),
@@ -1824,9 +1642,6 @@ export class CacheFirstLoop {
           );
           restoreModelIfNeeded();
           this._steerQueue.length = 0;
-          // Resume from the fresh recap instead of ending the turn: the user
-          // shouldn't have to re-prompt just because the model lost the thread.
-          if (this.resumeAfterDegeneration(folded)) continue;
           return;
         }
       }
@@ -2031,79 +1846,16 @@ export class CacheFirstLoop {
         };
       }
 
-      // Context-management decision after each turn's response.
-      // ContextManager owns the policy; loop renders the events.
-      // Must run BEFORE the repairedCalls.length === 0 early-return so
-      // text-only responses also benefit from auto-fold / force-summary.
-      const decision = this.context.decideAfterUsage(usage, callModel, this._foldedThisTurn);
-      // Compaction runs in the same queue as the tool calls: the fold emits a
-      // compaction card (compaction_start → compaction_end) like a tool card,
-      // and pending tool calls dispatch BEFORE the fold so an in-flight read
-      // isn't blocked behind the multi-minute summary window (the "read called,
-      // then force compaction — neither finishes" stall). ContextManager clamps
-      // the fold boundary to the last user exchange (protectActiveExchange) so
-      // the completed tool results survive into the tail.
-      const foldPlan = !this._disableAutoCompaction && decision.kind === "fold" ? decision : null;
-      const compactionId = foldPlan ? `compaction-${++this._compactionSeq}` : null;
-      if (!this._disableAutoCompaction && decision.kind === "exit-with-summary") {
-        const before = decision.promptTokens;
-        const ctxMax = decision.ctxMax;
-        yield {
-          turn: this._turn,
-          role: "warning",
-          content: t("loop.forcingSummary", {
-            before: before.toLocaleString(),
-            ctxMax: ctxMax.toLocaleString(),
-            pct: Math.round((before / ctxMax) * 100),
-          }),
-        };
-        // The context guard is a COMPACTION action, not just a warning: it trims
-        // the trailing in-flight tool call and summarizes in place — same card
-        // lifecycle as a fold, so the UI renders one compaction shape and the
-        // event log records the trim + summary as one action.
-        const result = yield* this.forcedSummaryEvents(
-          `compaction-${++this._compactionSeq}`,
-          "context-guard",
-        );
-        this._foldedThisTurn = true;
-        if (signal.aborted) this.resetAbortState();
-        if (!result.folded) {
-          restoreModelIfNeeded();
-          this._steerQueue.length = 0;
-          return;
-        }
-        continue;
-      }
-
       if (repairedCalls.length === 0) {
-        if (foldPlan && compactionId) {
-          yield* this.foldWithEvents(
-            compactionId,
-            foldPlan.tailBudget ?? 0,
-            foldPlan.aggressive ?? false,
-          );
-          // Esc/Stop during compaction: the fold is deliberately non-interruptible
-          // (see summarizeForFold), so a stop request that landed mid-summary is
-          // consumed here when the turn is finishing — there's nothing left to
-          // stop. Without the reset, the aborted controller would carry into the
-          // next step() (carryAbort) and instantly abort the user's next message.
-          if (signal.aborted) this.resetAbortState();
-        }
         if (this._steerQueue.length > 0) {
           continue;
         }
         if (allSuppressed) {
-          if (!this._disableAutoCompaction) {
-            // Same compaction card lifecycle as the context-guard path — the
-            // stuck-state force-summary is also a compaction action.
-            yield* this.forcedSummaryEvents(`compaction-${++this._compactionSeq}`, "stuck");
-          } else {
-            yield {
-              turn: this._turn,
-              role: "done",
-              content: assistantContent || t("loop.stormStuck"),
-            };
-          }
+          yield {
+            turn: this._turn,
+            role: "done",
+            content: assistantContent || t("loop.stormStuck"),
+          };
           restoreModelIfNeeded();
           this._steerQueue.length = 0;
           return;
@@ -2166,16 +1918,6 @@ export class CacheFirstLoop {
         abandonedCalls: this._abandonedCalls,
         rateLimitState,
       });
-      // The current iter's tool calls have settled — fold now, so the compaction
-      // card follows the tool cards in the queue instead of blocking them behind
-      // the multi-minute summary window.
-      if (foldPlan && compactionId) {
-        yield* this.foldWithEvents(
-          compactionId,
-          foldPlan.tailBudget ?? 0,
-          foldPlan.aggressive ?? false,
-        );
-      }
     }
     // Unreachable — the for-loop above is unbounded. The model exits the
     // loop via return statements when it produces no more tool calls,
@@ -2183,230 +1925,23 @@ export class CacheFirstLoop {
     // error escapes the inner try blocks.
   }
 
-  // Compaction card lifecycle — emitted by every fold path so UIs render the
-  // fold as a card in the same queue as tool calls (running spinner → folded
-  // result / failure reason) instead of a status row that never clears.
-  // protectActiveExchange is always on: this helper only runs post-response,
-  // where the current iter's tool results must survive into the tail.
-  private async *foldWithEvents(
-    compactionId: string,
-    tailBudget: number,
-    aggressive: boolean,
-  ): AsyncGenerator<LoopEvent, FoldResult, void> {
-    const result = yield* this.compactionEvents(
-      compactionId,
-      "auto-context-pressure",
-      "fold",
-      aggressive,
-      () => this.foldRun({ keepRecentTokens: tailBudget, protectActiveExchange: true }),
-    );
-    this._foldedThisTurn = true;
-    return result;
-  }
-
-  /** THE one compaction card lifecycle — every compaction form (fold, user
-   *  a user compaction, forced summary) yields the same compaction_start → compaction_end
-   *  pair; a successful fold snapshots the post-fold log for session.compacted. */
-  private async *compactionEvents(
-    compactionId: string,
-    reason: "user" | "auto-context-pressure",
-    kind: "fold" | "force-summary",
-    aggressive: boolean | undefined,
-    run: () => Promise<FoldResult> | AsyncGenerator<LoopEvent, FoldResult, void>,
-  ): AsyncGenerator<LoopEvent, FoldResult, void> {
-    if (this._disableAutoCompaction && reason !== "user") {
-      return {
-        folded: false,
-        beforeMessages: this.log.length,
-        afterMessages: this.log.length,
-        summaryChars: 0,
-      };
-    }
-    const beforeMessages = this.log.length;
-    // Cancel live work FIRST and hold the dispatch lock for the whole summary:
-    // no background shell, subagent, or tool may be running — or started — while
-    // history is being summarized and replaced. The lock clears on early break.
-    this._compacting = true;
-    try {
-      await this.cancelActiveTasks();
-      yield {
-        turn: this._turn,
-        role: "compaction_start",
-        content: "",
-        compactionId,
-        compactionReason: reason,
-        compactionKind: kind,
-        ...(aggressive ? { aggressive: true } : {}),
-      };
-
-      let result: FoldResult;
-      try {
-        const runner = run();
-        // Plain promise (fold paths) or generator (the forced summary forwards
-        // its own status/assistant_final/done events through the card).
-        result = runner instanceof Promise ? await runner : yield* runner;
-      } catch (err) {
-        // Compaction is an auxiliary action: a tokenizer, persistence, or model
-        // failure must settle its card and return control to the turn loop. The
-        // failed run is never reported as folded, so the live log remains the
-        // source of truth and a later turn can retry it.
-        result = {
-          folded: false,
-          beforeMessages,
-          afterMessages: this.log.length,
-          summaryChars: 0,
-          error: `compaction failed — ${messageOf(err)}`,
-        };
-      }
-
-      yield {
-        turn: this._turn,
-        role: "compaction_end",
-        content: "",
-        compactionId,
-        compactionReason: reason,
-        compactionKind: kind,
-        folded: result.folded,
-        beforeMessages: result.beforeMessages,
-        afterMessages: result.afterMessages,
-        summaryChars: result.summaryChars,
-        ...(result.summary ? { summary: result.summary } : {}),
-        ...(result.error ? { foldError: result.error } : {}),
-        ...(result.warn ? { foldWarn: result.warn } : {}),
-        ...(result.prunedFiles ? { prunedFiles: result.prunedFiles } : {}),
-        ...(result.prunedTokens ? { prunedTokens: result.prunedTokens } : {}),
-        ...(result.droppedFiles?.length ? { droppedFiles: result.droppedFiles } : {}),
-        // Post-fold log snapshot — the fold swapped the array in place, so the
-        // live entries ARE the replacement (merge-at-commit preserved any
-        // mid-summary appends).
-        ...(result.folded ? { replacementMessages: this.log.entries } : {}),
-      };
-      return result;
-    } finally {
-      this._compacting = false;
-    }
-  }
-
   /** One recovery path for both within-stream periodic reasoning and identical
-   *  reasoning across tool iterations. The warning explains the trigger and the
-   *  compaction lifecycle provides the single persistent UI card. */
+   *  reasoning across tool iterations. The warning explains the trigger; the
+   *  turn then ends so the user can redirect from a fresh prompt. */
   private async *reasoningLoopEvents(
     assistantContent: string,
     warningContent: string,
-  ): AsyncGenerator<LoopEvent, FoldResult | null, void> {
-    // The warning states what happens next: with auto-compaction on the turn
-    // resumes from the recap, so it must not tell the user to redirect manually.
-    const resolving = t(
-      this._disableAutoCompaction ? "loop.reasoningLoopStopping" : "loop.reasoningLoopResuming",
-    );
+  ): AsyncGenerator<LoopEvent, void, void> {
     yield {
       turn: this._turn,
       role: "warning",
       severity: "high",
-      content: `${warningContent}\n\n${resolving}`,
+      content: `${warningContent}\n\n${t("loop.reasoningLoopStopping")}`,
     };
-    if (!this._disableAutoCompaction) {
-      const result = yield* this.forcedSummaryEvents(
-        `compaction-${++this._compactionSeq}`,
-        "stuck",
-      );
-      return result;
-    }
     yield {
       turn: this._turn,
       role: "done",
       content: assistantContent || t("loop.reasoningLoop"),
-    };
-    return null;
-  }
-
-  /** Resume the turn from a degeneration recap instead of ending it. Bounded
-   *  per turn so a model that keeps looping still terminates. Returns false
-   *  when the fold failed or the resume budget is spent. */
-  private resumeAfterDegeneration(folded: FoldResult | null): boolean {
-    if (!folded?.folded || this._degenerationResumes >= CacheFirstLoop.MAX_DEGENERATION_RESUMES) {
-      return false;
-    }
-    this._degenerationResumes++;
-    this._foldedThisTurn = true;
-    this._reasoningLoopCount = 0;
-    this._lastReasoningSig = null;
-    return true;
-  }
-
-  /** Force-summary card lifecycle — trims the trailing in-flight tool call and
-   *  FULL-folds the log (history replaced by the synthesized summary). */
-  private async *forcedSummaryEvents(
-    compactionId: string,
-    reason: ForceSummaryReason,
-  ): AsyncGenerator<LoopEvent, FoldResult, void> {
-    return yield* this.compactionEvents(
-      compactionId,
-      "auto-context-pressure",
-      "force-summary",
-      undefined,
-      () => this.forceSummaryRun(reason),
-    );
-  }
-
-  /** Runs the fold itself — promise-returning; the forced-summary path passes
-   *  a generator instead to forward its own events through the card. */
-  private foldRun(opts: {
-    keepRecentTokens?: number;
-    keepHeadTokens?: number;
-    protectActiveExchange?: boolean;
-    requireTailBoundary?: boolean;
-    userInitiated?: boolean;
-  }): Promise<FoldResult> {
-    return this.context.fold(this.model, opts);
-  }
-
-  /** Runs the forced summary — trims the trailing in-flight assistant-with-
-   *  tool_calls, forwards events through the card, returns the FoldResult. */
-  private async *forceSummaryRun(
-    reason: ForceSummaryReason,
-  ): AsyncGenerator<LoopEvent, FoldResult, void> {
-    const beforeMessages = this.log.length;
-    try {
-      this.context.trimTrailingToolCalls();
-      const summary = yield* forceSummaryAfterIterLimit(this.summaryContext(), { reason });
-      return {
-        folded: true,
-        beforeMessages,
-        afterMessages: this.log.length,
-        summaryChars: summary.length,
-        summary,
-      };
-    } catch (err) {
-      return {
-        folded: false,
-        beforeMessages,
-        afterMessages: this.log.length,
-        summaryChars: 0,
-        error: `forced summary failed — ${messageOf(err)}`,
-      };
-    }
-  }
-
-  private summaryContext(): ForceSummaryContext {
-    return {
-      client: this.client,
-      buildMessages: () => this.buildMessages(),
-      replaceLog: (m) => {
-        this.log.compactInPlace([m]);
-        this.persistLog([m]);
-      },
-      recordStats: (model, usage) =>
-        this.stats.record(this._turn, model, usage, undefined, {
-          ...this._billingContextFor(model),
-          at: Date.now(),
-        }),
-      turn: this._turn,
-      model: this.model,
-      maxOutputTokens: this.maxOutputTokens,
-      getSystemPrompt: () => this.prefix.system,
-      ctxMax: resolveContextTokens(this.model, this.ctxMaxOverride),
-      canSend: (messages) => this.context.requestBudget(messages, null, this.model).fits,
     };
   }
 

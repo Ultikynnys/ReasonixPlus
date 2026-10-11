@@ -135,29 +135,6 @@ describe("conversation reducer", () => {
     ]);
   });
 
-  it("session.compacted REPLACES messages and clears pending", () => {
-    let v = emptyConversation();
-    v = conversation(v, ev<Event>({ type: "user.message", ts, turn: 1, text: "old" }));
-    v = conversation(
-      v,
-      ev<Event>({ type: "tool.intent", ts, turn: 1, callId: "c1", name: "shell", args: "" }),
-    );
-    v = conversation(
-      v,
-      ev<Event>({
-        type: "session.compacted",
-        ts,
-        turn: 2,
-        beforeMessages: 5,
-        afterMessages: 1,
-        reason: "user",
-        replacementMessages: [{ role: "system", content: "summary" }],
-      }),
-    );
-    expect(v.messages).toEqual([{ role: "system", content: "summary" }]);
-    expect(v.pendingToolCalls).toEqual([]);
-  });
-
   it("session.retracted REPLACES messages and clears pending (retry/rewind/discard)", () => {
     let v = emptyConversation();
     v = conversation(v, ev<Event>({ type: "user.message", ts, turn: 1, text: "old" }));

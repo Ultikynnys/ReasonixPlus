@@ -410,18 +410,6 @@ function formatDeepSeek5xx(status: string, probe?: DeepSeekProbeResult): string 
   return `${head}${probeNote}${action}`;
 }
 
-export function reasonPrefixFor(reason: "aborted" | "context-guard" | "stuck"): string {
-  if (reason === "aborted") return t("errors.reasonAborted");
-  if (reason === "context-guard") return t("errors.reasonContextGuard");
-  return t("errors.reasonStuck");
-}
-
-export function errorLabelFor(reason: "aborted" | "context-guard" | "stuck"): string {
-  if (reason === "aborted") return t("errors.labelAborted");
-  if (reason === "context-guard") return t("errors.labelContextGuard");
-  return t("errors.labelStuck");
-}
-
 function extractProviderErrorMessage(body: string): string {
   const trimmed = body.trim();
   if (!trimmed) return t("errors.innerNoMessage");

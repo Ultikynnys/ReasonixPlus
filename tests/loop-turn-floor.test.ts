@@ -9,7 +9,7 @@ import { loadSessionMeta, patchSessionMeta } from "../src/memory/session.js";
 
 /** Regression harness for the post-model-switch vanishing-cards bug: turn
  *  ordinals must be monotonic across runtime rebuilds, even when the live log
- *  was compacted down to almost no user records. */
+ *  was truncated down to almost no user records. */
 
 function okFetch(): typeof fetch {
   return vi.fn(
@@ -42,11 +42,11 @@ describe("monotonic turn ordinals across runtime rebuilds", () => {
     if (existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("floors the resume baseline on session-meta lastTurn after a compaction-shaped log", async () => {
+  it("floors the resume baseline on session-meta lastTurn after a truncated log", async () => {
     const sessionName = "turn-floor-compacted";
     const metaPath = join(tmp, ".reasonix", "sessions", sessionName, "meta.json");
 
-    // Post-compaction log: hundreds of user records folded away, baseline
+    // Truncated log: hundreds of user records dropped, baseline
     // counting would resume at 2 — the exact regression that reissued ordinals.
     mkdirSync(join(metaPath, ".."), { recursive: true });
     writeFileSync(metaPath, JSON.stringify({ lastTurn: 4095 }), "utf8");

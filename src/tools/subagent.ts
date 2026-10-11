@@ -128,7 +128,7 @@ export interface SubagentResult {
   skillName?: string;
   /** Zero-filled when no API calls landed so consumers always see a valid shape. */
   usage: Usage;
-  /** True when the child terminated via forceSummaryAfterIterLimit (storm-breaker / context-guard) — `output` carries the partial synthesis the model managed to produce; not a full answer. User-abort forced summaries do NOT set this (their content is a UX placeholder, routed to `error`). */
+  /** True when the child terminated without a full answer (a user-abort placeholder) — `output` carries the placeholder text, routed to `error`. */
   forcedSummary?: boolean;
   budgetExhausted?: "tool-iters" | "elapsed";
   maxToolIters?: number;
@@ -470,12 +470,9 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
           maybeEmitStreamProgress(Date.now(), true);
         }
         if (ev.forcedSummary) {
-          // Two paths emit forcedSummary: user-abort (loop.ts ~670) carries a
-          // UX placeholder ("aborted by user (Esc)…") that's useless to a
-          // parent loop; storm-breaker / context-guard (force-summary.ts)
-          // carries a real partial synthesis worth keeping. Discriminate on
-          // parentSignal.aborted because the abort path only fires when the
-          // signal is set.
+          // forcedSummary marks a placeholder final rather than a real answer.
+          // A user-abort placeholder ("aborted by user (Esc)…") is useless to a
+          // parent loop — route it to `error`; otherwise keep the content.
           if (opts.parentSignal?.aborted) {
             errorMessage = ev.content?.trim() || "subagent aborted before producing an answer";
           } else {

@@ -49,7 +49,7 @@ export interface RunCommandResult {
   /** True when the process was killed for exceeding `timeoutSec`. */
   timedOut: boolean;
   /** True when the run was killed by an abort (user stopped the conversation or
-   *  the command, compaction, shutdown), not a natural exit. Without it a killed
+   *  the command, shutdown), not a natural exit. Without it a killed
    *  command reports an unknown `exitCode` (`[exit ?]`), which reads as a crash. */
   aborted?: boolean;
 }

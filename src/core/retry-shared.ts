@@ -1,4 +1,4 @@
-/** Shared retryable-HTTP-status knowledge for the client and compaction retry loops. */
+/** Shared retryable-HTTP-status knowledge for the client and loop retry guards. */
 
 /** HTTP statuses that are safe to retry after a transient provider/network
  *  failure. 425 (Too Early) is included: a server that is still settling

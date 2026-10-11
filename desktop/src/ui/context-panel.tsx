@@ -40,7 +40,7 @@ type RuleMode = RuleRecord["mode"];
  *  window is 300K (DEEPSEEK_CONTEXT_TOKENS); never show the old 1M API ceiling. */
 const CONTEXT_MAX_TOKENS = 300_000;
 
-/** 1_234_567 → "1.2M" or 500_000 → "500K" — used for compaction-limit labels and slider display. */
+/** 1_234_567 → "1.2M" or 500_000 → "500K" — used for the context-window slider display. */
 function fmtCompact(n: number): string {
   if (n >= 1_000_000) {
     const m = n / 1_000_000;
@@ -65,7 +65,6 @@ export function ContextPanel({
   onExportMemories,
   onImportMemories,
   onDismissMemoryResult,
-  onCompact,
   onAddRule,
   onUpdateRule,
   onCopyWorkspaceRules,
@@ -103,7 +102,6 @@ export function ContextPanel({
   onExportMemories: () => void;
   onImportMemories: (json: string) => void;
   onDismissMemoryResult: () => void;
-  onCompact?: () => void;
   onAddRule?: (rule: RuleRecord) => void;
   onUpdateRule?: (from: RuleRecord, to: RuleRecord) => void;
   onCopyWorkspaceRules?: (from: string) => void;
@@ -177,48 +175,12 @@ export function ContextPanel({
             <span>{t("contextPanel.contextTokens")}</span>
             <span className="right" style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {(reserved + used + cached).toLocaleString()} / {ctxMax.toLocaleString()}
-              {onCompact ? (
-                <button
-                  type="button"
-                  className="mini-btn"
-                  title={t("contextPanel.compactBtnTooltip")}
-                  onClick={onCompact}
-                >
-                  <I.archive size={11} />
-                  <span style={{ marginLeft: 3, fontSize: 10.5 }}>
-                    {t("contextPanel.compactBtn")}
-                  </span>
-                </button>
-              ) : null}
             </span>
           </div>
           <div className="meter">
             <span className="rsvd" style={{ width: `${reservedPct}%` }} />
             <span className="cached" style={{ width: `${cachedPct}%` }} />
             <span className="used" style={{ width: `${usedPct}%` }} />
-            {/* Auto-compaction limits (context-manager.ts): fold 75% / forced summary 80% */}
-            <span
-              className={`meter-tick fold ${settings?.disableAutoCompaction ? "disabled" : ""}`}
-              style={{ left: "75%", opacity: settings?.disableAutoCompaction ? 0.3 : undefined }}
-              title={
-                settings?.disableAutoCompaction
-                  ? t("contextPanel.autoCompactionDisabledTooltip")
-                  : t("contextPanel.foldTick", {
-                      tokens: fmtCompact(ctxMax * 0.75),
-                    })
-              }
-            />
-            <span
-              className={`meter-tick force ${settings?.disableAutoCompaction ? "disabled" : ""}`}
-              style={{ left: "80%", opacity: settings?.disableAutoCompaction ? 0.3 : undefined }}
-              title={
-                settings?.disableAutoCompaction
-                  ? t("contextPanel.autoCompactionDisabledTooltip")
-                  : t("contextPanel.forceTick", {
-                      tokens: fmtCompact(ctxMax * 0.8),
-                    })
-              }
-            />
           </div>
           <div className="legend">
             <span className="l">
@@ -235,15 +197,6 @@ export function ContextPanel({
             </span>
             <span className="l">
               {t("contextPanel.freeKey")} <span className="v">{free.toLocaleString()}</span>
-            </span>
-            <span className="l">
-              <span className="sw z" />
-              {settings?.disableAutoCompaction
-                ? t("contextPanel.compactionDisabled")
-                : t("contextPanel.compactionAt", {
-                    fold: fmtCompact(ctxMax * 0.75),
-                    force: fmtCompact(ctxMax * 0.8),
-                  })}
             </span>
           </div>
         </div>
@@ -1416,19 +1369,6 @@ function CtxParameters({
             </button>
           ) : null
         }
-      />
-
-      <CtxToggleRow
-        label={t("contextPanel.autoCompaction")}
-        desc={
-          settings?.disableAutoCompaction
-            ? t("contextPanel.autoCompactionDisabledDesc")
-            : t("contextPanel.autoCompactionEnabledDesc")
-        }
-        onLabel={t("contextPanel.autoCompactionEnabled")}
-        offLabel={t("contextPanel.autoCompactionDisabled")}
-        enabled={!settings?.disableAutoCompaction}
-        onToggle={(enabled) => onSaveSettings?.({ disableAutoCompaction: !enabled })}
       />
 
       <CtxToggleRow

@@ -10,7 +10,6 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), openUrl: vi.fn(
 
 import { WorkspaceProvider } from "../Markdown";
 import {
-  CompactionCard,
   DiffCard,
   NoticeCard,
   PlanCardView,
@@ -906,30 +905,6 @@ describe("DiffCard — terminal escape handling", () => {
     expect(text).not.toContain(ESC);
     expect(text).toContain("old red");
     expect(text).toContain("new green");
-  });
-});
-
-describe("CompactionCard — terminal escape handling", () => {
-  const ESC = String.fromCharCode(27);
-
-  it("strips ANSI escapes from a failure message", () => {
-    const { container } = render(
-      wrap(<CompactionCard state="failed" error={`boom ${ESC}[31mred${ESC}[0m`} />),
-    );
-    fireEvent.click(screen.getByText("Compacted history"));
-    const body = container.querySelector(".compaction-body")?.textContent ?? "";
-    expect(body).not.toContain(ESC);
-    expect(body).toContain("boom red");
-  });
-
-  it("strips ANSI escapes from a success warning", () => {
-    const { container } = render(
-      wrap(<CompactionCard summary="folded summary" warn={`note ${ESC}[33myellow${ESC}[0m`} />),
-    );
-    fireEvent.click(screen.getByText("Compacted history"));
-    const warn = container.querySelector(".compaction-warn")?.textContent ?? "";
-    expect(warn).not.toContain(ESC);
-    expect(warn).toBe("note yellow");
   });
 });
 

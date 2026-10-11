@@ -1,8 +1,6 @@
 /** Event-log kernel types. Every transition is an appended Event; every view is a pure reducer projection (no I/O). */
 
 import type {
-  KernelCompactionFinishedEvent,
-  KernelCompactionStartedEvent,
   KernelErrorEvent,
   KernelModelDeltaEvent,
   KernelModelFinalEvent,
@@ -50,10 +48,7 @@ export const EventType = {
   planStepCompleted: "plan.step.completed",
   hookFired: "hook.fired",
   sessionOpened: "session.opened",
-  sessionCompacted: "session.compacted",
   sessionRetracted: "session.retracted",
-  compactionStarted: "compaction.started",
-  compactionFinished: "compaction.finished",
   capabilityRegistered: "capability.registered",
   capabilityRemoved: "capability.removed",
   status: "status",
@@ -174,18 +169,9 @@ export interface SessionOpenedEvent extends EventBase {
   resumedFromTurn: number;
 }
 
-export interface SessionCompactedEvent extends EventBase {
-  type: typeof EventType.sessionCompacted;
-  beforeMessages: number;
-  afterMessages: number;
-  reason: "user" | "auto-context-pressure";
-  /** Post-compact message list. Only event that REPLACES (not appends) the conversation view. */
-  replacementMessages: ReadonlyArray<ChatMessage>;
-}
-
-/** A session edit truncated the live log (retry / rewind / abort-discard / raw-context edit). Like
- *  session.compacted: the one event that REPLACES the conversation view, so
- *  replaying the events sidecar yields the truncated conversation. */
+/** A session edit truncated the live log (retry / rewind / abort-discard / raw-context edit).
+ *  The one event that REPLACES the conversation view, so replaying the events
+ *  sidecar yields the truncated conversation. */
 export interface SessionRetractedEvent extends EventBase {
   type: typeof EventType.sessionRetracted;
   /** What session edit truncated the log. */
@@ -195,10 +181,6 @@ export interface SessionRetractedEvent extends EventBase {
   /** Post-truncation message list — REPLACES the conversation view. */
   replacementMessages: ReadonlyArray<ChatMessage>;
 }
-
-export interface CompactionStartedEvent extends KernelCompactionStartedEvent {}
-
-export interface CompactionFinishedEvent extends KernelCompactionFinishedEvent {}
 
 export interface CapabilityRegisteredEvent extends EventBase {
   type: typeof EventType.capabilityRegistered;
@@ -221,9 +203,9 @@ export interface ErrorEvent extends KernelErrorEvent {
   retryable?: boolean;
 }
 
-/** Non-fatal system event surfaced to UIs as a quiet inline divider — compaction,
- *  rate-limit pause, user-aborted iter, storm-stuck interrupt, etc. Carries a
- *  severity so noisy/self-correcting warnings can be filtered out by the surface. */
+/** Non-fatal system event surfaced to UIs as a quiet inline divider — rate-limit
+ *  pause, user-aborted iter, storm-stuck interrupt, etc. Carries a severity so
+ *  noisy/self-correcting warnings can be filtered out by the surface. */
 export interface WarningEvent extends KernelWarningEvent {}
 
 export type Event =
@@ -249,10 +231,7 @@ export type Event =
   | PlanStepCompletedEvent
   | HookFiredEvent
   | SessionOpenedEvent
-  | SessionCompactedEvent
   | SessionRetractedEvent
-  | CompactionStartedEvent
-  | CompactionFinishedEvent
   | CapabilityRegisteredEvent
   | CapabilityRemovedEvent
   | StatusEvent

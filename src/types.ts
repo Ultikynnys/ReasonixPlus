@@ -48,7 +48,7 @@ export type UserContentPart =
       media_resolution?: "default" | "max";
     }
   /** Model-generated image (e.g. Antigravity's inlineData part) — output-side,
-   *  carried on assistant messages so history/reload/compaction preserve it. */
+   *  carried on assistant messages so history/reload preserve it. */
   | { type: "image"; data_url: string; mime_type: string };
 
 export type Role = "system" | "user" | "assistant" | "tool";

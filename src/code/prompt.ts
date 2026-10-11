@@ -67,7 +67,7 @@ When asked to audit/review/critique Reasonix+ itself, the failure mode is buildi
 
 ## Session plan pipeline (disk-backed, per session)
 
-Every attempt is persisted to the session's plan history, so it survives restarts, tab switches and context compaction. Approval returns a stable \`planId\`.
+Every attempt is persisted to the session's plan history, so it survives restarts and tab switches. Approval returns a stable \`planId\`.
 
 - \`submit_plan\` creates a plan; the approved \`planId\` is required by the tools below.
 - \`mark_step_complete\` takes \`planId\` and the next unfinished \`stepId\`; it records the result and evidence only after the checkpoint is accepted.

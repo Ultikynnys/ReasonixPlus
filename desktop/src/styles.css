@@ -2363,7 +2363,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   flex: 1;
 }
 
-/* Quiet inline system event — compaction, abort, rate-limit. Visually weak so
+/* Quiet inline system event — abort, rate-limit. Visually weak so
  * a long session can carry several without crowding the conversation. */
 .sys-event-row {
   display: flex;
@@ -5260,23 +5260,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .meter .rsvd {
   background: var(--warning);
 }
-/* Auto-compaction limit ticks: fold @75% (warn) · forced summary @80% (danger). */
-.meter-tick {
-  position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 1.5px;
-  border-radius: 1px;
-  opacity: 0.85;
-  pointer-events: none;
-}
-.meter-tick.fold {
-  background: var(--warning);
-}
-.meter-tick.force {
-  background: var(--danger, #f43f5e);
-}
-
 .legend {
   display: flex;
   gap: 12px;

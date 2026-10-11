@@ -422,34 +422,6 @@ describe("ContextPanel files", () => {
     expect(screen.getByText("100")).toBeTruthy();
   });
 
-  it("triggers onCompact when clicking the compact button in token header", () => {
-    const onCompact = vi.fn();
-    render(
-      <ContextPanel
-        settings={settings}
-        usage={{ ...usage, reservedTokens: 50, liveLogTokens: 100 }}
-        mcpSpecs={[]}
-        mcpBridged={false}
-        sessionFiles={[]}
-        memory={[]}
-        memoryDetail={null}
-        memoryResult={null}
-        onReadMemory={() => {}}
-        onWriteMemory={() => {}}
-        onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
-        onDismissMemoryResult={() => {}}
-        onCompact={onCompact}
-      />,
-    );
-
-    const btn = screen.getByTitle("Force context compaction (fold older turns into a summary)");
-    expect(btn).toBeTruthy();
-    fireEvent.click(btn);
-    expect(onCompact).toHaveBeenCalledOnce();
-  });
-
   it("renders the mode-rules summary, workspace rules, and per-scope add buttons", () => {
     const onRemoveRule = vi.fn();
     render(
@@ -1491,41 +1463,7 @@ describe("ContextPanel files", () => {
     ).toBe("1.1");
   });
 
-  it("renders Auto-compaction toggle in the Parameters section and updates setting", () => {
-    const onSaveSettings = vi.fn();
-    render(
-      <ContextPanel
-        settings={{ ...settings, disableAutoCompaction: false }}
-        usage={usage}
-        mcpSpecs={[]}
-        mcpBridged={false}
-        sessionFiles={[]}
-        memory={[]}
-        memoryDetail={null}
-        memoryResult={null}
-        onReadMemory={() => {}}
-        onWriteMemory={() => {}}
-        onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
-        onDismissMemoryResult={() => {}}
-        onSaveSettings={onSaveSettings}
-      />,
-    );
-    fireEvent.click(screen.getByText("Parameters"));
-
-    expect(screen.getByText("Auto-compaction")).toBeTruthy();
-    const enabledBtn = screen.getByRole("button", { name: "Enabled" });
-    const disabledBtn = screen.getByRole("button", { name: "Disabled" });
-
-    expect(enabledBtn.getAttribute("data-on")).toBe("true");
-    expect(disabledBtn.getAttribute("data-on")).toBe("false");
-
-    fireEvent.click(disabledBtn);
-    expect(onSaveSettings).toHaveBeenCalledWith({ disableAutoCompaction: true });
-  });
-
-  it("renders the Subagents toggle below Auto-compaction and updates the setting", () => {
+  it("renders the Subagents toggle and updates the setting", () => {
     const onSaveSettings = vi.fn();
     render(
       <ContextPanel
@@ -1547,12 +1485,6 @@ describe("ContextPanel files", () => {
       />,
     );
     fireEvent.click(screen.getByText("Parameters"));
-
-    const autoCompaction = screen.getByText("Auto-compaction");
-    const subagents = screen.getByText("Subagents");
-    expect(
-      autoCompaction.compareDocumentPosition(subagents) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
 
     const enableBtn = screen.getByRole("button", { name: "Enable subagents" });
     const disableBtn = screen.getByRole("button", { name: "Disable subagents" });
@@ -1679,29 +1611,6 @@ describe("ContextPanel files", () => {
     expect(onSaveSettings).toHaveBeenCalledWith({ questionTimerEnabled: true });
     fireEvent.click(disableBtn);
     expect(onSaveSettings).toHaveBeenCalledWith({ questionTimerEnabled: false });
-  });
-
-  it("displays auto-compaction disabled indicator in context meter legend when active", () => {
-    render(
-      <ContextPanel
-        settings={{ ...settings, disableAutoCompaction: true }}
-        usage={usage}
-        mcpSpecs={[]}
-        mcpBridged={false}
-        sessionFiles={[]}
-        memory={[]}
-        memoryDetail={null}
-        memoryResult={null}
-        onReadMemory={() => {}}
-        onWriteMemory={() => {}}
-        onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
-        onDismissMemoryResult={() => {}}
-      />,
-    );
-
-    expect(screen.getByText("auto-compaction disabled")).toBeTruthy();
   });
 });
 

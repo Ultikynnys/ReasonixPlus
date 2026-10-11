@@ -211,7 +211,7 @@ describe("Eventizer.consume", () => {
         turn: 1,
         role: "warning",
         severity: "high",
-        content: "context 76,500/100,000 (76%) — folded 30 messages → 12",
+        content: "context 76,500/100,000 (76%) — approaching the window limit",
       }),
       ctx,
     );
@@ -220,7 +220,7 @@ describe("Eventizer.consume", () => {
       | undefined;
     expect(warn).toBeDefined();
     expect(warn?.severity).toBe("high");
-    expect(warn?.text).toContain("folded 30 messages");
+    expect(warn?.text).toContain("approaching the window limit");
     expect(out.find((ev) => ev.type === "error")).toBeUndefined();
   });
 
@@ -256,196 +256,6 @@ describe("Eventizer.consume", () => {
     expect(s.name).toBe("context");
     expect(s.args).toBe("off");
     expect(s.id).toBeGreaterThan(u.id);
-  });
-
-  it("maps compaction_start / compaction_end into card lifecycle events (user compaction)", () => {
-    const e = new Eventizer();
-    e.consume(lev({ turn: 1 }), ctx); // burn turn-start
-    const start = e.consume(
-      lev({
-        turn: 1,
-        role: "compaction_start",
-        compactionId: "compaction-1",
-        compactionReason: "user",
-        compactionKind: "fold",
-        aggressive: true,
-      }),
-      ctx,
-    );
-    expect(start.length).toBe(1);
-    expect(start[0]).toMatchObject({
-      type: "compaction.started",
-      compactionId: "compaction-1",
-      reason: "user",
-      kind: "fold",
-      aggressive: true,
-    });
-
-    const end = e.consume(
-      lev({
-        turn: 1,
-        role: "compaction_end",
-        compactionId: "compaction-1",
-        compactionReason: "user",
-        compactionKind: "fold",
-        folded: true,
-        beforeMessages: 243,
-        afterMessages: 63,
-        summaryChars: 2912,
-        summary: "recap text",
-        // Prune + triage payloads ride the same event — the UI card meta and
-        // the "Files in context" panel depend on them arriving.
-        prunedFiles: 7,
-        prunedTokens: 4200,
-        droppedFiles: ["src/dead.ts", "src/old.ts"],
-        // The post-fold log snapshot — the fold replaced the live log.
-        replacementMessages: [
-          { role: "assistant", content: "[compaction summary] recap text" },
-          { role: "user", content: "keep me" },
-        ],
-      }),
-      ctx,
-    );
-    expect(end.length).toBe(2);
-    expect(end[0]).toMatchObject({
-      type: "compaction.finished",
-      compactionId: "compaction-1",
-      kind: "fold",
-      folded: true,
-      beforeMessages: 243,
-      afterMessages: 63,
-      summaryChars: 2912,
-      summary: "recap text",
-      prunedFiles: 7,
-      prunedTokens: 4200,
-      droppedFiles: ["src/dead.ts", "src/old.ts"],
-    });
-    // User-triggered compaction runs idle — a folded log REPLACES the
-    // conversation view, so the kernel records it for replay.
-    expect(end[1]).toMatchObject({
-      type: "session.compacted",
-      reason: "user",
-      beforeMessages: 243,
-      afterMessages: 63,
-    });
-    expect((end[1] as { replacementMessages: unknown[] }).replacementMessages).toHaveLength(2);
-  });
-
-  it("auto fold never emits session.compacted — a mid-turn swap would orphan the live turn", () => {
-    const e = new Eventizer();
-    e.consume(lev({ turn: 1 }), ctx); // burn turn-start
-    const end = e.consume(
-      lev({
-        turn: 1,
-        role: "compaction_end",
-        compactionId: "compaction-auto",
-        compactionReason: "auto-context-pressure",
-        compactionKind: "fold",
-        folded: true,
-        beforeMessages: 243,
-        afterMessages: 63,
-        summaryChars: 2912,
-        summary: "recap text",
-        replacementMessages: [
-          { role: "assistant", content: "[compaction summary] recap text" },
-          { role: "user", content: "keep me" },
-        ],
-      }),
-      ctx,
-    );
-    // Card lifecycle only — the replacement is applied on the next session
-    // load, never while the loop is mid-turn.
-    expect(end.length).toBe(1);
-    expect(end[0]).toMatchObject({ type: "compaction.finished", folded: true });
-    expect(end.find((x) => x.type === "session.compacted")).toBeUndefined();
-  });
-
-  it("auto fold opening a new turn still synthesizes model.turn.started", () => {
-    const e = new Eventizer();
-    // Turn-start fold of turn 2 (previous turn 1 was consumed) — the gate must
-    // NOT suppress the turn-started card for auto folds on a fresh turn.
-    e.consume(lev({ turn: 1, role: "assistant_final", content: "done" }), ctx);
-    const out = e.consume(
-      lev({
-        turn: 2,
-        role: "compaction_start",
-        compactionId: "compaction-2",
-        compactionReason: "auto-context-pressure",
-      }),
-      ctx,
-    );
-    expect(out.map((k) => k.type)).toEqual(["model.turn.started", "compaction.started"]);
-  });
-
-  it("user-triggered compaction never synthesizes model.turn.started (fresh load shape)", () => {
-    // Fresh eventizer = "session just loaded, user hits compaction": lastTurn is
-    // -1 and the compaction's turn is the resumed conversation's — a phantom
-    // model.turn.started would leave a pending assistant card that never settles.
-    const e = new Eventizer();
-    const start = e.consume(
-      lev({
-        turn: 5,
-        role: "compaction_start",
-        compactionId: "compaction-u1",
-        compactionReason: "user",
-        compactionKind: "fold",
-      }),
-      ctx,
-    );
-    expect(start).toHaveLength(1);
-    expect(start[0]).toMatchObject({
-      type: "compaction.started",
-      compactionId: "compaction-u1",
-      reason: "user",
-      kind: "fold",
-    });
-    const end = e.consume(
-      lev({
-        turn: 5,
-        role: "compaction_end",
-        compactionId: "compaction-u1",
-        compactionKind: "fold",
-        folded: false,
-        beforeMessages: 12,
-        afterMessages: 12,
-        summaryChars: 0,
-      }),
-      ctx,
-    );
-    expect(end.length).toBe(1);
-    expect(end[0]).toMatchObject({
-      type: "compaction.finished",
-      compactionId: "compaction-u1",
-      folded: false,
-      beforeMessages: 12,
-      afterMessages: 12,
-    });
-  });
-
-  it("force-summary compaction_end maps kind and never emits session.compacted", () => {
-    const e = new Eventizer();
-    e.consume(lev({ turn: 1 }), ctx); // burn turn-start
-    const out = e.consume(
-      lev({
-        turn: 1,
-        role: "compaction_end",
-        compactionId: "compaction-f1",
-        compactionKind: "force-summary",
-        folded: false,
-        beforeMessages: 14,
-        afterMessages: 14,
-        summaryChars: 1200,
-      }),
-      ctx,
-    );
-    expect(out.length).toBe(1);
-    expect(out[0]).toMatchObject({
-      type: "compaction.finished",
-      compactionId: "compaction-f1",
-      kind: "force-summary",
-      folded: false,
-      summaryChars: 1200,
-    });
   });
 
   it("emitAbortedFinal settles a pending assistant card with zero usage", () => {

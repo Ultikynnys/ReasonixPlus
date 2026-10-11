@@ -1,8 +1,8 @@
 /** Wire protocol shared with the desktop daemon. The event/command type
  *  definitions live in @reasonix/core-utils (desktop-protocol.ts) so a field
  *  change can't silently drift between the two sides of the JSON-RPC bridge.
- *  The kernel-event shapes below (model.* / tool.* / compaction.* / warning /
- *  error) are a read-only projection of the daemon's src/core/events.ts union
+ *  The kernel-event shapes below (model.* / tool.* / warning / error) are a
+ *  read-only projection of the daemon's src/core/events.ts union
  *  and stay declared here until the kernel Event union itself moves into
  *  core-utils. */
 import type {
@@ -30,8 +30,6 @@ import type {
   EditRequiredEvent,
   JobInfo,
   JobsEvent,
-  KernelCompactionFinishedEvent,
-  KernelCompactionStartedEvent,
   KernelModelDeltaEvent,
   KernelModelFinalEvent,
   KernelModelTurnStartedEvent,
@@ -99,7 +97,6 @@ import type {
   RetryResultEvent,
   RevisionRequiredEvent,
   RevisionVerdict,
-  SessionCompactedEvent,
   SessionEmptyEvent,
   SessionLoadedEvent,
   SessionProviderCost,
@@ -216,7 +213,6 @@ export type {
   RetryResultEvent,
   RevisionRequiredEvent,
   RevisionVerdict,
-  SessionCompactedEvent,
   SessionEmptyEvent,
   SessionLoadedEvent,
   SessionRetractedEvent,
@@ -258,8 +254,6 @@ export type ToolResultEvent = KernelToolResultEvent;
 export type ToolOutputEvent = KernelToolOutputEvent;
 export type SubagentProgressEvent = KernelSubagentProgressEvent;
 export type StatusEvent = KernelStatusEvent;
-export type CompactionStartedEvent = KernelCompactionStartedEvent;
-export type CompactionFinishedEvent = KernelCompactionFinishedEvent;
 export type WarningEvent = KernelWarningEvent;
 export type KernelErrorEvent = SharedKernelErrorEvent;
 
@@ -276,7 +270,6 @@ export type IncomingEvent = { tabId?: string } & (
   | PlanRequiredEvent
   | SessionsEvent
   | SessionLoadedEvent
-  | SessionCompactedEvent
   | SessionEmptyEvent
   | NeedsSetupEvent
   | SettingsEvent
@@ -316,7 +309,6 @@ export type IncomingEvent = { tabId?: string } & (
   | MemoryExportEvent
   | JobsEvent
   | DirectKernelWireEvent
-  | SessionCompactedEvent
   | SessionRetractedEvent
   | RetryResultEvent
   | BtwResultEvent

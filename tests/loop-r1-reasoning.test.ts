@@ -272,7 +272,7 @@ describe("R1 reasoning_content round-trip", () => {
     // 0.5.18 covered "reasoner turn with reasoning present." This is
     // the inverse: thinking-mode model returns `reasoning_content:
     // null` (legitimate edge case — zero reasoning deltas on a flash
-    // turn, or forced-summary paths that don't emit reasoning). Prior
+    // turn). Prior
     // behavior was `if (reasoning.length > 0)` which silently dropped
     // the field, and the NEXT API call 400'd. Invariant is now keyed
     // to the producing model, not to whether reasoning arrived.

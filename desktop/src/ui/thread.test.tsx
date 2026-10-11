@@ -17,7 +17,6 @@ vi.mock("./cards", () => ({
   ShellCard: () => null,
   ToolCard: () => null,
   ReasoningCard: () => null,
-  CompactionCard: () => null,
   DiffCard: () => null,
   SubagentCard: () => null,
   WarningCard: () => null,

@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { isRetryableProviderFailure } from "../src/core/retry-shared.js";
-import { isRetryableCompactionError } from "../src/loop/compaction-retry.js";
 import { fetchWithRetry } from "../src/retry.js";
 
 function makeFetch(responses: Array<Response | Error | (() => Response | Error)>): {
@@ -156,22 +155,5 @@ describe("isRetryableProviderFailure", () => {
         "Upstream request failed: [server_error] The model failed to generate a response.",
       ),
     ).toBe(true);
-  });
-});
-
-describe("isRetryableCompactionError", () => {
-  it("retries OpenCode upstream failures, same as DeepSeek-branded ones", () => {
-    expect(
-      isRetryableCompactionError(
-        "OpenCode 500: Upstream request failed: [server_error] The model failed to generate a response.",
-      ),
-    ).toBe(true);
-    expect(isRetryableCompactionError("DeepSeek 500: internal error")).toBe(true);
-  });
-
-  it("does not retry aborts, 4xx, or unknown local errors", () => {
-    expect(isRetryableCompactionError("aborted")).toBe(false);
-    expect(isRetryableCompactionError("OpenCode 400: bad request")).toBe(false);
-    expect(isRetryableCompactionError("Error: assertion failed")).toBe(false);
   });
 });

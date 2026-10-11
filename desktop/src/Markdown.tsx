@@ -331,7 +331,7 @@ const REHYPE_PLUGINS: MarkdownPlugins["rehypePlugins"] = [[rehypeKatex, { throwO
 
 /** Block markdown: the shared renderer for agent-authored prose anywhere in the
  *  transcript or a card body (assistant text, plan / checkpoint / revision /
- *  email bodies, compaction summaries, subagent results). */
+ *  email bodies, subagent results). */
 export const Markdown = memo(function Markdown({ source }: { source: string }) {
   return (
     <div className="markdown">

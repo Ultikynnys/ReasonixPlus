@@ -158,7 +158,7 @@ export class AppendOnlyLog {
    *  their own snapshot to detect staleness without destructive check-and-clear. */
   private _version = 0;
 
-  /** Observe appends (append/extend) — lets ContextManager keep an incremental token total. */
+  /** Observe appends (append/extend) — lets consumers keep an incremental token total. */
   onAppend(listener: (msg: ChatMessage) => void): void {
     this.appendListeners.push(listener);
   }
@@ -181,7 +181,7 @@ export class AppendOnlyLog {
     for (const m of messages) this.append(m);
   }
 
-  /** The one append-only-breaking path — reserved for compaction + recovery. Use `append()` otherwise. */
+  /** The one append-only-breaking path — reserved for recovery. Use `append()` otherwise. */
   compactInPlace(replacement: ChatMessage[]): void {
     this._entries = [...replacement];
     this._rewriteVersion++;

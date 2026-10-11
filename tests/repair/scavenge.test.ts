@@ -125,11 +125,11 @@ describe("scavengeToolCalls", () => {
       "Applying the exact ordering.",
       "src/cli/commands/desktop.ts",
       "<<<<<<< SEARCH",
-      "loadDisableAutoCompaction,",
+      "loadContextTokens,",
       "loadDisabledModels,",
       "=======",
       "loadDisabledModels,",
-      "loadDisableAutoCompaction,",
+      "loadContextTokens,",
       ">>>>>>> REPLACE",
     ].join("\n");
     const r = scavengeToolCalls(input, { allowedNames: new Set(["edit_file"]) });
@@ -137,8 +137,8 @@ describe("scavengeToolCalls", () => {
     expect(r.calls[0]!.function.name).toBe("edit_file");
     expect(JSON.parse(r.calls[0]!.function.arguments)).toEqual({
       path: "src/cli/commands/desktop.ts",
-      search: "loadDisableAutoCompaction,\nloadDisabledModels,",
-      replace: "loadDisabledModels,\nloadDisableAutoCompaction,",
+      search: "loadContextTokens,\nloadDisabledModels,",
+      replace: "loadDisabledModels,\nloadContextTokens,",
     });
     expect(r.recoveredRanges).toHaveLength(1);
   });

@@ -1,4 +1,4 @@
-/** Shared fake DeepSeek HTTP harness for loop / context-manager / subagent tests. */
+/** Shared fake DeepSeek HTTP harness for loop / subagent tests. */
 
 import { vi } from "vitest";
 import { DeepSeekClient } from "../../src/client.js";

@@ -263,11 +263,6 @@ export interface TranslationSchema {
     decisionTimeout: string;
     decisionError: string;
   };
-  summary: {
-    status: string;
-    hallucinatedFallback: string;
-    failedAfterReason: string;
-  };
   loop: {
     proArmed: string;
     toolUploadStatus: string;
@@ -297,10 +292,8 @@ export interface TranslationSchema {
     reasoningLoop: string;
     reasoningLoopRepeatStall: string;
     reasoningLoopRepeated: string;
-    reasoningLoopResuming: string;
     reasoningLoopStopping: string;
     repeatedPatternLabel: string;
-    forcingSummary: string;
     iterLimitReached: string;
     iterLimitGrace: string;
     iterLimitPaused: string;
@@ -387,12 +380,6 @@ export interface TranslationSchema {
     deepseek5xxActionNetwork: string;
     deepseek5xxActionRetry: string;
     innerNoMessage: string;
-    reasonAborted: string;
-    reasonContextGuard: string;
-    reasonStuck: string;
-    labelAborted: string;
-    labelContextGuard: string;
-    labelStuck: string;
   };
   handlers: {
     [group: string]: {
@@ -525,8 +512,6 @@ export interface TranslationSchema {
     mcpLoading: string;
     /** Word used in the context-usage pill (rendered as `ctx 72% · 144K/200K`). */
     ctx: string;
-    /** Auto-compaction limits shown on the ctx pill (rendered as `fold@225K · force@240K`). */
-    compactionLimits: string;
     /** Hint shown next to the ⚑ icon — triggers the shortcut help modal. */
     shortcutsHint: string;
   };
@@ -719,7 +704,6 @@ export interface TranslationSchema {
   };
   ctxBreakdown: {
     title: string;
-    compactHint: string;
     topTools: string;
     msg: string;
     turnLabel: string;

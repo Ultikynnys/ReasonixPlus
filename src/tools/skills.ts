@@ -269,9 +269,7 @@ export function registerSkillTools(
         .filter(Boolean)
         .join("\n");
       const argsBlock = rawArgs ? `\n\nArguments: ${rawArgs}` : "";
-      const inner = `${header}\n\n${skill.body}${argsBlock}`;
-      // Sentinel-wrapped so ContextManager.fold preserves the body verbatim instead of paraphrasing it.
-      return `<skill-pin name=${JSON.stringify(skill.name)}>\n${inner}\n</skill-pin>`;
+      return `${header}\n\n${skill.body}${argsBlock}`;
     },
   });
 

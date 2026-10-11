@@ -72,7 +72,6 @@ import type {
   PlaywrightBrowserInstallEvent,
   RetryResultEvent,
   RevisionRequiredEvent,
-  SessionCompactedEvent,
   SessionEmptyEvent,
   SessionLoadedEvent,
   SessionRetractedEvent,
@@ -140,7 +139,6 @@ import {
   loadContextTokens,
   loadCustomQuickSends,
   loadDesktopOpenTabs,
-  loadDisableAutoCompaction,
   loadDuplicateSessionAutoProceed,
   loadDuplicateSessionTokens,
   loadEditMode,
@@ -198,7 +196,6 @@ import {
   saveContextTokens,
   saveCustomQuickSends,
   saveDesktopOpenTabs,
-  saveDisableAutoCompaction,
   saveDuplicateSessionAutoProceed,
   saveDuplicateSessionTokens,
   saveEditMode,
@@ -451,46 +448,6 @@ export function abortableWait(
   );
 }
 
-// Wait until any in-flight compaction fold has settled. A turn cancelled
-// mid-fold leaves the fold running detached: it is non-interruptible and the
-// host closes the generator fire-and-forget, so it keeps owning the loop's
-// _compacting lock until it commits or fails open at its scaled deadline.
-// Starting a new turn while the lock is held would run the fold and the new
-// message concurrently on the same log. The compaction handler refuses that
-// overlap outright, user turns must wait instead. Bounded by the fold's own
-// deadline; abort-aware so Stop / switch during the wait cancels the pending
-// turn before any request goes out. Exported for tests.
-export async function waitForCompactionIdle(
-  loop: { isCompacting: boolean },
-  signal: AbortSignal | undefined,
-): Promise<void> {
-  while (loop.isCompacting && !signal?.aborted) {
-    await sleep(50);
-  }
-}
-
-/** Manual compaction is a priority barrier: stop the active conversation, wait
- * for its desktop consumer to release the busy state, then either accept the
- * fold that was already in flight or run exactly one user fold. */
-export async function runPriorityManualCompaction(options: {
-  abortActive: () => void;
-  isTurnBusy: () => boolean;
-  isCompacting: () => boolean;
-  compact: () => Promise<void>;
-}): Promise<"compacted" | "existing-compaction"> {
-  let sawExistingCompaction = options.isCompacting();
-  options.abortActive();
-  while (options.isTurnBusy()) {
-    sawExistingCompaction ||= options.isCompacting();
-    await sleep(10);
-  }
-  sawExistingCompaction ||= options.isCompacting();
-  while (options.isCompacting()) await sleep(50);
-  if (sawExistingCompaction) return "existing-compaction";
-  await options.compact();
-  return "compacted";
-}
-
 /** Route a desktop Stop to the exact tool card that supplied its callId
  *  (parallel chunks run several at once), else the most recent tool. Exported
  *  for tests. */
@@ -530,7 +487,7 @@ type InMessage = import("@reasonix/core-utils").OutgoingCommand;
 /** Direct fd write — bypasses Node's stream layer (and its piped-output
  *  block buffering) so every JSON line reaches Rust the moment it's
  *  produced, not whenever the next 8 KB flushes. */
-type KernelWireBridgeEvent = DirectKernelWireEvent | SessionCompactedEvent | SessionRetractedEvent;
+type KernelWireBridgeEvent = DirectKernelWireEvent | SessionRetractedEvent;
 
 type EmittableEvent =
   | KernelWireBridgeEvent
@@ -973,9 +930,9 @@ function emit(ev: EmittableEvent, tabId?: string): void {
   );
 }
 
-/** Emit a kernel event to a tab; session.compacted's replacement payload is
+/** Emit a kernel event to a tab; session.retracted's replacement payload is
  *  converted from the kernel ChatMessage shape into the LoadedMessage wire
- *  shape so the App reducer can swap in the post-fold conversation. */
+ *  shape so the App reducer can swap in the truncated conversation. */
 export function sessionCarryover(meta: SessionMeta): SessionLoadedEvent["carryover"] {
   return {
     totalCostUsd: meta.totalCostUsd ?? 0,
@@ -998,17 +955,6 @@ export function emptySessionCarryover(): SessionLoadedEvent["carryover"] {
 
 export function projectKernelEvent(kev: KernelEvent): KernelWireBridgeEvent | null {
   switch (kev.type) {
-    case "session.compacted":
-      return {
-        type: EventType.sessionCompacted,
-        id: kev.id,
-        ts: kev.ts,
-        turn: kev.turn,
-        beforeMessages: kev.beforeMessages,
-        afterMessages: kev.afterMessages,
-        reason: kev.reason,
-        replacementMessages: buildLoadedMessages([...kev.replacementMessages]),
-      };
     case "session.retracted":
       return {
         type: EventType.sessionRetracted,
@@ -1030,8 +976,6 @@ export function projectKernelEvent(kev: KernelEvent): KernelWireBridgeEvent | nu
     case "tool.output":
     case "subagent.progress":
     case "status":
-    case "compaction.started":
-    case "compaction.finished":
     case "warning":
     case "error":
       return kev;
@@ -1310,14 +1254,14 @@ export function mergeNoticesIntoLoaded(
     m.kind === "assistant" ? { ...m, segments: [...m.segments] } : m,
   );
   // A live card's turn is the kernel's ABSOLUTE ordinal, but buildLoadedMessages
-  // renumbers the surviving user records from 1. After a fold the two diverge by
-  // the folded-away turn count, so a persisted card whose turn exceeds the user
+  // renumbers the surviving user records from 1. After a truncation the two diverge by
+  // the dropped turn count, so a persisted card whose turn exceeds the user
   // count would otherwise be dumped at the transcript tail on every reload.
   // Rebase those turns into the reconstructed scheme; a card for a turn that no
   // longer exists (mapped to <= 0) is dropped along with the turn it belonged to.
   const userCount = out.reduce((n, m) => (m.kind === "user" ? n + 1 : n), 0);
   const offset = lastTurn !== undefined ? Math.max(0, lastTurn - userCount) : 0;
-  // null = the turn no longer exists (folded away) → drop the card. Turn 0
+  // null = the turn no longer exists (dropped) → drop the card. Turn 0
   // ("before the first user message") is legitimately kept.
   const rebase = (turn: number): number | null => {
     if (offset > 0 && turn > userCount) {
@@ -1584,7 +1528,6 @@ function emitSettings(tab: Tab): void {
       maxIterPerTurn: tab.runtime?.loop.maxIterPerTurn ?? loadMaxIterPerTurn(),
       maxIterPerTurnOverride:
         typeof config.maxIterPerTurn === "number" ? config.maxIterPerTurn : null,
-      disableAutoCompaction: tab.runtime?.loop.disableAutoCompaction ?? loadDisableAutoCompaction(),
       enableSubagents: loadEnableSubagents(),
       elevationEnabled: loadElevationEnabled(),
       repetitionGuardEnabled:
@@ -3916,9 +3859,9 @@ function emitCtxBreakdown(tab: Tab): void {
       }
     }
   }
-  // ctxMax drives the panel meter's denominator + compaction-limit ticks —
-  // keep it in sync with the loop's context cap (resolveContextTokens + the
-  // verdict-aware override, so Ollama tabs show the same cap the loop enforces).
+  // ctxMax drives the panel meter's denominator — keep it in sync with the
+  // loop's context cap (resolveContextTokens + the verdict-aware override, so
+  // Ollama tabs show the same cap the loop enforces).
   const ctxMax = resolveContextTokens(tab.currentModel, tabCtxMaxOverride(tab));
   emitTabDiagnostic(tab, "context.breakdown", {
     reservedTokens: sys + tools,
@@ -4047,9 +3990,6 @@ interface Tab {
   initializationRevision: number;
   runtime: RuntimeState | null;
   aborter: AbortController | null;
-  /** Priority barrier owned by a user-requested compaction. New turns wait on
-   *  this promise so queued sends cannot race ahead of the fold. */
-  manualCompaction: Promise<void> | null;
   fileIndex: FileWithStats[] | null;
   fileIndexBuilding: Promise<FileWithStats[]> | null;
   fileIndexBuiltAt: number;
@@ -4487,9 +4427,9 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
   });
   const prefix = new ImmutablePrefix({ system: tab.system, toolSpecs: toolset.tools.specs() });
   const reasoningEffort = tab.currentReasoningEffort;
-  // Ollama tabs calibrate compaction against the server's real window when one
-  // has been learned from /api/show (verdict store); the user `contextTokens`
-  // override (clamped ≥300K) is the fallback, then the per-model default.
+  // Ollama tabs calibrate the context window against the server's real value
+  // when one has been learned from /api/show (verdict store); the user
+  // `contextTokens` override (clamped ≥300K) is the fallback, then the default.
   const ctxMaxOverride = tabCtxMaxOverride(tab);
   const loop = new CacheFirstLoop({
     client,
@@ -4499,13 +4439,12 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
     ctxMaxOverride,
     session: tab.currentSession,
     // Turn ordinals are session-wide identity: a model switch rebuilds the
-    // runtime over a possibly-compacted log, and without this floor the new
+    // runtime over a possibly-truncated log, and without this floor the new
     // loop's baseline can regress below turns the desktop already rendered.
     turnFloor: tab.runtime?.loop.currentTurn ?? 0,
     reasoningEffort,
     maxIterPerTurn: loadMaxIterPerTurn(),
     maxOutputTokens: loadMaxOutputTokens(),
-    disableAutoCompaction: loadDisableAutoCompaction(),
     repetitionGuardEnabled: loadRepetitionGuardEnabled(),
     // Provider and billing unit come from resolved endpoint/config evidence.
     billingContextFor: (model) => {
@@ -4517,7 +4456,6 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
     getEditMode: () => loadEditMode(),
     hooks: tab.hooks,
     hookCwd: tab.rootDir,
-    onPreCompaction: () => toolset.jobs.cancelAll({ keepPersistent: true }),
   });
   const eventizer = new Eventizer();
   const ctx = { model: tab.currentModel, prefixHash: prefix.fingerprint, reasoningEffort };
@@ -4790,7 +4728,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       initializationRevision: 0,
       runtime: null,
       aborter: null,
-      manualCompaction: null,
       fileIndex: null,
       fileIndexBuilding: null,
       fileIndexBuiltAt: 0,
@@ -5280,10 +5217,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         return;
       }
     }
-    // A manual compact is a user priority command, not ordinary queued work.
-    // Never let a queued send claim the turn until that fold has settled.
-    const manualCompaction = tab.manualCompaction;
-    if (manualCompaction) await manualCompaction;
     emitTabDiagnostic(
       tab,
       "turn.start.requested",
@@ -5350,15 +5283,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // config. Never overwrites an existing stored pair (see stampSessionModelPrefs).
     stampSessionModelPrefs(tab);
     tab.aborter = new AbortController();
-    // A turn cancelled while its compaction fold was mid-summary leaves the
-    // fold running detached: the fold is non-interruptible (summarizeForFold)
-    // and the host closes the generator fire-and-forget, so it keeps owning
-    // the loop's _compacting lock until it settles (commit or fail-open at
-    // its scaled deadline). Starting this turn now would run the fold and the
-    // new message concurrently on the same log — wait for the lock to clear
-    // first, the same guard compaction uses. Stop or switch during the wait
-    // cancels before any request goes out.
-    await waitForCompactionIdle(rt.loop, tab.aborter.signal);
     if (tab.aborter.signal.aborted) {
       // The turn never started: nothing to settle beyond the busy flag, same
       // completion signal as the hook-blocked path above. A session switch
@@ -5420,17 +5344,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     await tabContext.run(tab.id, async () => {
       // Drive the turn generator manually instead of `for await`: an abort
-      // can land while the generator is suspended inside an await (the
-      // compaction fold is deliberately non-interruptible and can hold it
-      // for minutes). A plain for-await only notices the abort when the
-      // next event arrives, so Send now / Stop during a fold never reached
+      // can land while the generator is suspended inside an await (a
+      // long tool call can hold it). A plain for-await only notices the abort
+      // when the next event arrives, so Send now / Stop mid-await never reached
       // $turn_complete and the queued-sends drain never ran. raceLoopStep
       // resolves `null` the moment the aborter fires instead.
       const gen = rt.loop.step(text, images);
       let aborted = false;
       let lastTurn = -1;
       let sawAssistantFinal = false;
-      let openCompactionId: string | undefined;
       // Terminal-outcome tracking: `producedAnswer` distinguishes a real reply from
       // a model that stopped silently, so the UI never shows false success.
       let producedAnswer = false;
@@ -5487,10 +5409,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           if (ev.role === "tool" && (ev.toolName === "remember" || ev.toolName === "forget")) {
             emitMemory(tab);
           }
-          if (ev.role === "compaction_start" && ev.compactionId) {
-            openCompactionId = ev.compactionId;
-          }
-          if (ev.role === "compaction_end") openCompactionId = undefined;
         }
       } catch (err) {
         emit({ type: "$error", message: (err as Error).message }, tab.id);
@@ -5523,23 +5441,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             // closed mid-await), so settle the still-pending assistant
             // card here — $turn_complete alone leaves it spinning.
             emitKernelEvent(rt.eventizer.emitAbortedFinal(lastTurn), tab.id);
-          }
-          if (aborted && openCompactionId && lastTurn >= 0) {
-            // Same for a running compaction card: compaction_end was
-            // never yielded. Report the interruption — the detached fold
-            // keeps running and its merge-at-commit preserves anything
-            // the next turn appends.
-            emitKernelEvent(
-              rt.eventizer.emitCompactionFinished(openCompactionId, {
-                turn: lastTurn,
-                folded: false,
-                beforeMessages: 0,
-                afterMessages: 0,
-                summaryChars: 0,
-                error: "aborted by user",
-              }),
-              tab.id,
-            );
           }
           const outcome: TurnOutcome = aborted
             ? "aborted"
@@ -8089,14 +7990,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             emitSettings(openTab);
           }
         }
-        if (msg.disableAutoCompaction !== undefined) {
-          saveDisableAutoCompaction(msg.disableAutoCompaction);
-          const next = loadDisableAutoCompaction();
-          for (const openTab of tabs.values()) {
-            openTab.runtime?.loop.configure({ disableAutoCompaction: next });
-            emitSettings(openTab);
-          }
-        }
         if (msg.duplicateSessionTokens !== undefined) {
           saveDuplicateSessionTokens(msg.duplicateSessionTokens);
           for (const openTab of tabs.values()) emitSettings(openTab);
@@ -8394,33 +8287,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         });
       return;
     }
-    if (msg.cmd === "compact_history") {
-      if (!tab.runtime || tab.manualCompaction) return;
-      const rt = tab.runtime;
-      const task = runPriorityManualCompaction({
-        abortActive: () => cancelConversation(tab, desktopUserAbortLoopOptions()),
-        isTurnBusy: () => tab.aborter !== null,
-        isCompacting: () => rt.loop.isCompacting,
-        compact: async () => {
-          // Compaction card lifecycle is routed through the same LoopEvent
-          // stream as automatic folds and all other loop activity.
-          for await (const ev of rt.loop.compactHistoryWithEvents()) {
-            for (const kev of rt.eventizer.consume(ev, rt.ctx)) emitKernelEvent(kev, tab.id);
-          }
-        },
-      })
-        .then(() => emitCtxBreakdown(tab))
-        .catch((err) => {
-          emit({ type: "$error", message: `compaction failed: ${(err as Error).message}` }, tab.id);
-        })
-        .finally(() => {
-          if (tab.manualCompaction === task) tab.manualCompaction = null;
-        });
-      // Claim priority synchronously before the abort completion can drain a
-      // queued send. Repeated clicks coalesce on this one operation.
-      tab.manualCompaction = task;
-      return;
-    }
     if (msg.cmd === "plan_history_get") {
       emitPlanHistory(tab);
       return;
@@ -8446,7 +8312,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         return;
       }
       // A rewrite mid-turn would race the in-flight request; require idle.
-      if (tab.aborter !== null || tab.runtime.loop.isCompacting) {
+      if (tab.aborter !== null) {
         emit(
           { type: "$error", message: "Context is locked while a turn is running; stop first." },
           tab.id,
@@ -8482,8 +8348,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       if (!tab.runtime) return;
       // Retry truncates the log outside the turn stream — record the
       // replacement in the kernel event log (session.retracted) so replaying
-      // the events sidecar yields the truncated conversation, same as
-      // session.compacted after a fold.
+      // the events sidecar yields the truncated conversation.
       const before = tab.runtime.loop.log.length;
       const prev = tab.runtime.loop.retryLastUser();
       if (prev) {

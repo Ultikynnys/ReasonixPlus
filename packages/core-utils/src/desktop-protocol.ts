@@ -262,49 +262,6 @@ export interface KernelStatusEvent extends KernelWireEventBase {
   text: string;
 }
 
-export interface KernelCompactionStartedEvent extends KernelWireEventBase {
-  type: "compaction.started";
-  compactionId: string;
-  reason: "user" | "auto-context-pressure";
-  kind?: "fold" | "force-summary";
-  aggressive?: boolean;
-}
-
-/** Fold / force-summary outcome payload — the single source for the fold
- *  result shape, picked by the wire event, FoldResult, the loop compaction_end
- *  fields and the desktop compaction card. */
-export interface CompactionFoldPayload {
-  /** Whether the fold actually replaced the log. */
-  folded: boolean;
-  /** Message count before the fold. */
-  beforeMessages: number;
-  /** Message count after the fold. */
-  afterMessages: number;
-  /** Length of the synthesized summary, in characters. */
-  summaryChars: number;
-  /** The synthesized summary text (marker already stripped) — lets UIs render the recap inline. */
-  summary?: string;
-  /** Why the fold didn't happen, when the summarizer failed (as opposed to a legit nothing-to-fold noop). */
-  error?: string;
-  /** Advisory warning on a successful fold — e.g. file triage failed, nothing dropped. */
-  warn?: string;
-  /** Unique file paths whose read results were stubbed by the prune step. */
-  prunedFiles?: number;
-  /** Tokens saved by the prune step (content tokens − stub tokens). */
-  prunedTokens?: number;
-  /** File paths the triage step classified as no longer relevant — the UI drops
-   *  them from "Files in context". Absent when the triage kept everything. */
-  droppedFiles?: string[];
-}
-
-export interface KernelCompactionFinishedEvent
-  extends KernelWireEventBase,
-    CompactionFoldPayload {
-  type: "compaction.finished";
-  compactionId: string;
-  kind?: "fold" | "force-summary";
-}
-
 export interface KernelWarningEvent extends KernelWireEventBase {
   type: "warning";
   text: string;
@@ -328,8 +285,6 @@ export type DirectKernelWireEvent =
   | KernelToolOutputEvent
   | KernelSubagentProgressEvent
   | KernelStatusEvent
-  | KernelCompactionStartedEvent
-  | KernelCompactionFinishedEvent
   | KernelWarningEvent
   | KernelErrorEvent;
 
@@ -704,9 +659,9 @@ export interface SkillsEvent {
 export interface CtxBreakdownEvent {
   type: "$ctx_breakdown";
   reservedTokens: number;
-  /** Current log token count (real-time) — sent after compaction to refresh the meter. */
+  /** Current log token count (real-time). */
   logTokens?: number;
-  /** Model context cap — denominator + compaction-limit ticks for the meter. */
+  /** Model context cap — denominator for the meter. */
   ctxMax?: number;
   /** Cumulative cross-session shell-output filtering totals (summarizeCommandOutputMetrics):
    *  tokens the filters removed from command output before it reached the model. Omitted
@@ -868,24 +823,9 @@ export interface SessionProviderCost {
   quotaUsedPct?: number;
 }
 
-/** A fold committed and REPLACED the conversation — the chat must swap its
- *  message list to the post-fold log (summary message + preserved tail), like
- *  a session reload. `replacementMessages` ships in the same LoadedMessage
- *  wire shape as $session_loaded.messages. */
-export interface SessionCompactedEvent {
-  type: "session.compacted";
-  id: number;
-  ts: string;
-  turn: number;
-  beforeMessages: number;
-  afterMessages: number;
-  reason: "user" | "auto-context-pressure";
-  replacementMessages: LoadedMessage[];
-}
-
 /** A retry, rewind, abort-discard, or raw-context edit replaced the live
  *  conversation. The replacement uses the same LoadedMessage wire shape as
- *  session loading and compaction, while retaining the edit reason. */
+ *  session loading, while retaining the edit reason. */
 export interface SessionRetractedEvent {
   type: "session.retracted";
   id: number;
@@ -929,8 +869,6 @@ export interface SettingsEvent {
   maxIterPerTurn?: number | null;
   /** Explicit config override; null means environment/default resolution is active. */
   maxIterPerTurnOverride?: number | null;
-  /** When true, all automatic compaction sources (turn-start folds, post-response folds, context guards) are disabled. Only manual compaction runs. */
-  disableAutoCompaction?: boolean;
   /** Whether subagent skills may run. Defaults to true when absent. */
   enableSubagents?: boolean;
   /** Whether `run_command` may run commands elevated via Windows UAC. Defaults to false. */
@@ -1385,8 +1323,6 @@ export interface SettingsPatch {
   contextTokens?: number | null;
   /** Per-turn iteration cap, clamped to [50, 100]; null/undefined = default (50). */
   maxIterPerTurn?: number | null;
-  /** Disable automatic compaction from all sources except the manual button. */
-  disableAutoCompaction?: boolean;
   /** Allow dedicated and skill-based subagents to run. */
   enableSubagents?: boolean;
   /** Allow `run_command` to run commands elevated via Windows UAC. */
@@ -1583,7 +1519,6 @@ export type OutgoingCommand = { tabId?: string } & (
    *  restart job ids at 1, so `jobId` alone can match a different tab's job. */
   | { cmd: "jobs_stop"; jobId: number; tabId?: string }
   | { cmd: "jobs_stop_all" }
-  | { cmd: "compact_history" }
   /** Request the full request context as editable plaintext ($context_raw reply). */
   | { cmd: "plan_history_get" }
   | { cmd: "plan_detail_get"; planId: string }

@@ -471,7 +471,7 @@ describe("gemini payload", () => {
     ]);
   });
 
-  it("merges a tool response and trailing compaction instruction into one user turn", async () => {
+  it("merges a tool response and a trailing user instruction into one user turn", async () => {
     let captured: unknown = null;
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
       captured = JSON.parse(init?.body as string);
@@ -501,7 +501,7 @@ describe("gemini payload", () => {
           tool_call_id: "call-read",
           content: "file contents",
         },
-        { role: "user", content: "Summarize the conversation for compaction." },
+        { role: "user", content: "Summarize the conversation." },
       ],
     });
 
@@ -530,7 +530,7 @@ describe("gemini payload", () => {
               response: { result: "file contents" },
             },
           },
-          { text: "Summarize the conversation for compaction." },
+          { text: "Summarize the conversation." },
         ],
       },
     ]);

@@ -89,7 +89,7 @@ describe("mergeNoticesIntoLoaded — persisted annotation cards", () => {
     expect(placed && placed.kind === "notice" ? placed.turn : undefined).toBe(2);
   });
 
-  it("drops a card for a turn that was folded away (rebased to <= 0)", () => {
+  it("drops a card for a turn removed by a truncation (rebased to <= 0)", () => {
     const notices: PersistedNotice[] = [
       { id: "n3", kind: "notice", text: "gone", severity: "info", turn: 3 },
       { id: "n5", kind: "notice", text: "kept", severity: "info", turn: 5 },

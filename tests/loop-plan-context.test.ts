@@ -31,7 +31,7 @@ function makeLoop(session: string) {
 function request(loop: CacheFirstLoop) {
   return (loop as unknown as { buildMessages(): ChatMessage[] }).buildMessages();
 }
-it("rebuilds exact active-plan obligations after log compaction and harness recreation", () => {
+it("rebuilds exact active-plan obligations after a log rewrite and harness recreation", () => {
   const repo = new SessionPlanRepository("active");
   const plan = repo.propose("Full body", [
     { id: "one", title: "First", action: "Do first" },

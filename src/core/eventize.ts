@@ -1,17 +1,13 @@
-import type { CompactionFoldPayload } from "@reasonix/core-utils";
 import type { LoopEvent } from "../loop.js";
 import type { ChatMessage, RawUsage, ToolCall } from "../types.js";
 import { redactEventValue } from "./event-redaction.js";
 import { EventType } from "./events.js";
 import type {
-  CompactionFinishedEvent,
-  CompactionStartedEvent,
   Event,
   ErrorEvent as KernelErrorEvent,
   ModelDeltaEvent,
   ModelFinalEvent,
   ModelTurnStartedEvent,
-  SessionCompactedEvent,
   SessionOpenedEvent,
   SessionRetractedEvent,
   SlashInvokedEvent,
@@ -35,18 +31,10 @@ export interface EventizeContext {
   reasoningEffort: import("../config.js").ReasoningEffort;
 }
 
-/** Input shape shared by `emitCompactionFinished` and `compactionFinishedEvent`. */
-export type CompactionFinishedInput = {
-  turn: number;
-  kind?: "fold" | "force-summary";
-} & CompactionFoldPayload;
-
 export class Eventizer {
   private nextId = 0;
   private lastTurn = -1;
   private nextToolSeq = 0;
-  /** Fallback ids for compaction events that arrive without a loop-generated compactionId. */
-  private nextCompactionSeq = 0;
   /** Tool calls announced via tool_call_delta but not yet dispatched. FIFO upgraded by tool_start. */
   private preparingCallIds: string[] = [];
   /** Tool calls dispatched but not yet finished. Results prefer their explicit
@@ -66,15 +54,7 @@ export class Eventizer {
     if (ev.turn !== this.lastTurn) {
       this.lastTurn = ev.turn;
       this.announcedToolIdx.clear();
-      // Compaction events can arrive OUTSIDE a model turn — a user-triggered
-      // Compaction runs between turns or right after a session load, where a
-      // synthesized model.turn.started would leave a phantom pending assistant
-      // card that never settles. Only an auto fold that opens a brand-new turn
-      // (the turn-start pre-iter fold) gets the turn-started card.
-      const isUserCompaction =
-        (ev.role === "compaction_start" || ev.role === "compaction_end") &&
-        ev.compactionReason === "user";
-      if (!isUserCompaction) out.push(this.turnStartedEvent(ev.turn, ctx));
+      out.push(this.turnStartedEvent(ev.turn, ctx));
     }
     switch (ev.role) {
       case "assistant_delta":
@@ -152,68 +132,9 @@ export class Eventizer {
       case "status":
         out.push(this.statusEvent(ev.turn, ev.content));
         break;
-      case "compaction_start":
-        out.push(
-          this.compactionStartedEvent(
-            ev.turn,
-            ev.compactionId ?? `compaction-${++this.nextCompactionSeq}`,
-            ev.compactionReason ?? "auto-context-pressure",
-            ev.compactionKind,
-            ev.aggressive,
-          ),
-        );
-        break;
-      case "compaction_end": {
-        const compactionId = ev.compactionId ?? `compaction-${++this.nextCompactionSeq}`;
-        out.push(
-          this.compactionFinishedEvent(compactionId, {
-            turn: ev.turn,
-            kind: ev.compactionKind,
-            folded: ev.folded ?? false,
-            beforeMessages: ev.beforeMessages ?? 0,
-            afterMessages: ev.afterMessages ?? 0,
-            summaryChars: ev.summaryChars ?? 0,
-            summary: ev.summary,
-            error: ev.foldError,
-            warn: ev.foldWarn,
-            // The prune + triage payloads arrive on compaction_end; forward
-            // them so the UI can render the card meta and drop files from the
-            // "Files in context" panel (previously swallowed on this path).
-            prunedFiles: ev.prunedFiles,
-            prunedTokens: ev.prunedTokens,
-            droppedFiles: ev.droppedFiles,
-          }),
-        );
-        // The fold REPLACED the live log — record the replacement so the kernel
-        // conversation projection stays replayable after compaction, exactly like
-        // tool results and assistant finals are. The reducer swaps its message
-        // list on this event (the one event that doesn't append).
-        //
-        // USER-triggered compaction ONLY. Auto folds (turn-start / post-response)
-        // run MID-TURN: swapping the list renumbers every message (user turns
-        // become array positions, assistant turns become dense counts) while the
-        // loop keeps counting absolute turns, so the rest of the live turn's
-        // events (deltas, tool cards, final) target a turn number that no longer
-        // exists in the UI and are silently dropped — the turn renders as
-        // "silently thinking" then ends with nothing. The running compaction
-        // card already communicates the auto fold; the next session load
-        // applies the replacement.
-        if (ev.folded && ev.replacementMessages && ev.compactionReason === "user") {
-          out.push(
-            this.sessionCompactedEvent(
-              ev.turn,
-              ev.beforeMessages ?? 0,
-              ev.afterMessages ?? 0,
-              ev.compactionReason ?? "auto-context-pressure",
-              ev.replacementMessages,
-            ),
-          );
-        }
-        break;
-      }
       // session_retracted: an abort-discard truncated the live log mid-turn —
       // record the replacement so the kernel conversation projection stays
-      // replayable (same swap semantics as session.compacted).
+      // replayable.
       case "session_retracted":
         out.push(
           this.sessionRetractedEvent(
@@ -265,28 +186,9 @@ export class Eventizer {
     };
   }
 
-  private sessionCompactedEvent(
-    turn: number,
-    before: number,
-    after: number,
-    reason: "user" | "auto-context-pressure",
-    replacementMessages: ReadonlyArray<ChatMessage>,
-  ): SessionCompactedEvent {
-    return {
-      id: ++this.nextId,
-      ts: new Date().toISOString(),
-      turn,
-      type: EventType.sessionCompacted,
-      beforeMessages: before,
-      afterMessages: after,
-      reason,
-      replacementMessages,
-    };
-  }
-
   /** Session edits (retry / rewind from the desktop handler) truncate the live
-   *  log outside the turn stream — emit the kernel replacement directly, like
-   *  emitCompactionFinished: a side-channel for non-turn-stream actions. */
+   *  log outside the turn stream — emit the kernel replacement directly as a
+   *  side-channel for non-turn-stream actions. */
   emitSessionRetracted(
     turn: number,
     kind: "retry" | "rewind" | "abort-discard" | "context-edit",
@@ -359,15 +261,6 @@ export class Eventizer {
       ...progress,
       ...(parentCallId ? { parentCallId } : {}),
     };
-  }
-
-  /** Synthetic compaction card end when compaction_end never arrives (desktop
-   *  closes the turn generator mid-await on abort). Mirrors emitAbortedFinal. */
-  emitCompactionFinished(
-    compactionId: string,
-    result: CompactionFinishedInput,
-  ): CompactionFinishedEvent {
-    return this.compactionFinishedEvent(compactionId, result);
   }
 
   /** Synthetic final when a consumer closes the turn generator mid-await on
@@ -555,49 +448,6 @@ export class Eventizer {
       turn,
       type: EventType.status,
       text,
-    };
-  }
-
-  private compactionStartedEvent(
-    turn: number,
-    compactionId: string,
-    reason: "user" | "auto-context-pressure",
-    kind?: "fold" | "force-summary",
-    aggressive?: boolean,
-  ): CompactionStartedEvent {
-    return {
-      id: ++this.nextId,
-      ts: new Date().toISOString(),
-      turn,
-      type: EventType.compactionStarted,
-      compactionId,
-      reason,
-      ...(kind ? { kind } : {}),
-      ...(aggressive ? { aggressive: true } : {}),
-    };
-  }
-
-  private compactionFinishedEvent(
-    compactionId: string,
-    result: CompactionFinishedInput,
-  ): CompactionFinishedEvent {
-    return {
-      id: ++this.nextId,
-      ts: new Date().toISOString(),
-      turn: result.turn,
-      type: EventType.compactionFinished,
-      compactionId,
-      ...(result.kind ? { kind: result.kind } : {}),
-      folded: result.folded,
-      beforeMessages: result.beforeMessages,
-      afterMessages: result.afterMessages,
-      summaryChars: result.summaryChars,
-      ...(result.summary ? { summary: result.summary } : {}),
-      ...(result.error ? { error: result.error } : {}),
-      ...(result.warn ? { warn: result.warn } : {}),
-      ...(result.prunedFiles !== undefined ? { prunedFiles: result.prunedFiles } : {}),
-      ...(result.prunedTokens !== undefined ? { prunedTokens: result.prunedTokens } : {}),
-      ...(result.droppedFiles !== undefined ? { droppedFiles: result.droppedFiles } : {}),
     };
   }
 

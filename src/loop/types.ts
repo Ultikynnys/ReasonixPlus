@@ -1,4 +1,3 @@
-import type { CompactionFoldPayload } from "@reasonix/core-utils";
 import type { RepairReport } from "../repair/index.js";
 import type { CacheDiagnosticEntry } from "../telemetry/cache-diagnostics.js";
 import type { TurnStats } from "../telemetry/stats.js";
@@ -19,39 +18,17 @@ export type EventRole =
   | "status"
   /** Mid-turn steer injected as queued user guidance without aborting the current turn. */
   | "steer"
-  /** Compaction card lifecycle — mirrors tool_start/tool so UIs can render a
-   *  compaction card in the same queue as tool cards. Start carries the reason,
-   *  end carries the FoldResult. Never emitted without a matching end. */
-  | "compaction_start"
-  | "compaction_end"
   /** Session edit (abort-discard) truncated the log mid-turn — carries the
    *  post-truncation log so the eventizer can emit session.retracted and the
    *  kernel conversation view stays replayable. */
   | "session_retracted";
 
 /** "low" = chatty / self-correcting / counter — Desktop+Dashboard filter these out by default.
- *  Undefined / "high" = real event the user should see (compaction, abort, budget, rate-limit, etc.).
+ *  Undefined / "high" = real event the user should see (abort, budget, rate-limit, etc.).
  *  TUI ignores this and renders every warning. */
 export type EventSeverity = "low" | "high";
 
-/** compaction_end fold fields — names and docs live on CompactionFoldPayload
- *  (core-utils). foldError/foldWarn keep their prefixed names in LoopEvent
- *  (flat per-role bag) and map to payload `error`/`warn` in the eventizer. */
-export type CompactionEndFoldFields = Partial<
-  Pick<
-    CompactionFoldPayload,
-    | "folded"
-    | "beforeMessages"
-    | "afterMessages"
-    | "summaryChars"
-    | "summary"
-    | "prunedFiles"
-    | "prunedTokens"
-    | "droppedFiles"
-  >
->;
-
-export interface LoopEvent extends CompactionEndFoldFields {
+export interface LoopEvent {
   turn: number;
   role: EventRole;
   content: string;
@@ -88,26 +65,14 @@ export interface LoopEvent extends CompactionEndFoldFields {
     retryable: boolean;
     recoverable: boolean;
   };
-  /** Display-only — code-mode applier MUST skip SEARCH/REPLACE in forced-summary text. */
+  /** Display-only — code-mode applier MUST skip SEARCH/REPLACE in placeholder text. */
   forcedSummary?: boolean;
-  /** Stable id pairing compaction_start with its compaction_end — the UI keys the card by it. */
-  compactionId?: string;
-  /** Why the fold runs — "user" = a user-triggered compaction, "auto-context-pressure" = loop-internal fold. */
-  compactionReason?: "user" | "auto-context-pressure";
-  /** What kind of compaction runs — "fold" (head folded into a summary message) vs
-   *  "force-summary" (log trimmed + summarized in place under the context guard).
-   *  Carried on both compaction_start and compaction_end. */
-  compactionKind?: "fold" | "force-summary";
-  /** compaction_end with folded=true: the post-fold message log — lets the eventizer
-   *  emit session.compacted so the kernel conversation view stays replayable after
-   *  the log replacement. */
+  /** session_retracted: the pre-truncation / post-truncation message counts. */
+  beforeMessages?: number;
+  afterMessages?: number;
+  /** session_retracted: the post-truncation log — lets the eventizer emit
+   *  session.retracted so the kernel conversation view stays replayable. */
   replacementMessages?: ReadonlyArray<ChatMessage>;
-  /** True when the fold is in the 70-85% aggressive band — user-facing messaging. */
-  aggressive?: boolean;
   /** session_retracted: which session edit truncated the log. */
   sessionRetractedKind?: "retry" | "rewind" | "abort-discard";
-  /** compaction_end: why the fold didn't happen (payload `error`), when the summarizer failed. */
-  foldError?: string;
-  /** compaction_end: advisory warning on a successful fold (payload `warn`) — e.g. file triage failed, nothing dropped. */
-  foldWarn?: string;
 }

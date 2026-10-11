@@ -97,7 +97,6 @@ export const conversation: Reducer<ConversationView> = (v, ev) => {
         pendingToolCalls: v.pendingToolCalls.filter((c) => c.callId !== ev.callId),
       };
     }
-    case EventType.sessionCompacted:
     case EventType.sessionRetracted:
       return { messages: [...ev.replacementMessages], pendingToolCalls: [] };
     default:

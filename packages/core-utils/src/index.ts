@@ -1,13 +1,4 @@
 export {
-  COMPACTION_SUMMARY_MARKER,
-  FILES_DROPPED_MARKER_REGEX,
-  FILES_DROPPED_TAG,
-  buildFilesDroppedMarker,
-  isCompactionSummary,
-  parseFilesDroppedMarker,
-  stripCompactionMarker,
-} from "./compaction.js";
-export {
   FILE_PATH_TOOLS,
   extractPathsFromArgs,
   isFilePathTool,
@@ -166,9 +157,6 @@ export type {
   KernelToolOutputEvent,
   KernelSubagentProgressEvent,
   KernelStatusEvent,
-  KernelCompactionStartedEvent,
-  KernelCompactionFinishedEvent,
-  CompactionFoldPayload,
   KernelWarningEvent,
   KernelErrorEvent,
   ConnectedEvent,
@@ -237,7 +225,6 @@ export type {
   PersistedNotice,
   SessionLoadedEvent,
   SessionProviderCost,
-  SessionCompactedEvent,
   SessionRetractedEvent,
   SessionEmptyEvent,
   NeedsSetupEvent,

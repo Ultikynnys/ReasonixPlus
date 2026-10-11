@@ -156,7 +156,7 @@ export const DEEPSEEK_CONTEXT_TOKENS: Record<string, number> = {
   "gpt-6-sol": 1_000_000,
   "gpt-6-luna": 1_000_000,
   // GPT-5.6 advertises a 1.05M window but is held to a 300K quality cap here
-  // (compaction thresholds are fractions of this cap).
+  // (the context meter reads as a fraction of this cap).
   "gpt-5.6": 300_000,
   "gpt-5.6-sol": 300_000,
   "gpt-5.6-terra": 300_000,
@@ -193,9 +193,8 @@ export function resolveContextTokens(model: string, configured?: number): number
     const floor = isOllama ? 1_024 : MIN_CONTEXT_TOKENS;
     // An explicit override is the source of truth: honor it up to the 1M API
     // ceiling, even above the model's default window. The table only supplies
-    // the default when no override is set, so the meter, the compaction
-    // thresholds and the turn-start budget check all agree on the value the
-    // user asked for.
+    // the default when no override is set, so the meter and the request budget
+    // check agree on the value the user asked for.
     return Math.min(MAX_CONTEXT_TOKENS, Math.max(floor, Math.floor(configured)));
   }
   return modelDefault ?? DEFAULT_CONTEXT_TOKENS;
@@ -408,15 +407,6 @@ export interface SessionSummary {
   lastToolSchemaTokens: number;
   lastPrefixChanged: boolean;
   lastPrefixChangeReasons: CacheChurnReason[];
-  /** $ spent on internal context compaction (fold summarizer + triage calls),
-   *  kept separate from the agent loop's own per-turn cost. */
-  compactionCostUsd: number;
-  /** Number of compaction passes (fold summaries + triage) in this process. */
-  compactionCount: number;
-  /** Prompt (input) tokens consumed by compaction calls. */
-  compactionPromptTokens: number;
-  /** Completion (output) tokens consumed by compaction calls. */
-  compactionCompletionTokens: number;
 }
 
 export class SessionStats {
@@ -430,12 +420,6 @@ export class SessionStats {
   private _carryoverCompletion = 0;
   /** Last turn's promptTokens before exit — surfaced via summary() until the next live turn lands. */
   private _carryoverLastPromptTokens = 0;
-  /** $ spent on internal compaction — isolated from loop cost + cache accounting
-   *  because compaction is inherently cache-cold engineering work. */
-  private _compactionCost = 0;
-  private _compactionPromptTokens = 0;
-  private _compactionCompletionTokens = 0;
-  private _compactionCount = 0;
 
   /** Per-provider cumulative session usage, each in the provider's native unit
    *  (USD for token-priced APIs, plan-window % for quota APIs), keyed by provider
@@ -523,10 +507,6 @@ export class SessionStats {
     this._carryoverCacheMiss = 0;
     this._carryoverCompletion = 0;
     this._carryoverLastPromptTokens = 0;
-    this._compactionCost = 0;
-    this._compactionPromptTokens = 0;
-    this._compactionCompletionTokens = 0;
-    this._compactionCount = 0;
     this._providerCosts.clear();
     this._cacheDiagnostics = [];
   }
@@ -592,24 +572,6 @@ export class SessionStats {
     this._carryoverCompletion += usage.completionTokens;
   }
 
-  /** Record an internal compaction call (fold summarizer/triage) into a dedicated
-   *  accumulator. No turn entry, so per-turn cost and the cache-hit ratio stay
-   *  clean; still reflected in totalCost so session spend stays honest. */
-  recordCompaction(
-    model: string,
-    usage: Usage,
-    billing: BillingKind | BillingContext = billingContextForModel(model),
-  ): void {
-    const resolved = normalizeBilling(model, billing);
-    const pricing = pricingContextForBilling(resolved);
-    const cost = resolved.kind === "usd" ? costUsd(model, usage, undefined, pricing) : 0;
-    this._compactionCost += cost;
-    this.accrueProviderCost(resolved.provider, resolved.kind, { costUsd: cost });
-    this._compactionPromptTokens += usage.promptTokens;
-    this._compactionCompletionTokens += usage.completionTokens;
-    this._compactionCount += 1;
-  }
-
   /** Accrue into the per-provider native-unit bucket. Quota providers never get
    *  a dollar figure; USD providers never get a percentage. Zero-value records
    *  are skipped so an empty quota turn can't clobber a desktop-accumulated delta. */
@@ -673,9 +635,7 @@ export class SessionStats {
   }
 
   get totalCost(): number {
-    return (
-      this._carryoverCost + this.turns.reduce((sum, t) => sum + t.cost, 0) + this._compactionCost
-    );
+    return this._carryoverCost + this.turns.reduce((sum, t) => sum + t.cost, 0);
   }
 
   get totalClaudeEquivalent(): number {
@@ -740,10 +700,6 @@ export class SessionStats {
       lastToolSchemaTokens: last?.cacheDiagnostics?.toolSchemaTokens ?? 0,
       lastPrefixChanged: last?.cacheDiagnostics?.prefixChanged ?? false,
       lastPrefixChangeReasons: last?.cacheDiagnostics?.prefixChangeReasons ?? [],
-      compactionCostUsd: round(this._compactionCost, 6),
-      compactionCount: this._compactionCount,
-      compactionPromptTokens: this._compactionPromptTokens,
-      compactionCompletionTokens: this._compactionCompletionTokens,
     };
   }
 }

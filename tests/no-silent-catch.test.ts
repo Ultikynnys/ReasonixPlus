@@ -1,7 +1,7 @@
 // No silent catch blocks — a catch whose body is empty (or comment-only)
-// swallows the failure. That is the exact class of bug that made compaction
-// die without any visible error. Every catch in the durability-critical +
-// user-facing surfaces below must surface its failure: a stderr write, an
+// swallows the failure. That is the exact class of bug that made a session
+// rewrite die without any visible error. Every catch in the durability-critical
+// + user-facing surfaces below must surface its failure: a stderr write, an
 // error return, an emitted event, or a rethrow.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -9,7 +9,7 @@ import { join, relative } from "node:path";
 import { describe, expect, test } from "vitest";
 
 const TARGET_DIRS = ["src/core", "src/memory", "src/adapters", "src/cli/commands"];
-const TARGET_FILES = ["src/context-manager.ts", "src/loop.ts"];
+const TARGET_FILES = ["src/loop.ts"];
 
 function collect(): string[] {
   const out: string[] = [];

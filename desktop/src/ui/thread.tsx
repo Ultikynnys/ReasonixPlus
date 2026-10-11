@@ -3,7 +3,6 @@ import { sanitizeTerminalText } from "@reasonix/core-utils";
 import { formatBytes } from "@reasonix/core-utils";
 import type { PlanStep } from "@reasonix/core-utils";
 import { PLAN_INTERACTIVE_TOOL_NAMES } from "@reasonix/core-utils";
-import { isCompactionSummary, stripCompactionMarker } from "@reasonix/core-utils/compaction";
 import { derivePrefix } from "@reasonix/core-utils/derive-prefix";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -24,7 +23,6 @@ import type { JobInfo } from "../protocol";
 import { useAutoApproveCountdown } from "./auto-countdown";
 import {
   AssistantText,
-  CompactionCard,
   DiffCard,
   PreText,
   ReasoningCard,
@@ -442,10 +440,6 @@ export const AssistantMsg = memo(function AssistantMsg({
         {segments.map((s, i) => {
           if (s.kind === "text") {
             if (!s.text.trim()) return null;
-            if (isCompactionSummary(s.text)) {
-              // biome-ignore lint/suspicious/noArrayIndexKey: streamed segments are append-only
-              return <CompactionCard key={i} summary={stripCompactionMarker(s.text)} />;
-            }
             // biome-ignore lint/suspicious/noArrayIndexKey: streamed segments are append-only
             return <AssistantText key={i} text={s.text} />;
           }
@@ -457,26 +451,6 @@ export const AssistantMsg = memo(function AssistantMsg({
                 text={s.text}
                 durationMs={s.durationMs}
                 streaming={pending && !isInterventionPending && i === segments.length - 1}
-              />
-            );
-          }
-          if (s.kind === "compaction") {
-            return (
-              <CompactionCard
-                // biome-ignore lint/suspicious/noArrayIndexKey: streamed segments are append-only
-                key={i}
-                state={s.state}
-                reason={s.reason}
-                compactionKind={s.compactionKind}
-                aggressive={s.aggressive}
-                beforeMessages={s.beforeMessages}
-                afterMessages={s.afterMessages}
-                summaryChars={s.summaryChars}
-                prunedFiles={s.prunedFiles}
-                prunedTokens={s.prunedTokens}
-                droppedFiles={s.droppedFiles}
-                summary={s.summary}
-                error={s.error}
               />
             );
           }

@@ -496,13 +496,6 @@ export const EN: TranslationSchema = {
     decisionTimeout: "timeout",
     decisionError: COMMON_STRINGS.errorLower,
   },
-  summary: {
-    status: "summarizing what was gathered…",
-    hallucinatedFallback:
-      "(model emitted fake tool-call markup instead of a prose summary — try again with a narrower question)",
-    failedAfterReason:
-      "{label} and the fallback summary call failed: {message}. The conversation is intact — try again or continue from here. If the iteration cap keeps tripping, raise `maxIterPerTurn` in config or set REASONIX_MAX_ITER.",
-  },
   loop: {
     proArmed: "⇧ pro armed — this turn runs on deepseek-v4-pro (one-shot · disarms after turn)",
     toolUploadStatus: "tool result uploaded · model thinking before next response…",
@@ -548,24 +541,21 @@ export const EN: TranslationSchema = {
     repetitionStallNoPrefix:
       "[The model stream was stopped because it produced only repetitive output. Retry or switch models.]",
     reasoningLoop:
-      "The model is stuck re-thinking the same point without making progress — collapsing to a summary so you can redirect from a fresh recap.",
+      "The model is stuck re-thinking the same point without making progress — stopping this turn so you can redirect from a fresh prompt.",
     reasoningLoopRepeatStall:
       "The model is stuck re-thinking the same point without making progress: its reasoning stalled on a repeating pattern (period {period}, {repeatedChars} chars).",
     reasoningLoopRepeated:
       "The model is stuck re-thinking the same point without making progress: it repeated the same reasoning across {count} consecutive iterations.",
-    reasoningLoopResuming: "Collapsed to a summary and resuming automatically from the recap.",
-    reasoningLoopStopping: "Stopping this turn so you can redirect from a fresh recap.",
+    reasoningLoopStopping: "Stopping this turn so you can redirect from a fresh prompt.",
     repeatedPatternLabel: "Repeated pattern:",
-    forcingSummary:
-      "context {before}/{ctxMax} ({pct}%) — forcing summary from what was gathered. Start a new chat to reset.",
     iterLimitReached:
-      "Reached the {max}-iteration cap for this turn — forcing a summary of what was gathered. Raise with `maxIterPerTurn` config or REASONIX_MAX_ITER, or ask again in a fresh turn.",
+      "Reached the {max}-iteration cap for this turn — stopping this turn. Raise with `maxIterPerTurn` config or REASONIX_MAX_ITER, or ask again in a fresh turn.",
     iterLimitGrace:
       "Reached the {max}-iteration cap, but the turn is still making progress. Continuing up to {grace} iterations. Set `maxIterPerTurn` in config or REASONIX_MAX_ITER for a higher cap.",
     iterLimitPaused:
       'Reached the {grace}-iteration hard cap. The turn paused; the conversation is intact. Say "continue" to keep going, or set `maxIterPerTurn` in config / REASONIX_MAX_ITER for a higher cap.',
     iterLimitNeverAsk:
-      "Never Ask mode: reached the {max}-iteration cap, but the turn keeps running unattended, never-ask never pauses on the iteration cap. Stuck loops still force-summarize.",
+      "Never Ask mode: reached the {max}-iteration cap, but the turn keeps running unattended, never-ask never pauses on the iteration cap. Stuck loops still stop the turn.",
   },
   errors: {
     contextOverflowTooMany: "too many tokens",
@@ -714,14 +704,6 @@ export const EN: TranslationSchema = {
       " Try: check your network, wait, then check https://status.deepseek.com.",
     deepseek5xxActionRetry: " Wait and retry, or check https://status.deepseek.com.",
     innerNoMessage: "(no message)",
-    reasonAborted: "[aborted by user (Esc) — summarizing what I found so far]",
-    reasonContextGuard:
-      "[context budget running low — summarizing before the next call would overflow]",
-    reasonStuck:
-      "[stuck on a repeated tool call — explaining what was tried and what's blocking progress]",
-    labelAborted: "aborted by user",
-    labelContextGuard: "context-guard triggered (prompt > 80% of window)",
-    labelStuck: "stuck (repeated tool call suppressed by storm-breaker)",
   },
   handlers: {
     basic: {
@@ -920,10 +902,6 @@ export const EN: TranslationSchema = {
     },
     observability: {
       contextInfo: "context: ~{total} of {max} ({pct}%) · system {sys} · tools {tools} · log {log}",
-      compactStarting: "▸ folding older turns into a summary…",
-      compactNoop: "▸ nothing to fold — log already small or recent turns alone exceed the budget.",
-      compactDone: "▸ folded {before} messages → {after} (summary {chars} chars). Continuing.",
-      compactFailed: "▸ fold failed: {reason}",
       costNoTurn:
         "no turn yet — the cost panel shows the most recent turn's token + spend breakdown.",
       costNeedsTui: "Cost breakdown is not available in this context.",
@@ -1132,7 +1110,6 @@ export const EN: TranslationSchema = {
     editsLabel: "edits:",
     mcpLoading: COMMON_STRINGS.mcpLabel,
     ctx: "ctx",
-    compactionLimits: "fold@{fold} \u00b7 force@{force}",
     shortcutsHint: "Ctrl+P shortcuts",
   },
   editMode: {
@@ -1336,7 +1313,6 @@ export const EN: TranslationSchema = {
   },
   ctxBreakdown: {
     title: "\u25a3 context",
-    compactHint: "  older turns fold automatically at 75%",
     topTools: "  top tool results by cost ({count}):",
     msg: "msg",
     turnLabel: "turn",

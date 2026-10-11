@@ -7,7 +7,6 @@
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./compaction": "./src/compaction.ts",
     "./derive-prefix": "./src/derive-prefix.ts",
     "./desktop-protocol": "./src/desktop-protocol.ts",
     "./expand-tilde": "./src/expand-tilde.ts",

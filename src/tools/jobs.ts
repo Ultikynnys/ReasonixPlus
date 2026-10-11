@@ -45,7 +45,7 @@ export interface JobStartOptions {
   /** Total per-job output buffer cap (bytes). Default 64 KB. */
   maxBufferBytes?: number;
   /** Workspace-scoped instead of conversation-scoped: survives Stop / New-chat /
-   *  turn-abort / compaction. Killed only by explicit stop, a full workspace/app
+   *  turn-abort. Killed only by explicit stop, a full workspace/app
    *  shutdown, or the Jobs-panel Close button. Default false (session-scoped). */
   persistent?: boolean;
 }
@@ -64,7 +64,7 @@ export interface JobStartResult {
 }
 
 /** Why a background job was force-stopped before a natural exit. */
-export type JobStopReason = "user" | "cancelled" | "compaction" | "shutdown";
+export type JobStopReason = "user" | "cancelled" | "shutdown";
 
 export interface JobRecord {
   id: number;
@@ -520,13 +520,12 @@ export class JobRegistry {
   }
 
   /** Force-cancel every running job immediately (SIGKILL tree kill, no grace).
-   *  Wired to the loop's pre-compaction hook so no background shell outlives a
-   *  fold; `keepPersistent` spares workspace-scoped persistent jobs. */
+   *  `keepPersistent` spares workspace-scoped persistent jobs. */
   cancelAll(opts: { keepPersistent?: boolean } = {}): void {
     for (const job of this.jobs.values()) {
       if (!job.running) continue;
       if (opts.keepPersistent && job.persistent) continue;
-      job.stopReason = "compaction";
+      job.stopReason = "cancelled";
       if (job.cancel) {
         job.cancel.abort();
         job.running = false;
@@ -545,7 +544,7 @@ export class JobRegistry {
       }
       // Settle the record synchronously — the SIGKILL is issued; the OS reap
       // (Windows taskkill /T) completes asynchronously but must not keep the
-      // job looking "running" once compaction commits. The close handler still
+      // job looking "running" once cancelAll returns. The close handler still
       // fires and backfills exitCode via settleClosed.
       job.running = false;
       job.signalReady();

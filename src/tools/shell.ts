@@ -64,7 +64,7 @@ function shellStopReason(
 ): string | null {
   if (ctx?.cancelSignal?.aborted) return "the user stopped the running command";
   if (ctx?.signal?.aborted) return "the user stopped the conversation";
-  if (result.aborted) return "the run was aborted before it finished (compaction or shutdown)";
+  if (result.aborted) return "the run was aborted before it finished";
   return null;
 }
 
@@ -91,8 +91,6 @@ function jobStopLabel(reason: import("./jobs.js").JobStopReason | undefined): st
       return "stopped by user";
     case "cancelled":
       return "cancelled (turn stop)";
-    case "compaction":
-      return "stopped for context compaction";
     case "shutdown":
       return "stopped on workspace shutdown";
     default:

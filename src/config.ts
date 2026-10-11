@@ -515,8 +515,6 @@ export interface ReasonixConfig {
    *  [128000, 1000000] at load; an explicit value is honored up to that ceiling by
    *  resolveContextTokens, even above the model's default window. */
   contextTokens?: number;
-  /** When true, disable all automatic compaction (turn-start auto-fold, post-response fold, context guards). Manual compaction remains available. */
-  disableAutoCompaction?: boolean;
   /** Token budget for a duplicated session's retained context (newest-first). Default 50 000. */
   duplicateSessionTokens?: number;
   /** When true, a duplicated session auto-runs one continuation turn. Default false. */
@@ -2669,21 +2667,6 @@ export function saveCustomQuickSends(list: QuickSend[], path: string = defaultCo
       message: q.message,
     };
   });
-  writeConfig(cfg, path);
-}
-
-/** True when the user has disabled all automatic compaction sources. Defaults to false. */
-export function loadDisableAutoCompaction(path: string = defaultConfigPath()): boolean {
-  return Boolean(readConfig(path).disableAutoCompaction);
-}
-
-/** Persist whether automatic compaction is disabled. */
-export function saveDisableAutoCompaction(
-  disabled: boolean,
-  path: string = defaultConfigPath(),
-): void {
-  const cfg = readConfig(path);
-  cfg.disableAutoCompaction = disabled;
   writeConfig(cfg, path);
 }
 

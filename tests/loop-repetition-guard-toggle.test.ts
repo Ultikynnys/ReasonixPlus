@@ -77,9 +77,8 @@ describe("CacheFirstLoop repetition-guard toggle", () => {
 
     const events = await drain(loop, "explore");
 
-    // Guard is off by default: no "stuck re-thinking" warning, no compaction.
+    // Guard is off by default: no "stuck re-thinking" warning.
     expect(events.some(isReasoningWarning)).toBe(false);
-    expect(events.some((e) => e.role === "compaction_start")).toBe(false);
   });
 
   it("collapses a repeated-reasoning loop once the guard is enabled", async () => {
@@ -89,8 +88,6 @@ describe("CacheFirstLoop repetition-guard toggle", () => {
       prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
       tools: reg,
       stream: false,
-      // Manual-only compaction keeps the assertion on the warning itself.
-      disableAutoCompaction: true,
       repetitionGuardEnabled: true,
       maxToolIters: 8,
     });

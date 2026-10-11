@@ -1,7 +1,6 @@
 import {
   DEFAULT_MODEL,
   type ChangelogRelease,
-  type CompactionFoldPayload,
   clipText,
   extractPathsFromArgs,
   flattenText,
@@ -11,7 +10,6 @@ import {
   modelAcceptsAudioVideo,
   modelAcceptsImages,
   modelDisplayName,
-  parseFilesDroppedMarker,
   redactDiagnosticText,
   redactDiagnosticValue,
   sanitizeFilename,
@@ -259,17 +257,6 @@ export type AssistantSegment =
       liveOutput?: string;
       subagentRuns?: SubagentRunProgress[];
     }
-  | ({
-      kind: "compaction";
-      /** compactionId pairing the started event with its finished event. */
-      id: string;
-      /** running → spinner; done → folded result; failed → error; idle → nothing to fold. */
-      state: "running" | "done" | "failed" | "idle";
-      reason: "user" | "auto-context-pressure";
-      /** "fold" = head folded into a summary message; "force-summary" = context-guard / stuck trim + summarize in place. */
-      compactionKind?: "fold" | "force-summary";
-      aggressive?: boolean;
-    } & Partial<CompactionFoldPayload>)
   | { kind: "warning"; id: string; text: string; severity?: "low" | "high" }
   | { kind: "image"; dataUrl: string; mimeType: string };
 
@@ -383,7 +370,7 @@ export type UsageStats = {
   reservedTokens: number;
   /** Current conversation log tokens, refreshed by the desktop sidecar. */
   liveLogTokens: number;
-  /** Model context cap — meter denominator + compaction-limit ticks. */
+  /** Model context cap — meter denominator. */
   ctxMax?: number;
   /** Current-session shell-output filtering totals — the statusbar "saved"
    *  chip's numerator source. Undefined = this session has no shell telemetry
@@ -1214,21 +1201,9 @@ function mergeSessionFiles(existing: SessionFile[], adds: SessionFile[]): Sessio
   return changed ? next : existing;
 }
 
-/** Path-key used for context-file comparisons — Windows separators normalize to "/". */
-function contextPathKey(p: string): string {
-  return p.replace(/\\/g, "/");
-}
-
-/** Remove the paths the fold's triage step classified as no longer relevant. */
-function pruneSessionFiles(existing: SessionFile[], dropped: readonly string[]): SessionFile[] {
-  if (dropped.length === 0) return existing;
-  const droppedSet = new Set(dropped.map(contextPathKey));
-  return existing.filter((f) => !droppedSet.has(contextPathKey(f.path)));
-}
-
 /** Convert a server-sent conversation (LoadedMessage shape) into UI messages.
- *  Shared by $session_loaded and session.compacted — both carry the same wire
- *  shape, so the live fold replacement and a session reload render identically. */
+ *  Shared by $session_loaded and session.retracted — both carry the same wire
+ *  shape, so a truncation replacement and a session reload render identically. */
 export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
   // User turns are counted by user-message position (1-based), matching live
   // numbering. List index i+1 would drift: the loaded list interleaves
@@ -1303,8 +1278,7 @@ export function collectPersistedNotices(messages: ChatMessage[]): PersistedNotic
 }
 
 /** Re-derive the "Files in context" list from a conversation: paths from tool
- *  segments, minus paths the fold's triage dropped (persisted as a marker in
- *  the folded summary message). Used by $session_loaded and session.compacted. */
+ *  segments. Used by $session_loaded and session.retracted. */
 function deriveSessionFiles(loaded: ChatMessage[]): SessionFile[] {
   let sessionFiles: SessionFile[] = [];
   for (const m of loaded) {
@@ -1315,21 +1289,6 @@ function deriveSessionFiles(loaded: ChatMessage[]): SessionFile[] {
       // segments only survive into history if the call completed. Trust it.
       sessionFiles = mergeSessionFiles(sessionFiles, extractToolFiles(s.name, s.args));
     }
-  }
-  // Files the fold's triage step dropped stay dropped across reloads: the
-  // decision is persisted as a marker in the folded summary message.
-  const droppedFromMarkers = new Set<string>();
-  for (const m of loaded) {
-    if (m.kind !== "assistant") continue;
-    for (const s of m.segments) {
-      if (s.kind !== "text") continue;
-      for (const p of parseFilesDroppedMarker(s.text)) {
-        droppedFromMarkers.add(contextPathKey(p));
-      }
-    }
-  }
-  if (droppedFromMarkers.size > 0) {
-    sessionFiles = sessionFiles.filter((f) => !droppedFromMarkers.has(contextPathKey(f.path)));
   }
   return sessionFiles;
 }
@@ -2060,7 +2019,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           contextTokens: ev.contextTokens ?? null,
           maxIterPerTurn: ev.maxIterPerTurn ?? null,
           maxIterPerTurnOverride: ev.maxIterPerTurnOverride ?? null,
-          disableAutoCompaction: ev.disableAutoCompaction ?? false,
           enableSubagents: ev.enableSubagents ?? true,
           elevationEnabled: ev.elevationEnabled ?? false,
           repetitionGuardEnabled: ev.repetitionGuardEnabled ?? false,
@@ -2226,8 +2184,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     case "mimo_oauth_begin_result":
       return { ...state, mimoOAuthWaiting: true };
     case "model.turn.started":
-      // Duplicate-delivery dedupe only: ordinals are monotonic daemon-side,
-      // so this can no longer swallow a post-compaction turn (fixed at source).
+      // Duplicate-delivery dedupe only: ordinals are monotonic daemon-side.
       if (state.messages.some((m) => m.kind === "assistant" && m.turn === ev.turn)) {
         return { ...state, model: ev.model, turnLastEventMs: Date.now() };
       }
@@ -2297,8 +2254,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           // Abort-settled finals (emitAbortedFinal) carry the abort notice in
           // `content`, but the deltas never streamed it — append it so the card
           // isn't a silent empty bubble ("turn ended without any thinking").
-          // Skip when text already streamed (would duplicate) or the content
-          // belongs to a forced summary (the compaction card renders it).
+          // Skip when text already streamed (would duplicate).
           const hasText = m.segments.some((s) => s.kind === "text");
           let segments = ev.replaceStreamedOutput
             ? [
@@ -2477,62 +2433,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         }),
       };
     }
-    case "compaction.started": {
-      // Compaction card joins the assistant queue like a tool card: attached to
-      // the LAST assistant message (the running turn for auto folds; the previous
-      // turn for user-triggered compaction while idle).
-      const seg: AssistantSegment = {
-        kind: "compaction",
-        id: ev.compactionId,
-        state: "running",
-        reason: ev.reason,
-        ...(ev.kind ? { compactionKind: ev.kind } : {}),
-        ...(ev.aggressive ? { aggressive: true } : {}),
-      };
-      return {
-        ...state,
-        messages: appendAssistantSegment(state.messages, seg, ev.turn),
-      };
-    }
-    case "compaction.finished": {
-      const patch = (s: AssistantSegment): AssistantSegment => {
-        if (s.kind !== "compaction" || s.id !== ev.compactionId) return s;
-        return {
-          ...s,
-          // force-summary DID summarize (in place) — "idle" (nothing to fold)
-          // would be a lie, so it lands on "done" like a successful fold.
-          state: ev.error ? "failed" : ev.folded || ev.kind === "force-summary" ? "done" : "idle",
-          ...(ev.kind ? { compactionKind: ev.kind } : {}),
-          beforeMessages: ev.beforeMessages,
-          afterMessages: ev.afterMessages,
-          summaryChars: ev.summaryChars,
-          ...(ev.summary ? { summary: ev.summary } : {}),
-          ...(ev.error ? { error: ev.error } : {}),
-          ...(ev.warn ? { warn: ev.warn } : {}),
-          ...(ev.prunedFiles ? { prunedFiles: ev.prunedFiles } : {}),
-          ...(ev.prunedTokens ? { prunedTokens: ev.prunedTokens } : {}),
-          ...(ev.droppedFiles?.length ? { droppedFiles: ev.droppedFiles } : {}),
-        };
-      };
-      return {
-        ...state,
-        sessionFiles: pruneSessionFiles(state.sessionFiles, ev.droppedFiles ?? []),
-        messages: state.messages.map((m) =>
-          m.kind === "assistant" ? { ...m, segments: m.segments.map(patch) } : m,
-        ),
-      };
-    }
-    case "session.compacted": {
-      // The backend folded the conversation (summary message + preserved tail).
-      // Keep the live UI messages transcript intact so the compaction card
-      // stays at its chronological position in the chat. Re-derive sessionFiles
-      // from the post-fold replacement log.
-      const loaded = mapLoadedMessages(ev.replacementMessages);
-      return {
-        ...state,
-        sessionFiles: deriveSessionFiles(loaded),
-      };
-    }
     case "session.retracted": {
       const loaded = mapLoadedMessages(ev.replacementMessages);
       return {
@@ -2598,10 +2498,6 @@ function formatConversationMarkdown(
               }
               const res = resText ? `\n\n\`\`\`\n${resText}\n\`\`\`` : "";
               return `> **${t("app.exportToolLabel")} · \`${s.name}\`**${arg}${res}`;
-            }
-            if (s.kind === "compaction") {
-              if (s.state !== "done" || s.beforeMessages === undefined) return "";
-              return `> **${t("cards.compactionName")}**: ${s.beforeMessages} → ${s.afterMessages} messages`;
             }
             if (s.kind === "warning") {
               return `> **${t("cards.warningName")}** · ${s.text}`;
@@ -4270,7 +4166,6 @@ function TabRuntime({
           onExportMemories={() => sendRpc({ cmd: "memory_export" })}
           onImportMemories={(json) => sendRpc({ cmd: "memory_import", json })}
           onDismissMemoryResult={() => dispatch({ t: "dismiss_memory_result" })}
-          onCompact={() => sendRpc({ cmd: "compact_history" })}
           rawContext={state.contextRaw}
           onReadContext={() => sendRpc({ cmd: "context_raw_get" })}
           onWriteContext={(text) => sendRpc({ cmd: "context_raw_set", text })}

@@ -1541,7 +1541,7 @@ export class DeepSeekClient {
     let systemInstruction: string | undefined;
     // Gemini requires alternating user/model content turns. Keep all parts for
     // adjacent same-role messages in one content, including a functionResponse
-    // followed by the next user instruction during compaction.
+    // followed by the next user instruction.
     const pushContent = (role: "user" | "model", parts: Array<Record<string, unknown>>): void => {
       if (parts.length === 0) return;
       const previous = contents.at(-1);
@@ -1909,7 +1909,7 @@ export class DeepSeekClient {
 
   /** Infer cache-hit tokens from the message prefix shared with the previous
    *  request; Ollama reports no hit/miss split, so this is a local estimate
-   *  that shrinks on tool-list changes and folds. */
+   *  that shrinks on tool-list changes. */
   private applyOllamaCacheEstimate(opts: ChatRequestOptions, usage: Usage): void {
     if (usage.promptTokens <= 0 || opts.messages.length === 0) return;
     const toolsKey = JSON.stringify(opts.tools ?? []);
@@ -1936,7 +1936,7 @@ export class DeepSeekClient {
 
   /** num_ctx for an Ollama request: explicit option > config/env > a lazy
    *  `/api/show` probe (cached, fail-soft) > DEFAULT_CONTEXT_TOKENS (128K) — so
-   *  server and compaction agree on the default context window. */
+   *  server and the client agree on the default context window. */
   private async resolveOllamaNumCtx(opts: ChatRequestOptions): Promise<number> {
     if (opts.ollama?.numCtx !== undefined) return opts.ollama.numCtx;
     const configured = loadOllamaNumCtx();
