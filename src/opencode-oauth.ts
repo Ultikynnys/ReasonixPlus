@@ -165,7 +165,7 @@ export async function beginOpencodeDeviceFlow(
           }
           throw new Error(`OpenCode sign-in failed: ${token.error ?? "unknown error"}`);
         }
-        throw new Error("OpenCode sign-in timed out — retry from settings");
+        throw new Error("OpenCode sign-in timed out. Retry from settings");
       } catch (err) {
         reject(err instanceof Error ? err : new Error(String(err)));
       }

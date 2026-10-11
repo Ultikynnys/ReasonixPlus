@@ -404,7 +404,7 @@ export const AssistantMsg = memo(function AssistantMsg({
   onApproveConfirm: (id: number) => void;
   onRejectConfirm: (id: number) => void;
   onRuleConfirm: (id: number, scope: "workspace" | "global", prefix: string) => void;
-  onStopTool: () => void;
+  onStopTool: (callId: string) => void;
   pendingConfirms: PendingConfirm[];
   activePlan?: ActivePlan;
   /** Live background-job snapshots (all tabs). A `run_background` shell card
@@ -414,7 +414,7 @@ export const AssistantMsg = memo(function AssistantMsg({
   /** Id of the tab this transcript belongs to — scopes the job lookup, since
    *  per-tab registries restart their job ids at 1 (collision-prone). */
   tabId?: string;
-  onStopJob?: (jobId: number) => void;
+  onStopJob?: (jobId: number, tabId: string) => void;
   isInterventionPending?: boolean;
 }) {
   // A gate that is waiting on the user is owned by the approval strip; the
@@ -607,8 +607,8 @@ export const AssistantMsg = memo(function AssistantMsg({
                 }
                 onStop={
                   jobRunning && job !== undefined && onStopJob
-                    ? () => onStopJob(job.id)
-                    : onStopTool
+                    ? () => onStopJob(job.id, job.tabId)
+                    : () => onStopTool(s.callId)
                 }
               />
             );

@@ -1,5 +1,6 @@
 /** Library reads only DEEPSEEK_API_KEY from env; the CLI bridges config.json → env var. */
 
+import { randomBytes } from "node:crypto";
 import { closeSync, fstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
@@ -467,6 +468,9 @@ export interface ReasonixConfig {
   mimoApiKey?: string;
   /** MiMo OpenAI-compatible endpoint override. Falls back to MIMO_BASE_URL. */
   mimoBaseUrl?: string;
+  /** Stable MiMo sign-in key label — generated once so re-authorizing reuses
+   *  the account's existing key instead of provisioning a new one each time. */
+  mimoKeyName?: string;
   /** Set by the browser OAuth sign-in; auto-refreshed from refreshToken on expiry. */
   openaiOAuth?: OpenAIOAuthCreds;
   /** Google Antigravity OAuth tokens — set by the "Sign in with Google" flow;
@@ -821,6 +825,19 @@ export function loadMimoApiKey(path: string = defaultConfigPath()): string | und
   const cfg = readConfig(path).mimoApiKey;
   if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
   return undefined;
+}
+
+/** Stable MiMo sign-in key label — generated once and persisted, so repeated
+ *  authorizations reuse the account's existing key rather than provisioning a
+ *  new one on every sign-in. */
+export function loadMimoKeyName(path: string = defaultConfigPath()): string {
+  const cfg = readConfig(path);
+  const existing = cfg.mimoKeyName?.trim();
+  if (existing) return existing;
+  const name = `reasonix-${randomBytes(8).toString("hex")}`;
+  cfg.mimoKeyName = name;
+  writeConfig(cfg, path);
+  return name;
 }
 
 /** Escape hatch for Xiaomi MiMo: Xiaomi documents reasoning text occasionally

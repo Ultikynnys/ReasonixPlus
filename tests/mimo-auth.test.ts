@@ -112,8 +112,11 @@ describe("beginMiMoLoginFlow", () => {
       expect(redirectUri).toMatch(/^http:\/\/localhost:\d+\/$/);
 
       const encoded = encryptForFlow(pk as string, { sk: "sk-issued", uid: "acct-9" });
-      const cb = await fetch(`${redirectUri}?u=${encodeURIComponent(encoded)}`);
-      expect(cb.status).toBe(200);
+      const cb = await fetch(`${redirectUri}?u=${encodeURIComponent(encoded)}`, {
+        redirect: "manual",
+      });
+      expect(cb.status).toBe(302);
+      expect(cb.headers.get("location")).toContain("/authorize/callback?status=success");
       const cred = await flow.done;
       expect(cred.apiKey).toBe("sk-issued");
       expect(cred.uid).toBe("acct-9");

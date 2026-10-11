@@ -239,7 +239,7 @@ export async function beginOAuthFlow(
       }),
     exchange: (code, uri) =>
       exchangeOAuthCode({ clientId: openAIClientId(), redirectUri: uri, code, verifier }),
-    timeoutMessage: "OAuth sign-in timed out — retry from settings",
+    timeoutMessage: "OAuth sign-in timed out. Retry from settings",
   });
 }
 

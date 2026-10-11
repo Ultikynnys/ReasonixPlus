@@ -32,6 +32,7 @@ import type { ComposerDraft } from "./composer-draft";
 import { activationHandler } from "./keyboard";
 import { StuckLabel, TimerSpan } from "./live";
 import { Shortcut } from "./shortcut";
+import { StopButton, usePendingStop } from "./stop-button";
 export type { EditMode, ReasoningEffort };
 
 export type QueuedSendItem = string | QueuedSend;
@@ -256,6 +257,9 @@ export function Composer({
     supportedEfforts && supportedEfforts.length > 0
       ? (clampReasoningEffort(supportedEfforts, reasoningEffort) ?? reasoningEffort)
       : reasoningEffort;
+  // The interrupt button throbs while an abort is in flight, clearing once the
+  // turn actually stops.
+  const [interrupting, startInterrupt] = usePendingStop(!busy);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [subagentMenuOpen, setSubagentMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
@@ -924,14 +928,16 @@ export function Composer({
               {voiceError ? <div className="voice-error-tooltip">{voiceError}</div> : null}
             </button>
             {busy ? (
-              <button
-                type="button"
+              <StopButton
                 className="send-btn stop"
-                onClick={onAbort}
+                iconSize={14}
                 title={t("composer.interrupt")}
-              >
-                <I.stop size={14} />
-              </button>
+                busy={interrupting}
+                onClick={() => {
+                  startInterrupt();
+                  onAbort();
+                }}
+              />
             ) : (
               <button
                 type="button"

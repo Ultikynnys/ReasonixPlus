@@ -11,7 +11,6 @@ import {
   randomBytes,
 } from "node:crypto";
 import { type Server, createServer } from "node:http";
-import { errorPage, successPage } from "./oauth-shared.js";
 
 const MIMO_PLATFORM_DEFAULT = "https://platform.xiaomimimo.com";
 /** X25519 SubjectPublicKeyInfo DER prefix (algorithm id + 32-byte key). */
@@ -119,27 +118,31 @@ export async function beginMiMoLoginFlow(
     server.close(() => {});
   };
 
+  // Xiaomi delivers the credential on the browser redirect, but the path and
+  // method are not fixed, so read `u` regardless of either (mirrors the official
+  // XiaomiMiMo/MiMo-Code plugin) and hand the browser back to the platform's own
+  // result page instead of rendering our own HTML.
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (req.method !== "GET" || url.pathname !== "/") {
-      res.writeHead(404).end("Not found");
-      return;
-    }
     const encrypted = url.searchParams.get("u");
     if (!encrypted) {
-      res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-      res.end(errorPage("Missing credential in the Xiaomi callback."));
+      res.writeHead(302, {
+        location: `${platform}/authorize/callback?status=error&message=missing_data`,
+      });
+      res.end();
       settle(() => rejectDone(new Error("MiMo callback carried no credential")));
       return;
     }
     try {
       const credential = decryptMiMoCredential(keyPair.privateKey, encrypted);
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(successPage("Signed in", "Signed in to Xiaomi MiMo"));
+      res.writeHead(302, { location: `${platform}/authorize/callback?status=success` });
+      res.end();
       settle(() => resolveDone(credential));
     } catch (err) {
-      res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-      res.end(errorPage((err as Error).message));
+      res.writeHead(302, {
+        location: `${platform}/authorize/callback?status=error&message=decrypt_failed`,
+      });
+      res.end();
       settle(() => rejectDone(err as Error));
     }
   });
@@ -149,7 +152,10 @@ export async function beginMiMoLoginFlow(
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "localhost", () => {
+    // No host → dual-stack bind, so the browser reaches the server whether it
+    // resolves `localhost` to ::1 or 127.0.0.1. An explicit single host
+    // silently drops the callback on the other stack.
+    server.listen(0, () => {
       server.removeListener("error", reject);
       resolve();
     });
@@ -165,7 +171,7 @@ export async function beginMiMoLoginFlow(
   authorize.searchParams.set("key_name", keyName);
 
   timer = setTimeout(() => {
-    settle(() => rejectDone(new Error("MiMo sign-in timed out — retry from settings")));
+    settle(() => rejectDone(new Error("MiMo sign-in timed out. Retry from settings")));
   }, timeoutMs);
 
   return {

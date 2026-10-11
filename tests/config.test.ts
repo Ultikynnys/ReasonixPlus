@@ -43,6 +43,7 @@ import {
   loadIndexUserConfig,
   loadMaxIterPerTurn,
   loadMimoApiKey,
+  loadMimoKeyName,
   loadModel,
   loadMouseWheelRows,
   loadOllamaGenerationOverrides,
@@ -1853,6 +1854,13 @@ describe("config", () => {
         baseUrl: "https://custom-mimo.example.com/v1",
         apiKey: "mimo-key-123",
       });
+    });
+
+    it("generates a stable MiMo sign-in key name, persisted across calls", () => {
+      writeConfig({}, path);
+      const first = loadMimoKeyName(path);
+      expect(first).toMatch(/^reasonix-[0-9a-f]{16}$/);
+      expect(loadMimoKeyName(path)).toBe(first);
     });
   });
 

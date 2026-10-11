@@ -5,6 +5,7 @@ import { I } from "../icons";
 import type { JobInfo } from "../protocol";
 import { activationHandler, escapeHandler, useEscapeToClose } from "./keyboard";
 import { Shortcut } from "./shortcut";
+import { StopButton, usePendingStop } from "./stop-button";
 
 export function JobsPop({
   open,
@@ -16,7 +17,7 @@ export function JobsPop({
   open: boolean;
   onClose: () => void;
   jobs: JobInfo[];
-  onStop: (jobId: number) => void;
+  onStop: (jobId: number, tabId: string) => void;
   onStopAll: () => void;
 }) {
   useLang();
@@ -30,6 +31,7 @@ export function JobsPop({
 
   const running = useMemo(() => jobs.filter((j) => j.running), [jobs]);
   const exited = useMemo(() => jobs.filter((j) => !j.running), [jobs]);
+  const [stoppingAll, startStopAll] = usePendingStop(running.length === 0);
 
   if (!open) return null;
 
@@ -53,7 +55,17 @@ export function JobsPop({
           </div>
           <span className="grow" />
           {running.length > 0 ? (
-            <StopButton onClick={onStopAll} label={t("jobs.stopAll")} title={t("jobs.stopAllTip")} />
+            <StopButton
+              className="btn stop sm"
+              iconSize={10}
+              label={t("jobs.stopAll")}
+              title={t("jobs.stopAllTip")}
+              busy={stoppingAll}
+              onClick={() => {
+                startStopAll();
+                onStopAll();
+              }}
+            />
           ) : null}
         </div>
 
@@ -96,30 +108,6 @@ export function JobsPop({
   );
 }
 
-function StopButton({
-  onClick,
-  label,
-  title,
-}: {
-  onClick: () => void;
-  label: string;
-  title: string;
-}) {
-  return (
-    <button
-      type="button"
-      className="btn stop sm"
-      title={title}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-    >
-      <I.stop size={10} /> {label}
-    </button>
-  );
-}
-
 function tailPreview(s: string, n: number): string {
   const lines = s.split("\n").filter((line) => line.trim().length > 0);
   return lines.slice(-n).join("\n");
@@ -141,9 +129,11 @@ function JobRow({
 }: {
   job: JobInfo;
   tick: number;
-  onStop: (jobId: number) => void;
+  onStop: (jobId: number, tabId: string) => void;
 }) {
   const [exp, setExp] = useState(false);
+  // The Close/Stop button throbs until the job actually leaves `running`.
+  const [closing, startClose] = usePendingStop(!job.running);
   const elapsedMs = (job.running ? Date.now() : job.startedAt + 0) - job.startedAt;
   const liveMs = job.running ? Date.now() - job.startedAt : elapsedMs;
   // Raw job output is a captured TTY stream — strip ANSI escapes / control
@@ -184,9 +174,15 @@ function JobRow({
         <div className="jr-act">
           {job.running ? (
             <StopButton
-              onClick={() => onStop(job.id)}
+              className="btn stop sm"
+              iconSize={10}
               label={job.persistent ? t("jobs.close") : t("jobs.stop")}
               title={job.persistent ? t("jobs.closeOne") : t("jobs.stopOne")}
+              busy={closing}
+              onClick={() => {
+                startClose();
+                onStop(job.id, job.tabId);
+              }}
             />
           ) : (
             <span className="jr-exit" title={`exit ${job.exitCode ?? "-"}`}>

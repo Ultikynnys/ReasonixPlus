@@ -474,7 +474,7 @@ export async function beginAntigravityOAuthFlow(
         codeChallenge,
       }),
     exchange: (code, uri) => exchangeAntigravityCode({ redirectUri: uri, code, codeVerifier }),
-    timeoutMessage: "OAuth sign-in timed out — retry from settings",
+    timeoutMessage: "OAuth sign-in timed out. Retry from settings",
   });
 }
 

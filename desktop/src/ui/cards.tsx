@@ -16,6 +16,7 @@ import { CardHead } from "./card-head";
 import { FileMenu } from "./file-menu";
 import { formatDuration, tokenLabel } from "./format";
 import { Shortcut } from "./shortcut";
+import { StopButton, usePendingStop } from "./stop-button";
 
 type Tone = "default" | "success" | "warning" | "danger" | "accent" | "violet";
 
@@ -429,6 +430,8 @@ export function ShellCard({
   onStop?: () => void;
 }) {
   useLang();
+  // The Stop button throbs until the command actually leaves `running`.
+  const [stopping, startStop] = usePendingStop(state !== "running");
   const tone: Tone = state === "failed" ? "danger" : state === "done" ? "success" : "warning";
   const runningLabel = background
     ? persistent
@@ -526,9 +529,15 @@ export function ShellCard({
               {runningLabel}: {t("cards.shellStopHint")}
             </div>
             <div className="actions">
-              <button type="button" className="btn stop" onClick={onStop}>
-                {t("cards.shellStop")}
-              </button>
+              <StopButton
+                label={t("cards.shellStop")}
+                title={t("cards.shellStop")}
+                busy={stopping}
+                onClick={() => {
+                  startStop();
+                  onStop?.();
+                }}
+              />
             </div>
           </div>
         ) : null}

@@ -13,6 +13,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  abortableWait,
+  cancelToolFromDesktop,
   raceLoopStep,
   runPriorityManualCompaction,
   waitForCompactionIdle,
@@ -286,5 +288,52 @@ describe("desktop runTurn abort race (Send now during a non-interruptible fold)"
         },
       }),
     ).rejects.toThrow("fold failed");
+  });
+});
+
+describe("desktop cancel_tool routing", () => {
+  it("targets the clicked call when the card supplies its callId", () => {
+    const calls: string[] = [];
+    const loop = {
+      cancelToolCall: (callId: string) => calls.push(`call:${callId}`),
+      cancelCurrentTool: () => calls.push("current"),
+    };
+    cancelToolFromDesktop(loop, "call_a", "Stop");
+    expect(calls).toEqual(["call:call_a"]);
+  });
+
+  it("falls back to the most recent tool when no callId is supplied", () => {
+    const calls: string[] = [];
+    const loop = {
+      cancelToolCall: (callId: string) => calls.push(`call:${callId}`),
+      cancelCurrentTool: () => calls.push("current"),
+    };
+    cancelToolFromDesktop(loop, undefined, "Stop");
+    expect(calls).toEqual(["current"]);
+  });
+
+  it("is a no-op when the tab has no runtime loop", () => {
+    expect(() => cancelToolFromDesktop(undefined, "call_a", "Stop")).not.toThrow();
+    expect(() => cancelToolFromDesktop(null, "call_a", "Stop")).not.toThrow();
+  });
+});
+
+describe("abortableWait (MCP-bridge park is cancellable)", () => {
+  it("resolves false when the signal aborts before the promise settles", async () => {
+    const ctrl = new AbortController();
+    const result = abortableWait(new Promise<void>(() => {}), ctrl.signal);
+    ctrl.abort();
+    await expect(result).resolves.toBe(false);
+  });
+
+  it("resolves true when the promise settles first", async () => {
+    const ctrl = new AbortController();
+    await expect(abortableWait(Promise.resolve(), ctrl.signal)).resolves.toBe(true);
+  });
+
+  it("resolves false immediately when the signal is already aborted", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    await expect(abortableWait(new Promise<void>(() => {}), ctrl.signal)).resolves.toBe(false);
   });
 });

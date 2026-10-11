@@ -156,6 +156,7 @@ import {
   loadMaxOutputTokens,
   loadMetasoApiKey,
   loadMimoApiKey,
+  loadMimoKeyName,
   loadModel,
   loadOllamaApiKey,
   loadOllamaEndpoint,
@@ -403,21 +404,21 @@ export function desktopUserAbortLoopOptions(): LoopAbortOptions | undefined {
   return undefined;
 }
 
-/** Race the generator's next event against the aborter — resolves `null` on
- * abort even while the loop is suspended (the fold is non-interruptible).
- * Exported for tests. */
-export function raceLoopStep(
-  gen: AsyncGenerator<LoopEvent>,
+/** The one place that races a promise against an abort signal: resolves
+ *  `{ aborted }` plus the settled `value` when it won. Frees a wait with no
+ *  interrupt of its own (the fold, the MCP bridge) the moment Stop fires. */
+function raceAbort<T>(
+  p: Promise<T>,
   signal: AbortSignal | undefined,
-): Promise<IteratorResult<LoopEvent> | null> {
-  if (signal?.aborted) return Promise.resolve(null);
+): Promise<{ aborted: true } | { aborted: false; value: T }> {
+  if (signal?.aborted) return Promise.resolve({ aborted: true });
   return new Promise((resolve, reject) => {
-    const onAbort = (): void => resolve(null);
+    const onAbort = (): void => resolve({ aborted: true });
     signal?.addEventListener("abort", onAbort, { once: true });
-    gen.next().then(
-      (r) => {
+    p.then(
+      (value) => {
         signal?.removeEventListener("abort", onAbort);
-        resolve(r);
+        resolve({ aborted: false, value });
       },
       (err) => {
         signal?.removeEventListener("abort", onAbort);
@@ -425,6 +426,28 @@ export function raceLoopStep(
       },
     );
   });
+}
+
+/** Race the generator's next event against the aborter — resolves `null` on
+ * abort even while the loop is suspended (the fold is non-interruptible).
+ * Exported for tests. */
+export function raceLoopStep(
+  gen: AsyncGenerator<LoopEvent>,
+  signal: AbortSignal | undefined,
+): Promise<IteratorResult<LoopEvent> | null> {
+  return raceAbort(gen.next(), signal).then((r) => (r.aborted ? null : r.value));
+}
+
+/** Await a promise but unblock the instant `signal` fires: `true` when the
+ *  promise settled, `false` when aborted. Exported for tests. */
+export function abortableWait(
+  p: Promise<unknown>,
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
+  return raceAbort(p, signal).then(
+    (r) => !r.aborted,
+    () => true,
+  );
 }
 
 // Wait until any in-flight compaction fold has settled. A turn cancelled
@@ -465,6 +488,40 @@ export async function runPriorityManualCompaction(options: {
   if (sawExistingCompaction) return "existing-compaction";
   await options.compact();
   return "compacted";
+}
+
+/** Route a desktop Stop to the exact tool card that supplied its callId
+ *  (parallel chunks run several at once), else the most recent tool. Exported
+ *  for tests. */
+export function cancelToolFromDesktop(
+  loop:
+    | {
+        cancelToolCall: (callId: string, reason: string) => void;
+        cancelCurrentTool: (reason: string) => void;
+      }
+    | null
+    | undefined,
+  callId: string | undefined,
+  reason: string,
+): void {
+  if (!loop) return;
+  if (callId) loop.cancelToolCall(callId, reason);
+  else loop.cancelCurrentTool(reason);
+}
+
+/** Resolve the registry that owns `jobId`. With a `tabId`, only that tab is
+ *  consulted: per-tab ids restart at 1, so a global first-match can hit a
+ *  different tab's job and no-op. Exported for tests. */
+export function pickJobOwner<T>(
+  owners: ReadonlyArray<{ tabId: string; jobIds: ReadonlySet<number>; owner: T }>,
+  jobId: number,
+  tabId: string | undefined,
+): T | undefined {
+  for (const o of owners) {
+    if (tabId !== undefined && o.tabId !== tabId) continue;
+    if (o.jobIds.has(jobId)) return o.owner;
+  }
+  return undefined;
 }
 
 type InMessage = import("@reasonix/core-utils").OutgoingCommand;
@@ -1346,6 +1403,8 @@ function collectWebSearchApiKeyPrefixes(): {
   zai?: string;
   opencode?: string;
   typesafe?: string;
+  mimo?: string;
+  openai?: string;
 } {
   return {
     metaso: maskApiKey(loadMetasoApiKey()),
@@ -1357,6 +1416,8 @@ function collectWebSearchApiKeyPrefixes(): {
     zai: maskApiKey(loadZaiApiKey()),
     opencode: maskApiKey(loadOpencodeApiKey()),
     typesafe: maskApiKey(loadTypesafeApiKey()),
+    mimo: maskApiKey(loadMimoApiKey()),
+    openai: maskApiKey(process.env.OPENAI_API_KEY ?? readConfig().openaiApiKey),
   };
 }
 
@@ -5181,8 +5242,23 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   ): Promise<void> {
     // A pending tab has no workspace/session/runtime — there is nothing to run.
     if (tab.pending || !tab.rootDir) return;
+    // The MCP bridge (a slow server initialize) can park the turn before its
+    // own fold-idle wait. Lend the turn aborter to that wait so a desktop Stop
+    // releases it instead of hanging, then null it again before the turn's real
+    // aborter is minted below — the early returns in between assume it is null.
     if (tab.mcpBridgePromise) {
-      await tab.mcpBridgePromise.catch(() => undefined);
+      const bridgeAborter = new AbortController();
+      tab.aborter = bridgeAborter;
+      const bridged = await abortableWait(
+        tab.mcpBridgePromise.catch(() => undefined),
+        bridgeAborter.signal,
+      );
+      tab.aborter = null;
+      if (!bridged) {
+        tab.switching = false;
+        emit({ type: "$turn_complete", outcome: "aborted" }, tab.id);
+        return;
+      }
     }
     // A manual compact is a user priority command, not ordinary queued work.
     // Never let a queued send claim the turn until that fold has settled.
@@ -5856,16 +5932,18 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     emit({ type: "$jobs", items });
   }
 
-  async function stopJob(jobId: number): Promise<boolean> {
-    for (const t of tabs.values()) {
-      const reg = t.toolset?.jobs;
-      if (!reg) continue;
-      const hit = reg.list().find((j) => j.id === jobId);
-      if (!hit) continue;
-      await reg.stop(jobId);
-      return true;
-    }
-    return false;
+  async function stopJob(jobId: number, tabId?: string): Promise<boolean> {
+    const reg = pickJobOwner(
+      [...tabs.values()].flatMap((t) => {
+        const j = t.toolset?.jobs;
+        return j ? [{ tabId: t.id, jobIds: new Set(j.list().map((r) => r.id)), owner: j }] : [];
+      }),
+      jobId,
+      tabId,
+    );
+    if (!reg) return false;
+    await reg.stop(jobId);
+    return true;
   }
 
   async function stopAllJobs(): Promise<void> {
@@ -6727,7 +6805,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "jobs_stop") {
-      void stopJob(msg.jobId).finally(() => emitJobs());
+      void stopJob(msg.jobId, msg.tabId).finally(() => emitJobs());
       return;
     }
     if (msg.cmd === "jobs_stop_all") {
@@ -6797,7 +6875,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "cancel_tool") {
       emitTabDiagnostic(tab, "rpc.command.cancel-tool", undefined, "info");
-      tab.runtime?.loop.cancelCurrentTool("User stopped the running command (desktop Stop button)");
+      cancelToolFromDesktop(
+        tab.runtime?.loop,
+        msg.callId,
+        "User stopped the running command (desktop Stop button)",
+      );
       return;
     }
     if (msg.cmd === "tab_close") {
@@ -7779,7 +7861,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       mimoOAuthGen++;
       if (pendingMiMoOAuth) pendingMiMoOAuth.cancel();
       const gen = mimoOAuthGen;
-      void beginMiMoLoginFlow()
+      void beginMiMoLoginFlow({ keyName: loadMimoKeyName() })
         .then((flow) => {
           pendingMiMoOAuth = flow;
           emit({ type: "mimo_oauth_begin_result", url: flow.url }, tab.id);
@@ -8102,6 +8184,24 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             cfg.mimoBaseUrl = msg.mimoBaseUrl?.trim() || undefined;
           }
           writeConfig(cfg);
+          // The endpoint + credential are snapshotted into the runtime at build
+          // time, and a send is refused while it is null, so rebuild now-usable
+          // tabs here (mirrors the sign-in flows) or a saved key/URL looks inert.
+          if (
+            msg.mimoApiKey !== undefined ||
+            msg.mimoBaseUrl !== undefined ||
+            msg.opencodeApiKey !== undefined ||
+            msg.opencodeBaseUrl !== undefined ||
+            msg.ollamaApiKey !== undefined ||
+            msg.zaiApiKey !== undefined
+          ) {
+            for (const t of tabs.values()) {
+              if (t.toolset) {
+                t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
+                if (t.runtime) emit({ type: "$ready" }, t.id);
+              }
+            }
+          }
           if (msg.opencodeApiKey !== undefined) {
             // Adding/removing a key flips the catalog between the keyless free
             // tier and the paid Zen + Go catalog.

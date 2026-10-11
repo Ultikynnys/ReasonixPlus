@@ -951,6 +951,8 @@ export interface SettingsEvent {
     zai?: string;
     opencode?: string;
     typesafe?: string;
+    mimo?: string;
+    openai?: string;
   };
   opencodeBaseUrl?: string;
   /** Xiaomi MiMo OpenAI-compatible endpoint override. */
@@ -1429,7 +1431,9 @@ export type OutgoingCommand = { tabId?: string } & (
       clientId?: string;
     }
   | { cmd: "abort" }
-  | { cmd: "cancel_tool" }
+  /** Stops one running tool call. `callId` targets exactly that card; when
+   *  omitted the backend falls back to the most recently started tool. */
+  | { cmd: "cancel_tool"; callId?: string }
   | {
       cmd: "confirm_response";
       id: number;
@@ -1552,7 +1556,9 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "skills_get" }
   | { cmd: "skill_run"; name: string; args?: string }
   | { cmd: "jobs_list" }
-  | { cmd: "jobs_stop"; jobId: number }
+  /** Stops one background job. `tabId` names the owning tab: per-tab registries
+   *  restart job ids at 1, so `jobId` alone can match a different tab's job. */
+  | { cmd: "jobs_stop"; jobId: number; tabId?: string }
   | { cmd: "jobs_stop_all" }
   | { cmd: "compact_history" }
   /** Request the full request context as editable plaintext ($context_raw reply). */

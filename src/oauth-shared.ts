@@ -148,7 +148,7 @@ export async function beginLocalhostOAuthFlow<TCreds>(
 ): Promise<LocalhostOAuthFlow<TCreds>> {
   const state = randomOAuthState();
   const timeoutMs = opts.timeoutMs ?? OAUTH_FLOW_TIMEOUT_MS;
-  const timeoutMessage = opts.timeoutMessage ?? "OAuth sign-in timed out — retry from settings";
+  const timeoutMessage = opts.timeoutMessage ?? "OAuth sign-in timed out. Retry from settings";
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let resolveDone: (creds: TCreds) => void = () => {};

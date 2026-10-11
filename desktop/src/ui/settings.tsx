@@ -75,6 +75,12 @@ function keyStatusText(prefix: string | undefined): string {
   return prefix ? t("settings.apiKeySet", { prefix }) : t("settings.apiKeyNotSet");
 }
 
+/** A provider-key hint: the shared status line, optionally followed by a signup
+ *  link or description, so every provider key row reads the same way. */
+function keyStatusHint(prefix: string | undefined, trailing?: ReactNode): ReactNode {
+  return trailing ? <>{keyStatusText(prefix)} {trailing}</> : keyStatusText(prefix);
+}
+
 export type PageId = "general" | "models" | "mcp" | "changelog" | "shortcuts";
 
 const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
@@ -1313,10 +1319,13 @@ function SettingsEntry({
   );
 }
 
-function ApiKeyRow({ label, hint, placeholder, onSave }: {
+function ApiKeyRow({ label, hint, placeholder, prefix, onSave }: {
   label: string;
-  hint: ReactNode;
+  hint?: ReactNode;
   placeholder?: string;
+  /** Masked saved key: renders the shared status line and, when present, the
+   *  input placeholder, so the box always reflects the stored key. */
+  prefix?: string;
   onSave: (key: string) => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -1324,9 +1333,9 @@ function ApiKeyRow({ label, hint, placeholder, onSave }: {
     <div className="setting-row setting-row-entry">
       <div className="l">
         <div className="n">{label}</div>
-        <div className="h">{hint}</div>
+        <div className="h">{keyStatusHint(prefix, hint)}</div>
       </div>
-      <SettingsEntry secret value={draft} onChange={setDraft} placeholder={placeholder}
+      <SettingsEntry secret value={draft} onChange={setDraft} placeholder={prefix ?? placeholder}
         onSave={() => {
           onSave(draft.trim());
           setDraft("");
@@ -1373,22 +1382,21 @@ export function ProviderApiKeyRow({
   return (
     <ApiKeyRow
       label={label}
-      placeholder={prefix ?? ""}
+      prefix={prefix}
       onSave={(key) => onSave({ [patchKey]: key || null } as SettingsPatch)}
-      hint={<>
-          {keyStatusText(prefix)}{" "}
-          <a
-            href={signupUrl}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(e) => {
-              e.preventDefault();
-              void openUrl(signupUrl).catch(() => undefined);
-            }}
-          >
-            {t("settings.webSearchApiKeySignup")}
-          </a>
-      </>}
+      hint={
+        <a
+          href={signupUrl}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => {
+            e.preventDefault();
+            void openUrl(signupUrl).catch(() => undefined);
+          }}
+        >
+          {t("settings.webSearchApiKeySignup")}
+        </a>
+      }
     />
   );
 }
@@ -1408,7 +1416,7 @@ function DeepSeekSettings({
     <>
       <ApiKeyRow
         label={t("settings.apiKey")}
-        hint={keyStatusText(apiKeyPrefix)}
+        prefix={apiKeyPrefix}
         placeholder="sk-…"
         onSave={onSaveApiKey}
       />
@@ -1432,6 +1440,7 @@ export function OpenAISection({
   onBegin,
   onCancel,
   onSignOut,
+  apiKeyPrefix,
   onSaveApiKey,
 }: {
   signedIn: boolean;
@@ -1442,6 +1451,7 @@ export function OpenAISection({
   onBegin: () => void;
   onCancel: () => void;
   onSignOut: () => void;
+  apiKeyPrefix?: string;
   onSaveApiKey: (key: string) => void;
 }) {
   return (
@@ -1490,6 +1500,7 @@ export function OpenAISection({
       ) : null}
       <ApiKeyRow
         label={t("settings.openaiApiKey")}
+        prefix={apiKeyPrefix}
         hint={t("settings.openaiApiKeyHint")}
         placeholder="sk-…"
         onSave={onSaveApiKey}
@@ -2170,6 +2181,7 @@ function PageModels({
             onBegin={onOAuthBegin}
             onCancel={onOAuthCancel}
             onSignOut={onOAuthSignOut}
+            apiKeyPrefix={settings.webSearchApiKeys?.openai}
             onSaveApiKey={onSaveOpenAIApiKey}
           />
         }
@@ -2198,6 +2210,7 @@ function PageModels({
           <>
             <ApiKeyRow
               label={t("settings.mimoApiKey")}
+              prefix={settings.webSearchApiKeys?.mimo}
               hint={t("settings.mimoApiKeyHint")}
               placeholder="MiMo API key"
               onSave={(key) => onSave({ mimoApiKey: key || null })}

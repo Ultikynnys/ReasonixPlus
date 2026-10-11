@@ -1161,12 +1161,12 @@ const AssistantRow = memo(function AssistantRow({
   onApproveConfirm: (id: number) => void;
   onRejectConfirm: (id: number) => void;
   onRuleConfirm: (id: number, scope: "workspace" | "global", prefix: string) => void;
-  onStopTool: () => void;
+  onStopTool: (callId: string) => void;
   /** Live background-job snapshots — background shell cards read their job's
    *  status from here so a running job never renders as finished. */
   jobs?: JobInfo[];
   tabId?: string;
-  onStopJob?: (jobId: number) => void;
+  onStopJob?: (jobId: number, tabId: string) => void;
   isInterventionPending?: boolean;
 }) {
   const stats = !m.pending ? countFileStats(m.segments) : null;
@@ -3502,12 +3502,19 @@ function TabRuntime({
     [resolveConfirm],
   );
   /** Stable identity — passed to memoized AssistantMsg; an inline arrow would
-   *  defeat the memo and re-render the whole transcript on every frame. */
-  const onStopTool = useCallback(() => sendRpc({ cmd: "cancel_tool" }), [sendRpc]);
+   *  defeat the memo and re-render the whole transcript on every frame. The
+   *  card's own callId rides along so parallel tools each stop independently. */
+  const onStopTool = useCallback(
+    (callId: string) => sendRpc({ cmd: "cancel_tool", callId }),
+    [sendRpc],
+  );
   /** Stop a background job from its transcript shell card — distinct from
    *  `cancel_tool` because the tool call has already returned; the process is
    *  still alive and must be killed via `jobs_stop`. Stable for memoization. */
-  const onStopJob = useCallback((jobId: number) => sendRpc({ cmd: "jobs_stop", jobId }), [sendRpc]);
+  const onStopJob = useCallback(
+    (jobId: number, tabId: string) => sendRpc({ cmd: "jobs_stop", jobId, tabId }),
+    [sendRpc],
+  );
   const resolvePathAccess = useCallback(
     (id: number, response: ConfirmationChoice) => {
       sendRpc({ cmd: "confirm_response", id, response });
@@ -4441,7 +4448,7 @@ function TabRuntime({
           open={jobsOpen}
           onClose={() => setJobsOpen(false)}
           jobs={state.jobs}
-          onStop={(jobId) => sendRpc({ cmd: "jobs_stop", jobId })}
+          onStop={onStopJob}
           onStopAll={() => sendRpc({ cmd: "jobs_stop_all" })}
         />
 

@@ -10437,3 +10437,24 @@ html[data-platform="macos"] .splash {
   font-weight: 600;
   color: var(--accent);
 }
+
+/* A cancel button whose stop is in flight keeps its filled look — the throbber
+   is the cue, not a greyed-out control. */
+.btn.stop:disabled,
+.send-btn.stop:disabled {
+  background: var(--accent);
+  color: oklch(99% 0 0);
+  opacity: 0.8;
+  cursor: progress;
+}
+
+/* Throbber shown on a stop button while its cancel is in flight. Reads light on
+   the accent fill via currentColor. */
+.stop-throbber {
+  width: 11px;
+  height: 11px;
+  border-width: 2px;
+  border-color: color-mix(in oklch, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  flex-shrink: 0;
+}
