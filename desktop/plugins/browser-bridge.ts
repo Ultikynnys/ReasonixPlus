@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
@@ -24,6 +25,39 @@ import { WebSocketServer, type WebSocket } from "ws";
  * untouched.
  */
 const BRIDGE_PORT = 1421;
+
+/** The browser-dev daemon gets its own config file so a dev/Playwright instance
+ *  can never rewrite the real app's persisted workspace or open tabs. It seeds
+ *  key/model prefs once from the real config, but forces the checkout as the
+ *  workspace and drops the real tabs. */
+function devConfigPath(repoRoot: string): string {
+  const dir = resolve(repoRoot, ".reasonix", "browser-dev");
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
+  const target = resolve(dir, "config.json");
+  if (!existsSync(target)) {
+    const seeded: Record<string, unknown> = {};
+    const real = resolve(homedir(), ".reasonix", "config.json");
+    if (existsSync(real)) {
+      try {
+        Object.assign(seeded, JSON.parse(readFileSync(real, "utf8")) as Record<string, unknown>);
+      } catch {
+        /* seed is best-effort */
+      }
+    }
+    seeded.workspaceDir = repoRoot;
+    seeded.desktopOpenTabs = undefined;
+    try {
+      writeFileSync(target, `${JSON.stringify(seeded, null, 2)}\n`);
+    } catch {
+      /* if the seed write fails, the daemon just starts from an empty config */
+    }
+  }
+  return target;
+}
 
 export function browserBridge(): Plugin {
   return {
@@ -64,6 +98,13 @@ export function browserBridge(): Plugin {
           cwd: repoRoot,
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
+          // Isolate the dev instance: its own config file plus the browser-dev
+          // marker, so it opens on the checkout and never mutates real state.
+          env: {
+            ...process.env,
+            REASONIX_BROWSER: "1",
+            REASONIX_CONFIG: devConfigPath(repoRoot),
+          },
         });
         console.log(`[browser-bridge] daemon spawned (pid ${child.pid ?? "?"})`);
 

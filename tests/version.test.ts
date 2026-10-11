@@ -46,6 +46,16 @@ describe("reasonixDefaultWorkspaceDir", () => {
     const dir = reasonixDefaultWorkspaceDir();
     expect(existsSync(dir)).toBe(true);
   });
+
+  it("returns the install dir itself in browser dev mode, never a local subfolder", () => {
+    const previous = process.env.REASONIX_BROWSER;
+    process.env.REASONIX_BROWSER = "1";
+    try {
+      expect(reasonixDefaultWorkspaceDir()).toBe(reasonixInstallDir());
+    } finally {
+      process.env.REASONIX_BROWSER = previous ?? "";
+    }
+  });
 });
 
 describe("compareVersions", () => {

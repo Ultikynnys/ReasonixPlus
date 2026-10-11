@@ -47,6 +47,10 @@ export function reasonixInstallDir(): string {
 }
 
 export function reasonixDefaultWorkspaceDir(): string {
+  // The browser dev bridge runs the daemon on the repo checkout, where the
+  // install dir IS the working tree: default to the repo, never a separate
+  // `<installDir>/local` that would "infect" the real app's workspace.
+  if (process.env.REASONIX_BROWSER === "1") return reasonixInstallDir();
   const dir = join(reasonixInstallDir(), "local");
   try {
     mkdirSync(dir, { recursive: true });
