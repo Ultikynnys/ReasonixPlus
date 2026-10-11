@@ -144,7 +144,7 @@ export class McpClient {
   async callTool(
     name: string,
     args?: Record<string, unknown>,
-    opts: { onProgress?: McpProgressHandler; signal?: AbortSignal } = {},
+    opts: { onProgress?: McpProgressHandler; signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<CallToolResult> {
     this.assertInitialized();
     const params: CallToolParams = { name, arguments: args ?? {} };
@@ -155,7 +155,7 @@ export class McpClient {
       params._meta = { progressToken: token };
     }
     try {
-      return await this.request<CallToolResult>("tools/call", params, opts.signal);
+      return await this.request<CallToolResult>("tools/call", params, opts.signal, opts.timeoutMs);
     } finally {
       if (token !== undefined) this.progressHandlers.delete(token);
     }
@@ -207,7 +207,15 @@ export class McpClient {
     if (!this.initialized) throw new Error("MCP client not initialized: call initialize() first");
   }
 
-  private async request<R>(method: string, params: unknown, signal?: AbortSignal): Promise<R> {
+  private async request<R>(
+    method: string,
+    params: unknown,
+    signal?: AbortSignal,
+    timeoutMs = this.requestTimeoutMs,
+  ): Promise<R> {
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) {
+      throw new Error("MCP timeoutMs must be an integer between 1 and 2147483647");
+    }
     const id = this.nextId++;
     const frame: JsonRpcRequest = { jsonrpc: JSONRPC_VERSION, id, method, params };
     let abortHandler: (() => void) | null = null;
@@ -215,10 +223,8 @@ export class McpClient {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         if (abortHandler && signal) signal.removeEventListener("abort", abortHandler);
-        reject(
-          new Error(`MCP request ${method} (id=${id}) timed out after ${this.requestTimeoutMs}ms`),
-        );
-      }, this.requestTimeoutMs);
+        reject(new Error(`MCP request ${method} (id=${id}) timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,

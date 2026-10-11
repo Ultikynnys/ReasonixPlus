@@ -1,7 +1,7 @@
 /** MCP client + bridge — in-process fake transport answering initialize / tools/list / tools/call. */
 
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { McpClient } from "../src/mcp/client.js";
 import { bridgeMcpTools, flattenMcpResult } from "../src/mcp/registry.js";
 import { type McpTransport, formatServerExitReason } from "../src/mcp/stdio.js";
@@ -307,6 +307,112 @@ describe("McpClient: tools/list + tools/call", () => {
     await client.initialize();
     await expect(client.callTool("echo", { msg: "x" })).rejects.toThrow(/MCP -32001/);
     await client.close();
+  });
+});
+
+describe("bridgeMcpTools timeout controls", () => {
+  it("exposes an optional deadline and strips it before hooks and upstream dispatch", async () => {
+    const received: JsonRpcRequest[] = [];
+    const tool: McpTool = {
+      name: "import",
+      inputSchema: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+        additionalProperties: false,
+      },
+    };
+    const client = new McpClient({ transport: new FakeMcpTransport({ tools: [tool], received }) });
+    await client.initialize();
+    try {
+      const call = vi.spyOn(client, "callTool");
+      const transformArgs = vi.fn((_name, args) => ({ ...args, hydrated: true }));
+      const beforeCall = vi.fn(async () => null);
+      const { registry } = await bridgeMcpTools(client, { transformArgs, beforeCall });
+      const schema = registry.specs()[0].function.parameters;
+      expect(schema.properties?.timeoutSec).toMatchObject({ type: "integer", minimum: 1 });
+      expect(schema.required).toEqual(["path"]);
+      expect(tool.inputSchema.properties).not.toHaveProperty("timeoutSec");
+      const args = { path: "model.glb", timeoutSec: 600 };
+      await registry.dispatch("import", JSON.stringify(args));
+      expect(transformArgs).toHaveBeenCalledWith(
+        "import",
+        { path: "model.glb" },
+        expect.any(Object),
+      );
+      expect(beforeCall).toHaveBeenCalledWith(
+        "import",
+        { path: "model.glb", hydrated: true },
+        expect.any(Object),
+      );
+      expect(call).toHaveBeenLastCalledWith(
+        "import",
+        { path: "model.glb", hydrated: true },
+        expect.objectContaining({ timeoutMs: 600_000 }),
+      );
+      expect(received.find((req) => req.method === "tools/call")?.params).toMatchObject({
+        arguments: { path: "model.glb", hydrated: true },
+      });
+      expect(args.timeoutSec).toBe(600);
+      await registry.dispatch("import", JSON.stringify({ path: "next.glb" }));
+      expect(call).toHaveBeenLastCalledWith(
+        "import",
+        { path: "next.glb", hydrated: true },
+        expect.objectContaining({ timeoutMs: undefined }),
+      );
+      for (const timeoutSec of [0, -1, 1.5, "600", null, 2_147_484]) {
+        const count = call.mock.calls.length;
+        const result = await registry.dispatch(
+          "import",
+          JSON.stringify({ path: "bad", timeoutSec }),
+        );
+        expect(result).toMatch(/error|invalid|integer|minimum|maximum/i);
+        expect(call).toHaveBeenCalledTimes(count);
+      }
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("preserves upstream timeout names and picks a deterministic collision-free control", async () => {
+    const client = new McpClient({
+      transport: new FakeMcpTransport({
+        tools: [
+          {
+            name: "wait",
+            inputSchema: {
+              type: "object",
+              properties: { timeoutSec: { type: "integer" }, _mcpTimeoutSec: { type: "integer" } },
+            },
+          },
+        ],
+      }),
+    });
+    await client.initialize();
+    try {
+      const call = vi.spyOn(client, "callTool");
+      const first = await bridgeMcpTools(client);
+      const second = await bridgeMcpTools(client);
+      expect(first.registry.specs()).toEqual(second.registry.specs());
+      expect(first.registry.specs()[0].function.parameters.properties).toHaveProperty(
+        "__mcpTimeoutSec",
+      );
+      await first.registry.dispatch(
+        "wait",
+        JSON.stringify({
+          timeoutSec: 5,
+          _mcpTimeoutSec: 7,
+          __mcpTimeoutSec: 600,
+        }),
+      );
+      expect(call).toHaveBeenCalledWith(
+        "wait",
+        { timeoutSec: 5, _mcpTimeoutSec: 7 },
+        expect.objectContaining({ timeoutMs: 600_000 }),
+      );
+    } finally {
+      await client.close();
+    }
   });
 });
 

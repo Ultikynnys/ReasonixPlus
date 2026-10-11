@@ -156,6 +156,13 @@ export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string 
     registeredName = `${registeredName.slice(0, WIRE_TOOL_NAME_MAX - suffix.length - 1)}-${suffix}`;
   }
   env.bareNames?.set(registeredName, stableTool.name);
+  const schema = stableTool.inputSchema as JSONSchema;
+  const properties = schema.properties ?? {};
+  let timeoutKey = "timeoutSec";
+  if (Object.hasOwn(properties, timeoutKey)) {
+    timeoutKey = "_mcpTimeoutSec";
+    while (Object.hasOwn(properties, timeoutKey)) timeoutKey = `_${timeoutKey}`;
+  }
   env.registry.register({
     name: registeredName,
     description: withDescriptionSuffix(
@@ -163,9 +170,33 @@ export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string 
       env.descriptionSuffix,
       stableTool.name,
     ),
-    parameters: stableTool.inputSchema as JSONSchema,
+    parameters: {
+      ...schema,
+      properties: {
+        ...properties,
+        [timeoutKey]: {
+          type: "integer",
+          minimum: 1,
+          maximum: 2_147_483,
+          description:
+            "Override the MCP call deadline in seconds; omitted uses the client default (normally 60s). Host-only, not sent to the server.",
+        },
+      },
+    },
     readOnly: env.readOnlyTool?.(stableTool.name) || undefined,
     fn: async (args: Record<string, unknown>, ctx) => {
+      const timeoutSec = args[timeoutKey];
+      if (
+        timeoutSec !== undefined &&
+        (typeof timeoutSec !== "number" ||
+          !Number.isInteger(timeoutSec) ||
+          timeoutSec < 1 ||
+          timeoutSec > 2_147_483)
+      ) {
+        throw new Error(`MCP ${timeoutKey} must be an integer between 1 and 2147483`);
+      }
+      const upstreamArgs = { ...args };
+      delete upstreamArgs[timeoutKey];
       if (env.ready) {
         await waitForReady(
           env.ready,
@@ -174,10 +205,10 @@ export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string 
           ctx?.signal,
         );
       }
-      let params = args;
+      let params = upstreamArgs;
       if (env.transformArgs) {
         try {
-          const next = await env.transformArgs(stableTool.name, args, ctx);
+          const next = await env.transformArgs(stableTool.name, upstreamArgs, ctx);
           if (next) params = next;
         } catch (err) {
           return JSON.stringify({ error: messageOf(err) });
@@ -195,6 +226,7 @@ export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string 
             ? (info) => env.onProgress!({ toolName: registeredName, ...info })
             : undefined,
           signal: ctx?.signal,
+          timeoutMs: timeoutSec === undefined ? undefined : (timeoutSec as number) * 1000,
         });
         const durationMs = performance.now() - t0;
         env.tracker?.record(durationMs);

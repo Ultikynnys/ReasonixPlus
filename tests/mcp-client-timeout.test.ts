@@ -47,6 +47,110 @@ class SilentServerTransport extends StubTransport {
   async send(_msg: JsonRpcMessage): Promise<void> {}
 }
 
+class ToolTimeoutTransport extends StubTransport {
+  readonly sent: JsonRpcMessage[] = [];
+
+  async send(msg: JsonRpcMessage): Promise<void> {
+    this.sent.push(msg);
+    if ("method" in msg && msg.method === "initialize" && "id" in msg) {
+      const response: JsonRpcMessage = {
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: { capabilities: {}, serverInfo: { name: "test", version: "1" } },
+      };
+      const waiter = this.waiters.shift();
+      if (waiter) waiter(response);
+      else this.queue.push(response);
+    }
+  }
+}
+
+describe("McpClient per-call deadlines", () => {
+  it("preserves the 60s default and isolates concurrent longer and shorter overrides", async () => {
+    vi.useFakeTimers();
+    const transport = new ToolTimeoutTransport();
+    const client = new McpClient({ transport });
+    try {
+      await client.initialize();
+      const normal = expect(client.callTool("normal")).rejects.toThrow("after 60000ms");
+      const longer = expect(client.callTool("longer", {}, { timeoutMs: 600_000 })).rejects.toThrow(
+        "after 600000ms",
+      );
+      const shorter = expect(client.callTool("shorter", {}, { timeoutMs: 1_000 })).rejects.toThrow(
+        "after 1000ms",
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      await shorter;
+      expect(vi.getTimerCount()).toBe(2);
+      await vi.advanceTimersByTimeAsync(59_000);
+      await normal;
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(540_000);
+      await longer;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await client.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a configured default after an override", async () => {
+    vi.useFakeTimers();
+    const client = new McpClient({ transport: new ToolTimeoutTransport(), requestTimeoutMs: 25 });
+    try {
+      await client.initialize();
+      const override = expect(client.callTool("override", {}, { timeoutMs: 10 })).rejects.toThrow(
+        "after 10ms",
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      await override;
+      const normal = expect(client.callTool("normal")).rejects.toThrow("after 25ms");
+      await vi.advanceTimersByTimeAsync(25);
+      await normal;
+    } finally {
+      await client.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+    "rejects invalid timeout %s before sending",
+    async (timeoutMs) => {
+      const transport = new ToolTimeoutTransport();
+      const client = new McpClient({ transport });
+      try {
+        await client.initialize();
+        const count = transport.sent.length;
+        await expect(client.callTool("invalid", {}, { timeoutMs })).rejects.toThrow("timeoutMs");
+        expect(transport.sent).toHaveLength(count);
+      } finally {
+        await client.close();
+      }
+    },
+  );
+
+  it("still cancels a call with a long override", async () => {
+    const transport = new ToolTimeoutTransport();
+    const client = new McpClient({ transport });
+    try {
+      await client.initialize();
+      const controller = new AbortController();
+      const pending = client.callTool(
+        "long",
+        {},
+        { timeoutMs: 600_000, signal: controller.signal },
+      );
+      controller.abort();
+      await expect(pending).rejects.toThrow("aborted");
+      expect(transport.sent).toContainEqual(
+        expect.objectContaining({ method: "notifications/cancelled" }),
+      );
+    } finally {
+      await client.close();
+    }
+  });
+});
+
 describe("McpClient.request() timeout/no-crash", () => {
   const shortTimeoutMs = 50;
 
