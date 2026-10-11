@@ -739,9 +739,8 @@ export function StatusBar({
         ) : opencodeFreeBilling ? (
           <span
             className="seg"
+            style={{ cursor: "default" }}
             title={t("statusbar.opencodeFreeTitle")}
-            onClick={onOpenSettings}
-            onKeyDown={activationHandler(onOpenSettings)}
           >
             <I.coin size={11} style={{ color: "var(--accent)" }} />
             <span>{t("statusbar.opencodeFree")}</span>

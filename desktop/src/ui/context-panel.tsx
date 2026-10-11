@@ -337,13 +337,7 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, fallback }:
         ))}
       </select>
       {detail ? (
-        <>
-      <div className="ctx-plan-action">{t("contextPanel.planStatus")}: {detail.status}</div>
-      <div className="ctx-plan-action">{t("contextPanel.planCreated")}: {detail.createdAt ?? t("contextPanel.planCreatedUnknown")}</div>
-      <div className="ctx-plan-action">{t("contextPanel.planFinished")}: {detail.finishedAt ?? t("contextPanel.planNotCompleted")}</div>
-      {detail.dispositionReason ? <div className="ctx-plan-result">{detail.dispositionReason}</div> : null}
-      <CtxPlan plan={{ plan: detail.body, summary: detail.summary, steps: detail.steps, completedStepIds: Object.keys(detail.completions), stepResults: Object.fromEntries(Object.entries(detail.completions).map(([id, completion]) => [id, completion.result])), status: detail.status === "active" ? "active" : detail.status === "completed" ? "finished" : "cancelled" }} />
-        </>
+        <CtxPlan plan={{ plan: detail.body, summary: detail.summary, steps: detail.steps, completedStepIds: Object.keys(detail.completions), stepResults: Object.fromEntries(Object.entries(detail.completions).map(([id, completion]) => [id, completion.result])), status: detail.status === "active" ? "active" : detail.status === "completed" ? "finished" : "cancelled" }} />
       ) : (
         <div className="ctx-empty">{t("contextPanel.planDetailsLoading")}</div>
       )}

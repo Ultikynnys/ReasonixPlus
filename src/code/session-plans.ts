@@ -145,6 +145,22 @@ export function sessionPlanRepository(session: string): SessionPlanRepository {
   return repository;
 }
 
+/** A plan whose steps are all done is complete, whatever status it was sealed with.
+ *  Without this a finished leftover reports as "active" and the loop keeps nudging
+ *  the model to continue a plan with nothing left to do. */
+function sealCompletedPlans(history: History): void {
+  for (const plan of history.plans) {
+    if (
+      plan.status === "active" &&
+      plan.steps.length > 0 &&
+      plan.steps.every((s) => Object.hasOwn(plan.completions, s.id))
+    ) {
+      plan.status = "completed";
+      plan.finishedAt = plan.updatedAt;
+    }
+  }
+}
+
 export class SessionPlanRepository {
   private signature = "";
   private cached: History | undefined;
@@ -160,6 +176,7 @@ export class SessionPlanRepository {
     const signature = stat ? `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}` : "missing";
     if (this.cached && signature === this.signature) return this.cached;
     const history = stat ? validate(JSON.parse(readFileSync(this.path, "utf8"))) : this.legacy();
+    sealCompletedPlans(history);
     this.cached = history;
     this.signature = signature;
     return history;

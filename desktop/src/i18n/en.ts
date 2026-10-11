@@ -714,8 +714,7 @@ export const en = {
       "OpenCode Go usage · no data: sign in to OpenCode (Settings → OpenCode) with a Go subscription to see plan usage · click to retry",
     opencodeFree: "plan usage",
     opencodeFreeTier: "free",
-    opencodeFreeTitle:
-      "OpenCode free tier · no plan quota (rate-limited per IP, daily) · click to open settings",
+    opencodeFreeTitle: "OpenCode free tier · no plan quota (rate-limited per IP, daily)",
     offPeak: "off-peak",
     peak: "peak",
     offPeakTitle:
@@ -789,11 +788,6 @@ export const en = {
     planHistoryTitle: "Plan history",
     planUntitled: "Untitled plan",
     planDetailsLoading: "Loading plan details...",
-    planStatus: "Status",
-    planCreated: "Created",
-    planFinished: "Finished",
-    planNotCompleted: "Not completed",
-    planCreatedUnknown: "Unknown (legacy)",
     rawTab: "Raw",
     rawTitle: "Raw context",
     rawHelp:

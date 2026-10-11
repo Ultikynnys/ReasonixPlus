@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -120,4 +120,21 @@ it("keeps original steps when revising and retained completion details", () => {
   ]);
   expect(revised.revisions[0].steps).toEqual(steps);
   expect(revised.steps.map((s) => s.id)).toEqual(["one", "three"]);
+});
+it("treats a sealed fully-completed active plan as complete, never in-flight", () => {
+  const repo = new SessionPlanRepository("sealed");
+  const plan = repo.propose("Plan", [{ id: "one", title: "First", action: "Do first" }]);
+  repo.verdict(plan.id, "active");
+  repo.complete(plan.id, { kind: "step_completed", stepId: "one", result: "Done" });
+  // Simulate a stale file that still says "active" even though every step is done.
+  const raw = JSON.parse(readFileSync(repo.path, "utf8")) as {
+    plans: Array<{ status: string; finishedAt: string | null }>;
+  };
+  raw.plans[0]!.status = "active";
+  raw.plans[0]!.finishedAt = null;
+  writeFileSync(repo.path, JSON.stringify(raw));
+
+  const reread = new SessionPlanRepository("sealed");
+  expect(reread.active()).toBeNull();
+  expect(reread.list()[0]?.status).toBe("completed");
 });
