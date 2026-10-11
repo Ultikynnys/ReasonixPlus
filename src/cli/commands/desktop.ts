@@ -111,6 +111,7 @@ import {
   DEFAULT_OLLAMA_CHAT_URL,
   DEFAULT_OPENCODE_CHAT_URL,
   DEFAULT_ZAI_CHAT_URL,
+  type EditMode,
   MIMO_MODELS,
   MIMO_SPEECH_MODELS,
   OPENCODE_MODELS,
@@ -4283,18 +4284,37 @@ function stampSessionModelPrefs(tab: Tab): void {
   }
 }
 
-/** Rebuild only the prompt from current tab state. Callers own runtime/prefix updates. */
+/** Rebuild only the prompt from current tab state. Callers own runtime/prefix updates.
+ *  `editMode` pins the trailing "Permissions (live)" block to a just-saved selection so
+ *  the block cannot lag the user's flip behind a config re-read. */
 export function refreshTabSystemPrompt(
   tab: Pick<Tab, "rootDir" | "currentModel" | "system"> & {
     currentSession?: string;
     toolset: Pick<CodeToolset, "semantic"> | null;
   },
+  opts?: { editMode?: EditMode },
 ): void {
   if (!tab.toolset) return;
   tab.system = codeSystemPrompt(tab.rootDir, {
     hasSemanticSearch: tab.toolset.semantic.enabled,
     modelId: tab.currentModel,
+    editMode: opts?.editMode,
   });
+}
+
+/** Knowledge-level refresh after an edit-gate flip: mirror the mode into the dispatch
+ *  gate, rebuild the prompt's "Permissions (live)" block, and push the new system into
+ *  the running loop's prefix so even a mid-turn request sees the new selection. */
+export function refreshEditModeKnowledge(
+  tab: Pick<Tab, "rootDir" | "currentModel" | "system"> & {
+    toolset: (Pick<CodeToolset, "semantic"> & { tools: CodeToolset["tools"] }) | null;
+    runtime: { loop: { prefix: { replaceSystem: (system: string) => boolean } } } | null;
+  },
+  editMode: EditMode,
+): void {
+  if (tab.toolset) applyPlanMode(tab.toolset.tools, editMode);
+  refreshTabSystemPrompt(tab, { editMode });
+  tab.runtime?.loop.prefix.replaceSystem(tab.system);
 }
 
 /** Rebind the tab's model/effort/subagent-model to the conversation's stored
@@ -8037,7 +8057,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         }
         if (msg.editMode !== undefined) {
           saveEditMode(msg.editMode);
-          if (tab.toolset) applyPlanMode(tab.toolset.tools, msg.editMode);
+          // The edit gate is global state: every tab's dispatch gate AND the live
+          // "Permissions (live)" block must track the user's selection, not just
+          // the tab that sent the settings message.
+          for (const openTab of tabs.values()) {
+            refreshEditModeKnowledge(openTab, msg.editMode);
+            emitSettings(openTab);
+          }
         }
         if (msg.quickSendId !== undefined) {
           saveQuickSendId(msg.quickSendId);

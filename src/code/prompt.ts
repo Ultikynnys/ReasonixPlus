@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { loadEnableSubagents } from "../config.js";
+import { type EditMode, loadEditMode, loadEnableSubagents } from "../config.js";
 import { readCappedTextFile } from "../memory/read-capped.js";
 import { applyMemoryStack } from "../memory/user.js";
 import { TUI_FORMATTING_RULES, escalationContract } from "../prompt-fragments.js";
@@ -75,11 +75,15 @@ Every attempt is persisted to the session's plan history, so it survives restart
 - \`abandon_plan\` discards a plan with a \`reason\` (after approval); partial work is retained, never marked complete.
 - \`list_plans\` lists the session's attempts (IDs, status, dates, progress); \`open_plan\` returns one plan's full steps, results, evidence and revisions. Use these to recover context rather than guessing.
 
-# Read only mode
+# The edit gate
 
-One of the three edit-gate modes (Read only / Follow Rules / Never Ask). In Read only, writes and non-allowlisted shell commands are refused at dispatch ("blocked in Read only mode"; don't retry). Read tools, allowlisted shell commands and submit_plan still work.
+\`edit_file\` / \`write_file\` / \`multi_edit\` / \`delete_range\` / \`delete_symbol\`, shell commands and out-of-sandbox path access all route through the edit gate. The user sets its mode in the UI, and the "Permissions (live)" block at the end of this prompt names the mode active right now; that block is authoritative over anything this conversation says about permissions. The three modes:
 
-Read only is not a planning phase and no plan approval is pending: nothing waits on submit_plan, and refusing a write here does not mean a plan is missing. Read only simply never writes. If the task needs a write or an unlisted command, say so plainly and let the user move the gate to Follow Rules (asks first) or Never Ask.
+- **Read only**: writes and non-allowlisted shell commands are refused at dispatch ("blocked in Read only mode"; don't retry). Read tools, allowlisted shell commands and submit_plan still work. Not a planning phase, and no plan approval is pending: nothing waits on submit_plan, and a refused write does not mean a plan is missing. If the task needs a write or an unlisted command, say so plainly and let the user move the gate.
+- **Follow Rules**: reads and allowlisted shell commands run without a prompt; writes and any other command open a confirmation the user can approve or reject.
+- **Never Ask**: writes, shell commands and out-of-sandbox path access run without a prompt (Outlook sends still ask). Plan and choice cards auto-advance on a countdown.
+
+The user can flip the dial mid-session. Never infer the mode from earlier turns or from a refusal you already hit: read the live block before telling the user a write will be refused or that you must stop for approval.
 
 __SUBAGENT_SECTION__
 
@@ -87,7 +91,7 @@ __SUBAGENT_SECTION__
 
 Only propose edits when the user explicitly says change / fix / add / remove / refactor / write. For "analyze / read / explain / describe / summarize" requests, gather with tools and reply in prose, with no SEARCH/REPLACE or file changes. If unclear, ask.
 
-The **edit gate** routes \`edit_file\` / \`write_file\` / \`multi_edit\` / \`delete_range\` / \`delete_symbol\` based on the user's mode (\`read-only\` / \`follow\` / \`never-ask\`); you don't see which is active, write the same way in all. Responses:
+The **edit gate** routes \`edit_file\` / \`write_file\` / \`multi_edit\` / \`delete_range\` / \`delete_symbol\` based on the user's mode (\`read-only\` / \`follow\` / \`never-ask\`), named in the "Permissions (live)" block at the end of this prompt; write the same way in all modes. Responses:
 - a diff / \`"created ..."\` / \`"edit blocks: 1/1 applied"\`: the write landed, proceed.
 - \`"User rejected this edit to <path>..."\`: the user denied the write (Follow Rules mode). Do NOT re-emit the same call, do NOT switch tools to sneak it past (write_file → edit_file, or text-form SEARCH/REPLACE). Take a clearly different approach or ask.
 - Esc mid-prompt aborts the whole turn; don't keep calling tools after.
@@ -210,6 +214,31 @@ If \`semantic_search\` returns nothing useful (low scores, off-topic), THEN fall
 /** Cap on the embedded .gitignore preview. */
 const GITIGNORE_MAX_CHARS = 2000;
 
+/** Live permission state, always the final prompt block. Small and mode-keyed on
+ *  purpose: a dial flip must rewrite as little of the prompt as possible, and the
+ *  freshest context the model reads is then the current permissions. */
+function permissionsLiveSection(editMode: EditMode): string {
+  const label =
+    editMode === "read-only"
+      ? "Read only"
+      : editMode === "never-ask"
+        ? "Never Ask"
+        : "Follow Rules";
+  const effect =
+    editMode === "read-only"
+      ? "writes and non-allowlisted shell commands are refused at dispatch; read tools, allowlisted shell commands and submit_plan still work."
+      : editMode === "never-ask"
+        ? "writes, shell commands and out-of-sandbox path access run without a prompt (Outlook sends still ask); plan and choice cards auto-advance on a countdown."
+        : "reads and allowlisted shell commands run without a prompt; writes and any other command open a confirmation the user can approve or reject.";
+  return `# Permissions (live)
+
+Edit gate mode: **${label}** (\`${editMode}\`).
+
+Live effect: ${effect}
+
+This block is the authoritative permission state. It is rebuilt from the user's current selection and re-sent with every request, so it overrides anything earlier in this conversation about which mode is active, including your own earlier conclusions. When the user flips the dial, this block changes with it: trust it over anything you concluded earlier.`;
+}
+
 export interface CodeSystemPromptOptions {
   /** True when semantic_search is registered for this run. Adds an
    *  explicit routing fragment so the model picks it for intent-style
@@ -223,6 +252,10 @@ export interface CodeSystemPromptOptions {
   systemAppendFile?: string;
   /** Model the loop will run on — interpolated into the escalation contract so the model can name itself correctly when asked (#582). */
   modelId?: string;
+  /** Edit-gate mode for the trailing "Permissions (live)" block. Defaults to the
+   *  persisted selection (loadEditMode); hosts that just saved a flip pass it
+   *  explicitly so the block can't lag the user's choice. */
+  editMode?: EditMode;
   /** Override config path — tests point this at a tmp file. */
   configPath?: string;
 }
@@ -244,5 +277,7 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
   if (appendParts.length > 0) {
     result = `${result}\n\n# User System Append\n\n${appendParts.join("\n\n")}`;
   }
-  return result;
+  // Live permission state goes LAST: a mode flip then rewrites only this tail,
+  // and the freshest thing the model reads is always the current permissions.
+  return `${result}\n\n${permissionsLiveSection(opts.editMode ?? loadEditMode(opts.configPath))}`;
 }

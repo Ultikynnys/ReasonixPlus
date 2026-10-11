@@ -281,6 +281,71 @@ describe("codeSystemPrompt", () => {
     });
   });
 
+  describe("Permissions (live) block", () => {
+    it("names the persisted edit-gate mode", () => {
+      writeFileSync(cfgPath, JSON.stringify({ editMode: "never-ask" }), "utf8");
+      const out = codeSystemPrompt(root);
+      expect(out).toContain("# Permissions (live)");
+      expect(out).toContain("Edit gate mode: **Never Ask** (`never-ask`)");
+    });
+
+    it("renders each of the three modes distinctly", () => {
+      for (const [mode, label] of [
+        ["read-only", "Read only"],
+        ["follow", "Follow Rules"],
+        ["never-ask", "Never Ask"],
+      ] as const) {
+        const out = codeSystemPrompt(root, { editMode: mode });
+        expect(out).toContain(`Edit gate mode: **${label}** (\`${mode}\`)`);
+      }
+    });
+
+    it("editMode option wins over the persisted config", () => {
+      writeFileSync(cfgPath, JSON.stringify({ editMode: "never-ask" }), "utf8");
+      const out = codeSystemPrompt(root, { editMode: "read-only" });
+      expect(out).toContain("Edit gate mode: **Read only** (`read-only`)");
+    });
+
+    it("sits last, after the User System Append block", () => {
+      writeFileSync(join(root, ".gitignore"), "node_modules\n");
+      const out = codeSystemPrompt(root, { systemAppend: "Post-append instruction." });
+      const appendAt = out.indexOf("# User System Append");
+      const permsAt = out.indexOf("# Permissions (live)");
+      expect(appendAt).toBeGreaterThan(0);
+      expect(permsAt).toBeGreaterThan(appendAt);
+      expect(out.indexOf("# Permissions (live)", permsAt + 1)).toBe(-1);
+    });
+
+    it("keeps the frozen CODE_SYSTEM_PROMPT a substring for every mode", () => {
+      for (const mode of ["read-only", "follow", "never-ask"] as const) {
+        expect(codeSystemPrompt(root, { editMode: mode })).toContain(CODE_SYSTEM_PROMPT);
+      }
+    });
+
+    it("states the block is authoritative and tracks mid-session flips", () => {
+      const out = codeSystemPrompt(root, { editMode: "follow" });
+      expect(out).toMatch(/authoritative permission state/);
+      expect(out).toMatch(/this block changes with it/i);
+    });
+  });
+
+  describe("the static edit-gate section", () => {
+    it("describes all three modes and defers to the live block", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/# The edit gate/);
+      expect(CODE_SYSTEM_PROMPT).toContain("**Read only**");
+      expect(CODE_SYSTEM_PROMPT).toContain("**Follow Rules**");
+      expect(CODE_SYSTEM_PROMPT).toContain("**Never Ask**");
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Permissions \(live\)/);
+    });
+
+    it("no longer hard-codes a single mode as the session's state", () => {
+      // The bug: the template always headed the section "# Read only mode",
+      // so the agent believed it was in Read only while the UI showed another mode.
+      expect(CODE_SYSTEM_PROMPT).not.toMatch(/# Read only mode/);
+      expect(CODE_SYSTEM_PROMPT).not.toMatch(/you don't see which is active/);
+    });
+  });
+
   describe("MCP bridges awareness", () => {
     it("does not include configured MCP state in the system prompt", () => {
       writeFileSync(
