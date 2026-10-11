@@ -85,7 +85,13 @@ describe("Session plan history", () => {
     fireEvent.click(screen.getByText("Plan"));
     expect(onReadPlans).toHaveBeenCalledTimes(1);
     expect(onReadPlan).toHaveBeenCalledWith("new");
-    fireEvent.change(screen.getByRole("combobox", { name: "Session plan history" }), { target: { value: "old" } });
+    expect(screen.getByText("Plan history")).toBeTruthy();
+    const select = screen.getByRole("combobox", { name: "Session plan history" });
+    // Every plan in the session appears in the dropdown.
+    expect(within(select).getAllByRole("option")).toHaveLength(2);
+    expect(within(select).getByRole("option", { name: /Discarded/ })).toBeTruthy();
+    expect(within(select).getByRole("option", { name: /Current/ })).toBeTruthy();
+    fireEvent.change(select, { target: { value: "old" } });
     expect(screen.getByText("Status: superseded")).toBeTruthy();
     expect(screen.getByText("Verified work")).toBeTruthy();
     expect(screen.getByText("Original plan body")).toBeTruthy();

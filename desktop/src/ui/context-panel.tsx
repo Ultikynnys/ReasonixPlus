@@ -311,12 +311,32 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, fallback }:
   readPlan.current = onReadPlan;
   useEffect(() => { readPlans.current?.(); }, []);
   useEffect(() => { if (selected && !detail) readPlan.current?.(selected); }, [selected, detail]);
-  if (!history.length) return fallback ? <CtxPlan plan={fallback} /> : <div className="ctx-empty">{t("contextPanel.planHistoryEmpty")}</div>;
-  return <div className="ctx-plan">
-    <select aria-label={t("contextPanel.planHistoryAria")} value={selected} onChange={event => setSelection(event.target.value)}>
-      {history.map(plan => <option key={plan.id} value={plan.id}>{plan.summary ?? plan.id} ({plan.status}, {plan.completedSteps}/{plan.totalSteps})</option>)}
-    </select>
-    {detail ? <>
+  if (!history.length)
+    return fallback ? (
+      <CtxPlan plan={fallback} />
+    ) : (
+      <div className="ctx-empty">{t("contextPanel.planHistoryEmpty")}</div>
+    );
+  return (
+    <div className="ctx-plan">
+      <div className="ctx-section-head">
+        <div className="ctx-section-title">{t("contextPanel.planHistoryTitle")}</div>
+        <div className="ctx-plan-progress">{history.length}</div>
+      </div>
+      <select
+        aria-label={t("contextPanel.planHistoryAria")}
+        value={selected}
+        onChange={(event) => setSelection(event.target.value)}
+      >
+        {history.map((plan, index) => (
+          <option key={plan.id} value={plan.id}>
+            {index + 1}. {plan.summary ?? t("contextPanel.planUntitled")} · {plan.status} ·{" "}
+            {plan.completedSteps}/{plan.totalSteps}
+          </option>
+        ))}
+      </select>
+      {detail ? (
+        <>
       <div className="ctx-plan-action">{t("contextPanel.planStatus")}: {detail.status}</div>
       <div className="ctx-plan-action">{t("contextPanel.planCreated")}: {detail.createdAt ?? t("contextPanel.planCreatedUnknown")}</div>
       <div className="ctx-plan-action">{t("contextPanel.planFinished")}: {detail.finishedAt ?? t("contextPanel.planNotCompleted")}</div>
@@ -325,8 +345,12 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, fallback }:
       <details><summary>{t("contextPanel.planFullPlan")}</summary><pre style={{ whiteSpace: "pre-wrap" }}>{detail.body}</pre></details>
       {detail.steps.map(step => <details key={step.id}><summary>{step.title}: {t("contextPanel.planStepDetails")}</summary><pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify({ step, completion: detail.completions[step.id] }, null, 2)}</pre></details>)}
       {detail.revisions.map((revision, index) => <details key={`${revision.at}-${index}`}><summary>{t("contextPanel.planRevision")}: {revision.reason}</summary><pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(revision, null, 2)}</pre></details>)}
-    </> : <div className="ctx-empty">{t("contextPanel.planDetailsLoading")}</div>}
-  </div>;
+        </>
+      ) : (
+        <div className="ctx-empty">{t("contextPanel.planDetailsLoading")}</div>
+      )}
+    </div>
+  );
 }
 
 function CtxPlan({ plan }: { plan: ActivePlan }) {

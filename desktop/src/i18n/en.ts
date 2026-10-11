@@ -786,6 +786,8 @@ export const en = {
     activePlanEmpty: "No checklist steps were supplied.",
     planHistoryAria: "Session plan history",
     planHistoryEmpty: "No plan history yet.",
+    planHistoryTitle: "Plan history",
+    planUntitled: "Untitled plan",
     planDetailsLoading: "Loading plan details...",
     planStatus: "Status",
     planCreated: "Created",
