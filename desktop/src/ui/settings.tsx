@@ -3217,6 +3217,44 @@ const FEEDBACK_CUES: { id: FeedbackCueId; label: TKey; hint: TKey }[] = [
   },
 ];
 
+/** Range input with a local draft: dragging updates instantly and the value is
+ *  committed once, on release. A fully controlled slider re-rendered from the
+ *  daemon round-trip (settings_save → $settings) stutters and can snap back
+ *  mid-drag, which is why it felt undraggable. Always draggable — the volume is
+ *  set independently of whether the cue's sound is currently on. */
+function CueVolumeSlider({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  onCommit: (volume: number) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+  const commit = (el: HTMLInputElement) => onCommit(Number(el.value));
+  return (
+    <>
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.05}
+        value={draft}
+        aria-label={label}
+        onChange={(e) => setDraft(Number(e.target.value))}
+        onPointerUp={(e) => commit(e.currentTarget)}
+        onKeyUp={(e) => commit(e.currentTarget)}
+        onBlur={(e) => commit(e.currentTarget)}
+      />
+      <span className="feedback-cue-volume-value">{Math.round(draft * 100)}%</span>
+    </>
+  );
+}
+
 /** The per-type cue matrix as a table — one row per cue, columns for the sound
  *  on/off switch, its volume, and the desktop-notification switch, so every cue
  *  is toggled and tuned the same way. Each control patches the whole
@@ -3283,19 +3321,11 @@ function FeedbackCuesSection({
                   </div>
                 </td>
                 <td className="feedback-cue-volume">
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.05}
+                  <CueVolumeSlider
+                    label={t("settings.feedbackCueVolume", { cue: cueName })}
                     value={volume}
-                    disabled={!enabled}
-                    aria-label={t("settings.feedbackCueVolume", { cue: cueName })}
-                    onChange={(e) =>
-                      patchCue(id, { enabled, volume: Number(e.target.value), notify })
-                    }
+                    onCommit={(next) => patchCue(id, { enabled, volume: next, notify })}
                   />
-                  <span className="feedback-cue-volume-value">{Math.round(volume * 100)}%</span>
                 </td>
                 <td>
                   <div className="seg-ctrl">

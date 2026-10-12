@@ -128,10 +128,11 @@ describe("Feedback cues table", () => {
     ).toBe("true");
     expect(within(row).getByText("50%")).toBeTruthy();
 
-    // Volume change persists with the rest of the entry.
-    fireEvent.change(within(row).getByRole("slider", { name: "Volume for Plan complete" }), {
-      target: { value: "0.8" },
-    });
+    // Dragging updates a local draft; the value is committed on release.
+    const slider = within(row).getByRole("slider", { name: "Volume for Plan complete" });
+    fireEvent.change(slider, { target: { value: "0.8" } });
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.pointerUp(slider);
     expect(onSave).toHaveBeenCalledWith({
       feedbackCues: { planComplete: { enabled: true, volume: 0.8, notify: false } },
     });

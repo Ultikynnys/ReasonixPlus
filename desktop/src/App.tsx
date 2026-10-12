@@ -3013,8 +3013,14 @@ function TabRuntime({
     [tabId],
   );
 
+  // Optimistic by design: apply the patch to local state first, then persist.
+  // Waiting for the daemon's `$settings` echo (which re-emits for every open
+  // tab) made every control feel laggy — the whole point is the UI reacts now.
   const saveSettings = useCallback(
-    (patch: SettingsPatch) => sendRpc({ cmd: "settings_save", ...patch }),
+    (patch: SettingsPatch) => {
+      dispatch({ t: "settings_patch", patch });
+      sendRpc({ cmd: "settings_save", ...patch });
+    },
     [sendRpc],
   );
   const refreshCodexQuota = useCallback(() => {
@@ -3047,13 +3053,6 @@ function TabRuntime({
       onRefreshOllamaModels();
     }
   }, [activeModel, onRefreshOllamaModels]);
-  const applySettingsPatch = useCallback(
-    (patch: SettingsPatch) => {
-      dispatch({ t: "settings_patch", patch });
-      saveSettings(patch);
-    },
-    [saveSettings],
-  );
   const saveApiKey = useCallback(
     (key: string) => sendRpc({ cmd: "setup_save_key", key }),
     [sendRpc],
@@ -3301,22 +3300,22 @@ function TabRuntime({
 
   const applyReasoningEffort = useCallback(
     (reasoningEffort: Settings["reasoningEffort"]) => {
-      applySettingsPatch({ reasoningEffort });
+      saveSettings({ reasoningEffort });
       appendNotice(t("app.toast.effortSwitched", { effort: reasoningEffort }));
     },
-    [applySettingsPatch, appendNotice],
+    [saveSettings, appendNotice],
   );
 
   const applyEditMode = useCallback(
     (mode: Settings["editMode"]) => {
-      applySettingsPatch({ editMode: mode });
+      saveSettings({ editMode: mode });
       if (mode === "never-ask") {
         appendNotice(t("app.neverAskRules.toast"), "warning");
       } else {
         appendNotice(t("app.toast.modeSwitched", { mode: mode.toUpperCase() }));
       }
     },
-    [applySettingsPatch, appendNotice],
+    [saveSettings, appendNotice],
   );
 
   const dropActiveRef = useRef(active);
@@ -4344,11 +4343,11 @@ function TabRuntime({
                 onRefreshAntigravityModels={onRefreshAntigravityModels}
                 onRefreshOpencodeModels={onRefreshOpencodeModels}
                 onModelChange={(model) => {
-                  applySettingsPatch({ model });
+                  saveSettings({ model });
                   appendNotice(t("app.toast.modelSwitched", { model }));
                 }}
                 onSubagentModelChange={(model) => {
-                  applySettingsPatch({ subagentModel: model });
+                  saveSettings({ subagentModel: model });
                   appendNotice(t("app.toast.subagentModelSwitched", { model }));
                 }}
                 onEffortChange={applyReasoningEffort}
