@@ -37,6 +37,7 @@ import { registerJevTool, validateTypesafeApiKeyCached } from "../tools/jev.js";
 import { JobRegistry } from "../tools/jobs.js";
 import { registerMemoryTools } from "../tools/memory.js";
 import { registerPlanTool } from "../tools/plan.js";
+import { registerRulesTools } from "../tools/rules.js";
 import { registerScaffoldTools } from "../tools/scaffold.js";
 import { registerScreenCaptureTool } from "../tools/screen-capture.js";
 import { registerSeeImageTool } from "../tools/see-image.js";
@@ -54,6 +55,7 @@ import {
   spawnSubagent,
 } from "../tools/subagent.js";
 import { registerTodoTool } from "../tools/todo.js";
+import { registerWaitTool } from "../tools/wait.js";
 import { registerWebTools } from "../tools/web.js";
 
 /** How a subagent model is billed, for display purposes only. "usd" = a token-priced
@@ -77,6 +79,8 @@ export interface CodeToolsetOpts {
   onSkillInstalled?: SkillInstalledHook;
   /** Fired after `run_background` / `stop_job` mutate the JobRegistry — desktop pushes a fresh `$jobs` event so the popover updates without waiting for poll. */
   onJobsChanged?: () => void;
+  /** Fired after `remember_rule` / `forget_rule` mutate permission rules — desktop pushes a fresh `$settings` so the Rules tab updates in every tab. */
+  onRulesChanged?: () => void;
   /** Fired with `run_command`'s incremental stdout+stderr while it runs — desktop
    *  forwards it as a transient `tool.output` kernel event so the shell card can
    *  render live output rows. */
@@ -151,6 +155,11 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
       },
     });
     registerMemoryTools(tools, { projectRoot: root });
+    registerRulesTools(tools, {
+      rootDir: root,
+      configPath: opts.configPath,
+      onRulesChanged: opts.onRulesChanged,
+    });
     registerCodeQueryTools(tools, { rootDir: root });
   };
 
@@ -164,6 +173,7 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
   registerPlanTool(tools);
   registerChoiceTool(tools);
   registerTodoTool(tools);
+  registerWaitTool(tools);
   // Keep the handler stable for the tab's lifetime. A model switch can happen
   // after a model has emitted a see_image call but before dispatch starts, so
   // capability changes must never unregister an in-flight call's target.

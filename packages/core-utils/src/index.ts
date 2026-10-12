@@ -98,7 +98,12 @@ export {
   modelAcceptsAudioVideo,
   modelAcceptsImages,
   modelDisplayName,
+  needsProviderQualifier,
+  parseModelRef,
+  qualifyModelRef,
+  stripProviderQualifier,
 } from "./models.js";
+export type { ParsedModelRef } from "./models.js";
 export { PLAN_INTERACTIVE_TOOL_NAMES } from "./plan-tools.js";
 export type {
   ConfirmationChoice,

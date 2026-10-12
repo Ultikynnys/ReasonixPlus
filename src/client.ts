@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { messageOf } from "@reasonix/core-utils";
+import { messageOf, stripProviderQualifier } from "@reasonix/core-utils";
 import { type EventSourceMessage, createParser } from "eventsource-parser";
 import { ANTIGRAVITY_CLOUD_CODE_URL, antigravityHeaders } from "./antigravity-oauth.js";
 import {
@@ -935,9 +935,9 @@ export class DeepSeekClient {
     const provider = providerForModel(opts.model);
     const isOllama = provider === "ollama";
     const payload: Record<string, unknown> = {
-      // Ollama model ids are namespaced `ollama/<id>` for provider routing, but
-      // the server expects the raw id (`llama3.1:latest`) — strip the prefix.
-      model: isOllama ? opts.model.replace(/^ollama\//, "") : opts.model,
+      // `ollama/<id>` and `<provider>/<id>` namespacing is client-side routing —
+      // the server expects the bare id (`ollama/llama3.1:latest` → `llama3.1:latest`).
+      model: stripProviderQualifier(opts.model),
       messages: stripSyntheticMarkers(
         provider === "deepseek" ? stampWireMessageIds(opts.messages) : opts.messages,
       ),
@@ -1044,7 +1044,7 @@ export class DeepSeekClient {
     });
     const payload: Record<string, unknown> = {
       // `ollama/<id>` namespacing is client-side routing — the server wants the raw id.
-      model: opts.model.replace(/^ollama\//, ""),
+      model: stripProviderQualifier(opts.model),
       messages: filteredMessages.map((m) => toNativeOllamaMessage(m)),
       stream,
     };
@@ -1644,7 +1644,7 @@ export class DeepSeekClient {
             if (sig) {
               part.thoughtSignature = sig;
               lastKnownThoughtSignature = sig;
-            } else if (requiresThoughtSignature(opts.model)) {
+            } else if (requiresThoughtSignature(stripProviderQualifier(opts.model))) {
               // Gemini 3 requires a thought_signature on every functionCall part.
               // When no real signature is available (history transferred from a
               // provider that never emitted one, a pre-signature session, or a
@@ -1698,7 +1698,8 @@ export class DeepSeekClient {
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       ...(opts.maxTokens !== undefined ? { maxOutputTokens: opts.maxTokens } : {}),
     };
-    if (opts.model.startsWith("gemini-") && opts.thinking !== undefined) {
+    const wireModel = stripProviderQualifier(opts.model);
+    if (wireModel.startsWith("gemini-") && opts.thinking !== undefined) {
       generationConfig.thinkingConfig = { includeThoughts: opts.thinking === "enabled" };
     }
     if (Object.keys(generationConfig).length > 0) request.generationConfig = generationConfig;
@@ -1718,7 +1719,7 @@ export class DeepSeekClient {
       request.toolConfig = { functionCallingConfig: { mode: "AUTO" } };
     }
     return {
-      model: opts.model,
+      model: wireModel,
       project: projectId,
       user_prompt_id: globalThis.crypto.randomUUID(),
       request,
@@ -1956,7 +1957,7 @@ export class DeepSeekClient {
     try {
       const resp = await this._fetch(
         `${deriveNativeOllamaOrigin(this.baseUrl)}/api/show?model=${encodeURIComponent(
-          model.replace(/^ollama\//, ""),
+          stripProviderQualifier(model),
         )}`,
         { headers: await this.authHeaders(), signal: AbortSignal.timeout(10_000) },
       );

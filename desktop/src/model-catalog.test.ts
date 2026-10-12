@@ -47,4 +47,53 @@ describe("deriveModelCatalog", () => {
     expect(catalog.acceptsImages("dynamic-vision-free")).toBe(true);
     expect(catalog.acceptsImages("unknown-model")).toBe(false);
   });
+
+  it("qualifies opencode ids that an earlier provider catalog serves", () => {
+    const catalog = deriveModelCatalog({
+      // Live-synced OpenCode list including ids other providers serve natively.
+      opencodeModels: ["mimo-v2.6-pro", "gpt-6-luna", "glm-5.3", "big-pickle"],
+    });
+
+    const opencode = catalog.groups.find((group) => group.key === "opencode")!.models;
+    // Colliding rows carry a distinct picker value; the bare id would route to
+    // the native provider no matter which row the user clicks.
+    expect(opencode).toContain("opencode/mimo-v2.6-pro");
+    expect(opencode).toContain("opencode/gpt-6-luna");
+    expect(opencode).toContain("opencode/glm-5.3");
+    // OpenCode-exclusive ids stay bare.
+    expect(opencode).toContain("big-pickle");
+    expect(opencode).not.toContain("opencode/big-pickle");
+  });
+
+  it("keeps native catalog ids bare so bare and qualified rows coexist", () => {
+    const catalog = deriveModelCatalog({
+      opencodeModels: ["mimo-v2.6-pro"],
+    });
+
+    // The XIAOMI group's row stays `mimo-v2.6-pro` — the bare id already
+    // routes to mimo (catalog precedence) — so both rows are independent picks.
+    expect(catalog.groups.find((group) => group.key === "mimo")!.models).toContain("mimo-v2.6-pro");
+    expect(catalog.groups.find((group) => group.key === "mimo")!.models).not.toContain(
+      "mimo/mimo-v2.6-pro",
+    );
+  });
+
+  it("gives the two shared-id rows distinct vision verdicts from the wire id", () => {
+    const catalog = deriveModelCatalog({
+      opencodeModels: ["mimo-v2.6-pro"],
+    });
+
+    // Both rows show the vision badge: capability checks strip the qualifier.
+    expect(catalog.acceptsImages("mimo-v2.6-pro")).toBe(true);
+    expect(catalog.acceptsImages("opencode/mimo-v2.6-pro")).toBe(true);
+  });
+
+  it("dedupes within a group after qualifying", () => {
+    const catalog = deriveModelCatalog({
+      opencodeModels: ["mimo-v2.6-pro", "opencode/mimo-v2.6-pro", "mimo-v2.6-pro"],
+    });
+
+    const opencode = catalog.groups.find((group) => group.key === "opencode")!.models;
+    expect(opencode.filter((id) => id === "opencode/mimo-v2.6-pro")).toHaveLength(1);
+  });
 });

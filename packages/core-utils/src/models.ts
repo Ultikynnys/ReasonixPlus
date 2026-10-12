@@ -1,5 +1,7 @@
 /** Built-in model catalog and capability predicates shared by the daemon and desktop UI. */
 
+import type { ProviderID } from "./reasoning-efforts.js";
+
 export const DEFAULT_MODEL = "deepseek-flash";
 
 /** Models accepted by the official DeepSeek endpoint. `deepseek-flash` is the
@@ -83,7 +85,7 @@ export const MIMO_VISION_MODELS: ReadonlySet<string> = new Set([
 ]);
 /** MiMo's V2.6 conversational models accept audio and video input, not just images. */
 export function modelAcceptsAudioVideo(model: string | undefined | null): boolean {
-  return typeof model === "string" && MIMO_VISION_MODELS.has(model);
+  return typeof model === "string" && MIMO_VISION_MODELS.has(stripProviderQualifier(model));
 }
 
 /** Free models served through OpenCode Zen. */
@@ -268,6 +270,72 @@ export function isOllamaDeepSeekVisionModel(model: string): boolean {
   return DEEPSEEK_FLASH_VISION_MODELS.has(stripOllamaSchemeAndTag(model));
 }
 
+/** Providers that can appear in a `<provider>/<id>` model reference. Mirrors
+ *  the daemon's ModelProvider union; `ollama/` predates this scheme and shares it. */
+const QUALIFIER_PROVIDERS: ReadonlySet<string> = new Set<ProviderID>([
+  "deepseek",
+  "openai",
+  "ollama",
+  "gemini",
+  "zai",
+  "mimo",
+  "opencode",
+]);
+
+export interface ParsedModelRef {
+  /** Qualifying provider, or null when the reference is a bare id. */
+  provider: ProviderID | null;
+  /** Wire id with any qualifier stripped. */
+  id: string;
+}
+
+/** Splits `<provider>/<id>` into its parts. An unrecognized prefix is not a
+ *  qualifier (only provider ids count): `foo/bar` stays one bare id. */
+export function parseModelRef(model: string): ParsedModelRef {
+  const trimmed = model.trim();
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0) return { provider: null, id: trimmed };
+  const prefix = trimmed.slice(0, slash);
+  if (QUALIFIER_PROVIDERS.has(prefix)) {
+    return { provider: prefix as ProviderID, id: trimmed.slice(slash + 1) };
+  }
+  return { provider: null, id: trimmed };
+}
+
+/** Prefixes a wire id with its provider:
+ *  `qualifyModelRef("opencode", "mimo-v2.6-pro")` → `opencode/mimo-v2.6-pro`.
+ *  An already-qualified id is rewritten, never stacked. */
+export function qualifyModelRef(provider: ProviderID, model: string): string {
+  return `${provider}/${parseModelRef(model).id}`;
+}
+
+/** The wire id: strips a recognized `<provider>/` qualifier. An unrecognized
+ *  prefix belongs to the id and survives untouched. */
+export function stripProviderQualifier(model: string): string {
+  return parseModelRef(model).id;
+}
+
+/** Built-in catalog precedence (mirrors the daemon's CATALOG_PROVIDERS order:
+ *  first match wins for a bare id). OpenCode also serves the paid/Go catalog
+ *  through its live sync, so both lists count as "served by opencode". */
+const PROVIDER_CATALOGS: readonly { provider: ProviderID; ids: readonly string[] }[] = [
+  { provider: "deepseek", ids: SUPPORTED_OFFICIAL_MODELS },
+  { provider: "openai", ids: OPENAI_MODELS },
+  { provider: "zai", ids: ZAI_MODELS },
+  { provider: "mimo", ids: MIMO_MODELS },
+  { provider: "opencode", ids: [...new Set([...OPENCODE_MODELS, ...OPENCODE_GO_MODELS])] },
+];
+
+/** True when a bare `modelId` shown in `groupProvider`'s picker group would
+ *  route to a DIFFERENT provider (an earlier catalog serves it too), so the
+ *  entry needs a `<provider>/` qualifier there. Overlaps with later catalogs
+ *  never qualify: the bare id already routes to this group's provider. */
+export function needsProviderQualifier(groupProvider: ProviderID, modelId: string): boolean {
+  const group = PROVIDER_CATALOGS.findIndex((c) => c.provider === groupProvider);
+  if (group < 0) return false;
+  return PROVIDER_CATALOGS.some((catalog, index) => index < group && catalog.ids.includes(modelId));
+}
+
 /** Model ids that accept image attachments in user messages — the GPT-5.6
  *  family, DeepSeek's vision line, and every Gemini model (natively
  *  multimodal). Drives the composer's paste/drop affordance, the daemon's
@@ -287,12 +355,16 @@ export function modelAcceptsImages(
   opencodeVision?: ReadonlySet<string> | null,
 ): boolean {
   if (typeof model !== "string") return false;
-  if (model.startsWith("gpt-")) return true;
-  if (DEEPSEEK_FLASH_VISION_MODELS.has(model)) return true;
-  if (model === "glm-5.3-flash" || /^glm-\d+(?:\.\d+)?v(?:-|$)/.test(model)) return true;
-  if (MIMO_VISION_MODELS.has(model)) return true;
-  if (opencodeVision ? opencodeVision.has(model) : OPENCODE_VISION_MODELS.has(model)) return true;
-  if (isAntigravityModel(model)) return true;
+  // Catalog membership matches the wire id, so `opencode/mimo-v2.6-pro` sees
+  // the same vision verdict as the native id; ollama stays keyed on the full
+  // id (its probe sets store `ollama/`-prefixed entries).
+  const id = stripProviderQualifier(model);
+  if (id.startsWith("gpt-")) return true;
+  if (DEEPSEEK_FLASH_VISION_MODELS.has(id)) return true;
+  if (id === "glm-5.3-flash" || /^glm-\d+(?:\.\d+)?v(?:-|$)/.test(id)) return true;
+  if (MIMO_VISION_MODELS.has(id)) return true;
+  if (opencodeVision ? opencodeVision.has(id) : OPENCODE_VISION_MODELS.has(id)) return true;
+  if (isAntigravityModel(id)) return true;
   if (model.startsWith("ollama/") && ollamaVision && ollamaVision.has(model)) return true;
   if (isOllamaDeepSeekVisionModel(model)) return true;
   return false;

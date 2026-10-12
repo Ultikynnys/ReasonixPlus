@@ -4,6 +4,7 @@ import {
   isOllamaPeakPricedModel,
   isPeakRate,
   normalizeOllamaModelId,
+  stripProviderQualifier,
 } from "@reasonix/core-utils";
 import type { Usage } from "../client.js";
 import {
@@ -87,12 +88,16 @@ function ollamaPricingModel(model: string): string {
 }
 
 function defaultPricingFor(model: string, context?: PricingContext): ModelPricing | undefined {
-  if (!context) return DEEPSEEK_PRICING[model];
+  // Rate tables are keyed on the wire id, so a qualified ref prices like the
+  // native id. Ollama keeps the raw id: its scheme (ollama/<id>:tag) predates
+  // qualifiers and normalizeOllamaModelId expects it.
+  const id = stripProviderQualifier(model);
+  if (!context) return DEEPSEEK_PRICING[id];
   switch (context.provider) {
     case "deepseek":
-      return DEEPSEEK_PRICED_MODELS.has(model) ? DEEPSEEK_PRICING[model] : undefined;
+      return DEEPSEEK_PRICED_MODELS.has(id) ? DEEPSEEK_PRICING[id] : undefined;
     case "openai":
-      return OPENAI_PRICED_MODELS.has(model) ? DEEPSEEK_PRICING[model] : undefined;
+      return OPENAI_PRICED_MODELS.has(id) ? DEEPSEEK_PRICING[id] : undefined;
     case "ollama":
       return isOllamaPeakPricedModel(model) ? OLLAMA_PRICING[ollamaPricingModel(model)] : undefined;
     case "mimo":
@@ -110,7 +115,8 @@ function pricingFor(
   context?: PricingContext,
 ): ModelPricing | undefined {
   const defaults = defaultPricingFor(model, context);
-  const override = loadPricingOverride(path)[model];
+  // Overrides key on the wire id too: one entry covers every provider variant.
+  const override = loadPricingOverride(path)[stripProviderQualifier(model)];
   if (!override) return defaults;
   const pricing = { ...defaults, ...override };
   if (
@@ -188,7 +194,9 @@ export function resolveContextTokens(model: string, configured?: number): number
   // Ollama windows are set by the model/server (`num_ctx`) and can be far
   // below the DeepSeek 300K floor — never clamp an explicit Ollama value up.
   const isOllama = typeof model === "string" && model.startsWith("ollama/");
-  const modelDefault = DEEPSEEK_CONTEXT_TOKENS[model];
+  // The window table is keyed on the wire id; a `<provider>/` qualifier is
+  // routing syntax, so a qualified ref shares the native id's window.
+  const modelDefault = DEEPSEEK_CONTEXT_TOKENS[stripProviderQualifier(model)];
   if (typeof configured === "number" && Number.isFinite(configured)) {
     const floor = isOllama ? 1_024 : MIN_CONTEXT_TOKENS;
     // An explicit override is the source of truth: honor it up to the 1M API

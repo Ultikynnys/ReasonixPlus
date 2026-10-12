@@ -5,8 +5,11 @@ import {
   OPENCODE_MODELS,
   SUPPORTED_OFFICIAL_MODELS,
   ZAI_MODELS,
+  type ProviderID,
   isUsableAntigravityModel,
   modelAcceptsImages,
+  needsProviderQualifier,
+  qualifyModelRef,
 } from "@reasonix/core-utils";
 
 export type ModelCatalogGroupKey =
@@ -75,7 +78,36 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     options.providerCatalogs?.[key]
       ? [...new Set([...options.providerCatalogs[key]!.models, ...fallback])]
       : fallback;
-  const groups: ModelCatalogGroup[] = [
+  // Picker identity for cross-provider ids: an id an earlier provider catalog also
+  // serves resolves to that provider when sent bare, so this group's row carries a
+  // `<provider>/<id>` qualifier (mimo-v2.6-pro under OPENCODE → opencode/…).
+  const groupProvider: Record<ModelCatalogGroupKey, ProviderID | null> = {
+    deepseek: "deepseek",
+    openai: "openai",
+    zai: "zai",
+    mimo: "mimo",
+    opencode: "opencode",
+    typesafe: null,
+    antigravity: null,
+  };
+  const distinctModels = (
+    key: ModelCatalogGroupKey,
+    models: readonly string[],
+  ): readonly string[] => {
+    const provider = groupProvider[key];
+    if (!provider) return models;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const id of models) {
+      const value = needsProviderQualifier(provider, id) ? qualifyModelRef(provider, id) : id;
+      if (!seen.has(value)) {
+        seen.add(value);
+        out.push(value);
+      }
+    }
+    return out;
+  };
+  const rawGroups: ModelCatalogGroup[] = [
     { key: "deepseek", models: catalogFor("deepseek", SUPPORTED_OFFICIAL_MODELS) },
     { key: "openai", models: catalogFor("openai", OPENAI_MODELS) },
     { key: "zai", models: catalogFor("zai", ZAI_MODELS) },
@@ -86,6 +118,10 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
       : []),
     ...(includeAntigravity ? [{ key: "antigravity" as const, models: antigravityModelIds }] : []),
   ];
+  const groups: ModelCatalogGroup[] = rawGroups.map((group) => ({
+    key: group.key,
+    models: distinctModels(group.key, group.models),
+  }));
 
   return {
     groups,

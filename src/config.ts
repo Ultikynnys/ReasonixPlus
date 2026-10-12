@@ -20,8 +20,10 @@ import {
   enforceQuickSendShorthand,
   isQuickSend,
   isUsableAntigravityModel,
+  parseModelRef,
   resolveActiveQuickSend,
   ruleRegexError,
+  stripProviderQualifier,
 } from "@reasonix/core-utils";
 import { z } from "zod";
 import { atomicWriteSync, tmpSiblingPath } from "./core/atomic-write.js";
@@ -116,6 +118,15 @@ function resolveModelAdmission(model: string, path: string): ModelAdmission {
   if (discoveredAntigravity) {
     return { accepted: true, provider: "gemini", discoveredAntigravity: true };
   }
+  // An explicit `<provider>/<id>` qualifier pins routing over catalog precedence:
+  // an id served by two providers must resolve per picker row. The suffix must be
+  // a known id (a typo can't mint a routable model); `ollama/` keeps legacy any-id.
+  const ref = parseModelRef(id);
+  if (ref.provider && ref.provider !== "ollama" && ref.id) {
+    if (resolveModelAdmission(ref.id, path).accepted) {
+      return { accepted: true, provider: ref.provider, discoveredAntigravity: false };
+    }
+  }
   // Explicit provider catalogs win over OpenCode discovery: OpenCode Zen/Go
   // resell models that other providers also serve natively (gpt-6-luna,
   // glm-5.3, deepseek-v4-pro, …), and those ids must keep routing to their
@@ -159,7 +170,10 @@ export function supportedReasoningEfforts(
   path: string = defaultConfigPath(),
 ): readonly ReasoningEffort[] {
   const provider = providerForModel(model, path);
-  return reasoningEffortsFor(provider, reasoningEffortsForModel(provider, model));
+  return reasoningEffortsFor(
+    provider,
+    reasoningEffortsForModel(provider, stripProviderQualifier(model)),
+  );
 }
 
 /** The requested effort clamped to what the model accepts, or undefined when the
@@ -1569,8 +1583,12 @@ export function loadEndpointForModel(
     }
     // Go subscription ids live on their own endpoint. An explicit base URL
     // override above intentionally owns every OpenCode model (custom gateway).
+    // Go membership is judged on the wire id: a `opencode/<id>` qualifier is
+    // routing syntax the server never sees.
     return {
-      baseUrl: isOpencodeGoModel(model) ? DEFAULT_OPENCODE_GO_CHAT_URL : DEFAULT_OPENCODE_CHAT_URL,
+      baseUrl: isOpencodeGoModel(stripProviderQualifier(model))
+        ? DEFAULT_OPENCODE_GO_CHAT_URL
+        : DEFAULT_OPENCODE_CHAT_URL,
       apiKey: loadOpencodeApiKey(path) ?? "public",
     };
   }

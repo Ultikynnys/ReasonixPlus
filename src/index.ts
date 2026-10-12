@@ -125,6 +125,8 @@ export type { GenerateImageOptions, GenerateImageResult } from "./codex-backend.
 export { hasOpenAIOAuthSession } from "./oauth.js";
 export { registerMemoryTools } from "./tools/memory.js";
 export type { MemoryToolsOptions } from "./tools/memory.js";
+export { registerRulesTools } from "./tools/rules.js";
+export type { RulesToolsOptions } from "./tools/rules.js";
 export { ChoiceRequestedError, registerChoiceTool } from "./tools/choice.js";
 export type { ChoiceOption, ChoiceToolOptions } from "./tools/choice.js";
 export {
@@ -135,6 +137,8 @@ export {
 export type { PlanStep, PlanStepRisk, PlanToolOptions, StepCompletion } from "./tools/plan.js";
 export { registerTodoTool } from "./tools/todo.js";
 export type { TodoItem, TodoStatus, TodoToolOptions } from "./tools/todo.js";
+export { registerWaitTool } from "./tools/wait.js";
+export type { WaitToolOptions } from "./tools/wait.js";
 export { forkRegistryExcluding, registerSubagentTool } from "./tools/subagent.js";
 export type {
   SubagentEvent,

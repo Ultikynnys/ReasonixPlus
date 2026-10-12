@@ -235,3 +235,79 @@ describe("PageModels default-model enum", () => {
     expect(within(col).getByText("No models match your search.")).toBeTruthy();
   });
 });
+
+describe("PageModels shared-id identity (qualified refs)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const sharedIdSettings = {
+    ...baseSettings,
+    enabledModels: ["mimo-v2.6-pro", "opencode/mimo-v2.6-pro", "big-pickle"],
+  };
+
+  it("toggles the two shared-id rows independently via their distinct values", () => {
+    const onSave = vi.fn();
+    const { container } = render(
+      <SettingsModal
+        {...baseProps}
+        settings={sharedIdSettings}
+        opencodeModels={["mimo-v2.6-pro", "big-pickle"]}
+        onSave={onSave}
+        initialPage="models"
+      />,
+    );
+    container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
+      if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+    });
+
+    const cardFor = (name: string) =>
+      Array.from(container.querySelectorAll(".mcard")).find(
+        (card) => card.querySelector(".model-name")?.textContent === name,
+      );
+    const native = cardFor("mimo-v2.6-pro");
+    const qualified = cardFor("opencode/mimo-v2.6-pro");
+    expect(native).toBeTruthy();
+    expect(qualified).toBeTruthy();
+
+    // Disabling the OPENCODE row removes only the qualified identity.
+    fireEvent.click(within(qualified as HTMLElement).getByRole("button", { name: "Disable" }));
+    expect(onSave).toHaveBeenCalledWith({ enabledModels: ["mimo-v2.6-pro", "big-pickle"] });
+
+    // Disabling the XIAOMI row removes only the bare id.
+    onSave.mockClear();
+    fireEvent.click(within(native as HTMLElement).getByRole("button", { name: "Disable" }));
+    expect(onSave).toHaveBeenCalledWith({
+      enabledModels: ["opencode/mimo-v2.6-pro", "big-pickle"],
+    });
+  });
+
+  it("saves the qualified identity when the OPENCODE default model is selected", () => {
+    const onSave = vi.fn();
+    render(
+      <SettingsModal
+        {...baseProps}
+        settings={sharedIdSettings}
+        opencodeModels={["mimo-v2.6-pro", "big-pickle"]}
+        onSave={onSave}
+        initialPage="models"
+      />,
+    );
+
+    const select = screen.getByRole("combobox", { name: "Default model" }) as HTMLSelectElement;
+    // The active default (deepseek-v4-flash) isn't enabled here, so it is
+    // prepended to the allow-list options to keep the select non-blank.
+    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      "deepseek-v4-flash",
+      "mimo-v2.6-pro",
+      "opencode/mimo-v2.6-pro",
+      "big-pickle",
+    ]);
+    fireEvent.change(select, { target: { value: "opencode/mimo-v2.6-pro" } });
+    expect(onSave).toHaveBeenCalledWith({
+      model: "opencode/mimo-v2.6-pro",
+      subagentModel: "opencode/mimo-v2.6-pro",
+    });
+  });
+});

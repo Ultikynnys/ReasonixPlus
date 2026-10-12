@@ -1,6 +1,7 @@
 /** OpenAI Responses API (v1/responses) conversion for chatgpt.com's codex
  *  backend, which 400-rejects chat-completions payloads. */
 
+import { stripProviderQualifier } from "@reasonix/core-utils";
 import { sanitizeWireToolName } from "./tool-name.js";
 import type { ChatMessage, ChatRequestOptions } from "./types.js";
 
@@ -108,7 +109,7 @@ export function buildResponsesPayload(
   // extras (store, parallel_tool_calls, reasoning.summary) are omitted for it.
   const mimo = provider === "mimo";
   const payload: Record<string, unknown> = {
-    model: opts.model,
+    model: stripProviderQualifier(opts.model),
     input: items,
     stream,
   };

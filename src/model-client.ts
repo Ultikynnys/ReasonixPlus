@@ -1,3 +1,4 @@
+import { stripProviderQualifier } from "@reasonix/core-utils";
 import { resolveGeminiAuth } from "./antigravity-oauth.js";
 import { DeepSeekClient, type DeepSeekClientOptions } from "./client.js";
 import { resolveCodexTransport } from "./codex-backend.js";
@@ -26,6 +27,7 @@ export function modelClientOptions(opts: ResolvedModelClientOptions): DeepSeekCl
   const endpoint = loadEndpointForModel(opts.model, opts.configPath);
   const provider = providerForModel(opts.model, opts.configPath);
   const openAIStandard = isOpenAIStandardEndpoint(opts.model, opts.configPath);
+  const wireModel = stripProviderQualifier(opts.model);
 
   return {
     apiKey: endpoint.apiKey,
@@ -46,7 +48,7 @@ export function modelClientOptions(opts: ResolvedModelClientOptions): DeepSeekCl
       provider === "opencode" ? () => readConfig(opts.configPath).opencodeOAuth?.orgId : undefined,
     transportResolver: openAIStandard
       ? () => resolveCodexTransport()
-      : provider === "opencode" && opts.model.startsWith("muse-")
+      : provider === "opencode" && wireModel.startsWith("muse-")
         ? async () => ({
             endpoint: `${endpoint.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL}/responses`,
             headers: {

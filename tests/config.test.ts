@@ -1914,6 +1914,55 @@ describe("config", () => {
     });
   });
 
+  describe("Provider-qualified model references", () => {
+    it("pins the provider of a shared id independently of catalog precedence", () => {
+      writeConfig({}, path);
+      // The bare id keeps catalog precedence (mimo natively serves the id).
+      expect(providerForModel("mimo-v2.6-pro", path)).toBe("mimo");
+      // Qualified refs resolve each side of the same id independently.
+      expect(providerForModel("opencode/mimo-v2.6-pro", path)).toBe("opencode");
+      expect(providerForModel("mimo/mimo-v2.6-pro", path)).toBe("mimo");
+      expect(providerForModel("zai/glm-5.3-flash", path)).toBe("zai");
+      expect(providerForModel("gemini/gemini-3.8-flash-tiered", path)).toBe("gemini");
+    });
+
+    it("ignores unqualified and unroutable prefixes", () => {
+      writeConfig({}, path);
+      // An unknown prefix is part of the id: no catalog carries it → default.
+      expect(providerForModel("foo/mimo-v2.6-pro", path)).toBe("deepseek");
+      // A known provider + unknown id is not routable (a typo can't mint a model).
+      expect(isKnownModelId("opencode/not-a-real-model", path)).toBe(false);
+    });
+
+    it("routes a qualified id to the qualified provider's endpoint", () => {
+      writeConfig({}, path);
+      // The qualified ref keeps OpenCode's internal Zen/Go split: this id is a
+      // Go subscription entry, so it lands on the Go endpoint.
+      expect(loadEndpointForModel("opencode/mimo-v2.6-pro", path)).toEqual({
+        baseUrl: "https://opencode.ai/zen/go/v1",
+        apiKey: "public",
+      });
+      writeConfig({ mimoApiKey: "mimo-key-123" }, path);
+      expect(loadEndpointForModel("mimo/mimo-v2.6-pro", path)).toEqual({
+        baseUrl: "https://api.xiaomimimo.com/v1",
+        apiKey: "mimo-key-123",
+      });
+    });
+
+    it("accepts and round-trips a qualified pick through saveModel/loadModel", () => {
+      writeConfig({}, path);
+      saveModel("opencode/mimo-v2.6-pro", path);
+      expect(loadModel(path)).toBe("opencode/mimo-v2.6-pro");
+      expect(providerForModel(loadModel(path), path)).toBe("opencode");
+    });
+
+    it("stays compatible with ids the provider serves exclusively", () => {
+      writeConfig({}, path);
+      expect(isKnownModelId("opencode/big-pickle", path)).toBe(true);
+      expect(providerForModel("opencode/big-pickle", path)).toBe("opencode");
+    });
+  });
+
   describe("subagentModels", () => {
     it("round-trips flash/pro entries", () => {
       saveSubagentModels({ explore: "pro", review: "flash" }, path);
