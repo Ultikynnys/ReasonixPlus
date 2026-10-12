@@ -422,7 +422,7 @@ function PageGeneral({
     onSetCustomFontFamily(next);
   };
   return (
-    <>
+    <div className="page-general">
       <section className="section">
         <div className="stitle">{t("settings.appearanceSection")}</div>
         <div className="setting-row">
@@ -689,7 +689,7 @@ function PageGeneral({
 
       <AudioInputDeviceSettings />
       <VoiceModelSettings />
-    </>
+    </div>
   );
 }
 

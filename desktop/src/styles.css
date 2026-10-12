@@ -6730,6 +6730,19 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .setting-row:last-child {
   border-bottom: none;
 }
+/* The general page carries no row separators: the dashed rules only appeared on
+ * rows that weren't last in their section, which read as inconsistent against
+ * the section headers — spacing alone separates rows there now. */
+.page-general .setting-row,
+.page-general .feedback-cues-table th,
+.page-general .feedback-cues-table td {
+  border-bottom: none;
+}
+/* No section subheaders on the general page either — the rows read as one flat,
+ * evenly-spaced list. */
+.page-general .stitle {
+  display: none;
+}
 .setting-row .l {
   flex: 1 1 auto;
   min-width: 0;
