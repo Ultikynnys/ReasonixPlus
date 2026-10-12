@@ -28,6 +28,17 @@ export function isDroppedWorkNotice(m: ChatMessage): boolean {
   return messageText(m).trimStart().startsWith(DROPPED_WORK_NOTICE_PREFIX);
 }
 
+/** The rolled-up summary body (prefix stripped) from a compacted message list, or
+ *  "". Lets the compaction warning carry the same summary the fold installed. */
+export function compactionSummaryBody(messages: ReadonlyArray<ChatMessage>): string {
+  for (const m of messages) {
+    if (!isCompactionSummary(m)) continue;
+    const text = messageText(m).trimStart().slice(COMPACTION_SUMMARY_PREFIX.length).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
 /** Real user intent. Synthetic records (steers, nudges) and compaction
  *  artifacts are machine-generated and never count as prompts. */
 export function isUserPrompt(m: ChatMessage): boolean {

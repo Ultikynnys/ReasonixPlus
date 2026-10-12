@@ -38,6 +38,14 @@ export function redactDiagnosticValue(value: unknown): unknown {
   return value;
 }
 
+/** Compaction card body: the terse header (token counts) plus the rolled-up
+ *  summary that replaced the folded context. The single source of truth for the
+ *  manual and auto/overflow cards, which used to compose this independently. */
+export function compactionCardText(header: string, summary?: string | null): string {
+  const body = summary?.trim();
+  return body ? `${header}\n\n${body}` : header;
+}
+
 /** Clip `text` at `max` chars, appending `ellipsis` (default "…") when it had to clip. */
 export function clipText(text: string, max: number, ellipsis = "…"): string {
   return text.length > max ? `${text.slice(0, max)}${ellipsis}` : text;

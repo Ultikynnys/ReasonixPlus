@@ -46,9 +46,9 @@ describe("desktop timeline notices", () => {
       ...makeState(),
       messages: [
         { kind: "user", text: "hi", clientId: "c1", turn: 1 },
-        { kind: "assistant", turn: 1, segments: [], pending: false },
+        { kind: "assistant", turn: 1, segments: [], pending: false, closed: true },
         { kind: "user", text: "again", clientId: "c2", turn: 2 },
-        { kind: "assistant", turn: 2, segments: [], pending: false },
+        { kind: "assistant", turn: 2, segments: [], pending: false, closed: true },
       ],
     };
     const next = reduce(state, { t: "push_notice", text: "Export failed", severity: "error" });
@@ -72,13 +72,23 @@ describe("desktop timeline notices", () => {
       text: "Image attach failed",
       severity: "error",
     });
-    expect(next.messages.slice(0, -1)).toEqual(state.messages);
+    // Nothing is re-anchored: the notice is still last, after the queued user
+    // bubble — but the in-flight turn-2 card is sealed so later output opens a
+    // NEW card below the notice.
+    expect(next.messages.map((m) => m.kind)).toEqual([
+      ...state.messages.map((m) => m.kind),
+      "notice",
+    ]);
+    expect(next.messages.find((m) => m.kind === "assistant" && m.turn === 2)).toMatchObject({
+      closed: true,
+      pending: false,
+    });
     expect(next.messages.at(-1)).toMatchObject({ kind: "notice", turn: 2 });
   });
 });
 
 describe("manual compaction card chronology", () => {
-  it("appends below a pending assistant and settles without moving", () => {
+  it("closes the in-flight assistant card and appends below it, settling in place", () => {
     const state: AppState = {
       ...makeState(),
       messages: [
@@ -96,13 +106,18 @@ describe("manual compaction card chronology", () => {
         trigger: "manual",
       },
     });
-    expect(started.messages.slice(0, -1)).toEqual(state.messages);
+    // The user bubble is untouched; the in-flight assistant card is closed so
+    // post-compaction output opens a NEW card below the notice; the running
+    // compaction notice is appended last.
+    expect(started.messages[0]).toEqual(state.messages[0]);
+    expect(started.messages[1]).toMatchObject({ kind: "assistant", turn: 1, pending: false });
     expect(started.messages.at(-1)).toMatchObject({ kind: "notice", running: true });
     const finished = reduce(started, {
       t: "incoming",
       event: { type: "$notice", text: "Compacted", severity: "success" },
     });
-    expect(finished.messages.slice(0, -1)).toEqual(state.messages);
+    // The card settles in place — no reordering, no new message.
+    expect(finished.messages.slice(0, -1)).toEqual(started.messages.slice(0, -1));
     expect(finished.messages.at(-1)).toMatchObject({
       kind: "notice",
       running: false,

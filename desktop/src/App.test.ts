@@ -728,11 +728,13 @@ describe("Desktop App reducer — usage", () => {
 
 
     act({ t: "push_notice", text: "Model → deepseek-v4-flash", severity: "info" });
+    // A mid-turn notice seals the in-flight card, so later output opens a NEW
+    // card below it; the notice itself still lands in creation order (last).
     expect(labels(s.messages)).toEqual([
       "user-1",
       "assistant-1",
       "user-2",
-      "assistant-2(pending)",
+      "assistant-2",
       "info-2",
     ]);
 
@@ -1659,6 +1661,28 @@ describe("Desktop App reducer — compaction card lifecycle", () => {
     expect(next.messages.some((m) => m.kind === "assistant")).toBe(false);
   });
 
+  it("appends the compaction summary carried on the auto-path warning", () => {
+    const beforeState = reduce(initialState(), { t: "incoming", event: startedEvent(90, "auto") });
+    const next = reduce(beforeState, {
+      t: "incoming",
+      event: {
+        type: "warning",
+        id: 91,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        text: "Context compacted (summary): 1,000 tokens -> 400 tokens.",
+        severity: "high",
+        compactionSummary: "Goal: ship X.\nNext: run tests.",
+      },
+    });
+    const card = next.messages.find((m) => m.kind === "notice");
+    expect(card).toMatchObject({
+      running: false,
+      severity: "success",
+      text: "Context compacted (summary): 1,000 tokens -> 400 tokens.\n\nGoal: ship X.\nNext: run tests.",
+    });
+  });
+
   it("keeps the running card through a session.retracted rebuild", () => {
     const beforeState = reduce(initialState(), { t: "incoming", event: startedEvent(90) });
     const next = reduce(beforeState, {
@@ -1779,6 +1803,315 @@ describe("Desktop App reducer — compaction card lifecycle", () => {
     });
     // No second notice card beside it.
     expect(next.messages.filter((m) => m.kind === "notice")).toHaveLength(1);
+  });
+});
+
+describe("Desktop App reducer — card ordering", () => {
+  const turnStarted = (turn: number) =>
+    ({
+      type: "model.turn.started",
+      id: turn,
+      ts: "2026-05-27T00:00:00.000Z",
+      turn,
+      model: "deepseek-v4-flash",
+      reasoningEffort: "high",
+      prefixHash: "pfx",
+    }) as const;
+  const reasoningDelta = (turn: number, text: string) =>
+    ({
+      type: "model.delta",
+      id: turn * 100,
+      ts: "2026-05-27T00:00:00.000Z",
+      turn,
+      channel: "reasoning",
+      text,
+    }) as const;
+  const compactionStarted = (turn: number) =>
+    ({
+      type: "compaction.started",
+      id: turn * 1000,
+      ts: "2026-05-27T00:00:00.000Z",
+      turn,
+      trigger: "auto",
+    }) as const;
+  const compactionDone = (turn: number) =>
+    ({
+      type: "warning",
+      id: turn * 1000 + 1,
+      ts: "2026-05-27T00:00:00.000Z",
+      turn,
+      text: "Context compacted (summary): 1,000 tokens -> 400 tokens.",
+      severity: "high",
+    }) as const;
+
+  it("keeps a mid-turn compaction card above the post-compaction assistant output", () => {
+    let state = reduce(initialState(), { t: "incoming", event: turnStarted(1) });
+    state = reduce(state, { t: "incoming", event: reasoningDelta(1, "thinking before compaction") });
+    state = reduce(state, { t: "incoming", event: compactionStarted(1) });
+    state = reduce(state, { t: "incoming", event: compactionDone(1) });
+    state = reduce(state, { t: "incoming", event: reasoningDelta(1, "thinking after compaction") });
+
+    expect(state.messages.map((m) => m.kind)).toEqual(["assistant", "notice", "assistant"]);
+    const [before, notice, after] = state.messages;
+    expect(before).toMatchObject({ kind: "assistant", turn: 1, pending: false });
+    expect(notice).toMatchObject({ kind: "notice", severity: "success", running: false });
+    expect(after).toMatchObject({ kind: "assistant", turn: 1, pending: true });
+    if (before?.kind !== "assistant" || after?.kind !== "assistant") {
+      throw new Error("expected two assistant cards");
+    }
+    expect(before.segments.at(-1)).toMatchObject({
+      kind: "reasoning",
+      text: "thinking before compaction",
+    });
+    expect(after.segments.at(-1)).toMatchObject({
+      kind: "reasoning",
+      text: "thinking after compaction",
+    });
+  });
+
+  it("renders multiple assistant cards for one turn across a compaction boundary", () => {
+    let state = reduce(initialState(), { t: "incoming", event: turnStarted(1) });
+    state = reduce(state, { t: "incoming", event: reasoningDelta(1, "before") });
+    state = reduce(state, { t: "incoming", event: compactionStarted(1) });
+    state = reduce(state, { t: "incoming", event: compactionDone(1) });
+    state = reduce(state, { t: "incoming", event: reasoningDelta(1, "after") });
+
+    const assistantIdxs = state.messages.flatMap((m, i) => (m.kind === "assistant" ? [i] : []));
+    expect(assistantIdxs).toHaveLength(2);
+    expect(
+      state.messages
+        .filter((m) => m.kind === "assistant")
+        .every((m) => m.kind === "assistant" && m.turn === 1),
+    ).toBe(true);
+    const noticeIdx = state.messages.findIndex((m) => m.kind === "notice");
+    expect(assistantIdxs[0]!).toBeLessThan(noticeIdx);
+    expect(noticeIdx).toBeLessThan(assistantIdxs[1]!);
+  });
+
+  it("keeps the card above output that arrives as batched deltas (the runtime path)", () => {
+    let state = reduce(initialState(), { t: "incoming", event: turnStarted(1) });
+    state = reduce(state, {
+      t: "batch_delta",
+      items: [{ turn: 1, channel: "reasoning", text: "before" }],
+    });
+    state = reduce(state, { t: "incoming", event: compactionStarted(1) });
+    state = reduce(state, { t: "incoming", event: compactionDone(1) });
+    state = reduce(state, {
+      t: "batch_delta",
+      items: [{ turn: 1, channel: "reasoning", text: "after" }],
+    });
+
+    expect(state.messages.map((m) => m.kind)).toEqual(["assistant", "notice", "assistant"]);
+    const assistants = state.messages.filter((m) => m.kind === "assistant");
+    // The batched frame did NOT fan out to the pre-compaction card.
+    expect(assistants[0]).toMatchObject({ turn: 1, pending: false });
+    expect(assistants[1]).toMatchObject({ turn: 1, pending: true });
+  });
+
+  it("carries the in-flight turn's cards through a compaction retraction, in order", () => {
+    const base = {
+      ...initialState(),
+      messages: [
+        { kind: "user" as const, text: "old ask", clientId: "c-1", turn: 1 },
+        {
+          kind: "assistant" as const,
+          turn: 1,
+          segments: [{ kind: "text" as const, text: "old answer" }],
+          pending: false,
+        },
+        { kind: "user" as const, text: "new ask", clientId: "c-2", turn: 2 },
+        {
+          kind: "assistant" as const,
+          turn: 2,
+          segments: [{ kind: "reasoning" as const, text: "streaming" }],
+          pending: true,
+        },
+        {
+          kind: "notice" as const,
+          id: "notice-1",
+          text: "Compacting context…",
+          severity: "info" as const,
+          turn: 2,
+          running: true,
+          trigger: "auto" as const,
+        },
+      ],
+    };
+    const next = reduce(base, {
+      t: "incoming",
+      event: {
+        type: "session.retracted",
+        id: 5,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 2,
+        kind: "compact",
+        beforeMessages: 4,
+        afterMessages: 2,
+        replacementMessages: [
+          { kind: "user", text: "old ask" },
+          {
+            kind: "assistant",
+            turn: 1,
+            segments: [{ kind: "text", text: "old answer" }],
+            pending: false,
+          },
+        ],
+      },
+    });
+    expect(
+      next.messages.map((m) => (m.kind === "notice" ? "notice" : `${m.kind}-${m.turn}`)),
+    ).toEqual(["user-1", "assistant-1", "user-2", "assistant-2", "notice"]);
+  });
+
+  it("survives a pre-turn compaction retraction with the optimistic user bubble intact", () => {
+    const base = {
+      ...initialState(),
+      messages: [
+        { kind: "user" as const, text: "brand new ask", clientId: "c-9", turn: 1 },
+        {
+          kind: "notice" as const,
+          id: "notice-1",
+          text: "Compacting context…",
+          severity: "info" as const,
+          turn: 1,
+          running: true,
+          trigger: "auto" as const,
+        },
+      ],
+    };
+    const next = reduce(base, {
+      t: "incoming",
+      event: {
+        type: "session.retracted",
+        id: 6,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        kind: "compact",
+        beforeMessages: 0,
+        afterMessages: 0,
+        replacementMessages: [],
+      },
+    });
+    expect(
+      next.messages.map((m) => (m.kind === "notice" ? "notice" : `${m.kind}-${m.turn}`)),
+    ).toEqual(["user-1", "notice"]);
+  });
+
+  it("carries an earlier-turn notice through a compaction retraction, beside its turn", () => {
+    const base = {
+      ...initialState(),
+      messages: [
+        { kind: "user" as const, text: "ask1", clientId: "c-1", turn: 1 },
+        {
+          kind: "assistant" as const,
+          turn: 1,
+          segments: [{ kind: "text" as const, text: "ans1" }],
+          pending: false,
+          closed: true,
+        },
+        {
+          kind: "notice" as const,
+          id: "elog-1",
+          text: "Mode: AUTO",
+          severity: "warning" as const,
+          turn: 1,
+        },
+        { kind: "user" as const, text: "ask2", clientId: "c-2", turn: 2 },
+        {
+          kind: "assistant" as const,
+          turn: 2,
+          segments: [{ kind: "reasoning" as const, text: "live" }],
+          pending: true,
+        },
+      ],
+    };
+    const next = reduce(base, {
+      t: "incoming",
+      event: {
+        type: "session.retracted",
+        id: 9,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 2,
+        kind: "compact",
+        beforeMessages: 5,
+        afterMessages: 3,
+        replacementMessages: [
+          { kind: "user", text: "ask1" },
+          {
+            kind: "assistant",
+            turn: 1,
+            segments: [{ kind: "text", text: "ans1" }],
+            pending: false,
+          },
+        ],
+      },
+    });
+    // The older-turn notice is NOT dropped; it lands at the end of its own turn's
+    // group (after assistant-1, before the in-flight turn's cards).
+    expect(
+      next.messages.map((m) => (m.kind === "notice" ? `notice-${m.turn}` : `${m.kind}-${m.turn}`)),
+    ).toEqual(["user-1", "assistant-1", "notice-1", "user-2", "assistant-2"]);
+  });
+
+  it("keeps a surviving-turn notice but drops one whose turn a rewind removed", () => {
+    const base = {
+      ...initialState(),
+      messages: [
+        { kind: "user" as const, text: "ask1", clientId: "c-1", turn: 1 },
+        {
+          kind: "assistant" as const,
+          turn: 1,
+          segments: [],
+          pending: false,
+          closed: true,
+        },
+        {
+          kind: "notice" as const,
+          id: "elog-1",
+          text: "kept",
+          severity: "info" as const,
+          turn: 1,
+        },
+        { kind: "user" as const, text: "ask2", clientId: "c-2", turn: 2 },
+        {
+          kind: "assistant" as const,
+          turn: 2,
+          segments: [],
+          pending: false,
+          closed: true,
+        },
+        {
+          kind: "notice" as const,
+          id: "elog-2",
+          text: "rewound away",
+          severity: "warning" as const,
+          turn: 2,
+        },
+      ],
+    };
+    const next = reduce(base, {
+      t: "incoming",
+      event: {
+        type: "session.retracted",
+        id: 10,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 2,
+        kind: "rewind",
+        beforeMessages: 6,
+        afterMessages: 2,
+        replacementMessages: [
+          { kind: "user", text: "ask1" },
+          { kind: "assistant", turn: 1, segments: [], pending: false },
+        ],
+      },
+    });
+    const notices = next.messages.filter((m) => m.kind === "notice");
+    expect(notices.map((m) => (m.kind === "notice" ? m.text : ""))).toEqual(["kept"]);
+    expect(next.messages.map((m) => (m.kind === "notice" ? `notice-${m.turn}` : `${m.kind}-${m.turn}`))).toEqual([
+      "user-1",
+      "assistant-1",
+      "notice-1",
+    ]);
   });
 });
 

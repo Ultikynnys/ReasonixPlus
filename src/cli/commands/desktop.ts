@@ -13,6 +13,7 @@ import {
   MailProvider,
   PLAN_INTERACTIVE_TOOL_NAMES,
   type PersistedNotice,
+  compactionCardText,
   flattenText,
   isUsableAntigravityModel,
   mediaKindForPath,
@@ -293,7 +294,6 @@ import {
   type LoopEvent,
 } from "../../index.js";
 import { createLogger } from "../../logging.js";
-import { COMPACTION_SUMMARY_PREFIX } from "../../loop/compaction.js";
 import { MCP_CATALOG, catalogStdioCommand } from "../../mcp/catalog.js";
 import {
   GMAIL_MAIL_SERVER_NAME,
@@ -3987,16 +3987,8 @@ export function manualCompactNotice(events: KernelEvent[]): {
     (e): e is Extract<KernelEvent, { type: "warning" }> => e.type === "warning",
   );
   if (!compacted) return { text: t("loop.compactNothing"), severity: "info" };
-  const retracted = events.find(
-    (e): e is Extract<KernelEvent, { type: "session.retracted" }> =>
-      e.type === "session.retracted" && e.kind === "compact",
-  );
-  const summary = (retracted?.replacementMessages ?? [])
-    .map((m) => (typeof m.content === "string" ? m.content.trimStart() : ""))
-    .find((c) => c.startsWith(COMPACTION_SUMMARY_PREFIX));
-  const body = summary ? summary.slice(COMPACTION_SUMMARY_PREFIX.length).trim() : "";
   return {
-    text: body ? `${compacted.text}\n\n${body}` : compacted.text,
+    text: compactionCardText(compacted.text, compacted.compactionSummary),
     severity: "success",
   };
 }

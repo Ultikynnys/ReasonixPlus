@@ -506,6 +506,7 @@ export class Eventizer {
       text: c,
       severity: ev.severity ?? "high",
       cause: ev.cause,
+      ...(ev.compactionSummary ? { compactionSummary: ev.compactionSummary } : {}),
     };
   }
 }

@@ -298,6 +298,10 @@ export interface KernelWarningEvent extends KernelWireEventBase {
   /** Machine-readable trigger tag (mirror of src/loop WarningCause) so clients
    *  can key feedback cues off the trigger instead of matching message text. */
   cause?: "repetition-guard";
+  /** Compaction completion warning: the prefix-stripped summary body the fold
+   *  installed, so the card can show the actual compacted context alongside the
+   *  terse `text` header. Absent for non-compaction warnings. */
+  compactionSummary?: string;
 }
 
 export interface KernelErrorEvent extends KernelWireEventBase {

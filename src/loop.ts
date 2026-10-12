@@ -23,6 +23,7 @@ import {
   SUMMARIZER_OUTPUT_HEADROOM,
   buildCompactionRequest,
   buildVerificationRequest,
+  compactionSummaryBody,
   planCompaction,
   renderDeterministic,
   renderWithSummary,
@@ -1128,6 +1129,7 @@ export class CacheFirstLoop {
       afterMessages: merged.length,
       replacementMessages: merged,
     });
+    const summaryBody = compactionSummaryBody(result.messages);
     events.push({
       turn: this._turn,
       role: "warning",
@@ -1137,6 +1139,7 @@ export class CacheFirstLoop {
         after: (result.tokensAfter + tailTokens).toLocaleString(),
         method,
       }),
+      ...(summaryBody ? { compactionSummary: summaryBody } : {}),
     });
     return {
       status: "done",

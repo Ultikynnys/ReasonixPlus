@@ -130,6 +130,7 @@ export {
 export {
   clipIndexDescription,
   clipText,
+  compactionCardText,
   escapeHtml,
   flattenText,
   redactDiagnosticText,

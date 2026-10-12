@@ -120,29 +120,14 @@ describe("manualCompactNotice", () => {
     });
   });
 
-  it("appends the compacted summary from the retraction event", () => {
+  it("appends the compacted summary carried on the warning event", () => {
     const events = [
-      {
-        type: "session.retracted",
-        id: 1,
-        ts: "2026-05-27T00:00:00.000Z",
-        turn: 2,
-        kind: "compact",
-        beforeMessages: 40,
-        afterMessages: 6,
-        replacementMessages: [
-          {
-            role: "user",
-            synthetic: true,
-            content: "[COMPACT-SUMMARY]\nGoal: ship X.\nNext: run tests.",
-          },
-        ],
-      },
       {
         type: "warning",
         turn: 2,
         severity: "high",
         text: "Context compacted (summary): 1,000 tokens -> 400 tokens.",
+        compactionSummary: "Goal: ship X.\nNext: run tests.",
       },
     ] as unknown as Parameters<typeof manualCompactNotice>[0];
     expect(manualCompactNotice(events).text).toBe(

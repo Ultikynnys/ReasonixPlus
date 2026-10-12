@@ -86,4 +86,8 @@ export interface LoopEvent {
   sessionRetractedKind?: "retry" | "rewind" | "abort-discard" | "compact";
   /** compaction_start: which compaction path is running. */
   compactionTrigger?: "manual" | "auto" | "overflow";
+  /** Compaction completion warning: the prefix-stripped summary body installed
+   *  by the fold, so the card shows the compacted context. Kept out of `content`
+   *  so `content` stays the terse header other warning consumers rely on. */
+  compactionSummary?: string;
 }

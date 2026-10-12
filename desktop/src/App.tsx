@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL,
   type ChangelogRelease,
   clipText,
+  compactionCardText,
   extractPathsFromArgs,
   flattenText,
   isFilePathTool,
@@ -311,6 +312,10 @@ export type ChatMessage =
       turn: number;
       segments: AssistantSegment[];
       pending: boolean;
+      /** Set when a boundary card (compaction, …) was inserted right after this
+       *  card: later streaming output opens a NEW card below the boundary rather
+       *  than re-opening this one. */
+      closed?: boolean;
     }
   | {
       kind: "notice";
@@ -691,15 +696,114 @@ const ASSISTANT_CARD_EVENTS: ReadonlySet<IncomingEvent["type"]> = new Set([
   "tool.intent",
 ]);
 
-/** Append the event's assistant card when absent; a no-op otherwise. */
+/** Index of the turn's LAST assistant card — the card a boundary/annotation
+ *  segment (e.g. a late warning) belongs to. -1 when the turn has no card yet. */
+function lastAssistantIndex(messages: ChatMessage[], turn: number): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.kind === "assistant" && m.turn === turn) return i;
+  }
+  return -1;
+}
+
+/** Index of the turn's OPEN assistant card — its last card, unless a boundary
+ *  card has closed it — or -1 when streaming output must open a fresh card. A
+ *  settled (mid-turn `model.final`) card is still open, so the next delta
+ *  re-opens it; only a boundary closure forces a new card. */
+function openAssistantIndex(messages: ChatMessage[], turn: number): number {
+  const idx = lastAssistantIndex(messages, turn);
+  const card = idx >= 0 ? messages[idx] : undefined;
+  return card?.kind === "assistant" && !card.closed ? idx : -1;
+}
+
+/** Index of the single in-flight assistant card (the last one still pending),
+ *  or -1 when no turn is actively streaming. */
+function pendingAssistantIndex(messages: ChatMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.kind === "assistant" && m.pending) return i;
+  }
+  return -1;
+}
+
+/** A fresh, empty assistant card for a turn — pending until its turn settles. */
+function newAssistantCard(turn: number): Extract<ChatMessage, { kind: "assistant" }> {
+  return { kind: "assistant", turn, segments: [], pending: true };
+}
+
+/** Apply `fn` to the turn's OPEN assistant card, opening a fresh card when a
+ *  boundary has closed the previous one; every other card is left untouched.
+ *  This is the single streaming target — every delta/final/tool event routes
+ *  through it, so a turn's output is never written into a boundary-closed card
+ *  and never fanned out across cards. */
+function mapActiveAssistant(
+  messages: ChatMessage[],
+  turn: number,
+  fn: (m: Extract<ChatMessage, { kind: "assistant" }>) => ChatMessage,
+): ChatMessage[] {
+  const idx = openAssistantIndex(messages, turn);
+  const card = idx >= 0 ? messages[idx] : undefined;
+  if (card?.kind === "assistant") {
+    const next = [...messages];
+    next[idx] = fn(card);
+    return next;
+  }
+  return [...messages, fn(newAssistantCard(turn))];
+}
+
+/** Close the boundary-crossed card of `turn` — stop its spinner, stamp a trailing
+ *  reasoning run, and mark it CLOSED so later streaming opens a NEW card below the
+ *  boundary instead of re-opening this one. No-op when the turn has no card or it
+ *  is already closed. */
+function closeTurnCard(messages: ChatMessage[], turn: number): ChatMessage[] {
+  const idx = lastAssistantIndex(messages, turn);
+  const card = idx >= 0 ? messages[idx] : undefined;
+  if (card?.kind !== "assistant" || card.closed) return messages;
+  const next = [...messages];
+  next[idx] = {
+    ...card,
+    closed: true,
+    pending: false,
+    segments: closeTrailingReasoning(card.segments),
+  };
+  return next;
+}
+
+/** Append the event's assistant card when the turn has no OPEN card; a no-op
+ *  otherwise. After a boundary card closes the active card, the next streaming
+ *  event opens a fresh card below the boundary. */
 function ensureAssistantTurn(state: State, ev: IncomingEvent): State {
   if (!ASSISTANT_CARD_EVENTS.has(ev.type)) return state;
   const turn = (ev as { turn: number }).turn;
-  if (state.messages.some((m) => m.kind === "assistant" && m.turn === turn)) return state;
-  return {
-    ...state,
-    messages: [...state.messages, { kind: "assistant", turn, segments: [], pending: true }],
-  };
+  if (openAssistantIndex(state.messages, turn) >= 0) return state;
+  return { ...state, messages: [...state.messages, newAssistantCard(turn)] };
+}
+
+/** The turn a card is anchored to. Only user/assistant cards and notice cards
+ *  carry a turn; a notice without one is treated as belonging to turn 0. */
+function cardTurn(m: ChatMessage): number {
+  if (m.kind === "notice") return m.turn ?? 0;
+  return m.turn;
+}
+
+/** Merge `extras` into a turn-ordered `base`: each extra lands at the END of its
+ *  own turn's group (before the first base card with a greater turn), keeping the
+ *  extras' order. Used to carry notice cards back into a rebuilt conversation so
+ *  they sit beside the turn they annotate instead of being forced to the tail. */
+function mergeByTurn(base: ChatMessage[], extras: ChatMessage[]): ChatMessage[] {
+  let out = base;
+  for (const extra of extras) {
+    const turn = cardTurn(extra);
+    let idx = out.length;
+    for (let i = 0; i < out.length; i++) {
+      if (cardTurn(out[i]!) > turn) {
+        idx = i;
+        break;
+      }
+    }
+    out = [...out.slice(0, idx), extra, ...out.slice(idx)];
+  }
+  return out;
 }
 
 let noticeSequence = 0;
@@ -910,31 +1014,32 @@ export function reduce(state: State, action: Action): State {
         if (bucket) bucket.push(it);
         else byTurn.set(it.turn, [it]);
       }
-      // No missing-card synthesis: turn ordinals are monotonic daemon-side,
-      // so the card already exists (model.turn.started / ensureAssistantTurn).
+      // Route through the SAME open-card target every other streaming event
+      // uses: a batched frame lands in the turn's open card (opening a fresh one
+      // after a boundary closed the previous) instead of fanning out to every
+      // card of the turn.
       const lastItem = collapsed[collapsed.length - 1];
-      return {
-        ...state,
-        turnStatus: lastItem?.channel === "reasoning" ? "reasoning" : "responding",
-        turnLastEventMs: Date.now(),
-        messages: state.messages.map((m) => {
-          if (m.kind !== "assistant") return m;
-          const relevant = byTurn.get(m.turn);
-          if (!relevant || relevant.length === 0) return m;
+      let messages = state.messages;
+      for (const [turn, items] of byTurn) {
+        messages = mapActiveAssistant(messages, turn, (m) => {
           let segments = m.segments;
-          for (const it of relevant) {
+          for (const it of items) {
             segments = appendTextSegment(
               segments,
               it.channel === "content" ? "text" : "reasoning",
               it.text,
             );
           }
-          // A fresh stream re-opens the card. A mid-turn `model.final` settles
-          // the message once per model iteration, so a later iteration's
-          // reasoning has to re-assert pending, or its card renders the
-          // completion checkmark while it is still streaming.
+          // A fresh stream re-opens the card: a mid-turn `model.final` settles the
+          // message once per iteration, so a later iteration re-asserts pending.
           return { ...m, segments, pending: true };
-        }),
+        });
+      }
+      return {
+        ...state,
+        turnStatus: lastItem?.channel === "reasoning" ? "reasoning" : "responding",
+        turnLastEventMs: Date.now(),
+        messages,
       };
     }
     case "clear":
@@ -1465,8 +1570,10 @@ function handleCueForEvent(
 // turn). Stored on the notice only for turnHasTerminalExplanation's dedupe —
 // placement itself is creation-ordered (see appendNoticeMessage).
 function currentTurnForNotice(messages: ChatMessage[]): number {
-  const pending = messages.find((m) => m.kind === "assistant" && m.pending);
-  if (pending?.kind === "assistant") return pending.turn;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.kind === "assistant" && !m.closed) return m.turn;
+  }
   let last = 0;
   for (const m of messages) {
     if (m.kind === "user" || m.kind === "assistant") last = Math.max(last, m.turn);
@@ -1481,12 +1588,19 @@ function insertNotice(
   severity: NoticeSeverity = "info",
   turn?: number,
 ): ChatMessage[] {
-  return appendNoticeMessage(messages, {
+  const inflight = currentTurnForNotice(messages);
+  const noticeTurn = turn ?? inflight;
+  // A notice created for the streaming turn is a boundary: close that turn's
+  // open card so output created after this notice lands in a NEW card below it.
+  // A notice for an earlier turn (a late error) leaves the streaming card alone.
+  // Everything is then appended in creation order.
+  const base = noticeTurn === inflight ? closeTurnCard(messages, noticeTurn) : messages;
+  return appendNoticeMessage(base, {
     kind: "notice",
     id: nextNoticeId(),
     text,
     severity,
-    turn: turn ?? currentTurnForNotice(messages),
+    turn: noticeTurn,
   });
 }
 
@@ -1502,6 +1616,7 @@ export function settleTurnMessages(messages: ChatMessage[]): ChatMessage[] {
       ? {
           ...message,
           pending: false,
+          closed: true,
           segments: message.segments.map((segment) =>
             segment.kind === "tool" && segment.result === undefined
               ? {
@@ -1532,8 +1647,8 @@ function appendAssistantSegment(
   segment: AssistantSegment,
   turn = 1,
 ): ChatMessage[] {
-  const hostIndex = messages.findIndex((m) => m.kind === "assistant" && m.turn === turn);
-  const host = messages[hostIndex];
+  const hostIndex = openAssistantIndex(messages, turn);
+  const host = hostIndex >= 0 ? messages[hostIndex] : undefined;
   if (host?.kind === "assistant") {
     const next = [...messages];
     next[hostIndex] = { ...host, segments: [...host.segments, segment] };
@@ -1676,15 +1791,6 @@ function dropStaleCompaction(state: State, ev: IncomingEvent): State {
     ...state,
     messages: state.messages.filter((m) => !stale(m)),
   };
-}
-
-/** The turn's assistant card while it is still being built: streaming text or
- *  a dispatched tool whose result has not landed. */
-function isLiveAssistant(m: ChatMessage): m is Extract<ChatMessage, { kind: "assistant" }> {
-  return (
-    m.kind === "assistant" &&
-    (m.pending === true || m.segments.some((s) => s.kind === "tool" && s.result === undefined))
-  );
 }
 
 export function applyIncoming(state: State, ev: IncomingEvent): State {
@@ -2272,22 +2378,11 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // full of self-repaired loops does not look like everything failed.
       const recoverable = ev.type === "error" ? ev.recoverable : false;
       const turn = ev.type === "error" ? ev.turn : undefined;
+      const severity: NoticeSeverity = recoverable ? "warning" : "error";
       // $error is NOT terminal: mid-turn hook failures arrive as $error while
       // the loop keeps running, and real turn ends always carry $turn_complete
       // (daemon invariant). Clearing busy here created the UI-idle/
-      // daemon-working zombie. The still-streaming assistant message is still
-      // flipped to settled so a terminal error doesn't leave a spinner (#1660);
-      // if the turn continues, the next delta re-pends a fresh card.
-      const settled = state.messages.map((m) =>
-        m.kind === "assistant" && m.pending ? { ...m, pending: false } : m,
-      );
-      const notice: ChatMessage = {
-        kind: "notice",
-        text: ev.message,
-        id: nextNoticeId(),
-        severity: recoverable ? "warning" : "error",
-        turn: turn ?? currentTurnForNotice(settled),
-      };
+      // daemon-working zombie.
       return {
         ...state,
         oauthWaiting: ev.message.includes("OAuth") ? false : state.oauthWaiting,
@@ -2299,19 +2394,22 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           ev.message.includes("MiMo") || ev.message.includes("mimo_oauth")
             ? false
             : state.mimoOAuthWaiting,
-        // A failed compaction's card IS the error display now — settle it in
-        // place instead of leaving the throbber spinning next to a new card.
         messages: (() => {
-          const runningIdx = settled.findIndex(
+          // A failed compaction's card IS the error display — overwrite it in
+          // place (the compaction already closed the turn's card).
+          const runningIdx = state.messages.findIndex(
             (m) => m.kind === "notice" && m.running === true,
           );
-          return runningIdx >= 0
-            ? settled.map((m, i) =>
-                i === runningIdx && m.kind === "notice"
-                  ? { ...m, text: ev.message, severity: notice.severity, running: false }
-                  : m,
-              )
-            : appendNoticeMessage(settled, notice);
+          if (runningIdx >= 0) {
+            return state.messages.map((m, i) =>
+              i === runningIdx && m.kind === "notice"
+                ? { ...m, text: ev.message, severity, running: false }
+                : m,
+            );
+          }
+          // A mid-turn error is a boundary: insertNotice closes the turn's card
+          // so later output opens a NEW card below the error.
+          return insertNotice(state.messages, ev.message, severity, turn);
         })(),
       };
     }
@@ -2324,8 +2422,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     case "mimo_oauth_begin_result":
       return { ...state, mimoOAuthWaiting: true };
     case "model.turn.started":
-      // Duplicate-delivery dedupe only: ordinals are monotonic daemon-side.
-      if (state.messages.some((m) => m.kind === "assistant" && m.turn === ev.turn)) {
+      // Repeat only when the turn already has an OPEN card; a colliding ordinal
+      // (post-truncation) still opens a fresh card instead of being swallowed.
+      if (openAssistantIndex(state.messages, ev.turn) >= 0) {
         return { ...state, model: ev.model, turnLastEventMs: Date.now() };
       }
       return {
@@ -2334,18 +2433,14 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turnStatus: "thinking",
         turnStatusTool: null,
         turnLastEventMs: Date.now(),
-        messages: [
-          ...state.messages,
-          { kind: "assistant", turn: ev.turn, segments: [], pending: true },
-        ],
+        messages: [...state.messages, newAssistantCard(ev.turn)],
       };
     case "model.delta":
       return {
         ...state,
         turnStatus: ev.channel === "reasoning" ? "reasoning" : "responding",
         turnLastEventMs: Date.now(),
-        messages: state.messages.map((m) => {
-          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+        messages: mapActiveAssistant(state.messages, ev.turn, (m) => {
           if (ev.channel === "content") {
             return {
               ...m,
@@ -2392,8 +2487,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return {
         ...state,
         usage,
-        messages: state.messages.map((m) => {
-          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+        messages: mapActiveAssistant(state.messages, ev.turn, (m) => {
           // Abort-settled finals (emitAbortedFinal) carry the abort notice in
           // `content`, but the deltas never streamed it — append it so the card
           // isn't a silent empty bubble ("turn ended without any thinking").
@@ -2425,8 +2519,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turnStatus: "calling_tool",
         turnStatusTool: ev.name,
         turnLastEventMs: Date.now(),
-        messages: state.messages.map((m) => {
-          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+        messages: mapActiveAssistant(state.messages, ev.turn, (m) => {
           if (m.segments.some((s) => s.kind === "tool" && s.callId === ev.callId)) return m;
           return {
             ...m,
@@ -2451,8 +2544,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turnStatusTool: ev.name,
         turnLastEventMs: Date.now(),
         sessionFiles: mergeSessionFiles(state.sessionFiles, adds),
-        messages: state.messages.map((m) => {
-          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+        messages: mapActiveAssistant(state.messages, ev.turn, (m) => {
           const idx = m.segments.findIndex((s) => s.kind === "tool" && s.callId === ev.callId);
           if (idx >= 0) {
             const segs = [...m.segments];
@@ -2577,25 +2669,60 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     }
     case "session.retracted": {
-      // Chat state, not session log: the running compaction card survives the
-      // rebuild (its completion flips it to done), and a mid-turn compaction
-      // must never erase the streaming assistant card or strand in-flight
-      // tool results. The live card holds the turn's logged history plus its
-      // not-yet-logged tail, so it wins over the loaded copies of that turn.
-      const liveAssistant =
-        ev.kind === "compact" ? state.messages.find(isLiveAssistant) : undefined;
-      const inflightTurn = liveAssistant ? liveAssistant.turn : null;
+      // Chat state, not session log: the replacement log is the folded/truncated
+      // conversation, and it NEVER carries notice cards (those are client-side
+      // annotations the daemon stores out-of-band). So carry every notice whose
+      // turn still exists forward and MERGE it back into the conversation by turn
+      // — none is silently dropped, and each lands beside the turn it annotates
+      // instead of being forced to the tail. Notices for turns the replacement
+      // removed (a rewind / retry truncation) are the only ones dropped. The
+      // in-flight turn's conversation cards are carried too (their live copies
+      // hold the logged history plus its not-yet-logged tail).
+      const runningTurns = state.messages.flatMap((m) =>
+        m.kind === "notice" && m.running === true && m.turn !== undefined ? [m.turn] : [],
+      );
+      const pendingIdx = pendingAssistantIndex(state.messages);
+      const pendingTurn =
+        pendingIdx >= 0 && state.messages[pendingIdx]?.kind === "assistant"
+          ? (state.messages[pendingIdx] as Extract<ChatMessage, { kind: "assistant" }>).turn
+          : null;
+      const inflightTurn =
+        ev.kind !== "compact" || (pendingTurn === null && runningTurns.length === 0)
+          ? null
+          : Math.max(pendingTurn ?? -1, ...runningTurns);
+      // Loaded user/assistant cards for the in-flight turn are superseded by the
+      // live copies below — but a late notice for the in-flight turn must sit
+      // after them, so keep the turn's number when computing the surviving range.
       const loaded = mapLoadedMessages(ev.replacementMessages).filter(
-        (m) => inflightTurn === null || !(m.kind === "assistant" && m.turn === inflightTurn),
-      );
-      const live = state.messages.filter(
         (m) =>
-          (m.kind === "notice" && m.running === true) ||
-          (liveAssistant !== undefined && m === liveAssistant),
+          inflightTurn === null ||
+          !((m.kind === "user" || m.kind === "assistant") && m.turn === inflightTurn),
       );
+      const loadedMaxTurn = loaded.reduce(
+        (max, m) => (m.kind === "user" || m.kind === "assistant" ? Math.max(max, m.turn) : max),
+        0,
+      );
+      const survivingMaxTurn = Math.max(loadedMaxTurn, inflightTurn ?? 0);
+      // Split the carried cards: the in-flight turn's cards and its notices form
+      // the TAIL (the replacement log does not contain that turn), while a carried
+      // notice for a surviving earlier turn is merged back beside its turn. A
+      // notice for a turn the replacement dropped goes with the turn.
+      const settledNotices: ChatMessage[] = [];
+      const inflightCards: ChatMessage[] = [];
+      for (const m of state.messages) {
+        if (m.kind === "notice") {
+          if (m.running === true || (inflightTurn !== null && m.turn === inflightTurn)) {
+            inflightCards.push(m);
+          } else if ((m.turn ?? 0) <= survivingMaxTurn) {
+            settledNotices.push(m);
+          }
+          continue;
+        }
+        if (inflightTurn !== null && m.turn === inflightTurn) inflightCards.push(m);
+      }
       return {
         ...state,
-        messages: [...loaded, ...live],
+        messages: [...mergeByTurn(loaded, settledNotices), ...inflightCards],
         sessionFiles: deriveSessionFiles(loaded),
       };
     }
@@ -2611,16 +2738,20 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return state;
     case "compaction.started": {
       if (state.messages.some((m) => m.kind === "notice" && m.running === true)) return state;
+      // Close the in-flight turn's card first so the compaction card lands at the
+      // boundary: post-compaction output opens a NEW card below it instead of
+      // growing the card above it and stranding this card at the bottom.
+      const base = closeTurnCard(state.messages, ev.turn);
       const notice: ChatMessage = {
         kind: "notice",
         id: nextNoticeId(),
         text: t("cards.compactingBody"),
         severity: "info",
-        turn: currentTurnForNotice(state.messages),
+        turn: currentTurnForNotice(base),
         running: true,
         trigger: ev.trigger,
       };
-      return { ...state, messages: appendNoticeMessage(state.messages, notice) };
+      return { ...state, messages: appendNoticeMessage(base, notice) };
     }
     case "$notice": {
       // Manual compaction's completion signal — settles its card in place.
@@ -2636,16 +2767,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         );
         return { ...state, messages };
       }
-      // A completed action (manual compaction), not a turn status — append in
-      // creation order so it sits below the turn, not above its assistant card.
-      const notice: ChatMessage = {
-        kind: "notice",
-        id: nextNoticeId(),
-        text: ev.text,
-        severity: ev.severity,
-        turn: currentTurnForNotice(state.messages),
-      };
-      return { ...state, messages: appendNoticeMessage(state.messages, notice) };
+      // A completed action (manual compaction), not a turn status — appended in
+      // creation order, after closing the streaming turn's card.
+      return { ...state, messages: insertNotice(state.messages, ev.text, ev.severity) };
     }
     case "warning": {
       // High-severity only — eventize already drops "low".
@@ -2656,9 +2780,16 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       if (runningIdx >= 0) {
         // Auto/overflow compaction reports through this warning — it becomes
         // the running card's done text instead of an inline assistant segment.
+        // Compose through the shared helper so the card shows the summary that
+        // replaced the folded context, not just the token-count header.
         const messages: ChatMessage[] = state.messages.map((m, i) =>
           i === runningIdx && m.kind === "notice"
-            ? { ...m, text: ev.text, severity: "success", running: false }
+            ? {
+                ...m,
+                text: compactionCardText(ev.text, ev.compactionSummary),
+                severity: "success",
+                running: false,
+              }
             : m,
         );
         return { ...state, messages };

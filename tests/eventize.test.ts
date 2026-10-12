@@ -224,6 +224,25 @@ describe("Eventizer.consume", () => {
     expect(out.find((ev) => ev.type === "error")).toBeUndefined();
   });
 
+  it("carries the compaction summary body onto the warning event", () => {
+    const e = new Eventizer();
+    e.consume(lev({ turn: 1 }), ctx);
+    const out = e.consume(
+      lev({
+        turn: 1,
+        role: "warning",
+        severity: "high",
+        content: "Context compacted (summary): 1,000 tokens -> 400 tokens.",
+        compactionSummary: "Goal: ship X.",
+      }),
+      ctx,
+    );
+    const warn = out.find((ev) => ev.type === "warning") as
+      | { compactionSummary?: string }
+      | undefined;
+    expect(warn?.compactionSummary).toBe("Goal: ship X.");
+  });
+
   it("treats unmarked warnings as high-severity (safer default for new emit sites)", () => {
     const e = new Eventizer();
     e.consume(lev({ turn: 1 }), ctx);

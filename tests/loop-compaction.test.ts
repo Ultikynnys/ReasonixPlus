@@ -83,6 +83,8 @@ describe("CacheFirstLoop.compactNow (manual, LLM path)", () => {
     expect(retracted?.afterMessages).toBe(loop.log.length);
     const warning = outcome.events.find((e) => e.role === "warning");
     expect(warning?.content).toContain("Context compacted");
+    // The summary body rides along so the card shows the actual compacted context.
+    expect(warning?.compactionSummary).toContain("improved summary of older work");
   });
 
   it("falls back to the deterministic fold when the summarizer returns nothing", async () => {
