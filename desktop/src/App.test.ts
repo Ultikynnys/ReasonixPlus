@@ -1324,6 +1324,46 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
     expect(defaults.settings?.autoCompactTrigger).toBeNull();
   });
 
+  it("stores the feedback cue matrix from $settings (never dropped by the whitelist)", () => {
+    const cues = {
+      inputRequired: { enabled: true, volume: 0.25, notify: true },
+      guardTriggered: { enabled: false, volume: 0.8, notify: false },
+    };
+    const state = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$settings",
+        reasoningEffort: "high",
+        editMode: "follow",
+        quickSendId: "proceed",
+        quickSends: [],
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "deepseek-v4-pro",
+        feedbackCues: cues,
+        version: "0.50.1",
+      },
+    });
+    expect(state.settings?.feedbackCues).toEqual(cues);
+
+    // Absent field falls back to an empty matrix (everything off).
+    const defaults = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$settings",
+        reasoningEffort: "high",
+        editMode: "follow",
+        quickSendId: "proceed",
+        quickSends: [],
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "deepseek-v4-pro",
+        version: "0.50.1",
+      },
+    });
+    expect(defaults.settings?.feedbackCues).toEqual({});
+  });
+
   it("appends a $notice event below the turn as a notice card", () => {
     const base = {
       ...initialState(),

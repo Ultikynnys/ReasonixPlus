@@ -175,7 +175,7 @@ export const en = {
     rawTabHidden: "Hidden",
     feedbackCuesSection: "Feedback cues",
     feedbackCuesSectionHint:
-      "Sounds and notifications for notable events. Everything is off by default; enable each cue individually.",
+      "Sounds and notifications for notable events. Everything is off by default; enable each cue individually. Notifications are raised only while the window is unfocused.",
     feedbackCueInputRequired: "Input required",
     feedbackCueInputRequiredHint:
       "Command or file approval, plan approval, multiple-choice questions, checkpoints and revisions.",
@@ -188,9 +188,13 @@ export const en = {
       "The repetition guard stopped a degenerating model stream (opt in under Tools).",
     feedbackCueSoundOn: "Sound on",
     feedbackCueSoundOff: "Sound off",
+    feedbackCueSoundEnable: "Enable sound for {cue}",
+    feedbackCueSoundDisable: "Disable sound for {cue}",
     feedbackCueVolume: "Volume for {cue}",
-    feedbackCueNotify: "Notify",
-    feedbackCueNotifyTitle: "Also raise a desktop notification while the window is unfocused",
+    feedbackCueNotifyOn: "Notify on",
+    feedbackCueNotifyOff: "Notify off",
+    feedbackCueNotifyEnable: "Enable notifications for {cue}",
+    feedbackCueNotifyDisable: "Disable notifications for {cue}",
     voiceSection: "Voice processing model",
     voiceSectionHint:
       "Select a speech-to-text recognition model. Models download on demand into the local cache.",

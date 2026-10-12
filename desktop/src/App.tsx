@@ -2125,6 +2125,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           autoCompactTrigger: ev.autoCompactTrigger ?? null,
           questionTimerEnabled: ev.questionTimerEnabled ?? false,
           rawTabEnabled: ev.rawTabEnabled ?? false,
+          feedbackCues: ev.feedbackCues ?? {},
           baseUrl: ev.baseUrl,
           apiKeyPrefix: ev.apiKeyPrefix,
           workspaceDir: ev.workspaceDir,

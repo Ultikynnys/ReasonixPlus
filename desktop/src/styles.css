@@ -7263,6 +7263,22 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .seg-ctrl .mcp-remove {
   color: var(--danger);
 }
+/* Feedback-cue rows: a fixed control order (sound switch · volume · notify
+ * switch) that never wraps. The shared `.setting-row` control column wraps, so
+ * without this a row with a longer label stacked while a shorter one stayed on
+ * one line — the inconsistency the section used to show. */
+.feedback-cue-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+.feedback-cue-controls input[type="range"] {
+  width: 84px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
 .provider-caret {
   display: inline-flex;
   align-items: center;

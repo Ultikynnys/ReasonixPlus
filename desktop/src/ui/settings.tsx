@@ -3242,27 +3242,36 @@ function FeedbackCuesSection({
         const enabled = cue?.enabled === true;
         const notify = cue?.notify === true;
         const volume = typeof cue?.volume === "number" ? cue.volume : 0.5;
+        const cueName = t(label);
         return (
           <div className="setting-row" key={id}>
             <div className="l">
-              <div className="n">{t(label)}</div>
+              <div className="n">{cueName}</div>
               <div className="h">{t(hint)}</div>
             </div>
-            <div className="seg-ctrl">
-              <button
-                type="button"
-                data-on={enabled}
-                onClick={() => patchCue(id, { enabled: true, volume, notify })}
-              >
-                {t("settings.feedbackCueSoundOn")}
-              </button>
-              <button
-                type="button"
-                data-on={!enabled}
-                onClick={() => patchCue(id, { enabled: false, volume, notify })}
-              >
-                {t("settings.feedbackCueSoundOff")}
-              </button>
+            {/* Fixed control order — sound on/off, volume, notify on/off — so
+                every cue row renders identically (the shared row wraps). */}
+            <div className="feedback-cue-controls">
+              <div className="seg-ctrl">
+                <button
+                  type="button"
+                  aria-pressed={enabled}
+                  aria-label={t("settings.feedbackCueSoundEnable", { cue: cueName })}
+                  data-on={enabled}
+                  onClick={() => patchCue(id, { enabled: true, volume, notify })}
+                >
+                  {t("settings.feedbackCueSoundOn")}
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={!enabled}
+                  aria-label={t("settings.feedbackCueSoundDisable", { cue: cueName })}
+                  data-on={!enabled}
+                  onClick={() => patchCue(id, { enabled: false, volume, notify })}
+                >
+                  {t("settings.feedbackCueSoundOff")}
+                </button>
+              </div>
               <input
                 type="range"
                 min={0}
@@ -3270,17 +3279,29 @@ function FeedbackCuesSection({
                 step={0.05}
                 value={volume}
                 disabled={!enabled}
-                aria-label={t("settings.feedbackCueVolume", { cue: t(label) })}
+                aria-label={t("settings.feedbackCueVolume", { cue: cueName })}
                 onChange={(e) => patchCue(id, { enabled, volume: Number(e.target.value), notify })}
               />
-              <button
-                type="button"
-                data-on={notify}
-                title={t("settings.feedbackCueNotifyTitle")}
-                onClick={() => patchCue(id, { enabled, volume, notify: !notify })}
-              >
-                {t("settings.feedbackCueNotify")}
-              </button>
+              <div className="seg-ctrl">
+                <button
+                  type="button"
+                  aria-pressed={notify}
+                  aria-label={t("settings.feedbackCueNotifyEnable", { cue: cueName })}
+                  data-on={notify}
+                  onClick={() => patchCue(id, { enabled, volume, notify: true })}
+                >
+                  {t("settings.feedbackCueNotifyOn")}
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={!notify}
+                  aria-label={t("settings.feedbackCueNotifyDisable", { cue: cueName })}
+                  data-on={!notify}
+                  onClick={() => patchCue(id, { enabled, volume, notify: false })}
+                >
+                  {t("settings.feedbackCueNotifyOff")}
+                </button>
+              </div>
             </div>
           </div>
         );
