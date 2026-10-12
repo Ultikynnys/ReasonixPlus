@@ -615,6 +615,10 @@ export const en = {
       suggestion2: "Update the README to match the code base",
       suggestion3: "Find DRY violations in the code base",
     },
+    noSessions: {
+      title: "No conversations yet",
+      hint: "Create a new chat to get started in this workspace.",
+    },
     setup: {
       welcome: "Welcome to Reasonix+",
       description:

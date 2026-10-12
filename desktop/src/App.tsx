@@ -4126,6 +4126,8 @@ function TabRuntime({
               onPickWorkspace={pickWorkspace}
               onOpenSettings={() => openSettingsAt("models")}
             />
+          ) : state.sessionsRevision > 0 && state.sessions.length === 0 ? (
+            <NoSessionsView onNewChat={newChat} />
           ) : (
             <>
               <MainHead
@@ -5470,6 +5472,36 @@ function PendingWorkspaceView({
   );
 }
 
+/** Shared shell for the main-area empty panels (welcome, no-sessions): the
+ *  empty-mark plus a centered title/hint block above the caller's actions. */
+function EmptyPanel({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        padding: "48px 16px 24px",
+        textAlign: "center",
+        color: "var(--muted)",
+        fontFamily: "var(--font-sans, 'Geist', sans-serif)",
+      }}
+    >
+      <div className="empty-mark" />
+      <div style={{ fontSize: 18, fontWeight: 600, color: "var(--fg)", marginBottom: 4 }}>
+        {title}
+      </div>
+      <div style={{ fontSize: 12, marginBottom: 18 }}>{hint}</div>
+      {children}
+    </div>
+  );
+}
+
 function EmptyState({
   onPick,
   workspaceDir,
@@ -5486,28 +5518,19 @@ function EmptyState({
   ];
   const wsLabel = workspaceDir ? workspaceDir.split(/[\\/]/).pop() : null;
   return (
-    <div
-      style={{
-        padding: "48px 16px 24px",
-        textAlign: "center",
-        color: "var(--muted)",
-        fontFamily: "var(--font-sans, 'Geist', sans-serif)",
-      }}
-    >
-      <div className="empty-mark" />
-      <div style={{ fontSize: 18, fontWeight: 600, color: "var(--fg)", marginBottom: 4 }}>
-        {t("app.empty.welcome")}
-      </div>
-      <div style={{ fontSize: 12, marginBottom: 18 }}>
-        {wsLabel ? (
+    <EmptyPanel
+      title={t("app.empty.welcome")}
+      hint={
+        wsLabel ? (
           <>
             {t("app.empty.currentWorkspace")}
             <code style={{ fontFamily: "Geist Mono, monospace" }}>{wsLabel}</code>
           </>
         ) : (
           t("app.empty.selectWorkspace")
-        )}
-      </div>
+        )
+      }
+    >
       <div
         style={{
           display: "flex",
@@ -5530,7 +5553,18 @@ function EmptyState({
           </button>
         ))}
       </div>
-    </div>
+    </EmptyPanel>
+  );
+}
+
+function NoSessionsView({ onNewChat }: { onNewChat: () => void }) {
+  useLang();
+  return (
+    <EmptyPanel title={t("app.noSessions.title")} hint={t("app.noSessions.hint")}>
+      <button type="button" className="btn" style={{ fontSize: 12 }} onClick={onNewChat}>
+        {t("sidebarPanel.newChat")}
+      </button>
+    </EmptyPanel>
   );
 }
 
