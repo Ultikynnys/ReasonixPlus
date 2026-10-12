@@ -157,6 +157,7 @@ import { useAutoScroll } from "./ui/useAutoScroll";
 import { useIsScrollable } from "./ui/useIsScrollable";
 import { useDisableTextAssist } from "./ui/useDisableTextAssist";
 import { useResizable } from "./ui/useResizable";
+import { useTurnWatchdog } from "./ui/useTurnWatchdog";
 import { WorkdirPop } from "./ui/workdir-pop";
 import { anyVoiceModelDownloaded } from "./voice/models";
 import { areWorkspacesLoaded } from "./workspace-loading";
@@ -449,6 +450,10 @@ type State = {
   ready: boolean;
   needsSetup: boolean;
   busy: boolean;
+  /** True between an optimistic send and the daemon's $turn_started ack (or
+   *  its $turn_complete rejection). Visual pending spin only — turn state
+   *  itself is daemon-owned; busy never flips on a local guess. */
+  awaitingAck: boolean;
   model?: string;
   currentSession?: string;
   messages: ChatMessage[];
@@ -599,6 +604,7 @@ type Action =
   | { t: "antigravity_quota_refreshing" }
   | { t: "zai_quota_refreshing" }
   | { t: "opencode_quota_refreshing" }
+  | { t: "release_stale_send" }
   | { t: "push_notice"; text: string; severity?: NoticeSeverity };
 
 export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
@@ -729,7 +735,7 @@ export function reduce(state: State, action: Action): State {
     case "send_user": {
       return {
         ...state,
-        busy: true,
+        awaitingAck: true,
         messages: [
           ...state.messages,
           {
@@ -746,7 +752,7 @@ export function reduce(state: State, action: Action): State {
       const argsLine = action.args ? ` ${action.args}` : "";
       return {
         ...state,
-        busy: true,
+        awaitingAck: true,
         activeSkill: action.skill,
         messages: [
           ...state.messages,
@@ -765,6 +771,7 @@ export function reduce(state: State, action: Action): State {
         ...state,
         ready: false,
         busy: false,
+        awaitingAck: false,
         activeSkill: null,
         queuedSends: [],
         messages: insertNotice(
@@ -784,6 +791,7 @@ export function reduce(state: State, action: Action): State {
         ? {
             ...state,
             busy: modelChanged ? false : state.busy,
+            awaitingAck: modelChanged ? false : state.awaitingAck,
             turnStatus: modelChanged ? null : state.turnStatus,
             turnStatusTool: modelChanged ? null : state.turnStatusTool,
             settings: { ...state.settings, ...sanitizeSettingsPatch(action.patch) },
@@ -902,6 +910,7 @@ export function reduce(state: State, action: Action): State {
       return {
         ...state,
         busy: false,
+        awaitingAck: false,
         currentSession: undefined,
         messages: [],
         pendingConfirms: [],
@@ -1024,6 +1033,18 @@ export function reduce(state: State, action: Action): State {
       };
     case "shift_queued_send":
       return { ...state, queuedSends: state.queuedSends.slice(1) };
+    case "release_stale_send": {
+      if (!state.awaitingAck) return state;
+      return {
+        ...state,
+        awaitingAck: false,
+        messages: insertNotice(
+          state.messages,
+          "The send was never acknowledged by the agent — released. Check the connection and resend.",
+          "warning",
+        ),
+      };
+    }
     case "push_notice": {
       return {
         ...state,
@@ -1403,6 +1424,30 @@ function insertNotice(
 /** True when the given turn already carries a user-visible explanation (a warning
  *  segment or a notice). Prevents $turn_complete from adding a duplicate stop card
  *  when the loop already surfaced the reason. */
+/** The message list a settled turn leaves behind: unresolved tool segments get
+ *  a canned cancelled result. Shared by $turn_complete and the $tab_status
+ *  idle resync so the two settle paths cannot drift apart again. */
+export function settleTurnMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) =>
+    message.kind === "assistant"
+      ? {
+          ...message,
+          pending: false,
+          segments: message.segments.map((segment) =>
+            segment.kind === "tool" && segment.result === undefined
+              ? {
+                  ...segment,
+                  result:
+                    "Tool call cancelled because the conversation stopped. No result was produced.",
+                  ok: false,
+                }
+              : segment,
+          ),
+        }
+      : message,
+  );
+}
+
 function turnHasTerminalExplanation(messages: ChatMessage[], turn: number | undefined): boolean {
   return messages.some(
     (m) =>
@@ -1593,11 +1638,12 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         if (existing?.kind === "user" && existing.turn === ev.turn) return state;
         messages[existingIdx] =
           existing?.kind === "user" ? { ...existing, turn: ev.turn } : existing;
-        return { ...state, busy: true, messages };
+        return { ...state, busy: true, awaitingAck: false, messages };
       }
       return {
         ...state,
         busy: true,
+        awaitingAck: false,
         messages: [
           ...state.messages,
           {
@@ -1629,23 +1675,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // Without this, an Esc/abort during plan approval leaves the plan
       // card rendered AFTER state.messages forever; the queued user input
       // that drains next then appears above the zombie card (#1456).
-      const settled = state.messages.map((message) =>
-        message.kind === "assistant"
-          ? {
-              ...message,
-              segments: message.segments.map((segment) =>
-                segment.kind === "tool" && segment.result === undefined
-                  ? {
-                      ...segment,
-                      result:
-                        "Tool call cancelled because the conversation stopped. No result was produced.",
-                      ok: false,
-                    }
-                  : segment,
-              ),
-            }
-          : message,
-      );
+      const settled = settleTurnMessages(state.messages);
       const outcome = ev.outcome ?? "success";
       // Never end a turn silently: when the model stopped without an answer and
       // the loop did not already surface an explanation, add a terminal card.
@@ -1656,6 +1686,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return {
         ...state,
         busy: false,
+        awaitingAck: false,
         lastTurnOutcome: outcome,
         messages,
         activeSkill: null,
@@ -1667,6 +1698,39 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         pendingPlans: [],
         pendingCheckpoints: [],
         pendingRevisions: [],
+      };
+    }
+    case "$turn_started":
+      // Daemon-authoritative ON: the turn really runs from here. Releases the
+      // optimistic send spin; from this point busy is the daemon's truth.
+      return { ...state, busy: true, awaitingAck: false };
+    case "$tab_status": {
+      // Reconciliation probe reply. Anything other than agreement resolves to
+      // the daemon's answer — the UI never out-argues the backend.
+      if (ev.busy === state.busy && !state.awaitingAck) return state;
+      if (ev.busy) return { ...state, busy: true, awaitingAck: false };
+      // Daemon idle while the UI held a turn: a terminal event was lost.
+      // Release exactly like $turn_complete would, plus a warning notice so
+      // the correction is visible.
+      const settled = settleTurnMessages(state.messages);
+      return {
+        ...state,
+        busy: false,
+        awaitingAck: false,
+        activeSkill: null,
+        turnStatus: null,
+        turnStatusTool: null,
+        pendingConfirms: [],
+        pendingPathAccess: [],
+        pendingChoices: [],
+        pendingPlans: [],
+        pendingCheckpoints: [],
+        pendingRevisions: [],
+        messages: insertNotice(
+          settled,
+          "Resynced with the agent: it was idle, so stuck turn state was released.",
+          "warning",
+        ),
       };
     }
     case "$confirm_required":
@@ -1988,6 +2052,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return {
         ...state,
         busy: releaseTurn ? false : state.busy,
+        awaitingAck: releaseTurn ? false : state.awaitingAck,
         turnStatus: releaseTurn ? null : state.turnStatus,
         turnStatusTool: releaseTurn ? null : state.turnStatusTool,
         messages: wsChanged ? [] : state.messages,
@@ -2083,6 +2148,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return {
         ...state,
         busy: false,
+        awaitingAck: false,
         currentSession: sessionName,
         planHistory: [],
         planDetails: {},
@@ -2136,9 +2202,12 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // full of self-repaired loops does not look like everything failed.
       const recoverable = ev.type === "error" ? ev.recoverable : false;
       const turn = ev.type === "error" ? ev.turn : undefined;
-      // Loop has returned (any error path ends the turn); flip the still-
-      // streaming assistant message to settled so the UI doesn't keep
-      // showing a "thinking" spinner above the error card (#1660).
+      // $error is NOT terminal: mid-turn hook failures arrive as $error while
+      // the loop keeps running, and real turn ends always carry $turn_complete
+      // (daemon invariant). Clearing busy here created the UI-idle/
+      // daemon-working zombie. The still-streaming assistant message is still
+      // flipped to settled so a terminal error doesn't leave a spinner (#1660);
+      // if the turn continues, the next delta re-pends a fresh card.
       const settled = state.messages.map((m) =>
         m.kind === "assistant" && m.pending ? { ...m, pending: false } : m,
       );
@@ -2151,10 +2220,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
       return {
         ...state,
-        busy: false,
-        activeSkill: null,
-        turnStatus: null,
-        turnStatusTool: null,
         oauthWaiting: ev.message.includes("OAuth") ? false : state.oauthWaiting,
         opencodeOAuthWaiting:
           ev.message.includes("OpenCode") || ev.message.includes("opencode_oauth")
@@ -2467,9 +2532,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     case "$retry_result":
       return { ...state, retryText: ev.text, retryNonce: state.retryNonce + 1 };
     case "$btw_result":
+      // A side question never starts or ends a turn — it must not touch busy.
       return {
         ...state,
-        busy: false,
         messages: insertNotice(state.messages, `≫ btw\n${ev.answer}`, "info"),
       };
     case "status":
@@ -2739,6 +2804,7 @@ function TabRuntime({
     ready: false,
     needsSetup: false,
     busy: false,
+    awaitingAck: false,
     messages: [],
     pendingConfirms: [],
     pendingPathAccess: [],
@@ -3282,7 +3348,13 @@ function TabRuntime({
         }
       }
 
-      if ((!text && sendImages.length === 0) || !state.ready || state.busy) return;
+      if (
+        (!text && sendImages.length === 0) ||
+        !state.ready ||
+        state.busy ||
+        state.awaitingAck
+      )
+        return;
 
       const clientId = `c-${Date.now()}`;
       // ChatGPT models: typed `@path` image mentions get an optimistic echo —
@@ -3318,6 +3390,7 @@ function TabRuntime({
       imageCapable,
       state.ready,
       state.busy,
+      state.awaitingAck,
       state.settings?.workspaceDir,
       sendRpc,
       recordAbortDraft,
@@ -3335,8 +3408,21 @@ function TabRuntime({
   }, [clearAbortDraft, draftStore, setDraft, sendRpc]);
 
   useEffect(() => {
-    if (!state.busy) clearAbortDraft();
-  }, [clearAbortDraft, state.busy]);
+    if (!state.busy && !state.awaitingAck) clearAbortDraft();
+  }, [clearAbortDraft, state.busy, state.awaitingAck]);
+
+  // Turn-state parity watchdog: while a turn is engaged, poll the daemon's
+  // authoritative tab_status (interval + focus + reconnect); release a send
+  // the daemon never acknowledged.
+  const releaseStaleSend = useCallback(() => dispatch({ t: "release_stale_send" }), []);
+  const probeTabStatus = useCallback(() => sendRpc({ cmd: "tab_status" }), [sendRpc]);
+  useTurnWatchdog({
+    engaged: state.busy || state.awaitingAck,
+    awaitingAckWithoutBusy: state.awaitingAck && !state.busy,
+    connected: backendConnected,
+    probe: probeTabStatus,
+    onStaleAck: releaseStaleSend,
+  });
 
   // When retry returns the last user text, set it as the composer draft.
   // Only fire when retryNonce changes — retryText alone would re-fire on re-renders.
@@ -3349,12 +3435,12 @@ function TabRuntime({
   }, [state.retryNonce]);
 
   useEffect(() => {
-    if (state.busy || !state.ready || state.queuedSends.length === 0) return;
+    if (state.busy || state.awaitingAck || !state.ready || state.queuedSends.length === 0) return;
     const next = state.queuedSends[0];
     if (!next) return;
     dispatch({ t: "shift_queued_send" });
     send(next);
-  }, [state.busy, state.ready, state.queuedSends, send]);
+  }, [state.busy, state.awaitingAck, state.ready, state.queuedSends, send]);
 
   useEffect(() => {
     const currentSnapshot: ApprovalSnapshot = {
@@ -3604,7 +3690,7 @@ function TabRuntime({
       } else if (mod && (e.key === "j" || e.key === "J")) {
         e.preventDefault();
         setJobsOpen((v) => !v);
-      } else if (e.key === "Escape" && state.busy) {
+      } else if (e.key === "Escape" && (state.busy || state.awaitingAck)) {
         const target = e.target as HTMLElement | null;
         if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
         // A modal is open — let its own Esc handler close it (#1670).
@@ -3618,6 +3704,7 @@ function TabRuntime({
   }, [
     active,
     state.busy,
+    state.awaitingAck,
     abort,
     newChat,
     settingsOpen,
@@ -4095,9 +4182,9 @@ function TabRuntime({
                 )}
                 onAbort={abort}
                 disabled={!state.ready}
-                busy={state.busy}
+                busy={state.busy || state.awaitingAck}
                 busyLabel={
-                  state.busy
+                  state.busy || state.awaitingAck
                     ? state.activeSkill
                       ? `Skill · ${state.activeSkill.name}`
                       : state.pendingChoices.length > 0

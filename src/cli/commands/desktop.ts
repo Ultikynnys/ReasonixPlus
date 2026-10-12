@@ -81,9 +81,11 @@ import type {
   StepCompletedEvent,
   TabClosedEvent,
   TabOpenedEvent,
+  TabStatusEvent,
   TabsSnapshotEvent,
   TurnCompleteEvent,
   TurnOutcome,
+  TurnStartedEvent,
   UserImageAttachment,
   WorkspaceInitializedEvent,
   ZaiQuota,
@@ -500,6 +502,8 @@ export type EmittableEvent =
   | { type: "$error"; message: string }
   | { type: "$notice"; text: string; severity: "info" | "success" | "warning" | "error" }
   | TurnCompleteEvent
+  | TurnStartedEvent
+  | TabStatusEvent
   | DesktopDiagnosticEvent
   | { type: "oauth_begin_result"; url: string }
   | { type: "gemini_oauth_begin_result"; url: string }
@@ -3903,7 +3907,7 @@ export function contextRawPayload(tab: Tab, notice?: string): ContextRawEvent {
       text: "",
       messageCount: 0,
       tokens: 0,
-      busy: false,
+      busy: tabBusy(tab),
       ...(notice ? { notice } : {}),
     };
   }
@@ -3915,8 +3919,29 @@ export function contextRawPayload(tab: Tab, notice?: string): ContextRawEvent {
     text,
     messageCount: messages.length,
     tokens: countTokensForMeter(text),
-    busy: tab.aborter !== null,
+    busy: tabBusy(tab),
     ...(notice ? { notice } : {}),
+  };
+}
+
+/** Ground-truth "a turn is in flight or parked" for one tab — the one busy
+ *  source the $tab_status reply and the raw-context payload both report, so
+ *  the desktop can reconcile against a single definition. */
+export function tabBusy(tab: Pick<Tab, "aborter" | "activeTurn">): boolean {
+  return tab.aborter !== null || tab.activeTurn !== undefined;
+}
+
+/** Live turn-state snapshot for one tab — the $tab_status reply the desktop
+ *  polls to detect drift between its optimistic busy flag and reality. */
+export function tabStatus(tab: Tab): TabStatusEvent {
+  return {
+    type: "$tab_status",
+    busy: tabBusy(tab),
+    ...(tab.runtime ? { turn: tab.runtime.loop.currentTurn } : {}),
+    // The daemon holds no send queue — the desktop drains its own.
+    queued: 0,
+    compacting: tab.compactingManual,
+    switching: tab.switching,
   };
 }
 
@@ -4426,6 +4451,61 @@ function notConfiguredMessage(model: string): string {
     default:
       return "Not configured yet — paste your DeepSeek API key first.";
   }
+}
+
+/** One pre-flight rejection of a turn start; `reason` is the terminal-card text,
+ *  `outcome` the $turn_complete settlement. Pure over its inputs — env probes
+ *  arrive as booleans so the table can be driven from tests. */
+export type TurnStartRejection = {
+  kind: "pending-tab" | "runtime-missing" | "credential-unavailable" | "images-need-vision";
+  outcome: "aborted" | "stopped";
+  reason?: string;
+};
+
+export function turnStartRejection(
+  model: string,
+  images: TurnImage[] | undefined,
+  env: {
+    pending: boolean;
+    hasRootDir: boolean;
+    runtimeReady: boolean;
+    modelUsable: boolean;
+  },
+): TurnStartRejection | null {
+  if (env.pending || !env.hasRootDir) return { kind: "pending-tab", outcome: "aborted" };
+  if (!env.runtimeReady) {
+    return { kind: "runtime-missing", outcome: "stopped", reason: notConfiguredMessage(model) };
+  }
+  if (!env.modelUsable) {
+    const provider = providerForModel(model);
+    const reason =
+      provider === "openai"
+        ? `No OpenAI credential for ${model} — add an OpenAI key or sign in with ChatGPT (Settings → OpenAI).`
+        : provider === "ollama"
+          ? `No Ollama endpoint configured for ${model} — set a base URL / key (Settings → Models → Ollama).`
+          : provider === "gemini"
+            ? "Not signed in to Google Antigravity — sign in from Settings to use Gemini models."
+            : provider === "zai"
+              ? `No Z.AI credential for ${model} — add a Z.AI key in Settings → Models.`
+              : provider === "mimo"
+                ? `No Xiaomi MiMo credential for ${model} — add a MiMo key in Settings → Models.`
+                : provider === "opencode"
+                  ? `No OpenCode configuration for ${model}.`
+                  : "No API key configured — paste your DeepSeek API key first.";
+    return { kind: "credential-unavailable", outcome: "stopped", reason };
+  }
+  // Only vision-capable models accept image content parts — DeepSeek 400s
+  // otherwise. The UI hides the affordance for non-vision models; this is
+  // the hard gate so a stale or forged request can't reach the API.
+  if (images && images.length > 0 && !modelAcceptsImages(model, ollamaVisionModelIds())) {
+    return {
+      kind: "images-need-vision",
+      outcome: "stopped",
+      reason:
+        "Images require a vision-capable model (gpt-*, Gemini, or DeepSeek V4.1 Flash). Switch models to attach images.",
+    };
+  }
+  return null;
 }
 
 /** Whether the tab's CURRENT model can be run now — the strict per-turn gate.
@@ -5306,6 +5386,25 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (options.persist !== false) persistOpenTabs();
   }
 
+  /** Exactly one terminal event per accepted or rejected user_input: every
+   *  runTurnInner exit path ends here so the desktop's busy flag can never
+   *  outlive the turn (the zombie-session class of bugs). */
+  function emitTurnEnded(
+    tab: Tab,
+    outcome: TurnOutcome,
+    opts: { turn?: number; reason?: string } = {},
+  ): void {
+    emit(
+      {
+        type: "$turn_complete",
+        outcome,
+        ...(opts.turn !== undefined ? { turn: opts.turn } : {}),
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      },
+      tab.id,
+    );
+  }
+
   async function runTurn(
     tab: Tab,
     text: string,
@@ -5324,14 +5423,47 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
   }
 
+  /** Terminal-event safety net: whatever escapes the turn body (a throw, a
+   *  forgotten return) still settles the desktop exactly once. The body's own
+   *  endTurn calls flip `settled`, so the net only fires on a missed path. */
   async function runTurnInner(
     tab: Tab,
     text: string,
     images?: TurnImage[],
     clientId?: string,
   ): Promise<void> {
+    let settled = false;
+    const endTurn = (outcome: TurnOutcome, opts: { turn?: number; reason?: string } = {}) => {
+      settled = true;
+      emitTurnEnded(tab, outcome, opts);
+    };
+    try {
+      await runTurnInnerBody(tab, text, images, clientId, endTurn);
+    } catch (err) {
+      if (!settled && !tab.switching) {
+        const reason = err instanceof Error ? err.message : String(err);
+        emit({ type: "$notice", text: reason, severity: "error" }, tab.id);
+        endTurn("failed", { reason });
+      }
+    } finally {
+      // A session switch owns the tab's state via $session_loaded; the
+      // stale-event suppression (#1217) wins over the release here.
+      if (!settled && !tab.switching) endTurn("aborted");
+    }
+  }
+
+  async function runTurnInnerBody(
+    tab: Tab,
+    text: string,
+    images: TurnImage[] | undefined,
+    clientId: string | undefined,
+    endTurn: (outcome: TurnOutcome, opts?: { turn?: number; reason?: string }) => void,
+  ): Promise<void> {
     // A pending tab has no workspace/session/runtime — there is nothing to run.
-    if (tab.pending || !tab.rootDir) return;
+    if (tab.pending || !tab.rootDir) {
+      endTurn("aborted");
+      return;
+    }
     // The MCP bridge (a slow server initialize) can park the turn before its
     // own fold-idle wait. Lend the turn aborter to that wait so a desktop Stop
     // releases it instead of hanging, then null it again before the turn's real
@@ -5346,7 +5478,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       tab.aborter = null;
       if (!bridged) {
         tab.switching = false;
-        emit({ type: "$turn_complete", outcome: "aborted" }, tab.id);
+        endTurn("aborted");
         return;
       }
     }
@@ -5359,70 +5491,56 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       },
       "info",
     );
-    if (!tab.runtime) {
-      emitTabDiagnostic(tab, "turn.start.rejected", { reason: "runtime-not-ready" }, "error");
+    let modelUsable = false;
+    try {
+      modelUsable = tabCurrentModelUsable(tab);
+    } catch {
+      modelUsable = false;
+    }
+    const rejection = turnStartRejection(tab.currentModel, images, {
+      pending: tab.pending,
+      hasRootDir: !!tab.rootDir,
+      runtimeReady: !!tab.runtime,
+      modelUsable,
+    });
+    if (rejection) {
+      if (rejection.kind === "runtime-missing") {
+        emitTabDiagnostic(tab, "turn.start.rejected", { reason: "runtime-not-ready" }, "error");
+      } else if (rejection.kind === "credential-unavailable") {
+        emitTabDiagnostic(
+          tab,
+          "turn.start.rejected",
+          { reason: "credential-unavailable" },
+          "error",
+        );
+      } else if (rejection.kind === "images-need-vision") {
+        emitTabDiagnostic(
+          tab,
+          "turn.start.rejected",
+          { reason: "images-require-vision-model", imageCount: images?.length ?? 0 },
+          "error",
+        );
+      }
+      endTurn(rejection.outcome, rejection.reason ? { reason: rejection.reason } : {});
       return;
     }
-    if (!tabCurrentModelUsable(tab)) {
-      emitTabDiagnostic(tab, "turn.start.rejected", { reason: "credential-unavailable" }, "error");
-      const provider = providerForModel(tab.currentModel);
-      const message =
-        provider === "openai"
-          ? `No OpenAI credential for ${tab.currentModel} — add an OpenAI key or sign in with ChatGPT (Settings → OpenAI).`
-          : provider === "ollama"
-            ? `No Ollama endpoint configured for ${tab.currentModel} — set a base URL / key (Settings → Models → Ollama).`
-            : provider === "gemini"
-              ? "Not signed in to Google Antigravity — sign in from Settings to use Gemini models."
-              : provider === "zai"
-                ? `No Z.AI credential for ${tab.currentModel} — add a Z.AI key in Settings → Models.`
-                : provider === "mimo"
-                  ? `No Xiaomi MiMo credential for ${tab.currentModel} — add a MiMo key in Settings → Models.`
-                  : provider === "opencode"
-                    ? `No OpenCode configuration for ${tab.currentModel}.`
-                    : "No API key configured — paste your DeepSeek API key first.";
-      emit({ type: "$error", message }, tab.id);
+    if (!tab.runtime) {
+      endTurn("aborted");
       return;
     }
     const rt = tab.runtime;
-    // Only vision-capable models accept image content parts — DeepSeek 400s
-    // otherwise. The UI hides the affordance for non-vision models; this is
-    // the hard gate so a stale or forged request can't reach the API.
-    if (
-      images &&
-      images.length > 0 &&
-      !modelAcceptsImages(tab.currentModel, ollamaVisionModelIds())
-    ) {
-      emitTabDiagnostic(
-        tab,
-        "turn.start.rejected",
-        {
-          reason: "images-require-vision-model",
-          imageCount: images.length,
-        },
-        "error",
-      );
-      emit(
-        {
-          type: "$error",
-          message:
-            "Images require a vision-capable model (gpt-*, Gemini, or DeepSeek V4.1 Flash). Switch models to attach images.",
-        },
-        tab.id,
-      );
-      return;
-    }
     // First turn of a fresh conversation records the model/effort it runs
     // with; a later resume restores them even after a reinstall wiped the
     // config. Never overwrites an existing stored pair (see stampSessionModelPrefs).
     stampSessionModelPrefs(tab);
     if (tab.compactingManual) {
-      emit({ type: "$turn_complete", outcome: "aborted" }, tab.id);
+      endTurn("aborted");
       return;
     }
     await tab.turnCleanup;
     tab.turnCleanup = undefined;
     if (tab.compactingManual) {
-      emit({ type: "$turn_complete", outcome: "aborted" }, tab.id);
+      endTurn("aborted");
       return;
     }
     tab.aborter = new AbortController();
@@ -5433,7 +5551,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // events to suppress, so clear it like a finished turn would.
       tab.switching = false;
       tab.aborter = null;
-      emit({ type: "$turn_complete", outcome: "aborted" }, tab.id);
+      endTurn("aborted");
       return;
     }
     emitTabDiagnostic(
@@ -5445,6 +5563,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       },
       "info",
     );
+    // Authoritative ON for the desktop's busy flag: the turn really runs from
+    // here on, before any kernel delta events. An optimistic send spin waits
+    // for this instead of assuming the turn started; a stale later release
+    // is harmless ($turn_complete / $tab_status both settle to the truth).
+    emit({ type: "$turn_started", ...(clientId ? { clientId } : {}) }, tab.id);
     let lastAssistantText = "";
     if (tab.currentSession) {
       const existing = loadSessionMeta(tab.currentSession).summary;
@@ -5477,11 +5600,14 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       });
       for (const o of report.outcomes) {
         if (o.decision === "pass") continue;
-        emit({ type: "$error", message: formatHookOutcomeMessage(o) }, tab.id);
+        // Non-blocking hook failures must not touch turn state — the turn
+        // (or its terminal event) is still coming, and $error clears the
+        // desktop's busy flag mid-turn.
+        emit({ type: "$notice", text: formatHookOutcomeMessage(o), severity: "warning" }, tab.id);
       }
       if (report.blocked || tab.aborter.signal.aborted) {
         tab.aborter = null;
-        emit({ type: "$turn_complete", outcome: "failed" }, tab.id);
+        endTurn("failed");
         return;
       }
     }
@@ -5592,15 +5718,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
                 ? "failed"
                 : "stopped";
           const reason = producedAnswer ? undefined : lastStopReason || t("loop.stoppedNoAnswer");
-          emit(
-            {
-              type: "$turn_complete",
-              outcome,
-              ...(lastTurn >= 0 ? { turn: lastTurn } : {}),
-              ...(reason ? { reason } : {}),
-            },
-            tab.id,
-          );
+          endTurn(outcome, {
+            ...(lastTurn >= 0 ? { turn: lastTurn } : {}),
+            ...(reason ? { reason } : {}),
+          });
           emitTabDiagnostic(
             tab,
             "turn.complete.emitted",
@@ -5627,7 +5748,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             });
             for (const o of stopReport.outcomes) {
               if (o.decision === "pass") continue;
-              emit({ type: "$error", message: formatHookOutcomeMessage(o) }, tab.id);
+              emit(
+                { type: "$notice", text: formatHookOutcomeMessage(o), severity: "warning" },
+                tab.id,
+              );
             }
           }
         }
@@ -6931,6 +7055,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       );
       return;
     }
+    if (msg.cmd === "tab_status") {
+      emit(tabStatus(tab));
+      return;
+    }
 
     if (msg.cmd === "abort") {
       emitTabDiagnostic(tab, "rpc.command.abort", undefined, "info");
@@ -7296,7 +7424,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "skill_run") {
       if (!tab.runtime) {
-        emit({ type: "$error", message: notConfiguredMessage(tab.currentModel) }, tab.id);
+        emitTurnEnded(tab, "stopped", { reason: notConfiguredMessage(tab.currentModel) });
         return;
       }
       try {
@@ -7306,7 +7434,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         });
         const found = store.read(msg.name);
         if (!found) {
-          emit({ type: "$error", message: `skill not found: ${msg.name}` }, tab.id);
+          emitTurnEnded(tab, "stopped", { reason: `skill not found: ${msg.name}` });
           return;
         }
         const extra = msg.args?.trim() ?? "";
@@ -7315,7 +7443,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         const payload = `${header}\n\n${found.body}${argsLine}`;
         void runTurn(tab, payload);
       } catch (err) {
-        emit({ type: "$error", message: `skill_run: ${(err as Error).message}` }, tab.id);
+        emitTurnEnded(tab, "stopped", { reason: `skill_run: ${(err as Error).message}` });
       }
       return;
     }
@@ -8563,7 +8691,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "user_input") {
       if (!tab.runtime) {
-        emit({ type: "$error", message: notConfiguredMessage(tab.currentModel) }, tab.id);
+        emitTurnEnded(tab, "stopped", { reason: notConfiguredMessage(tab.currentModel) });
         return;
       }
       void (async () => {
@@ -8585,10 +8713,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           try {
             images = await resolveUserImages(attachments, tab.rootDir);
           } catch (err) {
-            emit(
-              { type: "$error", message: `Image attach failed: ${(err as Error).message}` },
-              tab.id,
-            );
+            emitTurnEnded(tab, "stopped", {
+              reason: `Image attach failed: ${(err as Error).message}`,
+            });
             return;
           }
         }

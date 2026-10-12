@@ -112,15 +112,17 @@ describe("manual compaction card chronology", () => {
 });
 
 describe("desktop $btw_result reducer (#1470)", () => {
-  it("clears busy and appends the answer as a status message", () => {
-    // A btw side question flips busy=true on send (via send_user echo); the answer must
-    // flip it back off or the composer stays disabled (#1470).
+  it("appends the answer as a status message without touching turn state", () => {
+    // A btw side question never runs a turn — the daemon answers it outside the
+    // loop, so no $turn_started/$turn_complete ever frames it. The answer must
+    // not release turn state either: a real turn may be running concurrently
+    // and only its own terminal event may settle it.
     const state: AppState = { ...makeState(), busy: true };
     const next = reduce(state, {
       t: "incoming",
       event: { type: "$btw_result", question: "what year is it?", answer: "2026." },
     });
-    expect(next.busy).toBe(false);
+    expect(next.busy).toBe(true);
     expect(next.messages.at(-1)).toMatchObject({
       kind: "notice",
       text: "≫ btw\n2026.",

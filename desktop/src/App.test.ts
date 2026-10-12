@@ -176,7 +176,7 @@ describe("Desktop App reducer — usage", () => {
     expect(next.usage.lastCallCacheMiss).toBe(200);
   });
 
-  it("settles the pending assistant message when an error ends the turn (#1660)", () => {
+  it("settles the pending assistant message on an error but keeps the daemon-owned turn (#1660)", () => {
     const base = initialState();
     const state = {
       ...base,
@@ -203,7 +203,9 @@ describe("Desktop App reducer — usage", () => {
       },
     });
 
-    expect(next.busy).toBe(false);
+    // $error is not terminal: mid-turn hook failures arrive while the loop
+    // keeps running. Only $turn_complete / $tab_status release the turn.
+    expect(next.busy).toBe(true);
     const assistant = next.messages.find((m) => m.kind === "assistant");
     expect(assistant?.pending).toBe(false);
     const error = next.messages.find((m) => m.kind === "notice" && m.severity === "error");
@@ -212,6 +214,83 @@ describe("Desktop App reducer — usage", () => {
       text: "SSE body read failed: terminated",
       severity: "error",
     });
+  });
+
+  it("busy parity: an optimistic send spins as awaitingAck without owning the turn", () => {
+    const next = reduce(initialState(), { t: "send_user", text: "hello", clientId: "c-1" });
+    expect(next.awaitingAck).toBe(true);
+    expect(next.busy).toBe(false);
+  });
+
+  it("busy parity: $turn_started is the authoritative ON signal", () => {
+    let state = reduce(initialState(), { t: "send_user", text: "hello", clientId: "c-1" });
+    expect(state.busy).toBe(false);
+    state = reduce(state, {
+      t: "incoming",
+      event: { type: "$turn_started", turn: 1, clientId: "c-1" },
+    });
+    expect(state.busy).toBe(true);
+    expect(state.awaitingAck).toBe(false);
+  });
+
+  it("busy parity: a rejected send settles through $turn_complete without $turn_started", () => {
+    let state = reduce(initialState(), { t: "send_user", text: "hello", clientId: "c-1" });
+    state = reduce(state, {
+      t: "incoming",
+      event: { type: "$turn_complete", outcome: "stopped", reason: "No API key configured" },
+    });
+    expect(state.busy).toBe(false);
+    expect(state.awaitingAck).toBe(false);
+  });
+
+  it("busy parity: a mid-turn $error does not release the turn", () => {
+    let state = reduce(initialState(), { t: "send_user", text: "hello", clientId: "c-1" });
+    state = reduce(state, { t: "incoming", event: { type: "$turn_started", turn: 1 } });
+    state = reduce(state, {
+      t: "incoming",
+      event: {
+        type: "error",
+        id: 2,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        message: "hook outcome failed",
+        recoverable: false,
+      },
+    });
+    expect(state.busy).toBe(true);
+    const error = state.messages.find((m) => m.kind === "notice" && m.severity === "error");
+    expect(error).toBeDefined();
+  });
+
+  it("busy parity: $tab_status reconciles a lost terminal event to idle with a notice", () => {
+    let state = reduce(initialState(), { t: "send_user", text: "hello", clientId: "c-1" });
+    state = reduce(state, { t: "incoming", event: { type: "$turn_started", turn: 1 } });
+    state = reduce(state, {
+      t: "incoming",
+      event: { type: "$tab_status", busy: false, queued: 0, compacting: false, switching: false },
+    });
+    expect(state.busy).toBe(false);
+    expect(state.awaitingAck).toBe(false);
+    const resync = state.messages.find(
+      (m) => m.kind === "notice" && m.text.includes("Resynced"),
+    );
+    expect(resync).toBeDefined();
+  });
+
+  it("busy parity: $tab_status adopts daemon busy when the UI missed the start", () => {
+    const next = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$tab_status",
+        busy: true,
+        turn: 2,
+        queued: 0,
+        compacting: false,
+        switching: false,
+      },
+    });
+    expect(next.busy).toBe(true);
+    expect(next.awaitingAck).toBe(false);
   });
 
   it("appends a late kernel error at the tail in creation order, not re-anchored to its turn", () => {

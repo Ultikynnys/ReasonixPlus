@@ -141,6 +141,35 @@ export type TurnCompleteEvent = {
   reason?: string;
 };
 
+/** Daemon-authoritative ON signal for the UI busy flag: emitted when a turn
+ *  actually begins (after the aborter is minted), including queued second
+ *  turns. The desktop's optimistic send spin waits for this instead of
+ *  assuming the turn started. */
+export type TurnStartedEvent = {
+  type: "$turn_started";
+  /** Turn the daemon assigned to the acknowledged input, when known. */
+  turn?: number;
+  /** Echo of the sender's optimistic-message id for bubble reconciliation. */
+  clientId?: string;
+};
+
+/** Daemon-authoritative snapshot of one tab's live turn state — the reply to
+ *  the `tab_status` pull command. Lets the desktop detect drift between its
+ *  optimistic busy flag and reality instead of guessing from event timing. */
+export type TabStatusEvent = {
+  type: "$tab_status";
+  /** True while a turn holds the tab (aborter minted or turn promise pending). */
+  busy: boolean;
+  /** Turn number the running (or most recent) turn is on, when known. */
+  turn?: number;
+  /** Number of queued sends the daemon holds behind the active turn. */
+  queued: number;
+  /** Manual compaction in progress. */
+  compacting: boolean;
+  /** Session switch in progress (stale-event suppression active). */
+  switching: boolean;
+};
+
 /** Common envelope for kernel events forwarded directly to desktop clients. */
 export interface KernelWireEventBase {
   id: number;
@@ -1435,6 +1464,9 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "gate_timer"; id: number; enabled: boolean }
   | { cmd: "session_list" }
   | { cmd: "desktop_resync" }
+  /** Pull one tab's live turn state ($tab_status reply) — the reconciliation
+   *  probe the desktop polls while busy so a lost terminal event can't wedge it. */
+  | { cmd: "tab_status" }
   | { cmd: "session_delete"; name: string }
   | { cmd: "session_clear" }
   /** Legacy alias for additive session_open; never replaces the active agent. */

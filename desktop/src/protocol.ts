@@ -113,8 +113,10 @@ import type {
   TabClosedEvent,
   TabOpenedEvent,
   TabsSnapshotEvent,
+  TabStatusEvent,
   TurnCompleteEvent,
   TurnOutcome,
+  TurnStartedEvent,
   UserImageAttachment,
   WebSearchEngineName,
   WorkspaceInitializedEvent,
@@ -227,8 +229,10 @@ export type {
   StepCompletedEvent,
   TabClosedEvent,
   TabOpenedEvent,
+  TabStatusEvent,
   TurnCompleteEvent,
   TurnOutcome,
+  TurnStartedEvent,
   UserImageAttachment,
   QuickSend,
   WebSearchEngineName,
@@ -263,6 +267,8 @@ export type IncomingEvent = { tabId?: string } & (
   | ProtocolErrorEvent
   | { type: "$notice"; text: string; severity: "info" | "success" | "warning" | "error" }
   | TurnCompleteEvent
+  | TurnStartedEvent
+  | TabStatusEvent
   | DesktopDiagnosticEvent
   | ConfirmRequiredEvent
   | PathAccessRequiredEvent

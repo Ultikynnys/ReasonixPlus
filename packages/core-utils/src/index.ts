@@ -170,6 +170,8 @@ export type {
   ProtocolErrorEvent,
   TurnCompleteEvent,
   TurnOutcome,
+  TurnStartedEvent,
+  TabStatusEvent,
   DesktopDiagnosticLevel,
   DesktopDiagnosticEvent,
   ConfirmRequiredEvent,
