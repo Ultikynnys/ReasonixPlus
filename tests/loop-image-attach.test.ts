@@ -160,6 +160,36 @@ describe("CacheFirstLoop — image attachments (OpenAI vision parts)", () => {
     }
   });
 
+  it("prunes image parts older than the retention window at send time, keeping the log intact", async () => {
+    const { client, captured } = makeFakeClient([{ content: "ok" }]);
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "be brief" }),
+      stream: false,
+    });
+    const img = (n: string) => `data:image/png;base64,${n}`;
+    // 6 turns, one image each: the window keeps only the newest 4 in requests.
+    for (let i = 1; i <= 6; i++) {
+      await consume(loop, `turn ${i}`, [img(`IMG-${i}`)]);
+    }
+    const lastReq = captured.at(-1)!;
+    const sentImages = lastReq.messages
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .filter((p) => p.type === "image_url");
+    expect(sentImages).toHaveLength(4);
+    expect(sentImages.map((p) => (p as { image_url: { url: string } }).image_url.url)).toEqual([
+      img("IMG-3"),
+      img("IMG-4"),
+      img("IMG-5"),
+      img("IMG-6"),
+    ]);
+    // Older images became placeholder text, not silent drops.
+    const notes = lastReq.messages
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .filter((p) => p.type === "text" && /image pruned/.test(p.text ?? ""));
+    expect(notes.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("builds MiMo audio/video content parts by attachment kind", async () => {
     const { client, captured } = makeFakeClient([{ content: "ok" }]);
     const loop = new CacheFirstLoop({
