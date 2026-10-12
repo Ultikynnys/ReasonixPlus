@@ -49,9 +49,10 @@ import { MODEL_CATALOG_GROUP_LABELS, deriveModelCatalog } from "./model-catalog"
 import {
   type ApprovalSnapshot,
   type PlanFeedbackState,
-  cueSetting,
   deriveDesktopNotifications,
+  deriveStateCueSounds,
   dispatchDesktopNotifications,
+  playEnabledCue,
   shouldAppendCompletionNotice,
 } from "./notifications";
 import {
@@ -1432,10 +1433,7 @@ function handleCueForEvent(
   if (id === "guardTriggered") {
     guardSink?.push({ cause: ev.type === "warning" ? ev.cause : undefined });
   }
-  const setting = cueSetting(cues, id);
-  if (setting.enabled && setting.volume > 0) {
-    player.play(id, setting.volume);
-  }
+  playEnabledCue(cues, id, player);
 }
 
 // The turn a notice belongs to (the one in flight, else the last completed
@@ -3560,6 +3558,21 @@ function TabRuntime({
     wasBusyRef.current = state.busy;
 
     const cues = state.settings?.feedbackCues;
+
+    // Sounds for state-driven cues fire regardless of window focus (a cue is
+    // the user's opt-in acknowledgment); the focus-gated OS notification path
+    // is separate below.
+    for (const id of deriveStateCueSounds({
+      wasBusy,
+      isBusy: state.busy,
+      busyDurationMs,
+      outcome: state.lastTurnOutcome,
+      previousPlan,
+      currentPlan,
+    })) {
+      playEnabledCue(cues, id, feedbackSounds);
+    }
+
     void getCurrentWindow()
       .isFocused()
       .catch((err) => {

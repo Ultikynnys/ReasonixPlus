@@ -1,10 +1,13 @@
 import type { FeedbackCueSettings } from "@reasonix/core-utils";
 import { describe, expect, it } from "vitest";
+import type { FeedbackSoundPlayer } from "./feedback-sounds";
 import {
   type ApprovalSnapshot,
   COMPLETION_NOTIFY_MIN_MS,
   cueSetting,
   deriveDesktopNotifications,
+  deriveStateCueSounds,
+  playEnabledCue,
 } from "./notifications";
 
 function emptySnapshot(): ApprovalSnapshot {
@@ -312,5 +315,102 @@ describe("desktop notifications", () => {
       volume: 0.8,
       notify: false,
     });
+  });
+});
+
+describe("deriveStateCueSounds — turn/plan transitions to cue ids", () => {
+  it("fires taskComplete on a successful long turn end", () => {
+    expect(
+      deriveStateCueSounds({
+        wasBusy: true,
+        isBusy: false,
+        busyDurationMs: COMPLETION_NOTIFY_MIN_MS,
+      }),
+    ).toEqual(["taskComplete"]);
+  });
+
+  it("suppresses taskComplete for short turns and non-success outcomes", () => {
+    expect(deriveStateCueSounds({ wasBusy: true, isBusy: false, busyDurationMs: 1_000 })).toEqual(
+      [],
+    );
+    for (const outcome of ["stopped", "failed", "aborted"] as const) {
+      expect(
+        deriveStateCueSounds({
+          wasBusy: true,
+          isBusy: false,
+          busyDurationMs: COMPLETION_NOTIFY_MIN_MS,
+          outcome,
+        }),
+      ).toEqual([]);
+    }
+  });
+
+  it("fires planComplete on the active → finished transition only", () => {
+    expect(
+      deriveStateCueSounds({
+        wasBusy: false,
+        isBusy: false,
+        busyDurationMs: 0,
+        previousPlan: { status: "active", totalSteps: 2, completedSteps: 1 },
+        currentPlan: { status: "finished", totalSteps: 2, completedSteps: 2 },
+      }),
+    ).toEqual(["planComplete"]);
+    expect(
+      deriveStateCueSounds({
+        wasBusy: false,
+        isBusy: false,
+        busyDurationMs: 0,
+        previousPlan: { status: "active", totalSteps: 2, completedSteps: 1 },
+        currentPlan: { status: "cancelled", totalSteps: 2, completedSteps: 1 },
+      }),
+    ).toEqual([]);
+  });
+
+  it("can report both cues in one pass", () => {
+    expect(
+      deriveStateCueSounds({
+        wasBusy: true,
+        isBusy: false,
+        busyDurationMs: COMPLETION_NOTIFY_MIN_MS,
+        previousPlan: { status: "active", totalSteps: 1, completedSteps: 0 },
+        currentPlan: { status: "finished", totalSteps: 1, completedSteps: 1 },
+      }),
+    ).toEqual(["taskComplete", "planComplete"]);
+  });
+});
+
+describe("playEnabledCue — the single sound gate", () => {
+  function recorder(): { calls: [string, number][]; player: FeedbackSoundPlayer } {
+    const calls: [string, number][] = [];
+    return {
+      calls,
+      player: {
+        play: (id, volume) => {
+          calls.push([id, volume]);
+          return true;
+        },
+      },
+    };
+  }
+
+  it("plays only enabled cues with an audible volume", () => {
+    const { calls, player } = recorder();
+    playEnabledCue(
+      { taskComplete: { enabled: true, volume: 0.4, notify: false } },
+      "taskComplete",
+      player,
+    );
+    playEnabledCue(
+      { taskComplete: { enabled: false, volume: 0.4, notify: false } },
+      "taskComplete",
+      player,
+    );
+    playEnabledCue(
+      { taskComplete: { enabled: true, volume: 0, notify: false } },
+      "taskComplete",
+      player,
+    );
+    playEnabledCue(undefined, "taskComplete", player);
+    expect(calls).toEqual([["taskComplete", 0.4]]);
   });
 });

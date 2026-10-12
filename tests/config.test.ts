@@ -41,6 +41,7 @@ import {
   loadEnableSubagents,
   loadEndpoint,
   loadEndpointForModel,
+  loadFeedbackCues,
   loadFilesystemOutlineThresholdBytes,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
@@ -94,6 +95,7 @@ import {
   saveDuplicateSessionTokens,
   saveEditMode,
   saveEnableSubagents,
+  saveFeedbackCues,
   saveIndexConfig,
   saveMaxIterPerTurn,
   saveModel,
@@ -1409,6 +1411,18 @@ describe("config", () => {
     saveRawTabEnabled(false, path);
     expect(loadRawTabEnabled(path)).toBe(false);
     expect(readConfig(path).rawTabEnabled).toBe(false);
+  });
+
+  it("feedbackCues defaults to empty (all off) and round-trips the cue matrix", () => {
+    expect(loadFeedbackCues(path)).toEqual({});
+
+    const cues = {
+      inputRequired: { enabled: true, volume: 0.25, notify: true },
+      guardTriggered: { enabled: false, volume: 0.8, notify: false },
+    };
+    saveFeedbackCues(cues, path);
+    expect(loadFeedbackCues(path)).toEqual(cues);
+    expect(readConfig(path).feedbackCues).toEqual(cues);
   });
 
   it("loadReasoningEffort defaults to 'high' when unset (safe for vLLM / Azure)", () => {

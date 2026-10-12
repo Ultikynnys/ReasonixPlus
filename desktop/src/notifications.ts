@@ -3,6 +3,7 @@ import {
   type FeedbackCueId,
   type FeedbackCueSettings,
 } from "@reasonix/core-utils";
+import type { FeedbackSoundPlayer } from "./feedback-sounds";
 import { t } from "./i18n";
 import type { TurnOutcome } from "./protocol";
 
@@ -136,6 +137,43 @@ export function cueSetting(
     volume: typeof entry?.volume === "number" ? entry.volume : (fallback?.volume ?? 0.5),
     notify: entry?.notify === true,
   };
+}
+
+/** Play one cue's sound when the user enabled it and its volume is audible —
+ *  the single gate every sound trigger shares. */
+export function playEnabledCue(
+  cues: FeedbackCueSettings | null | undefined,
+  id: FeedbackCueId,
+  player: FeedbackSoundPlayer,
+): void {
+  const setting = cueSetting(cues, id);
+  if (setting.enabled && setting.volume > 0) player.play(id, setting.volume);
+}
+
+/** Cue ids whose sound is driven by turn/plan state (not a dedicated wire
+ *  event): task completion and plan completion. Focus and the notify toggle are
+ *  irrelevant to sounds — the caller gates playback on `enabled`. */
+export function deriveStateCueSounds(args: {
+  wasBusy: boolean;
+  isBusy: boolean;
+  busyDurationMs: number;
+  outcome?: TurnOutcome | null;
+  previousPlan?: PlanFeedbackState | null;
+  currentPlan?: PlanFeedbackState | null;
+}): FeedbackCueId[] {
+  const cues: FeedbackCueId[] = [];
+  if (
+    isSuccessfulOutcome(args.outcome) &&
+    args.wasBusy &&
+    !args.isBusy &&
+    args.busyDurationMs >= COMPLETION_NOTIFY_MIN_MS
+  ) {
+    cues.push("taskComplete");
+  }
+  if (isPlanCompletionTransition(args.previousPlan, args.currentPlan)) {
+    cues.push("planComplete");
+  }
+  return cues;
 }
 
 /** Does ANY cue of these kinds have an enabled sound or notification? Gates
