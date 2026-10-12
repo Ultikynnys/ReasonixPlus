@@ -21,23 +21,9 @@ import {
   saveEditMode,
   updateRule,
 } from "../src/config.js";
-import { type ConfirmationChoice, PauseGate } from "../src/core/pause-gate.js";
+import type { ConfirmationChoice } from "../src/core/pause-gate.js";
 import { coveredRuleScopes } from "../src/tools/shell/rule-scope.js";
-
-/** Answers every gate with a fixed verdict and records the kinds it saw. */
-class ScriptedGate extends PauseGate {
-  readonly kinds: string[] = [];
-  private readonly choice: ConfirmationChoice;
-  constructor(choice: ConfirmationChoice) {
-    super();
-    this.choice = choice;
-    this.on(() => {});
-  }
-  override ask = ((opts: { kind: string }) => {
-    this.kinds.push(opts.kind);
-    return Promise.resolve(this.choice);
-  }) as PauseGate["ask"];
-}
+import { ScriptedGate } from "./support/scripted-gate.js";
 
 const ALLOW: ConfirmationChoice = { type: "run_once" };
 const DENY: ConfirmationChoice = { type: "deny" };

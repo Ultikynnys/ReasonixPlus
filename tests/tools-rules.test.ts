@@ -10,22 +10,7 @@ import { addGlobalShellAllowed, loadRules, saveEditMode } from "../src/config.js
 import { type ConfirmationChoice, PauseGate } from "../src/core/pause-gate.js";
 import { ToolRegistry } from "../src/tools.js";
 import { registerRulesTools } from "../src/tools/rules.js";
-
-/** Answers every gate with a fixed verdict and records the kinds it saw. Registers
- *  a listener so gates consulting `hasListeners()` see an interactive surface. */
-class ScriptedGate extends PauseGate {
-  readonly kinds: string[] = [];
-  private readonly choice: ConfirmationChoice;
-  constructor(choice: ConfirmationChoice) {
-    super();
-    this.choice = choice;
-    this.on(() => {});
-  }
-  override ask = ((opts: { kind: string }) => {
-    this.kinds.push(opts.kind);
-    return Promise.resolve(this.choice);
-  }) as PauseGate["ask"];
-}
+import { ScriptedGate } from "./support/scripted-gate.js";
 
 const DENY: ConfirmationChoice = { type: "deny" };
 /** Not in the builtin allowlist, so only a user rule can widen it; safe and quick to run. */

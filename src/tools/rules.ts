@@ -12,6 +12,7 @@ import {
   ruleModeInForce,
 } from "../config.js";
 import type { ToolRegistry } from "../tools.js";
+import type { JSONSchema } from "../types.js";
 
 export interface RulesToolsOptions {
   /** Workspace root — the target of scope='workspace' rules. */
@@ -28,6 +29,30 @@ const SCOPES: readonly RuleScope[] = ["workspace", "global"];
 const MATCHES: readonly string[] = ["pattern", "regex"];
 const MODES: readonly RuleMode[] = ["follow", "never-ask"];
 
+type RuleToolField = "kind" | "effect" | "pattern" | "scope" | "match" | "mode";
+
+/** Enum source for BOTH the JSON schemas and the runtime validation — one list per field. */
+const FIELD_ENUMS: Record<Exclude<RuleToolField, "pattern">, readonly string[]> = {
+  kind: KINDS,
+  effect: EFFECTS,
+  scope: SCOPES,
+  match: MATCHES,
+  mode: MODES,
+};
+
+/** Both write tools take the same four required fields. */
+const WRITE_REQUIRED = ["kind", "effect", "pattern", "scope"];
+
+/** One field's JSON-schema fragment; `pattern` is a free string, the rest are enums. */
+function fieldSchema(field: Exclude<RuleToolField, "pattern">, description: string): JSONSchema {
+  return { type: "string", enum: [...FIELD_ENUMS[field]], description };
+}
+
+const patternSchema = (description: string): JSONSchema => ({
+  type: "string",
+  description,
+});
+
 function fmtRule(r: ScopedRule): string {
   const match = r.match === "regex" ? " (regex)" : "";
   return `- [${r.scope}] ${r.mode}/${r.effect} ${r.kind}${match}: ${r.pattern}`;
@@ -37,6 +62,9 @@ function describeRule(r: ScopedRule): string {
   return `${r.scope} ${r.kind}/${r.effect} "${r.pattern}"`;
 }
 
+const banner = (verb: string, r: ScopedRule): string =>
+  `✓ RULE ${verb} (${r.scope} ${r.kind}/${r.effect}): ${r.pattern}`;
+
 interface RuleArgs {
   kind?: unknown;
   effect?: unknown;
@@ -44,6 +72,18 @@ interface RuleArgs {
   scope?: unknown;
   match?: unknown;
   mode?: unknown;
+}
+
+interface WriteRuleArgs extends RuleArgs {
+  kind: RuleKind;
+  effect: RuleEffect;
+  pattern: string;
+  scope: RuleScope;
+  match?: "pattern" | "regex";
+}
+
+interface ForgetRuleArgs extends WriteRuleArgs {
+  mode?: RuleMode;
 }
 
 function invalidField(
@@ -102,6 +142,24 @@ export function registerRulesTools(registry: ToolRegistry, opts: RulesToolsOptio
     }
   };
 
+  /** Shared write path for remember_rule/forget_rule: validate, apply, notify.
+   *  `ok: false` means the store was left unchanged (duplicate add / absent rule). */
+  async function applyRuleChange(
+    tool: string,
+    args: RuleArgs,
+    apply: (rule: ScopedRule) => boolean,
+  ): Promise<{ error: string } | { ok: boolean; rule: ScopedRule }> {
+    const built = buildRule(tool, args, ruleModeInForce(configPath));
+    if ("error" in built) return { error: built.error };
+    try {
+      const ok = apply(built.rule);
+      if (ok) fire();
+      return { ok, rule: built.rule };
+    } catch (err) {
+      return { error: JSON.stringify({ error: `${tool} failed: ${(err as Error).message}` }) };
+    }
+  }
+
   registry.register({
     name: "list_rules",
     description:
@@ -126,59 +184,37 @@ export function registerRulesTools(registry: ToolRegistry, opts: RulesToolsOptio
     parameters: {
       type: "object",
       properties: {
-        kind: {
-          type: "string",
-          enum: [...KINDS],
-          description: "'shell' matches the command text; 'path' matches a directory prefix.",
-        },
-        effect: {
-          type: "string",
-          enum: [...EFFECTS],
-          description:
-            "'allow' runs without asking; 'ask' always confirms; 'deny' refuses outright; 'ignore' is stored but not enforced.",
-        },
-        pattern: {
-          type: "string",
-          description:
-            "For kind='shell': a command pattern like 'git *' (or a regex with match='regex'). For kind='path': a directory prefix.",
-        },
-        scope: {
-          type: "string",
-          enum: [...SCOPES],
-          description: "'workspace' = this project only; 'global' = every project.",
-        },
-        match: {
-          type: "string",
-          enum: [...MATCHES],
-          description:
-            "Omit for glob-style pattern matching; 'regex' enables regex matching (kind='shell' only).",
-        },
+        kind: fieldSchema(
+          "kind",
+          "'shell' matches the command text; 'path' matches a directory prefix.",
+        ),
+        effect: fieldSchema(
+          "effect",
+          "'allow' runs without asking; 'ask' always confirms; 'deny' refuses outright; 'ignore' is stored but not enforced.",
+        ),
+        pattern: patternSchema(
+          "For kind='shell': a command pattern like 'git *' (or a regex with match='regex'). For kind='path': a directory prefix.",
+        ),
+        scope: fieldSchema("scope", "'workspace' = this project only; 'global' = every project."),
+        match: fieldSchema(
+          "match",
+          "Omit for glob-style pattern matching; 'regex' enables regex matching (kind='shell' only).",
+        ),
       },
-      required: ["kind", "effect", "pattern", "scope"],
+      required: WRITE_REQUIRED,
     },
-    fn: async (args: {
-      kind: RuleKind;
-      effect: RuleEffect;
-      pattern: string;
-      scope: RuleScope;
-      match?: "pattern" | "regex";
-    }) => {
-      const built = buildRule("remember_rule", args, ruleModeInForce(configPath));
-      if ("error" in built) return built.error;
-      const rule = built.rule;
-      try {
-        const added = addRule(rule, opts.rootDir, configPath);
-        if (!added) {
-          return `Already present: ${describeRule(rule)} (nothing changed).`;
-        }
-        fire();
-        return [
-          `✓ RULE SAVED (${args.scope} ${args.kind}/${args.effect}): ${rule.pattern}`,
-          "Enforced from the next run_command or path check onward; visible in Settings → Rules.",
-        ].join("\n");
-      } catch (err) {
-        return JSON.stringify({ error: `remember_rule failed: ${(err as Error).message}` });
+    fn: async (args: WriteRuleArgs) => {
+      const applied = await applyRuleChange("remember_rule", args, (rule) =>
+        addRule(rule, opts.rootDir, configPath),
+      );
+      if ("error" in applied) return applied.error;
+      if (!applied.ok) {
+        return `Already present: ${describeRule(applied.rule)} (nothing changed).`;
       }
+      return [
+        banner("SAVED", applied.rule),
+        "Enforced from the next run_command or path check onward; visible in Settings → Rules.",
+      ].join("\n");
     },
   });
 
@@ -189,60 +225,30 @@ export function registerRulesTools(registry: ToolRegistry, opts: RulesToolsOptio
     parameters: {
       type: "object",
       properties: {
-        kind: {
-          type: "string",
-          enum: [...KINDS],
-          description: "'shell' or 'path', as list_rules showed.",
-        },
-        effect: {
-          type: "string",
-          enum: [...EFFECTS],
-          description: "'allow', 'ask', 'deny' or 'ignore', as list_rules showed.",
-        },
-        pattern: {
-          type: "string",
-          description: "The rule's pattern exactly as list_rules displayed it.",
-        },
-        scope: {
-          type: "string",
-          enum: [...SCOPES],
-          description: "'workspace' or 'global', as list_rules showed.",
-        },
-        match: {
-          type: "string",
-          enum: [...MATCHES],
-          description: "Pass 'regex' only when list_rules marked the rule as (regex).",
-        },
-        mode: {
-          type: "string",
-          enum: [...MODES],
-          description:
-            "Rule set to search; defaults to the mode in force. Pass the mode list_rules displayed when it differs.",
-        },
+        kind: fieldSchema("kind", "'shell' or 'path', as list_rules showed."),
+        effect: fieldSchema("effect", "'allow', 'ask', 'deny' or 'ignore', as list_rules showed."),
+        pattern: patternSchema("The rule's pattern exactly as list_rules displayed it."),
+        scope: fieldSchema("scope", "'workspace' or 'global', as list_rules showed."),
+        match: fieldSchema(
+          "match",
+          "Pass 'regex' only when list_rules marked the rule as (regex).",
+        ),
+        mode: fieldSchema(
+          "mode",
+          "Rule set to search; defaults to the mode in force. Pass the mode list_rules displayed when it differs.",
+        ),
       },
-      required: ["kind", "effect", "pattern", "scope"],
+      required: WRITE_REQUIRED,
     },
-    fn: async (args: {
-      kind: RuleKind;
-      effect: RuleEffect;
-      pattern: string;
-      scope: RuleScope;
-      match?: "pattern" | "regex";
-      mode?: RuleMode;
-    }) => {
-      const built = buildRule("forget_rule", args, ruleModeInForce(configPath));
-      if ("error" in built) return built.error;
-      const rule = built.rule;
-      try {
-        const removed = removeRule(rule, opts.rootDir, configPath);
-        if (!removed) {
-          return `No matching rule: ${describeRule(rule)}. Call list_rules and retry with the exact fields.`;
-        }
-        fire();
-        return `✓ RULE REMOVED (${args.scope} ${args.kind}/${args.effect}): ${rule.pattern}`;
-      } catch (err) {
-        return JSON.stringify({ error: `forget_rule failed: ${(err as Error).message}` });
+    fn: async (args: ForgetRuleArgs) => {
+      const applied = await applyRuleChange("forget_rule", args, (rule) =>
+        removeRule(rule, opts.rootDir, configPath),
+      );
+      if ("error" in applied) return applied.error;
+      if (!applied.ok) {
+        return `No matching rule: ${describeRule(applied.rule)}. Call list_rules and retry with the exact fields.`;
       }
+      return banner("REMOVED", applied.rule);
     },
   });
 
