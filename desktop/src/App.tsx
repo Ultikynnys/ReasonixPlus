@@ -183,6 +183,31 @@ const VIDEO_ATTACH_ICON =
   );
 
 const RIGHT_SIDEBAR_COLLAPSE_WIDTH = 1120;
+
+/** Settings saves coalesce over this window: a burst of clicks becomes one
+ *  `settings_save`, so the UI never queues a round-trip per keystroke/click. */
+const SETTINGS_SAVE_DEBOUNCE_MS = 200;
+
+/** How long a locally-written settings field stays authoritative against the
+ *  daemon's `$settings` echo. Long enough to outlast any in-flight echo, short
+ *  enough that a value the daemon normalizes (a clamped number) still settles. */
+const SETTINGS_OVERRIDE_TTL_MS = 2000;
+
+/** Structural equality for settings values (primitives, arrays, plain objects).
+ *  Used to tell an echo that already reflects a local write from a stale one. */
+export function settingsValueEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, i) => settingsValueEqual(item, b[i]));
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((key) => settingsValueEqual(left[key], right[key]));
+}
 const LEFT_SIDEBAR_COLLAPSE_WIDTH = 760;
 
 const RESPONSIVE_STAGE = {
@@ -2969,9 +2994,40 @@ function TabRuntime({
   // exactly once, in arrival order.
   const cuesRef = useRef<FeedbackCueSettings | null | undefined>(null);
   cuesRef.current = state.settings?.feedbackCues;
+  // The daemon broadcasts `$settings` after every save — once per open tab, so
+  // this tab also receives echoes triggered by OTHER tabs' saves. Each echo is a
+  // full snapshot of the persisted state, so a snapshot older than the user's
+  // latest click would replay that older state over the UI. Keep the fields the
+  // user just changed authoritative: after each echo, re-assert any override the
+  // echo does not already reflect (deep-equal), and drop an override the moment
+  // its value comes back — that is the echo of our own write confirming it. A
+  // TTL bounds divergence for the rare field the daemon normalizes.
+  const settingsOverridesRef = useRef<SettingsPatch | null>(null);
+  const settingsOverridesExpireAtRef = useRef(0);
   const cueDispatch = useCallback((action: TabAction) => {
     if (action.t === "incoming") {
       handleCueForEvent(action.event, cuesRef.current, feedbackSounds, guardWarningsRef.current);
+      dispatch(action);
+      if (action.event.type === "$settings") {
+        const overrides = settingsOverridesRef.current;
+        if (overrides && Date.now() > settingsOverridesExpireAtRef.current) {
+          // TTL elapsed: accept the daemon's value even if it never matched.
+          settingsOverridesRef.current = null;
+        } else if (overrides) {
+          const ev = action.event as unknown as Record<string, unknown>;
+          const remaining: Record<string, unknown> = {};
+          for (const [key, value] of Object.entries(overrides)) {
+            if (!settingsValueEqual(ev[key], value)) remaining[key] = value;
+          }
+          if (Object.keys(remaining).length === 0) {
+            settingsOverridesRef.current = null;
+          } else {
+            settingsOverridesRef.current = remaining as SettingsPatch;
+            dispatch({ t: "settings_patch", patch: remaining as SettingsPatch });
+          }
+        }
+      }
+      return;
     }
     dispatch(action);
   }, []);
@@ -3016,12 +3072,27 @@ function TabRuntime({
   // Optimistic by design: apply the patch to local state first, then persist.
   // Waiting for the daemon's `$settings` echo (which re-emits for every open
   // tab) made every control feel laggy — the whole point is the UI reacts now.
+  // Bursts of clicks are coalesced into one save, and the latest patch is kept
+  // in `optimisticSettingsRef` (re-asserted after each echo, see cueDispatch)
+  // so an in-flight echo can't roll a control back under the user's fingers.
+  const pendingSettingsRef = useRef<SettingsPatch>({});
+  const settingsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushSettings = useCallback(() => {
+    settingsTimerRef.current = null;
+    const patch = pendingSettingsRef.current;
+    pendingSettingsRef.current = {};
+    if (Object.keys(patch).length > 0) sendRpc({ cmd: "settings_save", ...patch });
+  }, [sendRpc]);
   const saveSettings = useCallback(
     (patch: SettingsPatch) => {
       dispatch({ t: "settings_patch", patch });
-      sendRpc({ cmd: "settings_save", ...patch });
+      settingsOverridesRef.current = { ...(settingsOverridesRef.current ?? {}), ...patch };
+      settingsOverridesExpireAtRef.current = Date.now() + SETTINGS_OVERRIDE_TTL_MS;
+      pendingSettingsRef.current = { ...pendingSettingsRef.current, ...patch };
+      if (settingsTimerRef.current !== null) clearTimeout(settingsTimerRef.current);
+      settingsTimerRef.current = setTimeout(flushSettings, SETTINGS_SAVE_DEBOUNCE_MS);
     },
-    [sendRpc],
+    [dispatch, flushSettings],
   );
   const refreshCodexQuota = useCallback(() => {
     dispatch({ t: "codex_quota_refreshing" });

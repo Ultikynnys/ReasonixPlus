@@ -46,6 +46,7 @@ import {
   sanitizeSettingsPatch,
   sessionCreationTime,
   sessionRecency,
+  settingsValueEqual,
   sortSessionsByCreationDescending,
   sortSessionsDescending,
   workspaceTabRepresentatives,
@@ -3677,5 +3678,34 @@ describe("cueIdForEvent — wire events to feedback cue ids", () => {
   it("returns null for events with no cue", () => {
     expect(cueIdForEvent({ type: "status", id: 1, ts: "t", turn: 1, text: "" })).toBeNull();
     expect(cueIdForEvent({ type: "$turn_complete", outcome: "success" })).toBeNull();
+  });
+});
+
+describe("settingsValueEqual — echo reconciliation", () => {
+  it("matches primitives, arrays, and nested objects by structure", () => {
+    expect(settingsValueEqual(1, 1)).toBe(true);
+    expect(settingsValueEqual("a", "b")).toBe(false);
+    expect(settingsValueEqual([1, 2], [1, 2])).toBe(true);
+    expect(settingsValueEqual([1, 2], [2, 1])).toBe(false);
+    expect(
+      settingsValueEqual(
+        { inputRequired: { enabled: true, volume: 0.5, notify: false } },
+        { inputRequired: { enabled: true, volume: 0.5, notify: false } },
+      ),
+    ).toBe(true);
+    // Key order must not matter (JSON round-trips can reorder).
+    expect(settingsValueEqual({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(true);
+    expect(
+      settingsValueEqual(
+        { planComplete: { enabled: true, volume: 0.5, notify: false } },
+        { planComplete: { enabled: false, volume: 0.5, notify: false } },
+      ),
+    ).toBe(false);
+  });
+
+  it("treats a missing field and null/undefined distinctly from a value", () => {
+    expect(settingsValueEqual(undefined, null)).toBe(false);
+    expect(settingsValueEqual(null, null)).toBe(true);
+    expect(settingsValueEqual(undefined, {})).toBe(false);
   });
 });
