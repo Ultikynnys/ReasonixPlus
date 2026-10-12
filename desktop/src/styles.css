@@ -7263,21 +7263,62 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .seg-ctrl .mcp-remove {
   color: var(--danger);
 }
-/* Feedback-cue rows: a fixed control order (sound switch · volume · notify
- * switch) that never wraps. The shared `.setting-row` control column wraps, so
- * without this a row with a longer label stacked while a shorter one stayed on
- * one line — the inconsistency the section used to show. */
-.feedback-cue-controls {
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 10px;
-  flex: 0 0 auto;
+/* Feedback-cue matrix: one row per cue, columns for sound / volume / notify, so
+ * every cue is toggled and tuned identically. */
+.feedback-cues-table {
+  width: 100%;
+  border-collapse: collapse;
 }
-.feedback-cue-controls input[type="range"] {
-  width: 84px;
-  flex: 0 0 auto;
+.feedback-cues-table th {
+  text-align: left;
+  padding: 4px 12px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.feedback-cues-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.feedback-cues-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.feedback-cues-table .feedback-cue-name {
+  min-width: 220px;
+}
+.feedback-cues-table .feedback-cue-name .n {
+  font-size: 14px;
+  font-weight: 500;
+}
+.feedback-cues-table .feedback-cue-name .h {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.feedback-cues-table .seg-ctrl {
+  font-size: 13px;
+}
+.feedback-cues-table .feedback-cue-volume {
+  white-space: nowrap;
+}
+.feedback-cues-table input[type="range"] {
+  width: 120px;
+  vertical-align: middle;
   accent-color: var(--accent);
+}
+.feedback-cues-table .feedback-cue-volume-value {
+  display: inline-block;
+  min-width: 34px;
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 13px;
 }
 .provider-caret {
   display: inline-flex;
