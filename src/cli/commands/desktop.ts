@@ -6115,6 +6115,72 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
   }
 
+  /** Bring an already-open session's channel to the front and refresh its list. */
+  function focusSessionChannel(channel: Tab): void {
+    lastActiveTabId = channel.id;
+    persistOpenTabs();
+    emit(
+      {
+        type: "$tab_opened",
+        workspaceDir: channel.rootDir,
+        active: true,
+        groupId: channel.groupId,
+        sessions: [channel.currentSession],
+        activeSession: channel.currentSession,
+      },
+      channel.id,
+    );
+    emitSessionsForWorkspace(channel.rootDir);
+  }
+
+  /** Open `name` as its own channel in the requesting tab's group, or focus the
+   *  channel already holding it (never a second agent on one session). `legacy`
+   *  (session_load) never re-focuses a channel already open in this same tab. */
+  function openOrFocusSession(tab: Tab, name: string, legacy: boolean): void {
+    const existing = channelForSession(name);
+    if (existing) {
+      if (legacy && existing.id === tab.id) emitSessionsForWorkspace(existing.rootDir);
+      else focusSessionChannel(existing);
+      return;
+    }
+    try {
+      const opened = bootstrapTab(tab.rootDir, {
+        session: name,
+        active: true,
+        groupId: tab.groupId,
+      });
+      lastActiveTabId = opened.id;
+      persistOpenTabs();
+    } catch (err) {
+      emitDiagnosticError(legacy ? "session.load.failed" : "session.open.failed", err, {
+        tabId: tab.id,
+        details: { requestedSession: name, ...tabDiagnosticState(tab) },
+      });
+      if (legacy) {
+        process.stderr.write(`session_load: "${name}" threw — ${(err as Error).message}\n`);
+      }
+      const op = legacy ? "session_load" : "session_open";
+      emit({ type: "$error", message: `${op} failed: ${(err as Error).message}` }, tab.id);
+    }
+  }
+
+  /** Patch a session's meta and re-emit its workspace list; `buildPatch` runs
+   *  inside the guard, so malformed input surfaces as a command error, not a
+   *  crash. */
+  function patchSessionMetaAndResync(
+    tab: Tab,
+    op: string,
+    name: string,
+    buildPatch: () => Partial<SessionMeta>,
+  ): void {
+    try {
+      patchSessionMeta(name, buildPatch());
+      emitSessionsForWorkspace(tab.rootDir);
+    } catch (err) {
+      emit({ type: "$error", message: `${op} failed: ${(err as Error).message}` }, tab.id);
+    }
+  }
+
   function tabSessionLabel(tab: Tab): string {
     if (tab.currentSession) {
       try {
@@ -7535,32 +7601,17 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "session_rename") {
-      try {
-        const trimmed = normalizeSessionTitle(msg.title);
-        patchSessionMeta(msg.name, { summary: trimmed || undefined });
-        emitSessionsForWorkspace(tab.rootDir);
-      } catch (err) {
-        emit(
-          { type: "$error", message: `session_rename failed: ${(err as Error).message}` },
-          tab.id,
-        );
-      }
+      patchSessionMetaAndResync(tab, "session_rename", msg.name, () => ({
+        summary: normalizeSessionTitle(msg.title) || undefined,
+      }));
       return;
     }
     if (msg.cmd === "session_reorder") {
-      try {
-        const now =
-          typeof msg.createdAt === "number" && Number.isFinite(msg.createdAt) && msg.createdAt > 0
-            ? msg.createdAt
-            : Date.now();
-        patchSessionMeta(msg.name, { createdAt: now });
-        emitSessionsForWorkspace(tab.rootDir);
-      } catch (err) {
-        emit(
-          { type: "$error", message: `session_reorder failed: ${(err as Error).message}` },
-          tab.id,
-        );
-      }
+      const now =
+        typeof msg.createdAt === "number" && Number.isFinite(msg.createdAt) && msg.createdAt > 0
+          ? msg.createdAt
+          : Date.now();
+      patchSessionMetaAndResync(tab, "session_reorder", msg.name, () => ({ createdAt: now }));
       return;
     }
     if (msg.cmd === "notices_sync") {
@@ -7578,85 +7629,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "session_load") {
-      // Legacy alias for additive session_open. Loading from the sidebar must
+      // Legacy alias for additive session_open — loading from the sidebar must
       // never replace or abort the channel the user is currently watching.
-      const holder = channelForSession(msg.name);
-      if (holder) {
-        if (holder.id !== tab.id) {
-          lastActiveTabId = holder.id;
-          persistOpenTabs();
-          emit(
-            {
-              type: "$tab_opened",
-              workspaceDir: holder.rootDir,
-              active: true,
-              groupId: holder.groupId,
-              sessions: [holder.currentSession],
-              activeSession: holder.currentSession,
-            },
-            holder.id,
-          );
-        }
-        emitSessionsForWorkspace(holder.rootDir);
-        return;
-      }
-      try {
-        const opened = bootstrapTab(tab.rootDir, {
-          session: msg.name,
-          active: true,
-          groupId: tab.groupId,
-        });
-        lastActiveTabId = opened.id;
-        persistOpenTabs();
-      } catch (err) {
-        emitDiagnosticError("session.load.failed", err, {
-          tabId: tab.id,
-          details: { requestedSession: msg.name, ...tabDiagnosticState(tab) },
-        });
-        process.stderr.write(`session_load: "${msg.name}" threw — ${(err as Error).message}\n`);
-        emit({ type: "$error", message: `session_load failed: ${(err as Error).message}` }, tab.id);
-      }
+      openOrFocusSession(tab, msg.name, true);
       return;
     }
     if (msg.cmd === "session_open") {
-      const name = msg.name;
-      // Already open somewhere — focus it; never open a second agent on one
-      // session.
-      const existing = channelForSession(name);
-      if (existing) {
-        lastActiveTabId = existing.id;
-        persistOpenTabs();
-        emit(
-          {
-            type: "$tab_opened",
-            workspaceDir: existing.rootDir,
-            active: true,
-            groupId: existing.groupId,
-            sessions: [existing.currentSession],
-            activeSession: existing.currentSession,
-          },
-          existing.id,
-        );
-        emitSessionsForWorkspace(existing.rootDir);
-        return;
-      }
-      try {
-        // Stack the session into the requesting tab's group so one tab can host
-        // several sessions side by side (each an independent running agent).
-        const opened = bootstrapTab(tab.rootDir, {
-          session: name,
-          active: true,
-          groupId: tab.groupId,
-        });
-        lastActiveTabId = opened.id;
-        persistOpenTabs();
-      } catch (err) {
-        emitDiagnosticError("session.open.failed", err, {
-          tabId: tab.id,
-          details: { requestedSession: name, ...tabDiagnosticState(tab) },
-        });
-        emit({ type: "$error", message: `session_open failed: ${(err as Error).message}` }, tab.id);
-      }
+      openOrFocusSession(tab, msg.name, false);
       return;
     }
     if (msg.cmd === "memory_read") {

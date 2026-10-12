@@ -63,13 +63,14 @@ function dropKeysFor(messages: readonly ChatMessage[], keepNewest: number): Set<
   return new Set(positions.slice(0, cutoff).map((p) => positionKey(p.messageIndex, p.partIndex)));
 }
 
-/** Copy-on-write: replace image_url parts at `dropKeys` with `note`, cloning
- *  only the messages that actually change so untouched messages keep their
- *  identity (stable prompt-cache prefix). Never mutates the input. */
+/** Replace image_url parts at `dropKeys` with `note`. Copy-on-write by default
+ *  (untouched messages keep their identity, stable prompt-cache prefix);
+ *  `inPlace` mutates content arrays for the log-shrink heal that rewrites the log. */
 function withImagePartsDropped(
   messages: ChatMessage[],
   dropKeys: ReadonlySet<string>,
   note: string,
+  inPlace = false,
 ): { messages: ChatMessage[]; dropped: number } {
   if (dropKeys.size === 0) return { messages, dropped: 0 };
   let dropped = 0;
@@ -84,9 +85,14 @@ function withImagePartsDropped(
       }
       return part;
     });
-    return changed ? { ...msg, content: next } : msg;
+    if (!changed) return msg;
+    if (inPlace) {
+      msg.content = next;
+      return msg;
+    }
+    return { ...msg, content: next };
   });
-  return { messages: out, dropped };
+  return { messages: inPlace ? messages : out, dropped };
 }
 
 /** Downscale every surviving image_url part in place; returns the count shrunk. */
@@ -130,13 +136,9 @@ export async function shrinkImagePartsForRetry(
   level: ShrinkLevel,
 ): Promise<ShrinkImagesResult> {
   const dropKeys = level >= 2 ? dropKeysFor(messages, 1) : new Set<string>();
-  const rewritten = withImagePartsDropped(messages, dropKeys, SHRINK_DROP_NOTE);
-  for (let i = 0; i < messages.length; i++) {
-    const replacement = rewritten.messages[i]!;
-    if (replacement !== messages[i]) messages[i]!.content = replacement.content;
-  }
+  const { dropped } = withImagePartsDropped(messages, dropKeys, SHRINK_DROP_NOTE, true);
   const shrunk = await downscaleImagePartsInPlace(messages, LEVEL_MAX_SIDE[level]);
-  return { changed: shrunk > 0 || rewritten.dropped > 0, shrunk, dropped: rewritten.dropped };
+  return { changed: shrunk > 0 || dropped > 0, shrunk, dropped };
 }
 
 /** Send-time retention: returns a COPY where only the newest `keep` image_url
