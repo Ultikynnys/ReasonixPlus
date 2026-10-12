@@ -190,6 +190,7 @@ export const en = {
     feedbackCueColSound: "Sound",
     feedbackCueColVolume: "Volume",
     feedbackCueColNotify: "Notify",
+    feedbackCueColTest: "Test",
     feedbackCueOn: "On",
     feedbackCueOff: "Off",
     feedbackCueSoundEnable: "Enable sound for {cue}",
@@ -197,6 +198,7 @@ export const en = {
     feedbackCueVolume: "Volume for {cue}",
     feedbackCueNotifyEnable: "Enable notifications for {cue}",
     feedbackCueNotifyDisable: "Disable notifications for {cue}",
+    feedbackCueTestSound: "Test the {cue} sound",
     voiceSection: "Voice processing model",
     voiceSectionHint:
       "Select a speech-to-text recognition model. Models download on demand into the local cache.",

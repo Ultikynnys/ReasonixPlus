@@ -2,6 +2,7 @@ import { messageOf, modelDisplayName } from "@reasonix/core-utils";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { Settings as SettingsType } from "../App";
+import { feedbackSounds } from "../feedback-sounds";
 import { formatBytes } from "../format";
 import { t, type TKey } from "../i18n";
 import { I } from "../icons";
@@ -3283,6 +3284,7 @@ function FeedbackCuesSection({
             <th>{t("settings.feedbackCueColSound")}</th>
             <th>{t("settings.feedbackCueColVolume")}</th>
             <th>{t("settings.feedbackCueColNotify")}</th>
+            <th>{t("settings.feedbackCueColTest")}</th>
           </tr>
         </thead>
         <tbody>
@@ -3348,6 +3350,17 @@ function FeedbackCuesSection({
                       {t("settings.feedbackCueOn")}
                     </button>
                   </div>
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    title={t("settings.feedbackCueTestSound", { cue: cueName })}
+                    aria-label={t("settings.feedbackCueTestSound", { cue: cueName })}
+                    onClick={() => feedbackSounds.play(id, volume)}
+                  >
+                    <I.play size={13} />
+                  </button>
                 </td>
               </tr>
             );

@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "../App";
+import { feedbackSounds } from "../feedback-sounds";
 import { MailProvider } from "../protocol";
 import { SettingsModal } from "./settings";
 
@@ -84,15 +85,15 @@ describe("Feedback cues table", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders every cue as a row with Sound / Volume / Notify columns", () => {
+  it("renders every cue as a row with Sound / Volume / Notify / Test columns", () => {
     const { container } = render(<SettingsModal {...baseProps} initialPage="general" />);
     const table = container.querySelector(".feedback-cues-table");
     expect(table).toBeTruthy();
     const headers = Array.from(table!.querySelectorAll("th")).map((th) => th.textContent);
-    expect(headers).toEqual(["Cue", "Sound", "Volume", "Notify"]);
+    expect(headers).toEqual(["Cue", "Sound", "Volume", "Notify", "Test"]);
     expect(table!.querySelectorAll("tbody tr")).toHaveLength(4);
     for (const name of ["Input required", "Task complete", "Plan complete", "Repetition guard"]) {
-      expect(within(cueRow(name)).getAllByRole("button")).toHaveLength(4);
+      expect(within(cueRow(name)).getAllByRole("button")).toHaveLength(5);
     }
   });
 
@@ -144,5 +145,20 @@ describe("Feedback cues table", () => {
     expect(onSave).toHaveBeenLastCalledWith({
       feedbackCues: { planComplete: { enabled: true, volume: 0.5, notify: true } },
     });
+  });
+
+  it("plays a cue's sound from the Test column at its volume, even while the sound switch is off", () => {
+    const play = vi.spyOn(feedbackSounds, "play").mockReturnValue(true);
+    const settings: Settings = {
+      ...baseSettings,
+      feedbackCues: { guardTriggered: { enabled: false, volume: 0.8, notify: false } },
+    };
+    render(<SettingsModal {...baseProps} settings={settings} initialPage="general" />);
+    fireEvent.click(
+      within(cueRow("Repetition guard")).getByRole("button", {
+        name: "Test the Repetition guard sound",
+      }),
+    );
+    expect(play).toHaveBeenCalledWith("guardTriggered", 0.8);
   });
 });
