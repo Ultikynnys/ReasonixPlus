@@ -421,6 +421,10 @@ export class CacheFirstLoop {
    *  large — caps the shrink-and-retry heal before the error surfaces. */
   private _compactRecoveries = 0;
   private _payloadShrinkAttempts = 0;
+  /** Mid-turn auto-compactions this turn — bounds the per-iteration recheck so
+   *  a fold that still leaves the estimate over the trigger can't compact on
+   *  every remaining iteration. */
+  private _midTurnCompacts = 0;
   /** Normalized reasoning text from the previous iteration — detects a model
    *  re-thinking the identical thought (a reasoning-only loop) when tool args
    *  drift so the storm breaker can't fire. */
@@ -1246,6 +1250,7 @@ export class CacheFirstLoop {
     this._prematureStopNudges = 0;
     this._compactRecoveries = 0;
     this._payloadShrinkAttempts = 0;
+    this._midTurnCompacts = 0;
     this._lastReasoningSig = null;
     this._reasoningLoopCount = 0;
     // Fresh controller for this turn: the prior step's signal has
@@ -1288,8 +1293,8 @@ export class CacheFirstLoop {
     // first round-trip still leaves the message in the log; the user can
     // retry without re-typing.
     // Auto-compaction runs before the new prompt is logged (Codex pre-turn
-    // phase): the fresh user message can never be folded away, and at most one
-    // prompt-cache reset lands per turn.
+    // phase): the fresh user message can never be folded away. Mid-turn the
+    // check re-fires from the iteration loop once the threshold is crossed.
     if (this.autoCompact) {
       const estimate = estimateRequestTokens(
         [...this.prefix.toMessages(), ...this.log.entries],
@@ -1317,6 +1322,27 @@ export class CacheFirstLoop {
     let turnHadToolActivity = false;
 
     for (let iter = 0; ; iter++) {
+      // Mid-turn auto-compaction: a long tool loop crosses the threshold long
+      // after turn start, and the pre-turn check above never re-runs inside
+      // the iteration loop. Bounded per turn (see _midTurnCompacts).
+      if (this.autoCompact && iter > 0 && this._midTurnCompacts < 2) {
+        const estimate = estimateRequestTokens(
+          [...this.prefix.toMessages(), ...this.log.entries],
+          this.prefix.tools(),
+        );
+        const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);
+        if (estimate >= this.autoCompactTriggerRatio * ctxMax) {
+          this._midTurnCompacts++;
+          yield {
+            turn: this._turn,
+            role: "compaction_start",
+            compactionTrigger: "auto",
+            content: "",
+          };
+          const outcome = await this.compactNow({ trigger: "auto", signal });
+          for (const ev of outcome.events) yield ev;
+        }
+      }
       if (signal.aborted) {
         // Reset in finally — the consumer (desktop runTurn) breaks the
         // for-await on its own aborter between our yields, which calls
