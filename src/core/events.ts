@@ -210,8 +210,8 @@ export interface ErrorEvent extends KernelErrorEvent {
 }
 
 /** Non-fatal system event surfaced to UIs as a quiet inline divider — rate-limit
- *  pause, user-aborted iter, storm-stuck interrupt, etc. Carries a severity so
- *  noisy/self-correcting warnings can be filtered out by the surface. */
+ *  pause, user-abort, storm-stuck interrupt, etc. `cause` tags the trigger
+ *  (repetition-guard) so clients key cues off it instead of matching text. */
 export interface WarningEvent extends KernelWarningEvent {}
 
 export type Event =

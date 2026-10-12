@@ -270,7 +270,13 @@ export type {
   RuleRecord,
   StatusBarToggles,
 } from "./desktop-protocol.js";
+export type {
+  FeedbackCueId,
+  FeedbackCueSetting,
+  FeedbackCueSettings,
+} from "./desktop-protocol.js";
 export {
+  DEFAULT_FEEDBACK_CUES,
   BUILTIN_QUICK_SENDS,
   QUICK_SEND_SHORTHAND_MAX_LENGTH,
   MailProvider,

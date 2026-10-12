@@ -49,6 +49,7 @@ import { hookWarnings, safeParseToolArgs } from "./loop/hook-events.js";
 import {
   type ShrinkLevel,
   isPayloadTooLargeError,
+  pruneOldImageParts,
   shrinkImagePartsForRetry,
 } from "./loop/image-retry.js";
 import { buildAssistantMessage, buildSyntheticAssistantMessage } from "./loop/messages.js";
@@ -67,7 +68,7 @@ import {
   stripHallucinatedToolMarkup,
   thinkingModeForModel,
 } from "./loop/thinking.js";
-import type { LoopEvent } from "./loop/types.js";
+import type { LoopEvent, WarningCause } from "./loop/types.js";
 import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory/runtime.js";
 import {
   appendSessionMessage,
@@ -839,7 +840,12 @@ export class CacheFirstLoop {
             },
           ]
         : [];
-    return [...this.prefix.toMessages(), ...healedMessages, ...planContext];
+    // Send-time image retention (window default = KEEP_LAST_IMAGES): the log
+    // keeps every image so transcripts and reloads stay complete, but only the
+    // newest image parts are sent. Otherwise screenshots accumulate across a
+    // long session until the provider rejects the whole request with an
+    // image-count cap ("Too many images in request: 67 > 64") no retry can fix.
+    return pruneOldImageParts([...this.prefix.toMessages(), ...healedMessages, ...planContext]);
   }
 
   private cacheShapeForRequest(
@@ -1297,7 +1303,7 @@ export class CacheFirstLoop {
     // check re-fires from the iteration loop once the threshold is crossed.
     if (this.autoCompact) {
       const estimate = estimateRequestTokens(
-        [...this.prefix.toMessages(), ...this.log.entries],
+        pruneOldImageParts([...this.prefix.toMessages(), ...this.log.entries]),
         this.prefix.tools(),
       );
       const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);
@@ -1327,7 +1333,7 @@ export class CacheFirstLoop {
       // the iteration loop. Bounded per turn (see _midTurnCompacts).
       if (this.autoCompact && iter > 0 && this._midTurnCompacts < 2) {
         const estimate = estimateRequestTokens(
-          [...this.prefix.toMessages(), ...this.log.entries],
+          pruneOldImageParts([...this.prefix.toMessages(), ...this.log.entries]),
           this.prefix.tools(),
         );
         const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);
@@ -1740,6 +1746,7 @@ export class CacheFirstLoop {
           turn: this._turn,
           role: "warning",
           severity: "high",
+          cause: "repetition-guard",
           content: withRepeatedPattern(
             t("loop.repetitionStall", {
               channel: repetitionStall.channel,
@@ -2181,11 +2188,13 @@ export class CacheFirstLoop {
   private async *reasoningLoopEvents(
     assistantContent: string,
     warningContent: string,
+    cause: WarningCause = "repetition-guard",
   ): AsyncGenerator<LoopEvent, void, void> {
     yield {
       turn: this._turn,
       role: "warning",
       severity: "high",
+      cause,
       content: `${warningContent}\n\n${t("loop.reasoningLoopStopping")}`,
     };
     yield {

@@ -173,6 +173,24 @@ export const en = {
     rawTabHint: "Hidden by default.",
     rawTabShown: "Shown",
     rawTabHidden: "Hidden",
+    feedbackCuesSection: "Feedback cues",
+    feedbackCuesSectionHint:
+      "Sounds and notifications for notable events. Everything is off by default; enable each cue individually.",
+    feedbackCueInputRequired: "Input required",
+    feedbackCueInputRequiredHint:
+      "Command or file approval, plan approval, multiple-choice questions, checkpoints and revisions.",
+    feedbackCueTaskComplete: "Task complete",
+    feedbackCueTaskCompleteHint: "A long turn finished successfully.",
+    feedbackCuePlanComplete: "Plan complete",
+    feedbackCuePlanCompleteHint: "Every step of the active plan has been completed.",
+    feedbackCueGuardTriggered: "Repetition guard",
+    feedbackCueGuardTriggeredHint:
+      "The repetition guard stopped a degenerating model stream (opt in under Tools).",
+    feedbackCueSoundOn: "Sound on",
+    feedbackCueSoundOff: "Sound off",
+    feedbackCueVolume: "Volume for {cue}",
+    feedbackCueNotify: "Notify",
+    feedbackCueNotifyTitle: "Also raise a desktop notification while the window is unfocused",
     voiceSection: "Voice processing model",
     voiceSectionHint:
       "Select a speech-to-text recognition model. Models download on demand into the local cache.",
@@ -1171,5 +1189,9 @@ export const en = {
     writeBody: "Write: {path}",
     turnCompleteTitle: "Reasonix+ task complete",
     turnCompleteBody: "The current task finished and is ready for review.",
+    planCompleteTitle: "Reasonix+ plan complete",
+    planCompleteBody: "Every step of the plan has been completed.",
+    guardTitle: "Reasonix+ repetition guard fired",
+    guardBody: "A degenerating model stream was stopped. Check the transcript for details.",
   },
 };

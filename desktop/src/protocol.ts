@@ -28,6 +28,9 @@ import type {
   DirectKernelWireEvent,
   EditMode,
   EditRequiredEvent,
+  FeedbackCueId,
+  FeedbackCueSetting,
+  FeedbackCueSettings,
   JobInfo,
   JobsEvent,
   KernelModelDeltaEvent,
@@ -243,6 +246,8 @@ export type {
 
 /** Legacy alias for the memory-browser name (context-panel imports it). */
 export type MemoryDetail = MemoryEntryDetail;
+
+export type { FeedbackCueId, FeedbackCueSetting, FeedbackCueSettings };
 
 // ---- kernel events shared with the daemon ----
 

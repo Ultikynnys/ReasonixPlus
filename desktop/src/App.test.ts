@@ -34,8 +34,10 @@ vi.mock("./theme", () => ({
   themeForStyle: vi.fn(() => "dark"),
 }));
 
+import { baseAppState } from "../../tests/support/app-state.js";
 import {
   activePlanForMessage,
+  cueIdForEvent,
   groupTabsByWorkspace,
   hasPendingIntervention,
   parseSessionTimestamp,
@@ -49,7 +51,6 @@ import {
   workspaceTabRepresentatives,
 } from "./App";
 import type { ModelTurnStartedEvent } from "./protocol";
-import { baseAppState } from "../../tests/support/app-state.js";
 import { getThreadMaxWidth } from "./ui/thread-layout";
 
 function initialState(): Parameters<typeof reduce>[0] {
@@ -3582,5 +3583,59 @@ describe("groupTabsByWorkspace — one ribbon tab per workspace", () => {
     ];
 
     expect(workspaceTabRepresentatives(tabs, "a2").map((tab) => tab.id)).toEqual(["a2", "b1"]);
+  });
+});
+
+describe("cueIdForEvent — wire events to feedback cue ids", () => {
+  it("maps every user-intervention event to inputRequired", () => {
+    const events = [
+      { type: "$confirm_required", id: 1, kind: "run_command", command: "ls" },
+      {
+        type: "$path_access_required",
+        id: 2,
+        path: "/tmp/x",
+        intent: "write",
+        toolName: "write_file",
+        sandboxRoot: "/",
+        allowPrefix: "/",
+      },
+      {
+        type: "$edit_required",
+        id: 3,
+        path: "/a",
+        toolName: "edit_file",
+        sandboxRoot: "/",
+        allowPrefix: "/",
+      },
+      { type: "$choice_required", id: 4, question: "q", options: [], allowCustom: true },
+      { type: "$plan_required", id: 5, plan: "body" },
+      { type: "$checkpoint_required", id: 6, stepId: "s", result: "r", completed: 1, total: 2 },
+      { type: "$revision_required", id: 7, reason: "why", remainingSteps: [] },
+    ] as const;
+    for (const ev of events) {
+      expect(cueIdForEvent(ev as never)).toBe("inputRequired");
+    }
+  });
+
+  it("maps repetition-guard warnings to guardTriggered and leaves other warnings uncued", () => {
+    expect(
+      cueIdForEvent({
+        id: 1,
+        ts: "t",
+        turn: 1,
+        type: "warning",
+        text: "x",
+        severity: "high",
+        cause: "repetition-guard",
+      }),
+    ).toBe("guardTriggered");
+    expect(
+      cueIdForEvent({ id: 2, ts: "t", turn: 1, type: "warning", text: "x", severity: "high" }),
+    ).toBeNull();
+  });
+
+  it("returns null for events with no cue", () => {
+    expect(cueIdForEvent({ type: "status", id: 1, ts: "t", turn: 1, text: "" })).toBeNull();
+    expect(cueIdForEvent({ type: "$turn_complete", outcome: "success" })).toBeNull();
   });
 });

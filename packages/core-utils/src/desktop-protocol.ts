@@ -295,6 +295,9 @@ export interface KernelWarningEvent extends KernelWireEventBase {
   type: "warning";
   text: string;
   severity: "low" | "high";
+  /** Machine-readable trigger tag (mirror of src/loop WarningCause) so clients
+   *  can key feedback cues off the trigger instead of matching message text. */
+  cause?: "repetition-guard";
 }
 
 export interface KernelErrorEvent extends KernelWireEventBase {
@@ -893,10 +896,36 @@ export interface RuleRecord {
   match?: "pattern" | "regex";
 }
 
+/** One user-facing trigger the desktop can acknowledge with a sound cue and/or
+ *  a system notification. Values persist in config as `feedbackCues` and ride
+ *  the wire inside $settings / settings_save. All off by default. */
+export type FeedbackCueId = "planComplete" | "guardTriggered" | "inputRequired" | "taskComplete";
+
+/** One toggle + volume entry of the per-type sound/notification matrix. */
+export interface FeedbackCueSetting {
+  enabled: boolean;
+  /** 0..1 playback gain, applied by the WebAudio player. */
+  volume: number;
+  /** Desktop system notification alongside the cue (input-required types). */
+  notify: boolean;
+}
+
+export type FeedbackCueSettings = Partial<Record<FeedbackCueId, FeedbackCueSetting>>;
+
+/** Defaults used whenever a cue is missing from persisted config: everything off. */
+export const DEFAULT_FEEDBACK_CUES: FeedbackCueSettings = {
+  planComplete: { enabled: false, volume: 0.5, notify: false },
+  guardTriggered: { enabled: false, volume: 0.5, notify: false },
+  inputRequired: { enabled: false, volume: 0.5, notify: false },
+  taskComplete: { enabled: false, volume: 0.5, notify: false },
+};
+
 export interface SettingsEvent {
   type: "$settings";
   reasoningEffort: ReasoningEffort;
   editMode: EditMode;
+  /** Per-type sound/notification cue matrix (Settings → Behavior). Absent = all off. */
+  feedbackCues?: FeedbackCueSettings;
   /** Active quick-send action id (default "proceed"). */
   quickSendId: string;
   /** User-defined quick sends (built-ins are code-defined). */
@@ -1359,6 +1388,8 @@ export interface ChangelogEvent {
 export interface SettingsPatch {
   reasoningEffort?: ReasoningEffort;
   editMode?: EditMode;
+  /** Per-type sound/notification cue matrix (Settings → Behavior). */
+  feedbackCues?: FeedbackCueSettings;
   quickSendId?: string;
   quickSends?: QuickSend[];
   /** Context-window cap in tokens, clamped to [128000, 1000000]; null/undefined = per-model default. */

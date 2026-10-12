@@ -31,6 +31,10 @@ export type EventRole =
  *  TUI ignores this and renders every warning. */
 export type EventSeverity = "low" | "high";
 
+/** Stable machine tag for why a high-severity warning fired. Desktops key
+ *  feedback cues (sounds/notifications) on this instead of matching text. */
+export type WarningCause = "repetition-guard";
+
 export interface LoopEvent {
   turn: number;
   role: EventRole;
@@ -38,6 +42,8 @@ export interface LoopEvent {
   /** Model-generated image (assistant image output) — data URL + mime. */
   image?: { dataUrl: string; mimeType: string };
   severity?: EventSeverity;
+  /** Machine-readable trigger tag on warnings, when the trigger is one of WarningCause. */
+  cause?: WarningCause;
   reasoningDelta?: string;
   /** Complete reasoning snapshot, present on finals that replace streamed output. */
   reasoningContent?: string;

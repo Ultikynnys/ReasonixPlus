@@ -505,6 +505,7 @@ export class Eventizer {
       type: EventType.warning,
       text: c,
       severity: ev.severity ?? "high",
+      cause: ev.cause,
     };
   }
 }

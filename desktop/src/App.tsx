@@ -40,6 +40,7 @@ import {
 } from "react";
 import { WorkspaceProvider } from "./Markdown";
 import { type AbortDraftSource, nextAbortDraftCandidate, restoreAbortedDraft } from "./abort-draft";
+import { type FeedbackSoundPlayer, feedbackSounds, primeFeedbackSounds } from "./feedback-sounds";
 import { formatBytes } from "./format";
 import { t, useLang } from "./i18n";
 import { I } from "./icons";
@@ -47,6 +48,8 @@ import { downscaleImage, fileToDataUrl, isImagePath, typedMentionImages } from "
 import { MODEL_CATALOG_GROUP_LABELS, deriveModelCatalog } from "./model-catalog";
 import {
   type ApprovalSnapshot,
+  type PlanFeedbackState,
+  cueSetting,
   deriveDesktopNotifications,
   dispatchDesktopNotifications,
   shouldAppendCompletionNotice,
@@ -59,6 +62,8 @@ import {
   type ConfirmationChoice,
   type ContextRawEvent,
   type DesktopDiagnosticEvent,
+  type FeedbackCueId,
+  type FeedbackCueSettings,
   type IncomingEvent,
   type JobInfo,
   type LoadedMessage,
@@ -1390,6 +1395,47 @@ function closeTrailingReasoning(segments: AssistantSegment[]): AssistantSegment[
 
 function appendNoticeMessage(messages: ChatMessage[], notice: ChatMessage): ChatMessage[] {
   return [...messages, notice];
+}
+
+/** Map a wire event to its cue id, when the event is one the cue matrix knows:
+ *  pending approval/question/plan cards → inputRequired, repetition-guard
+ *  warnings → guardTriggered. Sound (enabled) fires immediately; the desktop
+ *  notification (notify) rides the normal approval-snapshot path. */
+export function cueIdForEvent(ev: IncomingEvent): FeedbackCueId | null {
+  switch (ev.type) {
+    case "$confirm_required":
+    case "$path_access_required":
+    case "$edit_required":
+    case "$choice_required":
+    case "$plan_required":
+    case "$checkpoint_required":
+    case "$revision_required":
+      return "inputRequired";
+    case "warning":
+      return ev.cause === "repetition-guard" ? "guardTriggered" : null;
+    default:
+      return null;
+  }
+}
+
+/** Fire the sound half of a cue for a wire event (if that cue's sound is
+ *  enabled). Guard warnings additionally land in `guardSink` so the
+ *  notification pass can surface one OS notification per unfocused burst. */
+function handleCueForEvent(
+  ev: IncomingEvent,
+  cues: FeedbackCueSettings | null | undefined,
+  player: FeedbackSoundPlayer,
+  guardSink?: { cause?: string }[],
+): void {
+  const id = cueIdForEvent(ev);
+  if (!id) return;
+  if (id === "guardTriggered") {
+    guardSink?.push({ cause: ev.type === "warning" ? ev.cause : undefined });
+  }
+  const setting = cueSetting(cues, id);
+  if (setting.enabled && setting.volume > 0) {
+    player.play(id, setting.volume);
+  }
 }
 
 // The turn a notice belongs to (the one in flight, else the last completed
@@ -2894,6 +2940,12 @@ function TabRuntime({
     checkpoints: [],
     revisions: [],
   });
+  // Plan rail state on the previous render — drives the plan-complete cue's
+  // active → finished transition detection.
+  const previousPlanRef = useRef<PlanFeedbackState | null>(null);
+  // High-severity repetition-guard warnings seen since the last notification
+  // pass — consumed once, then cleared.
+  const guardWarningsRef = useRef<{ cause?: string }[]>([]);
   const wasBusyRef = useRef(false);
   const busyStartedAtRef = useRef<number | null>(null);
   const abortDraftRef = useRef<string | null>(null);
@@ -2912,10 +2964,23 @@ function TabRuntime({
     setSettingsOpen(true);
   }, []);
 
+  // Feedback cue plumbing. Sounds and notifications fire from event delivery
+  // (not the reducer): the reducer must stay pure, and the cue matrix lives in
+  // settings state the reducer does not reduce. The wrapper sees every action
+  // exactly once, in arrival order.
+  const cuesRef = useRef<FeedbackCueSettings | null | undefined>(null);
+  cuesRef.current = state.settings?.feedbackCues;
+  const cueDispatch = useCallback((action: TabAction) => {
+    if (action.t === "incoming") {
+      handleCueForEvent(action.event, cuesRef.current, feedbackSounds, guardWarningsRef.current);
+    }
+    dispatch(action);
+  }, []);
+
   useEffect(() => {
-    registerDispatch(tabId, dispatch);
+    registerDispatch(tabId, cueDispatch);
     return () => registerDispatch(tabId, null);
-  }, [tabId, registerDispatch]);
+  }, [tabId, registerDispatch, cueDispatch]);
 
   useEffect(() => {
     if (state.workspaceInitializationRevision === 0) return;
@@ -3476,9 +3541,25 @@ function TabRuntime({
       busyStartedAtRef.current = null;
     }
 
+    // Guard warnings collected from the event stream since the last pass are
+    // consumed here (focused or not): the sound already played on arrival; the
+    // ref must drain so a later unfocus doesn't replay a stale warning.
+    const guardWarnings = guardWarningsRef.current;
+    guardWarningsRef.current = [];
+
+    const currentPlan: PlanFeedbackState | null = state.activePlan
+      ? {
+          status: state.activePlan.status ?? "active",
+          totalSteps: state.activePlan.steps.length,
+          completedSteps: state.activePlan.completedStepIds.length,
+        }
+      : null;
+    const previousPlan = previousPlanRef.current;
+    previousPlanRef.current = currentPlan;
     previousApprovalSnapshotRef.current = currentSnapshot;
     wasBusyRef.current = state.busy;
 
+    const cues = state.settings?.feedbackCues;
     void getCurrentWindow()
       .isFocused()
       .catch((err) => {
@@ -3505,8 +3586,12 @@ function TabRuntime({
           busyDurationMs,
           focused,
           outcome: state.lastTurnOutcome,
+          cues,
+          previousPlan,
+          currentPlan,
+          guardWarnings,
         });
-        void dispatchDesktopNotifications(notifications, {
+        void dispatchDesktopNotifications(notifications, cues, {
           isFocused: async () => focused,
           isPermissionGranted: isNotificationPermissionGranted,
           requestPermission: requestNotificationPermission,
@@ -3515,6 +3600,7 @@ function TabRuntime({
       });
   }, [
     appendNotice,
+    state.activePlan,
     state.busy,
     state.lastTurnOutcome,
     state.pendingChoices,
@@ -3523,6 +3609,7 @@ function TabRuntime({
     state.pendingPathAccess,
     state.pendingPlans,
     state.pendingRevisions,
+    state.settings?.feedbackCues,
   ]);
 
   const resolveConfirm = useCallback(
@@ -5501,6 +5588,11 @@ function normalizeWorkspacePath(p?: string): string {
 }
 
 export function App() {
+  // Arm the WebAudio cue player on the first gesture — one process-wide
+  // listener, so autoplay policies don't silence the first cue.
+  useEffect(() => {
+    primeFeedbackSounds();
+  }, []);
   const [tabs, setTabs] = useState<TabMeta[]>([]);
   const [backendConnected, setBackendConnected] = useState(false);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);

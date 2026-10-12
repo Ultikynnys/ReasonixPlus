@@ -152,6 +152,7 @@ import {
   loadEndpoint,
   loadEndpointForModel,
   loadExaApiKey,
+  loadFeedbackCues,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
   loadMaxIterPerTurn,
@@ -207,6 +208,7 @@ import {
   saveElevationEnabled,
   saveEnableSubagents,
   saveEnabledModels,
+  saveFeedbackCues,
   saveGmailOAuth,
   saveMailProvider,
   saveMaxIterPerTurn,
@@ -1534,6 +1536,7 @@ function emitSettings(tab: Tab): void {
       editMode,
       quickSendId: loadQuickSendId(),
       quickSends: loadCustomQuickSends(),
+      feedbackCues: loadFeedbackCues(),
       contextTokens: tab.ctxMaxOverride ?? null,
       maxIterPerTurn: tab.runtime?.loop.maxIterPerTurn ?? loadMaxIterPerTurn(),
       maxIterPerTurnOverride:
@@ -6068,6 +6071,50 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     emitTabDiagnostic(tab, `${diagnosticPrefix}.completed`, undefined, "info");
   }
 
+  /** Abort every live writer bound to a doomed session BEFORE its folder is
+   *  removed, so none can recreate it from an in-flight turn. Returns the tabs
+   *  that were bound to a doomed session. */
+  function detachDoomedSessionWriters(doomed: ReadonlySet<string>): Tab[] {
+    const affected = Array.from(tabs.values()).filter((t) => doomed.has(t.currentSession));
+    for (const t of affected) {
+      if (t.aborter) t.switching = true;
+      cancelConversation(t);
+      t.runtime?.loop.detachSessionPersistence();
+    }
+    return affected;
+  }
+
+  /** A failed delete leaves its tab's runtime torn down; rebuild it so the
+   *  channel is usable again. Sessions that WERE removed are skipped — their
+   *  tabs are re-armed by resyncAfterDeletes instead. */
+  function restoreUntouchedRuntimes(affected: readonly Tab[], removed: ReadonlySet<string>): void {
+    for (const t of affected) {
+      if (removed.has(t.currentSession)) continue;
+      t.runtime = t.toolset && tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
+      t.switching = false;
+    }
+  }
+
+  /** Shared post-delete resync: replace every tab still bound to a removed
+   *  session with a fresh virtual one; every other tab just gets the refreshed
+   *  sidebar list. `shouldReplace` is the caller's membership test. */
+  function resyncAfterDeletes(
+    settledDeletes: SessionsEvent["settledDeletes"],
+    shouldReplace: (tab: Tab) => boolean,
+  ): void {
+    for (const openTab of tabs.values()) {
+      if (shouldReplace(openTab)) {
+        startFreshSession(openTab, {
+          reason: "session-delete",
+          settledDeletes,
+          conversationCancelled: true,
+        });
+      } else {
+        void emitSessions(openTab, settledDeletes);
+      }
+    }
+  }
+
   function tabSessionLabel(tab: Tab): string {
     if (tab.currentSession) {
       try {
@@ -7452,64 +7499,28 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "session_delete") {
-      // Stop every live owner BEFORE removing its folder. Deleting first leaves
-      // the old runtime a window to append another event and recreate the same
-      // session directory with an empty transcript and reset metadata.
-      const affectedTabs = Array.from(tabs.values()).filter(
-        (openTab) => openTab.currentSession === msg.name,
-      );
-      for (const affectedTab of affectedTabs) {
-        if (affectedTab.aborter) affectedTab.switching = true;
-        cancelConversation(affectedTab);
-        affectedTab.runtime?.loop.detachSessionPersistence();
-      }
-
+      // Detach live writers BEFORE removing the folder so none recreates it.
+      const affectedTabs = detachDoomedSessionWriters(new Set([msg.name]));
       const existed = sessionExists(msg.name);
-      const deleted = deleteSession(msg.name);
-      const removed = deleted || !existed;
+      const removed = deleteSession(msg.name) || !existed;
       if (!removed) {
         emit({ type: "$error", message: `session_delete failed: ${msg.name}` }, tab.id);
-        for (const affectedTab of affectedTabs) {
-          affectedTab.runtime =
-            affectedTab.toolset && tabCurrentModelUsable(affectedTab)
-              ? buildRuntimeFor(affectedTab)
-              : null;
-          affectedTab.switching = false;
-        }
+        restoreUntouchedRuntimes(affectedTabs, new Set());
       }
-      for (const openTab of tabs.values()) {
-        const settledDeletes = [{ name: msg.name, removed }];
-        if (shouldReplaceDeletedSession(openTab.currentSession, msg.name, removed)) {
-          startFreshSession(openTab, {
-            reason: "session-delete",
-            settledDeletes,
-            conversationCancelled: true,
-          });
-        } else {
-          void emitSessions(openTab, settledDeletes);
-        }
-      }
+      resyncAfterDeletes([{ name: msg.name, removed }], (t) =>
+        shouldReplaceDeletedSession(t.currentSession, msg.name, removed),
+      );
       return;
     }
     if (msg.cmd === "session_clear") {
       const candidates = listSessionsForWorkspace(tab.rootDir);
       const candidateNames = new Set(candidates.map((session) => session.name));
-      // As with single deletion, detach active writers before touching disk so
-      // none can resurrect a just-deleted session from an in-flight turn.
-      const affectedTabs = Array.from(tabs.values()).filter((openTab) =>
-        candidateNames.has(openTab.currentSession),
-      );
-      for (const affectedTab of affectedTabs) {
-        if (affectedTab.aborter) affectedTab.switching = true;
-        cancelConversation(affectedTab);
-        affectedTab.runtime?.loop.detachSessionPersistence();
-      }
-
+      const affectedTabs = detachDoomedSessionWriters(candidateNames);
       const settledDeletes = candidates.map((session) => ({
         name: session.name,
         removed: deleteSession(session.name),
       }));
-      const deletedSessions = new Set(
+      const removed = new Set(
         settledDeletes.filter((result) => result.removed).map((result) => result.name),
       );
       const failed = settledDeletes.filter((result) => !result.removed);
@@ -7518,26 +7529,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           { type: "$error", message: `session_clear failed for ${failed.length} session(s)` },
           tab.id,
         );
-        for (const affectedTab of affectedTabs) {
-          if (deletedSessions.has(affectedTab.currentSession)) continue;
-          affectedTab.runtime =
-            affectedTab.toolset && tabCurrentModelUsable(affectedTab)
-              ? buildRuntimeFor(affectedTab)
-              : null;
-          affectedTab.switching = false;
-        }
+        restoreUntouchedRuntimes(affectedTabs, removed);
       }
-      for (const openTab of tabs.values()) {
-        if (deletedSessions.has(openTab.currentSession)) {
-          startFreshSession(openTab, {
-            reason: "session-delete",
-            settledDeletes,
-            conversationCancelled: true,
-          });
-        } else {
-          void emitSessions(openTab, settledDeletes);
-        }
-      }
+      resyncAfterDeletes(settledDeletes, (t) => removed.has(t.currentSession));
       return;
     }
     if (msg.cmd === "session_rename") {
@@ -8303,6 +8297,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             openTab.runtime?.loop.configure({ repetitionGuardEnabled: next });
             emitSettings(openTab);
           }
+        }
+        if (msg.feedbackCues !== undefined) {
+          saveFeedbackCues(msg.feedbackCues);
+          for (const openTab of tabs.values()) emitSettings(openTab);
         }
         if (msg.questionTimerEnabled !== undefined) {
           saveQuestionTimerEnabled(msg.questionTimerEnabled);

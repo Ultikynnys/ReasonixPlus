@@ -11,6 +11,8 @@ import {
   type ModelCatalogGroupKey,
 } from "../model-catalog";
 import type {
+  FeedbackCueId,
+  FeedbackCueSetting,
   McpExtensionCheck,
   McpExtensionStatus,
   McpSpecInfo,
@@ -537,6 +539,7 @@ function PageGeneral({
             </button>
           </div>
         </div>
+        <FeedbackCuesSection settings={settings} onSave={onSave} />
         <div className="setting-row">
           <div className="l">
             <div className="n">{t("settings.webSearchEngine")}</div>
@@ -3186,5 +3189,102 @@ function SectionRow({ nm, keys }: { nm: string; keys: ShortcutKey[] }): ReactNod
         <Shortcut keys={keys} />
       </div>
     </>
+  );
+}
+
+/** The cue rows, in stable display order — one table pairing each id with its
+ *  label and hint keys so a new cue can't be added to two of three lists. */
+const FEEDBACK_CUES: { id: FeedbackCueId; label: TKey; hint: TKey }[] = [
+  {
+    id: "inputRequired",
+    label: "settings.feedbackCueInputRequired",
+    hint: "settings.feedbackCueInputRequiredHint",
+  },
+  {
+    id: "taskComplete",
+    label: "settings.feedbackCueTaskComplete",
+    hint: "settings.feedbackCueTaskCompleteHint",
+  },
+  {
+    id: "planComplete",
+    label: "settings.feedbackCuePlanComplete",
+    hint: "settings.feedbackCuePlanCompleteHint",
+  },
+  {
+    id: "guardTriggered",
+    label: "settings.feedbackCueGuardTriggered",
+    hint: "settings.feedbackCueGuardTriggeredHint",
+  },
+];
+
+/** One row of the per-type cue matrix: sound toggle + volume slider, and a
+ *  notification toggle for the cue types that can raise one. Every control
+ *  patches the whole feedbackCues object (the sidecar persists it atomically). */
+function FeedbackCuesSection({
+  settings,
+  onSave,
+}: {
+  settings: SettingsType;
+  onSave: (patch: SettingsPatch) => void;
+}) {
+  const stored: Partial<Record<FeedbackCueId, FeedbackCueSetting>> = settings.feedbackCues ?? {};
+  const patchCue = (id: FeedbackCueId, entry: FeedbackCueSetting) => {
+    onSave({ feedbackCues: { ...stored, [id]: entry } });
+  };
+  return (
+    <section className="section">
+      <div className="stitle">{t("settings.feedbackCuesSection")}</div>
+      <div className="h" style={{ marginBottom: 12 }}>
+        {t("settings.feedbackCuesSectionHint")}
+      </div>
+      {FEEDBACK_CUES.map(({ id, label, hint }) => {
+        const cue = stored[id];
+        const enabled = cue?.enabled === true;
+        const notify = cue?.notify === true;
+        const volume = typeof cue?.volume === "number" ? cue.volume : 0.5;
+        return (
+          <div className="setting-row" key={id}>
+            <div className="l">
+              <div className="n">{t(label)}</div>
+              <div className="h">{t(hint)}</div>
+            </div>
+            <div className="seg-ctrl">
+              <button
+                type="button"
+                data-on={enabled}
+                onClick={() => patchCue(id, { enabled: true, volume, notify })}
+              >
+                {t("settings.feedbackCueSoundOn")}
+              </button>
+              <button
+                type="button"
+                data-on={!enabled}
+                onClick={() => patchCue(id, { enabled: false, volume, notify })}
+              >
+                {t("settings.feedbackCueSoundOff")}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={volume}
+                disabled={!enabled}
+                aria-label={t("settings.feedbackCueVolume", { cue: t(label) })}
+                onChange={(e) => patchCue(id, { enabled, volume: Number(e.target.value), notify })}
+              />
+              <button
+                type="button"
+                data-on={notify}
+                title={t("settings.feedbackCueNotifyTitle")}
+                onClick={() => patchCue(id, { enabled, volume, notify: !notify })}
+              >
+                {t("settings.feedbackCueNotify")}
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </section>
   );
 }

@@ -273,6 +273,7 @@ import {
 } from "@reasonix/core-utils";
 import type {
   EditMode,
+  FeedbackCueSettings,
   OllamaGenerationPatch,
   OllamaGenerationSettings,
   ProviderID,
@@ -552,6 +553,9 @@ export interface ReasonixConfig {
   /** Whether the side panel shows the Raw context tab. Defaults to false; the
    *  tab is an opt-in debugging surface, toggled from Settings → General. */
   rawTabEnabled?: boolean;
+  /** Per-type desktop sound/notification cue matrix. Absent = all off
+   *  (sounds and notifications stay silent until the user opts in). */
+  feedbackCues?: FeedbackCueSettings;
   /** Default workspace root for the desktop client. CLI uses cwd. */
   workspaceDir?: string;
   /** Last N workspace paths the desktop client has opened, most recent first. */
@@ -2850,6 +2854,21 @@ export function loadRawTabEnabled(path: string = defaultConfigPath()): boolean {
 export function saveRawTabEnabled(enabled: boolean, path: string = defaultConfigPath()): void {
   const cfg = readConfig(path);
   cfg.rawTabEnabled = enabled;
+  writeConfig(cfg, path);
+}
+
+/** Persisted per-type cue matrix. Missing entries read as all-off defaults, so
+ *  a config written before this feature (or with a subset of cues) stays valid. */
+export function loadFeedbackCues(path: string = defaultConfigPath()): FeedbackCueSettings {
+  return readConfig(path).feedbackCues ?? {};
+}
+
+export function saveFeedbackCues(
+  cues: FeedbackCueSettings,
+  path: string = defaultConfigPath(),
+): void {
+  const cfg = readConfig(path);
+  cfg.feedbackCues = cues;
   writeConfig(cfg, path);
 }
 
