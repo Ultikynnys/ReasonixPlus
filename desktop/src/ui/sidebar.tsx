@@ -59,6 +59,7 @@ export function Sidebar({
   onLoadSession,
   onDeleteSession,
   onClearSessions,
+  sessionsBusy,
   onReorderSession,
   onOpenWorkdir,
   onOpenSettings,
@@ -79,6 +80,9 @@ export function Sidebar({
   onLoadSession: (name: string) => void;
   onDeleteSession: (name: string) => void;
   onClearSessions: () => void;
+  /** True while a delete/clear is in flight and awaiting the daemon's settled
+   *  snapshot — drives the header throbber and locks the clear-all control. */
+  sessionsBusy?: boolean;
   onReorderSession?: (name: string) => void;
   onOpenWorkdir: (anchor: { top?: number; bottom?: number; left: number }) => void;
   onOpenSettings: () => void;
@@ -188,13 +192,26 @@ export function Sidebar({
         <div className="side-section">
           <div className="label">
             <span>{t("sidebarPanel.recent")}</span>
-            <span className="count">{filtered.length}</span>
+            {sessionsBusy ? (
+              <span
+                className="count busy"
+                role="status"
+                aria-label={t("sidebarPanel.deletingSessions")}
+                title={t("sidebarPanel.deletingSessions")}
+              >
+                <span className="spin" aria-hidden="true" />
+                {t("sidebarPanel.deletingSessions")}
+              </span>
+            ) : (
+              <span className="count">{filtered.length}</span>
+            )}
             {sessions.length > 0 ? (
               <button
                 type="button"
                 className="clear-all-btn"
                 title={t("sidebarPanel.clearAllSessions")}
                 aria-label={t("sidebarPanel.clearAllSessions")}
+                disabled={sessionsBusy}
                 onClick={(e) => {
                   e.stopPropagation();
                   const rect = e.currentTarget.getBoundingClientRect();

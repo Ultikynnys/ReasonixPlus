@@ -6069,9 +6069,19 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   function detachDoomedSessionWriters(doomed: ReadonlySet<string>): Tab[] {
     const affected = Array.from(tabs.values()).filter((t) => doomed.has(t.currentSession));
     for (const t of affected) {
-      if (t.aborter) t.switching = true;
-      cancelConversation(t);
-      t.runtime?.loop.detachSessionPersistence();
+      // A gate cancel or a runtime abort must never abort the whole delete:
+      // throwing here would skip the settled $sessions emit below and strand the
+      // sidebar's optimistic hide forever.
+      try {
+        if (t.aborter) t.switching = true;
+        cancelConversation(t);
+        t.runtime?.loop.detachSessionPersistence();
+      } catch (err) {
+        emitDiagnosticError("session.detach.failed", err, {
+          tabId: t.id,
+          details: tabDiagnosticState(t),
+        });
+      }
     }
     return affected;
   }
@@ -6082,7 +6092,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   function restoreUntouchedRuntimes(affected: readonly Tab[], removed: ReadonlySet<string>): void {
     for (const t of affected) {
       if (removed.has(t.currentSession)) continue;
-      t.runtime = t.toolset && tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
+      try {
+        t.runtime = t.toolset && tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
+      } catch (err) {
+        emitDiagnosticError("session.runtime.restore.failed", err, {
+          tabId: t.id,
+          details: tabDiagnosticState(t),
+        });
+        t.runtime = null;
+      }
       t.switching = false;
     }
   }
@@ -7557,11 +7575,23 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "session_delete") {
-      // Detach live writers BEFORE removing the folder so none recreates it.
-      const affectedTabs = detachDoomedSessionWriters(new Set([msg.name]));
-      const existed = sessionExists(msg.name);
-      const removed = deleteSession(msg.name) || !existed;
-      if (!removed) {
+      // The frontend hides the row optimistically and waits for a $sessions
+      // snapshot carrying its name in settledDeletes. A throw anywhere in this
+      // detach→delete→resync chain would skip that emit and strand the sidebar
+      // mid-delete, so settle it no matter what.
+      let affectedTabs: Tab[] = [];
+      let removed = false;
+      try {
+        // Detach live writers BEFORE removing the folder so none recreates it.
+        affectedTabs = detachDoomedSessionWriters(new Set([msg.name]));
+        const existed = sessionExists(msg.name);
+        removed = deleteSession(msg.name) || !existed;
+        if (!removed) {
+          emit({ type: "$error", message: `session_delete failed: ${msg.name}` }, tab.id);
+          restoreUntouchedRuntimes(affectedTabs, new Set());
+        }
+      } catch (err) {
+        emitDiagnosticError("session.delete.failed", err, { tabId: tab.id, session: msg.name });
         emit({ type: "$error", message: `session_delete failed: ${msg.name}` }, tab.id);
         restoreUntouchedRuntimes(affectedTabs, new Set());
       }
@@ -7571,13 +7601,43 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "session_clear") {
-      const candidates = listSessionsForWorkspace(tab.rootDir);
-      const candidateNames = new Set(candidates.map((session) => session.name));
-      const affectedTabs = detachDoomedSessionWriters(candidateNames);
-      const settledDeletes = candidates.map((session) => ({
-        name: session.name,
-        removed: deleteSession(session.name),
-      }));
+      // Settle EVERY name the frontend optimistically hid — its echoed request
+      // list plus this workspace's on-disk sessions — so a delete that lands on a
+      // name the listing missed (workspace-filter drift) can't leave a row hidden
+      // forever. A listing failure degrades to the echoed names rather than
+      // skipping the settled emit entirely.
+      const requested = Array.isArray(msg.names)
+        ? msg.names.filter((n): n is string => typeof n === "string" && n.length > 0)
+        : [];
+      const candidateNames = new Set(requested);
+      try {
+        for (const session of listSessionsForWorkspace(tab.rootDir)) {
+          candidateNames.add(session.name);
+        }
+      } catch (err) {
+        emitDiagnosticError("session.clear.list.failed", err, { tabId: tab.id });
+      }
+      let affectedTabs: Tab[] = [];
+      let settledDeletes: { name: string; removed: boolean }[];
+      try {
+        affectedTabs = detachDoomedSessionWriters(candidateNames);
+        // Each name settles independently — one failed unlink can't abort the rest.
+        settledDeletes = [...candidateNames].map((name) => {
+          try {
+            const existed = sessionExists(name);
+            return { name, removed: deleteSession(name) || !existed };
+          } catch (err) {
+            emitDiagnosticError("session.delete.failed", err, { tabId: tab.id, session: name });
+            return { name, removed: false };
+          }
+        });
+      } catch (err) {
+        emitDiagnosticError("session.clear.failed", err, { tabId: tab.id });
+        emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
+        restoreUntouchedRuntimes(affectedTabs, new Set());
+        // Still echo the requested names as settled so the frontend reconciles.
+        settledDeletes = requested.map((name) => ({ name, removed: false }));
+      }
       const removed = new Set(
         settledDeletes.filter((result) => result.removed).map((result) => result.name),
       );

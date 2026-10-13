@@ -194,6 +194,11 @@ const SETTINGS_SAVE_DEBOUNCE_MS = 200;
  *  enough that a value the daemon normalizes (a clamped number) still settles. */
 const SETTINGS_OVERRIDE_TTL_MS = 2000;
 
+/** How long a session delete/clear may stay unconfirmed before the sidebar
+ *  releases its optimistic hide. Outlasts a slow daemon-side delete without
+ *  leaving the UI stuck mid-delete when the settled snapshot never arrives. */
+const SESSION_MUTATION_TIMEOUT_MS = 15_000;
+
 /** Structural equality for settings values (primitives, arrays, plain objects).
  *  Used to tell an echo that already reflects a local write from a stale one. */
 export function settingsValueEqual(a: unknown, b: unknown): boolean {
@@ -508,6 +513,11 @@ type State = {
   sessionsRevision: number;
   workspaceInitializationRevision: number;
   pendingSessionDeletes: string[];
+  /** In-flight session destruction (one delete or a clear-all). Set on the
+   *  optimistic removal and held until the daemon's authoritative $sessions
+   *  snapshot settles the hidden names (or a watchdog releases it) — drives the
+   *  sidebar throbber and the lock on its destructive controls. */
+  sessionsMutation: "delete" | "clear" | null;
   settings: Settings | null;
   balance: Balance | null;
   codexQuota: CodexQuota | null;
@@ -628,6 +638,7 @@ type Action =
   | { t: "settings_patch"; patch: SettingsPatch }
   | { t: "session_delete_requested"; name: string }
   | { t: "session_clear_requested" }
+  | { t: "session_mutation_release" }
   | { t: "session_rename_requested"; name: string; title: string }
   | { t: "session_bump_requested"; name: string; createdAt?: number }
   | { t: "workspace_recent_removed"; path: string }
@@ -938,6 +949,7 @@ export function reduce(state: State, action: Action): State {
         ...state,
         sessions: state.sessions.filter((session) => session.name !== action.name),
         pendingSessionDeletes: [...new Set([...state.pendingSessionDeletes, action.name])],
+        sessionsMutation: "delete",
       };
     case "session_clear_requested":
       return {
@@ -946,7 +958,18 @@ export function reduce(state: State, action: Action): State {
         pendingSessionDeletes: [
           ...new Set([...state.pendingSessionDeletes, ...state.sessions.map((s) => s.name)]),
         ],
+        sessionsMutation: "clear",
       };
+    case "session_mutation_release":
+      // The daemon never settled these deletes (a wedged daemon, a dropped
+      // snapshot). Unhide them so the sidebar can't sit mid-delete forever.
+      if (state.sessionsMutation === null && state.pendingSessionDeletes.length === 0) {
+        return state;
+      }
+      console.warn(
+        "[reasonix frontend] session deletion was not confirmed by the agent — releasing the optimistic hide",
+      );
+      return { ...state, pendingSessionDeletes: [], sessionsMutation: null };
     case "session_rename_requested": {
       const title = flattenText(action.title).slice(0, 200);
       return {
@@ -2097,6 +2120,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         sessionsEpoch: ev.epoch,
         sessionsRevision: ev.revision,
         pendingSessionDeletes,
+        // Every hidden name was settled by this snapshot — drop the in-flight marker.
+        sessionsMutation: pendingSessionDeletes.length > 0 ? state.sessionsMutation : null,
       };
     }
     case "$mcp_specs":
@@ -3020,6 +3045,7 @@ function TabRuntime({
     sessionsRevision: 0,
     workspaceInitializationRevision: 0,
     pendingSessionDeletes: [],
+    sessionsMutation: null,
     settings: null,
     balance: null,
     codexQuota: null,
@@ -3689,6 +3715,18 @@ function TabRuntime({
     onStaleAck: releaseStaleSend,
   });
 
+  // Session-mutation watchdog: a delete/clear hides its rows optimistically and
+  // waits for the daemon's settled $sessions snapshot. If that never lands the
+  // sidebar would sit mid-delete forever, so release the hide past the deadline.
+  useEffect(() => {
+    if (state.sessionsMutation === null) return;
+    const id = window.setTimeout(
+      () => dispatch({ t: "session_mutation_release" }),
+      SESSION_MUTATION_TIMEOUT_MS,
+    );
+    return () => window.clearTimeout(id);
+  }, [state.sessionsMutation, state.pendingSessionDeletes.length]);
+
   // When retry returns the last user text, set it as the composer draft.
   // Only fire when retryNonce changes — retryText alone would re-fire on re-renders.
   // biome-ignore lint/correctness/useExhaustiveDependencies: retryText deliberately left out (see above)
@@ -4203,6 +4241,7 @@ function TabRuntime({
           onNewChat={newChat}
           runningSessions={runningSessions}
           sessionRates={sessionRates}
+          sessionsBusy={state.sessionsMutation !== null}
           onLoadSession={(name) => {
             clearAbortDraft();
             // Open the session as its own channel (a new tab in this group), or
@@ -4214,8 +4253,12 @@ function TabRuntime({
             sendRpc({ cmd: "session_delete", name });
           }}
           onClearSessions={() => {
+            // Echo the exact names being hidden so the daemon can settle every
+            // one even if its own workspace listing misses some — otherwise the
+            // rows stay hidden forever and the app looks wedged.
+            const names = state.sessions.map((session) => session.name);
             dispatch({ t: "session_clear_requested" });
-            sendRpc({ cmd: "session_clear" });
+            sendRpc({ cmd: "session_clear", names });
           }}
           onReorderSession={(name) => {
             const now = Date.now();
@@ -4258,7 +4301,7 @@ function TabRuntime({
               onOpenSettings={() => openSettingsAt("models")}
             />
           ) : state.sessionsRevision > 0 && state.sessions.length === 0 ? (
-            <NoSessionsView onNewChat={newChat} />
+            <NoSessionsView onNewChat={newChat} busy={state.sessionsMutation !== null} />
           ) : (
             <>
               <MainHead
@@ -5688,12 +5731,28 @@ function EmptyState({
   );
 }
 
-function NoSessionsView({ onNewChat }: { onNewChat: () => void }) {
+function NoSessionsView({ onNewChat, busy }: { onNewChat: () => void; busy?: boolean }) {
   useLang();
   return (
-    <EmptyPanel title={t("app.noSessions.title")} hint={t("app.noSessions.hint")}>
-      <button type="button" className="btn" style={{ fontSize: 12 }} onClick={onNewChat}>
-        {t("sidebarPanel.newChat")}
+    <EmptyPanel
+      title={t("app.noSessions.title")}
+      hint={busy ? t("app.noSessions.deleting") : t("app.noSessions.hint")}
+    >
+      <button
+        type="button"
+        className="btn"
+        style={{ fontSize: 12 }}
+        onClick={onNewChat}
+        disabled={busy}
+      >
+        {busy ? (
+          <>
+            <span className="spin" aria-hidden="true" />
+            {t("app.noSessions.deleting")}
+          </>
+        ) : (
+          t("sidebarPanel.newChat")
+        )}
       </button>
     </EmptyPanel>
   );

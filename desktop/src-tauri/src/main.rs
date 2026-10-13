@@ -7,6 +7,7 @@ use diagnostics::record_frontend_diagnostic;
 use rpc::{RpcState, rpc_kill, rpc_send, rpc_spawn};
 use serde::Serialize;
 use std::path::Path;
+use tauri_plugin_window_state::DEFAULT_FILENAME;
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -664,11 +665,25 @@ fn main() {
             use tauri::Manager;
             if let Some(w) = app.get_webview_window("main") {
                 // The window-state plugin already restored size/position/
-                // fullscreen during window creation (its `on_window_ready` runs
-                // synchronously on the main thread, before this callback).
-                // Correct a rect that overflows the whole desktop so a bad saved
-                // size can't strand the window off-screen across restarts.
+                // maximize/fullscreen during window creation: its
+                // `on_window_ready` runs synchronously on the main thread while
+                // the config windows are built, before this callback. So the
+                // window is created windowed (not fullscreen) and hidden, the
+                // plugin shows it at the restored geometry, and a fullscreen
+                // default is applied here only on a first run (no state file).
+                //
+                // Fit first so the pre-fullscreen rect Windows restores when
+                // the user later leaves fullscreen is a sane size, not the
+                // oversized logical config a HiDPI panel would blow up.
+                let first_run = app
+                    .path()
+                    .app_config_dir()
+                    .map(|dir| !dir.join(DEFAULT_FILENAME).exists())
+                    .unwrap_or(false);
                 fit_window_to_displays(&w);
+                if first_run {
+                    let _ = w.set_fullscreen(true);
+                }
                 if std::env::var("REASONIX_DEVTOOLS").is_ok() {
                     #[cfg(debug_assertions)]
                     w.open_devtools();

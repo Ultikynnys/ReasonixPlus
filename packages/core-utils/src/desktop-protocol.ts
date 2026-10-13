@@ -1503,7 +1503,10 @@ export type OutgoingCommand = { tabId?: string } & (
    *  probe the desktop polls while busy so a lost terminal event can't wedge it. */
   | { cmd: "tab_status" }
   | { cmd: "session_delete"; name: string }
-  | { cmd: "session_clear" }
+  /** Delete every session the caller is optimistically hiding. `names` is the
+   *  frontend's exact hide-list, echoed so the daemon can settle every one even
+   *  if its own workspace listing misses some (kept optional for older callers). */
+  | { cmd: "session_clear"; names?: string[] }
   /** Legacy alias for additive session_open; never replaces the active agent. */
   | { cmd: "session_load"; name: string }
   /** Focus an existing session agent or add it to the current workspace tab. */

@@ -22,7 +22,6 @@
         "decorations": false,
         "transparent": false,
         "backgroundColor": "#0b0b0b",
-        "fullscreen": true,
         "visible": false,
         "additionalBrowserArgs": "--enable-features=WebGPU --enable-unsafe-webgpu --force_high_performance_gpu"
       }
