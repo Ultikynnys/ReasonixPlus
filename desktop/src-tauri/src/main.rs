@@ -577,6 +577,51 @@ async fn write_text_file(path: String, content: String) -> Result<(), String> {
     .map_err(|e| format!("join: {e}"))?
 }
 
+/// Shrink a windowed window that overflows the whole virtual desktop back onto
+/// its current monitor, then recenter. HiDPI screens need this: exiting
+/// fullscreen restores the pre-fullscreen rect (the 1024x720 logical config),
+/// which at 200% scale is larger than a 1080p panel, and the window-state plugin
+/// would otherwise persist that oversized rect across restarts. Maximized or
+/// fullscreen windows, and windows that fit inside the union of all monitors
+/// (a legitimate multi-monitor span), are left untouched.
+fn fit_window_to_displays(win: &tauri::WebviewWindow) {
+    if win.is_fullscreen().unwrap_or(false) || win.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let (Ok(scale), Ok(size), Ok(monitors)) = (
+        win.scale_factor(),
+        win.inner_size(),
+        win.available_monitors(),
+    ) else {
+        return;
+    };
+    if monitors.is_empty() {
+        return;
+    }
+    let (mut left, mut top, mut right, mut bottom) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for m in &monitors {
+        let pos = m.position();
+        let msize = m.size();
+        left = left.min(pos.x as f64);
+        top = top.min(pos.y as f64);
+        right = right.max(pos.x as f64 + msize.width as f64);
+        bottom = bottom.max(pos.y as f64 + msize.height as f64);
+    }
+    let logical = size.to_logical::<f64>(scale);
+    if logical.width <= (right - left) / scale && logical.height <= (bottom - top) / scale {
+        return;
+    }
+    let Ok(Some(monitor)) = win.current_monitor() else {
+        return;
+    };
+    let avail = monitor.size().to_logical::<f64>(monitor.scale_factor());
+    let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+        width: avail.width * 0.9,
+        height: avail.height * 0.9,
+    }));
+    let _ = win.center();
+}
+
 fn main() {
     let diagnostics_path = diagnostics::initialize().unwrap_or_else(|error| {
         eprintln!("[diagnostics] initialization failed: {error}");
@@ -599,6 +644,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(RpcState::default())
         .invoke_handler(tauri::generate_handler![
             rpc_spawn,
@@ -617,27 +663,12 @@ fn main() {
         .setup(|app| {
             use tauri::Manager;
             if let Some(w) = app.get_webview_window("main") {
-                // HiDPI fit: the JSON config asks for 1024x720 logical px.
-                // On Windows laptops at 200% scale (1920x1080 → 960x540
-                // effective logical px) that overflows the screen and the
-                // window opens partially off-canvas. Clamp to 90% of the
-                // monitor's available logical size whenever the configured
-                // size doesn't fit, then recenter.
-                if let Ok(Some(monitor)) = w.current_monitor() {
-                    let scale = monitor.scale_factor();
-                    let phys = monitor.size();
-                    let avail_w = phys.width as f64 / scale;
-                    let avail_h = phys.height as f64 / scale;
-                    let want_w = 1024_f64.min(avail_w * 0.9);
-                    let want_h = 720_f64.min(avail_h * 0.9);
-                    if want_w < 1024.0 || want_h < 720.0 {
-                        let _ = w.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                            width: want_w,
-                            height: want_h,
-                        }));
-                        let _ = w.center();
-                    }
-                }
+                // The window-state plugin already restored size/position/
+                // fullscreen during window creation (its `on_window_ready` runs
+                // synchronously on the main thread, before this callback).
+                // Correct a rect that overflows the whole desktop so a bad saved
+                // size can't strand the window off-screen across restarts.
+                fit_window_to_displays(&w);
                 if std::env::var("REASONIX_DEVTOOLS").is_ok() {
                     #[cfg(debug_assertions)]
                     w.open_devtools();
