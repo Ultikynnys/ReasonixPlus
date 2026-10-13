@@ -195,6 +195,18 @@ export class SessionDirectoryIndex<M> {
     if (this.cacheFilePath() !== undefined) void this.persistIndex(this.records);
   }
 
+  /** Batch form of `remove`: drop every name, invalidate once, persist once.
+   *  A clear-all otherwise rewrote the whole index file once per session. */
+  removeMany(names: readonly string[]): void {
+    if (names.length === 0) return;
+    const dir = this.directory();
+    for (const name of names) {
+      this.records.delete(join(dir, name, SESSION_MESSAGES_FILENAME));
+    }
+    this.invalidate();
+    if (this.cacheFilePath() !== undefined) void this.persistIndex(this.records);
+  }
+
   private async refresh(generation: number): Promise<readonly SessionDirectoryRecord<M>[]> {
     await this.seedFromCache();
     let files: string[];

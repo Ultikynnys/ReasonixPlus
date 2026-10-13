@@ -6028,6 +6028,33 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   font-variant-numeric: tabular-nums;
 }
 
+/* Floating "deleting N sessions…" pill, centered at the top of the main area.
+   Always visible while a session delete/clear is in flight; pointer-events:none
+   so it never blocks the UI underneath. */
+.main-progress {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 18px oklch(0% 0 0 / 0.35);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+  pointer-events: none;
+}
+.main-progress .spin {
+  width: 13px;
+  height: 13px;
+}
+
 /* spinner */
 .spin {
   width: 12px;

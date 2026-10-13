@@ -19,10 +19,12 @@ import {
   appendSessionMessage,
   archiveSession,
   deleteSession,
+  deleteSessions,
   ensureSessionDir,
   findSessionsByPrefix,
   firstFreeSessionName,
   freshSessionName,
+  listSessionNamesForWorkspace,
   listSessions,
   listSessionsForWorkspace,
   loadSessionMessages,
@@ -456,10 +458,10 @@ describe("session persistence", () => {
     expect(existsSync(planPath)).toBe(false);
   });
 
-  it("clear-all deletes every workspace session while leaving other workspaces intact", () => {
-    // Mirrors the daemon's session_clear loop: enumerate the workspace's
-    // sessions and deleteSession each, covering meta-tagged + legacy
-    // code-<base>- prefix matches, and leaving unrelated sessions alone.
+  it("clear-all deletes every workspace session while leaving other workspaces intact", async () => {
+    // Mirrors the daemon's session_clear: enumerate the workspace's names
+    // (cheap, no transcript reads) and batch-delete, covering meta-tagged +
+    // legacy code-<base>- prefix matches and leaving unrelated sessions alone.
     appendSessionMessage("in-a", { role: "user", content: "x" });
     appendSessionMessage("in-a2", { role: "user", content: "x" });
     appendSessionMessage("code-a-202605251200", { role: "user", content: "x" });
@@ -469,7 +471,7 @@ describe("session persistence", () => {
     patchSessionMeta("in-a2", { workspace: "/proj/a" });
     patchSessionMeta("in-b", { workspace: "/proj/b" });
 
-    for (const s of listSessionsForWorkspace("/proj/a")) deleteSession(s.name);
+    await deleteSessions(listSessionNamesForWorkspace("/proj/a"));
 
     expect(existsSync(sessionPath("in-a"))).toBe(false);
     expect(existsSync(sessionPath("in-a2"))).toBe(false);
@@ -478,6 +480,43 @@ describe("session persistence", () => {
     expect(existsSync(sessionPath("unrelated"))).toBe(true);
     expect(listSessionsForWorkspace("/proj/a")).toEqual([]);
     expect(listSessionsForWorkspace("/proj/b").map((s) => s.name)).toEqual(["in-b"]);
+  });
+
+  it("listSessionNamesForWorkspace mirrors listSessionsForWorkspace names", () => {
+    appendSessionMessage("named-a", { role: "user", content: "x" });
+    appendSessionMessage("named-b", { role: "user", content: "x" });
+    appendSessionMessage("code-a-202605251200", { role: "user", content: "x" });
+    appendSessionMessage("untagged", { role: "user", content: "x" });
+    patchSessionMeta("named-a", { workspace: "/proj/a" });
+    patchSessionMeta("named-b", { workspace: "/proj/b" });
+
+    const detailed = listSessionsForWorkspace("/proj/a");
+    const names = listSessionNamesForWorkspace("/proj/a");
+
+    expect(names.sort()).toEqual(detailed.map((s) => s.name).sort());
+    expect(names.sort()).toEqual(["code-a-202605251200", "named-a"]);
+    // Trailing-slash drift must normalize identically to the detailed listing.
+    expect(listSessionNamesForWorkspace("/proj/a/").sort()).toEqual(names);
+  });
+
+  it("deleteSessions reports a per-name verdict and treats absent names as settled", async () => {
+    appendSessionMessage("bulk-a", { role: "user", content: "x" });
+    appendSessionMessage("bulk-b", { role: "user", content: "x" });
+    appendSessionMessage("keep-b", { role: "user", content: "x" });
+    patchSessionMeta("bulk-a", { workspace: "/proj/a" });
+    patchSessionMeta("bulk-b", { workspace: "/proj/a" });
+    patchSessionMeta("keep-b", { workspace: "/proj/b" });
+
+    const settled = await deleteSessions([...listSessionNamesForWorkspace("/proj/a"), "gone"]);
+    const removed = new Map(settled.map((result) => [result.name, result.removed]));
+
+    expect(removed.get("bulk-a")).toBe(true);
+    expect(removed.get("bulk-b")).toBe(true);
+    // Nothing on disk: still settled-removed so the sidebar un-hides the row.
+    expect(removed.get("gone")).toBe(true);
+    expect(existsSync(sessionPath("bulk-a"))).toBe(false);
+    expect(existsSync(sessionPath("keep-b"))).toBe(true);
+    expect(listSessionNamesForWorkspace("/proj/a")).toEqual([]);
   });
 
   it("pruneStaleSessions deletes sessions older than the cutoff and leaves fresh ones", () => {

@@ -4283,6 +4283,16 @@ function TabRuntime({
 
         <main className="main" style={{ position: "relative" }}>
           <JumpBar messages={state.messages} threadEl={threadRef.current} />
+          {state.sessionsMutation !== null ? (
+            <div className="main-progress" role="status" aria-live="polite">
+              <span className="spin" aria-hidden="true" />
+              <span>
+                {state.sessionsMutation === "clear"
+                  ? t("app.deletingSessions.bulk", { count: state.pendingSessionDeletes.length })
+                  : t("app.deletingSessions.one")}
+              </span>
+            </div>
+          ) : null}
           {state.settings != null && !state.settings.workspaceDir ? (
             <PendingWorkspaceView
               local={state.settings.reasonixLocalDir}

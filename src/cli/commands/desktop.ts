@@ -322,9 +322,10 @@ import {
   type SessionMeta,
   appendSessionMessage,
   deleteSession,
+  deleteSessions,
   ensureSessionDir,
   firstFreeSessionName,
-  listSessionsForWorkspace,
+  listSessionNamesForWorkspace,
   listSessionsForWorkspaceAsync,
   loadSessionMessages,
   loadSessionMessagesAsync,
@@ -7606,56 +7607,49 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (msg.cmd === "session_clear") {
       // Settle EVERY name the frontend optimistically hid — its echoed request
       // list plus this workspace's on-disk sessions — so a delete that lands on a
-      // name the listing missed (workspace-filter drift) can't leave a row hidden
-      // forever. A listing failure degrades to the echoed names rather than
-      // skipping the settled emit entirely.
+      // name the listing missed can't leave a row hidden forever. Runs off the
+      // reader thread so a large clear never freezes the RPC loop.
       const requested = Array.isArray(msg.names)
         ? msg.names.filter((n): n is string => typeof n === "string" && n.length > 0)
         : [];
-      const candidateNames = new Set(requested);
-      try {
-        for (const session of listSessionsForWorkspace(tab.rootDir)) {
-          candidateNames.add(session.name);
-        }
-      } catch (err) {
-        emitDiagnosticError("session.clear.list.failed", err, { tabId: tab.id });
-      }
-      let affectedTabs: Tab[] = [];
-      let settledDeletes: { name: string; removed: boolean }[];
-      try {
-        affectedTabs = detachDoomedSessionWriters(candidateNames);
-        // Each name settles independently — one failed unlink can't abort the rest.
-        settledDeletes = [...candidateNames].map((name) => {
-          try {
-            const existed = sessionExists(name);
-            return { name, removed: deleteSession(name) || !existed };
-          } catch (err) {
-            emitDiagnosticError("session.delete.failed", err, {
-              tabId: tab.id,
-              details: { session: name },
-            });
-            return { name, removed: false };
+      void (async () => {
+        const candidateNames = new Set(requested);
+        try {
+          // Names only: the full listing byte-scans every transcript, which
+          // blocked the daemon for seconds on a large store.
+          for (const name of listSessionNamesForWorkspace(tab.rootDir)) {
+            candidateNames.add(name);
           }
-        });
-      } catch (err) {
-        emitDiagnosticError("session.clear.failed", err, { tabId: tab.id });
-        emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
-        restoreUntouchedRuntimes(affectedTabs, new Set());
-        // Still echo the requested names as settled so the frontend reconciles.
-        settledDeletes = requested.map((name) => ({ name, removed: false }));
-      }
-      const removed = new Set(
-        settledDeletes.filter((result) => result.removed).map((result) => result.name),
-      );
-      const failed = settledDeletes.filter((result) => !result.removed);
-      if (failed.length > 0) {
-        emit(
-          { type: "$error", message: `session_clear failed for ${failed.length} session(s)` },
-          tab.id,
+        } catch (err) {
+          emitDiagnosticError("session.clear.list.failed", err, { tabId: tab.id });
+        }
+        let affectedTabs: Tab[] = [];
+        let settledDeletes: { name: string; removed: boolean }[];
+        try {
+          affectedTabs = detachDoomedSessionWriters(candidateNames);
+          // Chunked batch: each name settles independently, the directory index
+          // persists once, and the event loop breathes between chunks.
+          settledDeletes = await deleteSessions([...candidateNames]);
+        } catch (err) {
+          emitDiagnosticError("session.clear.failed", err, { tabId: tab.id });
+          emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
+          restoreUntouchedRuntimes(affectedTabs, new Set());
+          // Still echo the requested names as settled so the frontend reconciles.
+          settledDeletes = requested.map((name) => ({ name, removed: false }));
+        }
+        const removed = new Set(
+          settledDeletes.filter((result) => result.removed).map((result) => result.name),
         );
-        restoreUntouchedRuntimes(affectedTabs, removed);
-      }
-      resyncAfterDeletes(settledDeletes, (t) => removed.has(t.currentSession));
+        const failed = settledDeletes.filter((result) => !result.removed);
+        if (failed.length > 0) {
+          emit(
+            { type: "$error", message: `session_clear failed for ${failed.length} session(s)` },
+            tab.id,
+          );
+          restoreUntouchedRuntimes(affectedTabs, removed);
+        }
+        resyncAfterDeletes(settledDeletes, (t) => removed.has(t.currentSession));
+      })();
       return;
     }
     if (msg.cmd === "session_rename") {

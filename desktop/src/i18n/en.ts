@@ -622,6 +622,10 @@ export const en = {
       hint: "Create a new chat to get started in this workspace.",
       deleting: "Deleting sessions…",
     },
+    deletingSessions: {
+      one: "Deleting session…",
+      bulk: "Deleting {count} sessions…",
+    },
     setup: {
       welcome: "Welcome to Reasonix+",
       description:

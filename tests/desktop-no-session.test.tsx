@@ -205,6 +205,7 @@ describe("desktop — no-session main-area state", () => {
 
     // In flight — the sidebar reports the daemon work instead of looking dead.
     expect(screen.getByText("Deleting…")).toBeTruthy();
+    expect(screen.getByText("Deleting session…")).toBeTruthy();
 
     // Daemon settles: it mints a virtual replacement and lists no sessions.
     await feed(
@@ -234,6 +235,7 @@ describe("desktop — no-session main-area state", () => {
     await settle(40);
 
     expect(screen.queryByText("Deleting…")).toBeNull();
+    expect(screen.queryByText("Deleting session…")).toBeNull();
     expect(screen.getByText(/No conversations yet/)).toBeTruthy();
   });
 });

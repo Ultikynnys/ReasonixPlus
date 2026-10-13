@@ -573,6 +573,21 @@ export function listSessionsForWorkspace(workspace: string): SessionInfo[] {
   return listSessions({ workspaceFilter: workspace, includeLegacyWorkspaceMatches: true });
 }
 
+/** Workspace-scoped session NAMES without reading a single transcript. The
+ *  clear path only needs the names to delete; the full `listSessions` reads and
+ *  byte-scans every transcript, which blocked the daemon for seconds. */
+export function listSessionNamesForWorkspace(workspace: string): string[] {
+  const want = normalizeWorkspace(workspace);
+  const legacyPrefix = legacySessionPrefixForWorkspace(workspace);
+  return listSessionDirs().flatMap(({ name }) => {
+    const meta = loadSessionMeta(name);
+    if (typeof meta.workspace === "string") {
+      return normalizeWorkspace(meta.workspace) === want ? [name] : [];
+    }
+    return name.startsWith(legacyPrefix) ? [name] : [];
+  });
+}
+
 const sessionDirectoryIndex = new SessionDirectoryIndex<SessionMeta>(
   sessionsDir,
   loadSessionMeta,
@@ -788,28 +803,63 @@ export function pruneStaleSessions(daysOld = 90): string[] {
 
 /** Removes the session folder (and every file in it). Also cleans up a
  *  legacy flat jsonl + sidecars if no folder exists yet. */
-export function deleteSession(name: string): boolean {
+/** Filesystem-only removal of a session folder (or its legacy flat files),
+ *  leaving the directory index untouched so callers can batch the persist. */
+function removeSessionFiles(name: string): boolean {
   const dir = sessionDir(name);
-  try {
-    if (existsSync(dir)) {
-      rmSync(dir, { recursive: true, force: true });
-    } else {
-      const legacy = legacyFlatJsonlPath(name);
-      if (!existsSync(legacy)) return false;
-      unlinkSync(legacy);
-      for (const ext of LEGACY_SIDECAR_SUFFIXES) {
-        try {
-          unlinkSync(legacyFlatJsonlPath(name).replace(/\.jsonl$/, ext));
-        } catch {
-          void 0; /* expected when the sidecar doesn't exist */
-        }
-      }
+  if (existsSync(dir)) {
+    rmSync(dir, { recursive: true, force: true });
+    return true;
+  }
+  const legacy = legacyFlatJsonlPath(name);
+  if (!existsSync(legacy)) return false;
+  unlinkSync(legacy);
+  for (const ext of LEGACY_SIDECAR_SUFFIXES) {
+    try {
+      unlinkSync(legacyFlatJsonlPath(name).replace(/\.jsonl$/, ext));
+    } catch {
+      void 0; /* expected when the sidecar doesn't exist */
     }
+  }
+  return true;
+}
+
+/** Removes the session folder (and every file in it). Also cleans up a
+ *  legacy flat jsonl + sidecars if no folder exists yet. */
+export function deleteSession(name: string): boolean {
+  try {
+    if (!removeSessionFiles(name)) return false;
     sessionDirectoryIndex.remove(name);
     return true;
   } catch {
     return false;
   }
+}
+
+/** Delete many sessions, yielding to the event loop between chunks so a large
+ *  clear never blocks the daemon's RPC reader. Persists the directory index once
+ *  at the end, not once per session. */
+export async function deleteSessions(
+  names: readonly string[],
+  chunkSize = 24,
+): Promise<{ name: string; removed: boolean }[]> {
+  const settled: { name: string; removed: boolean }[] = [];
+  for (let start = 0; start < names.length; start += chunkSize) {
+    for (const name of names.slice(start, start + chunkSize)) {
+      try {
+        // Already-absent names count as settled-removed, so a tab bound to a
+        // dangling session is still replaced.
+        settled.push({ name, removed: removeSessionFiles(name) || !sessionExists(name) });
+      } catch {
+        settled.push({ name, removed: false });
+      }
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  sessionDirectoryIndex.removeMany(
+    settled.filter((result) => result.removed).map((result) => result.name),
+  );
+  return settled;
 }
 
 /** Crash-safe rewrite: snapshot the previous live log, write a sibling tmp file, then atomically swap it in. */
