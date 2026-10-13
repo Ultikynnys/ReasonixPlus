@@ -21,7 +21,6 @@ import {
   isQuickSend,
   isUsableAntigravityModel,
   parseModelRef,
-  resolveActiveQuickSend,
   ruleRegexError,
   stripProviderQualifier,
 } from "@reasonix/core-utils";
@@ -513,8 +512,6 @@ export interface ReasonixConfig {
   models?: Record<string, ModelProviderConfig>;
   editMode?: EditMode;
   editModeHintShown?: boolean;
-  /** Active quick-send action id (default "proceed"). */
-  quickSendId?: string;
   /** User-defined quick sends (built-ins are code-defined). */
   quickSends?: QuickSend[];
   mouseClipboardHintShown?: boolean;
@@ -2666,18 +2663,6 @@ export function ruleModeInForce(path: string = defaultConfigPath()): RuleMode {
 export function saveEditMode(mode: EditMode, path: string = defaultConfigPath()): void {
   const cfg = readConfig(path);
   cfg.editMode = mode;
-  writeConfig(cfg, path);
-}
-
-/** Load the active quick-send action id; unknown/absent falls back to Proceed. */
-export function loadQuickSendId(path: string = defaultConfigPath()): string {
-  return resolveActiveQuickSend(readConfig(path).quickSendId, loadCustomQuickSends(path)).id;
-}
-
-/** Persist the active quick-send action id. */
-export function saveQuickSendId(id: string, path: string = defaultConfigPath()): void {
-  const cfg = readConfig(path);
-  cfg.quickSendId = id;
   writeConfig(cfg, path);
 }
 

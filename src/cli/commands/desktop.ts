@@ -171,7 +171,6 @@ import {
   loadProjectPathAllowed,
   loadProjectShellAllowed,
   loadQuestionTimerEnabled,
-  loadQuickSendId,
   loadRawTabEnabled,
   loadReasoningEffort,
   loadRecentWorkspaces,
@@ -220,7 +219,6 @@ import {
   saveOpenAIOAuth,
   saveOpencodeOAuth,
   saveQuestionTimerEnabled,
-  saveQuickSendId,
   saveRawTabEnabled,
   saveReasoningEffort,
   saveRepetitionGuardEnabled,
@@ -1535,7 +1533,6 @@ function emitSettings(tab: Tab): void {
       type: "$settings",
       reasoningEffort: tab.currentReasoningEffort,
       editMode,
-      quickSendId: loadQuickSendId(),
       quickSends: loadCustomQuickSends(),
       feedbackCues: loadFeedbackCues(),
       contextTokens: tab.ctxMaxOverride ?? null,
@@ -6550,6 +6547,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       model?: string;
       reasoningEffort?: import("../../config.js").ReasoningEffort;
       subagentModel?: string;
+      /** Marks this channel as a just-minted session so the frontend shows a
+       *  "Creating session…" indicator until the first `$sessions` lands. */
+      creating?: boolean;
     },
   ): Tab {
     const tab = createTabSkeleton(initialDir, restore?.id, restore, restore?.pending ?? false);
@@ -6575,6 +6575,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         groupId: tab.groupId,
         sessions: [tab.currentSession],
         activeSession: tab.currentSession,
+        creating: restore?.creating,
       },
       tab.id,
     );
@@ -7783,6 +7784,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           model: tab.currentModel,
           reasoningEffort: tab.currentReasoningEffort,
           subagentModel: tab.currentSubagentModel,
+          // Fresh session, so the new channel shows a create indicator until
+          // its first $sessions snapshot lists the minted session.
+          creating: true,
         });
         lastActiveTabId = opened.id;
         persistOpenTabs();
@@ -7832,6 +7836,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           session: name,
           active: true,
           groupId: tab.groupId,
+          creating: true,
         });
         lastActiveTabId = opened.id;
         persistOpenTabs();
@@ -8261,9 +8266,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             refreshEditModeKnowledge(openTab, msg.editMode);
             emitSettings(openTab);
           }
-        }
-        if (msg.quickSendId !== undefined) {
-          saveQuickSendId(msg.quickSendId);
         }
         if (msg.quickSends !== undefined) {
           saveCustomQuickSends(msg.quickSends);

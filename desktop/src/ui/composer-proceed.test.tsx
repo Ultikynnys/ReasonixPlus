@@ -15,7 +15,14 @@ import { createComposerDraft } from "./composer-draft";
 
 const baseProps = makeComposerBaseProps();
 
-describe("Composer quick send Proceed button", () => {
+// Shorthand and message differ so `getByText(shorthand)` targets only the
+// dropdown row's command label, not its message line.
+const QUICK_SENDS = [
+  { id: "commit-and-push", message: "commit and push all changes", shorthand: "commit and push" },
+  { id: "deploy", message: "deploy to production", shorthand: "deploy" },
+];
+
+describe("Composer quick send dropdown", () => {
   it("isolates real composer typing and sends the latest draft immediately", () => {
     const store = createComposerDraft();
     const parentRender = vi.fn();
@@ -47,141 +54,114 @@ describe("Composer quick send Proceed button", () => {
     expect(textarea.value).toBe("restored draft");
     expect(parentRender).toHaveBeenCalledTimes(1);
   });
-  it("renders the quick proceed button with label and title", () => {
+
+  it("renders the quick send button labelled 'Quick send'", () => {
     render(<Composer {...baseProps} />);
 
-    const proceedBtn = screen.getByRole("button", { name: /Proceed/i });
-    expect(proceedBtn).toBeTruthy();
-    expect(proceedBtn.getAttribute("title")).toBe("Quick send");
+    const btn = screen.getByRole("button", { name: "Quick send" });
+    expect(btn).toBeTruthy();
+    expect(btn.getAttribute("title")).toBe("Quick send");
   });
 
-  it("calls onSend with 'proceed' when clicked", () => {
+  it("opens the dropdown without sending when clicked", () => {
     const onSend = vi.fn();
-    render(<Composer {...baseProps} onSend={onSend} />);
+    render(<Composer {...baseProps} quickSends={QUICK_SENDS} onSend={onSend} />);
 
-    const proceedBtn = screen.getByRole("button", { name: /Proceed/i });
-    fireEvent.click(proceedBtn);
+    const btn = screen.getByRole("button", { name: "Quick send" });
+    expect(btn.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(btn);
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(btn.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("deploy")).toBeTruthy();
+  });
+
+  it("sends the picked quick send when a dropdown item is clicked", () => {
+    const onSend = vi.fn();
+    render(<Composer {...baseProps} quickSends={QUICK_SENDS} onSend={onSend} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Quick send" }));
+    fireEvent.click(screen.getByText("deploy"));
 
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend).toHaveBeenCalledWith("proceed");
+    expect(onSend).toHaveBeenCalledWith({ text: "deploy to production", echo: "deploy" });
   });
 
-  it("clears draft and calls onSend with 'proceed' when clicked with active draft", () => {
+  it("clears the draft and echoes the shorthand when a quick send is picked", () => {
     const onSend = vi.fn();
     const setDraft = vi.fn();
     render(
-      <Composer {...baseProps} draft="some unfinished text" setDraft={setDraft} onSend={onSend} />,
+      <Composer
+        {...baseProps}
+        draft="some unfinished text"
+        setDraft={setDraft}
+        quickSends={QUICK_SENDS}
+        onSend={onSend}
+      />,
     );
 
-    const proceedBtn = screen.getByRole("button", { name: /Proceed/i });
-    fireEvent.click(proceedBtn);
+    fireEvent.click(screen.getByRole("button", { name: "Quick send" }));
+    fireEvent.click(screen.getByText("commit and push"));
 
     expect(setDraft).toHaveBeenCalledWith("");
-    expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend).toHaveBeenCalledWith("proceed");
+    expect(onSend).toHaveBeenCalledWith({
+      text: "commit and push all changes",
+      echo: "commit and push",
+    });
+  });
+
+  it("falls back to a proceed option when no quick sends are supplied", () => {
+    const onSend = vi.fn();
+    render(<Composer {...baseProps} onSend={onSend} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Quick send" }));
+    // The fallback row renders "proceed" as both label and message.
+    const options = screen.getAllByText("proceed");
+    expect(options.length).toBeGreaterThanOrEqual(1);
+
+    fireEvent.click(options[0]!);
+    expect(onSend).toHaveBeenCalledWith({ text: "proceed", echo: "proceed" });
   });
 
   it("is enabled when draft is empty (unlike regular send button)", () => {
     render(<Composer {...baseProps} draft="" />);
 
-    const proceedBtn = screen.getByRole("button", { name: /Proceed/i });
-    expect(proceedBtn.hasAttribute("disabled")).toBe(false);
-  });
-
-  it("is disabled when disabled prop is true", () => {
-    const onSend = vi.fn();
-    render(<Composer {...baseProps} disabled onSend={onSend} />);
-
-    const proceedBtn = screen.getByRole("button", { name: /Proceed/i });
-    expect(proceedBtn.hasAttribute("disabled")).toBe(true);
-
-    fireEvent.click(proceedBtn);
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it("remains enabled when busy and queues the quick send message via onQueueWhileBusy", () => {
-    const onSend = vi.fn();
-    const onQueueWhileBusy = vi.fn();
-    render(
-      <Composer
-        {...baseProps}
-        busy
-        onSend={onSend}
-        onQueueWhileBusy={onQueueWhileBusy}
-      />,
-    );
-
-    const proceedBtn = screen.getByRole("button", { name: /Proceed/i });
-    expect(proceedBtn.hasAttribute("disabled")).toBe(false);
-
-    fireEvent.click(proceedBtn);
-    expect(onSend).not.toHaveBeenCalled();
-    expect(onQueueWhileBusy).toHaveBeenCalledTimes(1);
-    expect(onQueueWhileBusy).toHaveBeenCalledWith({ text: "proceed", echo: "proceed" });
-  });
-
-  it("queues custom quickSend with message and shorthand when clicked while busy", () => {
-    const onSend = vi.fn();
-    const onQueueWhileBusy = vi.fn();
-    const quickSend = {
-      id: "commit-and-push",
-      label: "Commit and Push all changes",
-      message: "commit and push all changes",
-      shorthand: "commit and push",
-    };
-    render(
-      <Composer
-        {...baseProps}
-        busy
-        quickSend={quickSend}
-        onSend={onSend}
-        onQueueWhileBusy={onQueueWhileBusy}
-      />,
-    );
-
-    const btn = screen.getByRole("button", { name: "commit and push" });
+    const btn = screen.getByRole("button", { name: "Quick send" });
     expect(btn.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("is disabled when disabled prop is true and does not open", () => {
+    const onSend = vi.fn();
+    render(<Composer {...baseProps} disabled quickSends={QUICK_SENDS} onSend={onSend} />);
+
+    const btn = screen.getByRole("button", { name: "Quick send" });
+    expect(btn.hasAttribute("disabled")).toBe(true);
 
     fireEvent.click(btn);
     expect(onSend).not.toHaveBeenCalled();
-    expect(onQueueWhileBusy).toHaveBeenCalledTimes(1);
-    expect(onQueueWhileBusy).toHaveBeenCalledWith({
-      text: "commit and push all changes",
-      echo: "commit and push",
-    });
+    expect(screen.queryByText("deploy")).toBeNull();
   });
 
-  it("renders quickSend shorthand instead of label on the button", () => {
-    const quickSend = {
-      id: "commit-and-push",
-      label: "Commit and Push all changes",
-      message: "commit and push all changes",
-      shorthand: "commit and push",
-    };
-    render(<Composer {...baseProps} quickSend={quickSend} />);
-
-    expect(screen.getByRole("button", { name: "commit and push" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Commit and Push all changes" })).toBeNull();
-  });
-
-  it("sends message and echoes shorthand when quickSend is clicked", () => {
+  it("queues the picked quick send while busy", () => {
     const onSend = vi.fn();
-    const quickSend = {
-      id: "commit-and-push",
-      label: "Commit and Push all changes",
-      message: "commit and push all changes",
-      shorthand: "commit and push",
-    };
-    render(<Composer {...baseProps} quickSend={quickSend} onSend={onSend} />);
+    const onQueueWhileBusy = vi.fn();
+    render(
+      <Composer
+        {...baseProps}
+        busy
+        quickSends={QUICK_SENDS}
+        onSend={onSend}
+        onQueueWhileBusy={onQueueWhileBusy}
+      />,
+    );
 
-    const btn = screen.getByRole("button", { name: "commit and push" });
-    fireEvent.click(btn);
+    fireEvent.click(screen.getByRole("button", { name: "Quick send" }));
+    fireEvent.click(screen.getByText("deploy"));
 
-    expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend).toHaveBeenCalledWith({
-      text: "commit and push all changes",
-      echo: "commit and push",
-    });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onQueueWhileBusy).toHaveBeenCalledTimes(1);
+    expect(onQueueWhileBusy).toHaveBeenCalledWith({ text: "deploy to production", echo: "deploy" });
   });
 });
 

@@ -1,6 +1,11 @@
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { type SessionInfo, sortSessionsByCreationDescending } from "../App";
+import {
+  type SessionInfo,
+  type SessionMutation,
+  sessionMutationLabels,
+  sortSessionsByCreationDescending,
+} from "../App";
 import { t, useLang } from "../i18n";
 import { I } from "../icons";
 import { formatTokensPerSecond } from "../stream-rate";
@@ -59,7 +64,7 @@ export function Sidebar({
   onLoadSession,
   onDeleteSession,
   onClearSessions,
-  sessionsBusy,
+  sessionMutation,
   onReorderSession,
   onOpenWorkdir,
   onOpenSettings,
@@ -80,9 +85,9 @@ export function Sidebar({
   onLoadSession: (name: string) => void;
   onDeleteSession: (name: string) => void;
   onClearSessions: () => void;
-  /** True while a delete/clear is in flight and awaiting the daemon's settled
-   *  snapshot — drives the header throbber and locks the clear-all control. */
-  sessionsBusy?: boolean;
+  /** The session-list mutation in flight (delete / clear-all / create), or null.
+   *  Drives the header throbber wording and locks the clear-all control. */
+  sessionMutation?: SessionMutation | null;
   onReorderSession?: (name: string) => void;
   onOpenWorkdir: (anchor: { top?: number; bottom?: number; left: number }) => void;
   onOpenSettings: () => void;
@@ -92,6 +97,10 @@ export function Sidebar({
   const [query, setQuery] = useState("");
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [pendingClear, setPendingClear] = useState<PendingClear | null>(null);
+  const busy = sessionMutation != null;
+  const busyLabel = sessionMutation
+    ? sessionMutationLabels(sessionMutation, sessions.length).badge
+    : "";
   const workspaceLabel = workspaceDir
     ? workspaceDir.split(/[\\/]/).pop() || workspaceDir
     : t("sidebarPanel.noWorkspace");
@@ -192,15 +201,10 @@ export function Sidebar({
         <div className="side-section">
           <div className="label">
             <span>{t("sidebarPanel.recent")}</span>
-            {sessionsBusy ? (
-              <span
-                className="count busy"
-                role="status"
-                aria-label={t("sidebarPanel.deletingSessions")}
-                title={t("sidebarPanel.deletingSessions")}
-              >
+            {busy ? (
+              <span className="count busy" role="status" aria-label={busyLabel} title={busyLabel}>
                 <span className="spin" aria-hidden="true" />
-                {t("sidebarPanel.deletingSessions")}
+                {busyLabel}
               </span>
             ) : (
               <span className="count">{filtered.length}</span>
@@ -211,7 +215,7 @@ export function Sidebar({
                 className="clear-all-btn"
                 title={t("sidebarPanel.clearAllSessions")}
                 aria-label={t("sidebarPanel.clearAllSessions")}
-                disabled={sessionsBusy}
+                disabled={busy}
                 onClick={(e) => {
                   e.stopPropagation();
                   const rect = e.currentTarget.getBoundingClientRect();

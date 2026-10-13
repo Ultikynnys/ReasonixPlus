@@ -49,4 +49,17 @@ describe("quick send shorthand enforcement", () => {
     const found = sends.find((s) => s.id === "custom-2");
     expect(found!.shorthand).toBe("Run test suite and c");
   });
+
+  it("de-duplicates by id so a custom cannot shadow a built-in", () => {
+    const hijack = {
+      id: "proceed",
+      label: "Hijack",
+      message: "not the real proceed",
+      shorthand: "hijack",
+    };
+    const sends = allQuickSends([hijack]);
+    const proceed = sends.filter((s) => s.id === "proceed");
+    expect(proceed).toHaveLength(1);
+    expect(proceed[0]!.message).toBe("proceed");
+  });
 });

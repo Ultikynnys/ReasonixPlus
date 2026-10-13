@@ -4710,6 +4710,13 @@ html[data-platform="macos"] .startup-loading-overlay {
   min-width: 0;
 }
 
+/* Quick-send dropdown: a fixed button that anchors the popup menu. */
+.composer-foot .quick-send-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
 .send-btn {
   width: 30px;
   height: 30px;

@@ -29,6 +29,11 @@ export const I = {
       <path d="M12 19V5M5 12l7-7 7 7" />
     </Ic>
   ),
+  arrowDown: (p: IconProps) => (
+    <Ic {...p}>
+      <path d="M12 5v14M5 12l7 7 7-7" />
+    </Ic>
+  ),
   plus: (p: IconProps) => (
     <Ic {...p}>
       <path d="M12 5v14M5 12h14" />

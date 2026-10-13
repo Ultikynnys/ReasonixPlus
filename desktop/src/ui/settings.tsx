@@ -28,7 +28,6 @@ import type {
 import {
   MailProvider,
   QUICK_SEND_SHORTHAND_MAX_LENGTH,
-  allQuickSends,
   enforceQuickSendShorthand,
 } from "../protocol";
 import { FONT_FAMILY, FONT_SCALE, type FontFamily, type FontScale } from "../theme";
@@ -82,6 +81,15 @@ function keyStatusText(prefix: string | undefined): string {
  *  link or description, so every provider key row reads the same way. */
 function keyStatusHint(prefix: string | undefined, trailing?: ReactNode): ReactNode {
   return trailing ? <>{keyStatusText(prefix)} {trailing}</> : keyStatusText(prefix);
+}
+
+/** Reorder a quick send within the persisted list; out-of-range moves are no-ops. */
+function moveQuickSend<T>(list: readonly T[], from: number, to: number): T[] {
+  if (to < 0 || to >= list.length) return [...list];
+  const next = list.slice();
+  const [moved] = next.splice(from, 1);
+  if (moved !== undefined) next.splice(to, 0, moved);
+  return next;
 }
 
 export type PageId = "general" | "models" | "mcp" | "changelog" | "shortcuts";
@@ -588,44 +596,43 @@ function PageGeneral({
 
       <section className="section">
         <div className="stitle">{t("settings.quickSendSection")}</div>
-        <div className="setting-row">
-          <div className="l">
-            <div className="n">{t("settings.quickSend")}</div>
-            <div className="h">{t("settings.quickSendHint")}</div>
-          </div>
-          <div className="seg-ctrl">
-            {allQuickSends(settings.quickSends ?? []).map((q) => (
-              <button
-                type="button"
-                key={q.id}
-                data-on={settings.quickSendId === q.id}
-                onClick={() => onSave({ quickSendId: q.id })}
-              >
-                {q.shorthand}
-              </button>
-            ))}
-          </div>
-        </div>
+        <div className="h" style={{ marginBottom: 12 }}>{t("settings.quickSendHint")}</div>
 
         {(settings.quickSends ?? []).length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
-            {(settings.quickSends ?? []).map((q) => (
+            {(settings.quickSends ?? []).map((q, i, list) => (
               <div className="rule" key={q.id}>
                 <div className="top">
                   <span className="pat">{q.shorthand}</span>
-                  <button
-                    type="button"
-                    className="mini-btn"
-                    title={t("settings.quickSendRemove")}
-                    aria-label={`Remove quick send: ${q.shorthand}`}
-                    onClick={() =>
-                      onSave({
-                        quickSends: (settings.quickSends ?? []).filter((x) => x.id !== q.id),
-                      })
-                    }
-                  >
-                    <I.trash size={12} />
-                  </button>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {(
+                      [
+                        { dir: -1, kind: "up", icon: <I.arrowUp size={12} />, title: t("settings.quickSendMoveUp") },
+                        { dir: 1, kind: "down", icon: <I.arrowDown size={12} />, title: t("settings.quickSendMoveDown") },
+                      ] as const
+                    ).map(({ dir, kind, icon, title }) => (
+                      <button
+                        key={kind}
+                        type="button"
+                        className="mini-btn"
+                        disabled={dir < 0 ? i === 0 : i === list.length - 1}
+                        title={title}
+                        aria-label={`Move quick send ${kind}: ${q.shorthand}`}
+                        onClick={() => onSave({ quickSends: moveQuickSend(list, i, i + dir) })}
+                      >
+                        {icon}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      title={t("settings.quickSendRemove")}
+                      aria-label={`Remove quick send: ${q.shorthand}`}
+                      onClick={() => onSave({ quickSends: list.filter((x) => x.id !== q.id) })}
+                    >
+                      <I.trash size={12} />
+                    </button>
+                  </div>
                 </div>
                 <div className="desc">{q.message}</div>
               </div>

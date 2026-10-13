@@ -423,14 +423,15 @@ export const en = {
     mcpAdd: "Add",
     // Quick send
     quickSendSection: "Quick send",
-    quickSend: "Quick send action",
-    quickSendHint: "Choose which quick action the composer button sends.",
+    quickSendHint: "Create, delete, or reorder the quick actions offered in the composer dropdown.",
     quickSendShorthand: "Shorthand",
     quickSendMessage: "Message",
-    quickSendShorthandPlaceholder: "Shorthand (button label, max 20 chars)",
+    quickSendShorthandPlaceholder: "Shorthand (dropdown label, max 20 chars)",
     quickSendMessagePlaceholder: "Message sent to the model",
     quickSendAdd: "Add quick send",
     quickSendRemove: "Remove quick send",
+    quickSendMoveUp: "Move up",
+    quickSendMoveDown: "Move down",
     quickSendNoCustom: "No custom quick sends.",
     // Billing
     sessionCost: "This session cost",
@@ -626,6 +627,7 @@ export const en = {
       one: "Deleting session…",
       bulk: "Deleting {count} sessions…",
     },
+    creatingSession: "Creating session…",
     setup: {
       welcome: "Welcome to Reasonix+",
       description:
@@ -1064,6 +1066,7 @@ export const en = {
     deleteSession: "Delete session",
     clearAllSessions: "Clear all sessions",
     deletingSessions: "Deleting…",
+    creatingSession: "Creating…",
     clearAllConfirm: "{count} session(s) for this workspace",
     deleteAll: "Delete all",
     moveToTop: "Move to top",

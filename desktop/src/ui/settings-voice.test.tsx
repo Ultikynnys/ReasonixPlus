@@ -201,23 +201,52 @@ describe("VoiceModelSettings", () => {
     expect(screen.queryByText("Audio input device")).toBeNull();
   });
 
-  it("renders the quick-send selector with built-ins and saves the active choice", () => {
+  it("reorders custom quick sends from the general settings list", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="general" />);
+    const settings: Settings = {
+      ...mockSettings,
+      quickSends: [
+        { id: "a", message: "alpha", shorthand: "alpha" },
+        { id: "b", message: "beta", shorthand: "beta" },
+      ],
+    };
+    render(
+      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="general" />,
+    );
 
-    expect(screen.getByText("Quick send action")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "proceed" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "commit and push" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Move quick send down: alpha" }));
+    expect(onSave).toHaveBeenCalledWith({
+      quickSends: [
+        { id: "b", message: "beta", shorthand: "beta" },
+        { id: "a", message: "alpha", shorthand: "alpha" },
+      ],
+    });
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "commit and push" }));
-    expect(onSave).toHaveBeenCalledWith({ quickSendId: "commit-and-push" });
+  it("deletes a custom quick send from the general settings list", () => {
+    const onSave = vi.fn();
+    const settings: Settings = {
+      ...mockSettings,
+      quickSends: [
+        { id: "a", message: "alpha", shorthand: "alpha" },
+        { id: "b", message: "beta", shorthand: "beta" },
+      ],
+    };
+    render(
+      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="general" />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove quick send: alpha" }));
+    expect(onSave).toHaveBeenCalledWith({
+      quickSends: [{ id: "b", message: "beta", shorthand: "beta" }],
+    });
   });
 
   it("adds a custom quick send from the general settings form", () => {
     const onSave = vi.fn();
     render(<SettingsModal {...baseProps} onSave={onSave} initialPage="general" />);
 
-    fireEvent.change(screen.getByPlaceholderText("Shorthand (button label, max 20 chars)"), {
+    fireEvent.change(screen.getByPlaceholderText("Shorthand (dropdown label, max 20 chars)"), {
       target: { value: "Deploy" },
     });
     fireEvent.change(screen.getByPlaceholderText("Message sent to the model"), {
@@ -240,7 +269,7 @@ describe("VoiceModelSettings", () => {
     const onSave = vi.fn();
     render(<SettingsModal {...baseProps} onSave={onSave} initialPage="general" />);
 
-    fireEvent.change(screen.getByPlaceholderText("Shorthand (button label, max 20 chars)"), {
+    fireEvent.change(screen.getByPlaceholderText("Shorthand (dropdown label, max 20 chars)"), {
       target: { value: "Deploy to production immediately" },
     });
     fireEvent.change(screen.getByPlaceholderText("Message sent to the model"), {

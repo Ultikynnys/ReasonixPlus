@@ -95,7 +95,7 @@ import {
   type UserImageAttachment,
   type ZaiQuota,
   type OpencodeQuota,
-  resolveActiveQuickSend,
+  allQuickSends,
   rpcSend,
 } from "./protocol";
 import { StartupTimingTracker } from "./startup-timing";
@@ -445,6 +445,40 @@ export type SessionInfo = {
   workspaceStatus?: "matched" | "legacy_missing_meta";
 };
 
+/** A session-list mutation in flight for a channel — the single axis the
+ *  main-area pill, the sidebar throbber and the controls lock all key on. */
+export type SessionMutation = "delete" | "clear" | "create";
+
+/** The one source of in-flight session-mutation wording. `pill` is the main-area
+ *  toast text, `badge` the sidebar RECENT-header throbber (kept short for the
+ *  narrow surface) and `hint` the empty-state line. Every surface reads this, so
+ *  the wording can never drift. */
+export function sessionMutationLabels(
+  mutation: SessionMutation,
+  count: number,
+): { pill: string; badge: string; hint: string } {
+  switch (mutation) {
+    case "create":
+      return {
+        pill: t("app.creatingSession"),
+        badge: t("sidebarPanel.creatingSession"),
+        hint: t("app.creatingSession"),
+      };
+    case "clear":
+      return {
+        pill: t("app.deletingSessions.bulk", { count }),
+        badge: t("sidebarPanel.deletingSessions"),
+        hint: t("app.noSessions.deleting"),
+      };
+    default:
+      return {
+        pill: t("app.deletingSessions.one"),
+        badge: t("sidebarPanel.deletingSessions"),
+        hint: t("app.noSessions.deleting"),
+      };
+  }
+}
+
 export {
   parseSessionTimestamp,
   sessionCreationTime,
@@ -513,10 +547,12 @@ type State = {
   sessionsRevision: number;
   workspaceInitializationRevision: number;
   pendingSessionDeletes: string[];
-  /** In-flight session destruction (one delete or clear-all): set on the
-   *  optimistic removal, cleared when the daemon's settled snapshot lands or the
-   *  watchdog releases it. Drives the sidebar throbber and the controls lock. */
-  sessionsMutation: "delete" | "clear" | null;
+  /** In-flight session mutation: a single delete, a clear-all, or the initial
+   *  creation of a channel's session. Set on the optimistic request / channel
+   *  mount, cleared when the daemon's settled snapshot lands or the watchdog
+   *  releases it. Drives the main-area pill, the sidebar throbber and the
+   *  controls lock. */
+  sessionsMutation: SessionMutation | null;
   settings: Settings | null;
   balance: Balance | null;
   codexQuota: CodexQuota | null;
@@ -960,13 +996,13 @@ export function reduce(state: State, action: Action): State {
         sessionsMutation: "clear",
       };
     case "session_mutation_release":
-      // The daemon never settled these deletes (a wedged daemon, a dropped
-      // snapshot). Unhide them so the sidebar can't sit mid-delete forever.
+      // The daemon never settled this mutation (a wedged daemon, a dropped
+      // snapshot). Release the optimistic hide so the sidebar can't sit stuck.
       if (state.sessionsMutation === null && state.pendingSessionDeletes.length === 0) {
         return state;
       }
       console.warn(
-        "[reasonix frontend] session deletion was not confirmed by the agent — releasing the optimistic hide",
+        "[reasonix frontend] session mutation was not confirmed by the agent — releasing the optimistic state",
       );
       return { ...state, pendingSessionDeletes: [], sessionsMutation: null };
     case "session_rename_requested": {
@@ -2268,7 +2304,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         settings: {
           reasoningEffort: ev.reasoningEffort,
           editMode: ev.editMode,
-          quickSendId: ev.quickSendId,
           quickSends: ev.quickSends,
           contextTokens: ev.contextTokens ?? null,
           maxIterPerTurn: ev.maxIterPerTurn ?? null,
@@ -2918,6 +2953,13 @@ interface TabRuntimeProps {
   registerDispatch: (tabId: string, d: TabDispatcher | null) => void;
   onWorkspaceInitialized: (tabId: string) => void;
   onNewTab: () => void;
+  /** Session list to seed this channel's sidebar with at mount — the
+   *  workspace's last-known list, so a freshly opened channel never blanks the
+   *  sidebar while its own first $sessions snapshot is in flight. */
+  initialSessionSeed?: SessionInfo[];
+  /** True when this channel was opened for a fresh, not-yet-listed session —
+   *  starts the "Creating session…" indicator until the first $sessions lands. */
+  creatingSession?: boolean;
   /** Reports this channel's running-agent state so the tab dot can count them. */
   onBusyChange: (tabId: string, busy: boolean) => void;
   /** Live provider output rate (tokens/second) keyed by session name, for the
@@ -2986,6 +3028,8 @@ function TabRuntime({
   registerDispatch,
   onWorkspaceInitialized,
   onNewTab,
+  initialSessionSeed,
+  creatingSession,
   onBusyChange,
   sessionRates,
   theme,
@@ -3039,12 +3083,16 @@ function TabRuntime({
     pendingRevisions: [],
     activePlan: null,
     usage: zeroUsage(),
-    sessions: [],
+    // Seed the sidebar with the workspace's last-known list so a freshly opened
+    // channel (New chat) never blanks the session list while its own first
+    // $sessions snapshot is in flight. Read once at mount; the daemon's
+    // $sessions is the source of truth from here on.
+    sessions: initialSessionSeed ?? [],
     sessionsEpoch: "",
     sessionsRevision: 0,
     workspaceInitializationRevision: 0,
     pendingSessionDeletes: [],
-    sessionsMutation: null,
+    sessionsMutation: creatingSession ? "create" : null,
     settings: null,
     balance: null,
     codexQuota: null,
@@ -3714,9 +3762,9 @@ function TabRuntime({
     onStaleAck: releaseStaleSend,
   });
 
-  // Session-mutation watchdog: a delete/clear hides its rows optimistically and
+  // Session-mutation watchdog: a delete/clear/create shows its indicator and
   // waits for the daemon's settled $sessions snapshot. If that never lands the
-  // sidebar would sit mid-delete forever, so release the hide past the deadline.
+  // UI would sit mid-mutation forever, so release it past the deadline.
   useEffect(() => {
     if (state.sessionsMutation === null) return;
     const id = window.setTimeout(
@@ -4240,7 +4288,7 @@ function TabRuntime({
           onNewChat={newChat}
           runningSessions={runningSessions}
           sessionRates={sessionRates}
-          sessionsBusy={state.sessionsMutation !== null}
+          sessionMutation={state.sessionsMutation}
           onLoadSession={(name) => {
             clearAbortDraft();
             // Open the session as its own channel (a new tab in this group), or
@@ -4287,9 +4335,10 @@ function TabRuntime({
             <div className="main-progress" role="status" aria-live="polite">
               <span className="spin" aria-hidden="true" />
               <span>
-                {state.sessionsMutation === "clear"
-                  ? t("app.deletingSessions.bulk", { count: state.pendingSessionDeletes.length })
-                  : t("app.deletingSessions.one")}
+                {
+                  sessionMutationLabels(state.sessionsMutation, state.pendingSessionDeletes.length)
+                    .pill
+                }
               </span>
             </div>
           ) : null}
@@ -4310,7 +4359,7 @@ function TabRuntime({
               onOpenSettings={() => openSettingsAt("models")}
             />
           ) : state.sessionsRevision > 0 && state.sessions.length === 0 ? (
-            <NoSessionsView onNewChat={newChat} busy={state.sessionsMutation !== null} />
+            <NoSessionsView onNewChat={newChat} sessionMutation={state.sessionsMutation} />
           ) : (
             <>
               <MainHead
@@ -4532,10 +4581,7 @@ function TabRuntime({
               <Composer
                 draftStore={draftStore}
                 onSend={(text) => send(text)}
-                quickSend={resolveActiveQuickSend(
-                  state.settings?.quickSendId,
-                  state.settings?.quickSends ?? [],
-                )}
+                quickSends={allQuickSends(state.settings?.quickSends ?? [])}
                 onAbort={abort}
                 disabled={!state.ready}
                 busy={state.busy || state.awaitingAck}
@@ -5740,24 +5786,31 @@ function EmptyState({
   );
 }
 
-function NoSessionsView({ onNewChat, busy }: { onNewChat: () => void; busy?: boolean }) {
+function NoSessionsView({
+  onNewChat,
+  sessionMutation,
+}: {
+  onNewChat: () => void;
+  sessionMutation?: SessionMutation | null;
+}) {
   useLang();
+  const busyLabel = sessionMutation ? sessionMutationLabels(sessionMutation, 0).hint : null;
   return (
     <EmptyPanel
       title={t("app.noSessions.title")}
-      hint={busy ? t("app.noSessions.deleting") : t("app.noSessions.hint")}
+      hint={busyLabel ?? t("app.noSessions.hint")}
     >
       <button
         type="button"
         className="btn"
         style={{ fontSize: 12 }}
         onClick={onNewChat}
-        disabled={busy}
+        disabled={busyLabel != null}
       >
-        {busy ? (
+        {busyLabel != null ? (
           <>
             <span className="spin" aria-hidden="true" />
-            {t("app.noSessions.deleting")}
+            {busyLabel}
           </>
         ) : (
           t("sidebarPanel.newChat")
@@ -5892,6 +5945,9 @@ type TabMeta = {
   session?: string;
   /** Visual workspace-tab id shared by sibling session channels. */
   group?: string;
+  /** True for a channel opened for a fresh, not-yet-listed session (New chat /
+   *  duplicate); drives the create indicator. Consumed once, at channel mount. */
+  creating?: boolean;
 };
 
 /** Compare workspace dirs across separator flavor and trailing slashes.
@@ -5957,6 +6013,12 @@ export function App() {
   useEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
+
+  // Last-known session list per normalized workspace. A freshly opened channel
+  // (New chat / duplicate) seeds its sidebar from this so the workspace's
+  // sessions never blank out while the channel's own first $sessions snapshot
+  // is in flight.
+  const sessionsByWorkspaceRef = useRef<Map<string, SessionInfo[]>>(new Map());
 
   // Mirror of activeTabId for listener closures — the startup effect must
   // NOT re-run on every tab switch (it tears down and re-fires desktop_resync,
@@ -6322,7 +6384,13 @@ export function App() {
                 if (idx === -1) {
                   return [
                     ...prev,
-                    { id: tabId, workspaceDir: ev.workspaceDir, session, group: ev.groupId },
+                    {
+                      id: tabId,
+                      workspaceDir: ev.workspaceDir,
+                      session,
+                      group: ev.groupId,
+                      creating: ev.creating,
+                    },
                   ];
                 }
                 // Merge so a workspace switch / regroup updates the existing tab.
@@ -6331,6 +6399,9 @@ export function App() {
                   workspaceDir: ev.workspaceDir,
                   session: session ?? prev[idx]!.session,
                   group: ev.groupId ?? prev[idx]!.group,
+                  // Only a fresh (New chat / duplicate) open sets this; a later
+                  // re-emit leaves it in place. Consumed once, at channel mount.
+                  creating: ev.creating ?? prev[idx]!.creating,
                 };
                 const copy = prev.slice();
                 copy[idx] = merged;
@@ -6556,6 +6627,10 @@ export function App() {
                 tabId,
                 details: { count: ev.items.length, epoch: ev.epoch, revision: ev.revision },
               });
+              // Cache this channel's list for its workspace so a channel opened
+              // later on the same workspace seeds its sidebar instead of blanking.
+              const ws = tabsRef.current.find((t) => t.id === tabId)?.workspaceDir;
+              if (ws) sessionsByWorkspaceRef.current.set(normalizeWorkspacePath(ws), ev.items);
             }
 
             if (ev.type === "$workspace_initialized" && tabId) {
@@ -6831,6 +6906,10 @@ export function App() {
           backendConnected={backendConnected}
           currency={currency}
           registerDispatch={registerDispatch}
+          initialSessionSeed={sessionsByWorkspaceRef.current.get(
+            normalizeWorkspacePath(t.workspaceDir),
+          )}
+          creatingSession={t.creating === true}
           onWorkspaceInitialized={markWorkspaceInitialized}
           onNewTab={openTab}
           onBusyChange={reportTabBusy}

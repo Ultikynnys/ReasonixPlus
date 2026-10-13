@@ -45,6 +45,7 @@ import {
   runningSessionNames,
   sanitizeSettingsPatch,
   sessionCreationTime,
+  sessionMutationLabels,
   sessionRecency,
   settingsValueEqual,
   sortSessionsByCreationDescending,
@@ -1418,10 +1419,9 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
     });
     expect(fromEvent.settings?.model).toBe("deepseek-v4-pro");
     expect(fromEvent.settings?.subagentModel).toBe("deepseek-v4-flash");
-    // The active quick-send id and custom list must survive the $settings
-    // round-trip, or the Settings → General selector can never highlight a
-    // choice (regression: quick-send enum was dropped from the reducer).
-    expect(fromEvent.settings?.quickSendId).toBe("proceed");
+    // The custom quick-send list must survive the $settings round-trip, or the
+    // composer's quick-send dropdown loses the user's actions (regression: the
+    // quick-send list was dropped from the reducer).
     expect(fromEvent.settings?.quickSends).toEqual([]);
 
     // An explicit chat-menu pick patches the tab's own subagent model.
@@ -2709,6 +2709,39 @@ describe("Desktop App session sorting", () => {
     expect(next.sessions).toEqual([restarted]);
     expect(next.sessionsEpoch).toBe("daemon-2");
     expect(next.sessionsRevision).toBe(1);
+  });
+
+  it("clears a create mutation once the channel's first snapshot lands", () => {
+    const creating = { ...initialState(), sessionsMutation: "create" as const };
+    const listed = reduce(creating, {
+      t: "incoming",
+      event: { type: "$sessions", epoch: "daemon-1", revision: 1, items: [] },
+    });
+    expect(listed.sessionsMutation).toBeNull();
+  });
+
+  it("releases a create mutation the daemon never confirms", () => {
+    const creating = { ...initialState(), sessionsMutation: "create" as const };
+    const released = reduce(creating, { t: "session_mutation_release" });
+    expect(released.sessionsMutation).toBeNull();
+  });
+
+  it("maps each in-flight session mutation to its pill, badge and hint wording", () => {
+    expect(sessionMutationLabels("create", 0)).toEqual({
+      pill: "Creating session…",
+      badge: "Creating…",
+      hint: "Creating session…",
+    });
+    expect(sessionMutationLabels("delete", 0)).toEqual({
+      pill: "Deleting session…",
+      badge: "Deleting…",
+      hint: "Deleting sessions…",
+    });
+    expect(sessionMutationLabels("clear", 3)).toEqual({
+      pill: "Deleting 3 sessions…",
+      badge: "Deleting…",
+      hint: "Deleting sessions…",
+    });
   });
 });
 

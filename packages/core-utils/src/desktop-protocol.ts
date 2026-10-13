@@ -57,16 +57,22 @@ export function isQuickSend(v: unknown): v is QuickSend {
   );
 }
 
-/** Built-ins plus user-defined customs — the full set of selectable quick sends. */
+/** Built-ins plus user-defined customs — the full set of selectable quick sends.
+ *  De-duplicated by id (first wins) so a hand-edited config can't produce two
+ *  rows that collide as render keys or fire the same action twice. */
 export function allQuickSends(customs: readonly QuickSend[]): QuickSend[] {
-  return [...BUILTIN_QUICK_SENDS, ...customs].map((q) => {
-    const rawShorthand = q.shorthand || q.label || "";
-    return {
+  const seen = new Set<string>();
+  const out: QuickSend[] = [];
+  for (const q of [...BUILTIN_QUICK_SENDS, ...customs]) {
+    if (seen.has(q.id)) continue;
+    seen.add(q.id);
+    out.push({
       id: q.id,
-      shorthand: enforceQuickSendShorthand(rawShorthand),
+      shorthand: enforceQuickSendShorthand(q.shorthand || q.label || ""),
       message: q.message,
-    };
-  });
+    });
+  }
+  return out;
 }
 
 /** The active quick send by id, falling back to Proceed when unknown/absent. */
@@ -525,6 +531,10 @@ export interface TabOpenedEvent {
   groupId?: string;
   /** Session owned by this channel. */
   activeSession?: string;
+  /** True when this channel was opened for a fresh, not-yet-listed session (New
+   *  chat / duplicate). Drives the "Creating session…" indicator until the
+   *  channel's first `$sessions` snapshot lands. */
+  creating?: boolean;
 }
 
 /** One backend session channel closed. A tab_close command emits this once for
@@ -930,8 +940,8 @@ export interface SettingsEvent {
   editMode: EditMode;
   /** Per-type sound/notification cue matrix (Settings → Behavior). Absent = all off. */
   feedbackCues?: FeedbackCueSettings;
-  /** Active quick-send action id (default "proceed"). */
-  quickSendId: string;
+  /** @deprecated No persisted default — optional so older daemons that still emit it typecheck. */
+  quickSendId?: string;
   /** User-defined quick sends (built-ins are code-defined). */
   quickSends: QuickSend[];
   /** User-configured context-window cap (tokens); null = per-model default (300K). */
@@ -1075,7 +1085,7 @@ export interface SettingsEvent {
 /** Settings state consumed by the desktop UI, derived from the wire event contract.
  *  Quick-send fields remain optional for compatibility with older daemons. */
 export type SettingsPayload = Omit<SettingsEvent, "type" | "quickSendId" | "quickSends"> &
-  Partial<Pick<SettingsEvent, "quickSendId" | "quickSends">>;
+  Partial<Pick<SettingsEvent, "quickSends">>;
 
 /** Endpoint + auth state for the tab's CURRENT model — the status bar's API
  *  chip is per tab and flips between DeepSeek, OpenAI, Ollama and Gemini with the model. */
@@ -1394,7 +1404,6 @@ export interface SettingsPatch {
   editMode?: EditMode;
   /** Per-type sound/notification cue matrix (Settings → Behavior). */
   feedbackCues?: FeedbackCueSettings;
-  quickSendId?: string;
   quickSends?: QuickSend[];
   /** Context-window cap in tokens, clamped to [128000, 1000000]; null/undefined = per-model default. */
   contextTokens?: number | null;

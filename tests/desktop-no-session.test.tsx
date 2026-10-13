@@ -238,4 +238,52 @@ describe("desktop — no-session main-area state", () => {
     expect(screen.queryByText("Deleting session…")).toBeNull();
     expect(screen.getByText(/No conversations yet/)).toBeTruthy();
   });
+
+  it("surfaces a New-chat creation and seeds the channel from the workspace's sessions", async () => {
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await startupWithSessionA();
+
+    // New chat opens a fresh channel (t2) on the same workspace.
+    await feed(
+      {
+        type: "$tab_opened",
+        workspaceDir: WS,
+        active: true,
+        groupId: "g1",
+        sessions: ["B"],
+        activeSession: "B",
+        creating: true,
+      },
+      "t2",
+    );
+    await settle(20);
+
+    // The fresh channel seeds its sidebar from the workspace cache, so session
+    // A's row never blanks out to "No sessions yet"...
+    expect(screen.queryByText(/No sessions yet/)).toBeNull();
+    // ...and creation is surfaced the same way deletion is.
+    expect(screen.getByText("Creating session…")).toBeTruthy();
+    expect(screen.getByText("Creating…")).toBeTruthy();
+
+    // The channel's first snapshot settles the indicator.
+    await feed(
+      {
+        type: "$sessions",
+        epoch: "e2",
+        revision: 1,
+        items: [
+          { name: "A", messageCount: 2, mtime: new Date(1).toISOString() },
+          { name: "B", messageCount: 0, mtime: new Date(2).toISOString() },
+        ],
+      },
+      "t2",
+    );
+    await settle(40);
+
+    expect(screen.queryByText("Creating session…")).toBeNull();
+    expect(screen.queryByText("Creating…")).toBeNull();
+  });
 });

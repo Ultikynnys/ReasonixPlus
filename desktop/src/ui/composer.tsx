@@ -44,6 +44,9 @@ export type QueuedSendItem = string | QueuedSend;
 
 type ModeEntry = { k: EditMode; label: TKey; icon: React.ReactNode; hint: TKey };
 
+/** The composer's mutually-exclusive dropdowns — at most one is open at a time. */
+type MenuId = "model" | "subagent" | "effort" | "quick";
+
 const EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
 /** Clamp a video fps input to MiMo's documented 0.1–10 range (default 2). */
@@ -116,7 +119,7 @@ export function Composer({
   draft,
   setDraft,
   onSend,
-  quickSend,
+  quickSends,
   onAbort,
   disabled,
   busy,
@@ -169,8 +172,8 @@ export function Composer({
   draft: string;
   setDraft: React.Dispatch<React.SetStateAction<string>>;
   onSend: (text?: string | QueuedSend) => void;
-  /** The active quick-send action — drives the composer's quick button. Absent → "proceed". */
-  quickSend?: { message: string; shorthand: string; label?: string };
+  /** Every selectable quick send (built-ins + customs) — drives the quick-send dropdown. */
+  quickSends?: { id: string; message: string; shorthand: string }[];
   onAbort: () => void;
   disabled?: boolean;
   busy?: boolean;
@@ -265,12 +268,12 @@ export function Composer({
   // The interrupt button throbs while an abort is in flight, clearing once the
   // turn actually stops.
   const [interrupting, startInterrupt] = usePendingStop(!busy);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [subagentMenuOpen, setSubagentMenuOpen] = useState(false);
-  const [effortMenuOpen, setEffortMenuOpen] = useState(false);
-  const modelWrapRef = useRef<HTMLDivElement>(null);
-  const subagentWrapRef = useRef<HTMLDivElement>(null);
-  const effortWrapRef = useRef<HTMLDivElement>(null);
+  // One popup at a time from a single source of truth: `openMenu` names the only
+  // menu that can be open, so opening one closes the others by itself.
+  const [openMenu, setOpenMenu] = useState<MenuId | null>(null);
+  const menuWraps = useRef<Partial<Record<MenuId, HTMLDivElement | null>>>({});
+  const toggleMenu = (id: MenuId) => setOpenMenu((cur) => (cur === id ? null : id));
+  const closeMenu = () => setOpenMenu(null);
   // macOS Chinese IME fires compositionend BEFORE the confirm keydown.
   const composingRef = useRef(false);
   const compositionEndedAtRef = useRef(0);
@@ -279,22 +282,17 @@ export function Composer({
   const savedDraftRef = useRef("");
 
   useEffect(() => {
-    if (!modelMenuOpen && !subagentMenuOpen && !effortMenuOpen) return;
+    if (openMenu === null) return;
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
-      const inside =
-        (modelWrapRef.current?.contains(target) ?? false) ||
-        (subagentWrapRef.current?.contains(target) ?? false) ||
-        (effortWrapRef.current?.contains(target) ?? false);
-      if (!inside) {
-        setModelMenuOpen(false);
-        setSubagentMenuOpen(false);
-        setEffortMenuOpen(false);
+      for (const wrap of Object.values(menuWraps.current)) {
+        if (wrap?.contains(target)) return;
       }
+      setOpenMenu(null);
     };
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
-  }, [modelMenuOpen, subagentMenuOpen, effortMenuOpen]);
+  }, [openMenu]);
 
   const attachFile = async () => {
     try {
@@ -349,14 +347,13 @@ export function Composer({
     setBrowseIdx(-1);
   };
 
-  const handleProceed = () => {
+  const runQuickSend = (action: { message: string; shorthand: string }) => {
     if (disabled) return;
     const trimmed = draft.trim();
     if (trimmed) {
       historyRef.current.push(trimmed);
     }
-    const shorthand = quickSend?.shorthand || "proceed";
-    historyRef.current.push(shorthand);
+    historyRef.current.push(action.shorthand);
     if (historyRef.current.length > 100) {
       historyRef.current.splice(0, historyRef.current.length - 100);
     }
@@ -364,18 +361,19 @@ export function Composer({
     setDraft("");
     if (busy) {
       if (onQueueWhileBusy) {
-        onQueueWhileBusy(
-          quickSend
-            ? { text: quickSend.message, echo: shorthand }
-            : { text: "proceed", echo: "proceed" },
-        );
+        onQueueWhileBusy({ text: action.message, echo: action.shorthand });
       }
-    } else if (quickSend) {
-      onSend({ text: quickSend.message, echo: shorthand });
     } else {
-      onSend("proceed");
+      onSend({ text: action.message, echo: action.shorthand });
     }
   };
+
+  // Built-ins are always present, so the dropdown is never empty; the fallback
+  // only covers a daemon that predates the quick-sends list.
+  const quickSendOptions =
+    quickSends && quickSends.length > 0
+      ? quickSends
+      : [{ id: "proceed", message: "proceed", shorthand: "proceed" }];
 
   const navigateHistory = (dir: -1 | 1) => {
     const hist = historyRef.current;
@@ -528,14 +526,10 @@ export function Composer({
       navigateHistory(1);
       return;
     }
-    if (e.key === "Escape") {
-      if (modelMenuOpen || subagentMenuOpen || effortMenuOpen) {
-        e.preventDefault();
-        setModelMenuOpen(false);
-        setSubagentMenuOpen(false);
-        setEffortMenuOpen(false);
-        return;
-      }
+    if (e.key === "Escape" && openMenu !== null) {
+      e.preventDefault();
+      closeMenu();
+      return;
     }
     if (composingRef.current || Date.now() - compositionEndedAtRef.current < 50) return;
     if (e.key === "Enter" && !e.shiftKey) {
@@ -771,80 +765,78 @@ export function Composer({
 
             <span className="grow" />
 
-            <div ref={modelWrapRef} className="model-pill-wrap">
+            <div
+              ref={(el) => {
+                menuWraps.current.model = el;
+              }}
+              className="model-pill-wrap"
+            >
               <button
                 type="button"
                 className="model-pill"
-                onClick={() => {
-                  setModelMenuOpen((v) => !v);
-                  setSubagentMenuOpen(false);
-                  setEffortMenuOpen(false);
-                }}
+                onClick={() => toggleMenu("model")}
                 title={t("composer.switchModel")}
               >
                 <I.brain size={12} />
                 <span>{modelDisplayName(modelLabel)}</span>
                 <I.chev size={10} />
               </button>
-              {modelMenuOpen ? (
+              {openMenu === "model" ? (
                 <MenuPop width={420}>
-                  <div className="ph">
-                    <span className="tok">M</span>
-                    <span>{t("composer.switchModel")}</span>
-                  </div>
+                  <MenuHeader tok="M" label={t("composer.switchModel")} />
                   <ModelList
                     activeModel={modelLabel}
                     onPick={(m) => {
                       onModelChange(m);
-                      setModelMenuOpen(false);
+                      closeMenu();
                     }}
                     {...modelListProps}
                   />
                 </MenuPop>
               ) : null}
             </div>
-            <div ref={subagentWrapRef} className="model-pill-wrap">
+            <div
+              ref={(el) => {
+                menuWraps.current.subagent = el;
+              }}
+              className="model-pill-wrap"
+            >
               <button
                 type="button"
                 className="model-pill subagent-pill"
-                onClick={() => {
-                  setSubagentMenuOpen((v) => !v);
-                  setModelMenuOpen(false);
-                  setEffortMenuOpen(false);
-                }}
+                onClick={() => toggleMenu("subagent")}
                 title={t("composer.switchSubagentModel")}
               >
                 <I.bot size={12} />
                 <span>{modelDisplayName(subagentModelLabel)}</span>
                 <I.chev size={10} />
               </button>
-              {subagentMenuOpen ? (
+              {openMenu === "subagent" ? (
                 <MenuPop width={420}>
-                  <div className="ph">
-                    <span className="tok">S</span>
-                    <span>{t("composer.switchSubagentModel")}</span>
-                  </div>
+                  <MenuHeader tok="S" label={t("composer.switchSubagentModel")} />
                   <ModelList
                     activeModel={subagentModelLabel}
                     onPick={(m) => {
                       onSubagentModelChange(m);
-                      setSubagentMenuOpen(false);
+                      closeMenu();
                     }}
                     {...modelListProps}
                   />
                 </MenuPop>
               ) : null}
             </div>
-            <div ref={effortWrapRef} className="model-pill-wrap">
+            <div
+              ref={(el) => {
+                menuWraps.current.effort = el;
+              }}
+              className="model-pill-wrap"
+            >
               <button
                 type="button"
                 className="model-pill effort-pill"
                 disabled={effortControlDisabled}
                 onClick={() => {
-                  if (effortControlDisabled) return;
-                  setEffortMenuOpen((v) => !v);
-                  setModelMenuOpen(false);
-                  setSubagentMenuOpen(false);
+                  if (!effortControlDisabled) toggleMenu("effort");
                 }}
                 title={t("composer.switchEffort")}
               >
@@ -852,54 +844,66 @@ export function Composer({
                 <span>{displayEffort}</span>
                 <I.chev size={10} />
               </button>
-              {effortMenuOpen && !effortControlDisabled ? (
+              {openMenu === "effort" && !effortControlDisabled ? (
                 <MenuPop width={320}>
-                  <div className="ph">
-                    <span className="tok">E</span>
-                    <span>{t("composer.switchEffort")}</span>
-                  </div>
+                  <MenuHeader tok="E" label={t("composer.switchEffort")} />
                   <div className="popup-list effort-menu-list">
                     {efforts.map((e) => (
-                      <div
+                      <MenuRow
                         key={e}
-                        className="popup-item"
-                        data-active={e === displayEffort}
-                        onClick={() => {
+                        icon={<I.cpu size={12} />}
+                        label={e}
+                        desc={t(`effort.${e}Desc` as TKey)}
+                        active={e === displayEffort}
+                        onPick={() => {
                           onEffortChange(e);
-                          setEffortMenuOpen(false);
+                          closeMenu();
                         }}
-                        onKeyDown={activationHandler(() => {
-                          onEffortChange(e);
-                          setEffortMenuOpen(false);
-                        })}
-                      >
-                        <span className="ico">
-                          <I.cpu size={12} />
-                        </span>
-                        <div className="nm">
-                          <span className="cmd">{e}</span>
-                          <div className="desc">{t(`effort.${e}Desc` as TKey)}</div>
-                        </div>
-                      </div>
+                      />
                     ))}
                   </div>
                 </MenuPop>
               ) : null}
             </div>
-            <button
-              type="button"
-              className="quick-proceed-btn"
-              disabled={disabled}
-              onClick={handleProceed}
-              title={
-                quickSend
-                  ? `${quickSend.shorthand}: ${quickSend.message}`
-                  : t("composer.quickSendTitle")
-              }
+            <div
+              ref={(el) => {
+                menuWraps.current.quick = el;
+              }}
+              className="quick-send-wrap"
             >
-              <I.play size={11} />
-              <span>{quickSend?.shorthand || t("composer.proceed")}</span>
-            </button>
+              <button
+                type="button"
+                className="quick-proceed-btn"
+                disabled={disabled}
+                aria-haspopup="menu"
+                aria-expanded={openMenu === "quick"}
+                onClick={() => toggleMenu("quick")}
+                title={t("composer.quickSendTitle")}
+              >
+                <I.play size={11} />
+                <span>{t("composer.quickSendTitle")}</span>
+                <I.chev size={10} />
+              </button>
+              {openMenu === "quick" ? (
+                <MenuPop width={320}>
+                  <MenuHeader tok="Q" label={t("composer.quickSendTitle")} />
+                  <div className="popup-list">
+                    {quickSendOptions.map((q) => (
+                      <MenuRow
+                        key={q.id}
+                        icon={<I.play size={12} />}
+                        label={q.shorthand}
+                        desc={q.message}
+                        onPick={() => {
+                          runQuickSend(q);
+                          closeMenu();
+                        }}
+                      />
+                    ))}
+                  </div>
+                </MenuPop>
+              ) : null}
+            </div>
             <button
               type="button"
               className={`voice-btn ${voiceState === "recording" ? "recording" : ""} ${voiceState === "transcribing" ? "transcribing" : ""}`}
@@ -1161,6 +1165,47 @@ function ModelList({
           <div className="nm"><span className="cmd">{modelDisplayName(activeModel)}</span></div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Dropdown title row — a token chip + the section label. */
+function MenuHeader({ tok, label }: { tok: string; label: string }) {
+  return (
+    <div className="ph">
+      <span className="tok">{tok}</span>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+/** Shared dropdown row — icon + label + optional description, activated by
+ *  click or keyboard. Backs the quick-send and reasoning-effort menus. */
+function MenuRow({
+  icon,
+  label,
+  desc,
+  active,
+  onPick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  desc?: string;
+  active?: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <div
+      className="popup-item"
+      data-active={active}
+      onClick={onPick}
+      onKeyDown={activationHandler(onPick)}
+    >
+      <span className="ico">{icon}</span>
+      <div className="nm">
+        <span className="cmd">{label}</span>
+        {desc !== undefined ? <div className="desc">{desc}</div> : null}
+      </div>
     </div>
   );
 }
