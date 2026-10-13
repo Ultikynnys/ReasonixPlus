@@ -1641,6 +1641,23 @@ html[data-platform="macos"] .titlebar .tb-left {
   border-radius: 4px;
   padding: 0 5px;
 }
+/* RECENT-header throbber: shown while a session delete / clear-all awaits the
+   daemon's settled snapshot, so the list never looks silently dead. */
+.side-section .label .count.busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.side-section .label .count.busy .spin {
+  width: 10px;
+  height: 10px;
+}
+.side-section .label .clear-all-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .side-section .label .clear-all-btn {
   margin-left: auto;
   flex-shrink: 0;

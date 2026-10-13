@@ -620,6 +620,7 @@ export const en = {
     noSessions: {
       title: "No conversations yet",
       hint: "Create a new chat to get started in this workspace.",
+      deleting: "Deleting sessions…",
     },
     setup: {
       welcome: "Welcome to Reasonix+",
@@ -1058,6 +1059,7 @@ export const en = {
     tokensPerSecondTitle: "Live output rate from the provider",
     deleteSession: "Delete session",
     clearAllSessions: "Clear all sessions",
+    deletingSessions: "Deleting…",
     clearAllConfirm: "{count} session(s) for this workspace",
     deleteAll: "Delete all",
     moveToTop: "Move to top",

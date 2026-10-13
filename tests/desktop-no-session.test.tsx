@@ -186,4 +186,54 @@ describe("desktop — no-session main-area state", () => {
     expect(screen.queryByText(/hello from session A/)).toBeNull();
     expect(screen.getByText(/No conversations yet/)).toBeTruthy();
   });
+
+  it("shows a deleting throbber from the optimistic delete until the daemon settles it", async () => {
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await startupWithSessionA();
+
+    // Optimistically delete session A through the sidebar confirm popover.
+    await act(async () => {
+      screen.getByRole("button", { name: "Delete session" }).click();
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Delete" }).click();
+    });
+    await settle(20);
+
+    // In flight — the sidebar reports the daemon work instead of looking dead.
+    expect(screen.getByText("Deleting…")).toBeTruthy();
+
+    // Daemon settles: it mints a virtual replacement and lists no sessions.
+    await feed(
+      {
+        type: "$session_loaded",
+        name: "B",
+        messages: [],
+        carryover: {
+          totalCostUsd: 0,
+          cacheHitTokens: 0,
+          cacheMissTokens: 0,
+          totalCompletionTokens: 0,
+        },
+      },
+      "t1",
+    );
+    await feed(
+      {
+        type: "$sessions",
+        epoch: "e1",
+        revision: 2,
+        items: [],
+        settledDeletes: [{ name: "A", removed: true }],
+      },
+      "t1",
+    );
+    await settle(40);
+
+    expect(screen.queryByText("Deleting…")).toBeNull();
+    expect(screen.getByText(/No conversations yet/)).toBeTruthy();
+  });
 });

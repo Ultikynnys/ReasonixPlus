@@ -41,6 +41,7 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     sessionsRevision: 0,
     workspaceInitializationRevision: 0,
     pendingSessionDeletes: [],
+    sessionsMutation: null,
     settings: null,
     balance: null,
     codexQuota: null,

@@ -513,10 +513,9 @@ type State = {
   sessionsRevision: number;
   workspaceInitializationRevision: number;
   pendingSessionDeletes: string[];
-  /** In-flight session destruction (one delete or a clear-all). Set on the
-   *  optimistic removal and held until the daemon's authoritative $sessions
-   *  snapshot settles the hidden names (or a watchdog releases it) — drives the
-   *  sidebar throbber and the lock on its destructive controls. */
+  /** In-flight session destruction (one delete or clear-all): set on the
+   *  optimistic removal, cleared when the daemon's settled snapshot lands or the
+   *  watchdog releases it. Drives the sidebar throbber and the controls lock. */
   sessionsMutation: "delete" | "clear" | null;
   settings: Settings | null;
   balance: Balance | null;

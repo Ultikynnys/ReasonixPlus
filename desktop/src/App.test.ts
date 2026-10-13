@@ -2603,6 +2603,70 @@ describe("Desktop App session sorting", () => {
     expect(failedSnapshot.pendingSessionDeletes).toEqual([]);
   });
 
+  it("tracks an in-flight clear-all and drops the marker once the snapshot settles", () => {
+    const a = { name: "a", messageCount: 1, mtime: new Date(1000).toISOString() };
+    const b = { name: "b", messageCount: 2, mtime: new Date(2000).toISOString() };
+    const base = { ...initialState(), sessions: [a, b], sessionsEpoch: "daemon-1" };
+
+    const clearing = reduce(base, { t: "session_clear_requested" });
+    expect(clearing.sessions).toEqual([]);
+    expect(clearing.sessionsMutation).toBe("clear");
+    expect(clearing.pendingSessionDeletes).toEqual(["a", "b"]);
+
+    // One name still unconfirmed — the in-flight marker must survive.
+    const partial = reduce(clearing, {
+      t: "incoming",
+      event: {
+        type: "$sessions",
+        epoch: "daemon-1",
+        revision: 1,
+        settledDeletes: [{ name: "a", removed: true }],
+        items: [],
+      },
+    });
+    expect(partial.pendingSessionDeletes).toEqual(["b"]);
+    expect(partial.sessionsMutation).toBe("clear");
+
+    const settled = reduce(partial, {
+      t: "incoming",
+      event: {
+        type: "$sessions",
+        epoch: "daemon-1",
+        revision: 2,
+        settledDeletes: [{ name: "b", removed: true }],
+        items: [],
+      },
+    });
+    expect(settled.pendingSessionDeletes).toEqual([]);
+    expect(settled.sessionsMutation).toBeNull();
+  });
+
+  it("releases an unconfirmed delete so the sidebar can't stick mid-delete", () => {
+    const session = { name: "stuck", messageCount: 1, mtime: new Date(1000).toISOString() };
+    const deleting = reduce(
+      { ...initialState(), sessions: [session], sessionsEpoch: "daemon-1" },
+      { t: "session_delete_requested", name: session.name },
+    );
+    expect(deleting.sessionsMutation).toBe("delete");
+
+    const released = reduce(deleting, { t: "session_mutation_release" });
+    expect(released.pendingSessionDeletes).toEqual([]);
+    expect(released.sessionsMutation).toBeNull();
+  });
+
+  it("clears an in-flight marker when a fresh-epoch snapshot replaces the list", () => {
+    const session = { name: "x", messageCount: 1, mtime: new Date(1000).toISOString() };
+    const deleting = reduce(
+      { ...initialState(), sessions: [session], sessionsEpoch: "daemon-1" },
+      { t: "session_delete_requested", name: session.name },
+    );
+    const rebooted = reduce(deleting, {
+      t: "incoming",
+      event: { type: "$sessions", epoch: "daemon-2", revision: 1, items: [session] },
+    });
+    expect(rebooted.sessionsMutation).toBeNull();
+  });
+
   it("ignores an out-of-order session snapshot", () => {
     const newest = {
       name: "newest",

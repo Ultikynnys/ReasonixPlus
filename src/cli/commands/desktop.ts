@@ -7591,7 +7591,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           restoreUntouchedRuntimes(affectedTabs, new Set());
         }
       } catch (err) {
-        emitDiagnosticError("session.delete.failed", err, { tabId: tab.id, session: msg.name });
+        emitDiagnosticError("session.delete.failed", err, {
+          tabId: tab.id,
+          details: { session: msg.name },
+        });
         emit({ type: "$error", message: `session_delete failed: ${msg.name}` }, tab.id);
         restoreUntouchedRuntimes(affectedTabs, new Set());
       }
@@ -7627,7 +7630,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             const existed = sessionExists(name);
             return { name, removed: deleteSession(name) || !existed };
           } catch (err) {
-            emitDiagnosticError("session.delete.failed", err, { tabId: tab.id, session: name });
+            emitDiagnosticError("session.delete.failed", err, {
+              tabId: tab.id,
+              details: { session: name },
+            });
             return { name, removed: false };
           }
         });
