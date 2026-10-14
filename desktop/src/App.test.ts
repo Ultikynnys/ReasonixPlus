@@ -40,7 +40,6 @@ import {
   cueIdForEvent,
   groupTabsByWorkspace,
   hasPendingIntervention,
-  isCompacting,
   parseSessionTimestamp,
   reduce,
   runningSessionNames,
@@ -313,20 +312,27 @@ describe("Desktop App reducer — usage", () => {
     ).toBe(false);
   });
 
-  it("isCompacting flags only a live compaction card", () => {
-    expect(isCompacting([])).toBe(false);
-    const running = [
-      {
-        kind: "notice" as const,
-        id: "n1",
-        text: "Compacting context…",
-        severity: "info" as const,
-        running: true,
-        trigger: "manual" as const,
-      },
-    ];
-    expect(isCompacting(running)).toBe(true);
-    expect(isCompacting(running.map((m) => ({ ...m, running: false })))).toBe(false);
+  it("compacting clears from the daemon even while a card still spins", () => {
+    // Regression: the queue is gated by the daemon's authoritative flag, not by
+    // the presence of a compaction card — a stuck card must never wedge sends.
+    const stuck = baseAppState({
+      compacting: true,
+      messages: [
+        {
+          kind: "notice",
+          id: "n1",
+          text: "Compacting context…",
+          severity: "info",
+          running: true,
+          trigger: "auto",
+        },
+      ],
+    });
+    const next = reduce(stuck, {
+      t: "incoming",
+      event: { type: "$tab_status", busy: false, queued: 0, compacting: false, switching: false },
+    });
+    expect(next.compacting).toBe(false);
   });
 
   it("compacting toggles from the daemon without a spurious resync", () => {

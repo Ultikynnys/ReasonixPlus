@@ -1857,14 +1857,6 @@ function dropStaleCompaction(state: State, ev: IncomingEvent): State {
   };
 }
 
-/** A live compaction card (running throbber) means the daemon is folding the
- *  context — a busy stretch with NO turn of its own (its turn-busy flag is false).
- *  The composer queues and the drain waits on it, so a message typed mid-fold
- *  lands as a normal next turn instead of racing the running work. */
-export function isCompacting(messages: ChatMessage[]): boolean {
-  return messages.some((m) => m.kind === "notice" && m.running === true);
-}
-
 export function applyIncoming(state: State, ev: IncomingEvent): State {
   return applyIncomingInner(dropStaleCompaction(ensureAssistantTurn(state, ev), ev), ev);
 }
@@ -3688,10 +3680,11 @@ function TabRuntime({
     opencodeVisionModels,
   ]);
 
-  // A fold is a busy stretch the daemon runs without a turn of its own
-  // (busy=false). Its pushed `compacting` flag is authoritative; the live card is
-  // a fallback for auto/overflow folds, which never set that flag.
-  const compacting = state.compacting || isCompacting(state.messages);
+  // A fold is a busy stretch the daemon runs without a turn of its own. Its
+  // pushed `compacting` flag is the single source of truth, so a stuck compaction
+  // card can never wedge the queue. `engaged` is the one predicate the composer,
+  // the drain and send() share: a turn OR a fold is in flight, so a send QUEUES.
+  const engaged = state.busy || state.awaitingAck || state.compacting;
 
   const send = useCallback(
     (override?: string | QueuedSend) => {
@@ -3716,14 +3709,7 @@ function TabRuntime({
         }
       }
 
-      if (
-        (!text && sendImages.length === 0) ||
-        !state.ready ||
-        state.busy ||
-        state.awaitingAck ||
-        compacting
-      )
-        return;
+      if ((!text && sendImages.length === 0) || !state.ready || engaged) return;
 
       const clientId = `c-${Date.now()}`;
       // ChatGPT models: typed `@path` image mentions get an optimistic echo —
@@ -3758,9 +3744,7 @@ function TabRuntime({
       pendingImages,
       imageCapable,
       state.ready,
-      state.busy,
-      state.awaitingAck,
-      compacting,
+      engaged,
       state.settings?.workspaceDir,
       sendRpc,
       recordAbortDraft,
@@ -3787,7 +3771,7 @@ function TabRuntime({
   const releaseStaleSend = useCallback(() => dispatch({ t: "release_stale_send" }), []);
   const probeTabStatus = useCallback(() => sendRpc({ cmd: "tab_status" }), [sendRpc]);
   useTurnWatchdog({
-    engaged: state.busy || state.awaitingAck || compacting,
+    engaged,
     awaitingAckWithoutBusy: state.awaitingAck && !state.busy,
     connected: backendConnected,
     probe: probeTabStatus,
@@ -3819,19 +3803,12 @@ function TabRuntime({
   useEffect(() => {
     // Hold the drain through a fold too: the queued message must land AFTER the
     // compaction settles, not race it.
-    if (
-      state.busy ||
-      state.awaitingAck ||
-      compacting ||
-      !state.ready ||
-      state.queuedSends.length === 0
-    )
-      return;
+    if (engaged || !state.ready || state.queuedSends.length === 0) return;
     const next = state.queuedSends[0];
     if (!next) return;
     dispatch({ t: "shift_queued_send" });
     send(next);
-  }, [state.busy, state.awaitingAck, compacting, state.ready, state.queuedSends, send]);
+  }, [engaged, state.ready, state.queuedSends, send]);
 
   useEffect(() => {
     const currentSnapshot: ApprovalSnapshot = {
@@ -4625,7 +4602,7 @@ function TabRuntime({
                 quickSends={allQuickSends(state.settings?.quickSends ?? [])}
                 onAbort={abort}
                 disabled={!state.ready}
-                busy={state.busy || state.awaitingAck || compacting}
+                busy={engaged}
                 busyLabel={
                   state.busy || state.awaitingAck
                     ? state.activeSkill
@@ -4654,7 +4631,7 @@ function TabRuntime({
                                           : state.turnStatus === "responding"
                                             ? t("app.status.responding")
                                             : t("app.status.thinking")
-                    : compacting
+                    : state.compacting
                       ? t("app.status.compacting")
                       : undefined
                 }
