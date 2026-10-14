@@ -40,6 +40,7 @@ import {
   cueIdForEvent,
   groupTabsByWorkspace,
   hasPendingIntervention,
+  isCompacting,
   parseSessionTimestamp,
   reduce,
   runningSessionNames,
@@ -294,6 +295,57 @@ describe("Desktop App reducer — usage", () => {
     });
     expect(next.busy).toBe(true);
     expect(next.awaitingAck).toBe(false);
+  });
+
+  it("busy parity: $tab_status treats a compacting daemon as engaged, never idle", () => {
+    // A fold leaves turn-busy false while the daemon still works — releasing a
+    // held turn here would strand the send the user typed during compaction.
+    let state = reduce(initialState(), { t: "send_user", text: "hi", clientId: "c-1" });
+    state = reduce(state, { t: "incoming", event: { type: "$turn_started", turn: 1 } });
+    state = reduce(state, {
+      t: "incoming",
+      event: { type: "$tab_status", busy: false, queued: 0, compacting: true, switching: false },
+    });
+    expect(state.busy).toBe(true);
+    expect(state.awaitingAck).toBe(false);
+    expect(
+      state.messages.some((m) => m.kind === "notice" && m.text.includes("Resynced")),
+    ).toBe(false);
+  });
+
+  it("isCompacting flags only a live compaction card", () => {
+    expect(isCompacting([])).toBe(false);
+    const running = [
+      {
+        kind: "notice" as const,
+        id: "n1",
+        text: "Compacting context…",
+        severity: "info" as const,
+        running: true,
+        trigger: "manual" as const,
+      },
+    ];
+    expect(isCompacting(running)).toBe(true);
+    expect(isCompacting(running.map((m) => ({ ...m, running: false })))).toBe(false);
+  });
+
+  it("compacting toggles from the daemon without a spurious resync", () => {
+    // The daemon announces the fold while turn-busy stays false; the flag alone
+    // gates the queue, and clearing it must not look like a lost terminal.
+    let state = reduce(initialState(), {
+      t: "incoming",
+      event: { type: "$tab_status", busy: false, queued: 0, compacting: true, switching: false },
+    });
+    expect(state.compacting).toBe(true);
+    expect(state.busy).toBe(false);
+    state = reduce(state, {
+      t: "incoming",
+      event: { type: "$tab_status", busy: false, queued: 0, compacting: false, switching: false },
+    });
+    expect(state.compacting).toBe(false);
+    expect(
+      state.messages.some((m) => m.kind === "notice" && m.text.includes("Resynced")),
+    ).toBe(false);
   });
 
   it("appends a late kernel error at the tail in creation order, not re-anchored to its turn", () => {

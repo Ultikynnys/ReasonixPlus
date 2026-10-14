@@ -277,11 +277,16 @@ describe("runManualCompact", () => {
     expect(aborter.signal.aborted).toBe(true);
     expect(abort).toHaveBeenCalledOnce();
     expect(compact).not.toHaveBeenCalled();
-    expect(events).toEqual([]);
+    // Only the fold-state sync lands before the running work unwinds — no chat
+    // events until the fold actually starts.
+    expect(events.every((e) => e.type === "$tab_status")).toBe(true);
     finish();
     await work;
 
-    expect(events[0]).toMatchObject({ type: "compaction.started", trigger: "manual" });
+    expect(events.find((e) => e.type === "compaction.started")).toMatchObject({
+      type: "compaction.started",
+      trigger: "manual",
+    });
     expect(events.some((e) => e.type === "session.retracted")).toBe(true);
     expect(events.some((e) => e.type === "$notice")).toBe(true);
   });
@@ -339,7 +344,10 @@ describe("runManualCompact", () => {
     finish();
     await work;
     await barrier;
-    expect(events.at(-1)).toMatchObject({ type: "$error", message: "compact failed: fold failed" });
+    expect(events.find((e) => e.type === "$error")).toMatchObject({
+      type: "$error",
+      message: "compact failed: fold failed",
+    });
     expect(tab.compactingManual).toBe(false);
     expect(tab.manualCompactDone).toBeUndefined();
   });

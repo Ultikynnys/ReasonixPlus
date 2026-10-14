@@ -529,6 +529,10 @@ type State = {
    *  its $turn_complete rejection). Visual pending spin only — turn state
    *  itself is daemon-owned; busy never flips on a local guess. */
   awaitingAck: boolean;
+  /** True while the daemon folds the context. A fold is a busy stretch with no
+   *  turn of its own, so the composer queues against it and the drain waits:
+   *  a message typed mid-fold lands as a normal next turn once it settles. */
+  compacting: boolean;
   model?: string;
   currentSession?: string;
   messages: ChatMessage[];
@@ -953,6 +957,7 @@ export function reduce(state: State, action: Action): State {
         ready: false,
         busy: false,
         awaitingAck: false,
+        compacting: false,
         activeSkill: null,
         queuedSends: [],
         messages: insertNotice(
@@ -1105,6 +1110,7 @@ export function reduce(state: State, action: Action): State {
         ...state,
         busy: false,
         awaitingAck: false,
+        compacting: false,
         currentSession: undefined,
         messages: [],
         pendingConfirms: [],
@@ -1851,6 +1857,14 @@ function dropStaleCompaction(state: State, ev: IncomingEvent): State {
   };
 }
 
+/** A live compaction card (running throbber) means the daemon is folding the
+ *  context — a busy stretch with NO turn of its own (its turn-busy flag is false).
+ *  The composer queues and the drain waits on it, so a message typed mid-fold
+ *  lands as a normal next turn instead of racing the running work. */
+export function isCompacting(messages: ChatMessage[]): boolean {
+  return messages.some((m) => m.kind === "notice" && m.running === true);
+}
+
 export function applyIncoming(state: State, ev: IncomingEvent): State {
   return applyIncomingInner(dropStaleCompaction(ensureAssistantTurn(state, ev), ev), ev);
 }
@@ -1940,8 +1954,15 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     case "$tab_status": {
       // Reconciliation probe reply. Anything other than agreement resolves to
       // the daemon's answer — the UI never out-argues the backend.
-      if (ev.busy === state.busy && !state.awaitingAck) return state;
-      if (ev.busy) return { ...state, busy: true, awaitingAck: false };
+      const compacting = ev.compacting === true;
+      if (ev.busy === state.busy && compacting === state.compacting && !state.awaitingAck)
+        return state;
+      if (ev.busy) return { ...state, busy: true, awaitingAck: false, compacting };
+      // A fold leaves turn-busy false while the daemon is still working — adopt
+      // its compacting state and never mistake that for a lost terminal.
+      if (compacting) return { ...state, compacting };
+      // Not busy and not folding: only a real held-turn drift earns the notice.
+      if (!state.busy && !state.awaitingAck) return { ...state, compacting: false };
       // Daemon idle while the UI held a turn: a terminal event was lost.
       // Release exactly like $turn_complete would, plus a warning notice so
       // the correction is visible.
@@ -1950,6 +1971,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         ...state,
         busy: false,
         awaitingAck: false,
+        compacting: false,
         activeSkill: null,
         turnStatus: null,
         turnStatusTool: null,
@@ -2386,6 +2408,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         busy: false,
         awaitingAck: false,
         currentSession: sessionName,
+        compacting: false,
         planHistory: [],
         planDetails: {},
         messages: loaded,
@@ -3075,6 +3098,7 @@ function TabRuntime({
     needsSetup: false,
     busy: false,
     awaitingAck: false,
+    compacting: false,
     messages: [],
     pendingConfirms: [],
     pendingPathAccess: [],
@@ -3664,6 +3688,11 @@ function TabRuntime({
     opencodeVisionModels,
   ]);
 
+  // A fold is a busy stretch the daemon runs without a turn of its own
+  // (busy=false). Its pushed `compacting` flag is authoritative; the live card is
+  // a fallback for auto/overflow folds, which never set that flag.
+  const compacting = state.compacting || isCompacting(state.messages);
+
   const send = useCallback(
     (override?: string | QueuedSend) => {
       let text = draftStore.getSnapshot().trim();
@@ -3691,7 +3720,8 @@ function TabRuntime({
         (!text && sendImages.length === 0) ||
         !state.ready ||
         state.busy ||
-        state.awaitingAck
+        state.awaitingAck ||
+        compacting
       )
         return;
 
@@ -3730,6 +3760,7 @@ function TabRuntime({
       state.ready,
       state.busy,
       state.awaitingAck,
+      compacting,
       state.settings?.workspaceDir,
       sendRpc,
       recordAbortDraft,
@@ -3756,7 +3787,7 @@ function TabRuntime({
   const releaseStaleSend = useCallback(() => dispatch({ t: "release_stale_send" }), []);
   const probeTabStatus = useCallback(() => sendRpc({ cmd: "tab_status" }), [sendRpc]);
   useTurnWatchdog({
-    engaged: state.busy || state.awaitingAck,
+    engaged: state.busy || state.awaitingAck || compacting,
     awaitingAckWithoutBusy: state.awaitingAck && !state.busy,
     connected: backendConnected,
     probe: probeTabStatus,
@@ -3786,12 +3817,21 @@ function TabRuntime({
   }, [state.retryNonce]);
 
   useEffect(() => {
-    if (state.busy || state.awaitingAck || !state.ready || state.queuedSends.length === 0) return;
+    // Hold the drain through a fold too: the queued message must land AFTER the
+    // compaction settles, not race it.
+    if (
+      state.busy ||
+      state.awaitingAck ||
+      compacting ||
+      !state.ready ||
+      state.queuedSends.length === 0
+    )
+      return;
     const next = state.queuedSends[0];
     if (!next) return;
     dispatch({ t: "shift_queued_send" });
     send(next);
-  }, [state.busy, state.awaitingAck, state.ready, state.queuedSends, send]);
+  }, [state.busy, state.awaitingAck, compacting, state.ready, state.queuedSends, send]);
 
   useEffect(() => {
     const currentSnapshot: ApprovalSnapshot = {
@@ -4585,7 +4625,7 @@ function TabRuntime({
                 quickSends={allQuickSends(state.settings?.quickSends ?? [])}
                 onAbort={abort}
                 disabled={!state.ready}
-                busy={state.busy || state.awaitingAck}
+                busy={state.busy || state.awaitingAck || compacting}
                 busyLabel={
                   state.busy || state.awaitingAck
                     ? state.activeSkill
@@ -4614,7 +4654,9 @@ function TabRuntime({
                                           : state.turnStatus === "responding"
                                             ? t("app.status.responding")
                                             : t("app.status.thinking")
-                    : undefined
+                    : compacting
+                      ? t("app.status.compacting")
+                      : undefined
                 }
                 stuckLabel={
                   state.busy && state.turnLastEventMs && !state.activeSkill

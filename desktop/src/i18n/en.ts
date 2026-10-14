@@ -566,6 +566,7 @@ export const en = {
       waitingRevision: "Waiting for revision approval…",
       waitingConfirm: "Waiting for confirmation…",
       waitingUser: "Waiting for input…",
+      compacting: "Compacting context…",
     },
     jumpToBottom: "Jump to bottom",
     jumpToTop: "Jump to top",

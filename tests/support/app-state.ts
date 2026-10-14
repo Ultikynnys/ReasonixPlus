@@ -14,6 +14,7 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     needsSetup: false,
     busy: false,
     awaitingAck: false,
+    compacting: false,
     model: "deepseek-v4-flash",
     currentSession: "demo",
     messages: [],

@@ -4022,6 +4022,10 @@ export async function runManualCompact(
   tab.manualCompactDone = new Promise<void>((resolve) => {
     release = resolve;
   });
+  // Announce the fold before the running turn has even unwound: the UI treats a
+  // compacting daemon as busy, so a message typed during the teardown queues
+  // instead of being dispatched straight into the fold.
+  emitFn(tabStatus(tab), tab.id);
   try {
     if (tab.aborter || tab.activeTurn) {
       tab.aborter?.abort();
@@ -4052,6 +4056,8 @@ export async function runManualCompact(
     tab.compactingManual = false;
     tab.manualCompactDone = undefined;
     release();
+    // Fold over — clear the UI's busy so the queued sends drain as normal turns.
+    emitFn(tabStatus(tab), tab.id);
   }
 }
 
