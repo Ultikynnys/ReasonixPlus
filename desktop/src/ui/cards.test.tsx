@@ -142,6 +142,34 @@ describe("reasoning scroll lifecycle", () => {
     expect(disconnect).toHaveBeenCalledTimes(3);
   });
 
+  it("keeps a manually scrolled thinking card put until it is scrolled back to the bottom", () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      cb(0);
+      return 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(700);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(300);
+
+    const { container, rerender } = render(wrap(<ReasoningCard text="first" streaming />));
+    const stream = container.querySelector<HTMLElement>(".reason .stream")!;
+    expect(stream.scrollTop).toBe(700);
+
+    // User wheels up to read earlier reasoning: this card un-pins.
+    stream.scrollTop = 200;
+    fireEvent.wheel(stream, { deltaY: -50 });
+
+    // More tokens arrive: the viewport must hold, not snap back to the bottom.
+    rerender(wrap(<ReasoningCard text={"first\nsecond\nthird"} streaming />));
+    expect(stream.scrollTop).toBe(200);
+
+    // User wheels back down to the bottom: this card re-pins.
+    stream.scrollTop = 700;
+    fireEvent.wheel(stream, { deltaY: 50 });
+
+    rerender(wrap(<ReasoningCard text={"first\nsecond\nthird\nfourth"} streaming />));
+    expect(stream.scrollTop).toBe(700);
+  });
+
   it("caps single-newline CRLF rows and ignores blank trailing rows", () => {
     const text = Array.from({ length: 12 }, (_, i) => `row ${i + 1}`).join("\r\n") + "\r\n\r\n";
     const { container } = render(wrap(<ReasoningCard text={text} streaming />));

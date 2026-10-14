@@ -1,21 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-
-const PIN_THRESHOLD = 80; // px from bottom to consider "pinned"
+import { DEFAULT_PIN_THRESHOLD, useStickyBottom } from "./useStickyBottom";
 
 /**
  * Auto-scroll to bottom while content grows; un-pin immediately on user scroll-up.
  *
- * Sticky-bottom auto-scroll rules:
- * 1. User scrolling UP (wheel deltaY < 0, touch dragging down, PageUp/ArrowUp,
- *    or dragging scrollbar up) immediately un-pins the view so auto-scroll
- *    never snaps the viewport back to the bottom while the user reads earlier content.
- * 2. User scrolling DOWN re-pins only when the viewport actually reaches the bottom
- *    (within PIN_THRESHOLD).
- * 3. While the user is actively dragging the scrollbar, ResizeObserver auto-scroll
- *    is disabled so the scrollbar thumb never rubber-bands.
- * 4. Turn start re-pins so the user sees the new turn's incoming tokens.
- * 5. Turn end only settles at the bottom if the user remained pinned. If the user
- *    scrolled up to read, turn end does not yank them back to the bottom.
+ * Pin/un-pin and the user-gesture listeners live in {@link useStickyBottom};
+ * this hook layers the transcript's extra behaviour on top:
+ * 1. Turn start re-pins so the user sees the new turn's incoming tokens.
+ * 2. Turn end only settles at the bottom if the user remained pinned. If the
+ *    user scrolled up to read, turn end does not yank them back to the bottom.
+ * 3. Content size changes follow the bottom while pinned (unless dragging the
+ *    scrollbar).
+ * 4. Boot restore opens the transcript at the saved offset instead of the bottom.
  */
 export function useAutoScroll(
   containerRef: React.RefObject<HTMLDivElement | null>,
@@ -29,195 +25,60 @@ export function useAutoScroll(
   active?: boolean,
 ) {
   const [showJumpButton, setShowJumpButton] = useState(false);
-  const isPinnedRef = useRef(true);
   const wasBusyRef = useRef(busy);
   const rafIdRef = useRef<number>(0);
-  const draggingRef = useRef(false);
-  const lastScrollTopRef = useRef(0);
 
-  const isAtBottom = useCallback(() => {
-    const el = containerRef.current;
-    if (!el) return true;
-    return el.scrollTop + el.clientHeight >= el.scrollHeight - PIN_THRESHOLD;
-  }, [containerRef]);
-
-  const refreshJumpButton = useCallback(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    setShowJumpButton(!isPinnedRef.current && el.scrollHeight > el.clientHeight + PIN_THRESHOLD);
-  }, [containerRef]);
-
-  const scrollToBottom = useCallback(
-    (smooth = true) => {
+  const scrollToBottomRaw = useCallback(
+    (smooth: boolean) => {
       const el = containerRef.current;
-      if (!el) return;
-      isPinnedRef.current = true;
-      setShowJumpButton(false);
-      el.scrollTo({
-        top: el.scrollHeight,
-        behavior: smooth ? "smooth" : "instant",
-      });
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "instant" });
     },
     [containerRef],
   );
+
+  const onPinChange = useCallback(
+    (pinned: boolean) => {
+      const el = containerRef.current;
+      if (!el) return;
+      setShowJumpButton(!pinned && el.scrollHeight > el.clientHeight + DEFAULT_PIN_THRESHOLD);
+    },
+    [containerRef],
+  );
+
+  const sticky = useStickyBottom(containerRef, {
+    threshold: DEFAULT_PIN_THRESHOLD,
+    onPinChange,
+    scrollToBottom: scrollToBottomRaw,
+  });
+
+  const refreshJumpButton = useCallback(
+    () => onPinChange(sticky.isPinned()),
+    [onPinChange, sticky],
+  );
+
+  const scrollToBottom = useCallback((smooth = true) => sticky.pin(smooth), [sticky]);
 
   const scrollToTop = useCallback(
     (smooth = true) => {
       const el = containerRef.current;
       if (!el) return;
-      // Leaving the bottom: un-pin so a concurrent ResizeObserver cannot snap the
-      // viewport back to the bottom while the user reads earlier content.
-      isPinnedRef.current = false;
-      refreshJumpButton();
-      el.scrollTo({
-        top: 0,
-        behavior: smooth ? "smooth" : "instant",
-      });
+      // Un-pin before scrolling so a concurrent follow() cannot snap back.
+      sticky.unpin();
+      el.scrollTo({ top: 0, behavior: smooth ? "smooth" : "instant" });
     },
-    [containerRef, refreshJumpButton],
+    [containerRef, sticky],
   );
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    let pendingFrame = 0;
-
-    const unpin = () => {
-      if (pendingFrame) {
-        cancelAnimationFrame(pendingFrame);
-        pendingFrame = 0;
-      }
-      isPinnedRef.current = false;
-      refreshJumpButton();
-    };
-
-    const checkPinAfterScroll = () => {
-      if (pendingFrame) cancelAnimationFrame(pendingFrame);
-      pendingFrame = requestAnimationFrame(() => {
-        pendingFrame = 0;
-        if (isAtBottom()) {
-          isPinnedRef.current = true;
-          setShowJumpButton(false);
-        } else {
-          refreshJumpButton();
-        }
-      });
-    };
-
-    // Wheel: deltaY < 0 is an unambiguous user intent to scroll UP.
-    // Un-pin immediately so a concurrent ResizeObserver cannot snap the view
-    // back to the bottom mid-gesture.
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) {
-        unpin();
-      } else if (e.deltaY > 0) {
-        checkPinAfterScroll();
-      }
-    };
-
-    // Touch: track touch movement. deltaY < 0 (finger moving down) scrolls UP.
-    let touchStartY = 0;
-    const onTouchStart = (e: TouchEvent) => {
-      touchStartY = e.touches[0]?.clientY ?? 0;
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      const currentY = e.touches[0]?.clientY ?? 0;
-      const deltaY = touchStartY - currentY;
-      touchStartY = currentY;
-      if (deltaY < 0) {
-        unpin();
-      } else if (deltaY > 0) {
-        checkPinAfterScroll();
-      }
-    };
-
-    // Keyboard: keys that move viewport UP immediately un-pin.
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (
-        e.key === "PageUp" ||
-        e.key === "ArrowUp" ||
-        e.key === "Home" ||
-        (e.key === " " && e.shiftKey)
-      ) {
-        unpin();
-      } else if (
-        e.key === "PageDown" ||
-        e.key === "ArrowDown" ||
-        e.key === "End" ||
-        (e.key === " " && !e.shiftKey)
-      ) {
-        checkPinAfterScroll();
-      }
-    };
-
-    // Scrollbar drag / selection: while dragging, disable ResizeObserver auto-scroll
-    // and track directional scroll changes.
-    const onScrollDuringDrag = () => {
-      const currentScrollTop = el.scrollTop;
-      const delta = currentScrollTop - lastScrollTopRef.current;
-      lastScrollTopRef.current = currentScrollTop;
-      if (delta < 0) {
-        unpin();
-      } else if (delta > 0 && isAtBottom()) {
-        isPinnedRef.current = true;
-        setShowJumpButton(false);
-      }
-    };
-
-    const onPointerDown = () => {
-      lastScrollTopRef.current = el.scrollTop;
-      if (draggingRef.current) return;
-      draggingRef.current = true;
-      el.addEventListener("scroll", onScrollDuringDrag, { passive: true });
-    };
-
-    const endDrag = () => {
-      if (!draggingRef.current) return;
-      draggingRef.current = false;
-      el.removeEventListener("scroll", onScrollDuringDrag);
-      if (isAtBottom()) {
-        isPinnedRef.current = true;
-        setShowJumpButton(false);
-      } else {
-        refreshJumpButton();
-      }
-    };
-
-    el.addEventListener("wheel", onWheel, { passive: true });
-    el.addEventListener("touchstart", onTouchStart, { passive: true });
-    el.addEventListener("touchmove", onTouchMove, { passive: true });
-    el.addEventListener("keydown", onKeyDown);
-    el.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("pointerup", endDrag);
-    window.addEventListener("pointercancel", endDrag);
-
-    return () => {
-      if (pendingFrame) cancelAnimationFrame(pendingFrame);
-      el.removeEventListener("wheel", onWheel);
-      el.removeEventListener("touchstart", onTouchStart);
-      el.removeEventListener("touchmove", onTouchMove);
-      el.removeEventListener("keydown", onKeyDown);
-      el.removeEventListener("pointerdown", onPointerDown);
-      el.removeEventListener("scroll", onScrollDuringDrag);
-      window.removeEventListener("pointerup", endDrag);
-      window.removeEventListener("pointercancel", endDrag);
-    };
-  }, [containerRef, isAtBottom, refreshJumpButton]);
 
   // Turn start: user just sent a message and expects to see the new turn.
   // Turn end: settle on final answer ONLY if the user was already following along.
   // If the user scrolled up, do not yank them away from what they are reading.
   useEffect(() => {
     if (wasBusyRef.current !== busy) {
-      if (busy) {
-        scrollToBottom(true);
-      } else if (isPinnedRef.current) {
-        scrollToBottom(true);
-      }
+      if (busy) sticky.pin(true);
+      else if (sticky.isPinned()) sticky.pin(true);
     }
     wasBusyRef.current = busy;
-  }, [busy, scrollToBottom]);
+  }, [busy, sticky]);
 
   // Watch content size changes (streaming text, tool results, new messages)
   // and follow the bottom while pinned (unless actively dragging scrollbar).
@@ -229,13 +90,7 @@ export function useAutoScroll(
       if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = requestAnimationFrame(() => {
         rafIdRef.current = 0;
-        const el = containerRef.current;
-        if (!el) return;
-        if (isPinnedRef.current && !draggingRef.current) {
-          el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
-        } else {
-          refreshJumpButton();
-        }
+        if (!sticky.follow()) refreshJumpButton();
       });
     });
 
@@ -247,7 +102,7 @@ export function useAutoScroll(
         rafIdRef.current = 0;
       }
     };
-  }, [containerRef, contentRef, refreshJumpButton]);
+  }, [contentRef, sticky, refreshJumpButton]);
 
   // Initial scroll when the hook mounts or the tab becomes active.
   useEffect(() => {
@@ -256,18 +111,16 @@ export function useAutoScroll(
     if (!el) return;
     const id = setTimeout(() => {
       const restore = getRestoreScrollTop?.() ?? null;
-      if (restore != null && restore > PIN_THRESHOLD) {
-        isPinnedRef.current = false;
+      if (restore != null && restore > DEFAULT_PIN_THRESHOLD) {
+        sticky.unpin();
         el.scrollTop = restore;
         refreshJumpButton();
       } else {
-        isPinnedRef.current = true;
-        setShowJumpButton(false);
-        el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+        sticky.pin(false);
       }
     }, 60);
     return () => clearTimeout(id);
-  }, [containerRef, getRestoreScrollTop, refreshJumpButton, active]);
+  }, [containerRef, getRestoreScrollTop, refreshJumpButton, sticky, active]);
 
   return { showJumpButton, scrollToBottom, scrollToTop };
 }

@@ -20,6 +20,7 @@ import { FileMenu } from "./file-menu";
 import { formatDuration, tokenLabel } from "./format";
 import { Shortcut } from "./shortcut";
 import { StopButton, usePendingStop } from "./stop-button";
+import { useStickyBottom } from "./useStickyBottom";
 
 type Tone = "default" | "success" | "warning" | "danger" | "accent" | "violet";
 
@@ -281,6 +282,9 @@ function inlineReasoningNodes(text: string): ReactNode[] {
 
 const LIVE_REASONING_ROW_LIMIT = 10;
 
+/** px from the bottom within which the stream still counts as "pinned". */
+const REASONING_PIN_THRESHOLD = 8;
+
 /** Mounted only while expanded, so every opening measures a visible viewport. */
 function ReasoningStream({ text, streaming }: { text: string; streaming: boolean }) {
   const streamRef = useRef<HTMLDivElement>(null);
@@ -288,17 +292,27 @@ function ReasoningStream({ text, streaming }: { text: string; streaming: boolean
     ? text.split(/\r?\n/).filter((row) => row.trim()).slice(-LIVE_REASONING_ROW_LIMIT)
     : text.split(/\n\n+/);
 
+  // Sticky-bottom follow (shared with the transcript): a manual scroll-up un-pins
+  // this card so streaming tokens stop yanking the viewport; it re-pins only once
+  // the user scrolls back down to the bottom.
+  const sticky = useStickyBottom(streamRef, {
+    threshold: REASONING_PIN_THRESHOLD,
+    scrollToBottom: () => {
+      const stream = streamRef.current;
+      if (stream) stream.scrollTop = stream.scrollHeight;
+    },
+  });
+
+  // Pin on open and on every text/streaming update, and follow resizes while pinned.
   useLayoutEffect(() => {
     const stream = streamRef.current;
     if (!stream) return;
-    stream.scrollTop = stream.scrollHeight;
+    sticky.follow();
     if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      stream.scrollTop = stream.scrollHeight;
-    });
+    const observer = new ResizeObserver(() => sticky.follow());
     observer.observe(stream);
     return () => observer.disconnect();
-  }, [streaming, text]);
+  }, [streaming, text, sticky]);
 
   return (
     <div className="stream" ref={streamRef}>
