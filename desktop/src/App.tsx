@@ -2112,7 +2112,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     }
     case "$plan_history": {
       if (state.currentSession && ev.sessionName !== state.currentSession) return state;
-      return { ...state, planHistory: ev.items, planDetails: Object.fromEntries(Object.entries(state.planDetails ?? {}).filter(([id, detail]) => ev.items.some(item => item.id === id && item.updatedAt === detail.updatedAt))) };
+      const items = Array.isArray(ev.items) ? ev.items : [];
+      return { ...state, planHistory: items, planDetails: Object.fromEntries(Object.entries(state.planDetails ?? {}).filter(([id, detail]) => items.some(item => item.id === id && item.updatedAt === detail.updatedAt))) };
     }
     case "$plan_detail": {
       if (state.currentSession && ev.sessionName !== state.currentSession) return state;

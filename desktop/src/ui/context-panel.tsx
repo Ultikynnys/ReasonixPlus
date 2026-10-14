@@ -283,7 +283,11 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, fallback }:
   fallback?: ActivePlan | null;
 }) {
   const [selection, setSelection] = useState("");
-  const selected = history.find(p => p.id === selection)?.id ?? history.find(p => p.status === "active")?.id ?? history[0]?.id;
+  const selectedPlan =
+    history.find(p => p.id === selection) ??
+    history.find(p => p.status === "active") ??
+    history[0];
+  const selected = selectedPlan?.id;
   const detail = selected ? details[selected] : undefined;
   const readPlans = useRef(onReadPlans);
   const readPlan = useRef(onReadPlan);
@@ -319,7 +323,19 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, fallback }:
       {detail ? (
         <CtxPlan plan={{ plan: detail.body, summary: detail.summary, steps: detail.steps, completedStepIds: Object.keys(detail.completions), stepResults: Object.fromEntries(Object.entries(detail.completions).map(([id, completion]) => [id, completion.result])), status: detail.status === "active" ? "active" : detail.status === "completed" ? "finished" : "cancelled" }} />
       ) : (
-        <div className="ctx-empty">{t("contextPanel.planDetailsLoading")}</div>
+        // Keep the summary + progress header from the history item, so a slow or
+        // failed detail fetch never leaves the panel blank.
+        <div className="ctx-plan">
+          <div className="ctx-section-head">
+            <div className="ctx-section-title">
+              {selectedPlan?.summary ?? t("contextPanel.planUntitled")}
+            </div>
+            <div className="ctx-plan-progress">
+              {selectedPlan?.completedSteps ?? 0}/{selectedPlan?.totalSteps ?? 0}
+            </div>
+          </div>
+          <div className="ctx-empty">{t("contextPanel.planDetailsLoading")}</div>
+        </div>
       )}
     </div>
   );

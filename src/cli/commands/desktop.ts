@@ -103,7 +103,7 @@ import {
 import { fetchChangelog } from "../../changelog.js";
 import { pickPrimaryBalance } from "../../client.js";
 import { codeSystemPrompt } from "../../code/prompt.js";
-import { sessionPlanRepository } from "../../code/session-plans.js";
+import { type SessionPlan, sessionPlanRepository } from "../../code/session-plans.js";
 import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
 import { fetchCodexQuotaViaOAuth } from "../../codex-backend.js";
 import {
@@ -883,7 +883,14 @@ export function restorePlanForTab(
   hasPriorMessages: boolean,
 ): PlanRestoredEvent | null {
   if (!tab.currentSession || !hasPriorMessages) return null;
-  const active = sessionPlanRepository(tab.currentSession).active();
+  let active: SessionPlan | null;
+  try {
+    active = sessionPlanRepository(tab.currentSession).active();
+  } catch (err) {
+    // A plan read must never break session restore — treat it as "no active plan".
+    process.stderr.write(`reasonix: active plan read failed — ${messageOf(err)}\n`);
+    return null;
+  }
   if (!active || active.steps.length === 0) return null;
   return {
     type: "$plan_restored",
@@ -906,21 +913,29 @@ function emitRestoredPlan(tab: Tab, hasPriorMessages: boolean): void {
     emit(event, tab.id);
     return;
   }
-  if (sessionPlanRepository(tab.currentSession).list().length > 0) {
+  let hasHistory = false;
+  try {
+    hasHistory = sessionPlanRepository(tab.currentSession).list().length > 0;
+  } catch (err) {
+    process.stderr.write(`reasonix: plan history read failed — ${messageOf(err)}\n`);
+  }
+  if (hasHistory) {
     emit({ type: "$plan_cleared" }, tab.id);
   }
 }
 
 function emitPlanHistory(tab: Tab): void {
   if (!tab.currentSession) return;
-  emit(
-    {
-      type: "$plan_history",
-      sessionName: tab.currentSession,
-      items: sessionPlanRepository(tab.currentSession).list(),
-    },
-    tab.id,
-  );
+  // A corrupt or unreadable history.json must not abort session load — degrade
+  // to an empty projection rather than failing the whole tab restore.
+  let items: import("@reasonix/core-utils").PlanHistoryItem[];
+  try {
+    items = sessionPlanRepository(tab.currentSession).list();
+  } catch (err) {
+    process.stderr.write(`reasonix: plan history read failed — ${messageOf(err)}\n`);
+    items = [];
+  }
+  emit({ type: "$plan_history", sessionName: tab.currentSession, items }, tab.id);
 }
 
 function emit(ev: EmittableEvent, tabId?: string): void {
@@ -5887,6 +5902,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         },
         tab.id,
       );
+      emitRestoredPlan(tab, false);
     }
     if (tab.mcpRuntime) {
       await tab.mcpRuntime.closeAll().catch(() => undefined);
@@ -6057,6 +6073,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       },
       tab.id,
     );
+    emitRestoredPlan(tab, false);
     emitSessionsForWorkspace(tab.rootDir, options.settledDeletes);
     emitTabDiagnostic(tab, `${diagnosticPrefix}.completed`, undefined, "info");
   }
@@ -6725,6 +6742,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           tab.id,
         );
       }
+      // Every $session_loaded is followed by its plan projection, so a cold-start
+      // tab restores its plan history and active plan without waiting on resync
+      // (and a late duplicate $session_loaded can no longer wipe it).
+      emitRestoredPlan(tab, restoredMessages !== undefined);
       await emitWorkspaceInitialized(tab, sessionsInitialized);
       void emitBalance(tab);
       void emitCodexQuota(tab);
@@ -8608,14 +8629,23 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "plan_detail_get") {
-      emit(
-        {
-          type: "$plan_detail",
-          sessionName: tab.currentSession,
-          plan: sessionPlanRepository(tab.currentSession).open(msg.planId),
-        },
-        tab.id,
-      );
+      try {
+        emit(
+          {
+            type: "$plan_detail",
+            sessionName: tab.currentSession,
+            plan: sessionPlanRepository(tab.currentSession).open(msg.planId),
+          },
+          tab.id,
+        );
+      } catch (err) {
+        // A stale/unknown plan id or a missing session must not throw out of the
+        // stdin line handler — surface it as an error event instead.
+        emit(
+          { type: "$error", message: `plan_detail_get failed: ${(err as Error).message}` },
+          tab.id,
+        );
+      }
       return;
     }
     if (msg.cmd === "context_raw_get") {
