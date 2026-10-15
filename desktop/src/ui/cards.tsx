@@ -280,16 +280,27 @@ function inlineReasoningNodes(text: string): ReactNode[] {
   return out;
 }
 
-const LIVE_REASONING_ROW_LIMIT = 10;
+/** One reasoning row. Memoized so a streaming append re-renders only the row that
+ *  changed rather than the whole (potentially long) transcript. */
+const ReasoningRow = memo(function ReasoningRow({ row }: { row: string }) {
+  return <p>{inlineReasoningNodes(row)}</p>;
+});
 
 /** px from the bottom within which the stream still counts as "pinned". */
 const REASONING_PIN_THRESHOLD = 8;
 
-/** Mounted only while expanded, so every opening measures a visible viewport. */
+/**
+ * Mounted only while expanded (Card gates its body on `open`), so it always
+ * renders the WHOLE reasoning text: every earlier row stays reachable by
+ * scrolling. A collapsed card mounts nothing, so long streams stay cheap until
+ * the user opens them.
+ */
 function ReasoningStream({ text, streaming }: { text: string; streaming: boolean }) {
   const streamRef = useRef<HTMLDivElement>(null);
+  // Streaming splits on single newlines so each line appears as it arrives;
+  // completed reasoning groups into paragraphs. Neither path truncates.
   const rows = streaming
-    ? text.split(/\r?\n/).filter((row) => row.trim()).slice(-LIVE_REASONING_ROW_LIMIT)
+    ? text.split(/\r?\n/).filter((row) => row.trim())
     : text.split(/\n\n+/);
 
   // Sticky-bottom follow (shared with the transcript): a manual scroll-up un-pins
@@ -317,8 +328,8 @@ function ReasoningStream({ text, streaming }: { text: string; streaming: boolean
   return (
     <div className="stream" ref={streamRef}>
       {rows.map((row, i) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: rendered text snapshot has no row state
-        <p key={i}>{inlineReasoningNodes(row)}</p>
+        // biome-ignore lint/suspicious/noArrayIndexKey: append-only stream, no per-row state
+        <ReasoningRow key={i} row={row} />
       ))}
     </div>
   );

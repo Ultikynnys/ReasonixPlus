@@ -67,13 +67,13 @@ describe("card duration labels", () => {
     expect(container.querySelector(".meta-dur")).toBeNull();
   });
 
-  it("limits live reasoning to the latest 10 paragraphs", () => {
+  it("keeps the whole live reasoning scrollable while streaming", () => {
     const text = Array.from({ length: 12 }, (_, i) => `reasoning row ${i + 1}`).join("\n\n");
     const { container } = render(wrap(<ReasoningCard text={text} streaming />));
     const rows = Array.from(container.querySelectorAll(".reason .stream p"));
 
-    expect(rows).toHaveLength(10);
-    expect(rows[0]?.textContent).toBe("reasoning row 3");
+    expect(rows).toHaveLength(12);
+    expect(rows[0]?.textContent).toBe("reasoning row 1");
     expect(rows.at(-1)?.textContent).toBe("reasoning row 12");
   });
 
@@ -170,13 +170,13 @@ describe("reasoning scroll lifecycle", () => {
     expect(stream.scrollTop).toBe(700);
   });
 
-  it("caps single-newline CRLF rows and ignores blank trailing rows", () => {
+  it("splits single-newline CRLF rows and drops blank trailing rows", () => {
     const text = Array.from({ length: 12 }, (_, i) => `row ${i + 1}`).join("\r\n") + "\r\n\r\n";
     const { container } = render(wrap(<ReasoningCard text={text} streaming />));
     const rows = container.querySelectorAll(".reason .stream p");
-    expect(rows).toHaveLength(10);
-    expect(rows[0]?.textContent).toBe("row 3");
-    expect(rows[9]?.textContent).toBe("row 12");
+    expect(rows).toHaveLength(12);
+    expect(rows[0]?.textContent).toBe("row 1");
+    expect(rows[11]?.textContent).toBe("row 12");
   });
 });
 
