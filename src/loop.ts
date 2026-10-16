@@ -1233,6 +1233,16 @@ export class CacheFirstLoop {
       }
     }
     const restoreModelIfNeeded = () => undefined;
+    /** Drop a thinking-only partial and any queued steers, then let stepTurn
+     *  return — the shared tail of the give-up / stall branches below. */
+    const abandonThinkingOnlyTurn = (): void => {
+      if (this._thinkingOnlyPartialAppended) {
+        this._thinkingOnlyPartialAppended = false;
+        this.discardLogFrom(this.log.length - 1);
+      }
+      this._steerQueue.length = 0;
+      restoreModelIfNeeded();
+    };
 
     this._userTurnCount++;
     this.scratch.reset();
@@ -1718,12 +1728,7 @@ export class CacheFirstLoop {
             recoverable: false,
           },
         };
-        if (this._thinkingOnlyPartialAppended) {
-          this._thinkingOnlyPartialAppended = false;
-          this.discardLogFrom(this.log.length - 1);
-        }
-        this._steerQueue.length = 0;
-        restoreModelIfNeeded();
+        abandonThinkingOnlyTurn();
         return;
       }
 
@@ -1949,12 +1954,7 @@ export class CacheFirstLoop {
             ? t("loop.emptyResponseGiveUpReason", { reason: stopReason })
             : t("loop.emptyResponseGiveUp"),
         };
-        if (this._thinkingOnlyPartialAppended) {
-          this._thinkingOnlyPartialAppended = false;
-          this.discardLogFrom(this.log.length - 1);
-        }
-        this._steerQueue.length = 0;
-        restoreModelIfNeeded();
+        abandonThinkingOnlyTurn();
         return;
       }
 
@@ -2008,12 +2008,7 @@ export class CacheFirstLoop {
             severity: "high",
             content: t("loop.thinkingOnlyGiveUp"),
           };
-          if (this._thinkingOnlyPartialAppended) {
-            this._thinkingOnlyPartialAppended = false;
-            this.discardLogFrom(this.log.length - 1);
-          }
-          this._steerQueue.length = 0;
-          restoreModelIfNeeded();
+          abandonThinkingOnlyTurn();
           return;
         }
         // Conversational non-tool turns with substantial reasoning: promote so the turn isn't silent

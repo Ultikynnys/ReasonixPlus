@@ -1,6 +1,7 @@
 /** cwd pinned to root; non-allowlisted commands throw to a UI confirm gate; spawn is `shell: false`, tokenized argv only. */
 
 import * as pathMod from "node:path";
+import { tailLines } from "@reasonix/core-utils";
 import { addGlobalShellAllowed, addProjectShellAllowed } from "../config.js";
 import {
   type PauseAskOpts,
@@ -712,7 +713,7 @@ function formatJobStop(r: import("./jobs.js").JobRecord): string {
       : r.exitCode !== null
         ? `exit ${r.exitCode}`
         : "stopped";
-  const tail = tailLines(r.output, 40);
+  const tail = tailLines(r.output, 40, { elisionMarker: true });
   const tag = r.persistent ? " · persistent" : "";
   const header = `[job ${r.id} stopped · ${running}${tag}]\n$ ${r.command}`;
   return tail ? `${header}\n${tail}` : header;
@@ -731,14 +732,6 @@ function formatJobRow(r: import("./jobs.js").JobRecord): string {
           : "stopped";
   const tag = r.persistent ? "persistent · " : "";
   return `  ${String(r.id).padStart(3)}  ${(tag + state).padEnd(24)}  ${age}s ago   $ ${r.command}`;
-}
-
-function tailLines(s: string, n: number): string {
-  if (!s) return "";
-  const lines = s.split("\n");
-  if (lines.length <= n) return s;
-  const dropped = lines.length - n;
-  return [`[… ${dropped} earlier lines …]`, ...lines.slice(-n)].join("\n");
 }
 
 function exposeRecoveryWhenNeeded(

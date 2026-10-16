@@ -33,3 +33,19 @@ export function buildSyntheticAssistantMessage(
 ): ChatMessage {
   return buildAssistantMessage(content, [], fallbackModel, "");
 }
+
+/** Plain text of a message. `textOnly` drops non-text parts (client systemInstruction /
+ *  tool responses); the default substitutes a `[<type> attached]` placeholder for them
+ *  (token accounting and compaction summaries count the attachment). */
+export function messageText(m: ChatMessage, textOnly = false): string {
+  if (typeof m.content === "string") return m.content;
+  if (!Array.isArray(m.content)) return "";
+  return textOnly
+    ? m.content
+        .filter((p) => p.type === "text")
+        .map((p) => (p as { text: string }).text)
+        .join("\n")
+    : m.content
+        .map((part) => (part.type === "text" ? part.text : `[${part.type} attached]`))
+        .join("\n");
+}

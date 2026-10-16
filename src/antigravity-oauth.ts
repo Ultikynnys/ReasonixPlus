@@ -1,6 +1,10 @@
 /** Antigravity browser OAuth: same client, redirect, and callback the app uses. */
 
-import { isUsableAntigravityModel } from "@reasonix/core-utils";
+import {
+  type AntigravityPlan,
+  type AntigravityQuotaWindow,
+  isUsableAntigravityModel,
+} from "@reasonix/core-utils";
 import {
   type AntigravityOAuthCreds,
   clearAntigravityOAuth,
@@ -194,23 +198,13 @@ interface UserQuotaResponse {
   }> | null;
 }
 
-/** The account's Code Assist plan, from loadCodeAssist.currentTier. */
-export interface AntigravityPlan {
-  tierId: string;
-  name: string;
-  upgradeText?: string;
-  upgradeType?: string;
-  upgradeUri?: string;
-}
+/** The account's Code Assist plan, from loadCodeAssist.currentTier. Re-exported
+ *  from core-utils so the OAuth flow and the desktop protocol share one type. */
+export type { AntigravityPlan };
 
-/** Per-model quota window from retrieveUserQuota. */
-export interface AntigravityQuotaWindow {
-  modelId: string;
-  /** Fraction of the quota already consumed this window, 0..1. */
-  usedFraction: number;
-  /** ISO timestamp when the window resets; absent when not a limited bucket. */
-  resetTime?: string;
-}
+/** Per-model quota window from retrieveUserQuota. Shared with the desktop
+ *  protocol via core-utils — one definition, re-exported here. */
+export type { AntigravityQuotaWindow };
 
 /** Plan + per-model usage for the signed-in account. */
 export interface AntigravityQuota {

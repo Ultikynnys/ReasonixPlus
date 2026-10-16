@@ -15,6 +15,7 @@ import {
   OPENAI_MODELS,
   OPENCODE_MODELS,
   SUPPORTED_OFFICIAL_MODELS,
+  WEB_SEARCH_ENGINE_NAMES,
   type WebSearchEngineName,
   ZAI_MODELS,
   enforceQuickSendShorthand,
@@ -33,6 +34,7 @@ import {
 } from "./index/config.js";
 import { loadDotMcpJson } from "./mcp/dot-mcp-json.js";
 import { type McpServerSpec, parseMcpSpec } from "./mcp/spec.js";
+import { BUILTIN_MEMORY_TYPES } from "./memory/builtin-types.js";
 import {
   isDiscoveredOpencodeModel,
   isOpencodeGoModel,
@@ -738,7 +740,7 @@ export function loadMemoryTypeRegistry(
   cfg: ReasonixConfig = readConfig(),
 ): MemoryTypeRegistryEntry[] {
   const out: MemoryTypeRegistryEntry[] = [];
-  for (const name of ["user", "feedback", "project", "reference"]) {
+  for (const name of BUILTIN_MEMORY_TYPES) {
     out.push({ name, builtin: true, description: BUILTIN_TYPE_DOCS[name] });
   }
   const seen = new Set(out.map((e) => e.name));
@@ -771,75 +773,62 @@ export function memoryTypeDefaults(
   return out;
 }
 
+/** Resolve an API key as env-var > config-string > undefined. Shared by the
+ *  per-provider `load*ApiKey` wrappers so their precedence can't drift apart. */
+function resolveApiKey(
+  envVars: readonly string[],
+  field: keyof ReasonixConfig,
+  path: string,
+): string | undefined {
+  for (const name of envVars) {
+    const value = process.env[name];
+    if (value) return value.trim();
+  }
+  const cfg = readConfig(path)[field];
+  return typeof cfg === "string" && cfg.trim() ? cfg.trim() : undefined;
+}
+
 export function loadMetasoApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.METASO_API_KEY) return process.env.METASO_API_KEY.trim();
-  const cfg = readConfig(path).metasoApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["METASO_API_KEY"], "metasoApiKey", path);
 }
 
 export function loadBaiduApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.BAIDU_API_KEY) return process.env.BAIDU_API_KEY.trim();
-  if (process.env.QIANFAN_API_KEY) return process.env.QIANFAN_API_KEY.trim();
-  const cfg = readConfig(path).baiduApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["BAIDU_API_KEY", "QIANFAN_API_KEY"], "baiduApiKey", path);
 }
 
 /** Tavily API key — env > config > undefined. Returning undefined means the caller must error out with a clear "go get one at tavily.com" message; we deliberately ship no default because the free 1000/mo quota wouldn't survive being shared. */
 export function loadTavilyApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.TAVILY_API_KEY) return process.env.TAVILY_API_KEY.trim();
-  const cfg = readConfig(path).tavilyApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["TAVILY_API_KEY"], "tavilyApiKey", path);
 }
 
 /** Perplexity API key — env > config > undefined. Get one at https://perplexity.ai/settings/api */
 export function loadPerplexityApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.PERPLEXITY_API_KEY) return process.env.PERPLEXITY_API_KEY.trim();
-  const cfg = readConfig(path).perplexityApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["PERPLEXITY_API_KEY"], "perplexityApiKey", path);
 }
 
 /** Exa API key — env > config > undefined. Free 1000/mo signup at https://exa.ai */
 export function loadExaApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.EXA_API_KEY) return process.env.EXA_API_KEY.trim();
-  const cfg = readConfig(path).exaApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["EXA_API_KEY"], "exaApiKey", path);
 }
 
 /** Z.AI API key shared by glm-* chat and Z.AI web search: env > config > undefined. */
 export function loadZaiApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.ZAI_API_KEY) return process.env.ZAI_API_KEY.trim();
-  const cfg = readConfig(path).zaiApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["ZAI_API_KEY"], "zaiApiKey", path);
 }
 
 /** TypeSafe API key for Jev System One evaluations: env > config > undefined. */
 export function loadTypesafeApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.TYPESAFE_API_KEY) return process.env.TYPESAFE_API_KEY.trim();
-  const cfg = readConfig(path).typesafeApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["TYPESAFE_API_KEY"], "typesafeApiKey", path);
 }
 
 /** OpenCode API key: env > config > undefined. Defaults to "public" for free models when unconfigured. */
 export function loadOpencodeApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.OPENCODE_API_KEY) return process.env.OPENCODE_API_KEY.trim();
-  const cfg = readConfig(path).opencodeApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["OPENCODE_API_KEY"], "opencodeApiKey", path);
 }
 
 /** Xiaomi MiMo API key: env > config > undefined. */
 export function loadMimoApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.MIMO_API_KEY) return process.env.MIMO_API_KEY.trim();
-  const cfg = readConfig(path).mimoApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["MIMO_API_KEY"], "mimoApiKey", path);
 }
 
 /** Stable MiMo sign-in key label — generated once and persisted, so repeated
@@ -878,11 +867,7 @@ export function hasOpencodeCredential(path: string = defaultConfigPath()): boole
 
 /** Ollama cloud API key — env > config > undefined. */
 export function loadOllamaApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.OLLAMA_API_KEY) return process.env.OLLAMA_API_KEY.trim();
-  if (process.env.ollamaApiKey) return process.env.ollamaApiKey.trim();
-  const cfg = readConfig(path).ollamaApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["OLLAMA_API_KEY", "ollamaApiKey"], "ollamaApiKey", path);
 }
 
 const DEFAULT_OLLAMA_GENERATION = {
@@ -1049,11 +1034,7 @@ export function loadOllamaRepeatLastN(path: string = defaultConfigPath()): numbe
 
 /** Brave Search API key — env > config > undefined. Free 2000/mo signup at https://brave.com/search/api/ */
 export function loadBraveApiKey(path: string = defaultConfigPath()): string | undefined {
-  if (process.env.BRAVE_SEARCH_API_KEY) return process.env.BRAVE_SEARCH_API_KEY.trim();
-  if (process.env.BRAVE_API_KEY) return process.env.BRAVE_API_KEY.trim();
-  const cfg = readConfig(path).braveApiKey;
-  if (cfg && typeof cfg === "string" && cfg.trim()) return cfg.trim();
-  return undefined;
+  return resolveApiKey(["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"], "braveApiKey", path);
 }
 
 const DEFAULT_OLLAMA_URL = "http://localhost:11434";
@@ -1830,16 +1811,7 @@ export function loadJavaSourceEnabled(path: string = defaultConfigPath()): boole
 
 export function webSearchEngine(path: string = defaultConfigPath()): WebSearchEngineName {
   const cfg = readConfig(path).webSearchEngine;
-  if (cfg === "bing-intl") return "bing-intl";
-  if (cfg === "searxng") return "searxng";
-  if (cfg === "metaso") return "metaso";
-  if (cfg === "baidu") return "baidu";
-  if (cfg === "tavily") return "tavily";
-  if (cfg === "perplexity") return "perplexity";
-  if (cfg === "exa") return "exa";
-  if (cfg === "brave") return "brave";
-  if (cfg === "ollama") return "ollama";
-  if (cfg === "zai") return "zai";
+  if (cfg && WEB_SEARCH_ENGINE_NAMES.includes(cfg)) return cfg;
   // Any other value (including legacy "mojeek" from configs predating the
   // engine swap) falls through to bing. Read-only — we never rewrite the
   // user's config, so a later engine switch still rejects loudly.

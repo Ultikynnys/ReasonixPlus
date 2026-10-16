@@ -138,6 +138,7 @@ export {
   sanitizeFilename,
   sanitizeTerminalText,
   stripAnsi,
+  tailLines,
 } from "./text.js";
 export type { SanitizeFilenameOptions } from "./text.js";
 export type {
@@ -282,6 +283,7 @@ export {
   DEFAULT_FEEDBACK_CUES,
   BUILTIN_QUICK_SENDS,
   QUICK_SEND_SHORTHAND_MAX_LENGTH,
+  WEB_SEARCH_ENGINE_NAMES,
   MailProvider,
   allQuickSends,
   enforceQuickSendShorthand,

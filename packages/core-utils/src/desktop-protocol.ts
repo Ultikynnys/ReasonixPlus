@@ -87,18 +87,23 @@ export function resolveActiveQuickSend(
   };
 }
 
-export type WebSearchEngineName =
-  | "bing"
-  | "bing-intl"
-  | "searxng"
-  | "metaso"
-  | "baidu"
-  | "tavily"
-  | "perplexity"
-  | "exa"
-  | "brave"
-  | "ollama"
-  | "zai";
+/** Every supported web-search backend. `WebSearchEngineName` derives from this,
+ *  so the runtime validation list and the union type can never drift. */
+export const WEB_SEARCH_ENGINE_NAMES = [
+  "bing",
+  "bing-intl",
+  "searxng",
+  "metaso",
+  "baidu",
+  "tavily",
+  "perplexity",
+  "exa",
+  "brave",
+  "ollama",
+  "zai",
+] as const;
+
+export type WebSearchEngineName = (typeof WEB_SEARCH_ENGINE_NAMES)[number];
 
 export interface OllamaGenerationSettings {
   temperature?: number;

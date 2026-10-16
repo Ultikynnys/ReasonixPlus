@@ -21,6 +21,7 @@ import {
 import { parseFrontmatter } from "../frontmatter.js";
 import { reasonixHome } from "../reasonix-home.js";
 import { applySkillsIndex } from "../skills.js";
+import { BUILTIN_MEMORY_TYPES, type BuiltinMemoryType } from "./builtin-types.js";
 import {
   PROJECT_MEMORY_MAX_CHARS,
   applyMemoryIfPresent,
@@ -34,8 +35,8 @@ export const MEMORY_INDEX_FILE = "MEMORY.md";
 /** Cap on the index file content loaded into the prefix, per scope. */
 export const MEMORY_INDEX_MAX_CHARS = 4000;
 
-export const BUILTIN_MEMORY_TYPES = ["user", "feedback", "project", "reference"] as const;
-export type BuiltinMemoryType = (typeof BUILTIN_MEMORY_TYPES)[number];
+export { BUILTIN_MEMORY_TYPES };
+export type { BuiltinMemoryType };
 /** Built-ins plus any string declared in `config.memory.customTypes`. Unknown values are accepted (round-tripped verbatim). */
 export type MemoryType = BuiltinMemoryType | (string & {});
 export type MemoryScope = "global" | "project";

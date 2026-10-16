@@ -24,6 +24,7 @@ import {
   scanImageMentions,
   sleep,
   stripMentionTokens,
+  tailLines,
   toApprovalPrompt,
 } from "@reasonix/core-utils";
 import type {
@@ -116,6 +117,7 @@ import {
   type EditMode,
   MIMO_MODELS,
   MIMO_SPEECH_MODELS,
+  type McpServerConfig,
   OPENCODE_MODELS,
   type ReasonixConfig,
   SUPPORTED_MODELS,
@@ -1031,12 +1033,6 @@ export function projectKernelEvent(kev: KernelEvent): KernelWireBridgeEvent | nu
 function emitKernelEvent(kev: KernelEvent, tabId?: string): void {
   const wire = projectKernelEvent(kev);
   if (wire) emit(wire, tabId);
-}
-
-function tailLines(s: string, n: number): string {
-  if (!s) return "";
-  const lines = s.split(/\r?\n/);
-  return lines.slice(-n).join("\n");
 }
 
 const LOADED_RECENT_MESSAGE_WINDOW = 200;
@@ -5061,15 +5057,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     const { value: toolset, queueWaitMs } = await bootstrapGate.run(
       () =>
         buildCodeToolset({
-          rootDir: tab.rootDir,
-          getMcpSpecs: () => effectiveMcpSpecs(tab),
-          onSkillInstalled: () => emitSkills(tab),
-          onJobsChanged: () => emitJobs(),
-          onRulesChanged: () => emitSettingsToAllTabs(),
-          onShellOutput: shellOutputFor(tab),
-          subagentSink: subagentSinkFor(tab),
-          subagentBilling: (m) => subagentBillingFor(m),
-          subagentModel: () => tab.currentSubagentModel ?? tab.currentModel,
+          ...toolsetOptionsFor(tab, tab.rootDir),
           onPhase: (phase) => {
             const now = performance.now();
             emitTabDiagnostic(tab, "tab.bootstrap.phase", {
@@ -5931,17 +5919,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // settings now keeps a later $session_loaded (with the resumed messages)
     // from being wiped by that clear.
     emitSettings(tab);
-    const toolset = await buildCodeToolset({
-      rootDir: target,
-      getMcpSpecs: () => effectiveMcpSpecs(tab),
-      onSkillInstalled: () => emitSkills(tab),
-      onJobsChanged: () => emitJobs(),
-      onRulesChanged: () => emitSettingsToAllTabs(),
-      onShellOutput: shellOutputFor(tab),
-      subagentSink: subagentSinkFor(tab),
-      subagentBilling: (m) => subagentBillingFor(m),
-      subagentModel: () => tab.currentSubagentModel ?? tab.currentModel,
-    });
+    const toolset = await buildCodeToolset(toolsetOptionsFor(tab, target));
     tab.toolset = toolset;
     refreshTabSystemPrompt(tab);
     emitSettings(tab);
@@ -6295,6 +6273,53 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
    *  a stale workspace list until it hears about it. */
   function emitSettingsToAllTabs(): void {
     for (const t of tabs.values()) emitSettings(t);
+  }
+
+  /** Build (or rebuild) every now-credentialed tab so a fresh sign-in or saved
+   *  key takes effect without a model flip. A tab that booted un-credentialed has
+   *  a null runtime — it must be built here, not just rebuilt. */
+  function rebuildCredentialedTabs(): void {
+    for (const t of tabs.values()) {
+      if (t.toolset) {
+        t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
+        if (t.runtime) emit({ type: "$ready" }, t.id);
+      }
+    }
+  }
+
+  /** The buildCodeToolset options shared by tab bootstrap and workspace switch. */
+  function toolsetOptionsFor(tab: Tab, rootDir: string): Parameters<typeof buildCodeToolset>[0] {
+    return {
+      rootDir,
+      getMcpSpecs: () => effectiveMcpSpecs(tab),
+      onSkillInstalled: () => emitSkills(tab),
+      onJobsChanged: () => emitJobs(),
+      onRulesChanged: () => emitSettingsToAllTabs(),
+      onShellOutput: shellOutputFor(tab),
+      subagentSink: subagentSinkFor(tab),
+      subagentBilling: (m) => subagentBillingFor(m),
+      subagentModel: () => tab.currentSubagentModel ?? tab.currentModel,
+    };
+  }
+
+  /** Ensure the bundled playwright MCP server exists in `cfg`, returning its
+   *  mutable entry + the catalog default args (undefined when unavailable). */
+  function ensurePlaywrightServerEntry(
+    cfg: ReasonixConfig,
+  ): { stored: McpServerConfig; args: string[] } | undefined {
+    const entry = MCP_CATALOG.find((e) => e.name === "playwright");
+    if (!entry) return undefined;
+    const { command, args } = catalogStdioCommand(entry);
+    mergeMcpServerEntry(cfg, entry.name, { transport: "stdio", command, args });
+    const stored = cfg.mcpServers?.[entry.name];
+    return stored ? { stored, args } : undefined;
+  }
+
+  /** Persist a mutated playwright MCP entry and refresh the desktop UI. */
+  function commitPlaywrightMcpEntry(cfg: ReasonixConfig, tab: Tab): void {
+    writeConfig(cfg);
+    emitMcpSpecs(tab);
+    emitMcpExtensionStatus(tab);
   }
 
   function emitJobs(): void {
@@ -7555,21 +7580,17 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (msg.cmd === "playwright_browser_install") {
       void installPlaywrightBrowser(tab, msg.browser, () => {
         const cfg = readConfig();
-        const entry = MCP_CATALOG.find((e) => e.name === "playwright");
-        if (entry) {
-          const { command, args } = catalogStdioCommand(entry);
-          mergeMcpServerEntry(cfg, entry.name, { transport: "stdio", command, args });
-          const stored = cfg.mcpServers?.[entry.name];
-          if (stored) {
-            stored.args = configurePlaywrightArgs(stored.args ?? args, msg.browser);
-            const env = { ...(stored.env ?? {}) };
-            delete env[PLAYWRIGHT_EXTENSION_TOKEN_ENV];
-            delete env[PLAYWRIGHT_DOWNLOAD_HOST_ENV];
-            stored.env = Object.keys(env).length > 0 ? env : undefined;
-            writeConfig(cfg);
-            emitMcpSpecs(tab);
-            emitMcpExtensionStatus(tab);
-          }
+        const merged = ensurePlaywrightServerEntry(cfg);
+        if (merged) {
+          merged.stored.args = configurePlaywrightArgs(
+            merged.stored.args ?? merged.args,
+            msg.browser,
+          );
+          const env = { ...(merged.stored.env ?? {}) };
+          delete env[PLAYWRIGHT_EXTENSION_TOKEN_ENV];
+          delete env[PLAYWRIGHT_DOWNLOAD_HOST_ENV];
+          merged.stored.env = Object.keys(env).length > 0 ? env : undefined;
+          commitPlaywrightMcpEntry(cfg, tab);
         }
         void bridgeTabMcp(tab);
       });
@@ -7579,12 +7600,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       try {
         const token = typeof msg.token === "string" ? normalizeExtensionToken(msg.token) : "";
         const cfg = readConfig();
-        const entry = MCP_CATALOG.find((e) => e.name === "playwright");
-        if (!entry) throw new Error("bundled catalog has no playwright entry");
-        const { command, args } = catalogStdioCommand(entry);
-        mergeMcpServerEntry(cfg, entry.name, { transport: "stdio", command, args });
-        const stored = cfg.mcpServers?.[entry.name];
-        if (!stored) throw new Error("failed to create the playwright server entry");
+        const merged = ensurePlaywrightServerEntry(cfg);
+        if (!merged) throw new Error("failed to create the playwright server entry");
+        const { stored, args } = merged;
         stored.args = configurePlaywrightArgs(
           stored.args ?? args,
           msg.mode,
@@ -7600,9 +7618,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         }
         delete env[PLAYWRIGHT_DOWNLOAD_HOST_ENV];
         stored.env = Object.keys(env).length > 0 ? env : undefined;
-        writeConfig(cfg);
-        emitMcpSpecs(tab);
-        emitMcpExtensionStatus(tab);
+        commitPlaywrightMcpEntry(cfg, tab);
         void bridgeTabMcp(tab);
       } catch (err) {
         emitDiagnosticError("mcp.extension.configure.failed", err, {
@@ -8019,12 +8035,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
               // takes effect (and clears the needs-setup screen) without a
               // model flip. A tab that booted un-credentialed has a null
               // runtime — it must be built here, not just rebuilt.
-              for (const t of tabs.values()) {
-                if (t.toolset) {
-                  t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
-                  if (t.runtime) emit({ type: "$ready" }, t.id);
-                }
-              }
+              rebuildCredentialedTabs();
               emitSettings(tab);
             })
             .catch((err: Error) => {
@@ -8094,12 +8105,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
               // takes effect (and clears the needs-setup screen) without a
               // model flip. A tab that booted un-credentialed has a null
               // runtime — it must be built here, not just rebuilt.
-              for (const t of tabs.values()) {
-                if (t.toolset) {
-                  t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
-                  if (t.runtime) emit({ type: "$ready" }, t.id);
-                }
-              }
+              rebuildCredentialedTabs();
               emitSettings(tab);
             })
             .catch((err: Error) => {
@@ -8159,12 +8165,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
               // A fresh credential unlocks the paid + Go catalog and may make
               // previously unusable tabs usable — build (or rebuild) them, then
               // resync the model list so subscription ids appear.
-              for (const t of tabs.values()) {
-                if (t.toolset) {
-                  t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
-                  if (t.runtime) emit({ type: "$ready" }, t.id);
-                }
-              }
+              rebuildCredentialedTabs();
               void refreshOpencodeModels(true, tab);
               emitSettings(tab);
             })
@@ -8227,12 +8228,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
               saveMimoCredential({ apiKey: cred.apiKey, baseUrl: cred.baseUrl });
               lastMiMoOAuthError = null;
               // A fresh key makes previously unusable MiMo tabs usable — rebuild.
-              for (const t of tabs.values()) {
-                if (t.toolset) {
-                  t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
-                  if (t.runtime) emit({ type: "$ready" }, t.id);
-                }
-              }
+              rebuildCredentialedTabs();
               emitSettings(tab);
             })
             .catch((err: Error) => {
@@ -8287,12 +8283,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // defaults to a DeepSeek model — build (or rebuild) every now-credentialed
         // tab ready. A tab that booted un-credentialed has a null runtime — it
         // must be built here, not just rebuilt.
-        for (const t of tabs.values()) {
-          if (t.toolset) {
-            t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
-            if (t.runtime) emit({ type: "$ready" }, t.id);
-          }
-        }
+        rebuildCredentialedTabs();
         emitSettings(tab);
       } catch (err) {
         emit(
@@ -8563,12 +8554,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             msg.ollamaApiKey !== undefined ||
             msg.zaiApiKey !== undefined
           ) {
-            for (const t of tabs.values()) {
-              if (t.toolset) {
-                t.runtime = tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
-                if (t.runtime) emit({ type: "$ready" }, t.id);
-              }
-            }
+            rebuildCredentialedTabs();
           }
           if (msg.opencodeApiKey !== undefined) {
             // Adding/removing a key flips the catalog between the keyless free

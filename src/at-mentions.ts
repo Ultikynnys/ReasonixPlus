@@ -12,6 +12,7 @@ import {
   loadGitignoreAt,
   loadGitignoreAtSync,
 } from "./gitignore.js";
+import { COMMON_IGNORE_DIRS } from "./ignore-dirs.js";
 
 /** Caps match tool-result dispatch truncation (0.5.2). */
 export const DEFAULT_AT_MENTION_MAX_BYTES = 64 * 1024;
@@ -21,20 +22,9 @@ export const DEFAULT_AT_DIR_MAX_ENTRIES = 200;
 
 /** Universally-uninteresting build / VCS dirs. Framework-specific dirs (Pods, target, …) live in .gitignore. */
 export const DEFAULT_PICKER_IGNORE_DIRS: readonly string[] = [
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  ".next",
-  "out",
-  "coverage",
-  ".cache",
+  ...COMMON_IGNORE_DIRS,
   ".vscode",
   ".idea",
-  "target",
-  ".venv",
-  "venv",
-  "__pycache__",
 ];
 
 export interface ListFilesOptions {

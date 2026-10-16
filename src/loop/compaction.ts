@@ -1,5 +1,6 @@
 import { tokensForMessage } from "../tokenizer.js";
 import type { ChatMessage, ToolCall } from "../types.js";
+import { messageText } from "./messages.js";
 
 // Research-derived constants (Codex compact.rs, Gemini chatCompressionService,
 // Cline basic-compaction): trigger at 0.8 of the window, settle near 0.55,
@@ -43,16 +44,6 @@ export function compactionSummaryBody(messages: ReadonlyArray<ChatMessage>): str
  *  artifacts are machine-generated and never count as prompts. */
 export function isUserPrompt(m: ChatMessage): boolean {
   return m.role === "user" && !m.synthetic && messageText(m).trim().length > 0;
-}
-
-export function messageText(m: ChatMessage): string {
-  if (typeof m.content === "string") return m.content;
-  if (Array.isArray(m.content)) {
-    return m.content
-      .map((part) => (part.type === "text" ? part.text : `[${part.type} attached]`))
-      .join("\n");
-  }
-  return "";
 }
 
 function isLegacy(m: ChatMessage): boolean {

@@ -17,6 +17,9 @@ export interface CodeQueryToolOpts {
 const UNSUPPORTED =
   "language not supported (TS/TSX/JS/JSX/Python/Go/Rust/Java); use search_content for grep-style matching";
 
+const PATH_PARAM_DESCRIPTION =
+  "File path relative to the project root. Leading / or \\ is also treated as project-root-relative; external absolute paths are not supported.";
+
 export function registerCodeQueryTools(registry: ToolRegistry, opts: CodeQueryToolOpts): void {
   const { rootDir } = opts;
 
@@ -32,8 +35,7 @@ export function registerCodeQueryTools(registry: ToolRegistry, opts: CodeQueryTo
       properties: {
         path: {
           type: "string",
-          description:
-            "File path relative to the project root. Leading / or \\ is also treated as project-root-relative; external absolute paths are not supported.",
+          description: PATH_PARAM_DESCRIPTION,
         },
       },
       required: ["path"],
@@ -66,8 +68,7 @@ export function registerCodeQueryTools(registry: ToolRegistry, opts: CodeQueryTo
         },
         path: {
           type: "string",
-          description:
-            "File path relative to the project root. Leading / or \\ is also treated as project-root-relative; external absolute paths are not supported.",
+          description: PATH_PARAM_DESCRIPTION,
         },
         kind: {
           type: "string",

@@ -486,6 +486,21 @@ function parseCornerPair(value: unknown, name: string): { x: number; y: number }
   );
 }
 
+/** Locate a monitor by 0-based index (Number-coerced) then, for string queries,
+ *  by case-insensitive id / name. Returns undefined when nothing matches. */
+export function findMonitor(monitors: MonitorInfo[], query: unknown): MonitorInfo | undefined {
+  const index = Number(query);
+  if (Number.isInteger(index)) {
+    const byIndex = monitors.find((m) => m.index === index);
+    if (byIndex) return byIndex;
+  }
+  if (typeof query === "string") {
+    const norm = query.trim().toLowerCase();
+    return monitors.find((m) => m.id.toLowerCase() === norm || m.name.toLowerCase() === norm);
+  }
+  return undefined;
+}
+
 /** Select a monitor from query (index, name, ID, or default primary). */
 export function selectMonitor(monitors: MonitorInfo[], query: unknown): MonitorInfo {
   if (monitors.length === 0) {
@@ -496,20 +511,17 @@ export function selectMonitor(monitors: MonitorInfo[], query: unknown): MonitorI
     return monitors.find((m) => m.primary) ?? monitors[0]!;
   }
 
-  if (typeof query === "number" || (typeof query === "string" && /^-?\d+$/.test(query))) {
-    const idx = Number(query);
-    const match = monitors.find((m) => m.index === idx);
-    if (match) return match;
-    // Allow 1-based index if out of 0-based range
-    if (idx >= 1 && idx <= monitors.length) {
-      return monitors[idx - 1]!;
-    }
-  } else if (typeof query === "string") {
-    const norm = query.trim().toLowerCase();
-    const match = monitors.find(
-      (m) => m.id.toLowerCase() === norm || m.name.toLowerCase() === norm,
-    );
-    if (match) return match;
+  const match = findMonitor(monitors, query);
+  if (match) return match;
+
+  // Tolerate a 1-based index typed for what is a 0-based list.
+  const idx = Number(query);
+  if (
+    (typeof query === "number" || (typeof query === "string" && /^-?\d+$/.test(query))) &&
+    idx >= 1 &&
+    idx <= monitors.length
+  ) {
+    return monitors[idx - 1]!;
   }
 
   const available = monitors

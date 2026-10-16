@@ -7,6 +7,21 @@ export function flattenText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/** Last `n` lines of `text` (CRLF-aware). With `elisionMarker`, a longer input is
+ *  prefixed by a `[… N earlier lines …]` note — shared by the job/command output tails. */
+export function tailLines(
+  text: string,
+  n: number,
+  opts: { elisionMarker?: boolean } = {},
+): string {
+  if (!text) return "";
+  const lines = text.split(/\r?\n/);
+  if (opts.elisionMarker && lines.length > n) {
+    return [`[… ${lines.length - n} earlier lines …]`, ...lines.slice(-n)].join("\n");
+  }
+  return lines.slice(-n).join("\n");
+}
+
 /** Remove common credential/data-url forms before text reaches a diagnostic console. */
 export function redactDiagnosticText(raw: string, max = 2000): string {
   return raw

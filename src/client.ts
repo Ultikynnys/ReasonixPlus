@@ -19,6 +19,7 @@ import {
 import { tryParseJson } from "./core/parse-json.js";
 import { recordDiagnostic } from "./diagnostics.js";
 import { createLogger } from "./logging.js";
+import { messageText } from "./loop/messages.js";
 import { showPayloadContextLength } from "./ollama-model-map.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { buildResponsesPayload } from "./responses-api.js";
@@ -165,19 +166,6 @@ function stringifyNativeToolCallArguments(args: unknown): string {
   } catch {
     return "{}";
   }
-}
-
-/** Plain text of a message, joining text parts — used for the Cloud Code
- *  systemInstruction and tool responses. */
-function messageText(msg: ChatMessage): string {
-  if (typeof msg.content === "string") return msg.content;
-  if (Array.isArray(msg.content)) {
-    return msg.content
-      .filter((p) => p.type === "text")
-      .map((p) => (p as { text: string }).text)
-      .join("\n");
-  }
-  return "";
 }
 
 /** Split a `data:image/png;base64,...` URL into mimeType + base64 data. */
@@ -1582,7 +1570,7 @@ export class DeepSeekClient {
     for (const msg of opts.messages) {
       switch (msg.role) {
         case "system": {
-          const text = messageText(msg);
+          const text = messageText(msg, true);
           systemInstruction = systemInstruction ? `${systemInstruction}\n\n${text}` : text;
           break;
         }

@@ -1,6 +1,7 @@
 /** Shared exclude defaults + resolver — chunker, directory_tree, and dashboard read from here. */
 
 import picomatch from "picomatch";
+import { COMMON_IGNORE_DIRS } from "../ignore-dirs.js";
 
 export interface IndexUserConfig {
   excludeDirs?: string[];
@@ -33,25 +34,14 @@ export interface IndexFilters {
 
 export const DEFAULT_INDEX_EXCLUDES = {
   dirs: [
-    "node_modules",
+    ...COMMON_IGNORE_DIRS,
     ".devenv",
     ".direnv",
-    ".git",
     ".hg",
     ".svn",
-    "dist",
-    "build",
-    "out",
-    ".next",
     ".nuxt",
-    "target",
-    ".venv",
-    "venv",
-    "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
-    ".cache",
-    "coverage",
     ".turbo",
     ".vercel",
     ".reasonix",

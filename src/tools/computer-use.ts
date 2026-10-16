@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { messageOf } from "@reasonix/core-utils";
 import type { ToolCallContext, ToolRegistry } from "../tools.js";
-import type { MonitorInfo } from "./screen-capture.js";
+import { type MonitorInfo, findMonitor } from "./screen-capture.js";
 import {
   PS_WIN_FOCUS_TYPE,
   psMatchWindowStatements,
@@ -35,16 +35,8 @@ function selectMonitor(monitors: MonitorInfo[], query: unknown): MonitorInfo {
       "computer_use: monitor is required; actions cannot target an ambiguous desktop.",
     );
   }
-  const index = Number(query);
-  const byIndex = Number.isInteger(index) ? monitors.find((m) => m.index === index) : undefined;
-  if (byIndex) return byIndex;
-  if (typeof query === "string") {
-    const normalized = query.trim().toLowerCase();
-    const byName = monitors.find(
-      (m) => m.id.toLowerCase() === normalized || m.name.toLowerCase() === normalized,
-    );
-    if (byName) return byName;
-  }
+  const match = findMonitor(monitors, query);
+  if (match) return match;
   throw new Error(`computer_use: invalid monitor '${String(query)}'.`);
 }
 
