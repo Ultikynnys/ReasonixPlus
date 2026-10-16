@@ -222,11 +222,6 @@ const RESPONSIVE_STAGE = {
   NARROW: "narrow",
 } as const;
 
-/** Tail budget kept per running shell tool for the card's live output rows.
- *  The authoritative output arrives on tool.result; this only feeds the
- *  "show what's happening right now" window. */
-const LIVE_OUTPUT_MAX_CHARS = 8_000;
-
 type ResponsiveStage = (typeof RESPONSIVE_STAGE)[keyof typeof RESPONSIVE_STAGE];
 
 function responsiveStage(width: number): ResponsiveStage {
@@ -290,8 +285,8 @@ export type AssistantSegment =
       ok?: boolean;
       durationMs?: number;
       /** Transient mid-run stdout/stderr for blocking shell tools — streamed via
-       *  `tool.output` events and rendered as live rows until tool.result lands
-       *  (never persisted; a session reload shows only the final result). */
+       *  `tool.output` events and rendered in the card's output stream until
+       *  tool.result lands (never persisted; a reload shows only the result). */
       liveOutput?: string;
       subagentRuns?: SubagentRunProgress[];
     }
@@ -2716,8 +2711,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     case "tool.output": {
       // Transient live stdout/stderr feed for a blocking shell tool. Only the
       // running segment (no result yet) consumes it; once tool.result lands the
-      // authoritative output replaces the live view. The buffer keeps the TAIL
-      // so the shell card's live rows always reflect the most recent output.
+      // authoritative output replaces the live view. The WHOLE stream is kept so
+      // the user can scroll back through it — the server-side emitter already
+      // bounds how much is forwarded, so this is not unbounded.
       if (!ev.text) return state;
       return {
         ...state,
@@ -2728,16 +2724,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           const segs = m.segments.map((s) => {
             if (s.kind !== "tool" || s.callId !== ev.callId || s.result !== undefined) return s;
             mutated = true;
-            const prev = s.liveOutput ?? "";
-            const joined =
-              prev.length >= LIVE_OUTPUT_MAX_CHARS
-                ? prev.slice(prev.length - LIVE_OUTPUT_MAX_CHARS) + ev.text
-                : prev + ev.text;
-            const live =
-              joined.length > LIVE_OUTPUT_MAX_CHARS
-                ? joined.slice(joined.length - LIVE_OUTPUT_MAX_CHARS)
-                : joined;
-            return { ...s, liveOutput: live };
+            return { ...s, liveOutput: (s.liveOutput ?? "") + ev.text };
           });
           return mutated ? { ...m, segments: segs } : m;
         }),

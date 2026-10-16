@@ -3689,12 +3689,15 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   flex-shrink: 0;
 }
 
-.shell .out {
+/* Full command-output stream — renders the whole log (no tail slice) and
+   sticky-bottom follows the tail. Mirrors the reasoning stream's box model. */
+.shell .stream {
   padding: 10px 14px;
   background: var(--bg-2);
   color: var(--fg-2);
   max-height: 240px;
-  overflow: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   white-space: pre-wrap;
   border-top: 1px solid var(--border);
   font-size: 13px;
@@ -3705,34 +3708,11 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   font-variant-ligatures: none;
   font-feature-settings: "liga" 0, "calt" 0;
 }
-.shell .out .ok {
+.shell .stream .ok {
   color: var(--success);
 }
-.shell .out .err {
+.shell .stream .err {
   color: var(--danger);
-}
-.shell .out .dim {
-  color: var(--muted);
-}
-
-/* live output tail while the command runs — three rolling rows fed by
-   tool.output events (the shell-card analogue of the subagent activity rows) */
-.shell .live-log {
-  padding: 6px 14px 8px;
-  border-top: 1px solid var(--border);
-  font-family: "Geist Mono", monospace;
-  font-size: 13px;
-  line-height: 1.55;
-  background: var(--bg-2);
-}
-.shell .live-log::after {
-  display: none;
-}
-.shell .live-log .line {
-  white-space: pre;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--fg-2);
 }
 
 .approve-row {
@@ -6289,39 +6269,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   width: 34%;
 }
 
-/* progressive log (tool live output) */
-.live-log {
-  font-family: inherit;
-  font-size: 14px;
-  background: oklch(10% 0.006 255);
-  color: var(--fg-2);
-  padding: 8px 12px;
-  border-top: 1px solid var(--border);
-  max-height: 120px;
-  overflow: hidden;
-  position: relative;
-}
-[data-theme="light"] .live-log {
-  background: oklch(96% 0.005 255);
-}
-.live-log::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 0 0;
-  height: 40px;
-  background: linear-gradient(to bottom, transparent, var(--bg-2) 90%);
-}
-.live-log .line {
-  white-space: pre;
-  opacity: 0;
-  animation: line-in 0.25s ease-out forwards;
-}
-.live-log .line.ok {
-  color: var(--success);
-}
-.live-log .line.dim {
-  color: var(--muted);
-}
 @keyframes line-in {
   to {
     opacity: 1;
@@ -6555,17 +6502,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   50% {
     transform: scaleY(1);
   }
-}
-
-/* shell card while running */
-.shell.running .out {
-  position: relative;
-}
-.shell.running .out::after {
-  content: "▌";
-  color: var(--accent);
-  animation: caret 1s steps(2) infinite;
-  margin-left: 2px;
 }
 
 /* ----- "user is composing" indicator (echo back to user message) ----- */

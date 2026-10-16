@@ -3,6 +3,9 @@ import { type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
 /** px from the bottom within which the view still counts as "pinned". */
 export const DEFAULT_PIN_THRESHOLD = 80;
 
+/** ms of scroll quiescence before the pin is re-decided from the settled position. */
+export const PIN_SETTLE_MS = 140;
+
 export interface StickyBottomOptions {
   /** px from the bottom that still counts as pinned. */
   threshold?: number;
@@ -28,11 +31,15 @@ export interface StickyBottom {
 /**
  * Sticky-bottom auto-scroll for a scroll container.
  *
- * Shared by the transcript and the reasoning cards. A manual scroll UP (wheel
- * deltaY < 0, touch drag down, PageUp/ArrowUp/Home/Shift+Space, or dragging the
- * scrollbar up) un-pins immediately so a concurrent resize cannot snap the
- * viewport back; scrolling DOWN re-pins only once the viewport reaches the
- * bottom (within `threshold`). While the user drags the scrollbar, {@link
+ * Shared by the transcript and the thinking / shell cards. A manual scroll UP
+ * (wheel deltaY < 0, touch drag down, PageUp/ArrowUp/Home/Shift+Space, or
+ * dragging the scrollbar up) un-pins immediately so a concurrent resize cannot
+ * snap the viewport back. Re-pinning is debounced: once scrolling settles (see
+ * `PIN_SETTLE_MS`) the pin is re-decided from the settled position, and a
+ * down-scroll pins the instant the viewport is already at the bottom — so a
+ * mid-scroll reading, or a momentary gap while streamed content is still
+ * catching up, can never drop a pin the user did not mean to drop. While the
+ * user drags the scrollbar, {@link
  * StickyBottom.follow} is suppressed so the thumb never rubber-bands.
  */
 export function useStickyBottom(
@@ -48,6 +55,7 @@ export function useStickyBottom(
   optionsRef.current = options;
 
   const setPinned = useCallback((pinned: boolean) => {
+    if (isPinnedRef.current === pinned) return;
     isPinnedRef.current = pinned;
     optionsRef.current.onPinChange?.(pinned);
   }, []);
@@ -80,31 +88,53 @@ export function useStickyBottom(
     return false;
   }, [containerRef]);
 
-  // User-scroll listeners: an up-scroll un-pins immediately (so a concurrent
-  // resize cannot snap the viewport back), and the bottom re-pins.
+  // User-scroll listeners. Direction decides the pin: any scroll toward the bottom
+  // (or an at-bottom reading) re-pins and is never undone by a mid-scroll reading,
+  // while only an explicit up-scroll — a gesture, or a scroll back past the
+  // threshold — releases. Release is one-way until the user returns to the bottom.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    let pendingFrame = 0;
-    const unpinNow = () => {
-      if (pendingFrame) {
-        cancelAnimationFrame(pendingFrame);
-        pendingFrame = 0;
+    let settleTimer = 0;
+    const clearSettle = () => {
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+        settleTimer = 0;
       }
-      setPinned(false);
     };
-    const checkPin = () => {
-      if (pendingFrame) cancelAnimationFrame(pendingFrame);
-      pendingFrame = requestAnimationFrame(() => {
-        pendingFrame = 0;
-        setPinned(isAtBottom());
-      });
+
+    // Pin the instant the viewport is already at the bottom, without releasing.
+    const pinIfAtBottom = () => {
+      if (isAtBottom()) setPinned(true);
+    };
+
+    // Re-check the pin once scrolling settles, read from the settled position and
+    // PIN-ONLY: a down-scroll can never release the pin, only an explicit up-scroll
+    // (or a scroll back past the threshold) can. The debounce is the catch-all for
+    // every scroll source (wheel, trackpad momentum, scrollbar drag / click-track,
+    // keyboard, smooth scroll), and for a just-re-pinned view it stops a mid-scroll
+    // reading from bouncing it straight back into manual mode.
+    const settle = () => {
+      clearSettle();
+      settleTimer = window.setTimeout(() => {
+        settleTimer = 0;
+        if (isAtBottom()) setPinned(true);
+      }, PIN_SETTLE_MS);
+    };
+
+    // An up-scroll un-pins at once so streaming tokens stop yanking the viewport.
+    const unpinNow = () => {
+      clearSettle();
+      setPinned(false);
     };
 
     const onWheel = (e: WheelEvent) => {
       if (e.deltaY < 0) unpinNow();
-      else if (e.deltaY > 0) checkPin();
+      else if (e.deltaY > 0) {
+        pinIfAtBottom();
+        settle();
+      }
     };
 
     let touchStartY = 0;
@@ -116,7 +146,10 @@ export function useStickyBottom(
       const deltaY = touchStartY - currentY;
       touchStartY = currentY;
       if (deltaY < 0) unpinNow();
-      else if (deltaY > 0) checkPin();
+      else if (deltaY > 0) {
+        pinIfAtBottom();
+        settle();
+      }
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -133,48 +166,55 @@ export function useStickyBottom(
         e.key === "End" ||
         (e.key === " " && !e.shiftKey)
       ) {
-        checkPin();
+        pinIfAtBottom();
+        settle();
       }
     };
 
-    // Scrollbar drag / selection: while dragging, follow is suppressed (see
-    // `follow`) and directional scroll changes decide the pin.
-    const onScrollDuringDrag = () => {
+    // Every scroll is classified by direction so a re-pin can't be bounced back: a
+    // scroll toward the bottom re-pins (immediately when it is already at the
+    // bottom, plus the debounced settle), while an upward scroll releases only once
+    // it has clearly left the bottom. The threshold dead-zone means a 1px jitter, or
+    // a shrink while following, cannot un-pin a view the user just returned to.
+    const onScroll = () => {
       const current = el.scrollTop;
       const delta = current - lastScrollTopRef.current;
       lastScrollTopRef.current = current;
-      if (delta < 0) unpinNow();
-      else if (delta > 0 && isAtBottom()) setPinned(true);
+      if (delta < 0) {
+        if (!isAtBottom()) unpinNow();
+      } else if (delta > 0) {
+        pinIfAtBottom();
+      }
+      settle();
     };
     const onPointerDown = () => {
-      lastScrollTopRef.current = el.scrollTop;
       if (draggingRef.current) return;
       draggingRef.current = true;
-      el.addEventListener("scroll", onScrollDuringDrag, { passive: true });
+      lastScrollTopRef.current = el.scrollTop;
     };
     const endDrag = () => {
       if (!draggingRef.current) return;
       draggingRef.current = false;
-      el.removeEventListener("scroll", onScrollDuringDrag);
-      setPinned(isAtBottom());
+      pinIfAtBottom();
     };
 
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: true });
     el.addEventListener("keydown", onKeyDown);
+    el.addEventListener("scroll", onScroll, { passive: true });
     el.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointerup", endDrag);
     window.addEventListener("pointercancel", endDrag);
 
     return () => {
-      if (pendingFrame) cancelAnimationFrame(pendingFrame);
+      clearSettle();
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("touchstart", onTouchStart);
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("keydown", onKeyDown);
+      el.removeEventListener("scroll", onScroll);
       el.removeEventListener("pointerdown", onPointerDown);
-      el.removeEventListener("scroll", onScrollDuringDrag);
       window.removeEventListener("pointerup", endDrag);
       window.removeEventListener("pointercancel", endDrag);
     };

@@ -665,6 +665,7 @@ export const en = {
   },
   cards: {
     reasoningName: "Thinking",
+    reasoningStreamLabel: "Reasoning output",
     reasoningComplete: "Complete",
     shellAwaiting: "Waiting approval",
     awaitingUser: "Waiting for user",
@@ -672,6 +673,7 @@ export const en = {
     shellBackgroundRunning: "Running in background",
     shellPersistentRunning: "Running in background · persistent",
     shellLiveLabel: "Command output: live",
+    shellOutputLabel: "Command output",
     shellExecuteHint: "execute this command",
     shellAddWorkspaceRule: "Add to workspace rules",
     shellAddGlobalRule: "Add to global rules",

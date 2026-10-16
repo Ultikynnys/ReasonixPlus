@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PIN_THRESHOLD, useStickyBottom } from "./useStickyBottom";
+import { DEFAULT_PIN_THRESHOLD, PIN_SETTLE_MS, useStickyBottom } from "./useStickyBottom";
 
 beforeEach(() => {
   vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
@@ -15,6 +15,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function Harness() {
@@ -176,5 +177,71 @@ describe("useStickyBottom", () => {
     expect(isAtBottom()).toBe(true);
     Object.defineProperty(container, "scrollTop", { value: 0, writable: true, configurable: true });
     expect(isAtBottom()).toBe(false);
+  });
+
+  it("re-pins once a down-scroll settles at the bottom, even if the reading at gesture time missed", () => {
+    vi.useFakeTimers();
+    render(<Harness />);
+    const { container, scrollToSpy } = sizeContainer(200);
+
+    // Un-pin, then scroll down. The wheel event fires BEFORE the browser applies
+    // the scroll, so the synchronous bottom test still reads "not at bottom".
+    fireEvent.wheel(container, { deltaY: -50 });
+    fireEvent.wheel(container, { deltaY: 50 });
+    scrollToSpy.mockClear();
+    fireEvent.click(screen.getByTestId("follow"));
+    expect(scrollToSpy).not.toHaveBeenCalled();
+
+    // The scroll then settles at the bottom; the debounced re-check re-pins.
+    Object.defineProperty(container, "scrollTop", {
+      value: 600,
+      writable: true,
+      configurable: true,
+    });
+    vi.advanceTimersByTime(PIN_SETTLE_MS);
+
+    scrollToSpy.mockClear();
+    fireEvent.click(screen.getByTestId("follow"));
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 1000, behavior: "instant" });
+  });
+
+  it("keeps following through a down-scroll that reads off-bottom (no spurious release)", () => {
+    render(<Harness />);
+    // Pinned by default, viewport well away from the bottom (content is still
+    // streaming in, so follow() has not caught up yet).
+    const { container, scrollToSpy } = sizeContainer(0);
+
+    // A down-scroll here must NOT release the pin the user never left.
+    fireEvent.wheel(container, { deltaY: 30 });
+
+    scrollToSpy.mockClear();
+    fireEvent.click(screen.getByTestId("follow"));
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 1000, behavior: "instant" });
+  });
+
+  it("stays pinned when dragged to the bottom, even through a small up-jitter", () => {
+    render(<Harness />);
+    const { container, scrollToSpy } = sizeContainer(200);
+    const setTop = (value: number) =>
+      Object.defineProperty(container, "scrollTop", {
+        value,
+        writable: true,
+        configurable: true,
+      });
+
+    // Drag up to release, then down to the bottom, then nudge 1px back up.
+    fireEvent.pointerDown(container);
+    setTop(100);
+    fireEvent.scroll(container);
+    setTop(600);
+    fireEvent.scroll(container);
+    setTop(599);
+    fireEvent.scroll(container);
+    fireEvent.pointerUp(window);
+
+    // The re-pin held: the jitter did not bounce it back into manual mode.
+    scrollToSpy.mockClear();
+    fireEvent.click(screen.getByTestId("follow"));
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 1000, behavior: "instant" });
   });
 });

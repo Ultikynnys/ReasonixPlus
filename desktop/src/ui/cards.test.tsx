@@ -45,6 +45,11 @@ function wrap(ui: React.ReactNode) {
   );
 }
 
+/** Force a scroll container's scrollTop (jsdom has no layout engine). */
+function setScrollTop(el: HTMLElement, top: number) {
+  Object.defineProperty(el, "scrollTop", { value: top, writable: true, configurable: true });
+}
+
 describe("card duration labels", () => {
   it("keeps sub-second durations in ms and switches to seconds at 1s", () => {
     expect(formatDuration(0)).toBe("0 ms");
@@ -776,8 +781,8 @@ describe("DiffCard — show-in-explorer button", () => {
   });
 });
 
-describe("ShellCard — live output rows while running", () => {
-  it("renders only the last three lines of the streamed output tail", () => {
+describe("ShellCard — full output stream while running", () => {
+  it("renders every streamed line, not just a trailing tail", () => {
     const { container } = render(
       wrap(
         <ShellCard
@@ -787,13 +792,15 @@ describe("ShellCard — live output rows while running", () => {
         />,
       ),
     );
-    const rows = [...container.querySelectorAll(".shell-live .line")].map((el) => el.textContent);
-    expect(rows).toEqual(["pass 2", "pass 3", "pass 4"]);
+    const rows = [...container.querySelectorAll(".shell .stream > div")].map(
+      (el) => el.textContent,
+    );
+    expect(rows).toEqual(["pass 1", "pass 2", "pass 3", "pass 4"]);
   });
 
   it("shows nothing until output actually arrives", () => {
     const { container } = render(wrap(<ShellCard command="npm test" state="running" />));
-    expect(container.querySelector(".shell-live")).toBeNull();
+    expect(container.querySelector(".shell .stream")).toBeNull();
   });
 
   it("shows a trailing partial line while the command is still writing", () => {
@@ -806,11 +813,13 @@ describe("ShellCard — live output rows while running", () => {
         />,
       ),
     );
-    const rows = [...container.querySelectorAll(".shell-live .line")].map((el) => el.textContent);
+    const rows = [...container.querySelectorAll(".shell .stream > div")].map(
+      (el) => el.textContent,
+    );
     expect(rows).toEqual(["Compiling reasonix", "Building... 90%"]);
   });
 
-  it("hides the live tail once the command settles with its full result", () => {
+  it("hides the stream until the user expands a settled card", () => {
     const { container } = render(
       wrap(
         <ShellCard
@@ -821,13 +830,13 @@ describe("ShellCard — live output rows while running", () => {
         />,
       ),
     );
-    // Done cards collapse to the header — the live tail must not render and the
-    // full output only appears once the user expands the card.
-    expect(container.querySelector(".shell-live")).toBeNull();
+    // Done cards collapse to the header — the stream must not render until the
+    // user expands the card, where the settled result replaces the live tail.
+    expect(container.querySelector(".shell .stream")).toBeNull();
     expect(container.querySelector(".shell")).toBeNull();
   });
 
-  it("labels a live background job and streams its tail instead of reading as finished", () => {
+  it("labels a live background job and streams its output instead of reading as finished", () => {
     const { container } = render(
       wrap(
         <ShellCard
@@ -842,9 +851,85 @@ describe("ShellCard — live output rows while running", () => {
     // A detached job is not a finished command: the header shows the background
     // running label, never a done checkmark with a duration.
     expect(screen.getByRole("img", { name: "Running in background" })).toBeTruthy();
-    const rows = [...container.querySelectorAll(".shell-live .line")].map((el) => el.textContent);
+    const rows = [...container.querySelectorAll(".shell .stream > div")].map(
+      (el) => el.textContent,
+    );
     expect(rows).toEqual(["% Total    % Received", "0 685M    0  2403k  0  1610k"]);
     expect(container.querySelector(".meta-dur")).toBeNull();
+  });
+
+  it("pins the output to the bottom as new lines stream in", () => {
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(640);
+    const { container, rerender } = render(
+      wrap(<ShellCard command="npm test" liveOutput={"line 1\nline 2"} state="running" />),
+    );
+    const stream = container.querySelector<HTMLElement>(".shell .stream")!;
+    expect(stream.scrollTop).toBe(640);
+    stream.scrollTop = 0;
+    rerender(
+      wrap(<ShellCard command="npm test" liveOutput={"line 1\nline 2\nline 3"} state="running" />),
+    );
+    expect(stream.scrollTop).toBe(640);
+  });
+
+  it("holds position when the user scrolls up, and re-pins at the bottom", () => {
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(700);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(300);
+    const { container, rerender } = render(
+      wrap(<ShellCard command="npm test" liveOutput={"line 1\nline 2"} state="running" />),
+    );
+    const stream = container.querySelector<HTMLElement>(".shell .stream")!;
+    expect(stream.scrollTop).toBe(700);
+
+    // User wheels up to read earlier output: the stream un-pins.
+    stream.scrollTop = 200;
+    fireEvent.wheel(stream, { deltaY: -50 });
+
+    // More output arrives: the viewport must hold, not snap back to the bottom.
+    rerender(
+      wrap(<ShellCard command="npm test" liveOutput={"line 1\nline 2\nline 3"} state="running" />),
+    );
+    expect(stream.scrollTop).toBe(200);
+
+    // User wheels back down to the bottom: the stream re-pins and follows again.
+    stream.scrollTop = 700;
+    fireEvent.wheel(stream, { deltaY: 50 });
+    rerender(
+      wrap(
+        <ShellCard
+          command="npm test"
+          liveOutput={"line 1\nline 2\nline 3\nline 4"}
+          state="running"
+        />,
+      ),
+    );
+    expect(stream.scrollTop).toBe(700);
+  });
+
+  it("re-pins when the scrollbar is dragged to the bottom and never bounces back", () => {
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(700);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(300);
+    const { container, rerender } = render(
+      wrap(<ShellCard command="npm test" liveOutput={"line 1\nline 2"} state="running" />),
+    );
+    const stream = container.querySelector<HTMLElement>(".shell .stream")!;
+
+    // Drag up (release), then down to the bottom, with a 1px jitter back up.
+    fireEvent.pointerDown(stream);
+    setScrollTop(stream, 200);
+    fireEvent.scroll(stream);
+    setScrollTop(stream, 400);
+    fireEvent.scroll(stream);
+    setScrollTop(stream, 399);
+    fireEvent.scroll(stream);
+    fireEvent.pointerUp(window);
+
+    // The re-pin held through the jitter: the next append still follows the bottom.
+    setScrollTop(stream, 300);
+    rerender(
+      wrap(<ShellCard command="npm test" liveOutput={"line 1\nline 2\nline 3"} state="running" />),
+    );
+    expect(stream.scrollTop).toBe(700);
   });
 });
 
@@ -861,7 +946,7 @@ describe("ShellCard — terminal escape handling", () => {
         />,
       ),
     );
-    const out = container.querySelector(".shell .out")?.textContent ?? "";
+    const out = container.querySelector(".shell .stream")?.textContent ?? "";
     expect(out).not.toContain(ESC);
     expect(out).toContain("··");
   });
@@ -876,7 +961,9 @@ describe("ShellCard — terminal escape handling", () => {
         />,
       ),
     );
-    const rows = [...container.querySelectorAll(".shell-live .line")].map((el) => el.textContent);
+    const rows = [...container.querySelectorAll(".shell .stream > div")].map(
+      (el) => el.textContent,
+    );
     expect(rows).toEqual(["RUN", "pass"]);
   });
 });

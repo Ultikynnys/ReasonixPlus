@@ -1,7 +1,4 @@
-import {
-  sanitizeTerminalText,
-  stripAnsi,
-} from "@reasonix/core-utils";
+import { sanitizeTerminalText } from "@reasonix/core-utils";
 import {
   type CSSProperties,
   type ReactNode,
@@ -286,8 +283,54 @@ const ReasoningRow = memo(function ReasoningRow({ row }: { row: string }) {
   return <p>{inlineReasoningNodes(row)}</p>;
 });
 
-/** px from the bottom within which the stream still counts as "pinned". */
-const REASONING_PIN_THRESHOLD = 8;
+/** px from the bottom within which a follow stream still counts as "pinned". */
+const FOLLOW_PIN_THRESHOLD = 8;
+
+/**
+ * The scroll body shared by the thinking and shell cards. It mounts only while
+ * the card is expanded (Card gates its body on `open`), so a collapsed card
+ * holding thousands of lines costs nothing; when open, its content stays inside
+ * a bounded, self-scrolling box. Auto-follow keeps it pinned to the tail, an
+ * up-scroll releases it, and returning to the bottom re-pins.
+ */
+function FollowStream({
+  text,
+  streaming,
+  label,
+  children,
+}: {
+  text: string;
+  streaming: boolean;
+  label: string;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const sticky = useStickyBottom(ref, {
+    threshold: FOLLOW_PIN_THRESHOLD,
+    scrollToBottom: () => {
+      const el = ref.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    },
+  });
+
+  // Pin on mount and whenever the content or the streaming flag changes, and keep
+  // following resizes while pinned.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    sticky.follow();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => sticky.follow());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text, streaming, sticky]);
+
+  return (
+    <div className="stream" ref={ref} role="log" aria-label={label}>
+      {children}
+    </div>
+  );
+}
 
 /**
  * Mounted only while expanded (Card gates its body on `open`), so it always
@@ -296,42 +339,19 @@ const REASONING_PIN_THRESHOLD = 8;
  * the user opens them.
  */
 function ReasoningStream({ text, streaming }: { text: string; streaming: boolean }) {
-  const streamRef = useRef<HTMLDivElement>(null);
   // Streaming splits on single newlines so each line appears as it arrives;
   // completed reasoning groups into paragraphs. Neither path truncates.
   const rows = streaming
     ? text.split(/\r?\n/).filter((row) => row.trim())
     : text.split(/\n\n+/);
 
-  // Sticky-bottom follow (shared with the transcript): a manual scroll-up un-pins
-  // this card so streaming tokens stop yanking the viewport; it re-pins only once
-  // the user scrolls back down to the bottom.
-  const sticky = useStickyBottom(streamRef, {
-    threshold: REASONING_PIN_THRESHOLD,
-    scrollToBottom: () => {
-      const stream = streamRef.current;
-      if (stream) stream.scrollTop = stream.scrollHeight;
-    },
-  });
-
-  // Pin on open and on every text/streaming update, and follow resizes while pinned.
-  useLayoutEffect(() => {
-    const stream = streamRef.current;
-    if (!stream) return;
-    sticky.follow();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => sticky.follow());
-    observer.observe(stream);
-    return () => observer.disconnect();
-  }, [streaming, text, sticky]);
-
   return (
-    <div className="stream" ref={streamRef}>
+    <FollowStream text={text} streaming={streaming} label={t("cards.reasoningStreamLabel")}>
       {rows.map((row, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: append-only stream, no per-row state
         <ReasoningRow key={i} row={row} />
       ))}
-    </div>
+    </FollowStream>
   );
 }
 
@@ -395,32 +415,55 @@ export function ReasoningCard({
 
 // ---- Shell ----
 
-/** Rolling three-line tail of a running command's output — the shell-card
- *  analogue of the subagent card's live activity rows. `\r`-only progress
- *  updates collapse to their latest frame; each row is capped so a single
- *  pathological line can't blow up the card. */
-function ShellLiveRows({ text }: { text: string }) {
-  const rows = useMemo(() => {
-    // Streamed stdout/stderr is raw — strip ANSI colors/cursor codes before
-    // splitting so a colored progress line never renders as `[32m…` mojibake.
-    const normalized = stripAnsi(text).replace(/\r(?!\n)/g, "\n");
-    return normalized
-      .split("\n")
-      .map((ln) => ln.trimEnd())
-      .filter((ln) => ln.length > 0)
-      .slice(-3)
-      .map((ln) => (ln.length > 220 ? `${ln.slice(0, 220)}…` : ln));
-  }, [text]);
-  if (rows.length === 0) return null;
+/** One output line. Memoized so a streaming append re-renders only the row that
+ *  changed rather than the whole (potentially long) log. */
+const ShellRow = memo(function ShellRow({ line }: { line: string }) {
+  // Command output marks its own success/failure lines; color them the way the
+  // settled snapshot did, so live and finished output read identically.
+  if (line.startsWith(" ✓") || line.startsWith("✓"))
+    return (
+      <div>
+        <span className="ok">{line}</span>
+      </div>
+    );
+  if (line.startsWith(" ✗") || line.startsWith("✗") || /error/i.test(line))
+    return (
+      <div>
+        <span className="err">{line}</span>
+      </div>
+    );
+  return <div>{line}</div>;
+});
+
+/**
+ * Full command-output stream: the WHOLE output stays reachable by scrolling, and
+ * the tail is auto-followed. Nothing is truncated for the user; what the agent
+ * receives is bounded separately, upstream. Rendering and containment are the
+ * shared {@link FollowStream}'s job.
+ */
+function ShellOutput({ text, streaming }: { text: string; streaming: boolean }) {
+  // Streaming splits on single newlines and drops blank rows (matching the
+  // reasoning stream); the settled view keeps every line, blank separators and
+  // all. Sanitize at this boundary: strip escape sequences (colors, cursor moves)
+  // and collapse `\r`-only progress frames so a spinner line never stacks.
+  const lines = useMemo(() => {
+    const sanitized = sanitizeTerminalText(text);
+    return streaming
+      ? sanitized.split(/\r?\n/).filter((line) => line.trim())
+      : sanitized.split("\n");
+  }, [text, streaming]);
+
   return (
-    <div className="live-log shell-live" role="log" aria-label={t("cards.shellLiveLabel")}>
-      {rows.map((ln, i) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: rolling tail, rows shift as new output lands
-        <div className="line" key={i}>
-          {ln}
-        </div>
+    <FollowStream
+      text={text}
+      streaming={streaming}
+      label={streaming ? t("cards.shellLiveLabel") : t("cards.shellOutputLabel")}
+    >
+      {lines.map((line, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: append-only stream, no per-row state
+        <ShellRow key={i} line={line} />
       ))}
-    </div>
+    </FollowStream>
   );
 }
 
@@ -467,9 +510,12 @@ export function ShellCard({
       : t("cards.shellBackgroundRunning")
     : t("cards.shellRunning");
   // The settled result is raw combined stdout/stderr — strip escape sequences
-  // and progress/control bytes so colored output doesn't render as mojibake.
-  const outText = output ? sanitizeTerminalText(output) : undefined;
-  const copyText = outText ? `$ ${command}\n\n${outText}` : `$ ${command}`;
+  // so the copy affordance matches what the stream renders.
+  const copyText = output ? `$ ${command}\n\n${sanitizeTerminalText(output)}` : `$ ${command}`;
+  // While running the live stream is what the user watches; once the command
+  // settles the authoritative result replaces it. Both render through the same
+  // full-output stream.
+  const streamText = state === "running" ? liveOutput : output;
   return (
     <Card
       tone={tone}
@@ -501,29 +547,7 @@ export function ShellCard({
           <span className="prompt">$</span>
           <span className="text">{sanitizeTerminalText(command)}</span>
         </div>
-        {state === "running" && liveOutput ? <ShellLiveRows text={liveOutput} /> : null}
-        {outText !== undefined ? (
-          <pre className="out">
-            {outText.split("\n").map((ln, i) => {
-              if (ln.startsWith(" ✓") || ln.startsWith("✓"))
-                return (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: static output snapshot
-                  <div key={i}>
-                    <span className="ok">{ln}</span>
-                  </div>
-                );
-              if (ln.startsWith(" ✗") || ln.startsWith("✗") || /error/i.test(ln))
-                return (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: static output snapshot
-                  <div key={i}>
-                    <span className="err">{ln}</span>
-                  </div>
-                );
-              // biome-ignore lint/suspicious/noArrayIndexKey: static output snapshot
-              return <div key={i}>{ln}</div>;
-            })}
-          </pre>
-        ) : null}
+        {streamText ? <ShellOutput text={streamText} streaming={state === "running"} /> : null}
         {state === "await" && onApprove ? (
           <div className="approve-row">
             <div className="why">
