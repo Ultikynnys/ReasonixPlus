@@ -147,7 +147,6 @@ export function SettingsModal({
   onAddMcpSpec,
   onRemoveMcpSpec,
   onToggleMcpServer,
-  onToggleMcpTool,
   mcpExtensionStatus,
   mcpExtensionCheck,
   playwrightBrowserInstall,
@@ -219,7 +218,6 @@ export function SettingsModal({
   onAddMcpSpec: (spec: string) => void;
   onRemoveMcpSpec: (spec: string) => void;
   onToggleMcpServer: (name: string, disabled: boolean) => void;
-  onToggleMcpTool: (name: string, tool: string, disabled: boolean) => void;
   mcpExtensionStatus: McpExtensionStatus | null;
   mcpExtensionCheck: McpExtensionCheck | null;
   playwrightBrowserInstall: PlaywrightBrowserInstall | null;
@@ -370,7 +368,6 @@ export function SettingsModal({
                 onAdd={onAddMcpSpec}
                 onRemove={onRemoveMcpSpec}
                 onToggleServer={onToggleMcpServer}
-                onToggleTool={onToggleMcpTool}
                 extensionStatus={mcpExtensionStatus}
                 extensionCheck={mcpExtensionCheck}
                 browserInstall={playwrightBrowserInstall}
@@ -2522,7 +2519,6 @@ export function PageMCP({
   onAdd,
   onRemove,
   onToggleServer,
-  onToggleTool,
   extensionStatus,
   extensionCheck,
   browserInstall,
@@ -2545,7 +2541,6 @@ export function PageMCP({
   onAdd: (spec: string) => void;
   onRemove: (spec: string) => void;
   onToggleServer: (name: string, disabled: boolean) => void;
-  onToggleTool: (name: string, tool: string, disabled: boolean) => void;
   extensionStatus: McpExtensionStatus | null;
   extensionCheck: McpExtensionCheck | null;
   browserInstall: PlaywrightBrowserInstall | null;
@@ -2573,7 +2568,6 @@ export function PageMCP({
   const [mode, setMode] = useState<PlaywrightMcpConnectionMode>("chrome");
   const [extensionBrowser, setExtensionBrowser] = useState<PlaywrightExtensionBrowser>("chrome");
   const [cdpEndpoint, setCdpEndpoint] = useState("");
-  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const [gmailClientId, setGmailClientId] = useState("");
   const [gmailClientSecret, setGmailClientSecret] = useState("");
   const mail = mailAuth?.provider === mailProvider ? mailAuth : null;
@@ -2602,14 +2596,6 @@ export function PageMCP({
     if (!v) return;
     onAdd(v);
     setDraft("");
-  };
-  const toggleToolsExpanded = (raw: string) => {
-    setExpandedTools((prev) => {
-      const next = new Set(prev);
-      if (next.has(raw)) next.delete(raw);
-      else next.add(raw);
-      return next;
-    });
   };
   const configuredMode = extensionStatus?.server.mode;
   const extensionMode = mode === "extension";
@@ -2994,9 +2980,6 @@ export function PageMCP({
         ) : null}
         {specs.map((s) => {
           const canToggle = s.name !== null;
-          const tools = s.tools ?? [];
-          const isExpanded = expandedTools.has(s.raw);
-          const disabledCount = s.disabledTools?.length ?? 0;
           const headActions =
             canToggle || !s.builtin ? (
               <>
@@ -3042,10 +3025,6 @@ export function PageMCP({
                     <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
                       · {t("settings.mcpBuiltinBadge")}
                     </span>
-                  ) : disabledCount > 0 ? (
-                    <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
-                      · {t("settings.mcpToolsDisabledNote", { count: disabledCount })}
-                    </span>
                   ) : null}
                 </>
               }
@@ -3056,74 +3035,6 @@ export function PageMCP({
               {s.parseError ? (
                 <div className="desc" style={{ color: "var(--danger)" }}>
                   {t("settings.parseError", { error: s.parseError })}
-                </div>
-              ) : null}
-              {canToggle && tools.length > 0 ? (
-                <div
-                  style={{
-                    marginTop: 8,
-                    borderTop: "1px solid var(--border)",
-                    paddingTop: 8,
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    style={{ fontSize: 11 }}
-                    onClick={() => toggleToolsExpanded(s.raw)}
-                  >
-                    <I.chevR size={12} style={{ transform: isExpanded ? "rotate(90deg)" : "none" }} />
-                    {t("settings.mcpToolsLabel", { count: tools.length })}
-                  </button>
-                  {isExpanded ? (
-                    <div
-                      style={{
-                        marginTop: 6,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 2,
-                      }}
-                    >
-                      {tools.map((tool) => {
-                        const off = s.disabledTools?.includes(tool) ?? false;
-                        return (
-                          <div
-                            key={tool}
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              alignItems: "center",
-                              padding: "3px 8px",
-                              borderRadius: 6,
-                              background: off ? "var(--card)" : undefined,
-                            }}
-                          >
-                            <span
-                              className="mono"
-                              style={{
-                                fontSize: 11,
-                                color: off ? "var(--muted)" : undefined,
-                                textDecoration: off ? "line-through" : undefined,
-                              }}
-                            >
-                              {tool}
-                            </span>
-                            <button
-                              type="button"
-                              className="btn ghost"
-                              style={{ fontSize: 11, color: off ? "var(--accent)" : undefined }}
-                              onClick={() => onToggleTool(s.name as string, tool, !off)}
-                            >
-                              {off ? t("settings.mcpEnable") : t("settings.mcpDisable")}
-                            </button>
-                          </div>
-                        );
-                      })}
-                      <div style={{ fontSize: 10, color: "var(--muted)", padding: "2px 8px" }}>
-                        {t("settings.mcpToolToggleHint")}
-                      </div>
-                    </div>
-                  ) : null}
                 </div>
               ) : null}
               {s.name === "playwright" ? playwrightSettings : null}

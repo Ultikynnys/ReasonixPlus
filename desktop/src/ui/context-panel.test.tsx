@@ -204,9 +204,9 @@ describe("ContextPanel MCP tab count", () => {
       ...patch,
     });
     const { container } = renderPanel({}, null, [
-      spec("mail", { toolCount: 19, tools: ["send", "read"], sessionDisabledTools: ["send"] }),
+      spec("mail", { toolCount: 19 }),
       spec("other", { toolCount: 3 }),
-      spec("empty", { toolCount: 0, tools: [] }),
+      spec("empty", { toolCount: 0 }),
       spec("disabled", { toolCount: 100, sessionDisabled: true }),
       spec("failed", { toolCount: 100, status: "failed" }),
       spec("pending", { toolCount: 100, status: "handshake" }),
@@ -214,6 +214,27 @@ describe("ContextPanel MCP tab count", () => {
     ]);
     expect(container.querySelector(".ctx-tab-count")?.textContent).toBe("3");
     expect(container.querySelectorAll(".ctx-tab-count")).toHaveLength(1);
+  });
+});
+
+describe("ContextPanel MCP list", () => {
+  it("lists only the servers enabled for this session, hiding session-disabled ones", () => {
+    const spec = (name: string, patch: Partial<McpSpecInfo> = {}): McpSpecInfo => ({
+      raw: name,
+      name,
+      transport: "stdio",
+      summary: name,
+      status: "connected",
+      ...patch,
+    });
+    const { container } = renderPanel({}, null, [
+      spec("mail"),
+      spec("other"),
+      spec("hidden", { sessionDisabled: true }),
+    ]);
+    fireEvent.click(screen.getByText("MCP"));
+    const names = Array.from(container.querySelectorAll(".mcp-row .n")).map((n) => n.textContent);
+    expect(names).toEqual(["mail", "other"]);
   });
 });
 

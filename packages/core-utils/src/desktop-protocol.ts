@@ -578,14 +578,8 @@ export interface McpSpecInfo {
   toolCount?: number;
   /** Server-level DEFAULT from config (Settings) — true while disabled, even before first bridge. */
   disabled?: boolean;
-  /** Bare MCP tool names disabled in the DEFAULT (Settings) for this server. */
-  disabledTools?: string[];
-  /** THIS session's server-level disable (Tools-section toggles). Absent = follow the default. */
+  /** THIS session's server-level disable, frozen at chat creation. Absent = follow the default. */
   sessionDisabled?: boolean;
-  /** Bare MCP tool names disabled in THIS session for this server (Tools-section toggles). */
-  sessionDisabledTools?: string[];
-  /** Bare MCP tool names the server exposes — feeds the per-tool toggle UI. */
-  tools?: string[];
   /** Reasonix+-managed server (currently Playwright) — disableable and
    *  reconfigureable through its card, but never removable from the list. */
   builtin?: boolean;
@@ -595,6 +589,21 @@ export interface McpSpecsEvent {
   type: "$mcp_specs";
   specs: McpSpecInfo[];
   bridged: boolean;
+}
+
+/** One configured MCP server offered in the fresh-chat setup picker — `enabled`
+ *  is the Settings default (pre-filled). */
+export interface McpSetupServer {
+  name: string;
+  enabled: boolean;
+  builtin: boolean;
+}
+
+/** Fresh-chat MCP setup prompt: the configured servers the user must confirm
+ *  before the session can run. */
+export interface McpSetupEvent {
+  type: "$mcp_setup";
+  servers: McpSetupServer[];
 }
 
 export type PlaywrightManagedBrowser = "chrome" | "firefox" | "webkit" | "msedge";
@@ -1579,9 +1588,11 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "mcp_specs_get" }
   | { cmd: "mcp_specs_add"; spec: string }
   | { cmd: "mcp_specs_remove"; spec: string }
-  | { cmd: "mcp_specs_toggle"; name: string; disabled: boolean; tool?: string }
-  /** Per-session MCP toggle (Tools section) — edits the active session's state, not the default. */
-  | { cmd: "mcp_session_toggle"; name: string; disabled: boolean; tool?: string }
+  | { cmd: "mcp_specs_toggle"; name: string; disabled: boolean }
+  /** Confirm a fresh chat's enabled MCP servers, freezing its set and unlocking it. */
+  | { cmd: "mcp_session_configure"; enabled: string[] }
+  /** Abandon a fresh chat before its MCP set is confirmed — deletes that session; its workspace tab stays. */
+  | { cmd: "mcp_session_cancel" }
   | { cmd: "mcp_extension_status" }
   | {
       cmd: "mcp_extension_configure";

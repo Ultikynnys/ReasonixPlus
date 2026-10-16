@@ -74,6 +74,7 @@ import {
   type McpExtensionCheck,
   type McpExtensionStatus,
   type McpSpecInfo,
+  type McpSetupServer,
   type MemoryDetail,
   type MemoryEntryInfo,
   type OllamaQuota,
@@ -135,6 +136,7 @@ import { JobsPop } from "./ui/jobs-pop";
 import { JumpBar } from "./ui/jump-bar";
 import { activationHandler, escapeHandler } from "./ui/keyboard";
 import { type ChangelogState } from "./ui/changelog";
+import { McpSetupDialog } from "./ui/mcp-setup";
 import { SettingsModal, type PageId as SettingsPageId } from "./ui/settings";
 import { localizeShortcutText } from "./ui/shortcut";
 import { Sidebar } from "./ui/sidebar";
@@ -587,6 +589,8 @@ type State = {
   mentionPreview: MentionPreviewState | null;
   mcpSpecs: McpSpecInfo[];
   mcpBridged: boolean;
+  /** Configured servers pending confirmation on a fresh chat ($mcp_setup); null when not gating. */
+  mcpSetup: McpSetupServer[] | null;
   mcpExtensionStatus: McpExtensionStatus | null;
   mcpExtensionCheck: McpExtensionCheck | null;
   mailAuth: MailAuthState | null;
@@ -1890,7 +1894,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     }
     case "$ready":
-      return { ...state, ready: true, needsSetup: false };
+      return { ...state, ready: true, needsSetup: false, mcpSetup: null };
     case "$workspace_initialized":
       return {
         ...state,
@@ -2169,6 +2173,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         sessionsMutation: pendingSessionDeletes.length > 0 ? state.sessionsMutation : null,
       };
     }
+    case "$mcp_setup":
+      return { ...state, mcpSetup: Array.isArray(ev.servers) ? ev.servers : [] };
     case "$mcp_specs":
       return {
         ...state,
@@ -3118,6 +3124,7 @@ function TabRuntime({
     mentionPreview: null,
     mcpSpecs: [],
     mcpBridged: false,
+    mcpSetup: null,
     mcpExtensionStatus: null,
     mcpExtensionCheck: null,
     mailAuth: null,
@@ -3346,18 +3353,6 @@ function TabRuntime({
   );
   const toggleMcpServer = useCallback(
     (name: string, disabled: boolean) => sendRpc({ cmd: "mcp_specs_toggle", name, disabled }),
-    [sendRpc],
-  );
-  const toggleMcpTool = useCallback(
-    (name: string, tool: string, disabled: boolean) =>
-      sendRpc({ cmd: "mcp_specs_toggle", name, tool, disabled }),
-    [sendRpc],
-  );
-  // Per-session MCP toggle (Tools section) — edits the ACTIVE session's state,
-  // leaving the Settings default untouched.
-  const toggleSessionMcp = useCallback(
-    (name: string, disabled: boolean, tool?: string) =>
-      sendRpc({ cmd: "mcp_session_toggle", name, tool, disabled }),
     [sendRpc],
   );
   const requestMcpExtensionStatus = useCallback(
@@ -4730,7 +4725,6 @@ function TabRuntime({
           usage={state.usage}
           mcpSpecs={state.mcpSpecs}
           mcpBridged={state.mcpBridged}
-          onToggleSessionMcp={toggleSessionMcp}
           sessionFiles={state.sessionFiles}
           memory={state.memory}
           memoryDetail={state.memoryDetail}
@@ -4825,6 +4819,15 @@ function TabRuntime({
 
         {aboutOpen ? <AboutModal onClose={() => setAboutOpen(false)} /> : null}
 
+        {state.mcpSetup ? (
+          <McpSetupDialog
+            servers={state.mcpSetup}
+            onConfirm={(enabled) => sendRpc({ cmd: "mcp_session_configure", enabled })}
+            // Cancel discards the freshly minted session; its workspace tab stays.
+            onCancel={() => sendRpc({ cmd: "mcp_session_cancel" })}
+          />
+        ) : null}
+
         {settingsOpen && state.settings ? (
           <SettingsModal
             settings={state.settings}
@@ -4885,7 +4888,6 @@ function TabRuntime({
             onAddMcpSpec={addMcpSpec}
             onRemoveMcpSpec={removeMcpSpec}
             onToggleMcpServer={toggleMcpServer}
-            onToggleMcpTool={toggleMcpTool}
             mcpExtensionStatus={state.mcpExtensionStatus}
             mcpExtensionCheck={state.mcpExtensionCheck}
             playwrightBrowserInstall={state.playwrightBrowserInstall}

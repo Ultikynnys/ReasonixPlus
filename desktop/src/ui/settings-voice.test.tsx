@@ -70,7 +70,6 @@ describe("VoiceModelSettings", () => {
     onAddMcpSpec: vi.fn(),
     onRemoveMcpSpec: vi.fn(),
     onToggleMcpServer: vi.fn(),
-    onToggleMcpTool: vi.fn(),
     mcpExtensionStatus: null,
     mcpExtensionCheck: null,
     playwrightBrowserInstall: null,

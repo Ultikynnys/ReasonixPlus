@@ -1092,6 +1092,27 @@ describe("Desktop App reducer — usage", () => {
     expect(next.usage.liveLogTokens).toBe(42);
   });
 
+  it("$mcp_setup records the fresh-chat server list and $ready clears it", () => {
+    const withSetup = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$mcp_setup",
+        servers: [
+          { name: "playwright", enabled: true, builtin: true },
+          { name: "github", enabled: false, builtin: false },
+        ],
+      },
+    });
+    expect(withSetup.mcpSetup).toEqual([
+      { name: "playwright", enabled: true, builtin: true },
+      { name: "github", enabled: false, builtin: false },
+    ]);
+
+    const unlocked = reduce(withSetup, { t: "incoming", event: { type: "$ready" } });
+    expect(unlocked.ready).toBe(true);
+    expect(unlocked.mcpSetup).toBeNull();
+  });
+
   it("stores shell-output filtering totals from the context breakdown event", () => {
     const next = reduce(initialState(), {
       t: "incoming",

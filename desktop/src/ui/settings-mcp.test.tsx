@@ -59,7 +59,6 @@ function renderCard(
       onAdd={vi.fn()}
       onRemove={vi.fn()}
       onToggleServer={vi.fn()}
-      onToggleTool={vi.fn()}
       extensionStatus={status}
       extensionCheck={extensionCheck}
       browserInstall={browserInstall}

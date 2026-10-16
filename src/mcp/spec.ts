@@ -32,20 +32,14 @@ export type McpServerSpec =
   | (StdioMcpSpec & {
       env?: Record<string, string>;
       disabled?: boolean;
-      /** Bare MCP tool names (pre-namespace) that must not be bridged. */
-      disabledTools?: string[];
     })
   | (SseMcpSpec & {
       headers?: Record<string, string>;
       disabled?: boolean;
-      /** Bare MCP tool names (pre-namespace) that must not be bridged. */
-      disabledTools?: string[];
     })
   | (StreamableHttpMcpSpec & {
       headers?: Record<string, string>;
       disabled?: boolean;
-      /** Bare MCP tool names (pre-namespace) that must not be bridged. */
-      disabledTools?: string[];
     });
 
 export function getMcpServerEnv(spec: McpServerSpec): Record<string, string> | undefined {
@@ -72,28 +66,19 @@ export function overlayMatchedSpec(
 ): McpServerSpec {
   switch (parsed.transport) {
     case "stdio": {
-      const base = matched
+      return matched
         ? { ...parsed, disabled: matched.disabled, env: getMcpServerEnv(matched) }
         : { ...parsed };
-      return matched?.disabledTools?.length
-        ? { ...base, disabledTools: matched.disabledTools }
-        : base;
     }
     case "sse": {
-      const base = matched
+      return matched
         ? { ...parsed, disabled: matched.disabled, headers: getMcpServerHeaders(matched) }
         : { ...parsed };
-      return matched?.disabledTools?.length
-        ? { ...base, disabledTools: matched.disabledTools }
-        : base;
     }
     case "streamable-http": {
-      const base = matched
+      return matched
         ? { ...parsed, disabled: matched.disabled, headers: getMcpServerHeaders(matched) }
         : { ...parsed };
-      return matched?.disabledTools?.length
-        ? { ...base, disabledTools: matched.disabledTools }
-        : base;
     }
   }
 }

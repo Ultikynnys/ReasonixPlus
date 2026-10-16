@@ -31,12 +31,7 @@ import {
   playwrightWriteLocationNote,
 } from "../../mcp/playwright-tooling.js";
 import { preflightStdioSpec } from "../../mcp/preflight.js";
-import {
-  type BridgeEnv,
-  type McpClientHost,
-  bridgeMcpTools,
-  registerSingleMcpTool,
-} from "../../mcp/registry.js";
+import { type McpClientHost, bridgeMcpTools } from "../../mcp/registry.js";
 import type { SharedClientRegistry } from "../../mcp/shared-browser.js";
 import type { McpServerSpec } from "../../mcp/spec.js";
 import {
@@ -68,9 +63,6 @@ interface SpecRecord {
   registeredNames: string[];
   /** ToolSpec snapshots captured AFTER bridge — handed to loop.prefix.addTool on hot-add. */
   registeredSpecs: ToolSpec[];
-  /** Bare MCP tool names currently filtered out of the registry (user toggles).
-   *  Diffs against config to decide which tools to un/register without respawn. */
-  disabledTools: string[];
   /** Fingerprint of the env/headers this bridge was spawned with. A change (e.g.
    *  a rotated extension token) must force a respawn — `specToRaw` omits these,
    *  so a raw-spec diff alone would silently keep a stale bridge. */
@@ -123,9 +115,6 @@ export interface McpRuntime {
   summaries(): McpServerSummary[];
   /** Last bridge failure per spec — drives the "not bridged" reason shown in the dashboard. */
   failures(): McpFailure[];
-  /** Per-spec bare tool names currently registered (enabled) vs filtered out (disabled) —
-   *  drives the per-tool toggle UI and its current state. */
-  toolFilterState(): Array<{ spec: string; enabled: string[]; disabled: string[] }>;
   /** Call a server tool directly without registering it in the model-facing tool registry. */
   callServerTool(
     serverName: string,
@@ -160,23 +149,10 @@ function runtimeFingerprint(spec: McpServerSpec): string {
   ]);
 }
 
-/** Registered (wire) name → real bare MCP tool name. Prefers the mapping the
- *  bridge recorded; falls back to stripping the `server_` namespace prefix. */
-function bareToolName(env: BridgeEnv, registeredName: string): string {
-  const mapped = env.bareNames?.get(registeredName);
-  if (mapped !== undefined) return mapped;
-  const { prefix } = env;
-  return prefix && registeredName.startsWith(prefix)
-    ? registeredName.slice(prefix.length)
-    : registeredName;
-}
-
-/** Per-session MCP enablement, absolute — a server is disabled iff named, a tool
- *  iff listed under its server. Overlaid on the config default by
- *  `applyMcpSessionOverrides`. */
+/** Per-session MCP enablement, absolute — a server is disabled iff named.
+ *  Overlaid on the config default by `applyMcpSessionOverrides`. */
 export interface McpSpecOverrides {
   disabledServers?: ReadonlySet<string>;
-  disabledTools?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** Overlay a session's absolute MCP state onto specs from config. `overrides`
@@ -190,12 +166,9 @@ export function applyMcpSessionOverrides(
   const disabledServers = overrides.disabledServers ?? new Set<string>();
   return specs.map((spec): McpServerSpec => {
     const name = spec.name;
-    const disabled = name ? disabledServers.has(name) : false;
-    const toolList = name ? [...(overrides.disabledTools?.get(name) ?? [])] : [];
     return {
       ...spec,
-      disabled,
-      disabledTools: toolList.length > 0 ? toolList : undefined,
+      disabled: name ? disabledServers.has(name) : false,
     };
   });
 }
@@ -315,9 +288,10 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
           }
         }
       }
-      const configuredDisabled =
-        spec.disabledTools ?? (isOutlookMailSpec(spec) ? OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS : []);
-      const disabledTools = new Set([...configuredDisabled, ...hiddenTools]);
+      const disabledTools = new Set([
+        ...(isOutlookMailSpec(spec) ? OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS : []),
+        ...hiddenTools,
+      ]);
       const bridge = await bridgeMcpTools(mcp, {
         registry: tools,
         namePrefix,
@@ -393,7 +367,6 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
         registeredSpecs,
         runtimeKey: runtimeFingerprint(spec),
         sharedKey,
-        disabledTools: [...disabledTools],
       });
       insertionOrder.push(raw);
       resolveReady();
@@ -447,7 +420,6 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
         registeredSpecs,
         runtimeKey: runtimeFingerprint(spec),
         sharedKey,
-        disabledTools: [...disabledTools],
       });
       // Hot-add: shift the prefix so the live loop sees the new tools
       // on the very next turn. Each addTool is one cache-miss turn.
@@ -500,72 +472,6 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
     return true;
   }
 
-  /** Apply a new per-tool disable set to a LIVE server record — unregister
-   *  newly-disabled tools and re-register newly-enabled ones from the live
-   *  server listing, without closing/reopening the server process. */
-  async function applyToolDisableSet(
-    raw: string,
-    loop: CacheFirstLoop | undefined,
-    nextDisabled: ReadonlySet<string>,
-  ): Promise<void> {
-    const record = records.get(raw);
-    if (!record) return;
-    const env = record.summary.bridgeEnv;
-
-    // 1. Disable — unregister tools that entered the disable set.
-    const stillEnabled: string[] = [];
-    const stillEnabledSpecs: ToolSpec[] = [];
-    for (let i = 0; i < record.registeredNames.length; i++) {
-      const name = record.registeredNames[i]!;
-      if (nextDisabled.has(bareToolName(env, name))) {
-        env.registry.unregister(name);
-        loop?.prefix.removeTool(name);
-        continue;
-      }
-      stillEnabled.push(name);
-      const specSnapshot = record.registeredSpecs.find((s) => s.function.name === name);
-      if (specSnapshot) stillEnabledSpecs.push(specSnapshot);
-    }
-    record.registeredNames = stillEnabled;
-    record.registeredSpecs = stillEnabledSpecs;
-
-    // 2. Enable — re-register tools that left the disable set, from the live listing.
-    const toEnable = record.disabledTools.filter((bare) => !nextDisabled.has(bare));
-    if (toEnable.length > 0) {
-      const listed = await env.host.client.listTools();
-      const byName = new Map(listed.tools.map((t) => [t.name, t]));
-      for (const bare of toEnable) {
-        const mcpTool = byName.get(bare);
-        if (!mcpTool) continue; // server no longer exposes it — nothing to register
-        const registeredName = registerSingleMcpTool(mcpTool, env);
-        if (!registeredName) continue;
-        record.registeredNames.push(registeredName);
-        const specSnapshot = env.registry.specs().find((s) => s.function.name === registeredName);
-        if (specSnapshot) {
-          record.registeredSpecs.push(specSnapshot);
-          if (loop)
-            try {
-              loop.prefix.addTool(specSnapshot);
-            } catch (err) {
-              sink({
-                state: "warn",
-                name: record.summary.label,
-                reason: `addTool failed for ${registeredName}: ${(err as Error).message}`,
-              });
-            }
-        }
-      }
-    }
-
-    record.disabledTools = [...nextDisabled];
-    sink({
-      state: "tools-ready",
-      name: record.summary.label,
-      tools: record.registeredNames.length,
-      ms: 0,
-    });
-  }
-
   async function reloadFromConfig(loop?: CacheFirstLoop): Promise<{
     added: string[];
     removed: string[];
@@ -613,29 +519,6 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
         await removeSpec(spec, loop);
         const respawned = await addSpec(spec, loop);
         if (!respawned.ok) failed.push({ spec, reason: respawned.reason });
-        continue;
-      }
-      // Per-tool disable delta — hot un/register without respawning.
-      const protectedSendTools = isOutlookMailSpec(next)
-        ? record.disabledTools.filter(
-            (name) => !isOutlookConfirmedSendTool(name) && isOutlookSendCapableTool(name),
-          )
-        : [];
-      const nextConfiguredDisabled =
-        next.disabledTools ?? (isOutlookMailSpec(next) ? OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS : []);
-      const nextTools = new Set([
-        ...nextConfiguredDisabled,
-        ...managedMcpToolsHiddenFromModel(next),
-        ...protectedSendTools,
-      ]);
-      const cur = new Set(records.get(spec)?.disabledTools ?? []);
-      const changed = nextTools.size !== cur.size || [...nextTools].some((t) => !cur.has(t));
-      if (changed) {
-        try {
-          await applyToolDisableSet(spec, loop, nextTools);
-        } catch (err) {
-          failed.push({ spec, reason: `tool filter update failed: ${(err as Error).message}` });
-        }
       }
     }
     for (const spec of desired) {
@@ -670,22 +553,6 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
   function failures(): McpFailure[] {
     return [...failureMap.values()];
   }
-  function toolFilterState(): Array<{ spec: string; enabled: string[]; disabled: string[] }> {
-    return insertionOrder
-      .map((raw) => {
-        const rec = records.get(raw);
-        if (!rec) return undefined;
-        const env = rec.summary.bridgeEnv;
-        const parsed = parseMcpSpec(raw);
-        const hidden = managedMcpToolsHiddenFromModel(parsed);
-        return {
-          spec: raw,
-          enabled: rec.registeredNames.map((name) => bareToolName(env, name)),
-          disabled: rec.disabledTools.filter((name) => !hidden.has(name)),
-        };
-      })
-      .filter((s): s is { spec: string; enabled: string[]; disabled: string[] } => Boolean(s));
-  }
   async function callServerTool(
     serverName: string,
     toolName: string,
@@ -707,7 +574,6 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
     specs,
     summaries,
     failures,
-    toolFilterState,
     callServerTool,
     addSpec,
     removeSpec,

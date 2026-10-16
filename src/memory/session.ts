@@ -155,13 +155,16 @@ export interface SessionMeta {
    *  default taken at mint. Absent on older sessions: those follow the current
    *  default. Desktop "Duplicate session" copies the source session's value. */
   mcp?: SessionMcpState;
+  /** Set on a gated fresh chat whose MCP set was never confirmed (the process
+   *  died with the picker open); the boot sweep deletes it. Never set on legacy
+   *  sessions, so it distinguishes "pending" from "predates frozen-MCP". */
+  mcpPending?: boolean;
 }
 
 /** Session-owned MCP enablement. Absolute, not a delta — a server is disabled iff
- *  its name is listed, a tool iff it is listed under its server. */
+ *  its name is listed. Frozen at mint from the Settings default. */
 export interface SessionMcpState {
   disabledServers?: string[];
-  disabledTools?: Record<string, string[]>;
 }
 
 /** Sanitize a stored/loaded `SessionMeta.mcp` — drops non-strings and empties and
@@ -169,7 +172,7 @@ export interface SessionMcpState {
  *  legacy meta from feeding junk into the bridge. */
 export function normalizeSessionMcpState(input: unknown): SessionMcpState | undefined {
   if (!input || typeof input !== "object") return undefined;
-  const raw = input as { disabledServers?: unknown; disabledTools?: unknown };
+  const raw = input as { disabledServers?: unknown };
   let disabledServers: string[] | undefined;
   if (Array.isArray(raw.disabledServers)) {
     const clean = [
@@ -179,20 +182,8 @@ export function normalizeSessionMcpState(input: unknown): SessionMcpState | unde
     ];
     if (clean.length > 0) disabledServers = clean;
   }
-  let disabledTools: Record<string, string[]> | undefined;
-  if (raw.disabledTools && typeof raw.disabledTools === "object") {
-    const out: Record<string, string[]> = {};
-    for (const [server, tools] of Object.entries(raw.disabledTools as Record<string, unknown>)) {
-      if (!Array.isArray(tools)) continue;
-      const clean = [
-        ...new Set(tools.filter((t): t is string => typeof t === "string" && t.length > 0)),
-      ];
-      if (clean.length > 0) out[server] = clean;
-    }
-    if (Object.keys(out).length > 0) disabledTools = out;
-  }
-  if (!disabledServers && !disabledTools) return undefined;
-  return { disabledServers, disabledTools };
+  if (!disabledServers) return undefined;
+  return { disabledServers };
 }
 
 /** `sessionPath` keeps its historical name and now points at the chat transcript
@@ -797,6 +788,17 @@ export function pruneStaleSessions(daysOld = 90): string[] {
     if (s.mtime.getTime() < cutoff) {
       if (deleteSession(s.name)) deleted.push(s.name);
     }
+  }
+  return deleted;
+}
+
+/** Delete sessions minted for a gated fresh chat whose MCP set was never
+ *  confirmed (the daemon died with the picker open). Only a session still marked
+ *  `mcpPending` is removed; a confirmed or legacy one never carries it. */
+export function prunePendingMcpSessions(): string[] {
+  const deleted: string[] = [];
+  for (const { name } of listSessionDirs()) {
+    if (loadSessionMeta(name).mcpPending === true && deleteSession(name)) deleted.push(name);
   }
   return deleted;
 }

@@ -54,7 +54,6 @@ export function ContextPanel({
   usage,
   mcpSpecs,
   mcpBridged,
-  onToggleSessionMcp,
   sessionFiles,
   memory,
   memoryDetail,
@@ -86,8 +85,6 @@ export function ContextPanel({
   usage: UsageStats;
   mcpSpecs: McpSpecInfo[];
   mcpBridged: boolean;
-  /** Per-session MCP enable/disable (MCP tab) — edits THIS session, not the default. */
-  onToggleSessionMcp?: (name: string, disabled: boolean, tool?: string) => void;
   sessionFiles: SessionFile[];
   memory: MemoryEntryInfo[];
   memoryDetail: MemoryDetail | null;
@@ -239,7 +236,7 @@ export function ContextPanel({
             <CtxParameters settings={settings} usage={usage} onSaveSettings={onSaveSettings} />
           )}
           {tab === "mcp" && (
-            <CtxMcp specs={mcpSpecs} bridged={mcpBridged} onToggleSessionMcp={onToggleSessionMcp} />
+            <CtxMcp specs={mcpSpecs} bridged={mcpBridged} />
           )}
           {tab === "context" && settings?.rawTabEnabled && (
             <CtxRaw raw={rawContext ?? null} onRead={onReadContext} onWrite={onWriteContext} />
@@ -1584,42 +1581,27 @@ function CtxParameters({
   );
 }
 
-function CtxMcp({
-  specs,
-  bridged,
-  onToggleSessionMcp,
-}: {
-  specs: McpSpecInfo[];
-  bridged: boolean;
-  /** Per-session MCP enable/disable — edits THIS session, not the Settings default. */
-  onToggleSessionMcp?: (name: string, disabled: boolean, tool?: string) => void;
-}) {
-  const readyCount = specs.filter((s) => s.status === "connected").length;
-  const [expandedMcp, setExpandedMcp] = useState<Set<string>>(new Set());
-  const toggleMcpExpanded = (raw: string) =>
-    setExpandedMcp((prev) => {
-      const next = new Set(prev);
-      if (next.has(raw)) next.delete(raw);
-      else next.add(raw);
-      return next;
-    });
+function CtxMcp({ specs, bridged }: { specs: McpSpecInfo[]; bridged: boolean }) {
+  // The config may list servers this session never enabled; show only the session's set.
+  const sessionSpecs = specs.filter((s) => !s.sessionDisabled);
+  const readyCount = sessionSpecs.filter((s) => s.status === "connected").length;
   return (
     <>
       <div className="ctx-block">
         <div className="h">
           <span>{t("contextPanel.mcpTitle")}</span>
           <span className="right">
-            {specs.length === 0
+            {sessionSpecs.length === 0
               ? "-"
               : bridged
-                ? t("contextPanel.mcpReadyAll", { count: specs.length })
-                : t("contextPanel.mcpReadySome", { ready: readyCount, count: specs.length })}
+                ? t("contextPanel.mcpReadyAll", { count: sessionSpecs.length })
+                : t("contextPanel.mcpReadySome", { ready: readyCount, count: sessionSpecs.length })}
           </span>
         </div>
-        {specs.length === 0 ? (
+        {sessionSpecs.length === 0 ? (
           <div className="ctx-empty">{t("contextPanel.mcpEmpty")}</div>
         ) : (
-          specs.map((s) => {
+          sessionSpecs.map((s) => {
             const dot =
               s.status === "connected"
                 ? "ok"
@@ -1639,14 +1621,9 @@ function CtxMcp({
                     : s.status === "failed"
                       ? ` · ${t("contextPanel.mcpFailed")}`
                       : ` · ${t("contextPanel.mcpConfigured")}`;
-            const canToggle = s.name !== null && Boolean(onToggleSessionMcp);
-            const sessionOff = s.sessionDisabled === true;
-            const tools = s.tools ?? [];
-            const offTools = new Set(s.sessionDisabledTools ?? []);
-            const expanded = expandedMcp.has(s.raw);
             return (
               <div key={s.raw} style={{ marginBottom: 6 }}>
-                <div className="mcp-row" style={{ marginBottom: tools.length > 0 ? 4 : 6 }}>
+                <div className="mcp-row" style={{ marginBottom: 6 }}>
                   <span className="ico">
                     <I.wrench size={12} />
                   </span>
@@ -1657,85 +1634,8 @@ function CtxMcp({
                       {suffix}
                     </div>
                   </div>
-                  {canToggle ? (
-                    <button
-                      type="button"
-                      className="mini-btn"
-                      style={{
-                        fontSize: 11,
-                        flex: "0 0 auto",
-                        color: sessionOff ? "var(--accent)" : undefined,
-                      }}
-                      onClick={() => onToggleSessionMcp?.(s.name as string, !sessionOff)}
-                    >
-                      {sessionOff ? t("contextPanel.mcpEnable") : t("contextPanel.mcpDisable")}
-                    </button>
-                  ) : null}
                   <span className="status" data-s={dot} />
                 </div>
-                {canToggle && tools.length > 0 ? (
-                  <div style={{ paddingLeft: 8 }}>
-                    <button
-                      type="button"
-                      className="mini-btn"
-                      style={{ fontSize: 11, gap: 6 }}
-                      onClick={() => toggleMcpExpanded(s.raw)}
-                    >
-                      <I.chevR
-                        size={12}
-                        style={{ transform: expanded ? "rotate(90deg)" : "none" }}
-                      />
-                      {t("contextPanel.mcpToolsLabel", { count: tools.length })}
-                    </button>
-                    {expanded ? (
-                      <div
-                        style={{ display: "flex", flexDirection: "column", gap: 1, marginTop: 4 }}
-                      >
-                        {tools.map((tool) => {
-                          const off = offTools.has(tool);
-                          return (
-                            <div
-                              key={tool}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                gap: 6,
-                                padding: "1px 0",
-                              }}
-                            >
-                              <span
-                                className="mono"
-                                style={{
-                                  fontSize: 11,
-                                  color: off ? "var(--muted)" : undefined,
-                                  textDecoration: off ? "line-through" : undefined,
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {tool}
-                              </span>
-                              <button
-                                type="button"
-                                className="mini-btn"
-                                style={{
-                                  fontSize: 11,
-                                  flex: "0 0 auto",
-                                  color: off ? "var(--accent)" : undefined,
-                                }}
-                                onClick={() => onToggleSessionMcp?.(s.name as string, !off, tool)}
-                              >
-                                {off ? t("contextPanel.mcpEnable") : t("contextPanel.mcpDisable")}
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
               </div>
             );
           })

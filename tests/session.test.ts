@@ -35,6 +35,7 @@ import {
   parseSessionTimestamp,
   patchSessionMeta,
   patchSessionWorkspaceIfMissing,
+  prunePendingMcpSessions,
   pruneStaleSessions,
   renameSession,
   resolveSession,
@@ -548,6 +549,31 @@ describe("session persistence", () => {
     expect(existsSync(sessionPath("yesterday"))).toBe(false);
   });
 
+  it("prunePendingMcpSessions deletes never-configured fresh chats and keeps the rest", () => {
+    appendSessionMessage("pending", { role: "user", content: "x" });
+    patchSessionMeta("pending", { mcpPending: true });
+    // A confirmed chat (has `mcp`) and a legacy chat (neither field) must survive.
+    appendSessionMessage("confirmed", { role: "user", content: "x" });
+    patchSessionMeta("confirmed", { mcp: { disabledServers: ["blender"] } });
+    appendSessionMessage("legacy", { role: "user", content: "x" });
+    patchSessionMeta("legacy", { workspace: "/proj/a" });
+
+    expect(prunePendingMcpSessions()).toEqual(["pending"]);
+    expect(existsSync(sessionPath("pending"))).toBe(false);
+    expect(existsSync(sessionPath("confirmed"))).toBe(true);
+    expect(existsSync(sessionPath("legacy"))).toBe(true);
+  });
+
+  it("clearing mcpPending on confirm drops the flag from disk", () => {
+    appendSessionMessage("cleared", { role: "user", content: "x" });
+    patchSessionMeta("cleared", { mcpPending: true });
+    patchSessionMeta("cleared", { mcp: {}, mcpPending: undefined });
+
+    expect(loadSessionMeta("cleared").mcpPending).toBeUndefined();
+    expect(prunePendingMcpSessions()).toEqual([]);
+    expect(existsSync(sessionPath("cleared"))).toBe(true);
+  });
+
   describe("archiveSession", () => {
     it("returns null when the session file does not exist", () => {
       expect(archiveSession("ghost")).toBeNull();
@@ -988,9 +1014,12 @@ describe("normalizeSessionMcpState", () => {
     expect(normalizeSessionMcpState({ disabledServers: ["a", "a", 3, ""] })).toEqual({
       disabledServers: ["a"],
     });
+  });
+
+  it("ignores a legacy disabledTools field (per-tool disable removed)", () => {
     expect(
       normalizeSessionMcpState({ disabledTools: { s: ["x", "x", 1], empty: [], bad: 5 } }),
-    ).toEqual({ disabledTools: { s: ["x"] } });
+    ).toBeUndefined();
   });
 });
 

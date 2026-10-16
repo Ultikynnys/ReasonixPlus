@@ -224,7 +224,6 @@ import {
   saveRepetitionGuardEnabled,
   saveWorkspaceDir,
   setMcpServerDisabled,
-  setMcpToolDisabled,
   supportedReasoningEfforts,
   updateRule,
   writeConfig,
@@ -304,7 +303,6 @@ import {
 } from "../../mcp/gmail-mail.js";
 import {
   OUTLOOK_MAIL_ARGS,
-  OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS,
   OUTLOOK_MAIL_SERVER_NAME,
   isOutlookMailSpec,
   parseOutlookDeviceCode,
@@ -333,6 +331,7 @@ import {
   normalizeSessionMcpState,
   patchSessionMeta,
   patchSessionWorkspaceIfMissing,
+  prunePendingMcpSessions,
   resolveSessionModelPrefs,
   sessionExists,
   sessionNoticesPath,
@@ -545,6 +544,7 @@ export type EmittableEvent =
   | WorkspaceInitializedEvent
   | TabsSnapshotEvent
   | McpSpecsEvent
+  | import("@reasonix/core-utils").McpSetupEvent
   | McpExtensionStatusEvent
   | McpExtensionCheckEvent
   | MailAuthEvent
@@ -2915,6 +2915,7 @@ function loadSessionIntoTab(
   actions.abortTurn(tab);
   actions.cancelPendingGates(tab);
   tab.currentSession = name;
+  freezeLegacySessionMcp(tab, name);
   actions.persistOpenTabs();
   // Rebind model + effort to the conversation's stored pair before the
   // runtime rebuild, so the loop is constructed with the right model.
@@ -3002,21 +3003,26 @@ function summarizeMcpSpec(raw: string): McpSpecInfo {
   }
 }
 
-/** Snapshot the Settings → MCP default as a fresh session's absolute state. An
- *  empty object still marks the session as seeded, so later default edits don't
- *  retroactively change an existing conversation. */
+/** The named (non-anonymous) configured MCP servers for a workspace. */
+function namedMcpSpecs(rootDir: string): Array<McpServerSpec & { name: string }> {
+  return loadEffectiveMcpConfig(rootDir).filter((spec): spec is McpServerSpec & { name: string } =>
+    Boolean(spec.name),
+  );
+}
+
+/** Absolute session MCP state from the set of servers the chat may NOT use. */
+function makeSessionMcpState(disabledServers: Iterable<string>): SessionMcpState {
+  const sorted = [...new Set(disabledServers)].sort();
+  return sorted.length ? { disabledServers: sorted } : {};
+}
+
+/** Snapshot the Settings → MCP default as a fresh session's absolute state. */
 function sessionMcpFromConfig(rootDir: string): SessionMcpState {
-  const disabledServers: string[] = [];
-  const disabledTools: Record<string, string[]> = {};
-  for (const spec of loadEffectiveMcpConfig(rootDir)) {
-    if (!spec.name) continue;
-    if (spec.disabled) disabledServers.push(spec.name);
-    if (spec.disabledTools?.length) disabledTools[spec.name] = [...spec.disabledTools];
-  }
-  const state: SessionMcpState = {};
-  if (disabledServers.length) state.disabledServers = disabledServers.sort();
-  if (Object.keys(disabledTools).length) state.disabledTools = disabledTools;
-  return state;
+  return makeSessionMcpState(
+    namedMcpSpecs(rootDir)
+      .filter((spec) => spec.disabled === true)
+      .map((spec) => spec.name),
+  );
 }
 
 /** The active session's stored MCP state. `undefined` = a session created before
@@ -3034,10 +3040,24 @@ function sessionMcpOverrides(name: string): McpSpecOverrides | undefined {
   if (state === undefined) return undefined;
   return {
     disabledServers: new Set(state.disabledServers ?? []),
-    disabledTools: new Map(
-      Object.entries(state.disabledTools ?? {}).map(([server, tools]) => [server, new Set(tools)]),
-    ),
   };
+}
+
+/** Legacy sessions predate the frozen-MCP model: snapshot the current Settings
+ *  default once so the session's server set stops tracking later edits. */
+function freezeLegacySessionMcp(tab: Tab, name: string): void {
+  if (tab.mcpSetupPending) return;
+  try {
+    const meta = loadSessionMeta(name);
+    // A session still awaiting its MCP confirmation is not legacy — the boot
+    // sweep owns it; backfilling the default here would make it look configured.
+    if (meta.mcpPending === true) return;
+    if (meta.mcp !== undefined) return;
+    patchSessionMeta(name, { mcp: sessionMcpFromConfig(tab.rootDir) });
+  } catch (err) {
+    /* best-effort — a failure leaves the session mirroring the default */
+    process.stderr.write(`reasonix: legacy session MCP freeze failed — ${messageOf(err)}\n`);
+  }
 }
 
 /** Config specs for a tab with the active session's MCP overlay applied. */
@@ -3048,12 +3068,22 @@ function effectiveMcpSpecs(tab: Tab): McpServerSpec[] {
   );
 }
 
+/** Ask the frontend to pick this chat's enabled MCP servers before it can send.
+ *  Emits the configured servers with their Settings default state; the composer
+ *  stays disabled (no `$ready`) until `mcp_session_configure`. */
+function emitMcpSetup(tab: Tab): void {
+  const servers = namedMcpSpecs(tab.rootDir).map((spec) => ({
+    name: spec.name,
+    enabled: spec.disabled !== true,
+    builtin: isManagedMcpSpec(spec),
+  }));
+  emit({ type: "$mcp_setup", servers }, tab.id);
+}
+
 function emitMcpSpecs(tab: Tab): void {
   const normalized = loadEffectiveMcpConfig(tab.rootDir);
   // Session-scoped view. A legacy session (undefined) mirrors the default.
   const session = sessionMcpState(tab.currentSession);
-  const liveTools = tab.mcpRuntime?.toolFilterState() ?? [];
-  const toolStateByRaw = new Map(liveTools.map((t) => [t.spec, t]));
   const specs = normalized.map((spec) => {
     const raw = specToRaw(spec);
     const base = summarizeMcpSpec(raw);
@@ -3061,20 +3091,11 @@ function emitMcpSpecs(tab: Tab): void {
     base.disabled = spec.disabled === true;
     // Reasonix+ managed servers are built-in: disableable but not removable.
     base.builtin = isManagedMcpSpec(spec);
-    if (spec.disabledTools?.length) base.disabledTools = spec.disabledTools;
-    // Session toggle state (Tools section). Legacy sessions mirror the default.
+    // Session enablement — frozen at chat creation; a legacy session mirrors the default.
     const sessionDisabled = session
       ? Boolean(spec.name && session.disabledServers?.includes(spec.name))
       : spec.disabled === true;
-    const sessionDisabledTools = session
-      ? ((spec.name ? session.disabledTools?.[spec.name] : undefined) ?? [])
-      : (spec.disabledTools ?? []);
     if (sessionDisabled) base.sessionDisabled = true;
-    if (sessionDisabledTools.length) base.sessionDisabledTools = [...sessionDisabledTools].sort();
-    const toolState = toolStateByRaw.get(raw);
-    if (toolState) {
-      base.tools = [...new Set([...toolState.enabled, ...toolState.disabled])].sort();
-    }
     const live =
       tab.mcpStatuses.get(raw) ?? (spec.name ? tab.mcpStatuses.get(spec.name) : undefined);
     let merged: McpSpecInfo = live
@@ -3198,9 +3219,6 @@ function configureOutlookMailServer(): void {
   // Managed auth owns the token cache. Drop legacy/custom auth env so no access token,
   // client secret, or alternate tenant silently survives migration into this integration.
   stored.env = { MS365_MCP_TENANT_ID: "consumers" };
-  if (!stored.disabledTools || stored.disabledTools.length === 0) {
-    stored.disabledTools = [...OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS];
-  }
   writeConfig(cfg);
 }
 
@@ -4152,6 +4170,10 @@ interface Tab {
   mcpRuntime: McpRuntime | null;
   mcpStatuses: Map<string, { kind: McpSpecStatus; reason?: string; toolCount?: number }>;
   mcpBridgePromise: Promise<void> | null;
+  /** Fresh chat: true until the user confirms this chat's enabled MCP servers.
+   *  Withholds `$ready` (composer disabled) and defers the runtime + bridge
+   *  until `mcp_session_configure`. */
+  mcpSetupPending: boolean;
   /** True while a session switch is in progress — prevents stale events from the old turn. */
   switching: boolean;
   /** Identifies session snapshots from this daemon lifetime. */
@@ -4294,7 +4316,7 @@ export function pickResumeSession(
 function mintSessionFor(
   rootDir: string,
   prefs?: ModelPrefs,
-  options: { materialize?: boolean; mcp?: SessionMcpState } = {},
+  options: { materialize?: boolean; mcp?: SessionMcpState; mcpSetup?: boolean } = {},
 ): string {
   const materialize = options.materialize !== false;
   // Virtual deletion replacements need unique names even though they do not
@@ -4319,7 +4341,12 @@ function mintSessionFor(
     patchSessionMeta(name, {
       workspace: rootDir,
       ...(prefs ?? {}),
-      mcp: options.mcp ?? sessionMcpFromConfig(rootDir),
+      // A gated fresh chat defers its MCP snapshot until the user confirms the
+      // server set (and is marked pending so a force-exit mid-picker is swept on
+      // the next boot); every other mint freezes the set now.
+      ...(options.mcpSetup
+        ? { mcpPending: true }
+        : { mcp: options.mcp ?? sessionMcpFromConfig(rootDir) }),
     });
   } catch (err) {
     // meta is for filtering only: failure shouldn't block chat, but LOG
@@ -4846,6 +4873,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     process.stderr.write(`reasonix: session layout migration failed — ${messageOf(err)}\n`);
   }
 
+  // Fresh chats that were never configured (force-exited with the MCP picker
+  // open) are not real sessions — drop them before any list is served.
+  try {
+    const pruned = prunePendingMcpSessions();
+    if (pruned.length > 0) log.info(`pruned ${pruned.length} never-configured session(s)`);
+  } catch (err) {
+    process.stderr.write(`reasonix: pending-MCP session prune failed — ${messageOf(err)}\n`);
+  }
+
   const tabs = new Map<string, Tab>();
   publishProviderCatalogs = () => {
     for (const tab of tabs.values()) emitSettings(tab);
@@ -4892,6 +4928,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       model?: string;
       reasoningEffort?: import("../../config.js").ReasoningEffort;
       subagentModel?: string;
+      /** Fresh chat: hold the channel in MCP-setup state until servers are confirmed. */
+      mcpSetup?: boolean;
     },
     pending = false,
   ): Tab {
@@ -4946,6 +4984,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       mcpRuntime: null,
       mcpStatuses: new Map(),
       mcpBridgePromise: null,
+      mcpSetupPending: restore?.mcpSetup ?? false,
       switching: false,
       sessionsEpoch: randomUUID(),
       sessionsRevision: 0,
@@ -4967,7 +5006,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
               reasoningEffort: tab.currentReasoningEffort,
               subagentModel: tab.currentSubagentModel,
             },
-            { materialize: shouldMaterializeRestoredSession(restore) },
+            {
+              materialize: shouldMaterializeRestoredSession(restore),
+              mcpSetup: restore?.mcpSetup === true,
+            },
           );
     tabs.set(tab.id, tab);
     emitTabDiagnostic(tab, "tab.created", { active: false }, "info");
@@ -5043,16 +5085,22 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     tab.toolset = toolset;
     if (priority > 0) markPhase("first_toolset_ready");
     refreshTabSystemPrompt(tab);
-    if (tabCurrentModelUsable(tab)) {
+    if (tab.mcpSetupPending) {
+      // Fresh chat: hold the composer and the runtime until the user confirms the
+      // server set. The toolset exists so the picker can list servers; the runtime
+      // (and its tool-spec prefix) is built in the configure handler.
+      emitTabDiagnostic(tab, "tab.runtime.waiting-for-mcp-setup", undefined, "info");
+    } else if (tabCurrentModelUsable(tab)) {
       bridgeEndpointEnv();
+      // Focused tab: register the frozen MCP tools BEFORE the runtime exists so
+      // the first tool-spec prefix already contains them — no startup addTool
+      // churn. Other restored tabs still bridge lazily on first activation (see
+      // the tab_activate handler); bridging every tab at startup re-registered
+      // the full tool set once per tab and dominated startup.
+      if (tab === first) await bridgeTabMcp(tab);
       tab.runtime = buildRuntimeFor(tab);
       if (priority > 0) markPhase("first_runtime_ready");
       emitTabDiagnostic(tab, "tab.runtime.ready", undefined, "info");
-      // Bridge MCP eagerly for the initially-focused tab only; other restored
-      // tabs bridge lazily on first activation (see the tab_activate handler).
-      // Bridging every tab at startup re-registered the full MCP tool set once
-      // per tab (hundreds of tools each) and dominated startup.
-      if (tab === first) void bridgeTabMcp(tab);
     } else {
       emitTabDiagnostic(tab, "tab.runtime.waiting-for-credential", undefined, "warn");
     }
@@ -5128,12 +5176,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
   }
 
-  async function bridgeTabMcp(tab: Tab): Promise<void> {
-    if (!tab.runtime || !tab.toolset) {
-      emitTabDiagnostic(tab, "mcp.bridge.skipped", { reason: "runtime-or-toolset-not-ready" });
+  async function bridgeTabMcp(tab: Tab, loop?: CacheFirstLoop): Promise<void> {
+    if (!tab.toolset) {
+      emitTabDiagnostic(tab, "mcp.bridge.skipped", { reason: "toolset-not-ready" });
       tab.mcpBridgePromise = null;
       return Promise.resolve();
     }
+    // Prefer an explicitly-passed loop (the runtime isn't built yet during a
+    // bridge-before-build); otherwise the live runtime's loop.
+    const activeLoop = loop ?? tab.runtime?.loop;
     const configured = effectiveMcpSpecs(tab);
     emitTabDiagnostic(tab, "mcp.bridge.started", {
       configured: configured.length,
@@ -5159,7 +5210,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (tab.mcpRuntime) {
       // Already constructed — reload so new/removed specs settle without restart.
       const p = tab.mcpRuntime
-        .reloadFromConfig(tab.runtime.loop)
+        .reloadFromConfig(activeLoop)
         .then(() => {
           emitTabDiagnostic(tab, "mcp.bridge.completed", { mode: "reload" });
           emitMcpSpecs(tab);
@@ -5264,7 +5315,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       emitMcpSpecs(tab);
     });
     const p = runtime
-      .reloadFromConfig(tab.runtime.loop)
+      .reloadFromConfig(activeLoop)
       .then((result) => {
         emitTabDiagnostic(tab, "mcp.bridge.completed", {
           mode: "initial",
@@ -5358,6 +5409,17 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         });
         // MCP shutdown errors aren't actionable here either — but LOG
         process.stderr.write(`reasonix: tab MCP closeAll failed — ${messageOf(err)}\n`);
+      }
+    }
+    // A gated fresh chat never became a real conversation; its never-confirmed
+    // session dies with the tab on EVERY close path (X cancel, Ctrl+W, workspace
+    // removal). The boot sweep is the force-exit equivalent.
+    if (tab.mcpSetupPending && tab.currentSession) {
+      tab.mcpSetupPending = false;
+      if (deleteSession(tab.currentSession)) {
+        emitSessionsForWorkspace(tab.rootDir);
+      } else {
+        process.stderr.write(`reasonix: pending session delete failed — ${tab.currentSession}\n`);
       }
     }
     tabs.delete(tab.id);
@@ -6573,6 +6635,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       /** Marks this channel as a just-minted session so the frontend shows a
        *  "Creating session…" indicator until the first `$sessions` lands. */
       creating?: boolean;
+      /** Fresh chat: enter the MCP-setup state (picker + withheld $ready). */
+      mcpSetup?: boolean;
     },
   ): Tab {
     const tab = createTabSkeleton(initialDir, restore?.id, restore, restore?.pending ?? false);
@@ -6631,6 +6695,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         try {
           if (sessionExists(restore.session)) {
             tab.currentSession = restore.session;
+            freezeLegacySessionMcp(tab, tab.currentSession);
             restoreSessionModelPrefs(tab, loadSessionMeta(tab.currentSession));
           }
         } catch (err) {
@@ -6660,7 +6725,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // the frontend handles it.
       tab.initialization = initTabToolset(tab, tab === first || restore?.active ? 1 : 0)
         .then(() => {
-          if (tabHasCredential(tab)) {
+          if (tab.mcpSetupPending) {
+            // Composer stays disabled until `mcp_session_configure`; surface the picker.
+            emitTabDiagnostic(tab, "tab.setup.required", { reason: "mcp-setup" }, "info");
+            emitMcpSetup(tab);
+          } else if (tabHasCredential(tab)) {
             emitTabDiagnostic(tab, "tab.ready", undefined, "info");
             emit({ type: "$ready" }, tab.id);
             if (tab === first) {
@@ -7318,11 +7387,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "mcp_specs_toggle") {
+      // Edits the Settings DEFAULT (server-level). Takes effect for NEW chats only —
+      // a live session's server set is frozen at chat creation, so this never
+      // re-bridges the current session.
       try {
         const cfg = readConfig();
-        const ok = msg.tool
-          ? setMcpToolDisabled(cfg, msg.name, msg.tool, msg.disabled)
-          : setMcpServerDisabled(cfg, msg.name, msg.disabled);
+        const ok = setMcpServerDisabled(cfg, msg.name, msg.disabled);
         if (!ok) {
           emit(
             { type: "$error", message: `mcp_specs_toggle: unknown server "${msg.name}"` },
@@ -7332,48 +7402,81 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         }
         writeConfig(cfg);
         emitMcpSpecs(tab);
-        void bridgeTabMcp(tab);
       } catch (err) {
         emitDiagnosticError("mcp.spec.toggle.failed", err, {
           tabId: tab.id,
-          details: { name: msg.name, tool: msg.tool, disabled: msg.disabled },
+          details: { name: msg.name, disabled: msg.disabled },
         });
         emit({ type: "$error", message: `mcp_specs_toggle: ${(err as Error).message}` }, tab.id);
       }
       return;
     }
-    if (msg.cmd === "mcp_session_toggle") {
-      if (!tab.currentSession) return;
+    if (msg.cmd === "mcp_session_configure") {
+      // Only a chat still awaiting setup may be configured; a repeat/duplicate
+      // confirm is a no-op because the first call already cleared the flag.
+      if (!tab.currentSession || !tab.mcpSetupPending) return;
       try {
-        // Tools-section toggle: edit THIS session's absolute MCP state (seed a
-        // legacy session from the default first so its current state is frozen
-        // in), then re-bridge so the change is live.
-        const state = sessionMcpState(tab.currentSession) ?? sessionMcpFromConfig(tab.rootDir);
-        const next: SessionMcpState = { ...state };
-        if (msg.tool) {
-          const tools = new Set(state.disabledTools?.[msg.name] ?? []);
-          if (msg.disabled) tools.add(msg.tool);
-          else tools.delete(msg.tool);
-          const disabledTools = { ...(state.disabledTools ?? {}) };
-          if (tools.size > 0) disabledTools[msg.name] = [...tools].sort();
-          else delete disabledTools[msg.name];
-          next.disabledTools = Object.keys(disabledTools).length ? disabledTools : undefined;
-        } else {
-          const servers = new Set(state.disabledServers ?? []);
-          if (msg.disabled) servers.add(msg.name);
-          else servers.delete(msg.name);
-          next.disabledServers = servers.size ? [...servers].sort() : undefined;
-        }
-        patchSessionMeta(tab.currentSession, { mcp: next });
-        emitMcpSpecs(tab);
-        void bridgeTabMcp(tab);
-      } catch (err) {
-        emitDiagnosticError("mcp.session.toggle.failed", err, {
-          tabId: tab.id,
-          details: { name: msg.name, tool: msg.tool, disabled: msg.disabled },
+        // Freeze this chat's server set: every configured server not confirmed
+        // enabled is recorded disabled. Immutable from here on.
+        const enabledNames = new Set(msg.enabled);
+        const disabledServers = namedMcpSpecs(tab.rootDir)
+          .map((spec) => spec.name)
+          .filter((name) => !enabledNames.has(name));
+        patchSessionMeta(tab.currentSession, {
+          mcp: makeSessionMcpState(disabledServers),
+          // An explicit `undefined` is dropped on write, clearing the pending marker.
+          mcpPending: undefined,
         });
-        emit({ type: "$error", message: `mcp_session_toggle: ${(err as Error).message}` }, tab.id);
+        tab.mcpSetupPending = false;
+        emitMcpSpecs(tab);
+        const unlock = (): void => {
+          if (tabCurrentModelUsable(tab) && tab.toolset && !tab.runtime) {
+            bridgeEndpointEnv();
+            tab.runtime = buildRuntimeFor(tab);
+            emitTabDiagnostic(tab, "tab.runtime.ready", undefined, "info");
+          }
+          if (tabHasCredential(tab)) {
+            emitTabDiagnostic(tab, "tab.ready", undefined, "info");
+            emit({ type: "$ready" }, tab.id);
+          }
+          emitCtxBreakdown(tab);
+        };
+        if (tab.toolset) {
+          // Bridge the confirmed servers BEFORE building the prefix so the frozen
+          // tool set is present from the first turn (no addTool churn).
+          void bridgeTabMcp(tab).then(unlock);
+        } else {
+          unlock();
+        }
+      } catch (err) {
+        emitDiagnosticError("mcp.session.configure.failed", err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+        emit(
+          { type: "$error", message: `mcp_session_configure: ${(err as Error).message}` },
+          tab.id,
+        );
       }
+      return;
+    }
+    if (msg.cmd === "mcp_session_cancel") {
+      // Only a chat still awaiting setup can be cancelled. This closes just the
+      // channel (its session), NOT the whole workspace tab. `closeChannel` also
+      // discards the never-confirmed session.
+      if (!tab.mcpSetupPending || !tab.currentSession) return;
+      const sibling = channelsInWorkspaceTab(Array.from(tabs.values()), tab).find(
+        (channel) => channel.id !== tab.id,
+      );
+      // Focus the sibling FIRST: otherwise $tab_closed bounces the active tab to
+      // an arbitrary remaining one instead of keeping the user in place.
+      if (sibling) focusSessionChannel(sibling);
+      closeChannel(tab).catch((err) => {
+        emitDiagnosticError("mcp.session.cancel.failed", err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+      });
       return;
     }
     if (msg.cmd === "mcp_extension_status") {
@@ -7814,6 +7917,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           // Fresh session, so the new channel shows a create indicator until
           // its first $sessions snapshot lists the minted session.
           creating: true,
+          // A fresh chat must pick its MCP servers before it can run; skip the
+          // gate when nothing is configured — there's nothing to choose.
+          mcpSetup: loadEffectiveMcpConfig(tab.rootDir).length > 0,
         });
         lastActiveTabId = opened.id;
         persistOpenTabs();

@@ -199,6 +199,8 @@ export type {
   McpSpecStatus,
   McpSpecInfo,
   McpSpecsEvent,
+  McpSetupEvent,
+  McpSetupServer,
   McpExtensionCheck,
   McpExtensionCheckEvent,
   McpExtensionServerState,

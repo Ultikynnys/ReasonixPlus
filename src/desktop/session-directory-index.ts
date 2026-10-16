@@ -192,7 +192,9 @@ export class SessionDirectoryIndex<M> {
   remove(name: string): void {
     this.records.delete(join(this.directory(), name, SESSION_MESSAGES_FILENAME));
     this.invalidate();
-    if (this.cacheFilePath() !== undefined) void this.persistIndex(this.records);
+    // Persist only once materialized: before the first load `records` is empty,
+    // so writing it would clobber the warm cache with an empty index.
+    if (this.loaded && this.cacheFilePath() !== undefined) void this.persistIndex(this.records);
   }
 
   /** Batch form of `remove`: drop every name, invalidate once, persist once.
@@ -204,7 +206,7 @@ export class SessionDirectoryIndex<M> {
       this.records.delete(join(dir, name, SESSION_MESSAGES_FILENAME));
     }
     this.invalidate();
-    if (this.cacheFilePath() !== undefined) void this.persistIndex(this.records);
+    if (this.loaded && this.cacheFilePath() !== undefined) void this.persistIndex(this.records);
   }
 
   private async refresh(generation: number): Promise<readonly SessionDirectoryRecord<M>[]> {

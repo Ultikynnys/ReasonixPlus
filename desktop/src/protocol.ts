@@ -64,6 +64,8 @@ import type {
   McpSpecInfo,
   McpSpecStatus,
   McpSpecsEvent,
+  McpSetupEvent,
+  McpSetupServer,
   MemoryDetailEvent,
   MemoryEntryDetail,
   MemoryEntryInfo,
@@ -190,6 +192,8 @@ export type {
   PlaywrightExtensionBrowser,
   McpSpecInfo,
   McpSpecsEvent,
+  McpSetupEvent,
+  McpSetupServer,
   McpSpecStatus,
   MemoryDetailEvent,
   MemoryEntryDetail,
@@ -308,6 +312,7 @@ export type IncomingEvent = { tabId?: string } & (
   | WorkspaceInitializedEvent
   | TabsSnapshotEvent
   | McpSpecsEvent
+  | McpSetupEvent
   | McpExtensionStatusEvent
   | McpExtensionCheckEvent
   | MailAuthEvent

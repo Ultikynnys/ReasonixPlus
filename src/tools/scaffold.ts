@@ -258,7 +258,6 @@ export function registerScaffoldTools(
           // Live wins: a registered tool means the bridge is usable, even if the
           // config default marked the server disabled (a session enabled it).
           const status = isBridged ? "connected" : s.disabled ? "disabled" : "configured";
-          const disabledTools = s.disabledTools ?? [];
           return {
             name: s.name ?? "anon",
             transport: s.transport,
@@ -269,7 +268,6 @@ export function registerScaffoldTools(
               : { url: s.url }),
             tool_count: tools.length,
             tools,
-            disabled_tools: disabledTools,
           };
         });
 
