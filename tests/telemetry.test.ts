@@ -86,6 +86,16 @@ describe("costUsd", () => {
     expect(costUsd("unknown-model", new Usage(1000, 100))).toBe(0);
   });
 
+  it("resolves the rate table from the provider when no context is given", () => {
+    const usage = new Usage(1_000_000, 1_000_000, 2_000_000, 0, 1_000_000);
+    // The same wire id is served by several providers at different rates: the
+    // name alone must not pick a table. `ollama/…` resolves to Ollama → its
+    // off-peak table (no timestamp → 1x).
+    expect(costUsd("ollama/deepseek-v4-flash:0731", usage)).toBeCloseTo(0.22 + 0.66, 10);
+    // A bare DeepSeek id resolves to DeepSeek → the DeepSeek table.
+    expect(costUsd("deepseek-v4-flash", usage)).toBeCloseTo(0.15 + 0.6, 10);
+  });
+
   it("applies Ollama Cloud's published off-peak Flash and Pro prices", () => {
     expect(OLLAMA_PRICING).toEqual({
       "deepseek-v4-flash": {
@@ -504,6 +514,31 @@ describe("billingContextForModel", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("resolves the native unit from the provider, never the model name", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reasonix-billing-unit-"));
+    const path = join(dir, "config.json");
+    try {
+      writeConfig({}, path);
+      // Xiaomi MiMo bills a subscription plan → plan-window %, never USD.
+      expect(billingContextForModel("mimo-v2.6-pro", path)).toEqual({
+        kind: "quota",
+        provider: "mimo",
+      });
+      // DeepSeek is the only provider whose default native unit is per-token USD.
+      expect(billingContextForModel("deepseek-v4-flash", path)).toEqual({
+        kind: "usd",
+        provider: "deepseek",
+      });
+      // OpenCode never exposes a per-token dollar amount.
+      expect(billingContextForModel("big-pickle", path)).toEqual({
+        kind: "none",
+        provider: "opencode",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("SessionStats explicit billing context", () => {
@@ -622,5 +657,17 @@ describe("SessionStats.recordExternal (#2008)", () => {
     const summaryAfter = s.summary().totalCostUsd;
 
     expect(summaryAfter).toBeGreaterThan(summaryBefore);
+  });
+
+  it("resolves the provider from the model when the caller omits it", () => {
+    const s = new SessionStats();
+    // A provider-less billing (e.g. a library caller) must not collapse the
+    // bucket to the literal "undefined" key.
+    s.recordExternal("deepseek-v4-flash", new Usage(5_000, 500, 0, 4_000, 1_000), {
+      kind: "usd",
+    });
+    expect(s.providerCosts.deepseek).toBeDefined();
+    expect(s.providerCosts.undefined).toBeUndefined();
+    expect(s.totalCost).toBeGreaterThan(0);
   });
 });

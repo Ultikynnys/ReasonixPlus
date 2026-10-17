@@ -58,10 +58,12 @@ export const OLLAMA_PRICING: Record<string, ModelPricing> = {
 };
 
 export interface PricingContext {
-  /** Resolved provider identity. Never inferred from the model's name shape. */
+  /** Resolved provider identity — the rate-table selector. Never inferred from
+   *  the model's name shape. */
   provider: ModelProvider;
-  /** Time the priced request completed. */
-  at: Date | number;
+  /** Time the priced request completed; absent → the provider's base (off-peak)
+   *  rate. */
+  at?: Date | number;
 }
 
 const DEEPSEEK_PRICED_MODELS = new Set([
@@ -87,24 +89,24 @@ function ollamaPricingModel(model: string): string {
   return normalizeOllamaModelId(model);
 }
 
-function defaultPricingFor(model: string, context?: PricingContext): ModelPricing | undefined {
+/** The off-peak USD rate table for a model, selected by the RESOLVED provider —
+ *  never keyed on the model name alone, so the same id on two providers prices
+ *  by its own table. The provider arrives from positive evidence. */
+function defaultPricingFor(model: string, provider: ModelProvider): ModelPricing | undefined {
   // Rate tables are keyed on the wire id, so a qualified ref prices like the
   // native id. Ollama keeps the raw id: its scheme (ollama/<id>:tag) predates
   // qualifiers and normalizeOllamaModelId expects it.
   const id = stripProviderQualifier(model);
-  if (!context) return DEEPSEEK_PRICING[id];
-  switch (context.provider) {
+  switch (provider) {
     case "deepseek":
       return DEEPSEEK_PRICED_MODELS.has(id) ? DEEPSEEK_PRICING[id] : undefined;
     case "openai":
       return OPENAI_PRICED_MODELS.has(id) ? DEEPSEEK_PRICING[id] : undefined;
     case "ollama":
       return isOllamaPeakPricedModel(model) ? OLLAMA_PRICING[ollamaPricingModel(model)] : undefined;
-    case "mimo":
-      // MiMo bills through its subscription plan, not per-token USD — no static
-      // rate. Set `pricingOverride` for a per-model estimate if one is wanted.
-      return undefined;
     default:
+      // mimo bills a subscription plan; gemini/zai/opencode bill plan windows —
+      // none exposes a per-token USD rate. Set `pricingOverride` for an estimate.
       return undefined;
   }
 }
@@ -114,7 +116,10 @@ function pricingFor(
   path?: string,
   context?: PricingContext,
 ): ModelPricing | undefined {
-  const defaults = defaultPricingFor(model, context);
+  // Resolve the provider once — from the explicit context when present, else
+  // from positive evidence (config > qualifier > catalogs). Never from the name.
+  const provider = context?.provider ?? providerForModel(model, path);
+  const defaults = defaultPricingFor(model, provider);
   // Overrides key on the wire id too: one entry covers every provider variant.
   const override = loadPricingOverride(path)[stripProviderQualifier(model)];
   if (!override) return defaults;
@@ -130,7 +135,7 @@ function pricingFor(
 }
 
 function priceMultiplier(context?: PricingContext): number {
-  if (!context) return 1;
+  if (context?.at === undefined) return 1;
   const at = context.at instanceof Date ? context.at : new Date(context.at);
   if (context.provider === "deepseek") {
     return isPeakRate(at, DEEPSEEK_RATE_SCHEDULE) ? 2 : 1;
@@ -347,7 +352,12 @@ export interface SessionProviderCost {
 /** Resolve a model's native billing unit and provider from endpoint/config evidence. */
 export function billingContextForModel(model: string, path?: string): BillingContext {
   const provider = providerForModel(model, path);
+  // Exhaustive switch (no `default`): a newly added provider must declare its
+  // native unit here instead of silently inheriting "usd".
   switch (provider) {
+    case "deepseek":
+      // The only provider whose default native unit is per-token USD.
+      return { kind: "usd", provider };
     case "openai":
       return {
         kind: readConfig(path).openaiOAuth?.accessToken ? "quota" : "usd",
@@ -365,15 +375,20 @@ export function billingContextForModel(model: string, path?: string): BillingCon
         provider,
       };
     }
-    case "opencode":
-      return { kind: "none", provider };
     case "zai":
       // A Z.AI GLM key is evidence of a Coding Plan account, whose real unit is
       // plan-window % (fetched from the monitor endpoint), never dollars. Keyless
       // tabs stay unbilled ("none") rather than inventing a USD figure.
       return { kind: loadZaiApiKey(path) ? "quota" : "none", provider };
-    default:
-      return { kind: "usd", provider };
+    case "mimo":
+      // MiMo bills an OpenAI-compatible *subscription* plan; its native unit is
+      // plan-window % (the console usage endpoint), never per-token USD — no
+      // dollar figure is ever derived from its token counts.
+      return { kind: "quota", provider };
+    case "opencode":
+      // Go-subscription usage is plan-window %, accumulated from the usage
+      // endpoint; free/anon Zen and paid Zen expose no per-token dollar amount.
+      return { kind: "none", provider };
   }
 }
 
@@ -388,8 +403,11 @@ function normalizeBilling(model: string, billing: BillingKind | BillingContext):
     : billing;
 }
 
-function pricingContextForBilling(billing: BillingContext): PricingContext | undefined {
-  return billing.at === undefined ? undefined : { provider: billing.provider, at: billing.at };
+/** Narrow a provider + completion time to the pricing engine's context. `at` is
+ *  optional (absent → base rate), but the provider is ALWAYS carried, so the
+ *  rate table is never re-derived from the model name. */
+function pricingContext(src: { provider: ModelProvider; at?: number }): PricingContext {
+  return { provider: src.provider, ...(src.at !== undefined ? { at: src.at } : {}) };
 }
 
 export interface SessionSummary {
@@ -528,7 +546,7 @@ export class SessionStats {
     billing: BillingKind | BillingContext = billingContextForModel(model),
   ): TurnStats {
     const resolved = normalizeBilling(model, billing);
-    const pricing = pricingContextForBilling(resolved);
+    const pricing = pricingContext(resolved);
     const cost = resolved.kind === "usd" ? costUsd(model, usage, undefined, pricing) : 0;
     const stats: TurnStats = {
       turn,
@@ -564,16 +582,23 @@ export class SessionStats {
   recordExternal(
     model: string,
     usage: Usage,
-    billing: BillingContext & { quotaUsedPct?: number } = billingContextForModel(model),
+    billing: Omit<BillingContext, "provider"> & {
+      /** Resolved provider; falls back to the model's evidence when omitted. */
+      provider?: ModelProvider;
+      quotaUsedPct?: number;
+    } = billingContextForModel(model),
   ): void {
-    const pricing = pricingContextForBilling(billing);
+    // A caller that omits the provider must never collapse the bucket to the
+    // literal "undefined" key — resolve it from the model's positive evidence.
+    const provider = billing.provider ?? providerForModel(model);
+    const pricing = pricingContext({ provider, at: billing.at });
     if (billing.kind === "usd") {
       const cost = costUsd(model, usage, undefined, pricing);
       this._carryoverCost += cost;
-      this.accrueProviderCost(billing.provider, "usd", { costUsd: cost });
+      this.accrueProviderCost(provider, "usd", { costUsd: cost });
     } else if (billing.kind === "quota" && typeof billing.quotaUsedPct === "number") {
       // Native unit: plan-window % consumed, never converted to dollars.
-      this.accrueProviderCost(billing.provider, "quota", { quotaUsedPct: billing.quotaUsedPct });
+      this.accrueProviderCost(provider, "quota", { quotaUsedPct: billing.quotaUsedPct });
     }
     this._carryoverCacheHit += usage.promptCacheHitTokens;
     this._carryoverCacheMiss += usage.promptCacheMissTokens;
@@ -660,21 +685,23 @@ export class SessionStats {
     return c > 0 ? 1 - this.totalCost / c : 0;
   }
 
+  /** Pricing context for a recorded turn — the provider is carried explicitly
+   *  (never re-derived from the model name); a missing `pricedAt` = base rate. */
+  private turnPricing(turn: TurnStats): PricingContext {
+    return pricingContext({ provider: turn.provider, at: turn.pricedAt });
+  }
+
   get totalInputCost(): number {
     return this.turns.reduce((sum, turn) => {
       if (turn.billingKind !== "usd") return sum;
-      const pricing =
-        turn.pricedAt === undefined ? undefined : { provider: turn.provider, at: turn.pricedAt };
-      return sum + inputCostUsd(turn.model, turn.usage, undefined, pricing);
+      return sum + inputCostUsd(turn.model, turn.usage, undefined, this.turnPricing(turn));
     }, 0);
   }
 
   get totalOutputCost(): number {
     return this.turns.reduce((sum, turn) => {
       if (turn.billingKind !== "usd") return sum;
-      const pricing =
-        turn.pricedAt === undefined ? undefined : { provider: turn.provider, at: turn.pricedAt };
-      return sum + outputCostUsd(turn.model, turn.usage, undefined, pricing);
+      return sum + outputCostUsd(turn.model, turn.usage, undefined, this.turnPricing(turn));
     }, 0);
   }
 

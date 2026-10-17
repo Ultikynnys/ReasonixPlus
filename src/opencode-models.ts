@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import {
   ANTIGRAVITY_MODELS,
+  type ModelEndpointInfo,
   OPENAI_MODELS,
   OPENCODE_GO_MODELS,
   OPENCODE_MODELS,
@@ -9,6 +10,7 @@ import {
   SUPPORTED_OFFICIAL_MODELS,
   ZAI_MODELS,
   messageOf,
+  stripProviderQualifier,
 } from "@reasonix/core-utils";
 import { isCacheFresh, readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
 import { fetchJson } from "./net/timeout-fetch.js";
@@ -319,30 +321,47 @@ export async function fetchOpencodeModels(
   }
 }
 
-/** Check whether an arbitrary model ID belongs to the discovered OpenCode models. */
+/** Whether a model ID belongs to the discovered OpenCode models. Matched on the
+ *  raw id, not the stripped wire id — it gates the OpenCode-vs-`ollama/`
+ *  precedence, so stripping would let `ollama/<id>` hijack the Ollama scheme. */
 export function isDiscoveredOpencodeModel(modelId: string, homeDirOverride?: string): boolean {
   if (OPENCODE_MODELS.includes(modelId) || OPENCODE_GO_MODELS.includes(modelId)) return true;
   const cached = loadOpencodeModelsCache(homeDirOverride);
   return Boolean(cached?.models.includes(modelId));
 }
 
-/** True when a model id is served by the OpenCode Go subscription endpoint
- *  rather than Zen. Static Go-only ids always route to Go, so a stale or
- *  pre-Go cache can't mis-route them; discovery adds the rest. */
+/** True when a model id routes to the OpenCode Go subscription endpoint, judged
+ *  on the wire id so a shared id resold through OpenCode is Go whether bare or
+ *  `opencode/<id>`. Static Go-only ids always route to Go despite a stale cache. */
 export function isOpencodeGoModel(modelId: string, homeDirOverride?: string): boolean {
-  const staticGo = OPENCODE_GO_MODELS.includes(modelId) && !OPENCODE_MODELS.includes(modelId);
+  const id = stripProviderQualifier(modelId);
+  const staticGo = OPENCODE_GO_MODELS.includes(id) && !OPENCODE_MODELS.includes(id);
   const cached = loadOpencodeModelsCache(homeDirOverride);
-  if (cached) return cached.goModels.includes(modelId) || staticGo;
+  if (cached) return cached.goModels.includes(id) || staticGo;
   return staticGo;
 }
 
 /** True when a model id is a free (anonymous, no-plan) OpenCode Zen model: no
- *  usage API, capped per-IP. Go wins, so a Go-served id is never free. */
+ *  usage API, capped per-IP. Go wins, so a Go-served id is never free. Judged
+ *  on the wire id like the Go predicate. */
 export function isOpencodeFreeModel(modelId: string, homeDirOverride?: string): boolean {
-  if (OPENCODE_GO_MODELS.includes(modelId) && !OPENCODE_MODELS.includes(modelId)) return false;
-  if (OPENCODE_MODELS.includes(modelId)) return true;
+  const id = stripProviderQualifier(modelId);
+  if (OPENCODE_GO_MODELS.includes(id) && !OPENCODE_MODELS.includes(id)) return false;
+  if (OPENCODE_MODELS.includes(id)) return true;
   const cached = loadOpencodeModelsCache(homeDirOverride);
-  return Boolean(cached?.freeModels.includes(modelId));
+  return Boolean(cached?.freeModels.includes(id));
+}
+
+/** The model's OpenCode usage plan, judged on the wire id so a routing
+ *  qualifier can't hide a Go subscription. Typed against the wire field so the
+ *  `go`/`free`/none states can't drift from `ModelEndpointInfo.opencodePlan`. */
+export function opencodeUsagePlan(
+  model: string,
+  homeDirOverride?: string,
+): ModelEndpointInfo["opencodePlan"] {
+  if (isOpencodeGoModel(model, homeDirOverride)) return "go";
+  if (isOpencodeFreeModel(model, homeDirOverride)) return "free";
+  return undefined;
 }
 
 /** The model's declared reasoning-effort values from the last models.dev sync.

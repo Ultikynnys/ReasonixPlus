@@ -361,11 +361,7 @@ import {
   visionModelsFor,
 } from "../../ollama-model-map.js";
 import { loadOllamaModelsCache, saveOllamaModelsCache } from "../../ollama-models-cache.js";
-import {
-  fetchOpencodeModels,
-  isOpencodeFreeModel,
-  isOpencodeGoModel,
-} from "../../opencode-models.js";
+import { fetchOpencodeModels, opencodeUsagePlan } from "../../opencode-models.js";
 import {
   type OpencodeDeviceFlow,
   beginOpencodeDeviceFlow,
@@ -1492,11 +1488,8 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
       opencodeAccount: oauth?.account,
       // Go models bill the Go plan windows; free/anon Zen models have no usage
       // API and paid Zen has no price table here — both fall back to no chip.
-      opencodePlan: isOpencodeGoModel(model, path)
-        ? "go"
-        : isOpencodeFreeModel(model, path)
-          ? "free"
-          : undefined,
+      // Resolved on the wire id, so a shared `opencode/<id>` still reads as Go.
+      opencodePlan: opencodeUsagePlan(model, path),
     };
   }
   if (provider !== "openai") {
@@ -2747,9 +2740,10 @@ async function emitOpencodeQuota(tab: Tab): Promise<void> {
   // Only Go-subscription models have a usage API. Free/anon Zen models are
   // rate-limited per-IP with no usage endpoint, so there is nothing to fetch —
   // the statusbar keys its chip off the model's quota type, not a number.
-  if (!isOpencodeGoModel(tab.currentModel)) {
+  const plan = opencodeUsagePlan(tab.currentModel);
+  if (plan !== "go") {
     emitTabDiagnostic(tab, "quota.skipped", {
-      reason: isOpencodeFreeModel(tab.currentModel) ? "opencode-free-tier" : "opencode-not-go",
+      reason: plan === "free" ? "opencode-free-tier" : "opencode-not-go",
     });
     return;
   }

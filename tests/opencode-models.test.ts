@@ -9,6 +9,7 @@ import {
   isOpencodeGoModel,
   loadOpencodeModelsCache,
   opencodeModelsCachePath,
+  opencodeUsagePlan,
   reasoningEffortsForModel,
   writeOpencodeModelsCache,
 } from "../src/opencode-models.js";
@@ -224,6 +225,9 @@ describe("opencode-models", () => {
     // Static Go ids are recognized too.
     expect(isDiscoveredOpencodeModel("glm-5.3", TEST_DIR)).toBe(true);
     expect(isDiscoveredOpencodeModel("unknown-model", TEST_DIR)).toBe(false);
+    // Discovery membership matches the RAW id (it gates OpenCode-vs-`ollama/`
+    // precedence), so a provider-qualified ref is not an OpenCode discovery id.
+    expect(isDiscoveredOpencodeModel("opencode/big-pickle", TEST_DIR)).toBe(false);
 
     writeOpencodeModelsCache(
       {
@@ -245,6 +249,21 @@ describe("opencode-models", () => {
     expect(isOpencodeFreeModel("big-pickle", TEST_DIR)).toBe(true);
     expect(isOpencodeFreeModel("mimo-v2.6-pro", TEST_DIR)).toBe(false);
     expect(isOpencodeFreeModel("glm-5.3", TEST_DIR)).toBe(false);
+  });
+
+  it("resolves the usage plan on the wire id so a provider qualifier can't hide it", () => {
+    // A shared id resold through OpenCode is the SAME Go model as the bare id,
+    // so the qualifier must not demote it to a non-Go tier (the Xiaomi native id
+    // shares the name but not the plan).
+    expect(isOpencodeGoModel("opencode/mimo-v2.6-pro", TEST_DIR)).toBe(true);
+    expect(isOpencodeFreeModel("opencode/mimo-v2.6-pro", TEST_DIR)).toBe(false);
+    expect(opencodeUsagePlan("opencode/mimo-v2.6-pro", TEST_DIR)).toBe("go");
+    expect(opencodeUsagePlan("mimo-v2.6-pro", TEST_DIR)).toBe("go");
+    // A free Zen id stays free under its own qualifier and is never Go.
+    expect(opencodeUsagePlan("opencode/big-pickle", TEST_DIR)).toBe("free");
+    expect(opencodeUsagePlan("big-pickle", TEST_DIR)).toBe("free");
+    // Paid Zen (neither Go nor free) resolves to no plan.
+    expect(opencodeUsagePlan("some-paid-zen-id", TEST_DIR)).toBeUndefined();
   });
 
   it("classifies discovered free and Go models for the quota-type UI", () => {

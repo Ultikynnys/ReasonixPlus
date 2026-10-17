@@ -261,4 +261,14 @@ describe("desktop modelEndpointFor (#1529)", () => {
   it("tags a Go OpenCode model with the go quota type", () => {
     expect(modelEndpointFor("grok-4.7", path).opencodePlan).toBe("go");
   });
+
+  it("resolves a shared-id OpenCode model by provider, not by its name", () => {
+    // This id is served natively by Xiaomi AND resold through OpenCode Go. The
+    // `opencode/` qualifier must resolve to the OpenCode provider and its Go
+    // usage plan — never the Xiaomi provider the bare name would imply.
+    const ep = modelEndpointFor("opencode/mimo-v2.6-pro", path);
+    expect(ep.provider).toBe("opencode");
+    expect(ep.baseUrl).toBe("https://opencode.ai/zen/go/v1");
+    expect(ep.opencodePlan).toBe("go");
+  });
 });

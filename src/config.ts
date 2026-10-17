@@ -1526,12 +1526,10 @@ export function loadEndpointForModel(
     }
     // Go subscription ids live on their own endpoint. An explicit base URL
     // override above intentionally owns every OpenCode model (custom gateway).
-    // Go membership is judged on the wire id: a `opencode/<id>` qualifier is
-    // routing syntax the server never sees.
+    // Go membership is judged on the wire id — `isOpencodeGoModel` strips a
+    // `opencode/<id>` routing qualifier the server never sees.
     return {
-      baseUrl: isOpencodeGoModel(stripProviderQualifier(model))
-        ? DEFAULT_OPENCODE_GO_CHAT_URL
-        : DEFAULT_OPENCODE_CHAT_URL,
+      baseUrl: isOpencodeGoModel(model) ? DEFAULT_OPENCODE_GO_CHAT_URL : DEFAULT_OPENCODE_CHAT_URL,
       apiKey: loadOpencodeApiKey(path) ?? "public",
     };
   }
