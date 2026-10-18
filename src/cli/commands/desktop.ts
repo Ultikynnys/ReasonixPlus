@@ -108,6 +108,7 @@ import { type SessionPlan, sessionPlanRepository } from "../../code/session-plan
 import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
 import { fetchCodexQuotaViaOAuth } from "../../codex-backend.js";
 import {
+  DEFAULT_EXPERIENTIAL_CHAT_URL,
   DEFAULT_GEMINI_CHAT_URL,
   DEFAULT_MIMO_CHAT_URL,
   DEFAULT_MODEL,
@@ -155,6 +156,7 @@ import {
   loadEndpoint,
   loadEndpointForModel,
   loadExaApiKey,
+  loadExperientialApiKey,
   loadFeedbackCues,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
@@ -274,7 +276,12 @@ import { validateTypesafeApiKeyCached } from "../../tools/jev.js";
 import { BUILTIN_ALLOWLIST } from "../../tools/shell/parse.js";
 import { coveredRuleScopes } from "../../tools/shell/rule-scope.js";
 
-import { OPENAI_MODELS, SUPPORTED_OFFICIAL_MODELS, ZAI_MODELS } from "@reasonix/core-utils";
+import {
+  EXPERIENTIAL_MODELS,
+  OPENAI_MODELS,
+  SUPPORTED_OFFICIAL_MODELS,
+  ZAI_MODELS,
+} from "@reasonix/core-utils";
 import {
   ANTIGRAVITY_OAUTH_CLIENT_ID,
   antigravityAccount,
@@ -1380,6 +1387,7 @@ function collectWebSearchApiKeyPrefixes(): {
   opencode?: string;
   typesafe?: string;
   mimo?: string;
+  experiential?: string;
   openai?: string;
 } {
   return {
@@ -1393,6 +1401,7 @@ function collectWebSearchApiKeyPrefixes(): {
     opencode: maskApiKey(loadOpencodeApiKey()),
     typesafe: maskApiKey(loadTypesafeApiKey()),
     mimo: maskApiKey(loadMimoApiKey()),
+    experiential: maskApiKey(loadExperientialApiKey()),
     openai: maskApiKey(process.env.OPENAI_API_KEY ?? readConfig().openaiApiKey),
   };
 }
@@ -1489,6 +1498,14 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
       reasoningEfforts,
     };
   }
+  if (provider === "experiential") {
+    const ep = loadEndpointForModel(model, path);
+    return {
+      provider: "experiential",
+      baseUrl: ep.baseUrl ?? DEFAULT_EXPERIENTIAL_CHAT_URL,
+      reasoningEfforts,
+    };
+  }
   if (provider === "opencode") {
     const ep = loadEndpointForModel(model, path);
     const oauth = readConfig(path).opencodeOAuth;
@@ -1577,6 +1594,7 @@ function emitSettings(tab: Tab): void {
       ollamaBaseUrl: config.ollamaBaseUrl,
       opencodeBaseUrl: config.opencodeBaseUrl,
       mimoBaseUrl: config.mimoBaseUrl,
+      experientialBaseUrl: config.experientialBaseUrl,
       webSearchEngine: readWebSearchEngine(),
       webSearchEndpoint: readConfig().webSearchEndpoint,
       webSearchApiKeys: collectWebSearchApiKeyPrefixes(),
@@ -1933,6 +1951,11 @@ async function refreshProviderCatalogs(force = false, provider?: CatalogProvider
     { provider: "openai" as const, model: OPENAI_MODELS[0]!, fallback: OPENAI_MODELS },
     { provider: "zai" as const, model: ZAI_MODELS[0]!, fallback: ZAI_MODELS },
     { provider: "mimo" as const, model: MIMO_MODELS[0]!, fallback: MIMO_MODELS },
+    {
+      provider: "experiential" as const,
+      model: EXPERIENTIAL_MODELS[0]!,
+      fallback: EXPERIENTIAL_MODELS,
+    },
     { provider: "typesafe" as const, model: "jev-latest", fallback: ["jev-latest"] },
   ];
   await Promise.all(
@@ -4502,6 +4525,8 @@ function notConfiguredMessage(model: string): string {
       return "Not configured yet — add a Xiaomi MiMo API key in Settings → Models to use MiMo models.";
     case "opencode":
       return "Not configured yet — OpenCode endpoint is unavailable.";
+    case "experiential":
+      return "Not configured yet — add an Experiential Labs gateway key in Settings → Models to use gateway models.";
     default:
       return "Not configured yet — paste your DeepSeek API key first.";
   }
@@ -4586,6 +4611,9 @@ export function tabCurrentModelUsable(tab: Tab): boolean {
   }
   if (providerForModel(tab.currentModel) === "mimo") {
     return !!loadMimoApiKey();
+  }
+  if (providerForModel(tab.currentModel) === "experiential") {
+    return !!loadExperientialApiKey();
   }
   if (providerForModel(tab.currentModel) === "opencode") {
     return true;
@@ -8543,7 +8571,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           msg.opencodeApiKey !== undefined ||
           msg.opencodeBaseUrl !== undefined ||
           msg.mimoApiKey !== undefined ||
-          msg.mimoBaseUrl !== undefined
+          msg.mimoBaseUrl !== undefined ||
+          msg.experientialApiKey !== undefined ||
+          msg.experientialBaseUrl !== undefined
         ) {
           const cfg = readConfig();
           if (msg.webSearchEngine !== undefined) cfg.webSearchEngine = msg.webSearchEngine;
@@ -8586,6 +8616,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           if (msg.mimoBaseUrl !== undefined) {
             cfg.mimoBaseUrl = msg.mimoBaseUrl?.trim() || undefined;
           }
+          if (msg.experientialApiKey !== undefined) {
+            cfg.experientialApiKey = msg.experientialApiKey?.trim() || undefined;
+          }
+          if (msg.experientialBaseUrl !== undefined) {
+            cfg.experientialBaseUrl = msg.experientialBaseUrl?.trim() || undefined;
+          }
           writeConfig(cfg);
           // The endpoint + credential are snapshotted into the runtime at build
           // time, and a send is refused while it is null, so rebuild now-usable
@@ -8596,7 +8632,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             msg.opencodeApiKey !== undefined ||
             msg.opencodeBaseUrl !== undefined ||
             msg.ollamaApiKey !== undefined ||
-            msg.zaiApiKey !== undefined
+            msg.zaiApiKey !== undefined ||
+            msg.experientialApiKey !== undefined ||
+            msg.experientialBaseUrl !== undefined
           ) {
             rebuildCredentialedTabs();
           }

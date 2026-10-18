@@ -41,6 +41,7 @@ import {
   loadEnableSubagents,
   loadEndpoint,
   loadEndpointForModel,
+  loadExperientialApiKey,
   loadFeedbackCues,
   loadFilesystemOutlineThresholdBytes,
   loadGlobalPathAllowed,
@@ -1838,6 +1839,42 @@ describe("config", () => {
         if (original === undefined) delete process.env.TYPESAFE_API_KEY;
         else process.env.TYPESAFE_API_KEY = original;
       }
+    });
+  });
+
+  describe("Experiential Labs provider routing", () => {
+    it("routes fallback slugs to the default gateway with the config key", () => {
+      writeConfig({ experientialApiKey: "xpl-config-key" }, path);
+      expect(providerForModel("qwen3.8-27b")).toBe("experiential");
+      expect(loadExperientialApiKey(path)).toBe("xpl-config-key");
+      expect(loadEndpointForModel("qwen3.8-27b", path)).toEqual({
+        baseUrl: "https://api.experientiallabs.ai/v1",
+        apiKey: "xpl-config-key",
+      });
+    });
+
+    it("keeps a custom gateway endpoint paired with its config key", () => {
+      writeConfig(
+        {
+          experientialBaseUrl: "https://gateway.example.com/v1",
+          experientialApiKey: "xpl-config-key",
+        },
+        path,
+      );
+      expect(loadEndpointForModel("qwen3.8-27b", path)).toEqual({
+        baseUrl: "https://gateway.example.com/v1",
+        apiKey: "xpl-config-key",
+      });
+    });
+
+    it("defers a bare native overlap to its own provider and honors an explicit qualifier", () => {
+      writeConfig({}, path);
+      // gpt-5.6-luna is claimed by the OpenAI catalog — never the gateway bare.
+      expect(providerForModel("gpt-5.6-luna")).toBe("openai");
+      // An explicit `experiential/` qualifier re-pins it to the gateway.
+      expect(providerForModel("experiential/gpt-5.6-luna")).toBe("experiential");
+      // A gateway-only slug routes there without a qualifier.
+      expect(providerForModel("fable-5")).toBe("experiential");
     });
   });
 

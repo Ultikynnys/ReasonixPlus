@@ -693,11 +693,13 @@ export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
     opencodeApiKey: _opencode,
     typesafeApiKey: _typesafe,
     mimoApiKey: _mimo,
+    experientialApiKey: _experientialApiKey,
     ollamaBaseUrl: _ollamaBaseUrl,
     ollamaGeneration: _ollamaGeneration,
     webSearchEndpoint,
     opencodeBaseUrl,
     mimoBaseUrl,
+    experientialBaseUrl,
     ...rest
   } = patch;
   const sanitized: Partial<Settings> = { ...rest };
@@ -712,6 +714,9 @@ export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
   }
   if (mimoBaseUrl !== undefined) {
     sanitized.mimoBaseUrl = mimoBaseUrl ?? undefined;
+  }
+  if (experientialBaseUrl !== undefined) {
+    sanitized.experientialBaseUrl = experientialBaseUrl ?? undefined;
   }
   return sanitized;
 }
@@ -2343,6 +2348,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           webSearchApiKeys: ev.webSearchApiKeys,
           opencodeBaseUrl: ev.opencodeBaseUrl,
           mimoBaseUrl: ev.mimoBaseUrl,
+          experientialBaseUrl: ev.experientialBaseUrl,
           subagentModel: ev.subagentModel,
           ollamaGeneration: ev.ollamaGeneration,
           ollamaGenerationOverrides: ev.ollamaGenerationOverrides,

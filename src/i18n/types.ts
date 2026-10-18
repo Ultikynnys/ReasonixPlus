@@ -368,6 +368,15 @@ export interface TranslationSchema {
     mimoTimeout: string;
     mimoRate: string;
     mimoServer: string;
+    experientialAuth: string;
+    experientialCredits: string;
+    experientialPermission: string;
+    experientialNotFound: string;
+    experientialRequest: string;
+    experientialContext: string;
+    experientialTimeout: string;
+    experientialRate: string;
+    experientialServer: string;
     customAuth: string;
     customCredits: string;
     customPermission: string;

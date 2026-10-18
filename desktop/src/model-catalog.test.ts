@@ -6,6 +6,7 @@ describe("deriveModelCatalog", () => {
     expect(Object.keys(MODEL_CATALOG_GROUP_LABELS).sort()).toEqual([
       "antigravity",
       "deepseek",
+      "experiential",
       "mimo",
       "openai",
       "opencode",

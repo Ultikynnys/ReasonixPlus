@@ -389,6 +389,11 @@ export function billingContextForModel(model: string, path?: string): BillingCon
       // Go-subscription usage is plan-window %, accumulated from the usage
       // endpoint; free/anon Zen and paid Zen expose no per-token dollar amount.
       return { kind: "none", provider };
+    case "experiential":
+      // The gateway bills routed tokens as per-token USD (no plan-window %);
+      // the harness prices from token tables, so set `pricingOverride` for a
+      // model with no built-in rate row.
+      return { kind: "usd", provider };
   }
 }
 

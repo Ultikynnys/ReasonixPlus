@@ -14,7 +14,7 @@ export function isRetryableHttpStatus(status: number): boolean {
  *  Canonical list — src/loop/errors.ts builds its error classifiers from this,
  *  so a brand added here is retry-classified everywhere at once. */
 export const PROVIDER_ERROR_BRANDS =
-  "DeepSeek|OpenAI|Ollama|Antigravity|Z\\.AI|OpenCode|MiMo|Upstream";
+  "DeepSeek|OpenAI|Ollama|Antigravity|Z\\.AI|OpenCode|MiMo|Experiential|Upstream";
 
 /** Status line "<Brand> <status>: ..." shared by every provider's thrown errors. */
 const PROVIDER_STATUS_LINE = new RegExp(`^(?:${PROVIDER_ERROR_BRANDS}) (\\d{3}):`);

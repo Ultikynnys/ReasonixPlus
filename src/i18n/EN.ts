@@ -682,6 +682,23 @@ export const EN: TranslationSchema = {
     mimoTimeout: "MiMo request timed out: {inner}. Check the endpoint and retry.",
     mimoRate: "MiMo rate limit hit (429): {inner}. Wait and retry.",
     mimoServer: "MiMo service failure ({status}): {inner}. Retry later.",
+    experientialAuth:
+      "Experiential Labs authentication failed (401): {inner}. Check the gateway key (starts `xpl_`) in EXPERIENTIAL_API_KEY or the settings API key field.",
+    experientialCredits:
+      "Experiential Labs reports no usable credits: {inner}. Add credits or attach a provider key (BYOK) for this model.",
+    experientialPermission:
+      "Experiential Labs denied this request (403): {inner}. Check the key's scope, model allowlist, and spend caps.",
+    experientialNotFound:
+      "Experiential Labs could not find the requested model or route (404): {inner}. Check the model slug and EXPERIENTIAL_BASE_URL.",
+    experientialRequest:
+      "Experiential Labs rejected the request: {inner}. Check parameters the gateway refuses (unsupported_parameter names the field).",
+    experientialContext:
+      "Experiential Labs context overflow: session history is {requested}. Start a new conversation or reduce attached/tool content.",
+    experientialTimeout:
+      "Experiential Labs request timed out: {inner}. Check the gateway endpoint and retry.",
+    experientialRate:
+      "Experiential Labs rate limit hit (429): {inner}. Wait and retry, or review the key's requests/minute and spend caps.",
+    experientialServer: "Experiential Labs service failure ({status}): {inner}. Retry later.",
     customAuth:
       "Authentication failed (custom model endpoint 401): {inner}. Check that endpoint's configured API key.",
     customCredits:

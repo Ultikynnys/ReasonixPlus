@@ -137,6 +137,15 @@ describe("formatLoopError", () => {
     expect(out).not.toContain("ChatGPT");
   });
 
+  it("Experiential 401 → gateway-branded hint naming the xpl_ key", () => {
+    const raw = new Error('Experiential 401: {"error":{"message":"Invalid API key"}}');
+    const out = formatLoopError(raw);
+    expect(out).toContain("Experiential Labs authentication failed (401)");
+    expect(out).toContain("EXPERIENTIAL_API_KEY");
+    expect(out).toContain("Invalid API key");
+    expect(out).not.toContain("DEEPSEEK_API_KEY");
+  });
+
   it.each([
     ["deepseek", "DeepSeek 401: bad key", "DEEPSEEK_API_KEY"],
     ["openai", "OpenAI 401: bad key", "OPENAI_API_KEY"],

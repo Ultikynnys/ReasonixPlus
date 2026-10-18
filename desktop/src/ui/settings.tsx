@@ -1403,7 +1403,8 @@ export function ProviderApiKeyRow({
     | "ollama"
     | "zai"
     | "opencode"
-    | "typesafe";
+    | "typesafe"
+    | "experiential";
   patchKey:
     | "metasoApiKey"
     | "baiduApiKey"
@@ -1414,7 +1415,8 @@ export function ProviderApiKeyRow({
     | "ollamaApiKey"
     | "zaiApiKey"
     | "opencodeApiKey"
-    | "typesafeApiKey";
+    | "typesafeApiKey"
+    | "experientialApiKey";
   signupUrl: string;
   prefix?: string;
   onSave: (patch: SettingsPatch) => void;
@@ -1973,7 +1975,7 @@ function ProviderBaseUrlRow({
   hint: string;
   placeholder: string;
   value?: string;
-  patchKey: "baseUrl" | "opencodeBaseUrl" | "ollamaBaseUrl" | "mimoBaseUrl";
+  patchKey: "baseUrl" | "opencodeBaseUrl" | "ollamaBaseUrl" | "mimoBaseUrl" | "experientialBaseUrl";
   onSave: (patch: SettingsPatch) => void;
 }) {
   const [draft, setDraft] = useState(value ?? "");
@@ -2269,6 +2271,31 @@ function PageModels({
               onBegin={onMiMoOAuthBegin}
               onCancel={onMiMoOAuthCancel}
               onSignOut={onMiMoOAuthSignOut}
+            />
+          </>
+        }
+      />
+
+      <ProviderCard
+        title={t(MODEL_CATALOG_GROUP_LABELS.experiential)}
+        defaultOpen={false}
+        models={modelColumn(groupModels("experiential"))}
+        settings={
+          <>
+            <ProviderApiKeyRow
+              engine="experiential"
+              patchKey="experientialApiKey"
+              signupUrl="https://platform.experientiallabs.ai/settings/keys"
+              prefix={settings.webSearchApiKeys?.experiential}
+              onSave={onSave}
+            />
+            <ProviderBaseUrlRow
+              label={t("settings.experientialBaseUrl")}
+              hint={t("settings.experientialBaseUrlHint")}
+              placeholder="https://api.experientiallabs.ai/v1"
+              value={settings.experientialBaseUrl}
+              patchKey="experientialBaseUrl"
+              onSave={onSave}
             />
           </>
         }

@@ -1075,6 +1075,8 @@ export class DeepSeekClient {
         return "OpenCode";
       case "mimo":
         return "MiMo";
+      case "experiential":
+        return "Experiential";
     }
   }
 

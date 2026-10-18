@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   ANTIGRAVITY_MODELS,
   DEFAULT_MODEL,
+  EXPERIENTIAL_MODELS,
   GEMINI_MODELS,
   GPT56_MODELS,
   KNOWN_MODELS,
@@ -14,6 +15,7 @@ import {
   MailProvider,
   OPENAI_MODELS,
   OPENCODE_MODELS,
+  PROVIDER_IDS,
   SUPPORTED_OFFICIAL_MODELS,
   WEB_SEARCH_ENGINE_NAMES,
   type WebSearchEngineName,
@@ -71,17 +73,9 @@ export const SUPPORTED_MODELS: readonly string[] = KNOWN_MODELS;
  *  `models` config > Antigravity discovery > catalogs > `ollama/` scheme > DeepSeek default. */
 export type ModelProvider = ProviderID; // aliased to core-utils ProviderID (shared reasoning-effort map)
 
-/** Valid ModelProvider literals — config validation for the `models` map. */
-const PROVIDER_IDS: readonly ModelProvider[] = [
-  "deepseek",
-  "openai",
-  "ollama",
-  "gemini",
-  "zai",
-  "mimo",
-  "opencode",
-];
-
+/** Valid ModelProvider literals — config validation for the `models` map.
+ *  Reuses the core-utils runtime list so the daemon's validation and the
+ *  `ProviderID` union can never drift apart. */
 export function isModelProvider(value: unknown): value is ModelProvider {
   return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
 }
@@ -151,6 +145,20 @@ function resolveModelAdmission(model: string, path: string): ModelAdmission {
     if (discoveredProviderModels(provider, endpoint.baseUrl!, endpoint.apiKey)?.includes(id)) {
       return { accepted: true, provider, discoveredAntigravity: false };
     }
+  }
+  // The Experiential Labs gateway resells ids that native catalogs and the
+  // OpenCode sync also serve (gpt-5.6-luna, glm-5.2, …), so it is checked LAST:
+  // a bare overlap keeps its native provider and must be pinned with an
+  // `experiential/` qualifier or a `models` config mapping. The static fallback
+  // list covers an offline/no-discovery start so the group's rows still route.
+  const experiential = loadExperientialEndpoint(path);
+  if (
+    EXPERIENTIAL_MODELS.includes(id) ||
+    discoveredProviderModels("experiential", experiential.baseUrl!, experiential.apiKey)?.includes(
+      id,
+    )
+  ) {
+    return { accepted: true, provider: "experiential", discoveredAntigravity: false };
   }
   return { accepted: false, provider: "deepseek", discoveredAntigravity: false };
 }
@@ -228,6 +236,10 @@ export const DEFAULT_OPENCODE_GO_CHAT_URL = "https://opencode.ai/zen/go/v1";
  *  regional host (token-plan-{cn,sgp,ams}.xiaomimimo.com); the browser flow may
  *  return its own base URL. Override via `mimoBaseUrl` or MIMO_BASE_URL. */
 export const DEFAULT_MIMO_CHAT_URL = "https://api.xiaomimimo.com/v1";
+
+/** Experiential Labs OpenAI-compatible gateway. Point any OpenAI client at
+ *  `.../v1`; keys start `xpl_`. Override via EXPERIENTIAL_BASE_URL / `experientialBaseUrl`. */
+export const DEFAULT_EXPERIENTIAL_CHAT_URL = "https://api.experientiallabs.ai/v1";
 
 /** Positive endpoint evidence that an Ollama provider request targets Ollama Cloud. */
 export function isOllamaCloudEndpoint(baseUrl: string | undefined): boolean {
@@ -488,6 +500,12 @@ export interface ReasonixConfig {
   mimoApiKey?: string;
   /** MiMo OpenAI-compatible endpoint override. Falls back to MIMO_BASE_URL. */
   mimoBaseUrl?: string;
+  /** Experiential Labs gateway API key (starts `xpl_`). Falls back to
+   *  EXPERIENTIAL_API_KEY, then the vendor's EXPLABS_API_KEY env var. */
+  experientialApiKey?: string;
+  /** Experiential Labs OpenAI-compatible endpoint override. Falls back to
+   *  EXPERIENTIAL_BASE_URL, then https://api.experientiallabs.ai/v1. */
+  experientialBaseUrl?: string;
   /** Stable MiMo sign-in key label — generated once so re-authorizing reuses
    *  the account's existing key instead of provisioning a new one each time. */
   mimoKeyName?: string;
@@ -829,6 +847,29 @@ export function loadOpencodeApiKey(path: string = defaultConfigPath()): string |
 /** Xiaomi MiMo API key: env > config > undefined. */
 export function loadMimoApiKey(path: string = defaultConfigPath()): string | undefined {
   return resolveApiKey(["MIMO_API_KEY"], "mimoApiKey", path);
+}
+
+/** Experiential Labs gateway API key: env > config > undefined. Accepts the
+ *  vendor's own `EXPLABS_API_KEY` spelling as an alias for the primary env var. */
+export function loadExperientialApiKey(path: string = defaultConfigPath()): string | undefined {
+  return resolveApiKey(["EXPERIENTIAL_API_KEY", "EXPLABS_API_KEY"], "experientialApiKey", path);
+}
+
+/** (baseUrl, apiKey) tuple for the Experiential Labs gateway: EXPERIENTIAL_BASE_URL
+ *  env > `experientialBaseUrl` config > default endpoint. A custom baseUrl owns its key. */
+export function loadExperientialEndpoint(path: string = defaultConfigPath()): ResolvedEndpoint {
+  const envBaseUrl = process.env.EXPERIENTIAL_BASE_URL?.trim();
+  if (envBaseUrl) {
+    return {
+      baseUrl: envBaseUrl,
+      apiKey: process.env.EXPERIENTIAL_API_KEY ?? process.env.EXPLABS_API_KEY,
+    };
+  }
+  const cfg = readConfig(path);
+  if (cfg.experientialBaseUrl?.trim()) {
+    return { baseUrl: cfg.experientialBaseUrl.trim(), apiKey: cfg.experientialApiKey };
+  }
+  return { baseUrl: DEFAULT_EXPERIENTIAL_CHAT_URL, apiKey: loadExperientialApiKey(path) };
 }
 
 /** Stable MiMo sign-in key label — generated once and persisted, so repeated
@@ -1515,6 +1556,9 @@ export function loadEndpointForModel(
     }
     return { baseUrl: DEFAULT_MIMO_CHAT_URL, apiKey: loadMimoApiKey(path) };
   }
+  if (providerForModel(model, path) === "experiential") {
+    return loadExperientialEndpoint(path);
+  }
   if (providerForModel(model, path) === "opencode") {
     const envBaseUrl = process.env.OPENCODE_BASE_URL?.trim();
     if (envBaseUrl) {
@@ -1557,6 +1601,14 @@ export function anyProviderConfigured(path: string = defaultConfigPath()): boole
   if (process.env.OLLAMA_API_KEY || cfg.ollamaApiKey) return true;
   if (process.env.ZAI_API_KEY || cfg.zaiApiKey) return true;
   if (process.env.MIMO_API_KEY || cfg.mimoApiKey || cfg.mimoBaseUrl) return true;
+  if (
+    process.env.EXPERIENTIAL_API_KEY ||
+    process.env.EXPLABS_API_KEY ||
+    cfg.experientialApiKey ||
+    cfg.experientialBaseUrl
+  ) {
+    return true;
+  }
   if (process.env.OPENCODE_API_KEY || cfg.opencodeApiKey || cfg.opencodeBaseUrl) return true;
   if (cfg.opencodeOAuth?.accessToken) return true;
   if (cfg.antigravityOAuth?.accessToken) return true;

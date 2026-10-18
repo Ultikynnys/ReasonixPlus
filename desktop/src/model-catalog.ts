@@ -1,5 +1,6 @@
 import {
   ANTIGRAVITY_MODELS,
+  EXPERIENTIAL_MODELS,
   MIMO_MODELS,
   OPENAI_MODELS,
   OPENCODE_MODELS,
@@ -19,9 +20,16 @@ export type ModelCatalogGroupKey =
   | "mimo"
   | "opencode"
   | "typesafe"
-  | "antigravity";
+  | "antigravity"
+  | "experiential";
 
-export type ProviderCatalogKey = "deepseek" | "openai" | "zai" | "mimo" | "typesafe";
+export type ProviderCatalogKey =
+  | "deepseek"
+  | "openai"
+  | "zai"
+  | "mimo"
+  | "typesafe"
+  | "experiential";
 
 export interface ProviderCatalogView {
   models: readonly string[];
@@ -37,6 +45,7 @@ export const MODEL_CATALOG_GROUP_LABELS = {
   opencode: "composer.modelOpencodeGroup",
   typesafe: "settings.typesafeSection",
   antigravity: "composer.modelAntigravityGroup",
+  experiential: "composer.modelExperientialGroup",
 } as const satisfies Record<ModelCatalogGroupKey, string>;
 
 export interface ModelCatalogGroup {
@@ -89,6 +98,7 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     opencode: "opencode",
     typesafe: null,
     antigravity: null,
+    experiential: "experiential",
   };
   const distinctModels = (
     key: ModelCatalogGroupKey,
@@ -115,6 +125,9 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     { key: "opencode", models: opencodeModels },
     ...(options.providerCatalogs?.typesafe
       ? [{ key: "typesafe" as const, models: catalogFor("typesafe", ["jev-latest"]) }]
+      : []),
+    ...(options.providerCatalogs?.experiential
+      ? [{ key: "experiential" as const, models: catalogFor("experiential", EXPERIENTIAL_MODELS) }]
       : []),
     ...(includeAntigravity ? [{ key: "antigravity" as const, models: antigravityModelIds }] : []),
   ];

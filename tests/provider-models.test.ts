@@ -107,4 +107,22 @@ describe("provider model discovery", () => {
       source: "cache",
     });
   });
+
+  it("reads the Experiential Labs gateway /v1/models contract", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ data: [{ id: "qwen3.8-27b" }, { id: "fable-5" }] })),
+      );
+    expect(
+      await fetchProviderModels({
+        provider: "experiential",
+        baseUrl: "https://api.experientiallabs.ai/v1",
+        apiKey: "xpl-key",
+        fallback: ["qwen3.8-27b"],
+        homeDir: home(),
+        fetchImpl,
+      }),
+    ).toMatchObject({ models: ["fable-5", "qwen3.8-27b"], source: "live" });
+  });
 });

@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  PROVIDER_IDS,
   PROVIDER_REASONING_EFFORTS,
   REASONING_EFFORT_ORDER,
   clampReasoningEffort,
   reasoningEffortsFor,
 } from "../src/reasoning-efforts.js";
+
+describe("PROVIDER_IDS", () => {
+  it("lists each provider once and backs PROVIDER_REASONING_EFFORTS", () => {
+    expect(new Set(PROVIDER_IDS).size).toBe(PROVIDER_IDS.length);
+    expect([...PROVIDER_IDS].sort()).toEqual(Object.keys(PROVIDER_REASONING_EFFORTS).sort());
+  });
+});
 
 describe("PROVIDER_REASONING_EFFORTS", () => {
   it("declares a set for every provider and keeps values canonical", () => {
@@ -20,6 +28,9 @@ describe("PROVIDER_REASONING_EFFORTS", () => {
     expect(PROVIDER_REASONING_EFFORTS.openai).toEqual(["low", "medium", "high", "xhigh", "max"]);
     // MiMo differentiates reasoning only on/off (its `thinking` toggle) → no ladder.
     expect(PROVIDER_REASONING_EFFORTS.mimo).toEqual([]);
+
+    // The gateway 400s an unsupported reasoning_effort, so nothing is ever sent.
+    expect(PROVIDER_REASONING_EFFORTS.experiential).toEqual([]);
   });
 });
 

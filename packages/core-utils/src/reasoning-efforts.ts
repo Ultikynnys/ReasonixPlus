@@ -1,15 +1,22 @@
 import type { ReasoningEffort } from "./permission-types.js";
 
 /** Provider ids that own an endpoint family. Mirrors `ModelProvider` in the
- *  daemon config — kept here so both the daemon and desktop share one list. */
-export type ProviderID =
-  | "deepseek"
-  | "openai"
-  | "ollama"
-  | "gemini"
-  | "zai"
-  | "opencode"
-  | "mimo";
+ *  daemon config — kept here so both the daemon and desktop share one list.
+ *  Single source of truth: the `ProviderID` union is derived from this array,
+ *  and the daemon's provider-id validation reuses it, so a provider cannot be
+ *  added to the type without a matching runtime entry. */
+export const PROVIDER_IDS = [
+  "deepseek",
+  "openai",
+  "ollama",
+  "gemini",
+  "zai",
+  "opencode",
+  "mimo",
+  "experiential",
+] as const;
+
+export type ProviderID = (typeof PROVIDER_IDS)[number];
 
 /** Canonical low→max ordering. Used for nearest-value clamping so a persisted
  *  global effort degrades predictably when a provider(model) drops a level. */
@@ -37,6 +44,10 @@ export const PROVIDER_REASONING_EFFORTS: Record<ProviderID, readonly ReasoningEf
   // `thinking: { type }` toggle); its Responses effort enum is accepted but not
   // differentiated. No ladder, so `reasoning_effort` is never sent for it.
   mimo: [],
+  // The Experiential Labs gateway fronts many providers and refuses an
+  // unsupported `reasoning_effort` with a 400 (code unsupported_parameter), so
+  // with no per-model models.dev declaration we send no effort at all.
+  experiential: [],
 };
 
 const EFFORT_SET: ReadonlySet<string> = new Set(REASONING_EFFORT_ORDER);

@@ -69,6 +69,7 @@ export const en = {
     modelOpencodeGroup: "OpenCode",
     modelOpencodeError: "Couldn't fetch OpenCode models: {error}",
     modelAntigravityGroup: "Google Antigravity",
+    modelExperientialGroup: "Experiential Labs",
     modelNoneEnabled: "No models enabled. Enable them in Settings → Models to pick them here.",
     modelAntigravityError: "Couldn't refresh Antigravity models: {error}",
     modelOllamaGroup: "Ollama",
@@ -143,6 +144,7 @@ export const en = {
       zai: "Z.AI API key (also enables GLM models)",
       opencode: "OpenCode API key (OpenCode Zen)",
       typesafe: "JEV API key (TypeSafe)",
+      experiential: "Experiential Labs API key",
     },
     baseUrl: "DeepSeek base URL",
     baseUrlHint: "Override only if using a proxy. Empty = official endpoint. Restart required.",
@@ -304,6 +306,12 @@ export const en = {
     mimoApiKeyHint:
       "Paste a Xiaomi MiMo API key. MiMo models bill through your subscription plan, not per token.",
     mimoSignInTitle: "Sign in with Xiaomi",
+    experientialApiKey: "Experiential Labs API key",
+    experientialApiKeyHint:
+      "Paste an Experiential Labs gateway key (starts `xpl_`). It routes any gateway model slug through https://api.experientiallabs.ai/v1.",
+    experientialBaseUrl: "Experiential Labs base URL",
+    experientialBaseUrlHint:
+      "OpenAI-compatible endpoint override for all gateway models. Defaults to https://api.experientiallabs.ai/v1.",
     mimoSignInHint:
       "Authorize Reasonix+ in your browser to provision a MiMo inference key automatically.",
     mimoSignIn: "Sign in",

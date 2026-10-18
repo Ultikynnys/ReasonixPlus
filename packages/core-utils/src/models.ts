@@ -1,6 +1,6 @@
 /** Built-in model catalog and capability predicates shared by the daemon and desktop UI. */
 
-import type { ProviderID } from "./reasoning-efforts.js";
+import { PROVIDER_IDS, type ProviderID } from "./reasoning-efforts.js";
 
 export const DEFAULT_MODEL = "deepseek-flash";
 
@@ -162,6 +162,15 @@ export const OPENCODE_GO_MODELS: readonly string[] = [
   "deepseek-v4-flash",
 ];
 
+/** Conversational model slugs served by the Experiential Labs gateway
+ *  (https://api.experientiallabs.ai/v1). Offline fallback only — the live
+ *  catalog is fetched from GET /v1/models. These slugs are NOT added to the
+ *  native catalog precedence (the gateway resells ids such as `gpt-5.6-luna`
+ *  and `glm-5.2` that must keep routing to their own providers); a discovered
+ *  id routes to `experiential` only when no earlier catalog claims it, or when
+ *  pinned via the `models` config map or an `experiential/<id>` qualifier. */
+export const EXPERIENTIAL_MODELS: readonly string[] = ["qwen3.8-27b", "fable-5"];
+
 /** Unified models served through Google Antigravity OAuth and Cloud Code.
  *  Offline fallback only: these ids are known to be served by Cloud Code, and
  *  non-tiered bare `gemini-3.x-flash` ids are NOT (they 404) — live discovery
@@ -270,17 +279,10 @@ export function isOllamaDeepSeekVisionModel(model: string): boolean {
   return DEEPSEEK_FLASH_VISION_MODELS.has(stripOllamaSchemeAndTag(model));
 }
 
-/** Providers that can appear in a `<provider>/<id>` model reference. Mirrors
- *  the daemon's ModelProvider union; `ollama/` predates this scheme and shares it. */
-const QUALIFIER_PROVIDERS: ReadonlySet<string> = new Set<ProviderID>([
-  "deepseek",
-  "openai",
-  "ollama",
-  "gemini",
-  "zai",
-  "mimo",
-  "opencode",
-]);
+/** Providers that can appear in a `<provider>/<id>` model reference — every
+ *  provider id; `ollama/` predates this scheme and shares it. Derived from the
+ *  shared list so a new provider is a valid qualifier with no second edit. */
+const QUALIFIER_PROVIDERS: ReadonlySet<string> = new Set<ProviderID>(PROVIDER_IDS);
 
 export interface ParsedModelRef {
   /** Qualifying provider, or null when the reference is a bare id. */

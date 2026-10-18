@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
 import { reasonixHome } from "./reasonix-home.js";
 
-export type CatalogProvider = "deepseek" | "openai" | "zai" | "mimo" | "typesafe";
+export type CatalogProvider = "deepseek" | "openai" | "zai" | "mimo" | "typesafe" | "experiential";
 export interface ProviderCatalog {
   provider: CatalogProvider;
   models: string[];

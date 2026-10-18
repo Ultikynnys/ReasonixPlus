@@ -996,7 +996,7 @@ export interface SettingsEvent {
   model: string;
   providerCatalogs?: Partial<
     Record<
-      "deepseek" | "openai" | "zai" | "typesafe",
+      "deepseek" | "openai" | "zai" | "typesafe" | "experiential",
       {
         models: string[];
         source: "live" | "cache" | "fallback";
@@ -1023,12 +1023,15 @@ export interface SettingsEvent {
     zai?: string;
     opencode?: string;
     typesafe?: string;
+    experiential?: string;
     mimo?: string;
     openai?: string;
   };
   opencodeBaseUrl?: string;
   /** Xiaomi MiMo OpenAI-compatible endpoint override. */
   mimoBaseUrl?: string;
+  /** Experiential Labs OpenAI-compatible endpoint override. */
+  experientialBaseUrl?: string;
   /** Per-tab subagent model — the default model used when a subagent skill has no explicit `model:` frontmatter override. Absent = deepseek-v4-flash. */
   subagentModel?: string;
   /** Per-field visibility toggles for the bottom status row. Absent = all default to true. */
@@ -1108,7 +1111,15 @@ export type SettingsPayload = Omit<SettingsEvent, "type" | "quickSendId" | "quic
 /** Endpoint + auth state for the tab's CURRENT model — the status bar's API
  *  chip is per tab and flips between DeepSeek, OpenAI, Ollama and Gemini with the model. */
 export interface ModelEndpointInfo {
-  provider: "deepseek" | "openai" | "ollama" | "gemini" | "zai" | "opencode" | "mimo";
+  provider:
+    | "deepseek"
+    | "openai"
+    | "ollama"
+    | "gemini"
+    | "zai"
+    | "opencode"
+    | "mimo"
+    | "experiential";
   baseUrl: string;
   /** Reasoning-effort levels this model accepts, resolved by the daemon (native
    *  providers from a static set; OpenCode from the model's models.dev
@@ -1471,6 +1482,8 @@ export interface SettingsPatch {
   opencodeBaseUrl?: string | null;
   mimoApiKey?: string | null;
   mimoBaseUrl?: string | null;
+  experientialApiKey?: string | null;
+  experientialBaseUrl?: string | null;
 }
 
 /** An image to attach to a user message. Clipboard paste flows ship the
@@ -1572,7 +1585,7 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "opencode_models_refresh"; force?: boolean }
   | {
       cmd: "provider_models_refresh";
-      provider?: "deepseek" | "openai" | "zai" | "typesafe";
+      provider?: "deepseek" | "openai" | "zai" | "typesafe" | "experiential";
       force?: boolean;
     }
   | { cmd: "settings_get" }

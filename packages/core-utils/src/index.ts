@@ -80,6 +80,7 @@ export type { ProviderUsageView, QuotaWindowKey, QuotaWindowView } from "./provi
 export {
   ANTIGRAVITY_MODELS,
   DEFAULT_MODEL,
+  EXPERIENTIAL_MODELS,
   GEMINI_MODELS,
   GPT56_MODELS,
   KNOWN_MODELS,
@@ -118,6 +119,7 @@ export type {
 } from "./permission-types.js";
 export {
   REASONING_EFFORT_ORDER,
+  PROVIDER_IDS,
   PROVIDER_REASONING_EFFORTS,
   reasoningEffortsFor,
   clampReasoningEffort,

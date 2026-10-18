@@ -535,6 +535,11 @@ describe("billingContextForModel", () => {
         kind: "none",
         provider: "opencode",
       });
+      // Experiential Labs bills routed tokens per-token USD.
+      expect(billingContextForModel("experiential/qwen3.8-27b", path)).toEqual({
+        kind: "usd",
+        provider: "experiential",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
