@@ -3,7 +3,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   type SessionInfo,
   type SessionMutation,
-  sessionMutationLabels,
   sortSessionsByCreationDescending,
 } from "../App";
 import { t, useLang } from "../i18n";
@@ -97,10 +96,9 @@ export function Sidebar({
   const [query, setQuery] = useState("");
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [pendingClear, setPendingClear] = useState<PendingClear | null>(null);
+  // Lock only: the in-flight indicator itself lives in the main-area pill, so
+  // this surface never restates it as a second throbber.
   const busy = sessionMutation != null;
-  const busyLabel = sessionMutation
-    ? sessionMutationLabels(sessionMutation, sessions.length).badge
-    : "";
   const workspaceLabel = workspaceDir
     ? workspaceDir.split(/[\\/]/).pop() || workspaceDir
     : t("sidebarPanel.noWorkspace");
@@ -201,14 +199,7 @@ export function Sidebar({
         <div className="side-section">
           <div className="label">
             <span>{t("sidebarPanel.recent")}</span>
-            {busy ? (
-              <span className="count busy" role="status" aria-label={busyLabel} title={busyLabel}>
-                <span className="spin" aria-hidden="true" />
-                {busyLabel}
-              </span>
-            ) : (
-              <span className="count">{filtered.length}</span>
-            )}
+            <span className="count">{filtered.length}</span>
             {sessions.length > 0 ? (
               <button
                 type="button"

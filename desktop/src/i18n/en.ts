@@ -357,7 +357,7 @@ export const en = {
     mcpTokenHint:
       "Chrome/Edge only. Attaches to the browser if it is already running and reuses its tabs, logins, settings, and installed extensions. The optional relay token skips the per-connection approval prompt.",
     mcpManagedHint:
-      "Playwright keeps cookies, logins, settings, and installed extensions in this workspace under .reasonix/playwright/profiles, so signing in once survives Reasonix+ restarts. Firefox and WebKit do not use the extension relay.",
+      "Managed browsers are downloaded and pinned by Playwright: Managed Chrome runs Playwright's own Chromium build (Chrome for Testing), so it never launches or installs your system Chrome. Cookies, logins, settings, and installed extensions live in this workspace under .reasonix/playwright/profiles, so signing in once survives Reasonix+ restarts. Firefox and WebKit do not use the extension relay.",
     mcpCdpHint:
       "For Brave, Vivaldi, Opera, Chromium, and similar browsers started with a remote debugging endpoint.",
     mcpBrowserInstall: "Install {browser}",
@@ -622,7 +622,6 @@ export const en = {
     noSessions: {
       title: "No conversations yet",
       hint: "Create a new chat to get started in this workspace.",
-      deleting: "Deleting sessions…",
     },
     deletingSessions: {
       one: "Deleting session…",
@@ -1068,8 +1067,6 @@ export const en = {
     tokensPerSecondTitle: "Live output rate from the provider",
     deleteSession: "Delete session",
     clearAllSessions: "Clear all sessions",
-    deletingSessions: "Deleting…",
-    creatingSession: "Creating…",
     clearAllConfirm: "{count} session(s) for this workspace",
     deleteAll: "Delete all",
     moveToTop: "Move to top",

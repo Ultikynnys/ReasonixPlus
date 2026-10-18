@@ -1,12 +1,14 @@
 /** Configures Playwright MCP browser connections. The extension comes from the
  *  Chrome Web Store; no bundled copy ships, so the base install stays lightweight. */
 
-import { existsSync, readdirSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type {
-  PlaywrightExtensionBrowser,
-  PlaywrightMcpConnectionMode,
+import {
+  PLAYWRIGHT_MANAGED_BROWSERS,
+  type PlaywrightExtensionBrowser,
+  type PlaywrightManagedBrowser,
+  type PlaywrightMcpConnectionMode,
 } from "@reasonix/core-utils/desktop-protocol";
 import type { McpServerSpec } from "./spec.js";
 
@@ -33,10 +35,11 @@ export const PLAYWRIGHT_DOWNLOAD_SOURCES = [
 export type PlaywrightDownloadSource = (typeof PLAYWRIGHT_DOWNLOAD_SOURCES)[number];
 
 export async function installFromPlaywrightDownloadSources(
+  browser: unknown,
   install: (download: PlaywrightDownloadSource) => Promise<string | null>,
 ): Promise<{ ok: boolean; failures: string[] }> {
   const failures: string[] = [];
-  for (const download of PLAYWRIGHT_DOWNLOAD_SOURCES) {
+  for (const download of playwrightInstallSources(browser)) {
     const failure = await install(download);
     if (failure === null) return { ok: true, failures };
     failures.push(`${download.source} source (${download.host}): ${failure}`);
@@ -50,21 +53,67 @@ const CONNECTION_VALUE_ARGS = new Set([
   "--profile-dir-name",
   "--user-data-dir",
 ]);
-export const PLAYWRIGHT_MANAGED_BROWSERS = ["chrome", "firefox", "webkit", "msedge"] as const;
+/** Vendor-installed channels sit outside Playwright's download set; every other managed
+ *  mode is a hermetic build we install ourselves. */
+const SYSTEM_CHANNEL_BROWSERS = new Set<PlaywrightManagedBrowser>(["msedge"]);
 const MANAGED_MODES = new Set<PlaywrightMcpConnectionMode>(PLAYWRIGHT_MANAGED_BROWSERS);
 
 /** Relative to the MCP server cwd, which Reasonix+ pins to the active workspace. */
-export function playwrightWorkspaceProfileDir(
-  browser: (typeof PLAYWRIGHT_MANAGED_BROWSERS)[number],
-): string {
-  return `.reasonix/playwright/profiles/${browser}`;
+export const PLAYWRIGHT_WORKSPACE_PROFILES_DIR = ".reasonix/playwright/profiles";
+
+/** The pre-`chromium` name: it is both the legacy profile dir and the Chromium channel
+ *  prefix that `--browser` used to carry. */
+const LEGACY_CHROME_NAME = "chrome";
+
+/** Relative to the MCP server cwd, which Reasonix+ pins to the active workspace. */
+export function playwrightWorkspaceProfileDir(browser: PlaywrightManagedBrowser): string {
+  return `${PLAYWRIGHT_WORKSPACE_PROFILES_DIR}/${browser}`;
 }
 
-export function isPlaywrightManagedBrowser(
-  value: unknown,
-): value is (typeof PLAYWRIGHT_MANAGED_BROWSERS)[number] {
+export function isPlaywrightManagedBrowser(value: unknown): value is PlaywrightManagedBrowser {
   return typeof value === "string" && MANAGED_MODES.has(value as PlaywrightMcpConnectionMode);
 }
+
+/** A downloadable mode is one Reasonix+ installs into the browsers dir; the rest are
+ *  vendor browsers that already live on the machine. */
+export function isPlaywrightDownloadableBrowser(browser: unknown): boolean {
+  return isPlaywrightManagedBrowser(browser) && !SYSTEM_CHANNEL_BROWSERS.has(browser);
+}
+
+/** Only Playwright downloads honour PLAYWRIGHT_DOWNLOAD_HOST, so a system channel gets a
+ *  single attempt: a mirror retry just repeats the same vendor-installer failure. */
+export function playwrightInstallSources(browser: unknown): readonly PlaywrightDownloadSource[] {
+  return isPlaywrightDownloadableBrowser(browser)
+    ? PLAYWRIGHT_DOWNLOAD_SOURCES
+    : [PLAYWRIGHT_DOWNLOAD_SOURCES[0]];
+}
+
+/** Move a pre-`chromium` profile into place once, so cookies, logins, and installed
+ *  extensions survive the switch off system Chrome. Never overwrites an existing profile. */
+export function carryOverLegacyManagedProfile(
+  workspaceDir: string | undefined,
+  browser: PlaywrightManagedBrowser,
+): void {
+  if (!workspaceDir || browser !== "chromium") return;
+  const target = join(workspaceDir, playwrightWorkspaceProfileDir("chromium"));
+  const legacy = join(workspaceDir, PLAYWRIGHT_WORKSPACE_PROFILES_DIR, LEGACY_CHROME_NAME);
+  if (existsSync(target) || !existsSync(legacy)) return;
+  try {
+    renameSync(legacy, target);
+  } catch {
+    // Concurrent bridges may have won the rename, or a live browser holds the dir.
+    // Copying into a profile that now exists would merge two Chromium profiles.
+    if (existsSync(target) || !existsSync(legacy)) return;
+    try {
+      cpSync(legacy, target, { recursive: true, errorOnExist: false });
+    } catch {
+      // A fresh profile beats blocking the launch; the old dir stays for manual recovery.
+    }
+  }
+}
+
+/** Written by Playwright into a browser dir only after a completed extraction. */
+const PLAYWRIGHT_INSTALL_MARKER = "INSTALLATION_COMPLETE";
 
 /** Compute the base directory where Playwright downloads and caches browser builds. */
 export function resolvePlaywrightBrowsersDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -88,8 +137,8 @@ export function isPlaywrightBrowserInstalled(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (!isPlaywrightManagedBrowser(browser)) return false;
-  // Chrome and Edge use system channels; no local Playwright build download required.
-  if (browser === "chrome" || browser === "msedge") return true;
+  // Only the vendor-installed channel skips the probe; every download must be present.
+  if (!isPlaywrightDownloadableBrowser(browser)) return true;
 
   const baseDir = resolvePlaywrightBrowsersDir(env);
   if (!existsSync(baseDir)) return false;
@@ -98,8 +147,9 @@ export function isPlaywrightBrowserInstalled(
     const prefix = `${browser}-`;
     return entries.some((entry) => {
       if (!entry.startsWith(prefix)) return false;
-      const full = join(baseDir, entry);
-      return existsSync(full);
+      // Playwright writes this marker after extracting, so an interrupted download
+      // does not look installed and the next bridge retries instead of failing blind.
+      return existsSync(join(baseDir, entry, PLAYWRIGHT_INSTALL_MARKER));
     });
   } catch {
     return false;
@@ -183,6 +233,18 @@ function browserArg(args: string[]): string | undefined {
   return undefined;
 }
 
+/** Map a `--browser` value onto a managed mode. Legacy specs name a Chromium system
+ *  channel ("chrome", "chrome-beta", ...); those resolve to the hermetic build instead, so
+ *  the launch-time rewrite moves them off the system install without a user edit. */
+function normalizeManagedBrowser(value: string | undefined): PlaywrightManagedBrowser | undefined {
+  if (!value) return undefined;
+  if (MANAGED_MODES.has(value as PlaywrightMcpConnectionMode)) {
+    return value as PlaywrightManagedBrowser;
+  }
+  if (value === LEGACY_CHROME_NAME || value.startsWith(`${LEGACY_CHROME_NAME}-`)) return "chromium";
+  return undefined;
+}
+
 /** Parse Reasonix+'s supported connection modes from a Playwright MCP argv. */
 export function parsePlaywrightConnection(args: string[]): {
   mode: PlaywrightMcpConnectionMode;
@@ -200,12 +262,12 @@ export function parsePlaywrightConnection(args: string[]): {
     const cdpEndpoint =
       arg === "--cdp-endpoint" ? args[index + 1] : arg.match(/^--cdp-endpoint=(.+)$/)?.[1];
     if (cdpEndpoint) return { mode: "cdp", cdpEndpoint };
-    const browser = arg === "--browser" ? args[index + 1] : arg.match(/^--browser=(.+)$/)?.[1];
-    if (browser && MANAGED_MODES.has(browser as PlaywrightMcpConnectionMode)) {
-      return { mode: browser as PlaywrightMcpConnectionMode };
-    }
+    const browser = normalizeManagedBrowser(
+      arg === "--browser" ? args[index + 1] : arg.match(/^--browser=(.+)$/)?.[1],
+    );
+    if (browser) return { mode: browser };
   }
-  return { mode: "chrome" };
+  return { mode: "chromium" };
 }
 
 /** Replace connection-specific flags while preserving package pins and unrelated user options. */
@@ -260,17 +322,18 @@ export function withPlaywrightOutputDir(args: string[], outputDir: string): stri
 }
 
 /** Pin a Playwright spec to the workspace: managed modes get the workspace-local
- *  profile, and every mode gets an absolute output dir under the workspace so file
- *  outputs land inside the sandbox instead of the server's own cwd. */
+ *  profile (carrying a legacy `chrome` profile over once), and every mode gets an absolute
+ *  output dir under the workspace so file outputs land inside the sandbox. */
 export function withPlaywrightWorkspaceProfile(
   spec: McpServerSpec,
   workspaceDir?: string,
 ): McpServerSpec {
   if (spec.transport !== "stdio") return spec;
   const connection = parsePlaywrightConnection(spec.args);
-  let args = isPlaywrightManagedBrowser(connection.mode)
-    ? configurePlaywrightArgs(spec.args, connection.mode)
-    : spec.args;
+  const mode = connection.mode;
+  const managed = isPlaywrightManagedBrowser(mode);
+  if (managed) carryOverLegacyManagedProfile(workspaceDir, mode);
+  let args = managed ? configurePlaywrightArgs(spec.args, mode) : spec.args;
   if (workspaceDir) args = withPlaywrightOutputDir(args, join(workspaceDir, ".playwright-mcp"));
   return args === spec.args ? spec : { ...spec, args };
 }

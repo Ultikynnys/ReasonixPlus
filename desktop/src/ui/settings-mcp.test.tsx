@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { McpExtensionStatus, McpSpecInfo } from "../protocol";
-import { MailProvider } from "../protocol";
+import { MailProvider, PLAYWRIGHT_MANAGED_BROWSERS } from "../protocol";
 import { PageMCP } from "./settings";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -128,7 +128,12 @@ describe("PageMCP: Outlook Mail", () => {
       vi.fn(),
       vi.fn(),
       null,
-      { provider: MailProvider.Outlook, configured: true, phase: "connected", account: "ada@outlook.com" },
+      {
+        provider: MailProvider.Outlook,
+        configured: true,
+        phase: "connected",
+        account: "ada@outlook.com",
+      },
       connect,
       testConnection,
     );
@@ -261,13 +266,23 @@ describe("PageMCP — playwright connection status", () => {
     expect(onConfigure).toHaveBeenCalledWith("webkit", undefined, undefined, undefined);
   });
 
+  it("renders exactly the shared managed-browser list plus the attach modes", () => {
+    renderCard([spec()]);
+    const select = screen.getByLabelText("Browser connection") as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.value)).toEqual([
+      ...PLAYWRIGHT_MANAGED_BROWSERS,
+      "extension",
+      "cdp",
+    ]);
+  });
+
   it("offers the managed Firefox installer and dispatches it", () => {
     const status = extensionStatus();
     status.server.mode = "firefox";
     status.server.hasExtensionArg = false;
     const onInstall = vi.fn();
     renderCard([spec()], status, null, vi.fn(), onInstall);
-    fireEvent.click(screen.getByRole("button", { name: "Install firefox" }));
+    fireEvent.click(screen.getByRole("button", { name: "Install Managed Firefox" }));
     expect(onInstall).toHaveBeenCalledWith("firefox");
   });
 
@@ -297,54 +312,44 @@ describe("PageMCP — playwright connection status", () => {
     const status = extensionStatus();
     status.server.mode = "firefox";
     status.server.hasExtensionArg = false;
-    renderCard(
-      [spec()],
-      status,
-      null,
-      vi.fn(),
-      vi.fn(),
-      { phase: "running", browser: "firefox", source: "official" },
-    );
-    expect(screen.queryByRole("button", { name: "Install firefox" })).toBeNull();
+    renderCard([spec()], status, null, vi.fn(), vi.fn(), {
+      phase: "running",
+      browser: "firefox",
+      source: "official",
+    });
+    expect(screen.queryByRole("button", { name: "Install Managed Firefox" })).toBeNull();
     expect(screen.getByRole("button", { name: "Cancel installation" })).toBeTruthy();
     expect(screen.getByText("Preparing browser download…")).toBeTruthy();
     expect(screen.getByText("Downloading from Playwright's official source")).toBeTruthy();
     expect(screen.getByRole("progressbar", { name: "Browser download progress" })).toBeTruthy();
     cleanup();
-    renderCard(
-      [spec()],
-      status,
-      null,
-      vi.fn(),
-      vi.fn(),
-      {
-        phase: "running",
-        browser: "firefox",
-        source: "backup",
-        downloadedBytes: 50 * 1024 * 1024,
-        totalBytes: 100 * 1024 * 1024,
-        percent: 50,
-        bytesPerSecond: 2 * 1024 * 1024,
-      },
-    );
+    renderCard([spec()], status, null, vi.fn(), vi.fn(), {
+      phase: "running",
+      browser: "firefox",
+      source: "backup",
+      downloadedBytes: 50 * 1024 * 1024,
+      totalBytes: 100 * 1024 * 1024,
+      percent: 50,
+      bytesPerSecond: 2 * 1024 * 1024,
+    });
     expect(screen.getByText("50.0 MB / 100 MB · 50%")).toBeTruthy();
-    expect(screen.getByText("Official source failed: retrying from the Reasonix+ mirror")).toBeTruthy();
+    expect(
+      screen.getByText("Official source failed: retrying from the Reasonix+ mirror"),
+    ).toBeTruthy();
     expect(screen.getByText("2.0 MB/s")).toBeTruthy();
     expect(
-      screen.getByRole("progressbar", { name: "Browser download progress" }).getAttribute(
-        "aria-valuenow",
-      ),
+      screen
+        .getByRole("progressbar", { name: "Browser download progress" })
+        .getAttribute("aria-valuenow"),
     ).toBe("50");
     cleanup();
-    renderCard(
-      [spec()],
-      status,
-      null,
-      vi.fn(),
-      vi.fn(),
-      { phase: "done", browser: "firefox", ok: true, reason: null },
-    );
-    expect(screen.getByText(/firefox installed/)).toBeTruthy();
+    renderCard([spec()], status, null, vi.fn(), vi.fn(), {
+      phase: "done",
+      browser: "firefox",
+      ok: true,
+      reason: null,
+    });
+    expect(screen.getByText(/Managed Firefox installed/)).toBeTruthy();
   });
 
   it("passes a CDP endpoint for other Chromium browsers", () => {

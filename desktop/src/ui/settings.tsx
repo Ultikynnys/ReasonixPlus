@@ -27,6 +27,7 @@ import type {
 } from "../protocol";
 import {
   MailProvider,
+  PLAYWRIGHT_MANAGED_BROWSERS,
   QUICK_SEND_SHORTHAND_MAX_LENGTH,
   enforceQuickSendShorthand,
 } from "../protocol";
@@ -80,7 +81,13 @@ function keyStatusText(prefix: string | undefined): string {
 /** A provider-key hint: the shared status line, optionally followed by a signup
  *  link or description, so every provider key row reads the same way. */
 function keyStatusHint(prefix: string | undefined, trailing?: ReactNode): ReactNode {
-  return trailing ? <>{keyStatusText(prefix)} {trailing}</> : keyStatusText(prefix);
+  return trailing ? (
+    <>
+      {keyStatusText(prefix)} {trailing}
+    </>
+  ) : (
+    keyStatusText(prefix)
+  );
 }
 
 /** Reorder a quick send within the persisted list; out-of-range moves are no-ops. */
@@ -593,7 +600,9 @@ function PageGeneral({
 
       <section className="section">
         <div className="stitle">{t("settings.quickSendSection")}</div>
-        <div className="h" style={{ marginBottom: 12 }}>{t("settings.quickSendHint")}</div>
+        <div className="h" style={{ marginBottom: 12 }}>
+          {t("settings.quickSendHint")}
+        </div>
 
         {(settings.quickSends ?? []).length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
@@ -604,8 +613,18 @@ function PageGeneral({
                   <div style={{ display: "flex", gap: 4 }}>
                     {(
                       [
-                        { dir: -1, kind: "up", icon: <I.arrowUp size={12} />, title: t("settings.quickSendMoveUp") },
-                        { dir: 1, kind: "down", icon: <I.arrowDown size={12} />, title: t("settings.quickSendMoveDown") },
+                        {
+                          dir: -1,
+                          kind: "up",
+                          icon: <I.arrowUp size={12} />,
+                          title: t("settings.quickSendMoveUp"),
+                        },
+                        {
+                          dir: 1,
+                          kind: "down",
+                          icon: <I.arrowDown size={12} />,
+                          title: t("settings.quickSendMoveDown"),
+                        },
                       ] as const
                     ).map(({ dir, kind, icon, title }) => (
                       <button
@@ -1303,7 +1322,11 @@ function SearxngEndpointRow({
 }
 
 function SettingsEntry({
-  value, onChange, onSave, placeholder, secret = false,
+  value,
+  onChange,
+  onSave,
+  placeholder,
+  secret = false,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -1327,7 +1350,13 @@ function SettingsEntry({
   );
 }
 
-function ApiKeyRow({ label, hint, placeholder, prefix, onSave }: {
+function ApiKeyRow({
+  label,
+  hint,
+  placeholder,
+  prefix,
+  onSave,
+}: {
   label: string;
   hint?: ReactNode;
   placeholder?: string;
@@ -1343,7 +1372,11 @@ function ApiKeyRow({ label, hint, placeholder, prefix, onSave }: {
         <div className="n">{label}</div>
         <div className="h">{keyStatusHint(prefix, hint)}</div>
       </div>
-      <SettingsEntry secret value={draft} onChange={setDraft} placeholder={prefix ?? placeholder}
+      <SettingsEntry
+        secret
+        value={draft}
+        onChange={setDraft}
+        placeholder={prefix ?? placeholder}
         onSave={() => {
           onSave(draft.trim());
           setDraft("");
@@ -1928,7 +1961,6 @@ function ModelList({
   );
 }
 
-
 function ProviderBaseUrlRow({
   label,
   hint,
@@ -1963,7 +1995,6 @@ function ProviderBaseUrlRow({
     </div>
   );
 }
-
 
 function ProviderRefreshRow({
   label,
@@ -2565,7 +2596,7 @@ export function PageMCP({
 }) {
   const [draft, setDraft] = useState("");
   const [tokenDraft, setTokenDraft] = useState("");
-  const [mode, setMode] = useState<PlaywrightMcpConnectionMode>("chrome");
+  const [mode, setMode] = useState<PlaywrightMcpConnectionMode>("chromium");
   const [extensionBrowser, setExtensionBrowser] = useState<PlaywrightExtensionBrowser>("chrome");
   const [cdpEndpoint, setCdpEndpoint] = useState("");
   const [gmailClientId, setGmailClientId] = useState("");
@@ -2598,6 +2629,14 @@ export function PageMCP({
     setDraft("");
   };
   const configuredMode = extensionStatus?.server.mode;
+  const modeLabels: Record<PlaywrightMcpConnectionMode, string> = {
+    chromium: t("settings.mcpModeChrome"),
+    firefox: t("settings.mcpModeFirefox"),
+    webkit: t("settings.mcpModeWebkit"),
+    msedge: t("settings.mcpModeEdge"),
+    extension: t("settings.mcpModeExtension"),
+    cdp: t("settings.mcpModeCdp"),
+  };
   const extensionMode = mode === "extension";
   const managedMode = mode !== "extension" && mode !== "cdp";
   const installRunning =
@@ -2635,10 +2674,11 @@ export function PageMCP({
           value={mode}
           onChange={(event) => setMode(event.target.value as PlaywrightMcpConnectionMode)}
         >
-          <option value="chrome">{t("settings.mcpModeChrome")}</option>
-          <option value="firefox">{t("settings.mcpModeFirefox")}</option>
-          <option value="webkit">{t("settings.mcpModeWebkit")}</option>
-          <option value="msedge">{t("settings.mcpModeEdge")}</option>
+          {PLAYWRIGHT_MANAGED_BROWSERS.map((browser) => (
+            <option key={browser} value={browser}>
+              {modeLabels[browser]}
+            </option>
+          ))}
           <option value="extension">{t("settings.mcpModeExtension")}</option>
           <option value="cdp">{t("settings.mcpModeCdp")}</option>
         </select>
@@ -2721,7 +2761,7 @@ export function PageMCP({
             </button>
           ) : (
             <button type="button" className="btn primary" onClick={() => onInstallBrowser(mode)}>
-              {t("settings.mcpBrowserInstall", { browser: mode })}
+              {t("settings.mcpBrowserInstall", { browser: modeLabels[mode] })}
             </button>
           )
         ) : null}
@@ -2729,7 +2769,7 @@ export function PageMCP({
       <div style={{ marginTop: 8, fontSize: 11, color: "var(--muted)" }}>
         {extensionStatus
           ? extensionStatus.server.configured
-            ? `✓ ${t("settings.mcpConfiguredMode", { mode: configuredMode ?? "chrome" })}${
+            ? `✓ ${t("settings.mcpConfiguredMode", { mode: configuredMode ? modeLabels[configuredMode] : "…" })}${
                 extensionMode && extensionStatus.server.tokenPrefix
                   ? ` · ${t("settings.mcpTokenSaved")}`
                   : ""
@@ -2811,7 +2851,7 @@ export function PageMCP({
           }}
         >
           {browserInstall.ok
-            ? t("settings.mcpBrowserInstallOk", { browser: mode })
+            ? t("settings.mcpBrowserInstallOk", { browser: modeLabels[mode] })
             : `✗ ${browserInstall.reason ?? t("settings.mcpBrowserInstallFailed")}`}
         </div>
       ) : null}
@@ -3003,11 +3043,7 @@ export function PageMCP({
                 ) : null}
                 {s.builtin ? null : (
                   <div className="seg-ctrl">
-                    <button
-                      type="button"
-                      className="mcp-remove"
-                      onClick={() => onRemove(s.raw)}
-                    >
+                    <button type="button" className="mcp-remove" onClick={() => onRemove(s.raw)}>
                       {t("settings.mcpRemove")}
                     </button>
                   </div>

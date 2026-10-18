@@ -26,7 +26,7 @@ import {
 import { toPosixPath } from "@reasonix/core-utils/path-utils";
 import { type ReasoningEffort, isReasoningEffort } from "../config.js";
 import { atomicWriteSync, tmpSiblingPath } from "../core/atomic-write.js";
-import { readJsonFileSilently } from "../core/json-file.js";
+import { readJsonFileSilently, readJsonFileSilentlyAsync } from "../core/json-file.js";
 import { appendJsonlLine, parseJsonl } from "../core/jsonl.js";
 import { SessionDirectoryIndex } from "../desktop/session-directory-index.js";
 import { reasonixHome } from "../reasonix-home.js";
@@ -441,11 +441,14 @@ function creationStampFor(
   return parseSessionTimestamp(name) || Date.now();
 }
 
+/** Shape guard shared by every `meta.json` read, sync or async. */
+const isSessionMeta = (v: unknown): v is SessionMeta => !!v && typeof v === "object";
+
 /** Stamp `meta.updatedAt` on every append so resume-picking has an explicit, copy-safe "last activity" timestamp (falls back to mtime on failure). */
 function touchSessionUpdatedAt(name: string): void {
   try {
     const p = sessionMetaPath(name);
-    const cur = readJsonFileSilently(p, (v): v is SessionMeta => !!v && typeof v === "object");
+    const cur = readJsonFileSilently(p, isSessionMeta);
     const next: SessionMeta = {
       ...(cur ?? {}),
       updatedAt: Date.now(),
@@ -564,19 +567,61 @@ export function listSessionsForWorkspace(workspace: string): SessionInfo[] {
   return listSessions({ workspaceFilter: workspace, includeLegacyWorkspaceMatches: true });
 }
 
-/** Workspace-scoped session NAMES without reading a single transcript. The
- *  clear path only needs the names to delete; the full `listSessions` reads and
- *  byte-scans every transcript, which blocked the daemon for seconds. */
+/** One workspace-matching rule, shared by the sync and async name listings so
+ *  the two can never drift: an explicit meta stamp wins, otherwise the legacy
+ *  `code-<base>-` name prefix stands in for the missing stamp. */
+function sessionBelongsToWorkspace(
+  meta: SessionMeta,
+  name: string,
+  want: string,
+  legacyPrefix: string,
+): boolean {
+  if (typeof meta.workspace === "string") return normalizeWorkspace(meta.workspace) === want;
+  return name.startsWith(legacyPrefix);
+}
+
+/** Session NAMES without reading a transcript, which `listSessions` byte-scans: the sync
+ *  reference the async twin is tested against, and only for small explicit sweeps. */
 export function listSessionNamesForWorkspace(workspace: string): string[] {
   const want = normalizeWorkspace(workspace);
   const legacyPrefix = legacySessionPrefixForWorkspace(workspace);
-  return listSessionDirs().flatMap(({ name }) => {
-    const meta = loadSessionMeta(name);
-    if (typeof meta.workspace === "string") {
-      return normalizeWorkspace(meta.workspace) === want ? [name] : [];
+  return listSessionDirs().flatMap(({ name }) =>
+    sessionBelongsToWorkspace(loadSessionMeta(name), name, want, legacyPrefix) ? [name] : [],
+  );
+}
+
+/** Async twin of `listSessionNamesForWorkspace` for the daemon's clear path: same rule,
+ *  but chunked meta reads that yield the event loop instead of freezing every queued RPC. */
+export async function listSessionNamesForWorkspaceAsync(
+  workspace: string,
+  chunkSize = 64,
+): Promise<string[]> {
+  const want = normalizeWorkspace(workspace);
+  const legacyPrefix = legacySessionPrefixForWorkspace(workspace);
+  const names = listSessionDirs().map(({ name }) => name);
+  const out: string[] = [];
+  for (let start = 0; start < names.length; start += chunkSize) {
+    const chunk = names.slice(start, start + chunkSize);
+    const matched = await Promise.all(
+      chunk.map(async (name) =>
+        sessionBelongsToWorkspace(await loadSessionMetaAsync(name), name, want, legacyPrefix),
+      ),
+    );
+    for (let index = 0; index < chunk.length; index += 1) {
+      if (matched[index]) out.push(chunk[index]!);
     }
-    return name.startsWith(legacyPrefix) ? [name] : [];
-  });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  return out;
+}
+
+/** Async mirror of `loadSessionMeta`, including the legacy flat sidecar fallback. */
+async function loadSessionMetaAsync(name: string): Promise<SessionMeta> {
+  return (
+    (await readJsonFileSilentlyAsync(sessionMetaPath(name), isSessionMeta)) ??
+    (await readJsonFileSilentlyAsync(legacyFlatMetaPath(name), isSessionMeta)) ??
+    {}
+  );
 }
 
 const sessionDirectoryIndex = new SessionDirectoryIndex<SessionMeta>(
@@ -660,12 +705,9 @@ export function stampSessionWorkspace(name: string, workspace: string): boolean 
 
 export function loadSessionMeta(name: string): SessionMeta {
   const p = sessionMetaPath(name);
-  const fresh = readJsonFileSilently(p, (v): v is SessionMeta => !!v && typeof v === "object");
+  const fresh = readJsonFileSilently(p, isSessionMeta);
   if (fresh) return fresh;
-  const legacy = readJsonFileSilently(
-    legacyFlatMetaPath(name),
-    (v): v is SessionMeta => !!v && typeof v === "object",
-  );
+  const legacy = readJsonFileSilently(legacyFlatMetaPath(name), isSessionMeta);
   return legacy ?? {};
 }
 

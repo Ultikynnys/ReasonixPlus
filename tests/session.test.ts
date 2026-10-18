@@ -25,6 +25,7 @@ import {
   firstFreeSessionName,
   freshSessionName,
   listSessionNamesForWorkspace,
+  listSessionNamesForWorkspaceAsync,
   listSessions,
   listSessionsForWorkspace,
   loadSessionMessages,
@@ -498,6 +499,23 @@ describe("session persistence", () => {
     expect(names.sort()).toEqual(["code-a-202605251200", "named-a"]);
     // Trailing-slash drift must normalize identically to the detailed listing.
     expect(listSessionNamesForWorkspace("/proj/a/").sort()).toEqual(names);
+  });
+
+  it("listSessionNamesForWorkspaceAsync matches the sync twin, including meta-less legacy names", async () => {
+    appendSessionMessage("async-a", { role: "user", content: "x" });
+    appendSessionMessage("async-b", { role: "user", content: "x" });
+    appendSessionMessage("code-a-202605251200", { role: "user", content: "x" });
+    appendSessionMessage("untagged", { role: "user", content: "x" });
+    patchSessionMeta("async-a", { workspace: "/proj/a" });
+    patchSessionMeta("async-b", { workspace: "/proj/b" });
+
+    // Small chunk size so the yielding path is exercised across several chunks.
+    const names = await listSessionNamesForWorkspaceAsync("/proj/a", 1);
+
+    expect(names.sort()).toEqual(listSessionNamesForWorkspace("/proj/a").sort());
+    expect(names.sort()).toEqual(["async-a", "code-a-202605251200"]);
+    expect((await listSessionNamesForWorkspaceAsync("/proj/a/")).sort()).toEqual(names);
+    expect(await listSessionNamesForWorkspaceAsync("/proj/none")).toEqual([]);
   });
 
   it("deleteSessions reports a per-name verdict and treats absent names as settled", async () => {

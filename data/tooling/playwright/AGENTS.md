@@ -1,5 +1,5 @@
 <!-- platform:begin — this section is auto-managed by Reasonix+ (overwritten on playwright-tooling-version bumps). Your additions go below the platform:end marker and survive upgrades. -->
-<!-- playwright-tooling-version: 3 -->
+<!-- playwright-tooling-version: 4 -->
 
 # Playwright driver: persistent cross-browser control
 
@@ -7,7 +7,10 @@
 `mcpServers.playwright` entry over localhost HTTP and reuses that server across
 invocations. It supports every connection mode preserved in the config:
 
-- `--browser=chrome|firefox|webkit|msedge`: Playwright-managed persistent browser.
+- `--browser=chromium|firefox|webkit|msedge`: Playwright-managed persistent browser.
+  `chromium` is Playwright's own pinned Chrome for Testing build, downloaded on demand;
+  a `--browser=chrome*` flag is rewritten to it, so a managed mode never depends on an
+  installed system Chrome. `msedge` is the Edge that ships with Windows.
 - `--extension`: existing Chrome or Edge tabs through the official extension relay.
 - `--cdp-endpoint=...`: another Chromium browser, such as Brave, Vivaldi, Opera, or
   Chromium, when that browser exposes a Chrome DevTools Protocol endpoint.

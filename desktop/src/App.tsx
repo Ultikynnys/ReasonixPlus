@@ -442,37 +442,26 @@ export type SessionInfo = {
   workspaceStatus?: "matched" | "legacy_missing_meta";
 };
 
-/** A session-list mutation in flight for a channel — the single axis the
- *  main-area pill, the sidebar throbber and the controls lock all key on. */
-export type SessionMutation = "delete" | "clear" | "create";
+/** A session-list mutation in flight for a channel. One field carries the whole
+ *  fact, so the indicator cannot be told one thing and the "what are we waiting
+ *  for" another. `awaitingName` is present only for "create": the indicator
+ *  clears when that session is listed, and is omitted when the target is
+ *  unknown (then the first snapshot settles it). */
+export type SessionMutation =
+  | { kind: "delete" }
+  | { kind: "clear" }
+  | { kind: "create"; awaitingName?: string };
 
-/** The one source of in-flight session-mutation wording. `pill` is the main-area
- *  toast text, `badge` the sidebar RECENT-header throbber (kept short for the
- *  narrow surface) and `hint` the empty-state line. Every surface reads this, so
- *  the wording can never drift. */
-export function sessionMutationLabels(
-  mutation: SessionMutation,
-  count: number,
-): { pill: string; badge: string; hint: string } {
-  switch (mutation) {
+/** THE wording for an in-flight session mutation, and the only place it is
+ *  defined. Rendered by exactly one surface: the main-area pill. */
+export function sessionMutationLabel(mutation: SessionMutation, count: number): string {
+  switch (mutation.kind) {
     case "create":
-      return {
-        pill: t("app.creatingSession"),
-        badge: t("sidebarPanel.creatingSession"),
-        hint: t("app.creatingSession"),
-      };
+      return t("app.creatingSession");
     case "clear":
-      return {
-        pill: t("app.deletingSessions.bulk", { count }),
-        badge: t("sidebarPanel.deletingSessions"),
-        hint: t("app.noSessions.deleting"),
-      };
+      return t("app.deletingSessions.bulk", { count });
     default:
-      return {
-        pill: t("app.deletingSessions.one"),
-        badge: t("sidebarPanel.deletingSessions"),
-        hint: t("app.noSessions.deleting"),
-      };
+      return t("app.deletingSessions.one");
   }
 }
 
@@ -548,11 +537,10 @@ type State = {
   sessionsRevision: number;
   workspaceInitializationRevision: number;
   pendingSessionDeletes: string[];
-  /** In-flight session mutation: a single delete, a clear-all, or the initial
-   *  creation of a channel's session. Set on the optimistic request / channel
-   *  mount, cleared when the daemon's settled snapshot lands or the watchdog
-   *  releases it. Drives the main-area pill, the sidebar throbber and the
-   *  controls lock. */
+  /** The one in-flight session mutation for this channel, or null. Its `kind`
+   *  carries everything the indicator needs (including the session a "create"
+   *  is waiting for), so no sibling field can disagree with it. Cleared when
+   *  the daemon's settled snapshot lands or the watchdog releases it. */
   sessionsMutation: SessionMutation | null;
   settings: Settings | null;
   balance: Balance | null;
@@ -988,7 +976,7 @@ export function reduce(state: State, action: Action): State {
         ...state,
         sessions: state.sessions.filter((session) => session.name !== action.name),
         pendingSessionDeletes: [...new Set([...state.pendingSessionDeletes, action.name])],
-        sessionsMutation: "delete",
+        sessionsMutation: { kind: "delete" },
       };
     case "session_clear_requested":
       return {
@@ -997,7 +985,7 @@ export function reduce(state: State, action: Action): State {
         pendingSessionDeletes: [
           ...new Set([...state.pendingSessionDeletes, ...state.sessions.map((s) => s.name)]),
         ],
-        sessionsMutation: "clear",
+        sessionsMutation: { kind: "clear" },
       };
     case "session_mutation_release":
       // The daemon never settled this mutation (a wedged daemon, a dropped
@@ -2163,6 +2151,15 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           unique.set(session.name, session);
         }
       }
+      // A create settles only when the session it is waiting for is listed; an
+      // unrelated refresh must not tear the "Creating session..." indicator
+      // down. With no known target there is nothing to match, so accept the
+      // snapshot (the mutation watchdog is the final release).
+      const mutation = state.sessionsMutation;
+      const createSettled =
+        mutation?.kind !== "create" ||
+        mutation.awaitingName === undefined ||
+        ev.items.some((item) => item.name === mutation.awaitingName);
       return {
         ...state,
         sessions: [...unique.values()].sort(sortSessionsByCreationDescending),
@@ -2170,7 +2167,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         sessionsRevision: ev.revision,
         pendingSessionDeletes,
         // Every hidden name was settled by this snapshot — drop the in-flight marker.
-        sessionsMutation: pendingSessionDeletes.length > 0 ? state.sessionsMutation : null,
+        sessionsMutation:
+          pendingSessionDeletes.length > 0 || !createSettled ? state.sessionsMutation : null,
       };
     }
     case "$mcp_setup":
@@ -2966,9 +2964,12 @@ interface TabRuntimeProps {
    *  workspace's last-known list, so a freshly opened channel never blanks the
    *  sidebar while its own first $sessions snapshot is in flight. */
   initialSessionSeed?: SessionInfo[];
-  /** True when this channel was opened for a fresh, not-yet-listed session —
-   *  starts the "Creating session…" indicator until the first $sessions lands. */
+  /** True when this channel was opened for a fresh, not-yet-listed session.
+   *  Starts the "Creating session..." indicator until $sessions lists it. */
   creatingSession?: boolean;
+  /** The session name this channel was opened for, when `creatingSession` is
+   *  set: the create indicator stays up until exactly this name is listed. */
+  expectedSessionName?: string;
   /** Reports this channel's running-agent state so the tab dot can count them. */
   onBusyChange: (tabId: string, busy: boolean) => void;
   /** Live provider output rate (tokens/second) keyed by session name, for the
@@ -3039,6 +3040,7 @@ function TabRuntime({
   onNewTab,
   initialSessionSeed,
   creatingSession,
+  expectedSessionName,
   onBusyChange,
   sessionRates,
   theme,
@@ -3102,7 +3104,9 @@ function TabRuntime({
     sessionsRevision: 0,
     workspaceInitializationRevision: 0,
     pendingSessionDeletes: [],
-    sessionsMutation: creatingSession ? "create" : null,
+    sessionsMutation: creatingSession
+      ? { kind: "create", awaitingName: expectedSessionName }
+      : null,
     settings: null,
     balance: null,
     codexQuota: null,
@@ -3765,12 +3769,15 @@ function TabRuntime({
   // UI would sit mid-mutation forever, so release it past the deadline.
   useEffect(() => {
     if (state.sessionsMutation === null) return;
-    const id = window.setTimeout(
-      () => dispatch({ t: "session_mutation_release" }),
-      SESSION_MUTATION_TIMEOUT_MS,
-    );
+    const id = window.setTimeout(() => {
+      dispatch({ t: "session_mutation_release" });
+      // Re-sync instead of only dropping the indicator: past the deadline we
+      // cannot tell "wedged daemon" from "still deleting on a slow disk", so
+      // ask for the authoritative list rather than leaving the UI guessing.
+      sendRpc({ cmd: "session_list" });
+    }, SESSION_MUTATION_TIMEOUT_MS);
     return () => window.clearTimeout(id);
-  }, [state.sessionsMutation, state.pendingSessionDeletes.length]);
+  }, [state.sessionsMutation, state.pendingSessionDeletes.length, sendRpc]);
 
   // When retry returns the last user text, set it as the composer draft.
   // Only fire when retryNonce changes — retryText alone would re-fire on re-renders.
@@ -4335,10 +4342,7 @@ function TabRuntime({
             <div className="main-progress" role="status" aria-live="polite">
               <span className="spin" aria-hidden="true" />
               <span>
-                {
-                  sessionMutationLabels(state.sessionsMutation, state.pendingSessionDeletes.length)
-                    .pill
-                }
+                {sessionMutationLabel(state.sessionsMutation, state.pendingSessionDeletes.length)}
               </span>
             </div>
           ) : null}
@@ -4359,7 +4363,7 @@ function TabRuntime({
               onOpenSettings={() => openSettingsAt("models")}
             />
           ) : state.sessionsRevision > 0 && state.sessions.length === 0 ? (
-            <NoSessionsView onNewChat={newChat} sessionMutation={state.sessionsMutation} />
+            <NoSessionsView onNewChat={newChat} />
           ) : (
             <>
               <MainHead
@@ -5795,35 +5799,15 @@ function EmptyState({
   );
 }
 
-function NoSessionsView({
-  onNewChat,
-  sessionMutation,
-}: {
-  onNewChat: () => void;
-  sessionMutation?: SessionMutation | null;
-}) {
+/** Empty-workspace panel. Deliberately mutation-agnostic: the one in-flight
+ *  indicator is the main-area pill above it, so this surface never restates it
+ *  (and the New chat button is never disabled into a dead, unexplained control). */
+function NoSessionsView({ onNewChat }: { onNewChat: () => void }) {
   useLang();
-  const busyLabel = sessionMutation ? sessionMutationLabels(sessionMutation, 0).hint : null;
   return (
-    <EmptyPanel
-      title={t("app.noSessions.title")}
-      hint={busyLabel ?? t("app.noSessions.hint")}
-    >
-      <button
-        type="button"
-        className="btn"
-        style={{ fontSize: 12 }}
-        onClick={onNewChat}
-        disabled={busyLabel != null}
-      >
-        {busyLabel != null ? (
-          <>
-            <span className="spin" aria-hidden="true" />
-            {busyLabel}
-          </>
-        ) : (
-          t("sidebarPanel.newChat")
-        )}
+    <EmptyPanel title={t("app.noSessions.title")} hint={t("app.noSessions.hint")}>
+      <button type="button" className="btn" style={{ fontSize: 12 }} onClick={onNewChat}>
+        {t("sidebarPanel.newChat")}
       </button>
     </EmptyPanel>
   );
@@ -6919,6 +6903,7 @@ export function App() {
             normalizeWorkspacePath(t.workspaceDir),
           )}
           creatingSession={t.creating === true}
+          expectedSessionName={t.session}
           onWorkspaceInitialized={markWorkspaceInitialized}
           onNewTab={openTab}
           onBusyChange={reportTabBusy}

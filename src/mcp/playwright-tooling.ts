@@ -9,7 +9,7 @@ import { recordDiagnostic } from "../diagnostics.js";
 import { reasonixHome } from "../reasonix-home.js";
 import type { McpServerSpec } from "./spec.js";
 
-export const PLAYWRIGHT_TOOLING_VERSION = 3;
+export const PLAYWRIGHT_TOOLING_VERSION = 4;
 const STAMP_RE = /playwright-tooling-version:\s*(\d+)/g;
 const PLATFORM_BEGIN = "<!-- platform:begin";
 const PLATFORM_END = "<!-- platform:end -->";

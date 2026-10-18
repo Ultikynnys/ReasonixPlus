@@ -203,9 +203,9 @@ describe("desktop — no-session main-area state", () => {
     });
     await settle(20);
 
-    // In flight — the sidebar reports the daemon work instead of looking dead.
-    expect(screen.getByText("Deleting…")).toBeTruthy();
-    expect(screen.getByText("Deleting session…")).toBeTruthy();
+    // In flight — one indicator, in the main area, and nowhere else.
+    expect(screen.getAllByText("Deleting session…")).toHaveLength(1);
+    expect(screen.queryByText("Deleting…")).toBeNull();
 
     // Daemon settles: it mints a virtual replacement and lists no sessions.
     await feed(
@@ -264,9 +264,10 @@ describe("desktop — no-session main-area state", () => {
     // The fresh channel seeds its sidebar from the workspace cache, so session
     // A's row never blanks out to "No sessions yet"...
     expect(screen.queryByText(/No sessions yet/)).toBeNull();
-    // ...and creation is surfaced the same way deletion is.
-    expect(screen.getByText("Creating session…")).toBeTruthy();
-    expect(screen.getByText("Creating…")).toBeTruthy();
+    // ...and creation is surfaced the same way deletion is: once, in the main
+    // area, with no second copy in the sidebar header or the empty-state button.
+    expect(screen.getAllByText("Creating session…")).toHaveLength(1);
+    expect(screen.queryByText("Creating…")).toBeNull();
 
     // The channel's first snapshot settles the indicator.
     await feed(
@@ -285,5 +286,59 @@ describe("desktop — no-session main-area state", () => {
 
     expect(screen.queryByText("Creating session…")).toBeNull();
     expect(screen.queryByText("Creating…")).toBeNull();
+  });
+
+  it("keeps the create indicator until the minted session is actually listed", async () => {
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await startupWithSessionA();
+
+    // New chat opens channel t2 for a just-minted session B.
+    await feed(
+      {
+        type: "$tab_opened",
+        workspaceDir: WS,
+        active: true,
+        groupId: "g1",
+        sessions: ["B"],
+        activeSession: "B",
+        creating: true,
+      },
+      "t2",
+    );
+    await settle(20);
+    expect(screen.getByText("Creating session…")).toBeTruthy();
+
+    // A refresh that predates B (another channel's clear-all, a stale read)
+    // must not tear the indicator down: it is waiting for B, not for any reply.
+    await feed(
+      {
+        type: "$sessions",
+        epoch: "e2",
+        revision: 1,
+        items: [{ name: "A", messageCount: 2, mtime: new Date(1).toISOString() }],
+      },
+      "t2",
+    );
+    await settle(40);
+    expect(screen.getByText("Creating session…")).toBeTruthy();
+
+    // The snapshot that lists B is the one that finishes the task.
+    await feed(
+      {
+        type: "$sessions",
+        epoch: "e2",
+        revision: 2,
+        items: [
+          { name: "A", messageCount: 2, mtime: new Date(1).toISOString() },
+          { name: "B", messageCount: 0, mtime: new Date(2).toISOString() },
+        ],
+      },
+      "t2",
+    );
+    await settle(40);
+    expect(screen.queryByText("Creating session…")).toBeNull();
   });
 });

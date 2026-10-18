@@ -45,7 +45,7 @@ import {
   runningSessionNames,
   sanitizeSettingsPatch,
   sessionCreationTime,
-  sessionMutationLabels,
+  sessionMutationLabel,
   sessionRecency,
   settingsValueEqual,
   sortSessionsByCreationDescending,
@@ -2689,7 +2689,7 @@ describe("Desktop App session sorting", () => {
 
     const clearing = reduce(base, { t: "session_clear_requested" });
     expect(clearing.sessions).toEqual([]);
-    expect(clearing.sessionsMutation).toBe("clear");
+    expect(clearing.sessionsMutation).toEqual({ kind: "clear" });
     expect(clearing.pendingSessionDeletes).toEqual(["a", "b"]);
 
     // One name still unconfirmed — the in-flight marker must survive.
@@ -2704,7 +2704,7 @@ describe("Desktop App session sorting", () => {
       },
     });
     expect(partial.pendingSessionDeletes).toEqual(["b"]);
-    expect(partial.sessionsMutation).toBe("clear");
+    expect(partial.sessionsMutation).toEqual({ kind: "clear" });
 
     const settled = reduce(partial, {
       t: "incoming",
@@ -2726,7 +2726,7 @@ describe("Desktop App session sorting", () => {
       { ...initialState(), sessions: [session], sessionsEpoch: "daemon-1" },
       { t: "session_delete_requested", name: session.name },
     );
-    expect(deleting.sessionsMutation).toBe("delete");
+    expect(deleting.sessionsMutation).toEqual({ kind: "delete" });
 
     const released = reduce(deleting, { t: "session_mutation_release" });
     expect(released.pendingSessionDeletes).toEqual([]);
@@ -2791,7 +2791,7 @@ describe("Desktop App session sorting", () => {
   });
 
   it("clears a create mutation once the channel's first snapshot lands", () => {
-    const creating = { ...initialState(), sessionsMutation: "create" as const };
+    const creating = { ...initialState(), sessionsMutation: { kind: "create" } as const };
     const listed = reduce(creating, {
       t: "incoming",
       event: { type: "$sessions", epoch: "daemon-1", revision: 1, items: [] },
@@ -2799,28 +2799,71 @@ describe("Desktop App session sorting", () => {
     expect(listed.sessionsMutation).toBeNull();
   });
 
+  it("keeps a create mutation until the session it waits for is listed", () => {
+    const creating = {
+      ...initialState(),
+      sessionsMutation: { kind: "create", awaitingName: "fresh" } as const,
+    };
+    // A snapshot that predates the mint must not finish the indicator...
+    const stale = reduce(creating, {
+      t: "incoming",
+      event: {
+        type: "$sessions",
+        epoch: "daemon-1",
+        revision: 1,
+        items: [{ name: "older", messageCount: 2, mtime: new Date(1000).toISOString() }],
+      },
+    });
+    expect(stale.sessionsMutation).toEqual({ kind: "create", awaitingName: "fresh" });
+    // ...the one listing it does.
+    const listed = reduce(stale, {
+      t: "incoming",
+      event: {
+        type: "$sessions",
+        epoch: "daemon-1",
+        revision: 2,
+        items: [{ name: "fresh", messageCount: 0, mtime: new Date(2000).toISOString() }],
+      },
+    });
+    expect(listed.sessionsMutation).toBeNull();
+  });
+
   it("releases a create mutation the daemon never confirms", () => {
-    const creating = { ...initialState(), sessionsMutation: "create" as const };
+    const creating = {
+      ...initialState(),
+      sessionsMutation: { kind: "create", awaitingName: "fresh" } as const,
+    };
     const released = reduce(creating, { t: "session_mutation_release" });
     expect(released.sessionsMutation).toBeNull();
   });
 
-  it("maps each in-flight session mutation to its pill, badge and hint wording", () => {
-    expect(sessionMutationLabels("create", 0)).toEqual({
-      pill: "Creating session…",
-      badge: "Creating…",
-      hint: "Creating session…",
+  it("keeps a delete indicator until the daemon's settled echo arrives", () => {
+    const requested = reduce(initialState(), { t: "session_delete_requested", name: "gone" });
+    expect(requested.sessionsMutation).toEqual({ kind: "delete" });
+    // A snapshot the delete did not ask for leaves the row hidden and the pill
+    // up, so the indicator tracks the real round-trip rather than any reply.
+    const unrelated = reduce(requested, {
+      t: "incoming",
+      event: { type: "$sessions", epoch: "", revision: 1, items: [] },
     });
-    expect(sessionMutationLabels("delete", 0)).toEqual({
-      pill: "Deleting session…",
-      badge: "Deleting…",
-      hint: "Deleting sessions…",
+    expect(unrelated.sessionsMutation).toEqual({ kind: "delete" });
+    const settled = reduce(unrelated, {
+      t: "incoming",
+      event: {
+        type: "$sessions",
+        epoch: "",
+        revision: 2,
+        items: [],
+        settledDeletes: [{ name: "gone", removed: true }],
+      },
     });
-    expect(sessionMutationLabels("clear", 3)).toEqual({
-      pill: "Deleting 3 sessions…",
-      badge: "Deleting…",
-      hint: "Deleting sessions…",
-    });
+    expect(settled.sessionsMutation).toBeNull();
+  });
+
+  it("maps each in-flight session mutation to one wording", () => {
+    expect(sessionMutationLabel({ kind: "create" }, 0)).toBe("Creating session…");
+    expect(sessionMutationLabel({ kind: "delete" }, 0)).toBe("Deleting session…");
+    expect(sessionMutationLabel({ kind: "clear" }, 3)).toBe("Deleting 3 sessions…");
   });
 });
 

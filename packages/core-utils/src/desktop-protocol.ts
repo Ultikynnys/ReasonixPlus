@@ -611,7 +611,11 @@ export interface McpSetupEvent {
   servers: McpSetupServer[];
 }
 
-export type PlaywrightManagedBrowser = "chrome" | "firefox" | "webkit" | "msedge";
+/** Single source of truth for managed Playwright browser modes; the daemon, the UI
+ *  dropdown, and the installer all derive from it. */
+export const PLAYWRIGHT_MANAGED_BROWSERS = ["chromium", "firefox", "webkit", "msedge"] as const;
+
+export type PlaywrightManagedBrowser = (typeof PLAYWRIGHT_MANAGED_BROWSERS)[number];
 
 /** Extension relay targets: the Playwright Extension is Chromium-only, so the
  *  card chooses between Chrome (the default) and Edge. */

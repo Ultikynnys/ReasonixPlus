@@ -1,6 +1,9 @@
 /** Playwright MCP extension — store URL, server-entry merge, status computation. */
 
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PLAYWRIGHT_MANAGED_BROWSERS } from "@reasonix/core-utils";
 import { describe, expect, it } from "vitest";
 import { computeMcpExtensionStatus, interpretExtensionCheck } from "../src/cli/commands/desktop.js";
 import { type ReasonixConfig, mergeMcpServerEntry, normalizeMcpConfig } from "../src/config.js";
@@ -13,15 +16,18 @@ import {
   PLAYWRIGHT_DOWNLOAD_SOURCES,
   PLAYWRIGHT_EXTENSION_STORE_URL,
   PLAYWRIGHT_EXTENSION_TOKEN_ENV,
+  carryOverLegacyManagedProfile,
   configurePlaywrightArgs,
   createPlaywrightProgressParser,
   installFromPlaywrightDownloadSources,
   isPlaywrightBrowserInstalled,
+  isPlaywrightDownloadableBrowser,
   normalizeExtensionToken,
   parsePlaywrightConnection,
   parsePlaywrightDownloadProgress,
   playwrightBrowserInstallArgs,
   playwrightBrowserInstallEnv,
+  playwrightInstallSources,
   playwrightWorkspaceProfileDir,
   resolvePlaywrightBrowsersDir,
   withPlaywrightWorkspaceProfile,
@@ -119,7 +125,7 @@ describe("mergeMcpServerEntry", () => {
 });
 
 describe("playwrightBrowserInstallArgs", () => {
-  it.each(["chrome", "firefox", "webkit", "msedge"] as const)(
+  it.each(PLAYWRIGHT_MANAGED_BROWSERS)(
     "builds the official managed-browser installer for %s",
     (browser) => {
       expect(playwrightBrowserInstallArgs(browser)).toEqual([
@@ -169,10 +175,13 @@ describe("Playwright browser download", () => {
 
   it("tries the official source first and exposes the backup retry", async () => {
     const attempted: string[] = [];
-    const result = await installFromPlaywrightDownloadSources(async ({ source, host }) => {
-      attempted.push(source);
-      return source === "official" ? "network timeout" : null;
-    });
+    const result = await installFromPlaywrightDownloadSources(
+      "firefox",
+      async ({ source, host }) => {
+        attempted.push(source);
+        return source === "official" ? "network timeout" : null;
+      },
+    );
     expect(attempted).toEqual(["official", "backup"]);
     expect(result).toEqual({
       ok: true,
@@ -181,7 +190,7 @@ describe("Playwright browser download", () => {
   });
 
   it("retains diagnostics from both sources when neither succeeds", async () => {
-    const result = await installFromPlaywrightDownloadSources(async ({ source }) => {
+    const result = await installFromPlaywrightDownloadSources("chromium", async ({ source }) => {
       return `${source} failed`;
     });
     expect(result).toEqual({
@@ -215,21 +224,90 @@ describe("Playwright browser download", () => {
   });
 });
 
+describe("managed profile carry-over", () => {
+  const profilePath = (ws: string, ...parts: string[]) =>
+    join(ws, ".reasonix", "playwright", "profiles", ...parts);
+
+  const seedProfile = (ws: string, dir: string, marker = "signed-in") => {
+    mkdirSync(profilePath(ws, dir, "Default"), { recursive: true });
+    writeFileSync(profilePath(ws, dir, "Default", "Cookies"), marker);
+  };
+
+  it("moves a legacy chrome profile onto chromium so cookies and extensions survive", () => {
+    const ws = mkdtempSync(join(tmpdir(), "reasonix-ws-"));
+    seedProfile(ws, "chrome");
+    carryOverLegacyManagedProfile(ws, "chromium");
+    expect(readFileSync(profilePath(ws, "chromium", "Default", "Cookies"), "utf8")).toBe(
+      "signed-in",
+    );
+    expect(existsSync(profilePath(ws, "chrome"))).toBe(false);
+  });
+
+  it("never clobbers a chromium profile that already exists", () => {
+    const ws = mkdtempSync(join(tmpdir(), "reasonix-ws-"));
+    seedProfile(ws, "chrome", "legacy");
+    seedProfile(ws, "chromium", "current");
+    carryOverLegacyManagedProfile(ws, "chromium");
+    expect(readFileSync(profilePath(ws, "chromium", "Default", "Cookies"), "utf8")).toBe("current");
+    expect(readFileSync(profilePath(ws, "chrome", "Default", "Cookies"), "utf8")).toBe("legacy");
+  });
+
+  it("leaves other managed profiles and unknown workspaces untouched", () => {
+    const ws = mkdtempSync(join(tmpdir(), "reasonix-ws-"));
+    seedProfile(ws, "chrome");
+    carryOverLegacyManagedProfile(ws, "msedge");
+    carryOverLegacyManagedProfile(ws, "firefox");
+    expect(existsSync(profilePath(ws, "chrome", "Default", "Cookies"))).toBe(true);
+    expect(existsSync(profilePath(ws, "chromium"))).toBe(false);
+    expect(() => carryOverLegacyManagedProfile(undefined, "chromium")).not.toThrow();
+  });
+
+  it("carries the profile over when a legacy chrome spec is prepared for launch", () => {
+    const ws = mkdtempSync(join(tmpdir(), "reasonix-ws-"));
+    seedProfile(ws, "chrome");
+    const spec = withPlaywrightWorkspaceProfile(
+      {
+        transport: "stdio",
+        name: "playwright",
+        command: "npx",
+        args: ["-y", "@playwright/mcp", "--browser=chrome"],
+      },
+      ws,
+    );
+    expect(spec.args).toContain("--browser=chromium");
+    expect(readFileSync(profilePath(ws, "chromium", "Default", "Cookies"), "utf8")).toBe(
+      "signed-in",
+    );
+  });
+});
+
+describe("playwrightInstallSources", () => {
+  it("retries only downloadable browsers across mirrors", () => {
+    expect(playwrightInstallSources("chromium")).toEqual([...PLAYWRIGHT_DOWNLOAD_SOURCES]);
+    expect(playwrightInstallSources("firefox")).toEqual([...PLAYWRIGHT_DOWNLOAD_SOURCES]);
+    expect(playwrightInstallSources("msedge")).toEqual([PLAYWRIGHT_DOWNLOAD_SOURCES[0]]);
+  });
+
+  it("treats vendor channels as non-downloadable", () => {
+    expect(isPlaywrightDownloadableBrowser("chromium")).toBe(true);
+    expect(isPlaywrightDownloadableBrowser("firefox")).toBe(true);
+    expect(isPlaywrightDownloadableBrowser("msedge")).toBe(false);
+    expect(isPlaywrightDownloadableBrowser("chrome")).toBe(false);
+  });
+});
+
 describe("Playwright connection configuration", () => {
-  it.each(["chrome", "firefox", "webkit", "msedge"] as const)(
-    "configures and parses managed %s mode",
-    (mode) => {
-      const args = configurePlaywrightArgs(["-y", "@playwright/mcp@0.0.80", "--caps=vision"], mode);
-      expect(args).toEqual([
-        "-y",
-        "@playwright/mcp@0.0.80",
-        "--caps=vision",
-        `--browser=${mode}`,
-        `--user-data-dir=.reasonix/playwright/profiles/${mode}`,
-      ]);
-      expect(parsePlaywrightConnection(args)).toEqual({ mode });
-    },
-  );
+  it.each(PLAYWRIGHT_MANAGED_BROWSERS)("configures and parses managed %s mode", (mode) => {
+    const args = configurePlaywrightArgs(["-y", "@playwright/mcp@0.0.80", "--caps=vision"], mode);
+    expect(args).toEqual([
+      "-y",
+      "@playwright/mcp@0.0.80",
+      "--caps=vision",
+      `--browser=${mode}`,
+      `--user-data-dir=.reasonix/playwright/profiles/${mode}`,
+    ]);
+    expect(parsePlaywrightConnection(args)).toEqual({ mode });
+  });
 
   it("switches conflicting connection modes without losing unrelated arguments", () => {
     expect(
@@ -310,14 +388,16 @@ describe("Playwright connection configuration", () => {
   });
 
   it("uses one stable, browser-specific profile path under the workspace", () => {
-    expect(playwrightWorkspaceProfileDir("chrome")).toBe(".reasonix/playwright/profiles/chrome");
+    expect(playwrightWorkspaceProfileDir("chromium")).toBe(
+      ".reasonix/playwright/profiles/chromium",
+    );
     expect(playwrightWorkspaceProfileDir("firefox")).toBe(".reasonix/playwright/profiles/firefox");
     const configured = configurePlaywrightArgs(
-      configurePlaywrightArgs(["-y", "@playwright/mcp"], "chrome"),
-      "chrome",
+      configurePlaywrightArgs(["-y", "@playwright/mcp"], "chromium"),
+      "chromium",
     );
     expect(configured.filter((arg) => arg.startsWith("--user-data-dir="))).toEqual([
-      "--user-data-dir=.reasonix/playwright/profiles/chrome",
+      "--user-data-dir=.reasonix/playwright/profiles/chromium",
     ]);
   });
 
@@ -336,8 +416,8 @@ describe("Playwright connection configuration", () => {
       args: [
         "-y",
         "@playwright/mcp",
-        "--browser=chrome",
-        "--user-data-dir=.reasonix/playwright/profiles/chrome",
+        "--browser=chromium",
+        "--user-data-dir=.reasonix/playwright/profiles/chromium",
       ],
     });
   });
@@ -370,7 +450,7 @@ describe("Playwright connection configuration", () => {
         transport: "stdio",
         name: "playwright",
         command: "npx",
-        args: ["-y", "@playwright/mcp", "--browser=chrome"],
+        args: ["-y", "@playwright/mcp", "--browser=chromium"],
       },
       "/ws",
     );
@@ -404,9 +484,30 @@ describe("Playwright connection configuration", () => {
     ]);
   });
 
-  it("treats an unqualified Playwright server as managed Chrome", () => {
-    expect(parsePlaywrightConnection(["-y", "@playwright/mcp"])).toEqual({ mode: "chrome" });
+  it("treats an unqualified Playwright server as managed Chromium", () => {
+    expect(parsePlaywrightConnection(["-y", "@playwright/mcp"])).toEqual({ mode: "chromium" });
   });
+
+  it.each(["chrome", "chrome-beta", "chrome-dev", "chrome-canary", "chrome-for-testing"])(
+    "migrates a legacy %s system channel onto the hermetic Chromium build",
+    (browser) => {
+      expect(parsePlaywrightConnection(["-y", "@playwright/mcp", `--browser=${browser}`])).toEqual({
+        mode: "chromium",
+      });
+      const rewritten = withPlaywrightWorkspaceProfile({
+        transport: "stdio",
+        name: "playwright",
+        command: "npx",
+        args: ["-y", "@playwright/mcp", `--browser=${browser}`],
+      });
+      expect(rewritten.args).toEqual([
+        "-y",
+        "@playwright/mcp",
+        "--browser=chromium",
+        "--user-data-dir=.reasonix/playwright/profiles/chromium",
+      ]);
+    },
+  );
 });
 
 describe("normalizeExtensionToken", () => {
@@ -483,7 +584,7 @@ describe("computeMcpExtensionStatus", () => {
   it("reports unconfigured servers", () => {
     const status = computeMcpExtensionStatus({});
     expect(status.server.configured).toBe(false);
-    expect(status.server.mode).toBe("chrome");
+    expect(status.server.mode).toBe("chromium");
     expect(status.server.hasExtensionArg).toBe(false);
   });
 
@@ -555,9 +656,26 @@ describe("interpretExtensionCheck", () => {
 });
 
 describe("isPlaywrightBrowserInstalled", () => {
-  it("treats system channel browsers as installed", () => {
-    expect(isPlaywrightBrowserInstalled("chrome")).toBe(true);
+  it("treats the remaining system channel as installed", () => {
     expect(isPlaywrightBrowserInstalled("msedge")).toBe(true);
+  });
+
+  it("probes the browsers dir for the hermetic Chromium build", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reasonix-playwright-"));
+    const env = { PLAYWRIGHT_BROWSERS_PATH: dir };
+    expect(isPlaywrightBrowserInstalled("chromium", env)).toBe(false);
+    // An interrupted download leaves a dir without Playwright's completion marker.
+    mkdirSync(join(dir, "chromium-1248"));
+    expect(isPlaywrightBrowserInstalled("chromium", env)).toBe(false);
+    writeFileSync(join(dir, "chromium-1248", "INSTALLATION_COMPLETE"), "");
+    expect(isPlaywrightBrowserInstalled("chromium", env)).toBe(true);
+    // The headless shell is a separate dir and must not satisfy the probe.
+    const shellOnly = mkdtempSync(join(tmpdir(), "reasonix-playwright-"));
+    mkdirSync(join(shellOnly, "chromium_headless_shell-1248"));
+    writeFileSync(join(shellOnly, "chromium_headless_shell-1248", "INSTALLATION_COMPLETE"), "");
+    expect(isPlaywrightBrowserInstalled("chromium", { PLAYWRIGHT_BROWSERS_PATH: shellOnly })).toBe(
+      false,
+    );
   });
 
   it("returns false for unsupported browsers", () => {

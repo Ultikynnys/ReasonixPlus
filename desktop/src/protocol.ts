@@ -135,6 +135,7 @@ import { invoke } from "@tauri-apps/api/core";
 export { isAntigravityModel } from "@reasonix/core-utils";
 export {
   BUILTIN_QUICK_SENDS,
+  PLAYWRIGHT_MANAGED_BROWSERS,
   QUICK_SEND_SHORTHAND_MAX_LENGTH,
   MailProvider,
   allQuickSends,

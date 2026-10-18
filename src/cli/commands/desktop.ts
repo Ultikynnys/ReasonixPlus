@@ -261,6 +261,7 @@ import {
   createPlaywrightProgressParser,
   installFromPlaywrightDownloadSources,
   isPlaywrightBrowserInstalled,
+  isPlaywrightDownloadableBrowser,
   isPlaywrightManagedBrowser,
   normalizeExtensionToken,
   parsePlaywrightConnection,
@@ -323,7 +324,7 @@ import {
   deleteSessions,
   ensureSessionDir,
   firstFreeSessionName,
-  listSessionNamesForWorkspace,
+  listSessionNamesForWorkspaceAsync,
   listSessionsForWorkspaceAsync,
   loadSessionMessages,
   loadSessionMessagesAsync,
@@ -561,6 +562,18 @@ const STDOUT_BACKPRESSURE_WAIT = new Int32Array(new SharedArrayBuffer(4));
 type SyncWriter = (fd: number, buffer: Buffer, offset: number, length: number) => number;
 
 const SESSION_TITLE_MAX_CHARS = 200;
+
+/** Refusal for any session command a workspace-less (pending) tab can't honor.
+ *  One wording so the two silent-`return` paths can't drift apart. */
+export const NO_WORKSPACE_MESSAGE =
+  "This tab has no workspace yet. Pick or open a workspace, then try again.";
+
+/** A tab can only mint or clone a session once it has a workspace: a pending
+ *  tab has no rootDir, and both commands would otherwise return in silence.
+ *  Exported for tests. */
+export function tabNeedsWorkspace(tab: { pending: boolean; rootDir: string }): boolean {
+  return tab.pending || !tab.rootDir;
+}
 
 /** Trim + cap a user-provided session title; empty string means "clear summary". Exported for tests. */
 export function normalizeSessionTitle(raw: string): string {
@@ -3565,75 +3578,81 @@ async function installPlaywrightBrowser(
   const configuredEnv = readConfig().mcpServers?.playwright?.env;
   const baseEnv = { ...process.env, ...(configuredEnv ?? {}) };
   try {
-    const installResult = await installFromPlaywrightDownloadSources(async ({ source, host }) => {
-      emit(
-        { type: "$playwright_browser_install", install: { phase: "running", browser, source } },
-        tab.id,
-      );
-      const env = playwrightBrowserInstallEnv(baseEnv, host);
-      let output = "";
-      let previousProgress: { downloadedBytes: number; at: number } | undefined;
-      let markDownloadComplete = () => {};
-      const progressParser = createPlaywrightProgressParser((progress) => {
-        if (progress.percent === 100) markDownloadComplete();
-        const at = Date.now();
-        const elapsedMs = previousProgress ? at - previousProgress.at : 0;
-        const bytesPerSecond =
-          previousProgress &&
-          elapsedMs > 0 &&
-          progress.downloadedBytes >= previousProgress.downloadedBytes
-            ? Math.round(
-                ((progress.downloadedBytes - previousProgress.downloadedBytes) * 1000) / elapsedMs,
-              )
-            : undefined;
-        previousProgress = { downloadedBytes: progress.downloadedBytes, at };
+    const installResult = await installFromPlaywrightDownloadSources(
+      browser,
+      async ({ source, host }) => {
         emit(
-          {
-            type: "$playwright_browser_install",
-            install: { phase: "running", browser, source, ...progress, bytesPerSecond },
-          } satisfies PlaywrightBrowserInstallEvent,
+          { type: "$playwright_browser_install", install: { phase: "running", browser, source } },
           tab.id,
         );
-      });
-      const result = await new Promise<{
-        code: number | null;
-        error?: string;
-        cancelled?: boolean;
-      }>((resolveResult) => {
-        // Windows wraps `npx` as `npx.cmd`, which Node 22+ refuses to spawn
-        // without a shell (throws EINVAL). Mirror the stdio transport: on
-        // win32 build one quoted command line and run it through the shell;
-        // elsewhere spawn the bare binary. Args are already allowlisted
-        // (browser) and shape-checked (package pin), so no injection surface.
-        const shell = process.platform === "win32";
-        const child = shell
-          ? spawn(["npx", ...args.map((arg) => quoteArg(arg, true))].join(" "), [], {
-              windowsHide: true,
-              shell: true,
-              env,
-            })
-          : spawn("npx", args, { windowsHide: true, env });
-        const append = (chunk: Buffer | string) => {
-          output = `${output}${String(chunk)}`.slice(-8000);
-          progressParser.push(chunk);
-        };
-        child.stdout?.on("data", append);
-        child.stderr?.on("data", append);
-        const supervisor = supervisePlaywrightInstaller(child, {
-          signal: installController.signal,
+        const env = playwrightBrowserInstallEnv(baseEnv, host);
+        let output = "";
+        let previousProgress: { downloadedBytes: number; at: number } | undefined;
+        let markDownloadComplete = () => {};
+        const progressParser = createPlaywrightProgressParser((progress) => {
+          if (progress.percent === 100) markDownloadComplete();
+          const at = Date.now();
+          const elapsedMs = previousProgress ? at - previousProgress.at : 0;
+          const bytesPerSecond =
+            previousProgress &&
+            elapsedMs > 0 &&
+            progress.downloadedBytes >= previousProgress.downloadedBytes
+              ? Math.round(
+                  ((progress.downloadedBytes - previousProgress.downloadedBytes) * 1000) /
+                    elapsedMs,
+                )
+              : undefined;
+          previousProgress = { downloadedBytes: progress.downloadedBytes, at };
+          emit(
+            {
+              type: "$playwright_browser_install",
+              install: { phase: "running", browser, source, ...progress, bytesPerSecond },
+            } satisfies PlaywrightBrowserInstallEvent,
+            tab.id,
+          );
         });
-        markDownloadComplete = supervisor.markDownloadComplete;
-        void supervisor.result.then((result) => {
-          progressParser.flush();
-          resolveResult(result);
+        const result = await new Promise<{
+          code: number | null;
+          error?: string;
+          cancelled?: boolean;
+        }>((resolveResult) => {
+          // Windows wraps `npx` as `npx.cmd`, which Node 22+ refuses to spawn
+          // without a shell (throws EINVAL). Mirror the stdio transport: on
+          // win32 build one quoted command line and run it through the shell;
+          // elsewhere spawn the bare binary. Args are already allowlisted
+          // (browser) and shape-checked (package pin), so no injection surface.
+          const shell = process.platform === "win32";
+          const child = shell
+            ? spawn(["npx", ...args.map((arg) => quoteArg(arg, true))].join(" "), [], {
+                windowsHide: true,
+                shell: true,
+                env,
+              })
+            : spawn("npx", args, { windowsHide: true, env });
+          const append = (chunk: Buffer | string) => {
+            output = `${output}${String(chunk)}`.slice(-8000);
+            progressParser.push(chunk);
+          };
+          child.stdout?.on("data", append);
+          child.stderr?.on("data", append);
+          const supervisor = supervisePlaywrightInstaller(child, {
+            signal: installController.signal,
+          });
+          markDownloadComplete = supervisor.markDownloadComplete;
+          void supervisor.result.then((result) => {
+            progressParser.flush();
+            resolveResult(result);
+          });
         });
-      });
-      if (result.cancelled) throw new Error("installation cancelled");
-      if (result.code === 0) return null;
-      return (
-        (result.error ?? output.trim().slice(-1000)) || `installer exited with code ${result.code}`
-      );
-    });
+        if (result.cancelled) throw new Error("installation cancelled");
+        if (result.code === 0) return null;
+        return (
+          (result.error ?? output.trim().slice(-1000)) ||
+          `installer exited with code ${result.code}`
+        );
+      },
+    );
+    const failureReason = installResult.failures.join("\n\n");
     emit(
       {
         type: "$playwright_browser_install",
@@ -3641,7 +3660,11 @@ async function installPlaywrightBrowser(
           phase: "done",
           browser,
           ok: installResult.ok,
-          reason: installResult.ok ? null : installResult.failures.join("\n\n"),
+          reason: installResult.ok
+            ? null
+            : isPlaywrightDownloadableBrowser(browser)
+              ? failureReason
+              : `${failureReason}\n\n${browser} is installed by its vendor and needs Administrator rights, so Reasonix+ cannot install it. Choose a Playwright-managed browser instead.`,
         },
       },
       tab.id,
@@ -6068,6 +6091,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       reason: "new-chat" | "session-delete";
       settledDeletes?: SessionsEvent["settledDeletes"];
       conversationCancelled?: boolean;
+      /** Leave the trailing workspace list emit to the caller, which sends one
+       *  snapshot per workspace instead of one per replaced channel. */
+      deferSessionList?: boolean;
     },
   ): void {
     const diagnosticPrefix = options.reason === "new-chat" ? "session.new-chat" : "session.delete";
@@ -6114,7 +6140,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       tab.id,
     );
     emitRestoredPlan(tab, false);
-    emitSessionsForWorkspace(tab.rootDir, options.settledDeletes);
+    if (!options.deferSessionList) emitSessionsForWorkspace(tab.rootDir, options.settledDeletes);
     emitTabDiagnostic(tab, `${diagnosticPrefix}.completed`, undefined, "info");
   }
 
@@ -6167,17 +6193,22 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     settledDeletes: SessionsEvent["settledDeletes"],
     shouldReplace: (tab: Tab) => boolean,
   ): void {
+    const refreshed = new Set<string>();
     for (const openTab of tabs.values()) {
       if (shouldReplace(openTab)) {
         startFreshSession(openTab, {
           reason: "session-delete",
           settledDeletes,
           conversationCancelled: true,
+          deferSessionList: true,
         });
-      } else {
-        void emitSessions(openTab, settledDeletes);
       }
+      refreshed.add(openTab.rootDir);
     }
+    // One snapshot per affected workspace, never one per channel: a clear-all
+    // with many open channels otherwise re-listed the store once per replaced
+    // channel and buried the frontend in hundreds of $sessions events.
+    for (const dir of refreshed) emitSessionsForWorkspace(dir, settledDeletes);
   }
 
   /** Bring an already-open session's channel to the front and refresh its list. */
@@ -7756,9 +7787,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       void (async () => {
         const candidateNames = new Set(requested);
         try {
-          // Names only: the full listing byte-scans every transcript, which
-          // blocked the daemon for seconds on a large store.
-          for (const name of listSessionNamesForWorkspace(tab.rootDir)) {
+          // Names only, and off the reader thread: the sync twin walked and
+          // parsed the whole store on one tick, freezing the daemon's RPC loop.
+          for (const name of await listSessionNamesForWorkspaceAsync(tab.rootDir)) {
             candidateNames.add(name);
           }
         } catch (err) {
@@ -7790,7 +7821,18 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           restoreUntouchedRuntimes(affectedTabs, removed);
         }
         resyncAfterDeletes(settledDeletes, (t) => removed.has(t.currentSession));
-      })();
+      })().catch((err) => {
+        // Belt and braces: an unhandled rejection here would take the whole
+        // daemon down, which is the worst possible "no indication" outcome.
+        emitDiagnosticError("session.clear.crashed", err, { tabId: tab.id });
+        emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
+        // Settle every name the frontend optimistically hid, so no row stays
+        // hidden behind a clear that never finished.
+        void emitSessions(
+          tab,
+          requested.map((name) => ({ name, removed: false })),
+        );
+      });
       return;
     }
     if (msg.cmd === "session_rename") {
@@ -7913,7 +7955,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (msg.cmd === "new_chat") {
       // New chat is additive: preserve every existing agent in this workspace
       // tab and mount a fresh independent session beside them.
-      if (tab.pending || !tab.rootDir) return;
+      if (tabNeedsWorkspace(tab)) {
+        // Never drop a click in silence: the UI offers New chat here, so it owes
+        // the user a reason instead of a dead button.
+        emit({ type: "$error", message: NO_WORKSPACE_MESSAGE }, tab.id);
+        return;
+      }
       try {
         const opened = bootstrapTab(tab.rootDir, {
           active: true,
@@ -7947,7 +7994,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // `duplicateSessionTokens` tokens, opened on the user-picked models. The
       // frontend ships the export markdown (the export format lives there); we
       // trim it here where the accurate DeepSeek tokenizer lives.
-      if (tab.pending || !tab.rootDir) return;
+      if (tabNeedsWorkspace(tab)) {
+        emit({ type: "$error", message: NO_WORKSPACE_MESSAGE }, tab.id);
+        return;
+      }
       const markdown = typeof msg.markdown === "string" ? msg.markdown : "";
       if (!markdown.trim()) {
         emit({ type: "$error", message: "Duplicate session: nothing to duplicate." }, tab.id);

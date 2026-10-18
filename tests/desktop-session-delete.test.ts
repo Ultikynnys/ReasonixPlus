@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  NO_WORKSPACE_MESSAGE,
   shouldMaterializeFreshSession,
   shouldMaterializeRestoredSession,
   shouldReplaceDeletedSession,
+  tabNeedsWorkspace,
 } from "../src/cli/commands/desktop.js";
 
 describe("desktop session deletion synchronization", () => {
@@ -35,5 +37,22 @@ describe("desktop session deletion synchronization", () => {
   it("materializes a genuinely new tab with no persisted session", () => {
     expect(shouldMaterializeRestoredSession(undefined)).toBe(true);
     expect(shouldMaterializeRestoredSession({})).toBe(true);
+  });
+});
+
+describe("desktop — refusing a session command without a workspace", () => {
+  it("flags a pending tab and a tab with no root dir", () => {
+    expect(tabNeedsWorkspace({ pending: true, rootDir: "/ws" })).toBe(true);
+    expect(tabNeedsWorkspace({ pending: false, rootDir: "" })).toBe(true);
+  });
+
+  it("lets a normal workspace tab through", () => {
+    expect(tabNeedsWorkspace({ pending: false, rootDir: "/ws" })).toBe(false);
+  });
+
+  it("ships one user-facing refusal wording", () => {
+    // The daemon echoes this instead of returning silently, so a refused click
+    // still tells the user what to do next.
+    expect(NO_WORKSPACE_MESSAGE).toMatch(/workspace/i);
   });
 });
