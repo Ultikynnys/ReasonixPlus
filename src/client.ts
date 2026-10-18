@@ -35,6 +35,24 @@ const log = createLogger("client");
  *  `/api/show` (model registry changes are rare; 10 min keeps it fresh). */
 const OLLAMA_SHOW_PROBE_TTL_MS = 10 * 60_000;
 
+/** Cache-hit (cache-read) tokens under whatever spelling the provider used: the
+ *  single owner of that normalization. Returns undefined when no spelling is
+ *  present, so a provider-reported zero stays distinct from absent. */
+function cacheHitTokensFrom(u: RawUsage): number | undefined {
+  const candidates = [
+    u.prompt_cache_hit_tokens,
+    u.prompt_tokens_details?.cached_tokens,
+    u.input_tokens_details?.cached_tokens,
+    u.cached_tokens,
+    u.cache_read_input_tokens,
+    u.cachedContentTokenCount,
+    u.cached_content_token_count,
+  ];
+  return candidates.find(
+    (value): value is number => typeof value === "number" && Number.isFinite(value),
+  );
+}
+
 export class Usage {
   constructor(
     public promptTokens = 0,
@@ -59,22 +77,18 @@ export class Usage {
       typeof u.prompt_tokens === "number" ||
       typeof u.completion_tokens === "number" ||
       typeof u.total_tokens === "number" ||
-      typeof u.prompt_cache_hit_tokens === "number" ||
       typeof u.prompt_cache_miss_tokens === "number" ||
       typeof u.prompt_eval_count === "number" ||
       typeof u.eval_count === "number" ||
       // OpenAI Responses API usage names (codex backend / /v1/responses).
       typeof u.input_tokens === "number" ||
       typeof u.output_tokens === "number" ||
-      typeof u.input_tokens_details?.cached_tokens === "number" ||
-      // OpenAI Chat Completions cache detail (OpenCode Zen / openai-compatible chat).
-      typeof u.prompt_tokens_details?.cached_tokens === "number" ||
+      // Any cache-hit spelling (see cacheHitTokensFrom).
+      cacheHitTokensFrom(u) !== undefined ||
       // Google Antigravity / Gemini usageMetadata names.
       typeof u.promptTokenCount === "number" ||
       typeof u.candidatesTokenCount === "number" ||
-      typeof u.totalTokenCount === "number" ||
-      typeof u.cachedContentTokenCount === "number" ||
-      typeof u.cached_content_token_count === "number"
+      typeof u.totalTokenCount === "number"
     );
   }
 
@@ -84,13 +98,7 @@ export class Usage {
       u.prompt_tokens ?? u.prompt_eval_count ?? u.input_tokens ?? u.promptTokenCount ?? 0;
     const completionTokens =
       u.completion_tokens ?? u.eval_count ?? u.output_tokens ?? u.candidatesTokenCount ?? 0;
-    const cacheHitTokens =
-      u.prompt_cache_hit_tokens ??
-      u.prompt_tokens_details?.cached_tokens ??
-      u.input_tokens_details?.cached_tokens ??
-      u.cachedContentTokenCount ??
-      u.cached_content_token_count ??
-      0;
+    const cacheHitTokens = cacheHitTokensFrom(u) ?? 0;
     const cacheMissTokens =
       u.prompt_cache_miss_tokens ?? Math.max(0, promptTokens - cacheHitTokens);
     return new Usage(
@@ -1290,13 +1298,7 @@ export class DeepSeekClient {
     const completionTokens = usage.candidatesTokenCount ?? usage.candidates_token_count ?? 0;
     const totalTokens =
       usage.totalTokenCount ?? usage.total_token_count ?? promptTokens + completionTokens;
-    const cacheHitTokens =
-      usage.cachedContentTokenCount ??
-      usage.cached_content_token_count ??
-      usage.prompt_cache_hit_tokens ??
-      usage.prompt_tokens_details?.cached_tokens ??
-      usage.input_tokens_details?.cached_tokens ??
-      0;
+    const cacheHitTokens = cacheHitTokensFrom(usage) ?? 0;
     const cacheMissTokens =
       usage.prompt_cache_miss_tokens ?? Math.max(0, promptTokens - cacheHitTokens);
     return new Usage(promptTokens, completionTokens, totalTokens, cacheHitTokens, cacheMissTokens);

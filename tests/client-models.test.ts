@@ -158,6 +158,44 @@ describe("DeepSeekClient usage parsing", () => {
     expect(chunks.at(-1)?.usage?.promptTokens).toBe(10);
     expect(chunks.at(-1)?.usage?.promptCacheMissTokens).toBe(10);
   });
+
+  it("reads a top-level cached_tokens count (OpenAI-compatible gateways)", async () => {
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      baseUrl: "https://api.openai.com/v1",
+      fetch: makeFetch(200, {
+        choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 5,
+          total_tokens: 1005,
+          cached_tokens: 640,
+        },
+      }),
+    });
+    const resp = await client.chat({ model: "gpt-5.6-sol", messages: [] });
+    expect(resp.usage.promptCacheHitTokens).toBe(640);
+    expect(resp.usage.promptCacheMissTokens).toBe(360);
+  });
+
+  it("reads a top-level cache_read_input_tokens count", async () => {
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      baseUrl: "https://api.openai.com/v1",
+      fetch: makeFetch(200, {
+        choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+        usage: {
+          prompt_tokens: 800,
+          completion_tokens: 5,
+          total_tokens: 805,
+          cache_read_input_tokens: 512,
+        },
+      }),
+    });
+    const resp = await client.chat({ model: "gpt-5.6-sol", messages: [] });
+    expect(resp.usage.promptCacheHitTokens).toBe(512);
+    expect(resp.usage.promptCacheMissTokens).toBe(288);
+  });
 });
 
 describe("DeepSeekClient request serialization", () => {

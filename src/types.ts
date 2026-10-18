@@ -109,6 +109,11 @@ export interface RawUsage {
    *  cached input is reported under `prompt_tokens_details.cached_tokens`, a
    *  different path from the Responses API spelling above. */
   prompt_tokens_details?: { cached_tokens?: number };
+  /** OpenAI-compatible gateways that lift the cache-hit count to the top level
+   *  instead of nesting it (Z.AI/GLM, Groq-style proxies). */
+  cached_tokens?: number;
+  /** Top-level cache-read count in the Anthropic/DigitalOcean spelling. */
+  cache_read_input_tokens?: number;
   /** Google Antigravity / Gemini usageMetadata names. */
   promptTokenCount?: number;
   candidatesTokenCount?: number;
