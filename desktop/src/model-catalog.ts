@@ -4,13 +4,14 @@ import {
   MIMO_MODELS,
   OPENAI_MODELS,
   OPENCODE_MODELS,
+  PROVIDER_MODEL_PRECEDENCE,
   SUPPORTED_OFFICIAL_MODELS,
   ZAI_MODELS,
   type ProviderID,
   isUsableAntigravityModel,
   modelAcceptsImages,
-  needsProviderQualifier,
   qualifyModelRef,
+  stripProviderQualifier,
 } from "@reasonix/core-utils";
 
 export type ModelCatalogGroupKey =
@@ -87,29 +88,69 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     options.providerCatalogs?.[key]
       ? [...new Set([...options.providerCatalogs[key]!.models, ...fallback])]
       : fallback;
-  // Picker identity for cross-provider ids: an id an earlier provider catalog also
-  // serves resolves to that provider when sent bare, so this group's row carries a
-  // `<provider>/<id>` qualifier (mimo-v2.6-pro under OPENCODE → opencode/…).
   const groupProvider: Record<ModelCatalogGroupKey, ProviderID | null> = {
     deepseek: "deepseek",
     openai: "openai",
     zai: "zai",
     mimo: "mimo",
     opencode: "opencode",
+    // JEV/TypeSafe models have no routable provider id, so they are never
+    // qualified — and never take a bare id from a provider that does route.
     typesafe: null,
-    antigravity: null,
+    antigravity: "gemini",
     experiential: "experiential",
   };
-  const distinctModels = (
-    key: ModelCatalogGroupKey,
-    models: readonly string[],
-  ): readonly string[] => {
+  // One list per group and one order, so the ownership pass and the rendered
+  // cards can never disagree about a row's value. Every group contributes,
+  // visible card or not: a card appearing (sign-in, live catalogs) must not
+  // change the values already saved in `enabledModels`.
+  const groupModels: Record<ModelCatalogGroupKey, readonly string[]> = {
+    deepseek: catalogFor("deepseek", SUPPORTED_OFFICIAL_MODELS),
+    openai: catalogFor("openai", OPENAI_MODELS),
+    zai: catalogFor("zai", ZAI_MODELS),
+    mimo: catalogFor("mimo", MIMO_MODELS),
+    opencode: opencodeModels,
+    typesafe: catalogFor("typesafe", ["jev-latest"]),
+    experiential: catalogFor("experiential", EXPERIENTIAL_MODELS),
+    antigravity: antigravityModelIds,
+  };
+  const GROUP_ORDER: readonly ModelCatalogGroupKey[] = [
+    "deepseek",
+    "openai",
+    "zai",
+    "mimo",
+    "opencode",
+    "typesafe",
+    "experiential",
+    "antigravity",
+  ];
+  // A row's value is also its `enabledModels` key, so it must be unique across
+  // every card: OpenCode and the Experiential gateway both serve
+  // `deepseek-v4.1-flash`, and while both rows carried that same bare value one
+  // toggle hit both providers. Only the routing owner keeps the bare form; every
+  // other provider serving the id gets its own `<provider>/<id>`.
+  const rank = new Map(PROVIDER_MODEL_PRECEDENCE.map((provider, index) => [provider, index]));
+  const rankOf = (provider: ProviderID): number => rank.get(provider) ?? Number.MAX_SAFE_INTEGER;
+  const owner = new Map<string, ProviderID>();
+  for (const key of GROUP_ORDER) {
     const provider = groupProvider[key];
-    if (!provider) return models;
+    if (!provider) continue;
+    for (const id of groupModels[key]) {
+      const wire = stripProviderQualifier(id);
+      const current = owner.get(wire);
+      if (current === undefined || rankOf(provider) < rankOf(current)) owner.set(wire, provider);
+    }
+  }
+  const distinctModels = (key: ModelCatalogGroupKey): readonly string[] => {
+    const provider = groupProvider[key];
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const id of models) {
-      const value = needsProviderQualifier(provider, id) ? qualifyModelRef(provider, id) : id;
+    for (const id of groupModels[key]) {
+      const ownsId = owner.get(stripProviderQualifier(id));
+      const value =
+        provider && ownsId !== undefined && ownsId !== provider
+          ? qualifyModelRef(provider, id)
+          : id;
       if (!seen.has(value)) {
         seen.add(value);
         out.push(value);
@@ -117,23 +158,17 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     }
     return out;
   };
-  const rawGroups: ModelCatalogGroup[] = [
-    { key: "deepseek", models: catalogFor("deepseek", SUPPORTED_OFFICIAL_MODELS) },
-    { key: "openai", models: catalogFor("openai", OPENAI_MODELS) },
-    { key: "zai", models: catalogFor("zai", ZAI_MODELS) },
-    { key: "mimo", models: catalogFor("mimo", MIMO_MODELS) },
-    { key: "opencode", models: opencodeModels },
-    ...(options.providerCatalogs?.typesafe
-      ? [{ key: "typesafe" as const, models: catalogFor("typesafe", ["jev-latest"]) }]
-      : []),
-    ...(options.providerCatalogs?.experiential
-      ? [{ key: "experiential" as const, models: catalogFor("experiential", EXPERIENTIAL_MODELS) }]
-      : []),
-    ...(includeAntigravity ? [{ key: "antigravity" as const, models: antigravityModelIds }] : []),
-  ];
-  const groups: ModelCatalogGroup[] = rawGroups.map((group) => ({
-    key: group.key,
-    models: distinctModels(group.key, group.models),
+  const visible = (key: ModelCatalogGroupKey): boolean =>
+    key === "typesafe"
+      ? options.providerCatalogs?.typesafe !== undefined
+      : key === "experiential"
+        ? options.providerCatalogs?.experiential !== undefined
+        : key === "antigravity"
+          ? includeAntigravity
+          : true;
+  const groups: ModelCatalogGroup[] = GROUP_ORDER.filter(visible).map((key) => ({
+    key,
+    models: distinctModels(key),
   }));
 
   return {

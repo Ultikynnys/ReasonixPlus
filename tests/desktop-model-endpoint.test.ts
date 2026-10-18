@@ -271,4 +271,20 @@ describe("desktop modelEndpointFor (#1529)", () => {
     expect(ep.baseUrl).toBe("https://opencode.ai/zen/go/v1");
     expect(ep.opencodePlan).toBe("go");
   });
+
+  it("attributes each row of an id three providers serve to that row's provider", () => {
+    // The OpenCode Go flash id is also served by the gateway: the bare ref bills
+    // OpenCode and its Go windows, while the gateway row must bill the gateway
+    // instead of inheriting OpenCode's plan.
+    const bare = modelEndpointFor("deepseek-v4.1-flash", path);
+    expect(bare.provider).toBe("opencode");
+    expect(bare.opencodePlan).toBe("go");
+    expect(modelEndpointFor("experiential/deepseek-v4.1-flash", path).provider).toBe(
+      "experiential",
+    );
+    // A natively-owned id keeps its catalog owner bare; each reseller row
+    // resolves to itself, so the usage chips follow the row the user picked.
+    expect(modelEndpointFor("mimo-v2.6-pro", path).provider).toBe("mimo");
+    expect(modelEndpointFor("experiential/mimo-v2.6-pro", path).provider).toBe("experiential");
+  });
 });

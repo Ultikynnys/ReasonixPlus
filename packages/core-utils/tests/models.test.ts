@@ -13,7 +13,6 @@ import {
   modelAcceptsAudioVideo,
   modelAcceptsImages,
   modelDisplayName,
-  needsProviderQualifier,
   parseModelRef,
   qualifyModelRef,
   stripProviderQualifier,
@@ -235,27 +234,6 @@ describe("stripProviderQualifier", () => {
   it("leaves bare ids and unrecognized prefixes untouched", () => {
     expect(stripProviderQualifier("mimo-v2.6-pro")).toBe("mimo-v2.6-pro");
     expect(stripProviderQualifier("foo/bar")).toBe("foo/bar");
-  });
-});
-
-describe("needsProviderQualifier", () => {
-  it("flags ids an earlier catalog serves, so the bare id routes elsewhere", () => {
-    expect(needsProviderQualifier("opencode", "mimo-v2.6-pro")).toBe(true);
-    expect(needsProviderQualifier("opencode", "gpt-6-luna")).toBe(true);
-    expect(needsProviderQualifier("opencode", "glm-5.3")).toBe(true);
-    expect(needsProviderQualifier("opencode", "deepseek-v4-flash")).toBe(true);
-  });
-
-  it("leaves the native group and opencode-exclusive ids alone", () => {
-    expect(needsProviderQualifier("mimo", "mimo-v2.6-pro")).toBe(false);
-    expect(needsProviderQualifier("deepseek", "deepseek-flash")).toBe(false);
-    expect(needsProviderQualifier("opencode", "big-pickle")).toBe(false);
-    expect(needsProviderQualifier("opencode", "mimo-v2.5-free")).toBe(false);
-  });
-
-  it("returns false for providers outside the catalog precedence chain", () => {
-    expect(needsProviderQualifier("gemini", "gemini-3.8-flash")).toBe(false);
-    expect(needsProviderQualifier("ollama", "llama3.1:latest")).toBe(false);
   });
 });
 

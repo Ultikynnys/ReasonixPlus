@@ -288,6 +288,46 @@ describe("PageModels shared-id identity (qualified refs)", () => {
     });
   });
 
+  it("toggles two later providers' shared id independently", () => {
+    const onSave = vi.fn();
+    const { container } = render(
+      <SettingsModal
+        {...baseProps}
+        settings={{
+          ...baseSettings,
+          enabledModels: ["deepseek-v4.1-flash", "experiential/deepseek-v4.1-flash"],
+          providerCatalogs: {
+            experiential: { models: ["deepseek-v4.1-flash"], source: "live" },
+          },
+        }}
+        opencodeModels={["deepseek-v4.1-flash"]}
+        onSave={onSave}
+        initialPage="models"
+      />,
+    );
+    container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
+      if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+    });
+
+    const cardFor = (name: string) =>
+      Array.from(container.querySelectorAll(".mcard")).find(
+        (card) => card.querySelector(".model-name")?.textContent === name,
+      );
+    const opencodeRow = cardFor("deepseek-v4.1-flash");
+    const experientialRow = cardFor("experiential/deepseek-v4.1-flash");
+    expect(opencodeRow).toBeTruthy();
+    expect(experientialRow).toBeTruthy();
+    expect(
+      within(opencodeRow as HTMLElement).getByRole("button", { name: "Disable" }),
+    ).toBeTruthy();
+
+    // Disabling the Experimental Labs row must leave the OpenCode row enabled.
+    fireEvent.click(
+      within(experientialRow as HTMLElement).getByRole("button", { name: "Disable" }),
+    );
+    expect(onSave).toHaveBeenCalledWith({ enabledModels: ["deepseek-v4.1-flash"] });
+  });
+
   it("saves the qualified identity when the OPENCODE default model is selected", () => {
     const onSave = vi.fn();
     render(

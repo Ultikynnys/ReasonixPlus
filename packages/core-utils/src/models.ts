@@ -317,26 +317,21 @@ export function stripProviderQualifier(model: string): string {
   return parseModelRef(model).id;
 }
 
-/** Built-in catalog precedence (mirrors the daemon's CATALOG_PROVIDERS order:
- *  first match wins for a bare id). OpenCode also serves the paid/Go catalog
- *  through its live sync, so both lists count as "served by opencode". */
-const PROVIDER_CATALOGS: readonly { provider: ProviderID; ids: readonly string[] }[] = [
-  { provider: "deepseek", ids: SUPPORTED_OFFICIAL_MODELS },
-  { provider: "openai", ids: OPENAI_MODELS },
-  { provider: "zai", ids: ZAI_MODELS },
-  { provider: "mimo", ids: MIMO_MODELS },
-  { provider: "opencode", ids: [...new Set([...OPENCODE_MODELS, ...OPENCODE_GO_MODELS])] },
+/** Which provider owns the bare form of an id that several providers serve —
+ *  the first entry here that serves it keeps `<id>` and every other provider
+ *  must qualify its picker row as `<provider>/<id>`, because a bare id routes to
+ *  one provider only. Mirrors the daemon's `resolveModelAdmission` order:
+ *  Antigravity, the native catalogs, OpenCode, then the Experiential gateway.
+ *  A provider absent from this list never takes a bare id from another one. */
+export const PROVIDER_MODEL_PRECEDENCE: readonly ProviderID[] = [
+  "gemini",
+  "deepseek",
+  "openai",
+  "zai",
+  "mimo",
+  "opencode",
+  "experiential",
 ];
-
-/** True when a bare `modelId` shown in `groupProvider`'s picker group would
- *  route to a DIFFERENT provider (an earlier catalog serves it too), so the
- *  entry needs a `<provider>/` qualifier there. Overlaps with later catalogs
- *  never qualify: the bare id already routes to this group's provider. */
-export function needsProviderQualifier(groupProvider: ProviderID, modelId: string): boolean {
-  const group = PROVIDER_CATALOGS.findIndex((c) => c.provider === groupProvider);
-  if (group < 0) return false;
-  return PROVIDER_CATALOGS.some((catalog, index) => index < group && catalog.ids.includes(modelId));
-}
 
 /** Model ids that accept image attachments in user messages — the GPT-5.6
  *  family, DeepSeek's vision line, and every Gemini model (natively
