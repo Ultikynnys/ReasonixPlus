@@ -4799,7 +4799,9 @@ html[data-platform="macos"] .startup-loading-overlay {
   border-radius: 50%;
   border: 2px solid var(--border-strong);
   border-top-color: var(--accent);
-  animation: spin 0.8s linear infinite;
+  --spin-on: var(--accent);
+  --spin-off: var(--border-strong);
+  animation: spin-chase 0.8s linear infinite;
   display: inline-block;
   box-sizing: border-box;
   opacity: 1;
@@ -5975,7 +5977,9 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-radius: 50%;
   border: 1.5px solid var(--accent-soft);
   border-top-color: var(--accent);
-  animation: spin 0.9s linear infinite;
+  --spin-on: var(--accent);
+  --spin-off: var(--accent-soft);
+  animation: spin-chase 0.9s linear infinite;
   display: inline-block;
 }
 
@@ -6031,19 +6035,45 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   height: 13px;
 }
 
-/* spinner */
+/* Ring spinner: the lead border walks around with a color phase, never a
+   transform — a transforming child promotes the clipped card into a composited
+   mask layer whose tiles go stale while the transcript scrolls, ghosting labels. */
 .spin {
   width: 12px;
   height: 12px;
   border-radius: 50%;
   border: 1.5px solid var(--border-strong);
   border-top-color: var(--accent);
-  animation: spin 0.9s linear infinite;
+  --spin-on: var(--accent);
+  --spin-off: var(--border-strong);
+  animation: spin-chase 0.9s linear infinite;
   display: inline-block;
 }
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
+@keyframes spin-chase {
+  0%,
+  100% {
+    border-top-color: var(--spin-on);
+    border-right-color: var(--spin-off);
+    border-bottom-color: var(--spin-off);
+    border-left-color: var(--spin-off);
+  }
+  25% {
+    border-top-color: var(--spin-off);
+    border-right-color: var(--spin-on);
+    border-bottom-color: var(--spin-off);
+    border-left-color: var(--spin-off);
+  }
+  50% {
+    border-top-color: var(--spin-off);
+    border-right-color: var(--spin-off);
+    border-bottom-color: var(--spin-on);
+    border-left-color: var(--spin-off);
+  }
+  75% {
+    border-top-color: var(--spin-off);
+    border-right-color: var(--spin-off);
+    border-bottom-color: var(--spin-off);
+    border-left-color: var(--spin-on);
   }
 }
 
@@ -10500,5 +10530,7 @@ html[data-platform="macos"] .splash {
   border-width: 2px;
   border-color: color-mix(in oklch, currentColor 35%, transparent);
   border-top-color: currentColor;
+  --spin-on: currentColor;
+  --spin-off: color-mix(in oklch, currentColor 35%, transparent);
   flex-shrink: 0;
 }
