@@ -37,6 +37,7 @@ import {
   isContextOverflowError,
   isDeepSeekHost,
   isNetworkConnectionError,
+  isUpstreamBareRefusal,
   probeDeepSeekReachable,
   waitForReconnection,
 } from "./loop/errors.js";
@@ -108,11 +109,28 @@ import { USER_CANCEL_NOTE } from "./tools/shell.js";
 import type { ChatMessage, ToolCall, ToolSpec, TurnImage, UserContentPart } from "./types.js";
 
 export const PROVIDER_SERVER_ERROR_RETRY_DELAY_MS = 10_000;
+/** Backoff before replaying a request a gateway refused without naming a field. */
+export const UPSTREAM_REFUSAL_RETRY_DELAY_MS = 1_500;
+
+/** A refusal-recovery fold aims at this fraction of the refused request size. */
+const REFUSAL_FOLD_RATIO = 0.6;
+/** A prompt below this is not plausibly the reason, so recovery only replays it. */
+const REFUSAL_FOLD_MIN_TOKENS = 20_000;
 export const MID_TURN_STEER_WRAPPER =
   "[Mid-turn steer queued by the user. Do not treat this as a new task; use it only as additional guidance for the current task after completing the current step.]";
 
 function formatSteerUserMessage(content: string): string {
   return [MID_TURN_STEER_WRAPPER, content].join("\n");
+}
+
+/** Backoff that never turns a user abort into a spurious provider error. */
+async function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return;
+  try {
+    await sleep(ms, signal);
+  } catch (delayError) {
+    if (!signal.aborted) throw delayError;
+  }
 }
 
 /** finish_reason from a non-streaming chat-completions response body
@@ -258,6 +276,13 @@ export interface LoopAbortOptions {
 
 export type CompactionTrigger = "auto" | "manual" | "overflow";
 
+/** Notice key for each refusal-recovery step; a union so a typo fails to compile
+ *  instead of `t()` quietly rendering the key path. */
+export type UpstreamRefusalNoticeKey =
+  | "loop.upstreamRefusalRetry"
+  | "loop.upstreamRefusalTrimming"
+  | "loop.upstreamRefusalCompacting";
+
 export interface CompactionOutcome {
   status: "done" | "noop";
   trigger: CompactionTrigger;
@@ -303,6 +328,9 @@ export class CacheFirstLoop {
   /** Output-token-truncation continuations allowed per turn — a model stuck
    *  regenerating a partial answer must not loop forever. */
   static readonly MAX_TRUNCATION_CONTINUATIONS = 3;
+  /** Recovery attempts for a gateway refusal that names no offending field
+   *  (replay, request-only fold, durable fold) before the error surfaces. */
+  static readonly MAX_UPSTREAM_REFUSAL_RECOVERIES = 3;
   /** Consecutive identical-reasoning iterations before the reasoning-loop guard
    *  collapses the turn to a forced summary. */
   static readonly REASONING_LOOP_LIMIT = 3;
@@ -423,6 +451,12 @@ export class CacheFirstLoop {
    *  large — caps the shrink-and-retry heal before the error surfaces. */
   private _compactRecoveries = 0;
   private _payloadShrinkAttempts = 0;
+  /** Recovery stage for a field-less gateway refusal this turn (0 = none). */
+  private _refusalRecoveryStage = 0;
+  /** Request-only fold target (tokens) installed by the refusal ladder. The
+   *  log keeps its full history; only the outgoing copy is folded, so a retried
+   *  request is smaller while the transcript the user sees stays complete. */
+  private _requestFoldTarget: number | null = null;
   /** Mid-turn auto-compactions this turn — bounds the per-iteration recheck so
    *  a fold that still leaves the estimate over the trigger can't compact on
    *  every remaining iteration. */
@@ -846,7 +880,49 @@ export class CacheFirstLoop {
     // newest image parts are sent. Otherwise screenshots accumulate across a
     // long session until the provider rejects the whole request with an
     // image-count cap ("Too many images in request: 67 > 64") no retry can fix.
-    return pruneOldImageParts([...this.prefix.toMessages(), ...healedMessages, ...planContext]);
+    //
+    // The prefix is never folded: a durable compaction folds the log only, and
+    // the request-only fold below must match that or the system prompt would be
+    // summarized away from the outgoing turn.
+    return pruneOldImageParts([
+      ...this.prefix.toMessages(),
+      ...this.foldRequestForRefusal(healedMessages),
+      ...planContext,
+    ]);
+  }
+
+  /** Fold a copy of `messages` down to `targetTokens`, or null when folding
+   *  shrinks nothing (no plan, or a plan that keeps every message). */
+  private foldMessagesToTarget(
+    messages: readonly ChatMessage[],
+    targetTokens: number,
+  ): ChatMessage[] | null {
+    const plan = planCompaction(messages, { targetTokens });
+    if (!plan) return null;
+    const folded = renderDeterministic(plan);
+    return folded && folded.tokensAfter < folded.tokensBefore ? folded.messages : null;
+  }
+
+  /** Shrink the outgoing log copy to the refusal ladder's target without touching
+   *  the log, so a refused prompt is retried smaller while the transcript keeps
+   *  its full history. */
+  private foldRequestForRefusal(messages: ChatMessage[]): ChatMessage[] {
+    const target = this._requestFoldTarget;
+    if (target === null) return messages;
+    return this.foldMessagesToTarget(messages, target) ?? messages;
+  }
+
+  /** Target for a refusal-recovery fold, or null when the request is too small
+   *  for size to be a plausible cause (recovery then only replays it). Tool
+   *  schemas count: they are a fixed per-request cost the fold cannot remove. */
+  private refusalFoldTarget(): number | null {
+    const request = pruneOldImageParts([...this.prefix.toMessages(), ...this.log.entries]);
+    const tokens = estimateRequestTokens(request, this.prefix.tools());
+    if (tokens < REFUSAL_FOLD_MIN_TOKENS) return null;
+    const target = Math.max(REFUSAL_FOLD_MIN_TOKENS, Math.round(tokens * REFUSAL_FOLD_RATIO));
+    // Only offer a fold that actually drops history: a fold that keeps
+    // everything would relabel the retry without shrinking it.
+    return this.foldMessagesToTarget(this.log.entries, target) ? target : null;
   }
 
   private cacheShapeForRequest(
@@ -1076,7 +1152,7 @@ export class CacheFirstLoop {
    *  verification probe, falling back to a deterministic fold. Overflow
    *  recovery is fold-only (an estimated summarizer call could overflow). */
   async compactNow(
-    opts: { trigger?: CompactionTrigger; signal?: AbortSignal } = {},
+    opts: { trigger?: CompactionTrigger; signal?: AbortSignal; targetTokens?: number } = {},
   ): Promise<CompactionOutcome> {
     const run = this._compactLock.then(() => this.compactNowLocked(opts));
     this._compactLock = run.then(
@@ -1089,12 +1165,19 @@ export class CacheFirstLoop {
   private async compactNowLocked(opts: {
     trigger?: CompactionTrigger;
     signal?: AbortSignal;
+    /** Post-compaction token target. Unset = the window-derived default; the
+     *  refusal ladder passes a smaller one because the window estimate is not
+     *  what the gateway refused on. */
+    targetTokens?: number;
   }): Promise<CompactionOutcome> {
     const trigger = opts.trigger ?? "manual";
     const signal = opts.signal ?? this._turnAbort.signal;
     const events: LoopEvent[] = [];
     const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);
-    const targetTokens = Math.max(1_000, Math.round(ctxMax * COMPACT_TARGET_RATIO));
+    const targetTokens =
+      opts.targetTokens !== undefined
+        ? Math.max(1_000, Math.round(opts.targetTokens))
+        : Math.max(1_000, Math.round(ctxMax * COMPACT_TARGET_RATIO));
     // Snapshot boundary: the summarizer call below yields the event loop, and
     // a streaming turn can append to the log while it runs. The fold is
     // re-based onto the live log at apply time (see `appended` below).
@@ -1152,6 +1235,22 @@ export class CacheFirstLoop {
       checkpoint,
       events,
     };
+  }
+
+  /** Fold the log for a recovery path. A fold that throws is reported and
+   *  returns ok:false rather than propagating, so recovery degrades to a replay
+   *  instead of replacing the original failure with a raw error. */
+  private async foldLogForRecovery(
+    targetTokens: number | undefined,
+    signal: AbortSignal,
+  ): Promise<{ ok: boolean; events: LoopEvent[] }> {
+    try {
+      const outcome = await this.compactNow({ trigger: "overflow", signal, targetTokens });
+      return { ok: outcome.status === "done", events: outcome.events };
+    } catch (foldError) {
+      process.stderr.write(`reasonix: recovery compaction failed: ${messageOf(foldError)}\n`);
+      return { ok: false, events: [] };
+    }
   }
 
   private async summarizeForCompaction(
@@ -1269,6 +1368,8 @@ export class CacheFirstLoop {
     this._prematureStopNudges = 0;
     this._compactRecoveries = 0;
     this._payloadShrinkAttempts = 0;
+    this._refusalRecoveryStage = 0;
+    this._requestFoldTarget = null;
     this._midTurnCompacts = 0;
     this._lastReasoningSig = null;
     this._reasoningLoopCount = 0;
@@ -1649,13 +1750,7 @@ export class CacheFirstLoop {
             severity: "high",
             content: t(serverError ? "loop.providerServerErrorRetry" : "loop.providerErrorRetry"),
           };
-          if (serverError) {
-            try {
-              await sleep(PROVIDER_SERVER_ERROR_RETRY_DELAY_MS, signal);
-            } catch (delayError) {
-              if (!signal.aborted) throw delayError;
-            }
-          }
+          if (serverError) await sleepUnlessAborted(PROVIDER_SERVER_ERROR_RETRY_DELAY_MS, signal);
           continue;
         }
         // A provider that rejects the whole request body as too large (Ollama's
@@ -1689,6 +1784,55 @@ export class CacheFirstLoop {
             continue;
           }
         }
+        // A gateway can refuse the whole body without naming a field: OpenCode
+        // relays its upstream's bare invalid_request_error that way (param:
+        // null). The usual cause is a prompt the upstream takes once it is
+        // smaller, so ending the turn here is what made the failure look
+        // permanent: every re-prompt replayed the byte-identical body.
+        if (!signal.aborted && !partialDelivered && isUpstreamBareRefusal(cause)) {
+          if (this._refusalRecoveryStage < CacheFirstLoop.MAX_UPSTREAM_REFUSAL_RECOVERIES) {
+            this._refusalRecoveryStage++;
+            const attempt = this._refusalRecoveryStage;
+            const target = this.refusalFoldTarget();
+            let notice: UpstreamRefusalNoticeKey = "loop.upstreamRefusalRetry";
+            if (target !== null && attempt === 2) {
+              this._requestFoldTarget = target;
+              notice = "loop.upstreamRefusalTrimming";
+            } else if (target !== null && attempt === 3) {
+              yield {
+                turn: this._turn,
+                role: "compaction_start",
+                compactionTrigger: "overflow",
+                content: "",
+              };
+              const folded = await this.foldLogForRecovery(target, signal);
+              for (const ev of folded.events) yield ev;
+              if (folded.ok) notice = "loop.upstreamRefusalCompacting";
+            }
+            yield {
+              turn: this._turn,
+              role: "warning",
+              severity: "high",
+              content: t(notice, {
+                attempt: String(attempt),
+                max: String(CacheFirstLoop.MAX_UPSTREAM_REFUSAL_RECOVERIES),
+              }),
+            };
+            // Vitest drives the ladder to exhaustion; a real turn backs off so
+            // a gateway that is merely overloaded gets room to recover.
+            const retryDelay = process.env.VITEST === "true" ? 0 : UPSTREAM_REFUSAL_RETRY_DELAY_MS;
+            await sleepUnlessAborted(retryDelay, signal);
+            continue;
+          }
+          yield {
+            turn: this._turn,
+            role: "warning",
+            severity: "high",
+            content: t("loop.upstreamRefusalExhausted", {
+              max: String(CacheFirstLoop.MAX_UPSTREAM_REFUSAL_RECOVERIES),
+            }),
+          };
+        }
         // Context-overflow recovery folds deterministically (no summarizer
         // call): the estimator just undercounted, so an estimated LLM call
         // could overflow the same window again. Fold, then retry the iteration.
@@ -1700,9 +1844,9 @@ export class CacheFirstLoop {
             compactionTrigger: "overflow",
             content: "",
           };
-          const outcome = await this.compactNow({ trigger: "overflow", signal });
-          for (const ev of outcome.events) yield ev;
-          if (outcome.status === "done") continue;
+          const folded = await this.foldLogForRecovery(undefined, signal);
+          for (const ev of folded.events) yield ev;
+          if (folded.ok) continue;
         }
         const streamBodyError = this.stream && phase === "stream_body_read";
         const retryable =

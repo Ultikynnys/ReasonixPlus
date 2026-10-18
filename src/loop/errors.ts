@@ -99,6 +99,20 @@ export function isContextOverflowError(err: unknown): boolean {
   );
 }
 
+/** A gateway that refuses the whole body without naming a field: OpenCode Zen/Go
+ *  relays its upstream's bare `invalid_request_error` this way (`param: null`).
+ *  The text points at no field, so a smaller prompt is worth a retry. */
+const UPSTREAM_BARE_REFUSAL_RE =
+  /upstream request failed:\s*\[invalid_request_error\]\s*request could not be processed/i;
+
+/** True when a 4xx names no offending field, so replaying the identical payload
+ *  is not guaranteed to fail again. Shared by the loop's recovery ladder. */
+export function isUpstreamBareRefusal(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (!is4xxError(err)) return false;
+  return UPSTREAM_BARE_REFUSAL_RE.test(err.message ?? "");
+}
+
 const NETWORK_ERROR_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",

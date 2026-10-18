@@ -524,6 +524,14 @@ export const EN: TranslationSchema = {
       "The model provider reported a temporary server error before producing a visible response: retrying automatically in 10 seconds.",
     imagePayloadShrunk:
       "The model provider rejected the request because the attached image(s) made it too large. The images in context were {fate}; the turn is retrying. If you need image detail, load or produce a smaller or cropped image instead of a full-size one.",
+    upstreamRefusalRetry:
+      "The provider refused the request without naming a field, so the request may not be faulty. Replaying it automatically (recovery {attempt}/{max}).",
+    upstreamRefusalTrimming:
+      "The provider refused the request without naming a field. Retrying with older tool results trimmed from the outgoing request (recovery {attempt}/{max}).",
+    upstreamRefusalCompacting:
+      "The provider refused the request without naming a field. Compacting the conversation so the retry is smaller (recovery {attempt}/{max}).",
+    upstreamRefusalExhausted:
+      "The provider refused the request without naming a field, and recovering did not get it through after {max} attempts. The conversation is intact: continue in a fresh turn, ask for a narrower scope, or switch models.",
     connectionLostWaiting: "Connection lost. Waiting for connection to be re-established...",
     connectionRestoredResuming: "Connection re-established. Resuming conversation...",
     truncatedContinue:

@@ -280,6 +280,10 @@ export interface TranslationSchema {
     providerErrorRetry: string;
     providerServerErrorRetry: string;
     imagePayloadShrunk: string;
+    upstreamRefusalRetry: string;
+    upstreamRefusalTrimming: string;
+    upstreamRefusalCompacting: string;
+    upstreamRefusalExhausted: string;
     connectionLostWaiting: string;
     connectionRestoredResuming: string;
     truncatedContinue: string;
