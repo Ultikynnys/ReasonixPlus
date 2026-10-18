@@ -4066,7 +4066,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .sub-activity-dot.thinking {
   background: var(--violet);
   box-shadow: 0 0 4px var(--violet-soft);
-  animation: pulse-dot 1.5s infinite;
+  animation: dot-pulse 1.5s ease-in-out infinite;
 }
 .sub-activity-dot.process {
   background: var(--accent);
@@ -4074,7 +4074,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .sub-activity-dot.process.running {
   background: var(--accent);
   box-shadow: 0 0 4px var(--accent-soft);
-  animation: pulse-dot 1.5s infinite;
+  animation: dot-pulse 1.5s ease-in-out infinite;
 }
 .sub-activity-dot.process.done {
   background: var(--success);
@@ -4096,17 +4096,6 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   color: var(--fg-2);
   font-family: "Geist Mono", monospace;
   font-size: 11px;
-}
-@keyframes pulse-dot {
-  0%,
-  100% {
-    opacity: 0.6;
-    transform: scale(0.9);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.1);
-  }
 }
 
 /* ---- Cache / token card (inline strip) ---- */
@@ -4799,8 +4788,6 @@ html[data-platform="macos"] .startup-loading-overlay {
   border-radius: 50%;
   border: 2px solid var(--border-strong);
   border-top-color: var(--accent);
-  --spin-on: var(--accent);
-  --spin-off: var(--border-strong);
   animation: spin-chase 0.8s linear infinite;
   display: inline-block;
   box-sizing: border-box;
@@ -5977,9 +5964,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-radius: 50%;
   border: 1.5px solid var(--accent-soft);
   border-top-color: var(--accent);
-  --spin-on: var(--accent);
   --spin-off: var(--accent-soft);
-  animation: spin-chase 0.9s linear infinite;
   display: inline-block;
 }
 
@@ -6038,42 +6023,45 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 /* Ring spinner: the lead border walks around with a color phase, never a
    transform — a transforming child promotes the clipped card into a composited
    mask layer whose tiles go stale while the transcript scrolls, ghosting labels. */
+.spin,
+.spin-meta,
+.voice-throbber,
+.stop-throbber {
+  animation: spin-chase 0.9s linear infinite;
+}
 .spin {
   width: 12px;
   height: 12px;
   border-radius: 50%;
   border: 1.5px solid var(--border-strong);
   border-top-color: var(--accent);
-  --spin-on: var(--accent);
-  --spin-off: var(--border-strong);
-  animation: spin-chase 0.9s linear infinite;
   display: inline-block;
 }
 @keyframes spin-chase {
   0%,
   100% {
-    border-top-color: var(--spin-on);
-    border-right-color: var(--spin-off);
-    border-bottom-color: var(--spin-off);
-    border-left-color: var(--spin-off);
+    border-top-color: var(--spin-on, var(--accent));
+    border-right-color: var(--spin-off, var(--border-strong));
+    border-bottom-color: var(--spin-off, var(--border-strong));
+    border-left-color: var(--spin-off, var(--border-strong));
   }
   25% {
-    border-top-color: var(--spin-off);
-    border-right-color: var(--spin-on);
-    border-bottom-color: var(--spin-off);
-    border-left-color: var(--spin-off);
+    border-top-color: var(--spin-off, var(--border-strong));
+    border-right-color: var(--spin-on, var(--accent));
+    border-bottom-color: var(--spin-off, var(--border-strong));
+    border-left-color: var(--spin-off, var(--border-strong));
   }
   50% {
-    border-top-color: var(--spin-off);
-    border-right-color: var(--spin-off);
-    border-bottom-color: var(--spin-on);
-    border-left-color: var(--spin-off);
+    border-top-color: var(--spin-off, var(--border-strong));
+    border-right-color: var(--spin-off, var(--border-strong));
+    border-bottom-color: var(--spin-on, var(--accent));
+    border-left-color: var(--spin-off, var(--border-strong));
   }
   75% {
-    border-top-color: var(--spin-off);
-    border-right-color: var(--spin-off);
-    border-bottom-color: var(--spin-off);
-    border-left-color: var(--spin-on);
+    border-top-color: var(--spin-off, var(--border-strong));
+    border-right-color: var(--spin-off, var(--border-strong));
+    border-bottom-color: var(--spin-off, var(--border-strong));
+    border-left-color: var(--spin-on, var(--accent));
   }
 }
 
