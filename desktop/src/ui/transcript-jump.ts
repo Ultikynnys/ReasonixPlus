@@ -2,18 +2,16 @@
  *  the Events tab so the geometry (and its tests) do not depend on any panel
  *  rendering. */
 
-/** Past this many viewports a smooth scroll takes seconds and any arriving token
- *  can interrupt it, so the jump lands at once instead. */
-const JUMP_SMOOTH_MAX_VIEWPORTS = 3;
+/** How long a jump keeps re-pinning its target after it lands. A recorded event's
+ *  card can mount a commit later (a segment still being appended, a gate being
+ *  swapped for its answered form or for the live task card), a card above it can
+ *  open, and an image can decode; each of those moves the target. Long enough to
+ *  ride all of them out, short enough that a jump the reader has moved on from
+ *  lets go on its own. */
+const JUMP_HOLD_MS = 1_000;
 
-/** How long a landed jump keeps re-aligning against later layout changes: a card
- *  above opening, an image decoding, a Markdown reflow. It only corrects a target
- *  that actually moved, but the window is still bounded so a jump the reader has
- *  moved on from can never keep pulling the viewport. */
-const JUMP_ALIGN_MS = 2_000;
-
-/** How far the target may sit from the top before a relayout re-lands it: less
- *  than this is sub-pixel noise, more is a card above it having grown or shrunk. */
+/** How far the target may sit from the top before the hold re-pins it: less than
+ *  this is sub-pixel layout noise, more is the target having moved. */
 const ALIGN_EPSILON = 1;
 
 /** Collapsible cards listen for this to open themselves when a jump lands on
@@ -63,29 +61,16 @@ function hasLayout(el: HTMLElement): boolean {
   return rect.width > 0 || rect.height > 0;
 }
 
-/** The collapsible box a card wrapper carries: the anchor sits on the wrapper
- *  for a `Card` and on the box itself for an `ApprovalCard`. */
-function collapseBox(anchorEl: HTMLElement): HTMLElement | null {
-  if (anchorEl.hasAttribute("data-open")) return anchorEl;
-  return anchorEl.querySelector<HTMLElement>("[data-open]");
-}
-
-/** Whether the anchored card is rendered collapsed. A collapsed card is a header
- *  now and its whole body a commit later, so an offset measured against it lands
- *  high by exactly the body height. */
-function isCollapsed(anchorEl: HTMLElement): boolean {
-  return collapseBox(anchorEl)?.getAttribute("data-open") === "false";
-}
-
 /** Ask the collapsible cards to open the one carrying `anchor` (and to release
  *  any card an earlier jump forced open). The state change lands on React's next
- *  commit, so the caller re-measures a frame later. */
+ *  commit, which the hold below re-pins after. */
 export function requestAnchorExpansion(anchor: string | null): void {
   document.dispatchEvent(new CustomEvent(EXPAND_EVENT, { detail: anchor }));
 }
 
-/** What a target points at: the anchored card once it is laid out, else its
- *  turn's prompt bubble. */
+/** What a target points at right now: the anchored card once it is laid out, else
+ *  its turn's prompt bubble. Re-asked on every frame of a hold, because the card a
+ *  record names can be missing when the jump starts and appear a commit later. */
 function findTarget(threadEl: HTMLElement, target: JumpTarget): HTMLElement | null {
   const anchored = target.anchor ? findAnchorElement(threadEl, target.anchor) : null;
   if (anchored && hasLayout(anchored)) return anchored;
@@ -107,7 +92,8 @@ export function jumpTargetFor(offset: number, scrollHeight: number, clientHeight
   return clamp(offset, 0, Math.max(0, scrollHeight - clientHeight));
 }
 
-/** The scrollTop that puts the element's top edge at the viewport top. */
+/** Where the transcript has to scroll so the element's top edge sits at the top
+ *  of the viewport. */
 function landingScrollTop(threadEl: HTMLElement, element: HTMLElement): number {
   return jumpTargetFor(
     contentOffset(threadEl, element),
@@ -116,114 +102,83 @@ function landingScrollTop(threadEl: HTMLElement, element: HTMLElement): number {
   );
 }
 
-/** Scroll so the element's top edge sits at the viewport top. */
-function landOn(threadEl: HTMLElement, element: HTMLElement): void {
-  const targetScrollTop = landingScrollTop(threadEl, element);
-  const smoothRange = threadEl.clientHeight * JUMP_SMOOTH_MAX_VIEWPORTS;
-  const far = Math.abs(targetScrollTop - threadEl.scrollTop) > smoothRange;
-  threadEl.scrollTo({ top: targetScrollTop, behavior: far ? "instant" : "smooth" });
-}
+/** The one live hold: a fresh jump must not fight the previous one. */
+let stopHold: (() => void) | null = null;
 
-/** The one live alignment watcher: a fresh jump must not fight the previous one. */
-let stopAlignment: (() => void) | null = null;
-
-/** Stop re-aligning the transcript (a new jump, or the reader taking over). */
+/** Let go of the transcript so the reader has it back (a new jump does this
+ *  first, so a jump can never be pulled around by the one before it). */
 export function endJumpAlignment(): void {
-  stopAlignment?.();
-  stopAlignment = null;
+  stopHold?.();
+  stopHold = null;
 }
 
-/** Keep a landed jump on its target while the layout settles.
+/**
+ * Re-pin the target to the top of the viewport until the layout goes quiet.
  *
- * `.thread` sets `overflow-anchor: none`, so nothing compensates when a card above
- * the target opens, closes or finishes loading: it slides out by exactly that much.
- * Only a moved target is corrected, so a growing tail below it is left alone, and
- * any reader gesture, a spent budget or a gone target stops the watcher. */
-function alignWhileSettling(threadEl: HTMLElement, element: HTMLElement): void {
+ * A jump cannot be a single measurement: the card it names can mount a commit
+ * after the click, a card above it can open, an image can decode, and the browser
+ * can clamp the offset when the tail shrinks (`overflow-anchor: none` on `.thread`
+ * means nothing compensates). So each frame asks where the target is *now* and
+ * corrects, which also covers a scroll the app makes behind us. It lets go on the
+ * first reader gesture, when the transcript goes away, or when the window is up.
+ */
+function holdOnTarget(threadEl: HTMLElement, target: JumpTarget): void {
   endJumpAlignment();
-  const content = threadEl.firstElementChild ?? threadEl;
-  let frame = 0;
+  const deadline = performance.now() + JUMP_HOLD_MS;
   let stopped = false;
-  let budget = 0;
-  let resize: ResizeObserver | null = null;
+  let frame = 0;
 
   const stop = () => {
     if (stopped) return;
     stopped = true;
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
-    window.clearTimeout(budget);
-    resize?.disconnect();
-    resize = null;
     window.removeEventListener("wheel", stop);
     window.removeEventListener("touchstart", stop);
     window.removeEventListener("keydown", stop);
     window.removeEventListener("pointerdown", stop);
-    if (stopAlignment === stop) stopAlignment = null;
+    if (stopHold === stop) stopHold = null;
   };
 
-  const correct = () => {
+  const tick = (now: number) => {
     frame = 0;
     if (stopped) return;
-    if (!element.isConnected) {
+    if (!threadEl.isConnected || now >= deadline) {
       stop();
       return;
     }
-    // Compare with where the target belongs now, not with a remembered offset:
-    // sub-pixel drift still corrects once it passes the threshold, and the
-    // browser's own clamping can never leave the target parked off the mark.
-    const desired = landingScrollTop(threadEl, element);
-    if (Math.abs(desired - threadEl.scrollTop) < ALIGN_EPSILON) return;
-    threadEl.scrollTop = desired;
+    const element = findTarget(threadEl, target);
+    if (element) {
+      const desired = landingScrollTop(threadEl, element);
+      if (Math.abs(desired - threadEl.scrollTop) >= ALIGN_EPSILON) threadEl.scrollTop = desired;
+    }
+    frame = requestAnimationFrame(tick);
   };
 
-  const onLayoutChange = () => {
-    if (stopped || frame) return;
-    frame = requestAnimationFrame(correct);
-  };
-
-  budget = window.setTimeout(stop, JUMP_ALIGN_MS);
-  if (typeof ResizeObserver === "function") {
-    resize = new ResizeObserver(onLayoutChange);
-    resize.observe(content);
-  }
   window.addEventListener("wheel", stop, { passive: true });
   window.addEventListener("touchstart", stop, { passive: true });
   window.addEventListener("keydown", stop);
   window.addEventListener("pointerdown", stop);
-  stopAlignment = stop;
+  stopHold = stop;
+  frame = requestAnimationFrame(tick);
 }
 
-/** Scroll the transcript so `target` sits at the viewport top: the anchored card
- *  first, its turn's prompt bubble only when that card is gone. Returns false
- *  when nothing could be located, so the caller can decline to mark it current.
+/** Scroll the transcript so `target` sits at the viewport top and hold it there
+ *  while the layout settles. Lands on the event's own card, its turn's prompt
+ *  bubble only while that card is missing. Returns false when nothing could be
+ *  located, so the caller can decline to mark it current.
  *
- *  A collapsed card is opened first and the offset read after that commit, so
- *  the jump is never measured against a height the card is about to lose. */
+ *  The landing itself is instant, never animated: a smooth scroll is one more
+ *  thing that a later layout change can cancel or outrun, and one click has to be
+ *  enough. */
 export function jumpToAnchor(threadEl: HTMLElement | null, target: JumpTarget): boolean {
   if (!threadEl) return false;
   const element = findTarget(threadEl, target);
   if (!element) return false;
-
-  const land = (t: HTMLElement) => {
-    landOn(threadEl, t);
-    alignWhileSettling(threadEl, t);
-  };
-  const collapsed = target.anchor !== undefined && isCollapsed(element);
-  // Always announced: a jump to a plain turn releases a card an earlier jump
-  // forced open, so the reader's own collapses stay theirs.
+  // Not conditioned on the card looking collapsed: a jump is the reader asking to
+  // see the event, and `useJumpOpen` ignores the ask for a card already open.
   requestAnchorExpansion(target.anchor ?? null);
-
-  if (!collapsed) {
-    land(element);
-    return true;
-  }
-  // A collapsed card opens on React's next commit. Re-resolve in that frame
-  // instead of reusing the node: a gate resolving or a plan swapping in its live
-  // card replaces the element, and the stale one is detached by then.
-  requestAnimationFrame(() => {
-    const settled = findTarget(threadEl, target);
-    if (settled) land(settled);
-  });
+  threadEl.scrollTo({ top: landingScrollTop(threadEl, element), behavior: "instant" });
+  holdOnTarget(threadEl, target);
   return true;
 }
