@@ -516,6 +516,16 @@ export const EN: TranslationSchema = {
     stoppedNoAnswer: "The turn ended without producing an answer. Try again or switch models.",
     thinkingOnlyRetry:
       "The model returned thinking without an answer or tool call: retrying once so it can finish.",
+    thinkingOnlyNudge:
+      "Your previous response contained only thinking and stopped before answering. Produce the final answer now, in the reply text (or call a tool if more work is genuinely needed). Do not end the turn with thinking alone.",
+    thinkingOnlyNudgeWarning:
+      "The model stopped after thinking without answering — asked it to produce the answer.",
+    thinkingOnlyReasoningNudge:
+      "Your previous response again contained only thinking and stopped before answering. Here is that thinking:\n\n{reasoning}\n\nAnswer the user's request now, using that thinking as your notes. Reply with the final answer, or call a tool if work genuinely remains.",
+    thinkingOnlyReasoningNudgeWarning:
+      "The model stopped after thinking a second time — handed its reasoning back and asked it to answer.",
+    thinkingOnlyRecovered:
+      "The model kept stopping after thinking across {max} recovery attempts, so its own reasoning is shown above as the answer for this turn. Treat it as the model's unpolished output: retry, rephrase the request, or switch models.",
     thinkingOnlyGiveUp:
       "The model produced only thinking without an answer or tool call: ending the turn without an answer. Try again.",
     providerErrorRetry:
@@ -532,6 +542,8 @@ export const EN: TranslationSchema = {
       "The provider refused the request without naming a field. Compacting the conversation so the retry is smaller (recovery {attempt}/{max}).",
     upstreamRefusalExhausted:
       "The provider refused the request without naming a field, and recovering did not get it through after {max} attempts. The conversation is intact: continue in a fresh turn, ask for a narrower scope, or switch models.",
+    reasoningRoundTripRepair:
+      "The provider rejected the request because an earlier assistant turn was sent back without its reasoning. Back-filled the missing reasoning on {count} turn(s) and re-sent (repair {attempt}/{max}).",
     connectionLostWaiting: "Connection lost. Waiting for connection to be re-established...",
     connectionRestoredResuming: "Connection re-established. Resuming conversation...",
     truncatedContinue:

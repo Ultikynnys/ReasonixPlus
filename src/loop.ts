@@ -37,6 +37,7 @@ import {
   isContextOverflowError,
   isDeepSeekHost,
   isNetworkConnectionError,
+  isReasoningRoundTripError,
   isUpstreamBareRefusal,
   probeDeepSeekReachable,
   waitForReconnection,
@@ -307,6 +308,32 @@ interface CacheShapeSnapshot {
   toolSchemaTokens: number;
 }
 
+/** Index of the last user prompt — everything above it is the outgoing turn. */
+function lastUserIndex(messages: readonly ChatMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === "user") return i;
+  }
+  return 0;
+}
+
+/** Escalating synthetic prompts for a model that stops right after thinking.
+ *  Each stage changes the request rather than replaying one the model already
+ *  declined to answer; the last stage hands the model its own reasoning back. */
+const THINKING_ONLY_NUDGES = [
+  { prompt: "loop.thinkingOnlyNudge", warning: "loop.thinkingOnlyNudgeWarning" },
+  { prompt: "loop.thinkingOnlyReasoningNudge", warning: "loop.thinkingOnlyReasoningNudgeWarning" },
+] as const;
+
+/** Cap on the reasoning inlined into a recovery nudge — a thinking dump runs to
+ *  tens of KB, and pasting it whole can push the retry into context overflow. */
+const THINKING_ONLY_REASONING_CHARS = 16_000;
+
+function truncateReasoning(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= THINKING_ONLY_REASONING_CHARS) return trimmed;
+  return `${trimmed.slice(0, THINKING_ONLY_REASONING_CHARS)}\n\n[reasoning truncated — answer from what is above]`;
+}
+
 function shrinkMessageForRetention(message: ChatMessage): ChatMessage {
   if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) return message;
   return (
@@ -331,6 +358,13 @@ export class CacheFirstLoop {
   /** Recovery attempts for a gateway refusal that names no offending field
    *  (replay, request-only fold, durable fold) before the error surfaces. */
   static readonly MAX_UPSTREAM_REFUSAL_RECOVERIES = 3;
+  /** Reasoner-contract repairs per turn — back-fill `reasoning_content` on the
+   *  bare assistant turns a thinking-mode endpoint demands back, then re-send. */
+  static readonly MAX_REASONING_REPAIRS = 2;
+  /** Escalating recoveries for a thinking-only completion (reasoning, no content,
+   *  no tool call): replay the stop, nudge for an answer, then hand the reasoning
+   *  back before the turn falls back to showing that reasoning. */
+  static readonly MAX_THINKING_ONLY_RECOVERIES = 3;
   /** Consecutive identical-reasoning iterations before the reasoning-loop guard
    *  collapses the turn to a forced summary. */
   static readonly REASONING_LOOP_LIMIT = 3;
@@ -433,9 +467,9 @@ export class CacheFirstLoop {
   private readonly _getEditMode: (() => EditMode) | undefined;
   /** Latched once per turn — the empty-completion guard retries exactly once. */
   private _emptyResponseRetried = false;
-  /** Latched once per turn — a thinking-only completion (no content, no tool call)
-   *  is re-requested exactly once instead of ending the turn on the thinking dump. */
-  private _thinkingOnlyRetried = false;
+  /** Count of thinking-only recoveries this turn — each stage changes the
+   *  request so a model that stops after thinking gets a reason to answer. */
+  private _thinkingOnlyRecoveries = 0;
   /** True when a thinking-only retry appended a partial assistant message to the log
    *  that must be replaced by the subsequent answer or discarded on give-up. */
   private _thinkingOnlyPartialAppended = false;
@@ -453,6 +487,13 @@ export class CacheFirstLoop {
   private _payloadShrinkAttempts = 0;
   /** Recovery stage for a field-less gateway refusal this turn (0 = none). */
   private _refusalRecoveryStage = 0;
+  /** Repairs after a thinking-mode endpoint rejected a bare assistant turn
+   *  (`reasoning_content` not passed back) — caps the stamp-and-resend ladder. */
+  private _reasoningRepairs = 0;
+  /** Latched once the endpoint proves it wants `reasoning_content` on every
+   *  assistant turn: stale-reasoning pruning then has to stay off, or the
+   *  repair and the prune would undo each other on every send. */
+  private _reasoningRoundTripRequired = false;
   /** Request-only fold target (tokens) installed by the refusal ladder. The
    *  log keeps its full history; only the outgoing copy is folded, so a retried
    *  request is smaller while the transcript the user sees stays complete. */
@@ -696,7 +737,12 @@ export class CacheFirstLoop {
   }
 
   configure(opts: ReconfigurableOptions): void {
-    if (opts.model !== undefined) this.model = opts.model;
+    if (opts.model !== undefined) {
+      // The send-time heal is cached per log version, so a model switch would
+      // otherwise reuse a history prepared for the previous model's contract.
+      if (opts.model !== this.model) this._healedCache = null;
+      this.model = opts.model;
+    }
     if (opts.stream !== undefined) {
       this._streamPreference = opts.stream;
       this.stream = opts.stream;
@@ -983,17 +1029,34 @@ export class CacheFirstLoop {
       healed.messages,
       DEFAULT_MAX_RESULT_TOKENS,
     );
-    const pruned = stripDroppableReasoningContent(argsShrunk.messages);
-    if (healed.healedCount === 0 && argsShrunk.healedCount === 0 && pruned.prunedCount === 0) {
+    // Pruning and stamping fight over the same field: prune drops stale
+    // reasoning from earlier plain turns, stamp re-adds it for thinking mode.
+    // Once a gateway proves it wants the field back on every turn, the prune
+    // loses — a request that alternates the two can never pass.
+    const pruned = this._reasoningRoundTripRequired
+      ? { messages: argsShrunk.messages, prunedCount: 0, charsDropped: 0 }
+      : stripDroppableReasoningContent(argsShrunk.messages);
+    // A thinking-mode endpoint rejects the whole request over one bare
+    // assistant turn, so never let a current-turn turn go out bare.
+    const stamped = stampMissingReasoningForThinkingMode(pruned.messages, this.model, {
+      fromIndex: this._reasoningRoundTripRequired ? 0 : lastUserIndex(pruned.messages),
+      force: this._reasoningRoundTripRequired,
+    });
+    if (
+      healed.healedCount === 0 &&
+      argsShrunk.healedCount === 0 &&
+      pruned.prunedCount === 0 &&
+      stamped.stampedCount === 0
+    ) {
       this._healedCache = current;
       this._healedVersion = this.log.version;
       return current;
     }
-    this.log.compactInPlace(pruned.messages);
-    this._healedCache = pruned.messages;
+    this.log.compactInPlace(stamped.messages);
+    this._healedCache = stamped.messages;
     this._healedVersion = this.log.version;
-    this.persistLog(pruned.messages);
-    return pruned.messages;
+    this.persistLog(stamped.messages);
+    return stamped.messages;
   }
 
   abort(opts: LoopAbortOptions = {}): void {
@@ -1083,6 +1146,41 @@ export class CacheFirstLoop {
     const preserved = this.log.entries.slice(0, index).map((m) => ({ ...m }));
     this.log.compactInPlace(preserved);
     this.persistLog(preserved);
+  }
+
+  /** Drop the thinking-only assistant placeholder when a later recovery stage
+   *  replaces it with an explicit instruction the model can act on. */
+  private discardTailThinkingOnlyPartial(): void {
+    if (!this._thinkingOnlyPartialAppended) return;
+    this._thinkingOnlyPartialAppended = false;
+    const tail = this.log.entries[this.log.length - 1];
+    if (tail?.role === "assistant") this.discardLogFrom(this.log.length - 1);
+  }
+
+  /** One escalating step for a thinking-only stop, returning the warning to
+   *  surface. Stage 0 shows the model its own stop; later stages ask for the
+   *  answer outright, or hand the reasoning back as the material to answer from. */
+  private escalateThinkingOnly(
+    producingModel: string,
+    stage: number,
+    reasoning: string,
+  ): LoopEvent {
+    const warning = { turn: this._turn, role: "warning" as const, severity: "low" as const };
+    if (stage === 0) {
+      this._thinkingOnlyPartialAppended = true;
+      this.appendAndPersist(buildAssistantMessage("", [], producingModel, reasoning));
+      return { ...warning, content: t("loop.thinkingOnlyRetry") };
+    }
+    // Clamp to the last defined stage so raising MAX past the table's length
+    // degrades to the strongest ask instead of throwing.
+    const nudge = THINKING_ONLY_NUDGES[Math.min(stage - 1, THINKING_ONLY_NUDGES.length - 1)]!;
+    this.discardTailThinkingOnlyPartial();
+    this.appendAndPersist({
+      role: "user",
+      synthetic: true,
+      content: t(nudge.prompt, { reasoning: truncateReasoning(reasoning) }),
+    });
+    return { ...warning, content: t(nudge.warning) };
   }
 
   /** `session_retracted` event recording the truncation after an abort-discard. */
@@ -1338,10 +1436,7 @@ export class CacheFirstLoop {
     /** Drop a thinking-only partial and any queued steers, then let stepTurn
      *  return — the shared tail of the give-up / stall branches below. */
     const abandonThinkingOnlyTurn = (): void => {
-      if (this._thinkingOnlyPartialAppended) {
-        this._thinkingOnlyPartialAppended = false;
-        this.discardLogFrom(this.log.length - 1);
-      }
+      this.discardTailThinkingOnlyPartial();
       this._steerQueue.length = 0;
       restoreModelIfNeeded();
     };
@@ -1363,7 +1458,7 @@ export class CacheFirstLoop {
     this._iterGraceApplied = false;
     this._iterCapBypassed = false;
     this._emptyResponseRetried = false;
-    this._thinkingOnlyRetried = false;
+    this._thinkingOnlyRecoveries = 0;
     this._thinkingOnlyPartialAppended = false;
     this._providerErrorRetried = false;
     this._networkReconnects = 0;
@@ -1372,6 +1467,7 @@ export class CacheFirstLoop {
     this._compactRecoveries = 0;
     this._payloadShrinkAttempts = 0;
     this._refusalRecoveryStage = 0;
+    this._reasoningRepairs = 0;
     this._requestFoldTarget = null;
     this._midTurnCompacts = 0;
     this._lastReasoningSig = null;
@@ -1731,6 +1827,38 @@ export class CacheFirstLoop {
           if (signal.aborted) {
             restoreModelIfNeeded();
             return;
+          }
+        }
+        // A thinking-mode endpoint rejects the whole request when one assistant
+        // turn comes back without `reasoning_content`. The bare turn is usually
+        // one no model classifier claimed as thinking (an id the family match
+        // missed) or one loaded from an older session, so replaying the
+        // byte-identical payload can only fail again: back-fill the field on
+        // every assistant turn, stop pruning reasoning for the rest of the
+        // session so the repair survives the next send, and retry.
+        if (!signal.aborted && !partialDelivered && isReasoningRoundTripError(cause)) {
+          const repaired = stampMissingReasoningForThinkingMode(this.log.toMessages(), this.model, {
+            force: true,
+          });
+          if (
+            repaired.stampedCount > 0 &&
+            this._reasoningRepairs < CacheFirstLoop.MAX_REASONING_REPAIRS
+          ) {
+            this._reasoningRepairs++;
+            this._reasoningRoundTripRequired = true;
+            this.log.compactInPlace(repaired.messages);
+            this.persistLog(repaired.messages);
+            yield {
+              turn: this._turn,
+              role: "warning",
+              severity: "high",
+              content: t("loop.reasoningRoundTripRepair", {
+                count: String(repaired.stampedCount),
+                attempt: String(this._reasoningRepairs),
+                max: String(CacheFirstLoop.MAX_REASONING_REPAIRS),
+              }),
+            };
+            continue;
           }
         }
         const providerErrorRetryable =
@@ -2126,9 +2254,11 @@ export class CacheFirstLoop {
       // Ollama-hosted reasoning models (deepseek-r1 / v4 with `think` enabled)
       // intermittently end generation right after emitting their thinking, having
       // neither answered nor called a tool, or emit single-token fragments like "p".
-      // When tools were offered or output is degenerate noise, retry once bounded;
-      // on give-up, exit loudly without claiming the turn succeeded or promoting
-      // the reasoning dump as a completion.
+      // A bare replay changes nothing the model can act on — it re-stops and the
+      // turn ends with no answer — so each recovery stage changes the request:
+      // show the model its stop, then ask for the answer, then hand the reasoning
+      // back as the material to answer from. Degenerate noise and a stalled stream
+      // still exit loudly, and every stage is bounded per turn.
       if (
         assistantContent.trim().length === 0 &&
         toolCalls.length === 0 &&
@@ -2137,29 +2267,39 @@ export class CacheFirstLoop {
       ) {
         const isDegenerate = reasoningContent.trim().length <= 5;
         if (toolSpecs.length > 0 || isDegenerate) {
-          if (!repetitionStall && !this._thinkingOnlyRetried && !isDegenerate) {
-            this._thinkingOnlyRetried = true;
-            this._thinkingOnlyPartialAppended = true;
-            this.appendAndPersist(buildAssistantMessage("", [], callModel, reasoningContent));
+          if (repetitionStall || isDegenerate) {
             yield {
               turn: this._turn,
               role: "warning",
-              severity: "low",
-              content: t("loop.thinkingOnlyRetry"),
+              severity: "high",
+              content: t("loop.thinkingOnlyGiveUp"),
             };
+            abandonThinkingOnlyTurn();
+            return;
+          }
+          const stage = this._thinkingOnlyRecoveries;
+          if (stage < CacheFirstLoop.MAX_THINKING_ONLY_RECOVERIES) {
+            this._thinkingOnlyRecoveries++;
+            yield this.escalateThinkingOnly(callModel, stage, reasoningContent);
             continue;
           }
+          // Every stage came back thinking-only: surface the reasoning as the
+          // turn's answer instead of ending the conversation with nothing. The
+          // warning above the text says exactly where it came from.
+          this.discardTailThinkingOnlyPartial();
           yield {
             turn: this._turn,
             role: "warning",
             severity: "high",
-            content: t("loop.thinkingOnlyGiveUp"),
+            content: t("loop.thinkingOnlyRecovered", {
+              max: String(CacheFirstLoop.MAX_THINKING_ONLY_RECOVERIES),
+            }),
           };
-          abandonThinkingOnlyTurn();
-          return;
+          assistantContent = reasoningContent.trim();
+        } else {
+          // Conversational non-tool turns with substantial reasoning: promote so the turn isn't silent
+          assistantContent = reasoningContent.trim();
         }
-        // Conversational non-tool turns with substantial reasoning: promote so the turn isn't silent
-        assistantContent = reasoningContent.trim();
       }
 
       if (this._thinkingOnlyPartialAppended) {

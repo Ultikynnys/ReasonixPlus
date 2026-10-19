@@ -105,22 +105,34 @@ export function healLoadedMessages(
   return { messages: paired.messages, healedCount, healedFrom: shrunk.healedFrom };
 }
 
+export interface StampReasoningOptions {
+  /** First index to consider — the send-time pass only needs the current turn
+   *  (earlier bare turns are pruned again, so stamping them would churn the log). */
+  fromIndex?: number;
+  /** Stamp regardless of the model: the provider already said it is thinking
+   *  mode, which outranks our own id classification. */
+  force?: boolean;
+}
+
 /** Back-fills "" on bare assistant turns; skipped on non-thinking to avoid prefix-cache churn. */
 export function stampMissingReasoningForThinkingMode(
   messages: ChatMessage[],
   model: string,
+  opts: StampReasoningOptions = {},
 ): { messages: ChatMessage[]; stampedCount: number } {
-  if (!isThinkingModeModel(model)) {
+  if (!opts.force && !isThinkingModeModel(model)) {
     return { messages, stampedCount: 0 };
   }
+  const fromIndex = Math.max(0, opts.fromIndex ?? 0);
   let stampedCount = 0;
-  const out = messages.map((msg) => {
-    if (msg.role !== "assistant") return msg;
+  const out = messages.map((msg, i) => {
+    if (i < fromIndex || msg.role !== "assistant") return msg;
     if (Object.hasOwn(msg, "reasoning_content")) return msg;
     stampedCount += 1;
     return { ...msg, reasoning_content: "" };
   });
-  return { messages: out, stampedCount };
+  // Identity is load-bearing: a rewritten-but-identical log churns the prefix cache.
+  return { messages: stampedCount === 0 ? messages : out, stampedCount };
 }
 
 /** Token-cap variant — char cap would let CJK slip past at 2× the intended token cost. */

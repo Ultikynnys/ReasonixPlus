@@ -1,12 +1,12 @@
 import { stripProviderQualifier } from "@reasonix/core-utils";
 
-/** DeepSeek v4 models (official API or Ollama-hosted like ollama/deepseek-v4-flash:0731). */
-function isDeepSeekV4ThinkingModel(model: string): boolean {
-  return (
-    model.includes("deepseek-flash") ||
-    model.includes("deepseek-v4-flash") ||
-    model.includes("deepseek-v4-pro")
-  );
+/** DeepSeek's thinking line: official API, an OpenCode resale, or an Ollama-hosted
+ *  tag. Keyed on the flash/pro line, not an enumerated version list, so a version
+ *  bump cannot silently drop the reasoning round-trip the API demands back. */
+function isDeepSeekThinkingFamily(model: string): boolean {
+  if (!model.startsWith("deepseek-")) return false;
+  if (model === "deepseek-chat" || model.includes("coder")) return false;
+  return model.includes("flash") || model.includes("pro");
 }
 
 /** True when the model emits reasoning_content and requires it round-tripped on follow-ups. */
@@ -17,7 +17,7 @@ export function isThinkingModeModel(model: string): boolean {
   if (id.startsWith("gpt-")) return false;
   if (id.includes("reasoner")) return true;
   if (id.startsWith("glm-")) return true;
-  if (isDeepSeekV4ThinkingModel(id)) return true;
+  if (isDeepSeekThinkingFamily(id)) return true;
   // Ollama DeepSeek R1 models (e.g. ollama/deepseek-r1:14b, deepseek-r1:7b)
   if (id.includes("deepseek-r1")) return true;
   // Xiaomi MiMo emits reasoning_content and 400s if a tool-call turn drops it.
@@ -35,7 +35,7 @@ export function thinkingModeForModel(model: string): "enabled" | "disabled" | un
   if (id.startsWith("gemini-")) return "enabled";
   if (id.startsWith("glm-")) return "enabled";
   if (id.includes("reasoner")) return "enabled";
-  if (isDeepSeekV4ThinkingModel(id)) return "enabled";
+  if (isDeepSeekThinkingFamily(id)) return "enabled";
   // Ollama DeepSeek R1 models (e.g. ollama/deepseek-r1:14b, deepseek-r1:8b)
   if (id.includes("deepseek-r1")) return "enabled";
   // Xiaomi MiMo: thinking is on by default and toggled via `thinking: { type }`.

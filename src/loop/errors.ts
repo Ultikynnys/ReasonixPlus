@@ -113,6 +113,19 @@ export function isUpstreamBareRefusal(err: unknown): boolean {
   return UPSTREAM_BARE_REFUSAL_RE.test(err.message ?? "");
 }
 
+/** DeepSeek's thinking-mode contract: the assistant turns in the request must
+ *  carry `reasoning_content` back. A single bare turn fails the WHOLE request,
+ *  so replaying the byte-identical payload can only fail again. */
+const REASONING_ROUND_TRIP_RE =
+  /reasoning_content[\s\S]{0,80}?(?:must be (?:(?:passed|sent|returned|echoed) back|included|provided|replayed)|is required|not (?:allowed|permitted) to be (?:empty|dropped|omitted))|reasoning_content[\s\S]{0,30}?(?:必须|需要)回传/i;
+
+/** True when a provider rejected the request because an assistant turn came
+ *  back without `reasoning_content`. Recoverable by back-filling the field. */
+export function isReasoningRoundTripError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return REASONING_ROUND_TRIP_RE.test(err.message ?? "");
+}
+
 const NETWORK_ERROR_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",

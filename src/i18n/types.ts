@@ -276,6 +276,11 @@ export interface TranslationSchema {
     emptyResponseGiveUpReason: string;
     stoppedNoAnswer: string;
     thinkingOnlyRetry: string;
+    thinkingOnlyNudge: string;
+    thinkingOnlyNudgeWarning: string;
+    thinkingOnlyReasoningNudge: string;
+    thinkingOnlyReasoningNudgeWarning: string;
+    thinkingOnlyRecovered: string;
     thinkingOnlyGiveUp: string;
     providerErrorRetry: string;
     providerServerErrorRetry: string;
@@ -284,6 +289,7 @@ export interface TranslationSchema {
     upstreamRefusalTrimming: string;
     upstreamRefusalCompacting: string;
     upstreamRefusalExhausted: string;
+    reasoningRoundTripRepair: string;
     connectionLostWaiting: string;
     connectionRestoredResuming: string;
     truncatedContinue: string;
