@@ -46,11 +46,15 @@ export interface ConversationSpan {
   end: number;
 }
 
-/** Box overlaid on the `.thread` scrollbar track. */
+/** Box overlaid on the `.thread` scrollbar track, plus the band the dots may use:
+ *  the chevrons sit at the track's ends, so a dot there would land on a button. */
 interface TrackBox {
   top: number;
   right: number;
   height: number;
+  /** Reserved at the top and bottom, measured to the chevrons' inner edges. */
+  insetTop: number;
+  insetBottom: number;
 }
 
 interface TurnAnchor extends JumpTurn {
@@ -63,6 +67,9 @@ const MIN_TURNS = 2;
 /** Minimum gap between dots. One dot's invisible hit pad is 15px tall, so a
  *  tighter stack lets the top-most dot swallow its neighbours' clicks. */
 export const MIN_DOT_GAP = 16;
+/** Half a dot plus a hair: a dot is centred on its y, so the end dots must start
+ *  this far inside the band to stay clear of the chevrons. */
+const DOT_CLEARANCE = 3;
 /** Past this many viewports a smooth scroll takes seconds and any arriving token
  *  can interrupt it, so the jump lands at once instead. */
 const JUMP_SMOOTH_MAX_VIEWPORTS = 3;
@@ -210,6 +217,31 @@ function measureAnchors(threadEl: HTMLElement, turns: readonly JumpTurn[]): Turn
   });
 }
 
+/** How much of the track's ends belongs to the jump-to-top / jump-to-bottom
+ *  chevrons: the dots map between the buttons, never under them. */
+function chevronInsets(
+  threadEl: HTMLElement,
+  rect: DOMRect,
+  height: number,
+): Pick<TrackBox, "insetTop" | "insetBottom"> {
+  const buttons = threadEl.parentElement?.querySelectorAll<HTMLElement>(".thread-scroll-btn");
+  const first = buttons?.[0]?.getBoundingClientRect();
+  const last = buttons?.[buttons.length - 1]?.getBoundingClientRect();
+  // Half the track each, at most: a mis-measured button cannot eat the whole band.
+  const cap = Math.max(DOT_CLEARANCE, height / 2);
+  return {
+    insetTop: first ? clamp(Math.max(0, first.bottom - rect.top) + DOT_CLEARANCE, 0, cap) : 0,
+    insetBottom: last ? clamp(Math.max(0, rect.bottom - last.top) + DOT_CLEARANCE, 0, cap) : 0,
+  };
+}
+
+/** The stretch the dots may occupy: the track minus whatever the chevrons own.
+ *  Zero or negative means there is no band to draw into, which the projection
+ *  already treats as no dots. */
+function bandHeightOf(track: TrackBox): number {
+  return track.height - track.insetTop - track.insetBottom;
+}
+
 /** Measure the box the bar overlays. Only the container's own size moves it, so
  *  it is read on mount and on resize — never on scroll, never per frame. */
 function useTrackBox(
@@ -226,13 +258,20 @@ function useTrackBox(
     const measure = () => {
       const rect = threadEl.getBoundingClientRect();
       const parentRect = barRef.current?.offsetParent?.getBoundingClientRect();
+      const height = Math.round(threadEl.clientHeight);
       const next: TrackBox = {
         top: Math.round(parentRect ? rect.top - parentRect.top : threadEl.offsetTop),
         right: Math.round(parentRect ? parentRect.right - rect.right : 0),
-        height: Math.round(threadEl.clientHeight),
+        height,
+        ...chevronInsets(threadEl, rect, height),
       };
       setBox((prev) =>
-        prev && prev.top === next.top && prev.right === next.right && prev.height === next.height
+        prev &&
+        prev.top === next.top &&
+        prev.right === next.right &&
+        prev.height === next.height &&
+        prev.insetTop === next.insetTop &&
+        prev.insetBottom === next.insetBottom
           ? prev
           : next,
       );
@@ -240,6 +279,9 @@ function useTrackBox(
     measure();
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
     ro?.observe(threadEl);
+    // The chevrons mount and unmount with the scrollability gate inside the wrap.
+    const wrap = threadEl.parentElement;
+    if (wrap) ro?.observe(wrap);
     window.addEventListener("resize", measure);
     return () => {
       ro?.disconnect();
@@ -261,8 +303,10 @@ export function JumpBar({ messages, threadEl, onJump }: JumpBarProps) {
 
   const span = useMemo(() => conversationSpans(messages), [messages]);
   const track = useTrackBox(threadEl, barRef);
-  const trackHeight = track?.height ?? 0;
-  const marks = useMemo(() => projectMarks(span, trackHeight), [span, trackHeight]);
+  // Dots map onto the band between the chevrons, then shift down past the top one.
+  const bandHeight = track ? bandHeightOf(track) : 0;
+  const bandTop = track?.insetTop ?? 0;
+  const marks = useMemo(() => projectMarks(span, bandHeight), [span, bandHeight]);
 
   // Every streamed token rewrites `messages`, so the marker's effect keys on the
   // turn set instead of the array identity.
@@ -375,7 +419,7 @@ export function JumpBar({ messages, threadEl, onJump }: JumpBarProps) {
             data-turn={mark.turn}
             data-hover={isHovered ? "" : undefined}
             data-active={isActive ? "" : undefined}
-            style={{ top: mark.top }}
+            style={{ top: bandTop + mark.top }}
             onMouseEnter={() => setHovered(mark.turn)}
             onMouseLeave={() => setHovered((h) => (h === mark.turn ? null : h))}
             onClick={() => scrollTo(mark.turn)}
@@ -384,7 +428,7 @@ export function JumpBar({ messages, threadEl, onJump }: JumpBarProps) {
         );
       })}
       {hoveredMark ? (
-        <div className="jump-preview" style={{ top: hoveredMark.top }}>
+        <div className="jump-preview" style={{ top: bandTop + hoveredMark.top }}>
           <span className="jump-text">{hoveredMark.text}</span>
         </div>
       ) : null}

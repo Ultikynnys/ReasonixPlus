@@ -31,19 +31,27 @@ class FakeResizeObserver {
   }
 }
 
+const rectOf = (top: number, bottom: number): DOMRect =>
+  ({
+    top,
+    bottom,
+    left: 0,
+    right: 100,
+    width: 100,
+    height: bottom - top,
+    x: 0,
+    y: top,
+    toJSON: () => ({}),
+  }) as DOMRect;
+
+/** A rect with an explicit vertical extent: the bar measures the chevrons' inner
+ *  edges, so a fixed 10px box is not always enough. */
+function stubSpan(el: HTMLElement, top: number, bottom: number): void {
+  el.getBoundingClientRect = () => rectOf(top, bottom);
+}
+
 function stubRect(el: HTMLElement, top: number): void {
-  el.getBoundingClientRect = () =>
-    ({
-      top,
-      left: 0,
-      right: 100,
-      bottom: top + 10,
-      width: 100,
-      height: 10,
-      x: 0,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
+  stubSpan(el, top, top + 10);
 }
 
 interface FakeThread {
@@ -54,7 +62,14 @@ interface FakeThread {
   sync(): void;
 }
 
-function makeThread(): FakeThread {
+interface ThreadOptions {
+  /** Inner edges of the chevrons, in the scroller's viewport coordinates: the top
+   *  button's bottom edge and the bottom button's top edge. */
+  chevrons?: { topEnd: number; bottomStart: number };
+}
+
+function makeThread({ chevrons }: ThreadOptions = {}): FakeThread {
+  const wrap = document.createElement("div");
   const el = document.createElement("div");
   const inner = document.createElement("div");
   el.appendChild(inner);
@@ -77,7 +92,21 @@ function makeThread(): FakeThread {
   });
   Object.defineProperty(el, "scrollHeight", { get: () => geom.scrollHeight });
   Object.defineProperty(el, "clientHeight", { get: () => geom.clientHeight });
-  stubRect(el, 0);
+  // The scroller's rect follows its live height, as the real box does.
+  el.getBoundingClientRect = () => rectOf(0, geom.clientHeight);
+  wrap.appendChild(el);
+  if (chevrons) {
+    const rail = (buttonTop: number) => {
+      const row = document.createElement("div");
+      const button = document.createElement("button");
+      button.className = "thread-scroll-btn";
+      stubSpan(button, buttonTop, buttonTop + 18);
+      row.appendChild(button);
+      return row;
+    };
+    wrap.insertBefore(rail(chevrons.topEnd - 18), el);
+    wrap.appendChild(rail(chevrons.bottomStart));
+  }
   sync();
   return { el, geom, sync };
 }
@@ -360,6 +389,19 @@ describe("JumpBar", () => {
     expect(document.querySelectorAll(".jump-dot")).toHaveLength(2);
     // Turn 2 was written halfway through a 400px track that spans 1000..3000.
     expect(dotTops()).toEqual([0, 200]);
+  });
+
+  it("maps the dots between the chevrons when they overlap the track", () => {
+    thread = makeThread({ chevrons: { topEnd: 18, bottomStart: 382 } });
+    render(<JumpBar messages={messages} threadEl={thread.el} />);
+    // 400px track, an 18px chevron at each end, 3px clearance: a 358px band at y=21.
+    expect(dotTops()).toEqual([21, 200]);
+  });
+
+  it("only clears the chevrons when they sit outside the track", () => {
+    thread = makeThread({ chevrons: { topEnd: 0, bottomStart: 400 } });
+    render(<JumpBar messages={messages} threadEl={thread.el} />);
+    expect(dotTops()).toEqual([3, 200]);
   });
 
   it("renders nothing while the transcript holds a single turn", () => {
