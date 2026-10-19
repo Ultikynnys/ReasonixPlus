@@ -29,7 +29,10 @@ import { type ReasoningEffort, isReasoningEffort } from "../config.js";
 import { atomicWriteSync, tmpSiblingPath } from "../core/atomic-write.js";
 import { readJsonFileSilently, readJsonFileSilentlyAsync } from "../core/json-file.js";
 import { appendJsonlLine, parseJsonl } from "../core/jsonl.js";
-import { SessionDirectoryIndex } from "../desktop/session-directory-index.js";
+import {
+  SessionDirectoryIndex,
+  type SessionDirectoryRecord,
+} from "../desktop/session-directory-index.js";
 import { reasonixHome } from "../reasonix-home.js";
 import type { CacheDiagnosticEntry } from "../telemetry/cache-diagnostics.js";
 import type { SessionProviderCost } from "../telemetry/stats.js";
@@ -698,10 +701,56 @@ const sessionDirectoryIndex = new SessionDirectoryIndex<SessionMeta>(
   // (tests stubbing HOME/USERPROFILE) persist a foreign directory's records into
   // the real cache, forcing the next launch into a full cold scan.
   () => join(reasonixHome(), "cache", "session-directory-index.json"),
+  // The listing reads only these fields. Persisting whole meta blobs made the cache
+  // 39 MB (33.7 MB of it meta), and reading and rewriting it dominated the cold path.
+  (meta) => ({
+    workspace: meta.workspace,
+    updatedAt: meta.updatedAt,
+    createdAt: meta.createdAt,
+    summary: meta.summary,
+  }),
 );
+
+/** Projects indexed records into one workspace's session list. Shared by the
+ *  authoritative value and the cache-primed snapshot so the two cannot drift. */
+function toWorkspaceSessions(
+  records: readonly SessionDirectoryRecord<SessionMeta>[],
+  want: string,
+  legacyPrefix: string,
+): SessionInfo[] {
+  return records
+    .flatMap((record): SessionInfo[] => {
+      let workspaceStatus: SessionInfo["workspaceStatus"];
+      if (typeof record.meta.workspace === "string") {
+        if (normalizeWorkspace(record.meta.workspace) !== want) return [];
+        workspaceStatus = "matched";
+      } else if (record.name.startsWith(legacyPrefix)) {
+        workspaceStatus = "legacy_missing_meta";
+      } else {
+        return [];
+      }
+      return [
+        {
+          name: record.name,
+          path: sessionDir(record.name),
+          size: record.identity.size,
+          messageCount: record.messageCount,
+          mtime: record.mtime,
+          lastActive: record.meta.updatedAt,
+          createdAt: sessionCreatedAt(record.meta, record.name),
+          meta: record.meta,
+          workspaceStatus,
+        },
+      ];
+    })
+    .sort(sortSessionsDescending);
+}
 
 export function listSessionsForWorkspaceAsync(workspace: string): {
   value: Promise<SessionInfo[]>;
+  /** Last-known list read from the index cache without revalidating, or null when
+   *  no cache exists. Lets a caller paint the sidebar before the scan finishes. */
+  cached: Promise<SessionInfo[] | null>;
   cache: "hit" | "refresh" | "inflight";
 } {
   const request = sessionDirectoryIndex.load();
@@ -709,34 +758,12 @@ export function listSessionsForWorkspaceAsync(workspace: string): {
   const legacyPrefix = legacySessionPrefixForWorkspace(workspace);
   return {
     cache: request.cache,
-    value: request.value.then((records) =>
-      records
-        .flatMap((record): SessionInfo[] => {
-          let workspaceStatus: SessionInfo["workspaceStatus"];
-          if (typeof record.meta.workspace === "string") {
-            if (normalizeWorkspace(record.meta.workspace) !== want) return [];
-            workspaceStatus = "matched";
-          } else if (record.name.startsWith(legacyPrefix)) {
-            workspaceStatus = "legacy_missing_meta";
-          } else {
-            return [];
-          }
-          return [
-            {
-              name: record.name,
-              path: sessionDir(record.name),
-              size: record.identity.size,
-              messageCount: record.messageCount,
-              mtime: record.mtime,
-              lastActive: record.meta.updatedAt,
-              createdAt: sessionCreatedAt(record.meta, record.name),
-              meta: record.meta,
-              workspaceStatus,
-            },
-          ];
-        })
-        .sort(sortSessionsDescending),
-    ),
+    value: request.value.then((records) => toWorkspaceSessions(records, want, legacyPrefix)),
+    cached: sessionDirectoryIndex
+      .snapshot()
+      .then((records) =>
+        records === null ? null : toWorkspaceSessions(records, want, legacyPrefix),
+      ),
   };
 }
 

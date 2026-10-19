@@ -151,7 +151,9 @@ export class SessionDirectoryIndex<M> {
   private generation = 0;
   private refreshedAt = 0;
   private loaded = false;
-  private cacheLoaded = false;
+  /** One shared seed read: `load()` and `snapshot()` can both ask within the same
+   *  tick, and the second caller must await the first rather than see "no cache". */
+  private seedRequest: Promise<boolean> | null = null;
 
   constructor(
     private readonly directory: () => string,
@@ -163,6 +165,10 @@ export class SessionDirectoryIndex<M> {
      *  re-homed sessions dir (tests, alternate REASONIX_HOME) never persists a
      *  foreign directory's cache and forces a full cold scan. */
     private readonly cacheFile?: string | (() => string),
+    /** Shrinks each record's meta before it is persisted. What this returns is cast
+     *  back to `M` when a cache is seeded, so it must keep every field this index's
+     *  consumers read. Defaults to persisting meta whole. */
+    private readonly persistMeta: (meta: M) => unknown = (meta) => meta,
   ) {}
 
   private cacheFilePath(): string | undefined {
@@ -184,11 +190,19 @@ export class SessionDirectoryIndex<M> {
     return { value: request, cache: "refresh" };
   }
 
+  /** What is already known without revalidating: the in-memory set once loaded,
+   *  else the persisted cache. Null when neither exists. It deliberately leaves the
+   *  index unfresh, so a later `load()` still runs the full refresh. */
+  async snapshot(): Promise<readonly SessionDirectoryRecord<M>[] | null> {
+    if (this.loaded) return [...this.records.values()];
+    if (!(await this.seedFromCache())) return null;
+    return [...this.records.values()];
+  }
+
   invalidate(): void {
     this.generation += 1;
     this.refreshedAt = 0;
   }
-
   remove(name: string): void {
     this.records.delete(join(this.directory(), name, SESSION_MESSAGES_FILENAME));
     this.invalidate();
@@ -264,26 +278,35 @@ export class SessionDirectoryIndex<M> {
     return [...next.values()];
   }
 
-  private async seedFromCache(): Promise<void> {
+  /** Seeds `records` from the persisted cache, once per instance. Reports whether a
+   *  usable cache was loaded; concurrent callers share the one read. */
+  private seedFromCache(): Promise<boolean> {
+    if (this.seedRequest) return this.seedRequest;
     const cacheFile = this.cacheFilePath();
-    if (this.cacheLoaded || cacheFile === undefined) return;
-    this.cacheLoaded = true;
-    const cached = await readJsonFileSilentlyAsync(cacheFile, isPersistedSessionIndex);
-    if (cached === null || cached.directory !== this.directory()) return;
-    const seeded = new Map<string, SessionDirectoryRecord<M>>();
-    for (const record of cached.records) {
-      seeded.set(record.path, {
-        name: record.name,
-        path: record.path,
-        identity: record.identity,
-        messageCount: record.messageCount,
-        endedWithNewline: record.endedWithNewline,
-        mtime: new Date(record.mtimeMs),
-        meta: record.meta as M,
-        metaIdentity: record.metaIdentity,
-      });
+    if (cacheFile === undefined) {
+      this.seedRequest = Promise.resolve(false);
+      return this.seedRequest;
     }
-    this.records = seeded;
+    this.seedRequest = (async (): Promise<boolean> => {
+      const cached = await readJsonFileSilentlyAsync(cacheFile, isPersistedSessionIndex);
+      if (cached === null || cached.directory !== this.directory()) return false;
+      const seeded = new Map<string, SessionDirectoryRecord<M>>();
+      for (const record of cached.records) {
+        seeded.set(record.path, {
+          name: record.name,
+          path: record.path,
+          identity: record.identity,
+          messageCount: record.messageCount,
+          endedWithNewline: record.endedWithNewline,
+          mtime: new Date(record.mtimeMs),
+          meta: record.meta as M,
+          metaIdentity: record.metaIdentity,
+        });
+      }
+      this.records = seeded;
+      return true;
+    })();
+    return this.seedRequest;
   }
 
   private async persistIndex(records: Map<string, SessionDirectoryRecord<M>>): Promise<void> {
@@ -322,7 +345,7 @@ export class SessionDirectoryIndex<M> {
         messageCount: record.messageCount,
         endedWithNewline: record.endedWithNewline,
         mtimeMs: record.mtime.getTime(),
-        meta: record.meta,
+        meta: this.persistMeta(record.meta),
         metaIdentity: record.metaIdentity,
       })),
     };

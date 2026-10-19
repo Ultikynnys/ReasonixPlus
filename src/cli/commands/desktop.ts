@@ -250,6 +250,7 @@ import {
   readMemoryEntryDetail,
   writeMemoryEntry,
 } from "../../desktop/memory-browser.js";
+import { sameSessionListItems, toSessionListItems } from "../../desktop/session-listing.js";
 import { recordDiagnostic } from "../../diagnostics.js";
 import { buildDuplicateContext } from "../../duplicate-session.js";
 import { normalizeImageToDataUrls } from "../../image-format.js";
@@ -2942,31 +2943,63 @@ function subagentBillingFor(model: string): import("../../code/setup.js").Subage
 async function emitSessions(
   tab: Tab,
   settledDeletes?: SessionsEvent["settledDeletes"],
+  options: { primeFromCache?: boolean } = {},
 ): Promise<void> {
   const startedAt = performance.now();
-  const revision = ++tab.sessionsRevision;
   const source = listSessionsForWorkspaceAsync(tab.rootDir);
   const request = {
     cache: source.cache,
-    value: source.value.then((sessions): SessionsEvent["items"] =>
-      sessions.map((session) => ({
-        name: session.name,
-        messageCount: session.messageCount,
-        mtime: session.mtime.toISOString(),
-        updatedAt: session.meta.updatedAt,
-        createdAt: session.createdAt,
-        summary: session.meta.summary,
-        workspaceStatus: session.workspaceStatus,
-      })),
-    ),
+    value: source.value.then(toSessionListItems),
   };
   emitTabDiagnostic(tab, "sessions.list.started", { cache: request.cache });
   try {
+    // Paint the last-known list from the index cache while the store revalidates:
+    // on a large store that scan is seconds, and the sidebar was blank until it
+    // landed. A settle confirmation only ever rides the authoritative revision.
+    let primed: SessionsEvent["items"] | null = null;
+    if (options.primeFromCache && settledDeletes === undefined) {
+      const cached = await source.cached;
+      if (cached) {
+        primed = toSessionListItems(cached);
+        emit(
+          {
+            type: "$sessions",
+            epoch: tab.sessionsEpoch,
+            revision: ++tab.sessionsRevision,
+            items: primed,
+          },
+          tab.id,
+        );
+        emitTabDiagnostic(tab, "sessions.list.primed", {
+          count: primed.length,
+          durationMs: Number((performance.now() - startedAt).toFixed(3)),
+        });
+      }
+    }
     const items = await request.value;
-    emit({ type: "$sessions", epoch: tab.sessionsEpoch, revision, items, settledDeletes }, tab.id);
+    if (primed !== null && sameSessionListItems(primed, items)) {
+      // Already on screen — a second revision would only churn the sidebar.
+      emitTabDiagnostic(tab, "sessions.list.primed_current", {
+        count: items.length,
+        cache: request.cache,
+        durationMs: Number((performance.now() - startedAt).toFixed(3)),
+      });
+      return;
+    }
+    emit(
+      {
+        type: "$sessions",
+        epoch: tab.sessionsEpoch,
+        revision: ++tab.sessionsRevision,
+        items,
+        settledDeletes,
+      },
+      tab.id,
+    );
     emitTabDiagnostic(tab, "sessions.list.completed", {
       count: items.length,
       cache: request.cache,
+      primed: primed !== null,
       durationMs: Number((performance.now() - startedAt).toFixed(3)),
     });
   } catch (err) {
@@ -7039,7 +7072,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // below. No-op for an already-stamped or purely virtual session.
         stampSessionWorkspace(tab.currentSession, tab.rootDir);
       }
-      const sessionsInitialized = emitSessions(tab);
+      const sessionsInitialized = emitSessions(tab, undefined, { primeFromCache: true });
       emitMemory(tab);
       if (restoredMessages) {
         const meta = loadSessionMeta(tab.currentSession);

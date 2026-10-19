@@ -153,6 +153,83 @@ describe("SessionDirectoryIndex", () => {
     expect(loadMeta).toHaveBeenCalledTimes(2);
   });
 
+  it("persists only the meta a projector keeps and casts it back on seed", async () => {
+    const dir = await fixture();
+    const cacheFile = join(dir, "index-cache.json");
+    await seedSession(dir, "one", "a\nb\n");
+    const full = {
+      workspace: "/ws",
+      updatedAt: 5,
+      createdAt: 1,
+      summary: "Title",
+      totalCostUsd: 12,
+      turnCount: 3,
+    };
+    const keep = (meta: typeof full) => ({
+      workspace: meta.workspace,
+      updatedAt: meta.updatedAt,
+      createdAt: meta.createdAt,
+      summary: meta.summary,
+    });
+    const index = new SessionDirectoryIndex(
+      () => dir,
+      () => full,
+      undefined,
+      undefined,
+      undefined,
+      cacheFile,
+      keep,
+    );
+    await index.load().value;
+    const cached = JSON.parse(readFileSync(cacheFile, "utf8")) as {
+      records: Array<{ meta: Record<string, unknown> }>;
+    };
+    expect(cached.records[0]?.meta).toEqual({
+      workspace: "/ws",
+      updatedAt: 5,
+      createdAt: 1,
+      summary: "Title",
+    });
+
+    // A relaunch reuses the projected meta for the unchanged session.
+    const relaunched = new SessionDirectoryIndex(
+      () => dir,
+      () => full,
+      undefined,
+      undefined,
+      undefined,
+      cacheFile,
+      keep,
+    );
+    const [record] = await relaunched.load().value;
+    expect(record?.meta).toEqual({
+      workspace: "/ws",
+      updatedAt: 5,
+      createdAt: 1,
+      summary: "Title",
+    });
+  });
+
+  it("persists meta whole when no projector is given", async () => {
+    const dir = await fixture();
+    const cacheFile = join(dir, "index-cache.json");
+    await seedSession(dir, "one", "a\n");
+    const full = { workspace: "/ws", summary: "Title", totalCostUsd: 12 };
+    const index = new SessionDirectoryIndex(
+      () => dir,
+      () => full,
+      undefined,
+      undefined,
+      undefined,
+      cacheFile,
+    );
+    await index.load().value;
+    const cached = JSON.parse(readFileSync(cacheFile, "utf8")) as {
+      records: Array<{ meta: unknown }>;
+    };
+    expect(cached.records[0]?.meta).toEqual(full);
+  });
+
   it("recounts only files that changed since the cache was written", async () => {
     const dir = await fixture();
     const cacheFile = join(dir, "index-cache.json");
@@ -180,6 +257,86 @@ describe("SessionDirectoryIndex", () => {
     const records = (await second.load().value).sort((a, b) => a.name.localeCompare(b.name));
     expect(records[0]?.messageCount).toBe(3);
     expect(records[1]?.messageCount).toBe(1);
+  });
+
+  it("snapshots the persisted cache without satisfying the TTL", async () => {
+    const dir = await fixture();
+    const cacheFile = join(dir, "index-cache.json");
+    await seedSession(dir, "one", "a\nb\n");
+    const first = new SessionDirectoryIndex(
+      () => dir,
+      () => ({}),
+      undefined,
+      undefined,
+      undefined,
+      cacheFile,
+    );
+    await first.load().value;
+
+    // A relaunch can answer from the cache immediately...
+    const second = new SessionDirectoryIndex(
+      () => dir,
+      () => ({}),
+      undefined,
+      undefined,
+      undefined,
+      cacheFile,
+    );
+    const snapshot = await second.snapshot();
+    expect(snapshot?.map((record) => record.name)).toEqual(["one"]);
+    expect(snapshot?.[0]?.messageCount).toBe(2);
+
+    // ...and still owe the caller a full revalidation, which sees the new session.
+    await seedSession(dir, "two", "x\n");
+    const refreshed = second.load();
+    expect(refreshed.cache).toBe("refresh");
+    expect(
+      (await refreshed.value).map((record) => record.name).sort((a, b) => a.localeCompare(b)),
+    ).toEqual(["one", "two"]);
+    expect(second.load().cache).toBe("hit");
+  });
+
+  it("returns no snapshot before anything is cached or loaded", async () => {
+    const dir = await fixture();
+    await seedSession(dir, "one", "a\n");
+    const index = new SessionDirectoryIndex(
+      () => dir,
+      () => ({}),
+      0,
+      () => 0,
+    );
+    expect(await index.snapshot()).toBeNull();
+    // Once loaded, the in-memory set is the snapshot.
+    await index.load().value;
+    expect((await index.snapshot())?.map((record) => record.name)).toEqual(["one"]);
+  });
+
+  it("withholds a snapshot it cannot use or that belongs to another directory", async () => {
+    const dir = await fixture();
+    const other = await fixture();
+    const cacheFile = join(dir, "index-cache.json");
+    await seedSession(dir, "one", "a\n");
+    await writeFile(cacheFile, "{ not json");
+    const corrupt = new SessionDirectoryIndex(
+      () => dir,
+      () => ({}),
+      0,
+      () => 0,
+      undefined,
+      cacheFile,
+    );
+    expect(await corrupt.snapshot()).toBeNull();
+    expect((await corrupt.load().value)[0]?.messageCount).toBe(1);
+
+    const foreign = new SessionDirectoryIndex(
+      () => other,
+      () => ({}),
+      0,
+      () => 0,
+      undefined,
+      cacheFile,
+    );
+    expect(await foreign.snapshot()).toBeNull();
   });
 
   it("ignores a corrupt cache file and rebuilds from disk", async () => {
