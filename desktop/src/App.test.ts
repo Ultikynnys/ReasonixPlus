@@ -1987,6 +1987,224 @@ describe("Desktop App reducer — card ordering", () => {
     expect(assistants[1]).toMatchObject({ turn: 1, pending: true });
   });
 
+  it("opens a card below the boundary when the retraction carries no in-flight card", () => {
+    // The compaction card can be settled BEFORE the log swap lands (an $error, a
+    // stale-frame sweep, a slow fold). The retraction then finds no pending card
+    // and no running notice, so it keeps the folded log's cards as-is — and those
+    // are "open". Output after the boundary must still open a NEW card below the
+    // compaction card instead of growing a folded card above it, which is what
+    // made everything after a compaction invisible.
+    let state = reduce(initialState(), { t: "incoming", event: turnStarted(1) });
+    state = reduce(state, {
+      t: "incoming",
+      event: reasoningDelta(1, "thinking before compaction"),
+    });
+    state = reduce(state, { t: "incoming", event: compactionStarted(1) });
+    state = reduce(state, { t: "incoming", event: compactionDone(1) });
+    state = reduce(state, {
+      t: "incoming",
+      event: {
+        type: "session.retracted",
+        id: 7,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        kind: "compact",
+        beforeMessages: 2,
+        afterMessages: 2,
+        replacementMessages: [
+          { kind: "user", text: "the ask" },
+          {
+            kind: "assistant",
+            turn: 1,
+            segments: [{ kind: "reasoning", text: "before" }],
+            pending: false,
+          },
+        ],
+      },
+    });
+    state = reduce(state, {
+      t: "incoming",
+      event: reasoningDelta(1, "thinking after compaction"),
+    });
+
+    // The compaction card stays where the boundary put it; the turn's later
+    // output opens a NEW card below it.
+    expect(state.messages.map((m) => m.kind)).toEqual([
+      "user",
+      "assistant",
+      "notice",
+      "assistant",
+    ]);
+    const noticeIdx = state.messages.findIndex((m) => m.kind === "notice");
+    const after = state.messages[state.messages.length - 1];
+    if (after?.kind !== "assistant") throw new Error("expected a post-boundary card");
+    expect(after.segments.at(-1)).toMatchObject({
+      kind: "reasoning",
+      text: "thinking after compaction",
+    });
+    expect(state.messages.length - 1).toBeGreaterThan(noticeIdx);
+  });
+
+  it("settles the sealed card when output opens its successor", () => {
+    // A card left unclosed above a boundary (the shape a late notice for an
+    // earlier turn leaves behind) must stop rendering as live the moment the
+    // next card opens, so one turn never shows two live cards at once.
+    const sealed = {
+      kind: "assistant" as const,
+      turn: 1,
+      segments: [{ kind: "reasoning" as const, text: "orphan", startedAt: Date.now() }],
+      pending: true,
+    };
+    const base = {
+      ...initialState(),
+      messages: [
+        { kind: "user" as const, text: "ask", clientId: "c-1", turn: 1 },
+        sealed,
+        {
+          kind: "notice" as const,
+          id: "notice-1",
+          text: "Context compacted.",
+          severity: "success" as const,
+          turn: 1,
+          running: false,
+        },
+      ],
+    };
+    const next = reduce(base, { t: "incoming", event: reasoningDelta(1, "after") });
+
+    expect(next.messages.map((m) => m.kind)).toEqual(["user", "assistant", "notice", "assistant"]);
+    expect(next.messages[1]).toMatchObject({ pending: false, closed: true });
+    expect(next.messages.at(-1)).toMatchObject({ pending: true, segments: [{ kind: "reasoning" }] });
+    expect(next.messages.at(-1)).not.toHaveProperty("closed", true);
+  });
+
+  it("keeps late output at the tail when a newer user bubble already follows the card", () => {
+    // Same invariant, no notice involved: content may never be written into a
+    // card that something else already follows.
+    const base = {
+      ...initialState(),
+      messages: [
+        { kind: "user" as const, text: "first", clientId: "c-1", turn: 1 },
+        {
+          kind: "assistant" as const,
+          turn: 1,
+          segments: [{ kind: "reasoning" as const, text: "run" }],
+          pending: true,
+        },
+      ],
+    };
+    const withNewAsk = reduce(base, {
+      t: "incoming",
+      event: {
+        type: "user.message",
+        id: 3,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 2,
+        text: "second",
+      },
+    });
+    const next = reduce(withNewAsk, { t: "incoming", event: reasoningDelta(1, "late") });
+
+    expect(next.messages.map((m) => m.kind)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(next.messages[1]).toMatchObject({ turn: 1, segments: [{ kind: "reasoning" }] });
+    expect(next.messages.at(-1)).toMatchObject({ turn: 1, pending: true });
+  });
+
+  it("keeps streaming into a live card that sits below the boundary", () => {
+    // The retraction carried the in-flight card past a settled boundary, so the
+    // boundary is mid-transcript: output belongs in that live card, not in a
+    // needless third card.
+    const base = {
+      ...initialState(),
+      messages: [
+        { kind: "user" as const, text: "ask", clientId: "c-1", turn: 1 },
+        {
+          kind: "assistant" as const,
+          turn: 1,
+          segments: [{ kind: "text" as const, text: "before" }],
+          pending: false,
+          closed: true,
+        },
+        {
+          kind: "notice" as const,
+          id: "notice-1",
+          text: "Context compacted.",
+          severity: "success" as const,
+          turn: 1,
+          running: false,
+        },
+        {
+          kind: "assistant" as const,
+          turn: 1,
+          segments: [{ kind: "reasoning" as const, text: "thinking" }],
+          pending: true,
+        },
+      ],
+    };
+    const next = reduce(base, { t: "incoming", event: reasoningDelta(1, "more") });
+
+    expect(next.messages.map((m) => m.kind)).toEqual(["user", "assistant", "notice", "assistant"]);
+    const tail = next.messages.at(-1);
+    if (tail?.kind !== "assistant") throw new Error("expected the live card");
+    // Appended to the live card's open reasoning run, not to a new card.
+    expect(tail.segments).toHaveLength(1);
+    expect(tail.segments.at(-1)).toMatchObject({ kind: "reasoning", text: "thinkingmore" });
+  });
+
+  it("never streams into the tail card of a reloaded transcript", () => {
+    // A load puts history at the tail. Its ordinals are renumbered from the log,
+    // so the next delta of the same ordinal would land in history — visibly
+    // above whatever card the user is watching. It must open a new card.
+    let state = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$session_loaded",
+        name: "sess-1",
+        resync: false,
+        messages: [
+          { kind: "user", text: "q1" },
+          {
+            kind: "assistant",
+            turn: 1,
+            segments: [{ kind: "text", text: "logged answer" }],
+            pending: false,
+          },
+        ],
+        carryover: {
+          totalCostUsd: 0,
+          cacheHitTokens: 0,
+          cacheMissTokens: 0,
+          totalCompletionTokens: 0,
+        },
+      },
+    });
+    state = reduce(state, { t: "incoming", event: reasoningDelta(1, "live tail") });
+
+    expect(state.messages.map((m) => m.kind)).toEqual(["user", "assistant", "assistant"]);
+    const history = state.messages[1];
+    if (history?.kind !== "assistant") throw new Error("expected the history card");
+    expect(history.segments.some((s) => s.kind === "text" && s.text === "logged answer")).toBe(
+      true,
+    );
+    expect(history.segments.some((s) => s.kind === "reasoning")).toBe(false);
+    expect(state.messages.at(-1)).toMatchObject({ kind: "assistant", pending: true });
+  });
+
+  it("keeps later output below a mid-turn btw card", () => {
+    let state = reduce(initialState(), { t: "incoming", event: turnStarted(1) });
+    state = reduce(state, { t: "incoming", event: reasoningDelta(1, "before btw") });
+    state = reduce(state, {
+      t: "incoming",
+      event: { type: "$btw_result", question: "why?", answer: "because" },
+    });
+    state = reduce(state, { t: "incoming", event: reasoningDelta(1, "after btw") });
+
+    expect(state.messages.map((m) => m.kind)).toEqual(["assistant", "notice", "assistant"]);
+    const tail = state.messages.at(-1);
+    if (tail?.kind !== "assistant") throw new Error("expected a post-btw card");
+    expect(tail.segments.at(-1)).toMatchObject({ kind: "reasoning", text: "after btw" });
+  });
+
   it("carries the in-flight turn's cards through a compaction retraction, in order", () => {
     const base = {
       ...initialState(),

@@ -745,14 +745,31 @@ function lastAssistantIndex(messages: ChatMessage[], turn: number): number {
   return -1;
 }
 
-/** Index of the turn's OPEN assistant card — its last card, unless a boundary
- *  card has closed it — or -1 when streaming output must open a fresh card. A
- *  settled (mid-turn `model.final`) card is still open, so the next delta
- *  re-opens it; only a boundary closure forces a new card. */
-function openAssistantIndex(messages: ChatMessage[], turn: number): number {
+/** Index of the turn's last card when nothing has sealed it — where the turn's
+ *  ANNOTATIONS belong (a late warning still attaches to the turn it describes,
+ *  even after later turns exist). Streamed CONTENT must not use this: that card
+ *  may sit above a boundary or a newer card, so content uses
+ *  {@link openAssistantIndex} instead. */
+function unclosedTurnCardIndex(messages: ChatMessage[], turn: number): number {
   const idx = lastAssistantIndex(messages, turn);
   const card = idx >= 0 ? messages[idx] : undefined;
   return card?.kind === "assistant" && !card.closed ? idx : -1;
+}
+
+/** Index of the turn's streaming target — the transcript TAIL, when that tail is
+ *  an unclosed card of this turn — or -1 when output must open a fresh card.
+ *  Everything above the tail is already on screen (a boundary notice, a newer
+ *  user bubble, an older card), so growing an earlier card would place the
+ *  turn's output ABOVE that card instead of beside it: invisible, and that is
+ *  exactly what made every card produced after a compaction disappear.
+ *
+ *  A settled (mid-turn `model.final`) card is still open, so the next delta
+ *  re-opens it; only a seal forces a new card. */
+function openAssistantIndex(messages: ChatMessage[], turn: number): number {
+  const idx = messages.length - 1;
+  const card = messages[idx];
+  if (card?.kind !== "assistant" || card.closed || card.turn !== turn) return -1;
+  return idx;
 }
 
 /** Index of the single in-flight assistant card (the last one still pending),
@@ -787,7 +804,7 @@ function mapActiveAssistant(
     next[idx] = fn(card);
     return next;
   }
-  return [...messages, fn(newAssistantCard(turn))];
+  return appendAssistantCardBelow(messages, turn, fn);
 }
 
 /** Close the boundary-crossed card of `turn` — stop its spinner, stamp a trailing
@@ -808,6 +825,18 @@ function closeTurnCard(messages: ChatMessage[], turn: number): ChatMessage[] {
   return next;
 }
 
+/** Open the turn's next assistant card below whatever sealed the previous one.
+ *  The single creator of a successor card: the sealed card is settled first
+ *  (spinner off, trailing reasoning stamped) so two cards of one turn never
+ *  render as live at once. */
+function appendAssistantCardBelow(
+  messages: ChatMessage[],
+  turn: number,
+  fn: (m: Extract<ChatMessage, { kind: "assistant" }>) => ChatMessage = (m) => m,
+): ChatMessage[] {
+  return [...closeTurnCard(messages, turn), fn(newAssistantCard(turn))];
+}
+
 /** Append the event's assistant card when the turn has no OPEN card; a no-op
  *  otherwise. After a boundary card closes the active card, the next streaming
  *  event opens a fresh card below the boundary. */
@@ -815,7 +844,7 @@ function ensureAssistantTurn(state: State, ev: IncomingEvent): State {
   if (!ASSISTANT_CARD_EVENTS.has(ev.type)) return state;
   const turn = (ev as { turn: number }).turn;
   if (openAssistantIndex(state.messages, turn) >= 0) return state;
-  return { ...state, messages: [...state.messages, newAssistantCard(turn)] };
+  return { ...state, messages: appendAssistantCardBelow(state.messages, turn) };
 }
 
 /** The turn a card is anchored to. Only user/assistant cards and notice cards
@@ -1421,7 +1450,13 @@ function mergeSessionFiles(existing: SessionFile[], adds: SessionFile[]): Sessio
 
 /** Convert a server-sent conversation (LoadedMessage shape) into UI messages.
  *  Shared by $session_loaded and session.retracted — both carry the same wire
- *  shape, so a truncation replacement and a session reload render identically. */
+ *  shape, so a truncation replacement and a session reload render identically.
+ *
+ *  Every loaded assistant card is CLOSED: the wire snapshot is history, not a
+ *  live turn, and its turn ordinals are renumbered from the log's user records.
+ *  Left open, a later delta whose ordinal happens to match would be written into
+ *  that history card — above whatever boundary (a compaction notice) sits after
+ *  it — and vanish from the transcript. */
 export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
   // User turns are counted by user-message position (1-based), matching live
   // numbering. List index i+1 would drift: the loaded list interleaves
@@ -1465,7 +1500,8 @@ export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
       }
       return s;
     });
-    return { kind: "assistant", turn: m.turn, segments, pending: false };
+    // closed: history can never be the streaming target (see openAssistantIndex).
+    return { kind: "assistant", turn: m.turn, segments, pending: false, closed: true };
   });
 }
 
@@ -1621,9 +1657,13 @@ function handleCueForEvent(
 // turn). Stored on the notice only for turnHasTerminalExplanation's dedupe —
 // placement itself is creation-ordered (see appendNoticeMessage).
 function currentTurnForNotice(messages: ChatMessage[]): number {
+  // "Which turn is live" — the newest card nothing has sealed. A queued user
+  // bubble can trail it, so this is deliberately NOT the streaming target (see
+  // openAssistantIndex): the live card still gets settled when a notice arrives
+  // for its turn, even though later content opens a card below the notice.
   for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m?.kind === "assistant" && !m.closed) return m.turn;
+    const card = messages[i];
+    if (card?.kind === "assistant" && !card.closed) return card.turn;
   }
   let last = 0;
   for (const m of messages) {
@@ -1641,10 +1681,12 @@ function insertNotice(
 ): ChatMessage[] {
   const inflight = currentTurnForNotice(messages);
   const noticeTurn = turn ?? inflight;
-  // A notice created for the streaming turn is a boundary: close that turn's
-  // open card so output created after this notice lands in a NEW card below it.
-  // A notice for an earlier turn (a late error) leaves the streaming card alone.
-  // Everything is then appended in creation order.
+  // A notice is a boundary. Placing later output below it is guaranteed by
+  // openAssistantIndex (content only ever lands at the transcript tail), not by
+  // this closure — the closeTurnCard call here only settles the card's rendered
+  // state (spinner off, trailing reasoning stamped). A notice for an earlier turn
+  // (a late error) leaves the streaming card's rendered state alone. Everything is
+  // appended in creation order.
   const base = noticeTurn === inflight ? closeTurnCard(messages, noticeTurn) : messages;
   return appendNoticeMessage(base, {
     kind: "notice",
@@ -1698,7 +1740,7 @@ function appendAssistantSegment(
   segment: AssistantSegment,
   turn = 1,
 ): ChatMessage[] {
-  const hostIndex = openAssistantIndex(messages, turn);
+  const hostIndex = unclosedTurnCardIndex(messages, turn);
   const host = hostIndex >= 0 ? messages[hostIndex] : undefined;
   if (host?.kind === "assistant") {
     const next = [...messages];
@@ -2506,7 +2548,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turnStatus: "thinking",
         turnStatusTool: null,
         turnLastEventMs: Date.now(),
-        messages: [...state.messages, newAssistantCard(ev.turn)],
+        messages: appendAssistantCardBelow(state.messages, ev.turn),
       };
     case "model.delta":
       return {
@@ -2803,9 +2845,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return state;
     case "compaction.started": {
       if (state.messages.some((m) => m.kind === "notice" && m.running === true)) return state;
-      // Close the in-flight turn's card first so the compaction card lands at the
-      // boundary: post-compaction output opens a NEW card below it instead of
-      // growing the card above it and stranding this card at the bottom.
+      // Seal the in-flight card as the boundary is created: it must render as
+      // finished (spinner off, trailing reasoning stamped). Where later output
+      // lands is guaranteed by openAssistantIndex.
       const base = closeTurnCard(state.messages, ev.turn);
       const notice: ChatMessage = {
         kind: "notice",
