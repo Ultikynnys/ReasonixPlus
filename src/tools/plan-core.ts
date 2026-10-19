@@ -304,17 +304,12 @@ function registerMarkStepComplete(registry: ToolRegistry, opts: PlanToolOptions)
       if (title) update.title = title;
       if (notes) update.notes = notes;
       if (evidence) update.evidence = evidence;
-      const repository = repositoryFor(ctx);
-      const session = sessionFor(ctx);
-      // `adoptUnclaimed` so a session resumed over a pre-ownership store still owns the
-      // one in-flight plan it was already working instead of being told it has none.
-      const active = repository?.activeFor(session, { adoptUnclaimed: true }) ?? null;
-      if (repository && (!active || args.planId !== active.id)) {
-        const planId = args.planId;
-        const refusal = planId === undefined ? null : repository.claimable(planId, session);
-        if (refusal) return rejectionText(refusal.plan.id, refusal.owner);
-        throw new Error("mark_step_complete: supply the owning active planId");
-      }
+      const { repository, session, active, rejection } = resolveOwnedPlan(
+        "mark_step_complete",
+        ctx,
+        args.planId,
+      );
+      if (rejection) return rejection;
       if (
         active?.steps.find((s) => !Object.hasOwn(active.completions, s.id))?.id !== stepId &&
         repository
@@ -395,15 +390,12 @@ function registerRevisePlan(registry: ToolRegistry, opts: PlanToolOptions): void
       }
       const summary =
         typeof args?.summary === "string" ? args.summary.trim() || undefined : undefined;
-      const repository = repositoryFor(ctx);
-      const session = sessionFor(ctx);
-      const active = repository?.activeFor(session, { adoptUnclaimed: true }) ?? null;
-      if (repository && (!active || args.planId !== active.id)) {
-        const planId = args.planId;
-        const refusal = planId === undefined ? null : repository.claimable(planId, session);
-        if (refusal) return rejectionText(refusal.plan.id, refusal.owner);
-        throw new Error("revise_plan: supply the owning active planId");
-      }
+      const { repository, session, active, rejection } = resolveOwnedPlan(
+        "revise_plan",
+        ctx,
+        args.planId,
+      );
+      if (rejection) return rejection;
       opts.onPlanRevisionProposed?.(reason, remainingSteps, summary);
       // Block until the user accepts, rejects, or cancels the revision
       const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
@@ -481,8 +473,8 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
           if (!args.reason?.trim()) throw new Error("Abandonment reason is required");
           const plan = repository.open(args.planId);
           // Refuse before asking the user: a live session's plan is not ours to discard.
-          const refusal = repository.claimable(args.planId, session);
-          if (refusal) return rejectionText(args.planId, refusal.owner);
+          const rejection = refusalFor(repository, args.planId, session);
+          if (rejection) return rejection;
           const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
             kind: "choice",
             payload: {
@@ -504,8 +496,8 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
           throw new Error("activate_plan: a completed plan cannot be modified or activated");
         // Asking for a plan another LIVE session is working is answered here, before the
         // user is prompted: accept means this session now owns it, reject names the holder.
-        const refusal = repository.claimable(args.planId, session);
-        if (refusal) return rejectionText(args.planId, refusal.owner);
+        const rejection = refusalFor(repository, args.planId, session);
+        if (rejection) return rejection;
         const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
           kind: "choice",
           payload: {
