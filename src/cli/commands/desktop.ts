@@ -7908,7 +7908,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "memory_write") {
       try {
-        writeMemoryEntry(
+        const written = writeMemoryEntry(
           {
             scope: msg.scope,
             name: msg.name,
@@ -7920,14 +7920,19 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           },
           tab.rootDir,
         );
-        // Delete the replaced entry only after the new write succeeds, so a
-        // rejected rename (bad name / empty body) can't destroy the original.
-        // Best-effort: a delete hiccup must not fail the already-persisted edit.
-        if (msg.originalPath) {
+        // Remove the replaced file only after the new write succeeds, so a rejected
+        // rename can't destroy the original. Skip when both resolve to one file: a
+        // case-only rename lands in the same Windows file, so deleting erases the write.
+        if (
+          msg.originalPath &&
+          resolve(msg.originalPath).toLowerCase() !== resolve(written.path).toLowerCase()
+        ) {
           try {
             deleteMemoryEntry(msg.originalPath, tab.rootDir);
-          } catch {
-            /* keep the stale original rather than claim the saved edit failed */
+          } catch (err) {
+            process.stderr.write(
+              `reasonix: memory_write saved the edit but could not delete the replaced entry ${msg.originalPath}: ${(err as Error).message}\n`,
+            );
           }
         }
         emitMemory(tab);
