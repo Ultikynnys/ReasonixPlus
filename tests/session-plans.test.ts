@@ -42,7 +42,7 @@ it("retains partial superseded work across repository recreation", () => {
     finishedAt: null,
     completions: { one: { result: "Done", evidence: [{ summary: "Passed" }] } },
   });
-  expect(restored.active()?.id).toBe(second.id);
+  expect(restored.newestActivePlan()?.id).toBe(second.id);
   expect(restored.list()).toHaveLength(2);
   expect(new PlanRepository("second").list()).toEqual([]);
 });
@@ -80,7 +80,7 @@ it("refreshes an existing repository after another instance writes", () => {
   const plan = second.propose("New plan");
   expect(first.open(plan.id).body).toBe("New plan");
   first.verdict(plan.id, "active");
-  expect(second.active()?.id).toBe(plan.id);
+  expect(second.newestActivePlan()?.id).toBe(plan.id);
 });
 it("fails closed on malformed history without overwriting it", () => {
   const repo = new PlanRepository("broken");
@@ -135,7 +135,7 @@ it("treats a sealed fully-completed active plan as complete, never in-flight", (
   writeFileSync(repo.path, JSON.stringify(raw));
 
   const reread = new PlanRepository("sealed");
-  expect(reread.active()).toBeNull();
+  expect(reread.newestActivePlan()).toBeNull();
   expect(reread.list()[0]?.status).toBe("completed");
 });
 it("freezes a completed plan: it cannot be completed, revised, abandoned or activated", () => {
@@ -160,18 +160,18 @@ it("activates any non-completed plan, superseding the current active", () => {
   repo.verdict(first.id, "active");
   const second = repo.propose("Second", steps);
   repo.verdict(second.id, "active");
-  expect(repo.active()?.id).toBe(second.id);
+  expect(repo.newestActivePlan()?.id).toBe(second.id);
 
   const reactivated = repo.activate(first.id);
   expect(reactivated.status).toBe("active");
-  expect(repo.active()?.id).toBe(first.id);
+  expect(repo.newestActivePlan()?.id).toBe(first.id);
   expect(repo.open(second.id).status).toBe("superseded");
   expect(repo.open(second.id).replacedBy).toBe(first.id);
 
   const third = repo.propose("Third");
   repo.verdict(third.id, "cancelled");
   expect(repo.activate(third.id).status).toBe("active");
-  expect(repo.active()?.id).toBe(third.id);
+  expect(repo.newestActivePlan()?.id).toBe(third.id);
 });
 it("removes a plan for good in every state and refuses an unknown id", () => {
   const repo = new PlanRepository("remove");
@@ -186,7 +186,7 @@ it("removes a plan for good in every state and refuses an unknown id", () => {
 
   // Removing the active plan is allowed and leaves no in-flight plan behind.
   repo.remove(active.id);
-  expect(repo.active()).toBeNull();
+  expect(repo.newestActivePlan()).toBeNull();
   expect(() => repo.open(active.id)).toThrow("Unknown plan ID");
   // A completed record can be removed too — a manual delete is the user's explicit call.
   repo.remove(completed.id);

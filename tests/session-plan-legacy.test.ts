@@ -67,7 +67,7 @@ describe("legacy plan migration", () => {
       summary: "Legacy summary",
     });
 
-    const active = new PlanRepository(ws).active();
+    const active = new PlanRepository(ws).newestActivePlan();
     expect(active?.status).toBe("active");
     expect(active?.steps.map((s) => s.id)).toEqual(["one", "two"]);
     expect(active?.completions.one?.result).toMatch(/Legacy completion/);
@@ -91,7 +91,7 @@ describe("legacy plan migration", () => {
     const repo = new PlanRepository(ws);
     // A finished leftover must not resurrect as the active plan (that would
     // keep re-injecting "continue the next step").
-    expect(repo.active()).toBeNull();
+    expect(repo.newestActivePlan()).toBeNull();
     const [plan] = repo.list();
     expect(plan?.status).toBe("completed");
     expect(plan?.finishedAt).toBe("2026-01-09T00:00:00.000Z");
@@ -146,7 +146,7 @@ describe("legacy plan migration", () => {
     });
 
     // One step stays unfinished, so this leftover keeps importing as active.
-    const active = new PlanRepository(ws).active();
+    const active = new PlanRepository(ws).newestActivePlan();
     expect(active?.steps.map((s) => s.id)).toEqual(["ok", "ok-2", "ok-3"]);
     expect(Object.keys(active?.completions ?? {})).toEqual(["ok", "ok-2"]);
   });
@@ -161,7 +161,7 @@ describe("legacy plan migration", () => {
       completedStepIds: [],
       updatedAt: "2026-01-06T00:00:00.000Z",
     });
-    expect(new PlanRepository(ws).active()).toBeNull();
+    expect(new PlanRepository(ws).newestActivePlan()).toBeNull();
   });
 
   it("ignores malformed JSON and unknown versions", () => {
@@ -175,7 +175,7 @@ describe("legacy plan migration", () => {
       completedStepIds: [],
       updatedAt: "2026-01-07T00:00:00.000Z",
     });
-    expect(new PlanRepository(ws).active()).toBeNull();
+    expect(new PlanRepository(ws).newestActivePlan()).toBeNull();
   });
 
   it("seals legacy records into the unified history on first write", () => {
@@ -193,13 +193,13 @@ describe("legacy plan migration", () => {
     repo.verdict(created.id, "active");
 
     // The legacy plan is retained (superseded) and the new plan is active.
-    expect(repo.active()?.id).toBe(created.id);
+    expect(repo.newestActivePlan()?.id).toBe(created.id);
     expect(repo.list()).toHaveLength(2);
 
     // Once history.json exists it is authoritative — removing the leftover plan.json changes nothing.
     rmSync(sessionPlanPath(session));
     const reread = new PlanRepository(ws);
-    expect(reread.active()?.id).toBe(created.id);
+    expect(reread.newestActivePlan()?.id).toBe(created.id);
     expect(reread.list()).toHaveLength(2);
   });
 
@@ -226,7 +226,7 @@ describe("legacy plan migration", () => {
     const items = repo.list();
     expect(items).toHaveLength(2);
     // Two actives can't coexist: the newest wins, the older is superseded.
-    expect(repo.active()?.body).toBe("# b");
+    expect(repo.newestActivePlan()?.body).toBe("# b");
     expect(new Set(items.map((p) => p.status))).toEqual(new Set(["active", "superseded"]));
   });
 

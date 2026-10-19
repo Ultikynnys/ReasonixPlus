@@ -25,7 +25,7 @@ export function setLiveSessionProbe(probe: LiveSessionProbe | null): void {
 /** Ownership identity for a tool call. An unnamed caller (library embed, direct
  *  dispatch) is still one distinct owner per process, never a shared bucket that
  *  would let two processes believe they hold the same plan. */
-export function claimingSession(sessionName: string | undefined): string {
+export function claimingSession(sessionName: string | null | undefined): string {
   const name = sessionName?.trim();
   return name ? name : `anonymous-${process.pid}`;
 }

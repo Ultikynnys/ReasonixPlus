@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { messageOf } from "@reasonix/core-utils";
 import { readJsonFileSilently } from "../core/json-file.js";
 import {
   listSessionNamesForWorkspace,
@@ -234,20 +235,15 @@ function blockingClaim(workspace: string, plan: PlanRecord, session: string): Pl
   return claimOwnerIsLive(workspace, claim) ? claim : null;
 }
 
-/** One session works one plan at a time: activating a plan supersedes that owner's
+/** One session works one plan at a time: activating `plan` supersedes the same owner's
  *  other active plans and leaves every other session's active plan alone, so two
  *  sessions can run two plans in one workspace in parallel. */
-function supersedeOwnerActives(
-  history: History,
-  id: string,
-  owner: string | undefined,
-  now: string,
-): void {
-  const key = owner ?? "";
+function supersedeOwnerActives(history: History, plan: PlanRecord, now: string): void {
+  const key = ownerKey(plan);
   for (const other of history.plans) {
-    if (other.id === id || other.status !== "active" || ownerKey(other) !== key) continue;
+    if (other.id === plan.id || other.status !== "active" || ownerKey(other) !== key) continue;
     other.status = "superseded";
-    other.replacedBy = id;
+    other.replacedBy = plan.id;
     other.updatedAt = now;
   }
 }
@@ -409,9 +405,10 @@ export class PlanRepository {
         plan.claim = claimFor(session);
         return plan;
       });
-    } catch {
-      // A live writer holds the store (or the history is unreadable): a plan read on
-      // the message-build path must degrade to "no plan here", never break the turn.
+    } catch (err) {
+      // A live writer holds the lock, or the history went unreadable between the read
+      // and the write. Plan context is additive: degrade to "no plan here" and say so.
+      process.stderr.write(`reasonix: plan adoption failed — ${messageOf(err)}\n`);
       return null;
     }
   }
@@ -451,11 +448,10 @@ export class PlanRepository {
       const now = new Date().toISOString();
       if (status === "active") {
         if (session) {
-          const owner = blockingClaim(this.workspace, plan, session);
-          if (owner) throw new Error(claimRefusalMessage(id, owner));
+          this.requireUnclaimed(plan, session);
           plan.claim = claimFor(session, plan.claim);
         }
-        supersedeOwnerActives(history, id, plan.claim?.session, now);
+        supersedeOwnerActives(history, plan, now);
       }
       plan.status = status;
       plan.updatedAt = now;
@@ -507,10 +503,7 @@ export class PlanRepository {
       const plan = this.findMutable(history, id);
       if (plan.status !== "active" && plan.status !== "proposed")
         throw new Error("Plan cannot be abandoned in its current state");
-      if (session) {
-        const owner = blockingClaim(this.workspace, plan, session);
-        if (owner) throw new Error(claimRefusalMessage(id, owner));
-      }
+      if (session) this.requireUnclaimed(plan, session);
       plan.status = "abandoned";
       plan.dispositionReason = reason.trim();
       plan.updatedAt = new Date().toISOString();
@@ -526,13 +519,12 @@ export class PlanRepository {
       const plan = this.findMutable(history, id);
       const mine = !session || plan.claim?.session === session;
       if (session) {
-        const owner = blockingClaim(this.workspace, plan, session);
-        if (owner) throw new Error(claimRefusalMessage(id, owner));
+        this.requireUnclaimed(plan, session);
         plan.claim = claimFor(session, plan.claim);
       }
       if (plan.status === "active" && mine) return plan;
       const now = new Date().toISOString();
-      supersedeOwnerActives(history, id, plan.claim?.session, now);
+      supersedeOwnerActives(history, plan, now);
       plan.status = "active";
       plan.finishedAt = null;
       plan.replacedBy = undefined;
@@ -578,6 +570,13 @@ export class PlanRepository {
       throw new Error(
         `Plan is owned by session "${plan.claim.session}"; activate it from this session first`,
       );
+  }
+
+  /** Refuse to touch a plan a LIVE other session is working — the mutator-side twin of
+   *  `claimable`, so every write answers "is this plan taken?" the same way. */
+  private requireUnclaimed(plan: PlanRecord, session: string): void {
+    const owner = blockingClaim(this.workspace, plan, session);
+    if (owner) throw new Error(claimRefusalMessage(plan.id, owner));
   }
 }
 

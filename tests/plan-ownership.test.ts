@@ -141,6 +141,61 @@ it("adopts an unclaimed pre-ownership plan exactly once", () => {
   expect(repo.claimable(plan.id, "s2")?.owner.session).toBe("s1");
 });
 
+it("keeps its own plan across a repository recreation and re-reads it", () => {
+  const repo = new PlanRepository("reentry");
+  const plan = repo.propose("Mine", steps, undefined, "s1");
+  repo.verdict(plan.id, "active", "s1");
+
+  // A second reader (another tab process, a restarted daemon) must not refuse the owner.
+  const reread = new PlanRepository("reentry");
+  expect(reread.activeFor("s1")?.id).toBe(plan.id);
+  expect(reread.claimable(plan.id, "s1")).toBeNull();
+  expect(reread.activate(plan.id, "s1").claim?.session).toBe("s1");
+  expect(
+    reread.complete(plan.id, { kind: "step_completed", stepId: "one", result: "Done" }, "s1")
+      .completions.one?.result,
+  ).toBe("Done");
+});
+
+it("treats a probe that cannot answer as a live owner", () => {
+  const repo = new PlanRepository("probe-fault");
+  const plan = repo.propose("Guarded", steps, undefined, "s1");
+  repo.verdict(plan.id, "active", "s1");
+  setLiveSessionProbe(() => {
+    throw new Error("tab registry unavailable");
+  });
+
+  // Fail safe: an unanswerable liveness question never frees a plan.
+  expect(repo.claimable(plan.id, "s2")?.owner.session).toBe("s1");
+});
+
+it("survives a store locked by a live writer without adopting or throwing", () => {
+  const repo = new PlanRepository("locked-adopt");
+  const plan = repo.propose("Imported", steps);
+  repo.verdict(plan.id, "active");
+  const lock = `${repo.path}.lock`;
+  writeFileSync(lock, String(process.pid));
+
+  // The adoption write cannot take the lock, so the read degrades to "no plan here".
+  expect(repo.activeFor("s1", { adoptUnclaimed: true })).toBeNull();
+  expect(repo.activeFor("s1")).toBeNull();
+
+  rmSync(lock);
+  expect(repo.activeFor("s1", { adoptUnclaimed: true })?.id).toBe(plan.id);
+});
+
+it("fails closed on a stored claim it cannot parse", () => {
+  const repo = new PlanRepository("bad-claim");
+  const plan = repo.propose("Mine", steps, undefined, "s1");
+  repo.verdict(plan.id, "active", "s1");
+  patchPlan(repo.path, plan.id, (record) => {
+    record.claim = { session: 42, pid: "nope" };
+  });
+
+  // An unreadable owner must never be read as "unowned, take it".
+  expect(() => new PlanRepository("bad-claim").list()).toThrow(/claim/);
+});
+
 it("supersedes only the same session's plan when that session starts a new one", () => {
   const repo = new PlanRepository("supersede");
   const mine = repo.propose("Mine", steps, undefined, "s1");
@@ -230,6 +285,42 @@ it("answers a session asking for another live session's plan with a reject", asy
     { rootDir: workspace, sessionName: "s1", confirmationGate: gate("continue") },
   );
   expect(JSON.parse(String(owned))).toMatchObject({ stepId: "one", status: "completed" });
+});
+
+it("rejects a foreign planId even when the asking session has its own plan", async () => {
+  const tools = registerPlanTool(new ToolRegistry());
+  const workspace = "two-own-plans";
+  const theirs = await submitted(tools, workspace, "s1", "Owned by s1");
+  await submitted(tools, workspace, "s2", "Owned by s2");
+
+  const refusal = String(
+    await tools.dispatch(
+      "mark_step_complete",
+      { planId: theirs, stepId: "one", result: "Done" },
+      { rootDir: workspace, sessionName: "s2" },
+    ),
+  );
+  expect(refusal).toContain("rejected:");
+  expect(refusal).toContain('session "s1"');
+});
+
+it("injects nothing when the plan store is unreadable instead of failing the turn", () => {
+  const workspace = "loop-corrupt";
+  const repo = new PlanRepository(workspace);
+  const plan = repo.propose("Mine", steps, undefined, "s1");
+  repo.verdict(plan.id, "active", "s1");
+  writeFileSync(repo.path, "not json");
+
+  const loop = new CacheFirstLoop({
+    client: makeFakeClient([]).client,
+    prefix: new ImmutablePrefix({ system: "System" }),
+    model: "deepseek-chat",
+    session: "s1",
+    hookCwd: workspace,
+    stream: false,
+  });
+  const context = (loop as unknown as { buildMessages(): ChatMessage[] }).buildMessages();
+  expect(context.some((message) => String(message.content).includes(plan.id))).toBe(false);
 });
 
 it("injects only the plan the loop's own session owns", () => {

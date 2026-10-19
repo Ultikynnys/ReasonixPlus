@@ -1,4 +1,4 @@
-import { type PlanClaim, claimRefusalMessage, claimingSession } from "../code/plan-claim.js";
+import { claimRefusalMessage, claimingSession } from "../code/plan-claim.js";
 import { type PlanRecord, type PlanRepository, planRepository } from "../code/plans.js";
 import { pauseGate } from "../core/pause-gate.js";
 import type { ToolCallContext, ToolRegistry } from "../tools.js";
@@ -95,18 +95,13 @@ function sessionFor(ctx: ToolCallContext | undefined): string {
   return claimingSession(ctx?.sessionName);
 }
 
-/** A refusal is a RESULT, not an error: a live session asking for a plan another live
- *  session is working gets an explicit reject carrying the holder's identity, and the
- *  model can pick a different plan instead of retrying into a wall. */
-function rejectionText(planId: string, owner: PlanClaim): string {
-  return `rejected: ${claimRefusalMessage(planId, owner)}. One workspace plan belongs to one live session at a time; finish or abandon it in that session, or work a different plan here.`;
-}
-
-/** Reject text when another live session holds `planId`, else null. The single place
- *  the "may this session take this plan?" question is answered for a specific plan. */
-function refusalFor(repository: PlanRepository, planId: string, session: string): string | null {
+/** A refusal is a RESULT, not an error: null means the plan is free, so this is the
+ *  single place that answers and words "may I take this plan?" — naming the live holder
+ *  so the model can pick a different plan instead of retrying into a wall. */
+function rejectionFor(repository: PlanRepository, planId: string, session: string): string | null {
   const refusal = repository.claimable(planId, session);
-  return refusal ? rejectionText(refusal.plan.id, refusal.owner) : null;
+  if (!refusal) return null;
+  return `rejected: ${claimRefusalMessage(refusal.plan.id, refusal.owner)}. One workspace plan belongs to one live session at a time; finish or abandon it in that session, or work a different plan here.`;
 }
 
 type PlanTarget = {
@@ -133,8 +128,7 @@ function resolveOwnedPlan(
   // in-flight plan it was already working instead of being told it has none.
   const active = repository?.activeFor(session, { adoptUnclaimed: true }) ?? undefined;
   if (!repository || (active && planId === active.id)) return { repository, session, active };
-  const rejection =
-    repository && planId !== undefined ? refusalFor(repository, planId, session) : null;
+  const rejection = planId === undefined ? null : rejectionFor(repository, planId, session);
   if (rejection) return { repository, session, active, rejection };
   throw new Error(`${toolName}: supply the owning active planId`);
 }
@@ -473,7 +467,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
           if (!args.reason?.trim()) throw new Error("Abandonment reason is required");
           const plan = repository.open(args.planId);
           // Refuse before asking the user: a live session's plan is not ours to discard.
-          const rejection = refusalFor(repository, args.planId, session);
+          const rejection = rejectionFor(repository, args.planId, session);
           if (rejection) return rejection;
           const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
             kind: "choice",
@@ -496,7 +490,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
           throw new Error("activate_plan: a completed plan cannot be modified or activated");
         // Asking for a plan another LIVE session is working is answered here, before the
         // user is prompted: accept means this session now owns it, reject names the holder.
-        const rejection = refusalFor(repository, args.planId, session);
+        const rejection = rejectionFor(repository, args.planId, session);
         if (rejection) return rejection;
         const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
           kind: "choice",

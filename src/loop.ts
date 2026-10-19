@@ -1,7 +1,7 @@
 import { flattenText, messageOf, sleep } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "./client.js";
 import { claimingSession } from "./code/plan-claim.js";
-import { type PlanRepository, planRepository } from "./code/plans.js";
+import { type PlanRecord, type PlanRepository, planRepository } from "./code/plans.js";
 import {
   type EditMode,
   type ReasoningEffort,
@@ -904,6 +904,22 @@ export class CacheFirstLoop {
 
   private planRepository: PlanRepository | undefined;
   private planRepositoryKey: string | null = null;
+
+  /** This session's in-flight plan, or null. Plan context is additive, the conversation
+   *  is not: an unreadable or lock-held store must not take the turn down with it. */
+  private activePlanForSession(): PlanRecord | null {
+    try {
+      return (
+        this.planRepository?.activeFor(claimingSession(this.sessionName), {
+          adoptUnclaimed: true,
+        }) ?? null
+      );
+    } catch (err) {
+      process.stderr.write(`reasonix: session plan read failed — ${messageOf(err)}\n`);
+      return null;
+    }
+  }
+
   private buildMessages(): ChatMessage[] {
     const healedMessages = this.healActiveLogBeforeSend();
     // Plan context belongs to a bound conversation: a session-less loop (REPL or a
@@ -916,10 +932,7 @@ export class CacheFirstLoop {
     // Only THIS session's plan: another session's in-flight plan in the same workspace
     // is not ours to continue, and injecting it is exactly how two sessions end up
     // driving one plan. An unclaimed pre-ownership plan is adopted on first read.
-    const active =
-      this.planRepository?.activeFor(claimingSession(this.sessionName ?? undefined), {
-        adoptUnclaimed: true,
-      }) ?? null;
+    const active = this.activePlanForSession();
     // Only nudge on a plan that still has an unfinished step — a finished leftover
     // (e.g. an imported legacy plan) must not inject "continue the next step" forever.
     const nextStep = active?.steps.find((s) => !Object.hasOwn(active.completions, s.id));

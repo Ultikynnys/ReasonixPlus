@@ -881,14 +881,19 @@ function planCounts(tab: { rootDir: string; currentSession?: string }): {
 }
 
 /** The plan THIS tab's session is working, never another session's plan in the same
- *  workspace: ownership is per session, so the rail and the restore hydrate stay
- *  scoped to the conversation that owns the plan. */
+ *  workspace. A corrupt or locked store degrades to "no plan here": every caller is a
+ *  projection that must not fail the tab. */
 function activePlanForTab(
   tab: { rootDir: string; currentSession?: string },
   opts: { adoptUnclaimed?: boolean } = {},
 ): PlanRecord | null {
   if (!tab.rootDir) return null;
-  return planRepository(tab.rootDir).activeFor(claimingSession(tab.currentSession), opts);
+  try {
+    return planRepository(tab.rootDir).activeFor(claimingSession(tab.currentSession), opts);
+  } catch (err) {
+    process.stderr.write(`reasonix: active plan read failed — ${messageOf(err)}\n`);
+    return null;
+  }
 }
 
 /** Project an accepted mark_step_complete result into the rail's progress tick.
@@ -919,16 +924,9 @@ export function restorePlanForTab(
   hasPriorMessages: boolean,
 ): PlanRestoredEvent | null {
   if (!tab.rootDir || !hasPriorMessages) return null;
-  let active: PlanRecord | null;
-  try {
-    // A live session asking for a plan adopts an unclaimed pre-ownership plan; one
-    // another live session holds is refused and stays out of this tab.
-    active = activePlanForTab(tab, { adoptUnclaimed: true });
-  } catch (err) {
-    // A plan read must never break session restore — treat it as "no active plan".
-    process.stderr.write(`reasonix: active plan read failed — ${messageOf(err)}\n`);
-    return null;
-  }
+  // A live session asking for a plan adopts an unclaimed pre-ownership plan; one another
+  // live session holds is refused and stays out of this tab. A failed read is "no plan".
+  const active = activePlanForTab(tab, { adoptUnclaimed: true });
   if (!active || active.steps.length === 0) return null;
   return {
     type: "$plan_restored",

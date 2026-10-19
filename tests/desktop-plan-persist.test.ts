@@ -74,7 +74,7 @@ describe("desktop plan projection", () => {
   it("returns null when no plan is in flight (completed plans stay history only)", () => {
     const { repo, plan } = startPlan("s4", "b", [{ id: "step-1", title: "t", action: "a" }]);
     repo.complete(plan.id, { kind: "step_completed", stepId: "step-1", result: "done" });
-    expect(repo.active()).toBeNull();
+    expect(repo.newestActivePlan()).toBeNull();
     expect(restorePlanForTab(tab("s4"), true)).toBeNull();
     // The completed attempt remains an inspectable history record.
     expect(repo.list()[0]?.status).toBe("completed");
@@ -100,6 +100,6 @@ describe("desktop plan projection", () => {
     ]);
     const otherSession = planRepository("/repo/shared");
     expect(otherSession.open(plan.id).body).toBe("shared body");
-    expect(otherSession.active()?.id).toBe(plan.id);
+    expect(otherSession.newestActivePlan()?.id).toBe(plan.id);
   });
 });
