@@ -4046,7 +4046,7 @@ function TabRuntime({
     return Number.isFinite(n) ? n : null;
   }, []);
 
-  const { scrollToBottom, scrollToTop } = useAutoScroll(
+  const { scrollToBottom, scrollToTop, unpinForJump } = useAutoScroll(
     threadRef,
     threadInnerRef,
     state.busy,
@@ -4377,7 +4377,14 @@ function TabRuntime({
         ) : null}
 
         <main className="main" style={{ position: "relative" }}>
-          <JumpBar messages={state.messages} threadEl={threadRef.current} />
+          {threadScrollable ? (
+            <JumpBar
+              messages={state.messages}
+              threadEl={threadRef.current}
+              busy={state.busy}
+              onJump={unpinForJump}
+            />
+          ) : null}
           {state.sessionsMutation !== null ? (
             <div className="main-progress" role="status" aria-live="polite">
               <span className="spin" aria-hidden="true" />

@@ -1,9 +1,15 @@
 import type { RefObject } from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 interface JumpBarProps {
   messages: { kind: string; text?: string; turn?: number }[];
   threadEl: HTMLElement | null;
+  /** True while this tab is streaming a turn: the dots then re-measure every frame
+   *  by construction, instead of waiting for a layout observer to settle. */
+  busy?: boolean;
+  /** Called just before a jump so a sticky-bottom follow cannot snap the viewport
+   *  back to the bottom while the jump is in flight. */
+  onJump?: () => void;
 }
 
 interface JumpTurn {
@@ -20,6 +26,9 @@ interface JumpLayout {
   /** Box overlaid on the `.thread` scrollbar track. */
   track: { top: number; right: number; height: number };
   marks: JumpMark[];
+  /** Turn offsets in content space, ascending with turn order: what the scroll
+   *  position is compared against to decide the reader's position. */
+  anchors: TurnAnchor[];
 }
 
 interface TurnAnchor extends JumpTurn {
@@ -27,13 +36,24 @@ interface TurnAnchor extends JumpTurn {
   offset: number;
 }
 
-/** Content must stay quiet this long before the dots are re-projected, so a
- *  streaming turn, or an image that lands after a jump, cannot drag them. */
-export const SETTLE_MS = 150;
-/** Cap on that deferral: a continuously growing transcript is still refreshed. */
-const MAX_DEFER_MS = 1200;
+/** Frames without growth before the sampler parks. Long enough to ride out a
+ *  streamed token's pause, short enough to stop forcing layout once idle. */
+const IDLE_FRAMES = 12;
 /** Below this many turns there is nothing to navigate between. */
 const MIN_TURNS = 2;
+/** Chromium and WebKit clamp the native thumb to a platform minimum length that
+ *  JS cannot read; assume it so a dot still lands under the thumb once a long
+ *  transcript drives `clientHeight / scrollHeight * trackHeight` below it. */
+export const MIN_THUMB_PX = 20;
+/** Minimum gap between dots. One dot's invisible hit pad is 15px tall, so a
+ *  tighter stack lets the top-most dot swallow its neighbours' clicks. */
+export const MIN_DOT_GAP = 16;
+/** Past this many viewports a smooth scroll takes seconds and any arriving token
+ *  can interrupt it, so the jump lands at once instead. */
+const JUMP_SMOOTH_MAX_VIEWPORTS = 3;
+/** How long a jump holds the marker on the clicked turn while a smooth scroll
+ *  passes over the turns in between. */
+const JUMP_MARKER_LOCK_MS = 600;
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(Math.max(value, min), max);
@@ -43,26 +63,114 @@ function findTurn(threadEl: HTMLElement, turn: number): HTMLElement | null {
   return threadEl.querySelector<HTMLElement>(`[data-turn="${turn}"]`);
 }
 
-/** Project each turn onto the scrollbar track: a dot marks the spot the thumb
- *  reaches when that turn is scrolled to. Rounded to whole pixels so sub-pixel
- *  wobble cannot invent a new position; pure, so it is testable without a DOM. */
-export function projectMarks(
-  anchors: readonly TurnAnchor[],
+/** Scroll geometry the dots are projected onto. The track box spans the
+ *  scroller's padding box, so `trackHeight` and `clientHeight` hold the same
+ *  number here; both are carried because the thumb length follows the viewport
+ *  while the travel range follows the track. */
+export interface TrackMetrics {
+  /** Track length in px. */
+  trackHeight: number;
+  /** Scroll content height. */
+  scrollHeight: number;
+  /** Viewport height of the scroller. */
+  clientHeight: number;
+}
+
+/** Read the track metrics from the live scroller: the single place the geometry
+ *  is sampled, so the dots, the click target and the tests cannot drift apart. */
+export function trackMetrics(el: HTMLElement): TrackMetrics {
+  return {
+    trackHeight: el.clientHeight,
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  };
+}
+
+/** Longest possible scrollTop; 0 when the transcript cannot scroll. */
+export function maxScrollTop(metrics: TrackMetrics): number {
+  return Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+}
+
+/** Native thumb length, including the browser's minimum-length clamp. */
+export function thumbLength(metrics: TrackMetrics): number {
+  const proportional = (metrics.clientHeight / metrics.scrollHeight) * metrics.trackHeight;
+  return clamp(proportional, MIN_THUMB_PX, metrics.trackHeight);
+}
+
+/** Where the thumb's top edge sits for a given scrollTop. */
+export function thumbTopForScrollTop(scrollTop: number, metrics: TrackMetrics): number {
+  const max = maxScrollTop(metrics);
+  if (max <= 0) return 0;
+  const travel = Math.max(0, metrics.trackHeight - thumbLength(metrics));
+  return (clamp(scrollTop, 0, max) / max) * travel;
+}
+
+/** The scrollTop that brings a turn's top edge to the viewport top. */
+export function scrollTopForOffset(offset: number, metrics: TrackMetrics): number {
+  return clamp(offset, 0, maxScrollTop(metrics));
+}
+
+/** A dot's y: exactly where the thumb lands once that turn is jumped to, so the
+ *  click moves the thumb onto the dot and it stays there as content grows. */
+export function dotTopForOffset(offset: number, metrics: TrackMetrics): number {
+  return thumbTopForScrollTop(scrollTopForOffset(offset, metrics), metrics);
+}
+
+/** Spread dots into a readable ladder, order preserved: a forward pass drops
+ *  each dot `minGap` below its predecessor, a backward pass keeps the tail
+ *  inside the track, and a set too dense to fit shares the track evenly (a turn
+ *  count that high cannot be told apart at any spacing). */
+export function separateTops(
+  tops: readonly number[],
   trackHeight: number,
-  scrollHeight: number,
-): JumpMark[] {
-  if (trackHeight <= 0 || scrollHeight <= 0) return [];
-  // A transcript that does not overflow has no scroll range to be proportional
-  // to, so its turns fall back to evenly spaced slots.
-  const spaced = scrollHeight <= trackHeight + 1;
-  const place = (anchor: TurnAnchor, i: number): number =>
-    spaced
-      ? (trackHeight * (i + 0.5)) / anchors.length
-      : clamp((anchor.offset / scrollHeight) * trackHeight, 0, trackHeight);
+  minGap: number,
+): number[] {
+  const out = tops.map((top) => clamp(top, 0, trackHeight));
+  for (let i = 1; i < out.length; i += 1) {
+    out[i] = Math.max(out[i]!, out[i - 1]! + minGap);
+  }
+  if (out.length > 0 && out[out.length - 1]! > trackHeight) {
+    out[out.length - 1] = trackHeight;
+    for (let i = out.length - 2; i >= 0; i -= 1) {
+      out[i] = Math.min(out[i]!, out[i + 1]! - minGap);
+    }
+  }
+  if (out.some((top) => top < 0)) {
+    const step = trackHeight / Math.max(1, out.length - 1);
+    for (let i = 0; i < out.length; i += 1) out[i] = i * step;
+  }
+  return out;
+}
+
+/** The turn the reader is currently at: the last one whose top has passed the
+ *  viewport top, falling back to the first turn above it. */
+export function activeTurnFor(
+  scrollTop: number,
+  anchors: readonly TurnAnchor[],
+): number | null {
+  let active: number | null = null;
+  for (const anchor of anchors) {
+    if (anchor.offset > scrollTop + 1) break;
+    active = anchor.turn;
+  }
+  return active ?? anchors[0]?.turn ?? null;
+}
+
+/** Project each turn onto the scrollbar track: a dot marks the spot the thumb
+ *  reaches when that turn is scrolled to, then the dots are separated so each
+ *  one stays individually reachable. Rounded to whole pixels so sub-pixel wobble
+ *  cannot invent a new position; pure, so it is testable without a DOM. */
+export function projectMarks(anchors: readonly TurnAnchor[], metrics: TrackMetrics): JumpMark[] {
+  if (anchors.length === 0 || metrics.trackHeight <= 0 || metrics.scrollHeight <= 0) return [];
+  const tops = separateTops(
+    anchors.map((anchor) => dotTopForOffset(anchor.offset, metrics)),
+    metrics.trackHeight,
+    MIN_DOT_GAP,
+  );
   return anchors.map((anchor, i) => ({
     turn: anchor.turn,
     text: anchor.text,
-    top: Math.round(place(anchor, i)),
+    top: Math.round(tops[i]!),
   }));
 }
 
@@ -73,14 +181,22 @@ function sameLayout(prev: JumpLayout | null, next: JumpLayout): boolean {
     prev.track.top !== next.track.top ||
     prev.track.right !== next.track.right ||
     prev.track.height !== next.track.height ||
-    prev.marks.length !== next.marks.length
+    prev.marks.length !== next.marks.length ||
+    prev.anchors.length !== next.anchors.length
   ) {
     return false;
   }
-  return prev.marks.every((mark, i) => {
+  const sameMarks = prev.marks.every((mark, i) => {
     const other = next.marks[i]!;
     return mark.turn === other.turn && mark.top === other.top;
   });
+  // Anchors decide the "you are here" marker, so an offset drift the rounded
+  // marks hide must still refresh them.
+  const sameAnchors = prev.anchors.every((anchor, i) => {
+    const other = next.anchors[i]!;
+    return anchor.turn === other.turn && anchor.offset === other.offset;
+  });
+  return sameMarks && sameAnchors;
 }
 
 /** Measure the transcript and turn each user turn into a dot position. Split
@@ -89,6 +205,7 @@ function useJumpLayout(
   threadEl: HTMLElement | null,
   barRef: RefObject<HTMLDivElement | null>,
   items: readonly JumpTurn[],
+  busy: boolean,
 ): JumpLayout | null {
   const [layout, setLayout] = useState<JumpLayout | null>(null);
   // Turns are append-only, so their joined numbers identify the turn SET. The
@@ -103,8 +220,6 @@ function useJumpLayout(
   // Overlay the transcript's scrollbar and read each turn's offset from its
   // `[data-turn]` element. Offsets are read in content space (scrollTop added
   // back), so they hold no matter where the transcript happens to be scrolled.
-  // Re-projection waits for the content to settle, because growth (a streamed
-  // turn, an image that lands after a jump) would otherwise drag every dot.
   // biome-ignore lint/correctness/useExhaustiveDependencies: turn set change; list via itemsRef
   useLayoutEffect(() => {
     if (!threadEl) {
@@ -112,17 +227,14 @@ function useJumpLayout(
       return;
     }
     let frame = 0;
-    let framePending = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let deferredSince = 0;
-    let drawn = false;
+    let lastScrollHeight = -1;
+    let stillFrames = 0;
+    let running = false;
 
     const measure = () => {
-      const trackHeight = threadEl.clientHeight;
-      const scrollHeight = threadEl.scrollHeight;
+      const metrics = trackMetrics(threadEl);
       const turns = itemsRef.current;
-      if (turns.length < MIN_TURNS || trackHeight <= 0 || scrollHeight <= 0) {
-        drawn = false;
+      if (turns.length < MIN_TURNS || metrics.trackHeight <= 0 || metrics.scrollHeight <= 0) {
         setLayout(null);
         return;
       }
@@ -140,64 +252,73 @@ function useJumpLayout(
         track: {
           top: Math.round(parentRect ? rect.top - parentRect.top : threadEl.offsetTop),
           right: Math.round(parentRect ? parentRect.right - rect.right : 0),
-          height: Math.round(trackHeight),
+          height: Math.round(metrics.trackHeight),
         },
-        marks: projectMarks(anchors, trackHeight, scrollHeight),
+        marks: projectMarks(anchors, metrics),
+        anchors,
       };
-      drawn = true;
       setLayout((prev) => (sameLayout(prev, next) ? prev : next));
     };
 
-    const measureNextFrame = () => {
-      if (framePending) return;
-      framePending = true;
-      frame = requestAnimationFrame(() => {
-        framePending = false;
-        frame = 0;
+    // A live turn re-measures every frame by construction: the deferred
+    // re-projection this replaced is what made the dots land in whole-tens-of-pixels
+    // steps, and waiting for observer notifications instead would tie the dots to
+    // whenever the layout happens to settle. When idle the sampler parks a few
+    // frames after growth stops, and the observers below restart it for growth that
+    // lands later (an image loading, a late reflow).
+    const tick = () => {
+      frame = 0;
+      const scrollHeight = threadEl.scrollHeight;
+      if (busy || scrollHeight !== lastScrollHeight) {
+        lastScrollHeight = scrollHeight;
+        stillFrames = 0;
         measure();
-      });
+      } else {
+        stillFrames += 1;
+        if (stillFrames > IDLE_FRAMES) {
+          running = false;
+          return;
+        }
+      }
+      frame = requestAnimationFrame(tick);
     };
 
-    /** Coalesce layout noise into one measure, taken once the content settles. */
-    const measureWhenSettled = () => {
-      if (!drawn) {
-        measureNextFrame();
-        return;
-      }
-      const now = performance.now();
-      if (deferredSince === 0) deferredSince = now;
-      if (timer !== undefined) clearTimeout(timer);
-      if (now - deferredSince >= MAX_DEFER_MS) {
-        deferredSince = 0;
-        measureNextFrame();
-        return;
-      }
-      timer = setTimeout(() => {
-        timer = undefined;
-        deferredSince = 0;
-        measureNextFrame();
-      }, SETTLE_MS);
-    };
+    let ro: ResizeObserver | null = null;
 
-    // The turn set changed (or the overlay just appeared), so the dots on screen
-    // no longer describe this transcript: place them without waiting.
-    measureNextFrame();
-
-    const ro =
-      typeof ResizeObserver !== "undefined" ? new ResizeObserver(measureWhenSettled) : null;
-    if (ro) {
-      // Watch every child: growth can land in any of them, not just the first.
+    // Re-observe on every start: a tab remount replaces `.thread-inner`, and a
+    // detached node stops reporting the growth the idle path relies on.
+    const observe = () => {
+      if (!ro) return;
+      // Every child, not just the first: growth can land in any of them.
       ro.observe(threadEl);
       for (const child of threadEl.children) ro.observe(child);
-    }
-    window.addEventListener("resize", measureWhenSettled);
-    return () => {
-      if (frame) cancelAnimationFrame(frame);
-      if (timer !== undefined) clearTimeout(timer);
-      ro?.disconnect();
-      window.removeEventListener("resize", measureWhenSettled);
     };
-  }, [threadEl, turnsKey]);
+
+    const startSampling = () => {
+      observe();
+      if (running) return;
+      running = true;
+      lastScrollHeight = -1;
+      stillFrames = 0;
+      frame = requestAnimationFrame(tick);
+    };
+
+    ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(startSampling) : null;
+    // A structural change (a turn appended, the inner subtree remounted) can leave
+    // the observed nodes detached, after which the resize observer never fires again.
+    const mo =
+      typeof MutationObserver !== "undefined" ? new MutationObserver(startSampling) : null;
+    mo?.observe(threadEl, { childList: true });
+    startSampling();
+    window.addEventListener("resize", startSampling);
+    return () => {
+      running = false;
+      if (frame) cancelAnimationFrame(frame);
+      ro?.disconnect();
+      mo?.disconnect();
+      window.removeEventListener("resize", startSampling);
+    };
+  }, [threadEl, turnsKey, busy]);
 
   return layout;
 }
@@ -205,7 +326,7 @@ function useJumpLayout(
 /** One dot per user turn, overlaid on the transcript's native scrollbar. A dot
  *  sits where the thumb reaches when its turn is scrolled to, and is only
  *  re-projected once the layout settles: never on scroll, so jumps stay put. */
-export function JumpBar({ messages, threadEl }: JumpBarProps) {
+export function JumpBar({ messages, threadEl, busy = false, onJump }: JumpBarProps) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [active, setActive] = useState<number | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
@@ -223,13 +344,47 @@ export function JumpBar({ messages, threadEl }: JumpBarProps) {
       return [{ turn: m.turn, text: m.text.slice(0, 80) }];
     });
   }, [messages]);
-  const lastTurn = items.length > 0 ? items[items.length - 1]!.turn : null;
-  const layout = useJumpLayout(threadEl, barRef, items);
+  const layout = useJumpLayout(threadEl, barRef, items, busy);
+  // The measure closure runs a tick after the render that scheduled it, so its
+  // anchors are read through a ref rather than from a stale render value.
+  const anchorsRef = useRef<TurnAnchor[]>([]);
+  anchorsRef.current = layout?.anchors ?? [];
+  // A jump states the user's intent: hold the marker on the clicked turn while a
+  // smooth scroll passes over the turns in between.
+  const jumpLockRef = useRef(0);
 
-  // The newest turn is the "you are here" marker.
+  const deriveActive = useCallback(() => {
+    const el = threadEl;
+    if (!el || performance.now() < jumpLockRef.current) return;
+    const next = activeTurnFor(el.scrollTop, anchorsRef.current);
+    setActive((prev) => (prev === next ? prev : next));
+  }, [threadEl]);
+
+  // "You are here" is the reader's position, not the newest turn, so a newly
+  // streaming turn cannot drag the marker away from what is being read.
   useEffect(() => {
-    if (lastTurn !== null) setActive(lastTurn);
-  }, [lastTurn]);
+    const el = threadEl;
+    if (!el) return;
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        deriveActive();
+      });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [threadEl, deriveActive]);
+
+  // Growth above the reading position moves every anchor without a scroll event.
+  const anchorsKey = anchorsRef.current.map((a) => `${a.turn}:${a.offset}`).join(",");
+  useEffect(() => {
+    deriveActive();
+  }, [deriveActive, anchorsKey]);
 
   if (items.length < MIN_TURNS) return null;
 
@@ -238,8 +393,20 @@ export function JumpBar({ messages, threadEl }: JumpBarProps) {
 
   const scrollTo = (turn: number) => {
     setActive(turn);
-    if (!threadEl) return;
-    findTurn(threadEl, turn)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    jumpLockRef.current = performance.now() + JUMP_MARKER_LOCK_MS;
+    const el = threadEl;
+    if (!el) return;
+    const target = findTurn(el, turn);
+    if (!target) return;
+    // Read the turn's content offset at click time: a streamed answer below it
+    // moves the scroll range, not the turn.
+    const offset =
+      target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+    const targetScrollTop = scrollTopForOffset(offset, trackMetrics(el));
+    onJump?.();
+    const far =
+      Math.abs(targetScrollTop - el.scrollTop) > el.clientHeight * JUMP_SMOOTH_MAX_VIEWPORTS;
+    el.scrollTo({ top: targetScrollTop, behavior: far ? "instant" : "smooth" });
   };
 
   const hoveredMark = hovered !== null ? marks.find((m) => m.turn === hovered) : undefined;

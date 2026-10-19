@@ -2,7 +2,19 @@
 
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JumpBar, SETTLE_MS, projectMarks } from "./jump-bar";
+import {
+  JumpBar,
+  MIN_DOT_GAP,
+  MIN_THUMB_PX,
+  activeTurnFor,
+  dotTopForOffset,
+  maxScrollTop,
+  projectMarks,
+  scrollTopForOffset,
+  separateTops,
+  thumbLength,
+  thumbTopForScrollTop,
+} from "./jump-bar";
 
 /** Minimal ResizeObserver the test fires by hand: jsdom has none, and the
  *  component's own scheduling is what is under test. */
@@ -90,34 +102,134 @@ function fireResize(): void {
   });
 }
 
-function settle(): void {
-  act(() => {
-    vi.advanceTimersByTime(SETTLE_MS);
-  });
-}
-
 const anchors = [
   { turn: 1, text: "a", offset: 0 },
   { turn: 2, text: "b", offset: 500 },
 ];
 
+/** Track geometry; the track box spans the scroller's padding box, so the track
+ *  height and the viewport height are the same number. */
+const metrics = (trackHeight: number, scrollHeight: number, clientHeight = trackHeight) => ({
+  trackHeight,
+  scrollHeight,
+  clientHeight,
+});
+
 describe("projectMarks", () => {
   it("places a turn where its content offset falls on the track", () => {
-    expect(projectMarks(anchors, 400, 1000).map((m) => m.top)).toEqual([0, 200]);
+    expect(projectMarks(anchors, metrics(400, 1000)).map((m) => m.top)).toEqual([0, 200]);
   });
 
-  it("clamps an offset past the content end onto the track bottom", () => {
-    expect(projectMarks([{ turn: 1, text: "a", offset: 9000 }], 400, 1000)[0]!.top).toBe(400);
+  it("clamps an offset past the content end onto the thumb's lowest position", () => {
+    // Not the track bottom: the thumb can only reach trackHeight - thumbLength.
+    expect(projectMarks([{ turn: 1, text: "a", offset: 9000 }], metrics(400, 1000))[0]!.top).toBe(
+      240,
+    );
   });
 
-  it("gives a non-overflowing transcript evenly spaced slots", () => {
-    expect(projectMarks(anchors, 400, 400).map((m) => m.top)).toEqual([100, 300]);
+  it("falls back to an ordered ladder when the transcript cannot scroll", () => {
+    expect(projectMarks(anchors, metrics(400, 400)).map((m) => m.top)).toEqual([0, MIN_DOT_GAP]);
   });
 
   it("rounds to whole pixels so sub-pixel wobble cannot invent a position", () => {
-    const a = projectMarks([{ turn: 1, text: "a", offset: 1 }], 400, 1000)[0]!.top;
-    const b = projectMarks([{ turn: 1, text: "a", offset: 1.2 }], 400, 1000)[0]!.top;
+    const a = projectMarks([{ turn: 1, text: "a", offset: 500 }], metrics(400, 1000))[0]!.top;
+    const b = projectMarks([{ turn: 1, text: "a", offset: 500.4 }], metrics(400, 1000))[0]!.top;
     expect(a).toBe(b);
+  });
+});
+
+describe("the dot mapping is the thumb's own map", () => {
+  it("puts the thumb exactly on the dot once that turn is jumped to", () => {
+    const m = metrics(564, 95085);
+    for (const offset of [0, 1200, 45000, 94521]) {
+      expect(dotTopForOffset(offset, m)).toBe(
+        thumbTopForScrollTop(scrollTopForOffset(offset, m), m),
+      );
+    }
+  });
+
+  it("keeps a turn past the end inside the thumb's reach, not on the track edge", () => {
+    // Pre-fix this clamped to trackHeight (564), where the thumb can never sit.
+    expect(projectMarks([{ turn: 1, text: "a", offset: 9_000_000 }], metrics(564, 95085))[0]!.top).toBe(
+      544,
+    );
+  });
+
+  it("clamps the thumb to the platform minimum on a very long transcript", () => {
+    const m = metrics(564, 95085);
+    // The proportional value is ~3.3px; without the floor every dot would sit
+    // tens of pixels below the thumb that a click actually lands on.
+    expect(thumbLength(m)).toBe(MIN_THUMB_PX);
+    expect(maxScrollTop(m)).toBe(95085 - 564);
+  });
+
+  it("clamps a jump target to the reachable scroll range", () => {
+    const m = metrics(564, 1000);
+    expect(scrollTopForOffset(9000, m)).toBe(436);
+    expect(scrollTopForOffset(100, m)).toBe(100);
+  });
+
+  it("moves a dot smoothly as the content keeps growing", () => {
+    const tops = [40_000, 40_100, 40_200, 40_300].map((sh) => dotTopForOffset(2_000, metrics(564, sh)));
+    for (let i = 1; i < tops.length; i += 1) {
+      expect(tops[i]!).toBeLessThanOrEqual(tops[i - 1]!);
+      expect(tops[i - 1]! - tops[i]!).toBeLessThan(1);
+    }
+  });
+});
+
+describe("separateTops", () => {
+  it("spaces a stack to the minimum gap, order preserved", () => {
+    expect(separateTops([1, 5, 11, 17, 23], 600, MIN_DOT_GAP)).toEqual([1, 17, 33, 49, 65]);
+  });
+
+  it("keeps the tail inside the track", () => {
+    expect(separateTops([590, 595, 599], 600, MIN_DOT_GAP)).toEqual([568, 584, 600]);
+  });
+
+  it("spreads evenly when the turns outnumber the available gaps", () => {
+    expect(separateTops([0, 1, 2, 3, 4], 40, MIN_DOT_GAP)).toEqual([0, 10, 20, 30, 40]);
+  });
+});
+
+describe("activeTurnFor", () => {
+  const positions = [0, 250, 500, 750].map((offset, i) => ({
+    turn: i + 1,
+    text: `t${i + 1}`,
+    offset,
+  }));
+
+  it("marks the last turn whose top has passed the viewport top", () => {
+    expect(activeTurnFor(480, positions)).toBe(2);
+    expect(activeTurnFor(500, positions)).toBe(3);
+    expect(activeTurnFor(5000, positions)).toBe(4);
+  });
+
+  it("falls back to the first turn while the viewport sits above them all", () => {
+    expect(activeTurnFor(0, positions)).toBe(1);
+  });
+
+  it("has no marker without anchors", () => {
+    expect(activeTurnFor(0, [])).toBeNull();
+  });
+});
+
+describe("projectMarks separation", () => {
+  const clustered = [0, 250, 500, 750, 1000].map((offset, i) => ({
+    turn: i + 1,
+    text: `t${i + 1}`,
+    offset,
+  }));
+
+  it("spaces the clustered dots of a long transcript instead of stacking them", () => {
+    const tops = projectMarks(clustered, metrics(564, 95085)).map((m) => m.top);
+    expect(tops).toEqual([0, 16, 32, 48, 64]);
+    // Pre-fix this fixture produced [0, 1, 3, 4, 6]: a stack whose 15px hit pads
+    // fully overlapped, so only the last turn in the DOM could be clicked.
+    expect(tops).not.toEqual([0, 1, 3, 4, 6]);
+    for (let i = 1; i < tops.length; i += 1) {
+      expect(tops[i]! - tops[i - 1]!).toBeGreaterThanOrEqual(MIN_DOT_GAP - 1);
+    }
   });
 });
 
@@ -164,10 +276,10 @@ describe("JumpBar", () => {
     expect(document.querySelectorAll(".jump-dot")).toHaveLength(2);
   });
 
-  it("spaces the turns evenly while the transcript is too short to scroll", () => {
+  it("falls back to an ordered ladder while the transcript is too short to scroll", () => {
     thread.geom.scrollHeight = thread.geom.clientHeight;
     render(<JumpBar messages={messages} threadEl={thread.el} />);
-    expect(dotTops()).toEqual([100, 300]);
+    expect(dotTops()).toEqual([0, MIN_DOT_GAP]);
   });
 
   it("drops the dot of a turn that is not mounted in the transcript", () => {
@@ -186,14 +298,12 @@ describe("JumpBar", () => {
     expect(dotTops()).toEqual([0, 200]);
   });
 
-  it("holds the dots still while the content grows, then re-projects once it settles", () => {
+  it("follows content growth on the next frame instead of deferring it", () => {
     render(<JumpBar messages={messages} threadEl={thread.el} />);
     expect(dotTops()).toEqual([0, 200]);
     // The transcript grows below the second turn, as a streamed reply would.
     thread.geom.scrollHeight = 2000;
     fireResize();
-    expect(dotTops()).toEqual([0, 200]);
-    settle();
     expect(dotTops()).toEqual([0, 100]);
   });
 
@@ -204,7 +314,6 @@ describe("JumpBar", () => {
     thread.geom.scrollTop = 250;
     thread.sync();
     fireResize();
-    settle();
     expect(dotTops()).toEqual([0, 200]);
   });
 });

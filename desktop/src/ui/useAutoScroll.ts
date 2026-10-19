@@ -69,6 +69,10 @@ export function useAutoScroll(
     [containerRef, sticky],
   );
 
+  /** Release the pin before a programmatic jump. While pinned, the next content
+   *  growth calls follow() and would drag the viewport back to the bottom mid-jump. */
+  const unpinForJump = useCallback(() => sticky.unpin(), [sticky]);
+
   // Turn start: user just sent a message and expects to see the new turn.
   // Turn end: settle on final answer ONLY if the user was already following along.
   // If the user scrolled up, do not yank them away from what they are reading.
@@ -122,5 +126,5 @@ export function useAutoScroll(
     return () => clearTimeout(id);
   }, [containerRef, getRestoreScrollTop, refreshJumpButton, sticky, active]);
 
-  return { showJumpButton, scrollToBottom, scrollToTop };
+  return { showJumpButton, scrollToBottom, scrollToTop, unpinForJump };
 }
