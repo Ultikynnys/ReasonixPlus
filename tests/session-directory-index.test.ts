@@ -132,7 +132,7 @@ describe("SessionDirectoryIndex", () => {
       version: number;
       records: Array<{ name: string; messageCount: number }>;
     };
-    expect(cached.version).toBe(2);
+    expect(cached.version).toBe(3);
     expect(cached.records).toHaveLength(2);
 
     // A fresh instance (simulating relaunch) reuses the cache: no meta reloads,

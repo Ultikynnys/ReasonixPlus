@@ -1,9 +1,9 @@
-import { constants, type BigIntStats } from "node:fs";
+import { constants, type BigIntStats, statSync } from "node:fs";
 import { copyFile, mkdir, open, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { messageOf } from "@reasonix/core-utils";
 import { tmpSiblingPath } from "../core/atomic-write.js";
-import { readJsonFileSilentlyAsync } from "../core/json-file.js";
+import { readJsonFileSilently, readJsonFileSilentlyAsync } from "../core/json-file.js";
 import { SESSION_MESSAGES_FILENAME, SESSION_META_FILENAME } from "../memory/session-layout.js";
 
 const READ_BUFFER_BYTES = 64 * 1024;
@@ -71,8 +71,9 @@ interface PersistedSessionIndexRecord<M> {
 }
 
 interface PersistedSessionIndex<M> {
-  /** v1 = flat <name>.jsonl layout (pre folder-per-session); v2 = <name>/messages.jsonl folders. */
-  version: 2;
+  /** v1 = flat <name>.jsonl layout; v2 = <name>/messages.jsonl folders; v3 added the
+   *  `mcpPending` meta projection, so a v2 cache cannot answer the boot sweep. */
+  version: 3;
   directory: string;
   records: PersistedSessionIndexRecord<M>[];
 }
@@ -92,7 +93,7 @@ function isSessionFileIdentity(value: unknown): value is SessionFileIdentity {
 function isPersistedSessionIndex(value: unknown): value is PersistedSessionIndex<unknown> {
   if (typeof value !== "object" || value === null) return false;
   const index = value as Record<string, unknown>;
-  if (index.version !== 2 || typeof index.directory !== "string") return false;
+  if (index.version !== 3 || typeof index.directory !== "string") return false;
   if (!Array.isArray(index.records)) return false;
   return index.records.every((record) => {
     if (typeof record !== "object" || record === null) return false;
@@ -109,6 +110,19 @@ function isPersistedSessionIndex(value: unknown): value is PersistedSessionIndex
       (entry.metaIdentity === null || isSessionFileIdentity(entry.metaIdentity))
     );
   });
+}
+
+function toRecord<M>(record: PersistedSessionIndexRecord<M>): SessionDirectoryRecord<M> {
+  return {
+    name: record.name,
+    path: record.path,
+    identity: record.identity,
+    messageCount: record.messageCount,
+    endedWithNewline: record.endedWithNewline,
+    mtime: new Date(record.mtimeMs),
+    meta: record.meta,
+    metaIdentity: record.metaIdentity,
+  };
 }
 
 async function countLines(
@@ -154,6 +168,8 @@ export class SessionDirectoryIndex<M> {
   /** One shared seed read: `load()` and `snapshot()` can both ask within the same
    *  tick, and the second caller must await the first rather than see "no cache". */
   private seedRequest: Promise<boolean> | null = null;
+  /** Sync twin of `seedRequest`, memoized by cache signature (see `cachedRecords`). */
+  private syncSeed: { signature: string; records: SessionDirectoryRecord<M>[] } | null = null;
 
   constructor(
     private readonly directory: () => string,
@@ -292,21 +308,38 @@ export class SessionDirectoryIndex<M> {
       if (cached === null || cached.directory !== this.directory()) return false;
       const seeded = new Map<string, SessionDirectoryRecord<M>>();
       for (const record of cached.records) {
-        seeded.set(record.path, {
-          name: record.name,
-          path: record.path,
-          identity: record.identity,
-          messageCount: record.messageCount,
-          endedWithNewline: record.endedWithNewline,
-          mtime: new Date(record.mtimeMs),
-          meta: record.meta as M,
-          metaIdentity: record.metaIdentity,
-        });
+        seeded.set(record.path, toRecord(record as PersistedSessionIndexRecord<M>));
       }
       this.records = seeded;
       return true;
     })();
     return this.seedRequest;
+  }
+
+  /** Every record the persisted cache holds, without walking the directory. Null means
+   *  there is no usable cache and the caller must fall back to the full scan. */
+  cachedRecords(): SessionDirectoryRecord<M>[] | null {
+    return this.syncSeedRecords();
+  }
+
+  /** The cache file parsed synchronously, memoized by mtime+ctime+size so a caller looping
+   *  over workspaces parses one multi-megabyte JSON once, not once per workspace. */
+  private syncSeedRecords(): SessionDirectoryRecord<M>[] | null {
+    const cacheFile = this.cacheFilePath();
+    if (cacheFile === undefined) return null;
+    let signature: string;
+    try {
+      const stats = statSync(cacheFile);
+      signature = `${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
+    } catch {
+      return null;
+    }
+    if (this.syncSeed?.signature === signature) return this.syncSeed.records;
+    const cached = readJsonFileSilently(cacheFile, isPersistedSessionIndex);
+    if (cached === null || cached.directory !== this.directory()) return null;
+    const records = (cached.records as PersistedSessionIndexRecord<M>[]).map(toRecord);
+    this.syncSeed = { signature, records };
+    return records;
   }
 
   private async persistIndex(records: Map<string, SessionDirectoryRecord<M>>): Promise<void> {
@@ -336,7 +369,7 @@ export class SessionDirectoryIndex<M> {
     records: Map<string, SessionDirectoryRecord<M>>,
   ): PersistedSessionIndex<unknown> {
     return {
-      version: 2,
+      version: 3,
       directory: this.directory(),
       records: [...records.values()].map((record) => ({
         name: record.name,

@@ -14,9 +14,11 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { messageOf } from "@reasonix/core-utils";
+import { atomicWriteSync, tmpSiblingPath } from "../core/atomic-write.js";
 import { readJsonFileSilently } from "../core/json-file.js";
 import {
   listSessionNamesForWorkspace,
+  listSessionNamesForWorkspaceFromIndex,
   normalizeWorkspace,
   sanitizeName,
   sessionPlanPath,
@@ -291,7 +293,23 @@ export class PlanRepository {
     sealCompletedPlans(history);
     this.cached = history;
     this.signature = signature;
+    if (!stat) this.adoptMigration(history);
     return history;
+  }
+
+  /** Writes a first-read migration through so later boots take the plain file path: the
+   *  untouched migration re-aggregated every session of the workspace on each start. A
+   *  store that fails validation stays in memory only, never on disk. */
+  private adoptMigration(history: History): void {
+    try {
+      validate(history);
+      mkdirSync(dirname(this.path), { recursive: true });
+      atomicWriteSync(this.path, `${JSON.stringify(history)}\n`, tmpSiblingPath(this.path));
+      const stat = statSync(this.path);
+      this.signature = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+    } catch (err) {
+      process.stderr.write(`reasonix: plan migration write skipped — ${messageOf(err)}\n`);
+    }
   }
 
   /** First read for a workspace: aggregate every session plan store that belongs
@@ -302,7 +320,7 @@ export class PlanRepository {
       const existing = byId.get(plan.id);
       if (!existing || plan.updatedAt > existing.updatedAt) byId.set(plan.id, plan);
     };
-    for (const session of listSessionNamesForWorkspace(this.workspace)) {
+    for (const session of migrationCandidates(this.workspace)) {
       for (const plan of readSessionHistory(session)) add(plan);
       for (const plan of legacyPlans(session)) add(plan);
     }
@@ -578,6 +596,15 @@ export class PlanRepository {
     const owner = blockingClaim(this.workspace, plan, session);
     if (owner) throw new Error(claimRefusalMessage(plan.id, owner));
   }
+}
+
+/** Sessions the first read aggregates. The persisted session index answers this without
+ *  a meta.json read per session; an unusable cache falls back to the full walk, which at
+ *  ~12k sessions is seconds of blocking I/O. */
+function migrationCandidates(workspace: string): string[] {
+  return (
+    listSessionNamesForWorkspaceFromIndex(workspace) ?? listSessionNamesForWorkspace(workspace)
+  );
 }
 
 /** Read a session's current per-session history.json; a malformed file is skipped

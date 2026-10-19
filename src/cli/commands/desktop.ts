@@ -612,6 +612,20 @@ export function shouldMaterializeRestoredSession(restore?: { session?: string })
   return !restore?.session;
 }
 
+/** Whether a restored channel waits for its first activation before building a toolset.
+ *  Building every channel eagerly cost 96 toolsets (~11 s) at boot, so only the focused
+ *  one, the last-active one, and one holding an MCP picker build now. */
+export function shouldDeferRestoredBuild(restore: {
+  restored: boolean;
+  focused: boolean;
+  active?: boolean;
+  mcpSetupPending?: boolean;
+}): boolean {
+  if (!restore.restored || restore.focused) return false;
+  if (restore.mcpSetupPending === true) return false;
+  return restore.active !== true;
+}
+
 /** Drain `buffer` to `fd` across partial writes; retry EAGAIN after a 5 ms park. Exported for tests. */
 export function writeAllSync(
   fd: number,
@@ -881,6 +895,12 @@ function planCounts(tab: { rootDir: string; currentSession?: string }): {
   };
 }
 
+/** Cache the plan progress on the tab. The diagnostics projection reads this instead of
+ *  the store: it is emitted many times per start, and a store read can scan sessions. */
+function refreshPlanSummary(tab: Tab): void {
+  tab.planSummary = planCounts(tab);
+}
+
 /** The plan THIS tab's session is working, never another session's plan in the same
  *  workspace. A corrupt or locked store degrades to "no plan here": every caller is a
  *  projection that must not fail the tab. */
@@ -907,6 +927,7 @@ function emitAcceptedStep(tab: Tab, result: string): void {
     return;
   }
   if (typeof parsed.stepId !== "string") return;
+  refreshPlanSummary(tab);
   emit(
     {
       type: "$step_completed",
@@ -944,6 +965,7 @@ export function restorePlanForTab(
  *  has past plans but none is in flight. The repository is the single source. */
 function emitRestoredPlan(tab: Tab, hasPriorMessages: boolean): void {
   emitPlanHistory(tab);
+  refreshPlanSummary(tab);
   if (!hasPriorMessages || !tab.rootDir) return;
   const event = restorePlanForTab(tab, true);
   if (event) {
@@ -4307,6 +4329,9 @@ interface Tab {
   sessionsEpoch: string;
   /** Monotonic ordering for asynchronous session-list snapshots. */
   sessionsRevision: number;
+  /** Plan progress for the diagnostics projection. Refreshed wherever plan state is
+   *  consulted or changed; `tabDiagnosticState` must never read the store itself. */
+  planSummary: { completed: number; total: number };
   hooks: ResolvedHook[];
 }
 
@@ -4343,7 +4368,7 @@ function tabDiagnosticState(tab: Tab): Record<string, unknown> {
     busy: tab.aborter !== null,
     switching: tab.switching,
     pendingGateCount: tab.pendingGateIds.size,
-    plan: { totalSteps: planCounts(tab).total, completedSteps: planCounts(tab).completed },
+    plan: { totalSteps: tab.planSummary.total, completedSteps: tab.planSummary.completed },
     mcp: { configured: mcpStatusCounts, runtimeReady: tab.mcpRuntime !== null },
     indexes: {
       fileReady: tab.fileIndex !== null,
@@ -5008,7 +5033,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   // Fresh chats that were never configured (force-exited with the MCP picker
   // open) are not real sessions — drop them before any list is served.
   try {
-    const pruned = prunePendingMcpSessions();
+    const pruned = await prunePendingMcpSessions();
     if (pruned.length > 0) log.info(`pruned ${pruned.length} never-configured session(s)`);
   } catch (err) {
     process.stderr.write(`reasonix: pending-MCP session prune failed — ${messageOf(err)}\n`);
@@ -5140,6 +5165,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       switching: false,
       sessionsEpoch: randomUUID(),
       sessionsRevision: 0,
+      planSummary: { completed: 0, total: 0 },
       hooks: pending ? [] : loadHooks({ projectRoot: dir }),
     };
     // A restored session binds its real jsonl when it still exists. A restored
@@ -5205,6 +5231,30 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   }
 
   const bootstrapGate = new ConcurrencyGate(6);
+
+  /** Builds a deferred restored tab's toolset the first time the user opens it, then
+   *  releases the composer with `$ready` — the deferred twin of `startTabInit`'s tail. */
+  const activationBuilds = new Map<string, Promise<void>>();
+  function ensureActiveToolset(tab: Tab): void {
+    if (tab.toolset || tab.pending || tab.mcpSetupPending || activationBuilds.has(tab.id)) return;
+    if (!tabHasCredential(tab)) return;
+    const build = initTabToolset(tab, 1)
+      .then(() => {
+        emitTabDiagnostic(tab, "tab.ready", undefined, "info");
+        emit({ type: "$ready" }, tab.id);
+        emitCtxBreakdown(tab);
+        void bridgeTabMcp(tab);
+      })
+      .catch((err) => {
+        emitDiagnosticError("tab.bootstrap.failed", err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+        emit({ type: "$error", message: `init failed: ${(err as Error).message}` }, tab.id);
+      })
+      .finally(() => activationBuilds.delete(tab.id));
+    activationBuilds.set(tab.id, build);
+  }
 
   async function initTabToolset(tab: Tab, priority = 0): Promise<void> {
     const bootstrapStartedAt = performance.now();
@@ -5849,6 +5899,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       endTurn("aborted");
       return;
     }
+    refreshPlanSummary(tab);
     tab.aborter = new AbortController();
     if (tab.aborter.signal.aborted) {
       // The turn never started: nothing to settle beyond the busy flag, same
@@ -6028,10 +6079,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             ...(lastTurn >= 0 ? { turn: lastTurn } : {}),
             ...(reason ? { reason } : {}),
           });
+          refreshPlanSummary(tab);
           emitTabDiagnostic(
             tab,
             "turn.complete.emitted",
-            { planProgress: planCounts(tab) },
+            { planProgress: tab.planSummary },
             "info",
           );
           void emitSessions(tab);
@@ -6638,6 +6690,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       pauseGate.cancel(id);
     }
     if (hadActivePlan) {
+      refreshPlanSummary(tab);
       emit({ type: "$plan_cleared" }, tab.id);
     }
   }
@@ -6842,6 +6895,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         result: string;
         notes?: string;
       };
+      if (tab) refreshPlanSummary(tab);
       emit(
         {
           type: "$checkpoint_required",
@@ -6850,8 +6904,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           title: payload.title,
           result: payload.result,
           notes: payload.notes,
-          completed: tab ? planCounts(tab).completed : 0,
-          total: tab ? planCounts(tab).total : 0,
+          completed: tab ? tab.planSummary.completed : 0,
+          total: tab ? tab.planSummary.total : 0,
         },
         tabId,
       );
@@ -6996,9 +7050,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // alongside it interleaved ~N synchronous registrations into the boot
       // critical path. Total work is unchanged; it just no longer competes with
       // the tab the splash is waiting for.
+      //
+      // A restored channel the user is not looking at defers its build to first
+      // activation: 96 restored tabs registered 96 toolsets (~11 s of synchronous
+      // work) before the app could be used, and the tail ran for a minute.
+      const deferredBuild = shouldDeferRestoredBuild({
+        restored: restore !== undefined,
+        focused: tab === first,
+        active: restore?.active,
+        mcpSetupPending: tab.mcpSetupPending,
+      });
       const startToolset = async (): Promise<void> => {
         if (tab !== first) await firstBootstrapSettled;
-        await initTabToolset(tab, tab === first || restore?.active ? 1 : 0);
+        if (deferredBuild) return;
+        await initTabToolset(tab, 1);
       };
       tab.initialization = startToolset()
         .then(() => {
@@ -7006,6 +7071,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             // Composer stays disabled until `mcp_session_configure`; surface the picker.
             emitTabDiagnostic(tab, "tab.setup.required", { reason: "mcp-setup" }, "info");
             emitMcpSetup(tab);
+          } else if (deferredBuild) {
+            // The activation path builds the toolset and answers with `$ready`.
+            emitTabDiagnostic(tab, "tab.ready.deferred", undefined, "info");
           } else if (tabHasCredential(tab)) {
             emitTabDiagnostic(tab, "tab.ready", undefined, "info");
             emit({ type: "$ready" }, tab.id);
@@ -7326,6 +7394,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // Lazily bridge MCP on first activation: non-focused restored tabs skip
         // the per-tab MCP tool registration at startup and pay it only when the
         // user actually opens them.
+        ensureActiveToolset(activated);
         if (activated.toolset && !activated.mcpRuntime) void bridgeTabMcp(activated);
         void emitSessions(activated);
       } else {
@@ -7363,6 +7432,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       const tab = forgetGate(msg.id);
       if (tab && msg.response.type === "cancel") {
         // submit_plan records the cancelled verdict itself; just clear the rail.
+        refreshPlanSummary(tab);
         emit({ type: "$plan_cleared" }, tab.id);
       }
       pauseGate.resolve(msg.id, msg.response);
@@ -9031,6 +9101,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "plan_detail_get") {
+      refreshPlanSummary(tab);
       try {
         emit(
           {
@@ -9055,6 +9126,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         const repository = planRepository(tab.rootDir);
         const wasActive = activePlanForTab(tab)?.id === msg.planId;
         repository.remove(msg.planId);
+        refreshPlanSummary(tab);
         emitPlanHistory(tab);
         // A removed active plan must stop driving the rail and the loop's plan context.
         if (wasActive) emit({ type: "$plan_cleared" }, tab.id);

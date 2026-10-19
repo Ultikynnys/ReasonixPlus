@@ -656,6 +656,25 @@ export function listSessionNamesForWorkspace(workspace: string): string[] {
   );
 }
 
+/** `listSessionNamesForWorkspace` answered from the persisted index instead of per-session
+ *  meta reads: folders the cache never saw are read directly, so a session minted after it
+ *  was written is never missed. Null when no cache exists; the caller falls back. */
+export function listSessionNamesForWorkspaceFromIndex(workspace: string): string[] | null {
+  const want = normalizeWorkspace(workspace);
+  const legacyPrefix = legacySessionPrefixForWorkspace(workspace);
+  const records = sessionDirectoryIndex.cachedRecords();
+  if (records === null) return null;
+  const indexedMeta = new Map<string, SessionMeta>();
+  for (const record of records) indexedMeta.set(record.name, record.meta);
+  const names: string[] = [];
+  for (const { name } of listSessionDirs()) {
+    const cachedMeta = indexedMeta.get(name);
+    const meta = cachedMeta ?? loadSessionMeta(name);
+    if (sessionBelongsToWorkspace(meta, name, want, legacyPrefix)) names.push(name);
+  }
+  return names;
+}
+
 /** Async twin of `listSessionNamesForWorkspace` for the daemon's clear path: same rule,
  *  but chunked meta reads that yield the event loop instead of freezing every queued RPC. */
 export async function listSessionNamesForWorkspaceAsync(
@@ -701,13 +720,15 @@ const sessionDirectoryIndex = new SessionDirectoryIndex<SessionMeta>(
   // (tests stubbing HOME/USERPROFILE) persist a foreign directory's records into
   // the real cache, forcing the next launch into a full cold scan.
   () => join(reasonixHome(), "cache", "session-directory-index.json"),
-  // The listing reads only these fields. Persisting whole meta blobs made the cache
-  // 39 MB (33.7 MB of it meta), and reading and rewriting it dominated the cold path.
+  // The listing reads only these fields, plus `mcpPending` for the boot sweep. Persisting
+  // whole meta blobs made the cache 39 MB (33.7 MB of it meta), and reading and rewriting
+  // it dominated the cold path.
   (meta) => ({
     workspace: meta.workspace,
     updatedAt: meta.updatedAt,
     createdAt: meta.createdAt,
     summary: meta.summary,
+    ...(meta.mcpPending === true ? { mcpPending: true } : {}),
   }),
 );
 
@@ -927,12 +948,31 @@ export function pruneStaleSessions(daysOld = 90): string[] {
 /** Delete sessions minted for a gated fresh chat whose MCP set was never
  *  confirmed (the daemon died with the picker open). Only a session still marked
  *  `mcpPending` is removed; a confirmed or legacy one never carries it. */
-export function prunePendingMcpSessions(): string[] {
+export async function prunePendingMcpSessions(): Promise<string[]> {
   const deleted: string[] = [];
-  for (const { name } of listSessionDirs()) {
+  for (const name of await pendingMcpCandidateNames()) {
     if (loadSessionMeta(name).mcpPending === true && deleteSession(name)) deleted.push(name);
   }
   return deleted;
+}
+
+/** Every name that could still carry `mcpPending`. The directory index already holds
+ *  each session's meta, so the sweep reads a handful of files instead of all of them;
+ *  folders the cache has never seen (minted after it was written) are re-read. */
+async function pendingMcpCandidateNames(): Promise<string[]> {
+  const dirs = listSessionDirs();
+  const indexed = await sessionDirectoryIndex.snapshot();
+  if (indexed === null) return dirs.map(({ name }) => name);
+  const candidates: string[] = [];
+  const known = new Set<string>();
+  for (const record of indexed) {
+    known.add(record.name);
+    if ((record.meta as SessionMeta).mcpPending === true) candidates.push(record.name);
+  }
+  for (const { name } of dirs) {
+    if (!known.has(name)) candidates.push(name);
+  }
+  return candidates;
 }
 
 /** Removes the session folder (and every file in it). Also cleans up a

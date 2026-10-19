@@ -587,7 +587,7 @@ describe("session persistence", () => {
     expect(existsSync(sessionPath("yesterday"))).toBe(false);
   });
 
-  it("prunePendingMcpSessions deletes never-configured fresh chats and keeps the rest", () => {
+  it("prunePendingMcpSessions deletes never-configured fresh chats and keeps the rest", async () => {
     appendSessionMessage("pending", { role: "user", content: "x" });
     patchSessionMeta("pending", { mcpPending: true });
     // A confirmed chat (has `mcp`) and a legacy chat (neither field) must survive.
@@ -596,20 +596,78 @@ describe("session persistence", () => {
     appendSessionMessage("legacy", { role: "user", content: "x" });
     patchSessionMeta("legacy", { workspace: "/proj/a" });
 
-    expect(prunePendingMcpSessions()).toEqual(["pending"]);
+    expect(await prunePendingMcpSessions()).toEqual(["pending"]);
     expect(existsSync(sessionPath("pending"))).toBe(false);
     expect(existsSync(sessionPath("confirmed"))).toBe(true);
     expect(existsSync(sessionPath("legacy"))).toBe(true);
   });
 
-  it("clearing mcpPending on confirm drops the flag from disk", () => {
+  it("clearing mcpPending on confirm drops the flag from disk", async () => {
     appendSessionMessage("cleared", { role: "user", content: "x" });
     patchSessionMeta("cleared", { mcpPending: true });
     patchSessionMeta("cleared", { mcp: {}, mcpPending: undefined });
 
     expect(loadSessionMeta("cleared").mcpPending).toBeUndefined();
-    expect(prunePendingMcpSessions()).toEqual([]);
+    expect(await prunePendingMcpSessions()).toEqual([]);
     expect(existsSync(sessionPath("cleared"))).toBe(true);
+  });
+
+  it("prunes from the persisted index, including folders it has never seen", async () => {
+    appendSessionMessage("indexed-pending", { role: "user", content: "x" });
+    patchSessionMeta("indexed-pending", { mcpPending: true, workspace: "/proj/c" });
+    appendSessionMessage("indexed-keep", { role: "user", content: "x" });
+    patchSessionMeta("indexed-keep", { mcp: {}, workspace: "/proj/c" });
+    // First boot: the listing loads the index and persists it with the projection.
+    vi.resetModules();
+    await (await import("../src/memory/session.js")).listSessionsForWorkspaceAsync("/proj/c").value;
+    // Minted after that cache write, so no record exists for it yet.
+    appendSessionMessage("minted-later", { role: "user", content: "x" });
+    patchSessionMeta("minted-later", { mcpPending: true, workspace: "/proj/c" });
+
+    // Next boot prunes from the cache, re-reading only the folder it never saw.
+    vi.resetModules();
+    const session = await import("../src/memory/session.js");
+    expect((await session.prunePendingMcpSessions()).sort()).toEqual([
+      "indexed-pending",
+      "minted-later",
+    ]);
+    expect(existsSync(session.sessionPath("indexed-pending"))).toBe(false);
+    expect(existsSync(session.sessionPath("minted-later"))).toBe(false);
+    expect(existsSync(session.sessionPath("indexed-keep"))).toBe(true);
+  });
+
+  it("still prunes when the cached index predates the mcpPending projection", async () => {
+    appendSessionMessage("stale-cache", { role: "user", content: "x" });
+    patchSessionMeta("stale-cache", { mcpPending: true, workspace: "/proj/d" });
+    // A cache written by an older build carries no `mcpPending` anywhere, so it must
+    // be rejected outright rather than seeding a sweep that would keep the session.
+    const cacheFile = join(dirname(sessionsDir()), "cache", "session-directory-index.json");
+    mkdirSync(dirname(cacheFile), { recursive: true });
+    writeFileSync(
+      cacheFile,
+      JSON.stringify({
+        version: 2,
+        directory: sessionsDir(),
+        records: [
+          {
+            name: "stale-cache",
+            path: sessionMessagesPath("stale-cache"),
+            identity: { dev: "1", ino: "1", ctimeNs: "1", mtimeNs: "1", size: 2 },
+            messageCount: 1,
+            endedWithNewline: true,
+            mtimeMs: 1,
+            meta: { workspace: "/proj/d" },
+            metaIdentity: null,
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    vi.resetModules();
+    const session = await import("../src/memory/session.js");
+    expect(await session.prunePendingMcpSessions()).toEqual(["stale-cache"]);
+    expect(existsSync(session.sessionPath("stale-cache"))).toBe(false);
   });
 
   describe("archiveSession", () => {

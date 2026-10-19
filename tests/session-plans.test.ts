@@ -1,8 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { PlanRepository } from "../src/code/plans.js";
+import { PlanRepository, workspacePlansDir } from "../src/code/plans.js";
+import { sessionPlansDir } from "../src/memory/session-layout.js";
+import { appendSessionMessage, patchSessionMeta } from "../src/memory/session.js";
 
 let home: string;
 let oldHome: string | undefined;
@@ -23,6 +25,32 @@ const steps = [
   { id: "one", title: "First", action: "Do first" },
   { id: "two", title: "Second", action: "Do second" },
 ];
+it("persists a first-read migration so the next boot does not re-aggregate it", () => {
+  const workspace = join(home, "proj");
+  appendSessionMessage("carried-plan", { role: "user", content: "x" });
+  patchSessionMeta("carried-plan", { workspace });
+  // A plan that lived only in the session's own (retired) store.
+  const carried = new PlanRepository(join(home, "scratch")).propose(
+    "Carried body",
+    steps,
+    "Carried plan",
+  );
+  mkdirSync(sessionPlansDir("carried-plan"), { recursive: true });
+  writeFileSync(
+    join(sessionPlansDir("carried-plan"), "history.json"),
+    JSON.stringify({ version: 1, revision: 1, plans: [carried] }),
+    "utf8",
+  );
+
+  expect(new PlanRepository(workspace).list().map((p) => p.summary)).toEqual(["Carried plan"]);
+  expect(existsSync(join(workspacePlansDir(workspace), "history.json"))).toBe(true);
+
+  // The workspace store now answers on its own: a later boot reads the file it was
+  // adopted into instead of walking every session again.
+  rmSync(sessionPlansDir("carried-plan"), { recursive: true, force: true });
+  expect(new PlanRepository(workspace).list().map((p) => p.summary)).toEqual(["Carried plan"]);
+});
+
 it("retains partial superseded work across repository recreation", () => {
   const repo = new PlanRepository("first");
   const first = repo.propose("First plan", steps);
