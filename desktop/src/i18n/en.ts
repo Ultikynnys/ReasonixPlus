@@ -1036,7 +1036,6 @@ export const en = {
     noFilesMsg: "No files in context yet.",
     noMemoriesMsg: "No memories saved yet.",
     deleteMemory: "delete this memory",
-    editMemory: "edit this memory",
     newMemory: "New memory",
     newNamePh: "name (e.g. budget-cap)",
     newBodyPh: "Body: what should future sessions know?",

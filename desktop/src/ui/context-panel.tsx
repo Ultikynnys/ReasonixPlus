@@ -1640,6 +1640,11 @@ function CtxMcp({ specs, bridged }: { specs: McpSpecInfo[]; bridged: boolean }) 
   );
 }
 
+/** Structured memories open straight into the editor; project/global files stay read-only. */
+function isEditableMemory(e: { kind: MemoryEntryInfo["kind"] }): boolean {
+  return e.kind === "structured";
+}
+
 function CtxMemory({
   entries,
   detail,
@@ -1713,10 +1718,12 @@ function CtxMemory({
     closeComposer();
   };
 
-  const startEdit = (path: string): void => {
+  /** Opening a card edits it in place: structured entries prefill the composer from
+   *  their fetched body, while freeform files stay read-only. */
+  const openEntry = (m: MemoryEntryInfo): void => {
     closeComposer();
-    setPendingEdit(path);
-    onRead(path);
+    if (isEditableMemory(m)) setPendingEdit(m.path);
+    onRead(m.path);
   };
 
   return (
@@ -1743,8 +1750,8 @@ function CtxMemory({
               className="mem-row"
               data-active={detail?.path === m.path}
               key={m.path}
-              onClick={() => onRead(m.path)}
-              onKeyDown={activationHandler(() => onRead(m.path))}
+              onClick={() => openEntry(m)}
+              onKeyDown={activationHandler(() => openEntry(m))}
             >
               <span className="scope" data-s={m.scope}>
                 {m.scope === "project"
@@ -1752,20 +1759,6 @@ function CtxMemory({
                   : t("contextPanel.scopeGlobal")}
               </span>
               <span className="txt">{m.description || m.name}</span>
-              {m.kind === "structured" ? (
-                <button
-                  type="button"
-                  className="mem-edit"
-                  title={t("contextPanel.editMemory")}
-                  aria-label={`${t("contextPanel.editMemory")}: ${m.name}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    startEdit(m.path);
-                  }}
-                >
-                  <I.pencil size={11} />
-                </button>
-              ) : null}
               <button
                 type="button"
                 className="mem-del"
@@ -1782,7 +1775,9 @@ function CtxMemory({
         </div>
       )}
 
-      {detail ? <pre className="mem-detail">{detail.body}</pre> : null}
+      {detail && !composing && !isEditableMemory(detail) ? (
+        <pre className="mem-detail">{detail.body}</pre>
+      ) : null}
 
       {composing ? (
         <div className="mem-composer">

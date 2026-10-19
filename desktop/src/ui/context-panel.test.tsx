@@ -1923,7 +1923,7 @@ describe("ContextPanel memory panel", () => {
 
     const { rerender } = render(panel(null));
     fireEvent.click(screen.getByText("Memory"));
-    fireEvent.click(screen.getByRole("button", { name: "edit this memory: budget-cap" }));
+    fireEvent.click(screen.getByText("Cap the budget"));
     expect(onReadMemory).toHaveBeenCalledWith(info.path);
 
     // The arriving detail prefills the composer for editing.

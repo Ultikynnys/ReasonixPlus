@@ -4158,19 +4158,22 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   color: var(--fg-2);
   line-height: 1.5;
 }
-.mem-detail {
-  max-height: 220px;
-  overflow: auto;
-  margin: 8px 0 0;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  white-space: pre-wrap;
-  color: var(--fg-1);
+.mem-detail,
+.mem-textarea {
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.5;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg-1);
+}
+.mem-detail {
+  margin: 8px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 /* ---- Memory panel actions (delete / export / import / composer) ---- */
@@ -4213,24 +4216,6 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .mem-del:hover {
   background: var(--danger-soft, rgba(244, 63, 94, 0.15));
   color: var(--danger, #f43f5e);
-}
-.mem-edit {
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-}
-.mem-edit:hover {
-  background: var(--accent-soft);
-  color: var(--fg-1);
 }
 .mem-result {
   display: flex;
@@ -4311,13 +4296,6 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .mem-textarea {
   min-height: 72px;
   resize: vertical;
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg-1);
 }
 .mem-composer-actions {
   display: flex;
@@ -7693,47 +7671,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--fg-2);
   min-width: 18px;
   text-align: center;
-}
-
-/* memory editor */
-.mem-edit {
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  margin-bottom: 6px;
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 10px;
-  align-items: flex-start;
-}
-.mem-edit .scope {
-  font-family: inherit;
-  font-size: 14px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  text-transform: uppercase;
-}
-.mem-edit .scope[data-s="project"] {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-.mem-edit .scope[data-s="user"] {
-  background: var(--violet-soft);
-  color: var(--violet);
-}
-.mem-edit .scope[data-s="global"] {
-  background: var(--success-soft);
-  color: var(--success);
-}
-.mem-edit .txt {
-  font-size: 14px;
-  line-height: 1.55;
-}
-.mem-edit .x {
-  color: var(--muted-2);
-  cursor: pointer;
-  align-self: center;
 }
 
 /* usage spark */
