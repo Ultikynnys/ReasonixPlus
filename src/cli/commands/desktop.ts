@@ -1174,13 +1174,17 @@ export async function extractImageMentions(
 /** User records carry plain text for text-only turns and OpenAI content parts
  *  when images are attached — extract the text and image data URLs for the
  *  LoadedMessage wire shape. */
-function userLoadedMessage(content: ChatMessage["content"]): {
+function userLoadedMessage(
+  content: ChatMessage["content"],
+  ts?: number,
+): {
   kind: "user";
   text: string;
   images?: string[];
+  ts?: number;
 } {
   if (typeof content === "string" || content === undefined || content === null) {
-    return { kind: "user", text: content ?? "" };
+    return { kind: "user", text: content ?? "", ts };
   }
   const textParts: string[] = [];
   const images: string[] = [];
@@ -1191,7 +1195,12 @@ function userLoadedMessage(content: ChatMessage["content"]): {
       images.push(part.image_url.url);
     }
   }
-  return { kind: "user", text: textParts.join("\n"), images: images.length ? images : undefined };
+  return {
+    kind: "user",
+    text: textParts.join("\n"),
+    images: images.length ? images : undefined,
+    ts,
+  };
 }
 
 export function buildLoadedMessages(records: ChatMessage[]): LoadedMessage[] {
@@ -1212,7 +1221,7 @@ export function buildLoadedMessages(records: ChatMessage[]): LoadedMessage[] {
       if (rec.synthetic === true) continue;
       turn += 1;
       pendingAssistantIdx = -1;
-      out.push(userLoadedMessage(rec.content));
+      out.push(userLoadedMessage(rec.content, rec.ts));
       continue;
     }
     if (rec.role === "assistant") {
@@ -1241,7 +1250,13 @@ export function buildLoadedMessages(records: ChatMessage[]): LoadedMessage[] {
           });
         }
       }
-      out.push({ kind: "assistant", turn, segments, pending: false });
+      out.push({
+        kind: "assistant",
+        turn,
+        segments,
+        pending: false,
+        ts: rec.ts,
+      });
       pendingAssistantIdx = out.length - 1;
       continue;
     }

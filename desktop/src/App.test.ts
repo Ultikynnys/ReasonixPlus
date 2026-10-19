@@ -40,6 +40,7 @@ import {
   cueIdForEvent,
   groupTabsByWorkspace,
   hasPendingIntervention,
+  mapLoadedMessages,
   parseSessionTimestamp,
   reduce,
   runningSessionNames,
@@ -51,6 +52,7 @@ import {
   sortSessionsByCreationDescending,
   sortSessionsDescending,
   workspaceTabRepresentatives,
+  writeStamp,
 } from "./App";
 import type { ModelTurnStartedEvent } from "./protocol";
 import { getThreadMaxWidth } from "./ui/thread-layout";
@@ -706,7 +708,7 @@ describe("Desktop App reducer — usage", () => {
     expect(
       incoming({ type: "model.delta", id: 1, ts: "t", turn: 2, channel: "content", text: "hi" })
         .messages,
-    ).toEqual([
+    ).toMatchObject([
       { kind: "assistant", turn: 2, pending: true, segments: [{ kind: "text", text: "hi" }] },
     ]);
 
@@ -4477,5 +4479,36 @@ describe("settingsValueEqual — echo reconciliation", () => {
     expect(settingsValueEqual(undefined, null)).toBe(false);
     expect(settingsValueEqual(null, null)).toBe(true);
     expect(settingsValueEqual(undefined, {})).toBe(false);
+  });
+});
+
+describe("mapLoadedMessages write stamps", () => {
+  it("carries each record's write time onto the transcript entry", () => {
+    const messages = mapLoadedMessages([
+      { kind: "user", text: "first", ts: 1_700_000_000_000 },
+      { kind: "assistant", turn: 1, segments: [], pending: false, ts: 1_700_000_004_000 },
+      { kind: "notice", id: "n1", text: "compacted", severity: "info", ts: 1_700_000_006_000 },
+      { kind: "user", text: "second", ts: 1_700_000_010_000 },
+    ]);
+    expect(messages.map((m) => m.ts)).toEqual([
+      1_700_000_000_000, 1_700_000_004_000, 1_700_000_006_000, 1_700_000_010_000,
+    ]);
+  });
+
+  it("leaves the stamp absent for a record written before stamps existed", () => {
+    const [user] = mapLoadedMessages([{ kind: "user", text: "old" }]);
+    expect(user?.ts).toBeUndefined();
+  });
+});
+
+describe("writeStamp", () => {
+  it("orders two records written in the same millisecond", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    const first = writeStamp();
+    const second = writeStamp();
+    vi.useRealTimers();
+    expect(first).toBeGreaterThanOrEqual(1_700_000_000_000);
+    expect(second).toBeGreaterThan(first);
   });
 });

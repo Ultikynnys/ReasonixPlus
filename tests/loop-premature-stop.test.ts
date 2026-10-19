@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { CacheFirstLoop } from "../src/loop.js";
-import { looksLikePrematureStop } from "../src/loop/premature-stop.js";
+import { looksCutOffMidSentence, looksLikePrematureStop } from "../src/loop/premature-stop.js";
 import type { LoopEvent } from "../src/loop/types.js";
 import { ImmutablePrefix } from "../src/memory/runtime.js";
 import { ToolRegistry } from "../src/tools.js";
@@ -39,6 +39,37 @@ describe("looksLikePrematureStop", () => {
       looksLikePrematureStop("See the guide below:\n\n```ts\ncode();\n```\n\nThat's it."),
     ).toBe(false);
     expect(looksLikePrematureStop("")).toBe(false);
+  });
+});
+
+describe("looksCutOffMidSentence", () => {
+  it("flags the field report — a stream that died inside an opened clause", () => {
+    expect(
+      looksCutOffMidSentence(
+        "I'll gather the last details I need (test file body, all consumers of",
+      ),
+    ).toBe(true);
+  });
+
+  it("flags an unclosed opener with no dangling word", () => {
+    expect(looksCutOffMidSentence("Reading the call sites (src/loop.ts, src/client.ts")).toBe(true);
+    expect(looksCutOffMidSentence("The shape is")).toBe(true);
+    expect(looksCutOffMidSentence("I need the exports, the types and all consumers of")).toBe(true);
+  });
+
+  it("does not flag prose that closes its own structure", () => {
+    expect(looksCutOffMidSentence("Done. All 14 tests pass.")).toBe(false);
+    expect(looksCutOffMidSentence("Call `foo(1)` to run it.")).toBe(false);
+    expect(looksCutOffMidSentence("See [the guide](docs/guide.md).")).toBe(false);
+    expect(looksCutOffMidSentence("Fixed.\n\n```ts\nconst x = f(1);\n```")).toBe(false);
+    expect(looksCutOffMidSentence("Full log: https://example.com/run/1234")).toBe(false);
+    expect(looksCutOffMidSentence("Done.\n\n---")).toBe(false);
+  });
+
+  it("leaves one-word answers alone", () => {
+    expect(looksCutOffMidSentence("a")).toBe(false);
+    expect(looksCutOffMidSentence("ok")).toBe(false);
+    expect(looksCutOffMidSentence("")).toBe(false);
   });
 });
 
@@ -97,6 +128,53 @@ describe("CacheFirstLoop premature-stop nudge", () => {
 
   it("does not nudge plain Q&A answers that never used tools", async () => {
     const responses: FakeResponseShape[] = [{ content: "Now the remaining verification" }];
+    const { client, captured } = makeFakeClient(responses, { echoMessages: true });
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s" }),
+      stream: false,
+      model: "deepseek-v4-flash",
+    });
+
+    for await (const _ of loop.step("just answer this")) {
+      /* drain */
+    }
+    expect(captured.length).toBe(1);
+  });
+
+  it("resumes a reply the provider cut off mid-sentence, before any tool ran", async () => {
+    // The field report: a stream that died mid-phrase and was reported as a
+    // finished turn ("Task complete") with the half-written message.
+    const responses: FakeResponseShape[] = [
+      { content: "I'll gather the last details I need (test file body, all consumers of" },
+      {
+        content:
+          "I'll gather the last details I need (test file body, all consumers of the helper). Done: no test needs changing.",
+      },
+    ];
+    const { client, captured } = makeFakeClient(responses, { echoMessages: true });
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s" }),
+      stream: false,
+      model: "deepseek-v4-flash",
+    });
+
+    const events: LoopEvent[] = [];
+    for await (const ev of loop.step("check the helper")) events.push(ev);
+
+    expect(captured.length).toBe(2);
+    const retryMessages = captured[1]?.messages ?? [];
+    const lastUser = [...retryMessages].reverse().find((m) => m.role === "user");
+    expect(lastUser?.content).toContain("cut off mid-sentence");
+    expect(events.find((ev) => ev.role === "done")?.content).toContain("no test needs changing");
+    expect(
+      events.some((ev) => ev.role === "warning" && ev.content?.includes("cut off mid-sentence")),
+    ).toBe(true);
+  });
+
+  it("does not nudge a complete answer that closes its own punctuation", async () => {
+    const responses: FakeResponseShape[] = [{ content: "Done. All 14 tests pass." }];
     const { client, captured } = makeFakeClient(responses, { echoMessages: true });
     const loop = new CacheFirstLoop({
       client,

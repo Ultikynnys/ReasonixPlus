@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   JumpBar,
+  type JumpMessage,
   MIN_DOT_GAP,
-  dotTopForOffset,
-  separateTops,
-  trackMetrics,
+  conversationSpans,
+  projectMarks,
 } from "../src/ui/jump-bar";
 import { useAutoScroll } from "../src/ui/useAutoScroll";
 import { useIsScrollable } from "../src/ui/useIsScrollable";
@@ -17,11 +17,10 @@ import { useIsScrollable } from "../src/ui/useIsScrollable";
  */
 
 const QUESTION_PX = 24;
-
-// Expected positions come from the component's own helpers: one mapping, so the
-// probe and the thing it probes cannot drift apart. (An earlier revision of this
-// harness re-derived the mapping locally so it could also run against the pre-fix
-// component; those pre-fix numbers are recorded in the plan history instead.)
+/** Stamp of the first recorded turn, and the spacing between turns. The map is
+ *  projected from these, so they are the fixture's real inputs. */
+const BASE_TS = 1_700_000_000_000;
+const TURN_GAP_MS = 60_000;
 
 interface TurnFixture {
   question: string;
@@ -34,8 +33,8 @@ interface Scenario {
   lastAnswerPx: number;
 }
 
-/** Five short turns with one long answer: the real-world shape that stacks every
- *  dot near the top of the track (a live chat with a long reply). */
+/** Five short turns with one long answer: the real-world shape the old
+ *  content-weight map stacked against the top of the track. */
 const CLUSTERED: Scenario = { turns: 5, answerPx: 200, lastAnswerPx: 30000 };
 const TINY: Scenario = { turns: 2, answerPx: 10, lastAnswerPx: 10 };
 
@@ -43,6 +42,15 @@ const fixture = ({ turns, answerPx, lastAnswerPx }: Scenario): TurnFixture[] =>
   Array.from({ length: turns }, (_, i) => ({
     question: `Probe question ${i + 1}`,
     answerPx: i === turns - 1 ? lastAnswerPx : answerPx,
+  }));
+
+/** The transcript the bar reads: one user record per turn, each stamped. */
+const messagesFor = (turns: TurnFixture[]): JumpMessage[] =>
+  turns.map((turn, i) => ({
+    kind: "user",
+    text: turn.question,
+    turn: i + 1,
+    ts: BASE_TS + i * TURN_GAP_MS,
   }));
 
 interface AssertionResult {
@@ -64,14 +72,16 @@ interface HarnessControl {
   setStreamed: (px: number) => void;
   addStreamed: (px: number) => void;
   setBusy: (busy: boolean) => void;
+  addTurn: () => void;
+  /** The dots the visible transcript should be showing, straight from the
+   *  component's own helpers: a probe never re-implements the mapping. */
+  expected: () => number[];
 }
 
 declare global {
   interface Window {
     __harness?: {
       results: () => HarnessResults | null;
-      /** What the dots should read right now, straight from the component's own
-       *  helpers: a probe never re-implements the mapping to check it. */
       expected: () => number[];
       run: () => Promise<HarnessResults>;
       control: HarnessControl;
@@ -93,23 +103,13 @@ const dots = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(".j
 
 const dotTops = (): number[] => dots().map((dot) => Number.parseFloat(dot.style.top) || 0);
 
-/** Content-space offset of every turn, the coordinate the dots are mapped from. */
+/** Content-space offset of every turn, the coordinate a click has to land on. */
 const anchors = (thread: HTMLElement): { turn: number; offset: number }[] => {
   const rect = thread.getBoundingClientRect();
   return [...thread.querySelectorAll<HTMLElement>("[data-turn]")].map((el) => ({
     turn: Number(el.getAttribute("data-turn")),
     offset: el.getBoundingClientRect().top - rect.top + thread.scrollTop,
   }));
-};
-
-/** What the dots should read right now, computed from the live geometry. */
-const expectedTops = (thread: HTMLElement): number[] => {
-  const m = trackMetrics(thread);
-  return separateTops(
-    anchors(thread).map((a) => dotTopForOffset(a.offset, m)),
-    m.trackHeight,
-    MIN_DOT_GAP,
-  ).map((top) => Math.round(top));
 };
 
 /** Wait until the transcript has grown enough to overflow, so the bar exists. */
@@ -147,66 +147,102 @@ async function assertIdleStable(control: HarnessControl): Promise<AssertionResul
   };
 }
 
-/** Growth must be reflected within one frame; the deferral this replaced took
- *  ~1.2s, which is what made the dots land in whole-tens-of-pixels steps. */
-async function assertGrowthTracked(control: HarnessControl): Promise<AssertionResult> {
+/** The first record anchors the top of the track: the first dot must be flush
+ *  with the top edge, not merely near it. */
+async function assertFirstDotAtTop(control: HarnessControl): Promise<AssertionResult> {
   control.reset(CLUSTERED);
   await frames(20);
   if (!(await waitForBar())) {
-    return { id: "B", name: "growth is tracked every frame", pass: false, detail: "no dots" };
+    return { id: "B", name: "first dot sits at the top edge", pass: false, detail: "no dots" };
   }
-  let mismatches = 0;
-  let maxLag = 0;
-  let steps = 0;
+  const tops = dotTops();
+  const expected = control.expected();
+  const first = document.querySelector<HTMLElement>('.jump-dot[data-turn="1"]');
+  const firstTop = first ? Number.parseFloat(first.style.top) : Number.NaN;
+  return {
+    id: "B",
+    name: "first dot sits at the top edge",
+    pass: firstTop === 0 && tops.join(",") === expected.join(","),
+    detail: `turn 1 at ${firstTop}px, tops [${tops.join(", ")}], mapping [${expected.join(", ")}]`,
+  };
+}
+
+/** The map is a function of the records, not of layout: an answer streaming
+ *  taller must not move a single dot. */
+async function assertInertWhileGrowing(control: HarnessControl): Promise<AssertionResult> {
+  control.reset(CLUSTERED);
+  await frames(20);
+  if (!(await waitForBar())) {
+    return {
+      id: "C",
+      name: "dots are inert while an answer streams",
+      pass: false,
+      detail: "no dots",
+    };
+  }
+  const before = dotTops().join(",");
+  let moves = 0;
   let worst = "";
   control.setBusy(true);
   for (let i = 0; i < 90; i += 1) {
     control.addStreamed(64);
     await frame();
-    steps += 1;
-    const thread = threadEl();
-    if (!thread) break;
-    let lag = 0;
-    while (lag < 4 && expectedTops(thread).join(",") !== dotTops().join(",")) {
-      await frame();
-      lag += 1;
-    }
-    if (lag > 0) maxLag = Math.max(maxLag, lag);
-    if (lag >= 4) {
-      mismatches += 1;
-      if (!worst) worst = `expected ${expectedTops(thread).join(",")} got ${dotTops().join(",")}`;
+    const now = dotTops().join(",");
+    if (now !== before) {
+      moves += 1;
+      if (!worst) worst = `${before} -> ${now}`;
     }
   }
   control.setBusy(false);
+  const expected = control.expected().join(",");
+  const onMap = dotTops().join(",") === expected;
   return {
-    id: "B",
-    name: "growth is tracked every frame",
-    pass: mismatches === 0,
-    detail: `${steps} growth frames, max lag ${maxLag} frame(s), ${mismatches} unresolved${worst ? ` (${worst})` : ""}`,
+    id: "C",
+    name: "dots are inert while an answer streams",
+    pass: moves === 0 && onMap,
+    detail: `90 growth frames, ${moves} move(s)${worst ? `, first ${worst}` : ""}, ${onMap ? "still on the mapping" : `off the mapping (expected [${expected}])`}`,
   };
 }
 
-/** The bug that started this: dots stacked within 2px, so the top-most dot of the
- *  stack swallowed every click aimed at its neighbours. */
+/** A dot moves when, and only when, a record is written. */
+async function assertMovesOnWrite(control: HarnessControl): Promise<AssertionResult> {
+  control.reset(CLUSTERED);
+  await frames(20);
+  if (!(await waitForBar())) {
+    return { id: "D", name: "a written record moves the dots", pass: false, detail: "no dots" };
+  }
+  const before = dotTops();
+  control.addTurn();
+  await frames(6);
+  const after = dotTops();
+  const expected = control.expected();
+  const moved = after.length === before.length + 1 && after.join(",") !== before.join(",");
+  return {
+    id: "D",
+    name: "a written record moves the dots",
+    pass: moved && after.join(",") === expected.join(","),
+    detail: `${before.length} dots [${before.join(", ")}] -> ${after.length} dots [${after.join(", ")}], mapping [${expected.join(", ")}]`,
+  };
+}
+
+/** The bug that started the earlier work: dots stacked within 2px, so the top-most
+ *  dot of the stack swallowed every click aimed at its neighbours. */
 async function assertDotsReachable(control: HarnessControl): Promise<AssertionResult> {
   control.reset(CLUSTERED);
   await frames(20);
   if (!(await waitForBar())) {
-    return { id: "C", name: "every dot reachable and separated", pass: false, detail: "no dots" };
+    return { id: "E", name: "every dot reachable and separated", pass: false, detail: "no dots" };
   }
   const tops = dotTops();
   const gaps = tops.slice(1).map((top, i) => Math.round((top - tops[i]!) * 10) / 10);
   const tooTight = gaps.filter((gap) => gap < MIN_DOT_GAP - 1);
   const misHit = dots().filter((dot) => {
     const rect = dot.getBoundingClientRect();
-    const hit = document.elementFromPoint(
-      rect.left + rect.width / 2,
-      rect.top + rect.height / 2,
-    );
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
     return hit !== dot;
   });
   return {
-    id: "C",
+    id: "E",
     name: "every dot reachable and separated",
     pass: tooTight.length === 0 && misHit.length === 0,
     detail: `tops [${tops.join(", ")}], gaps [${gaps.join(", ")}] (min ${MIN_DOT_GAP}), ${misHit.length}/${dots().length} dots not on top at their own centre`,
@@ -219,13 +255,13 @@ async function assertClickWhileGrowing(control: HarnessControl): Promise<Asserti
   control.reset(CLUSTERED);
   await frames(20);
   if (!(await waitForBar())) {
-    return { id: "D", name: "click lands the turn while growing", pass: false, detail: "no dots" };
+    return { id: "F", name: "click lands the turn while growing", pass: false, detail: "no dots" };
   }
   const thread = threadEl();
-  if (!thread) return { id: "D", name: "click lands the turn", pass: false, detail: "no thread" };
+  if (!thread) return { id: "F", name: "click lands the turn", pass: false, detail: "no thread" };
   const target = dots().find((dot) => dot.dataset.turn === "4") ?? dots()[dots().length - 2];
   if (!target) {
-    return { id: "D", name: "click lands the turn while growing", pass: false, detail: "no dot 4" };
+    return { id: "F", name: "click lands the turn while growing", pass: false, detail: "no dot 4" };
   }
   const turn = target.dataset.turn!;
   // Busy first, settle, then click: in the app the turn-start pin happens when the
@@ -239,14 +275,12 @@ async function assertClickWhileGrowing(control: HarnessControl): Promise<Asserti
     await frame();
     const el = thread.querySelector<HTMLElement>(`[data-turn="${turn}"]`);
     if (!el) continue;
-    const offset = Math.abs(
-      el.getBoundingClientRect().top - thread.getBoundingClientRect().top,
-    );
+    const offset = Math.abs(el.getBoundingClientRect().top - thread.getBoundingClientRect().top);
     worstOffset = Math.max(worstOffset, offset);
   }
   control.setBusy(false);
   return {
-    id: "D",
+    id: "F",
     name: "click lands the turn while growing",
     pass: worstOffset <= 2,
     detail: `after clicking turn ${turn}, its top drifted up to ${Math.round(worstOffset)}px from the viewport top while the answer kept growing`,
@@ -260,7 +294,12 @@ async function assertHopsWhileGrowing(control: HarnessControl): Promise<Assertio
   await frames(20);
   const thread = threadEl();
   if (!thread || !(await waitForBar())) {
-    return { id: "G", name: "hopping while growing lands and stays mapped", pass: false, detail: "no dots" };
+    return {
+      id: "G",
+      name: "hopping while growing lands and stays mapped",
+      pass: false,
+      detail: "no dots",
+    };
   }
   control.setBusy(true);
   await frames(6);
@@ -293,8 +332,10 @@ async function assertHopsWhileGrowing(control: HarnessControl): Promise<Assertio
     const active = document.querySelector<HTMLElement>(".jump-dot[data-active]")?.dataset.turn;
     if (!(offTop <= 2)) problems.push(`turn ${turn}: landed ${Math.round(offTop)}px off`);
     if (active !== String(turn)) problems.push(`turn ${turn}: marker on ${active ?? "none"}`);
-    if (dotTops().join(",") !== expectedTops(thread).join(",")) {
-      problems.push(`turn ${turn}: dots ${dotTops().join(",")} vs mapping ${expectedTops(thread).join(",")}`);
+    if (dotTops().join(",") !== control.expected().join(",")) {
+      problems.push(
+        `turn ${turn}: dots ${dotTops().join(",")} vs mapping ${control.expected().join(",")}`,
+      );
     }
   }
   control.setBusy(false);
@@ -315,17 +356,17 @@ async function assertActiveFollowsScroll(control: HarnessControl): Promise<Asser
   await frames(20);
   const thread = threadEl();
   if (!thread || !(await waitForBar())) {
-    return { id: "E", name: "active marker follows the reader", pass: false, detail: "no dots" };
+    return { id: "H", name: "active marker follows the reader", pass: false, detail: "no dots" };
   }
   const anchor = anchors(thread).find((a) => a.turn === 3);
   if (!anchor) {
-    return { id: "E", name: "active marker follows the reader", pass: false, detail: "no turn 3" };
+    return { id: "H", name: "active marker follows the reader", pass: false, detail: "no turn 3" };
   }
   thread.scrollTop = anchor.offset;
   await frames(20);
   const active = document.querySelector<HTMLElement>(".jump-dot[data-active]");
   return {
-    id: "E",
+    id: "H",
     name: "active marker follows the reader",
     pass: active?.dataset.turn === "3",
     detail: `scrolled to turn 3; active marker is turn ${active?.dataset.turn ?? "none"}`,
@@ -338,7 +379,7 @@ async function assertBarHiddenWhenFits(control: HarnessControl): Promise<Asserti
   const bar = document.querySelector(".jump-bar");
   const thread = threadEl();
   return {
-    id: "F",
+    id: "I",
     name: "no bar when the transcript fits",
     pass: bar === null,
     detail: bar
@@ -370,6 +411,17 @@ function Harness() {
   const { unpinForJump } = useAutoScroll(threadRef, innerRef, busy);
   const scrollable = useIsScrollable(threadRef, innerRef);
 
+  const messages = useMemo(() => messagesFor(turns), [turns]);
+
+  /** The dots the rendered transcript should show, from the component's own
+   *  mapping — never a locally re-derived one. */
+  const expected = useCallback((): number[] => {
+    const el = threadEl();
+    if (!el) return [];
+    const trackHeight = Math.round(el.clientHeight);
+    return projectMarks(conversationSpans(messages), trackHeight).map((mark) => mark.top);
+  }, [messages]);
+
   const control = useMemo<HarnessControl>(
     () => ({
       reset: (scenario) => {
@@ -379,13 +431,14 @@ function Harness() {
       setStreamed: (px) => setStreamed(px),
       addStreamed: (px) => setStreamed((prev) => prev + px),
       setBusy,
+      addTurn: () =>
+        setTurns((prev) => [
+          ...prev,
+          { question: `Probe question ${prev.length + 1}`, answerPx: 200 },
+        ]),
+      expected,
     }),
-    [],
-  );
-
-  const messages = useMemo(
-    () => turns.map((turn, i) => ({ kind: "user", text: turn.question, turn: i + 1 })),
-    [turns],
+    [expected],
   );
 
   useEffect(() => {
@@ -393,7 +446,9 @@ function Harness() {
     const run = async (): Promise<HarnessResults> => {
       const assertions: AssertionResult[] = [];
       assertions.push(await assertIdleStable(control));
-      assertions.push(await assertGrowthTracked(control));
+      assertions.push(await assertFirstDotAtTop(control));
+      assertions.push(await assertInertWhileGrowing(control));
+      assertions.push(await assertMovesOnWrite(control));
       assertions.push(await assertDotsReachable(control));
       assertions.push(await assertClickWhileGrowing(control));
       assertions.push(await assertHopsWhileGrowing(control));
@@ -411,10 +466,7 @@ function Harness() {
     // `results` here would re-run the whole suite on every publish.
     window.__harness = {
       results: () => resultsRef.current,
-      expected: () => {
-        const el = threadEl();
-        return el ? expectedTops(el) : [];
-      },
+      expected: () => control.expected(),
       run,
       control,
     };
@@ -423,7 +475,7 @@ function Harness() {
     });
     return () => {
       cancelled = true;
-      delete window.__harness;
+      window.__harness = undefined;
     };
   }, [control]);
 
@@ -461,14 +513,7 @@ function Harness() {
           </div>
         </div>
       </div>
-      {scrollable ? (
-        <JumpBar
-          messages={messages}
-          threadEl={thread}
-          busy={busy}
-          onJump={unpinForJump}
-        />
-      ) : null}
+      {scrollable ? <JumpBar messages={messages} threadEl={thread} onJump={unpinForJump} /> : null}
     </div>
   );
 }

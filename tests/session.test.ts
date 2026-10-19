@@ -105,8 +105,26 @@ describe("session persistence", () => {
     appendSessionMessage("foo", { role: "assistant", content: "hello" });
     const msgs = loadSessionMessages("foo");
     expect(msgs.length).toBe(2);
-    expect(msgs[0]).toEqual({ role: "user", content: "hi" });
-    expect(msgs[1]).toEqual({ role: "assistant", content: "hello" });
+    expect(msgs[0]).toMatchObject({ role: "user", content: "hi" });
+    expect(msgs[1]).toMatchObject({ role: "assistant", content: "hello" });
+  });
+
+  it("stamps every appended record with its write time", () => {
+    const before = Date.now();
+    appendSessionMessage("stamped-ts", { role: "user", content: "when" });
+    const after = Date.now();
+    const [record] = loadSessionMessages("stamped-ts");
+    expect(typeof record?.ts).toBe("number");
+    expect(record!.ts!).toBeGreaterThanOrEqual(before);
+    expect(record!.ts!).toBeLessThanOrEqual(after);
+  });
+
+  it("keeps an explicit stamp and preserves stamps across a rewrite", () => {
+    appendSessionMessage("stamp-keep", { role: "user", content: "kept", ts: 1_700_000_000_000 });
+    const loaded = loadSessionMessages("stamp-keep");
+    expect(loaded[0]!.ts).toBe(1_700_000_000_000);
+    rewriteSession("stamp-keep", loaded);
+    expect(loadSessionMessages("stamp-keep")[0]!.ts).toBe(1_700_000_000_000);
   });
 
   it("tolerates malformed lines (skips them)", () => {
@@ -125,9 +143,9 @@ describe("session persistence", () => {
     rewriteSession("safe-rewrite", [{ role: "user", content: "new" }]);
 
     expect(loadSessionMessages("safe-rewrite")).toEqual([{ role: "user", content: "new" }]);
-    expect(readFileSync(`${sessionPath("safe-rewrite")}.bak`, "utf8")).toBe(
-      `${JSON.stringify({ role: "user", content: "old" })}\n`,
-    );
+    // The snapshot holds the pre-rewrite record verbatim, stamp included.
+    const backup = readFileSync(`${sessionPath("safe-rewrite")}.bak`, "utf8").trim();
+    expect(JSON.parse(backup)).toMatchObject({ role: "user", content: "old" });
   });
 
   it("loadSessionMessages falls back to backup when the live transcript has no valid entries", () => {
@@ -136,7 +154,9 @@ describe("session persistence", () => {
     writeFileSync(`${p}.bak`, readFileSync(p, "utf8"));
     writeFileSync(p, "not json\nalso not json\n");
 
-    expect(loadSessionMessages("recover-corrupt")).toEqual([{ role: "user", content: "saved" }]);
+    expect(loadSessionMessages("recover-corrupt")).toMatchObject([
+      { role: "user", content: "saved" },
+    ]);
   });
 
   it("loadSessionMessages does not resurrect backup when the live transcript is empty", () => {
@@ -623,7 +643,7 @@ describe("session persistence", () => {
       expect(existsSync(sessionPath(archived!).replace(/\.jsonl$/, ".events.jsonl"))).toBe(true);
       expect(existsSync(sessionPath(archived!).replace(/\.jsonl$/, ".meta.json"))).toBe(true);
       expect(existsSync(`${sessionPath(archived!)}.bak`)).toBe(true);
-      expect(loadSessionMessages(archived!)).toEqual([{ role: "user", content: "hi" }]);
+      expect(loadSessionMessages(archived!)).toMatchObject([{ role: "user", content: "hi" }]);
     });
 
     it("disambiguates when called twice in the same minute", () => {
@@ -634,8 +654,8 @@ describe("session persistence", () => {
       expect(a).not.toBeNull();
       expect(b).not.toBeNull();
       expect(a).not.toBe(b);
-      expect(loadSessionMessages(a!)).toEqual([{ role: "user", content: "first" }]);
-      expect(loadSessionMessages(b!)).toEqual([{ role: "user", content: "second" }]);
+      expect(loadSessionMessages(a!)).toMatchObject([{ role: "user", content: "first" }]);
+      expect(loadSessionMessages(b!)).toMatchObject([{ role: "user", content: "second" }]);
     });
 
     it("archive name is excluded from the resume-by-prefix lookup", () => {
@@ -713,7 +733,9 @@ describe("session persistence", () => {
     });
     loop.appendAndPersist({ role: "user", content: "[!ls]\n$ ls\n[exit 0]\nfile1 file2" });
     const reloaded = loadSessionMessages("bang-persist");
-    expect(reloaded).toEqual([{ role: "user", content: "[!ls]\n$ ls\n[exit 0]\nfile1 file2" }]);
+    expect(reloaded).toMatchObject([
+      { role: "user", content: "[!ls]\n$ ls\n[exit 0]\nfile1 file2" },
+    ]);
   });
 
   it("a detached active loop cannot recreate its deleted session", () => {

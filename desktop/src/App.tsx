@@ -308,6 +308,8 @@ export type ChatMessage =
       turn: number;
       skill?: SkillOrigin;
       images?: string[];
+      /** When the record was written (epoch ms): the jump map's coordinate. */
+      ts?: number;
     }
   | {
       kind: "assistant";
@@ -318,6 +320,7 @@ export type ChatMessage =
        *  card: later streaming output opens a NEW card below the boundary rather
        *  than re-opening this one. */
       closed?: boolean;
+      ts?: number;
     }
   | {
       kind: "notice";
@@ -325,6 +328,7 @@ export type ChatMessage =
       text: string;
       severity: NoticeSeverity;
       turn?: number;
+      ts?: number;
       /** Compaction card state: true = in progress (throbber), false = done. */
       running?: boolean;
       /** Which compaction path owns the card — completion signals are keyed to it. */
@@ -782,9 +786,18 @@ function pendingAssistantIndex(messages: ChatMessage[]): number {
   return -1;
 }
 
+/** When a record is written. Monotone within the process, so two records created in
+ *  the same millisecond still order by write order: a tie would collapse the
+ *  conversation's span, and the jump dots with it. */
+let lastWriteStamp = 0;
+export function writeStamp(): number {
+  lastWriteStamp = Math.max(Date.now(), lastWriteStamp + 1);
+  return lastWriteStamp;
+}
+
 /** A fresh, empty assistant card for a turn — pending until its turn settles. */
 function newAssistantCard(turn: number): Extract<ChatMessage, { kind: "assistant" }> {
-  return { kind: "assistant", turn, segments: [], pending: true };
+  return { kind: "assistant", turn, segments: [], pending: true, ts: writeStamp() };
 }
 
 /** Apply `fn` to the turn's OPEN assistant card, opening a fresh card when a
@@ -946,6 +959,7 @@ export function reduce(state: State, action: Action): State {
             text: action.text,
             clientId: action.clientId,
             turn: nextMessageTurn(state.messages),
+            ts: writeStamp(),
             ...(action.images ? { images: action.images } : {}),
           },
         ],
@@ -964,6 +978,7 @@ export function reduce(state: State, action: Action): State {
             text: `/${action.skill.name}${argsLine}`,
             clientId: action.clientId,
             turn: nextMessageTurn(state.messages),
+            ts: writeStamp(),
             skill: action.skill,
           },
         ],
@@ -1472,10 +1487,18 @@ export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
         clientId: `c-loaded-${i}`,
         turn: userTurn,
         ...(m.images ? { images: m.images } : {}),
+        ts: m.ts,
       };
     }
     if (m.kind === "notice") {
-      return { kind: "notice", id: m.id, text: m.text, severity: m.severity, turn: m.turn };
+      return {
+        kind: "notice",
+        id: m.id,
+        text: m.text,
+        severity: m.severity,
+        turn: m.turn,
+        ts: m.ts,
+      };
     }
     const segments: AssistantSegment[] = m.segments.map((s, segIdx) => {
       if (s.kind === "tool") {
@@ -1501,7 +1524,14 @@ export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
       return s;
     });
     // closed: history can never be the streaming target (see openAssistantIndex).
-    return { kind: "assistant", turn: m.turn, segments, pending: false, closed: true };
+    return {
+      kind: "assistant",
+      turn: m.turn,
+      segments,
+      pending: false,
+      closed: true,
+      ts: m.ts,
+    };
   });
 }
 
@@ -1694,6 +1724,7 @@ function insertNotice(
     text,
     severity,
     turn: noticeTurn,
+    ts: writeStamp(),
   });
 }
 
@@ -1747,7 +1778,10 @@ function appendAssistantSegment(
     next[hostIndex] = { ...host, segments: [...host.segments, segment] };
     return next;
   }
-  return [...messages, { kind: "assistant", turn, segments: [segment], pending: false }];
+  return [
+    ...messages,
+    { kind: "assistant", turn, segments: [segment], pending: false, ts: writeStamp() },
+  ];
 }
 
 export function applySubagentProgress(
@@ -1919,6 +1953,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
             text: ev.text,
             clientId: ev.clientId ?? `remote-${ev.id}`,
             turn: ev.turn > 0 ? ev.turn : nextMessageTurn(state.messages),
+            ts: writeStamp(),
           },
         ],
       };
@@ -2857,6 +2892,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turn: currentTurnForNotice(base),
         running: true,
         trigger: ev.trigger,
+        ts: writeStamp(),
       };
       return { ...state, messages: appendNoticeMessage(base, notice) };
     }
@@ -4378,12 +4414,7 @@ function TabRuntime({
 
         <main className="main" style={{ position: "relative" }}>
           {threadScrollable ? (
-            <JumpBar
-              messages={state.messages}
-              threadEl={threadRef.current}
-              busy={state.busy}
-              onJump={unpinForJump}
-            />
+            <JumpBar messages={state.messages} threadEl={threadRef.current} onJump={unpinForJump} />
           ) : null}
           {state.sessionsMutation !== null ? (
             <div className="main-progress" role="status" aria-live="polite">

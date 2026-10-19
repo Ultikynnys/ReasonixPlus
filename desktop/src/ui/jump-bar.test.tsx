@@ -5,15 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   JumpBar,
   MIN_DOT_GAP,
-  MIN_THUMB_PX,
+  type ConversationSpan,
   activeTurnFor,
-  dotTopForOffset,
-  maxScrollTop,
+  conversationSpans,
+  jumpTargetFor,
+  markTopFor,
   projectMarks,
-  scrollTopForOffset,
   separateTops,
-  thumbLength,
-  thumbTopForScrollTop,
 } from "./jump-bar";
 
 /** Minimal ResizeObserver the test fires by hand: jsdom has none, and the
@@ -84,9 +82,21 @@ function makeThread(): FakeThread {
   return { el, geom, sync };
 }
 
-const userTurn = (turn: number, text: string) => ({ kind: "user", text, turn });
+const userTurn = (turn: number, text: string, ts?: number) => ({
+  kind: "user",
+  text,
+  turn,
+  ...(ts === undefined ? {} : { ts }),
+});
 
-const messages = [userTurn(1, "first question"), userTurn(2, "second question")];
+/** Two turns with their answers: turn 1 written at 1000, turn 2 at 2000, and the
+ *  conversation ends at 3000. */
+const messages = [
+  userTurn(1, "first question", 1_000),
+  { kind: "assistant", turn: 1, ts: 1_500 },
+  userTurn(2, "second question", 2_000),
+  { kind: "assistant", turn: 2, ts: 3_000 },
+];
 
 function dotTops(): number[] {
   return Array.from(document.querySelectorAll<HTMLElement>(".jump-dot")).map((dot) =>
@@ -94,101 +104,199 @@ function dotTops(): number[] {
   );
 }
 
+/** Notify every observer, as a real resize does: the bar keeps one for the track
+ *  box and one for the marker's anchors. */
 function fireResize(): void {
-  const ro = FakeResizeObserver.instances.at(-1);
-  if (!ro) throw new Error("no ResizeObserver was installed");
+  if (FakeResizeObserver.instances.length === 0) {
+    throw new Error("no ResizeObserver was installed");
+  }
   act(() => {
-    ro.fire();
+    for (const ro of FakeResizeObserver.instances) ro.fire();
   });
 }
 
-const anchors = [
-  { turn: 1, text: "a", offset: 0 },
-  { turn: 2, text: "b", offset: 500 },
-];
+describe("conversationSpans", () => {
+  it("places each turn on the timeline by when it was written", () => {
+    const span = conversationSpans(messages);
+    expect(span.turns.map((t) => t.turn)).toEqual([1, 2]);
+    expect(span.turns.map((t) => t.at)).toEqual([1_000, 2_000]);
+    expect(span.start).toBe(1_000);
+    expect(span.end).toBe(3_000);
+  });
 
-/** Track geometry; the track box spans the scroller's padding box, so the track
- *  height and the viewport height are the same number. */
-const metrics = (trackHeight: number, scrollHeight: number, clientHeight = trackHeight) => ({
-  trackHeight,
-  scrollHeight,
-  clientHeight,
+  it("anchors the top on the first turn, not on a record written before it", () => {
+    const span = conversationSpans([
+      { kind: "notice", text: "compacted", ts: 500 },
+      userTurn(1, "one", 1_000),
+    ]);
+    // A notice can sit above turn 1; the first dot still has to be at 0.
+    expect(span.start).toBe(1_000);
+    expect(span.end).toBe(1_000);
+    expect(span.turns.map((t) => t.at)).toEqual([1_000]);
+  });
+
+  it("stretches the end over a record written after the last turn", () => {
+    const span = conversationSpans([
+      userTurn(1, "one", 1_000),
+      { kind: "assistant", turn: 1, ts: 3_000 },
+    ]);
+    expect(span.start).toBe(1_000);
+    expect(span.end).toBe(3_000);
+    expect(span.turns.map((t) => t.at)).toEqual([1_000]);
+  });
+
+  it("keeps one span per turn when a replayed turn arrives twice", () => {
+    const span = conversationSpans([
+      userTurn(1, "first", 10),
+      userTurn(1, "replayed", 20),
+      userTurn(2, "second", 30),
+    ]);
+    expect(span.turns.map((t) => t.turn)).toEqual([1, 2]);
+  });
+
+  it("falls back to turn order when any record has no write stamp", () => {
+    const span = conversationSpans([
+      userTurn(1, "first", 1_000),
+      { kind: "assistant", turn: 1 },
+      userTurn(2, "second", 2_000),
+    ]);
+    expect(span.turns.map((t) => t.at)).toEqual([0, 2]);
+    expect(span.start).toBe(0);
+    expect(span.end).toBe(2);
+  });
+
+  it("has an empty timeline without records", () => {
+    expect(conversationSpans([])).toEqual({ turns: [], start: 0, end: 0 });
+  });
+
+  it("keeps an out-of-order log inside one span", () => {
+    // A retracted or re-inserted record must not pull the span behind a turn: the
+    // old first-record/last-record rule clamped every such dot onto an edge.
+    const span = conversationSpans([userTurn(1, "first", 900), userTurn(2, "second", 300)]);
+    expect(span.start).toBe(300);
+    expect(span.end).toBe(900);
+  });
+
+  it("falls back to turn order when a record's stamp is corrupt", () => {
+    const span = conversationSpans([userTurn(1, "a", Number.NaN), userTurn(2, "b", 10)]);
+    expect(span.turns.map((t) => t.at)).toEqual([0, 1]);
+    expect(span.start).toBe(0);
+    expect(span.end).toBe(1);
+  });
+});
+
+describe("markTopFor", () => {
+  it("puts the first thing in the written conversation at the very top", () => {
+    expect(markTopFor(1_000, 1_000, 3_000, 564)).toBe(0);
+    expect(markTopFor(0, 0, 1, 1200)).toBe(0);
+  });
+
+  it("maps the end of the conversation to the bottom of the track", () => {
+    expect(markTopFor(3_000, 1_000, 3_000, 564)).toBe(564);
+  });
+
+  it("places a turn by its share of the timeline, not of the content", () => {
+    expect(markTopFor(2_000, 1_000, 3_000, 400)).toBe(200);
+  });
+
+  it("draws nothing without a track or without a timeline", () => {
+    expect(markTopFor(2_000, 1_000, 3_000, 0)).toBe(0);
+    expect(markTopFor(2_000, 1_000, 1_000, 400)).toBe(0);
+  });
+
+  it("clamps a stamp outside the timeline", () => {
+    expect(markTopFor(9_999, 1_000, 3_000, 400)).toBe(400);
+    expect(markTopFor(0, 1_000, 3_000, 400)).toBe(0);
+  });
+
+  it("refuses to place a dot from a non-finite stamp", () => {
+    expect(markTopFor(Number.NaN, 0, 10, 400)).toBe(0);
+    expect(markTopFor(5, 0, Number.POSITIVE_INFINITY, 400)).toBe(0);
+  });
 });
 
 describe("projectMarks", () => {
-  it("places a turn where its content offset falls on the track", () => {
-    expect(projectMarks(anchors, metrics(400, 1000)).map((m) => m.top)).toEqual([0, 200]);
+  /** A timeline of turns at the given stamps, spanning them by default. */
+  const timeline = (
+    stamps: readonly number[],
+    start = stamps[0] ?? 0,
+    end = stamps[stamps.length - 1] ?? 0,
+  ): ConversationSpan => ({
+    turns: stamps.map((at, i) => ({ turn: i + 1, text: `t${i + 1}`, at })),
+    start,
+    end,
   });
 
-  it("clamps an offset past the content end onto the thumb's lowest position", () => {
-    // Not the track bottom: the thumb can only reach trackHeight - thumbLength.
-    expect(projectMarks([{ turn: 1, text: "a", offset: 9000 }], metrics(400, 1000))[0]!.top).toBe(
-      240,
+  it("marks each turn at its place on the timeline", () => {
+    expect(projectMarks(timeline([1_000, 2_000, 3_000]), 400).map((m) => m.top)).toEqual([
+      0, 200, 400,
+    ]);
+  });
+
+  it("keeps the first dot at the top even when every later turn is dense", () => {
+    const tops = projectMarks(timeline([1_000, 1_001, 1_002, 1_003], 1_000, 900_000), 600).map(
+      (m) => m.top,
     );
-  });
-
-  it("falls back to an ordered ladder when the transcript cannot scroll", () => {
-    expect(projectMarks(anchors, metrics(400, 400)).map((m) => m.top)).toEqual([0, MIN_DOT_GAP]);
-  });
-
-  it("rounds to whole pixels so sub-pixel wobble cannot invent a position", () => {
-    const a = projectMarks([{ turn: 1, text: "a", offset: 500 }], metrics(400, 1000))[0]!.top;
-    const b = projectMarks([{ turn: 1, text: "a", offset: 500.4 }], metrics(400, 1000))[0]!.top;
-    expect(a).toBe(b);
-  });
-});
-
-describe("the dot mapping is the thumb's own map", () => {
-  it("puts the thumb exactly on the dot once that turn is jumped to", () => {
-    const m = metrics(564, 95085);
-    for (const offset of [0, 1200, 45000, 94521]) {
-      expect(dotTopForOffset(offset, m)).toBe(
-        thumbTopForScrollTop(scrollTopForOffset(offset, m), m),
-      );
-    }
-  });
-
-  it("keeps a turn past the end inside the thumb's reach, not on the track edge", () => {
-    // Pre-fix this clamped to trackHeight (564), where the thumb can never sit.
-    expect(projectMarks([{ turn: 1, text: "a", offset: 9_000_000 }], metrics(564, 95085))[0]!.top).toBe(
-      544,
-    );
-  });
-
-  it("clamps the thumb to the platform minimum on a very long transcript", () => {
-    const m = metrics(564, 95085);
-    // The proportional value is ~3.3px; without the floor every dot would sit
-    // tens of pixels below the thumb that a click actually lands on.
-    expect(thumbLength(m)).toBe(MIN_THUMB_PX);
-    expect(maxScrollTop(m)).toBe(95085 - 564);
-  });
-
-  it("clamps a jump target to the reachable scroll range", () => {
-    const m = metrics(564, 1000);
-    expect(scrollTopForOffset(9000, m)).toBe(436);
-    expect(scrollTopForOffset(100, m)).toBe(100);
-  });
-
-  it("moves a dot smoothly as the content keeps growing", () => {
-    const tops = [40_000, 40_100, 40_200, 40_300].map((sh) => dotTopForOffset(2_000, metrics(564, sh)));
+    expect(tops[0]).toBe(0);
     for (let i = 1; i < tops.length; i += 1) {
-      expect(tops[i]!).toBeLessThanOrEqual(tops[i - 1]!);
-      expect(tops[i - 1]! - tops[i]!).toBeLessThan(1);
+      expect(tops[i]! - tops[i - 1]!).toBeGreaterThanOrEqual(MIN_DOT_GAP - 1);
     }
+  });
+
+  it("shares the track evenly when the whole conversation lands in one instant", () => {
+    expect(projectMarks(timeline([5_000, 5_000, 5_000]), 400).map((m) => m.top)).toEqual([
+      0, 200, 400,
+    ]);
+  });
+
+  it("keeps the distances between dots proportional to the stamp gaps", () => {
+    expect(projectMarks(timeline([0, 1_000, 3_000]), 300).map((m) => m.top)).toEqual([0, 100, 300]);
+  });
+
+  it("spreads a burst to the floor without displacing an isolated dot", () => {
+    const tops = projectMarks(timeline([0, 10, 20, 3_000]), 300).map((m) => m.top);
+    expect(tops.slice(0, 3)).toEqual([0, MIN_DOT_GAP, MIN_DOT_GAP * 2]);
+    // The far dot still sits exactly where its stamp puts it.
+    expect(tops[3]).toBe(300);
+  });
+
+  it("has nothing to draw without a track", () => {
+    expect(projectMarks(timeline([0], 0, 10), 0)).toEqual([]);
+    expect(projectMarks({ turns: [], start: 0, end: 10 }, 400)).toEqual([]);
   });
 });
 
 describe("separateTops", () => {
-  it("spaces a stack to the minimum gap, order preserved", () => {
+  it("leaves stamp spacing untouched where it already clears the floor", () => {
+    expect(separateTops([0, 100, 260], 600, MIN_DOT_GAP)).toEqual([0, 100, 260]);
+  });
+
+  it("nudges only the dot that would overlap, and only far enough", () => {
+    expect(separateTops([0, 4, 200], 600, MIN_DOT_GAP)).toEqual([0, 16, 200]);
+  });
+
+  it("never moves a dot above where its stamp put it", () => {
     expect(separateTops([1, 5, 11, 17, 23], 600, MIN_DOT_GAP)).toEqual([1, 17, 33, 49, 65]);
   });
 
-  it("keeps the tail inside the track", () => {
-    expect(separateTops([590, 595, 599], 600, MIN_DOT_GAP)).toEqual([568, 584, 600]);
+  it("keeps the first dot on the top edge and pays the overflow from the tail", () => {
+    expect(separateTops([0, 585, 592, 600], 600, MIN_DOT_GAP)).toEqual([0, 568, 584, 600]);
   });
 
-  it("spreads evenly when the turns outnumber the available gaps", () => {
-    expect(separateTops([0, 1, 2, 3, 4], 40, MIN_DOT_GAP)).toEqual([0, 10, 20, 30, 40]);
+  it("pins every dot when the track has no height", () => {
+    expect(separateTops([0, 10, 20], 0, MIN_DOT_GAP)).toEqual([0, 0, 0]);
+  });
+
+  it("shrinks the floor instead of rewriting the layout when the turns cannot fit", () => {
+    const stamps = Array.from({ length: 41 }, (_, i) => (i / 40) * 600);
+    const tops = separateTops(stamps, 600, MIN_DOT_GAP);
+    expect(tops[0]).toBe(0);
+    expect(tops[40]).toBe(600);
+    // 41 dots leave 40 gaps, so the tallest floor that still fits is 600/40 = 15.
+    for (let i = 1; i < tops.length; i += 1) {
+      expect(tops[i]! - tops[i - 1]!).toBeCloseTo(15, 9);
+    }
+    expect(tops[20]).toBeCloseTo(300, 9);
   });
 });
 
@@ -214,22 +322,14 @@ describe("activeTurnFor", () => {
   });
 });
 
-describe("projectMarks separation", () => {
-  const clustered = [0, 250, 500, 750, 1000].map((offset, i) => ({
-    turn: i + 1,
-    text: `t${i + 1}`,
-    offset,
-  }));
+describe("jumpTargetFor", () => {
+  it("clamps a jump target to the reachable scroll range", () => {
+    expect(jumpTargetFor(9000, 1000, 564)).toBe(436);
+    expect(jumpTargetFor(100, 1000, 564)).toBe(100);
+  });
 
-  it("spaces the clustered dots of a long transcript instead of stacking them", () => {
-    const tops = projectMarks(clustered, metrics(564, 95085)).map((m) => m.top);
-    expect(tops).toEqual([0, 16, 32, 48, 64]);
-    // Pre-fix this fixture produced [0, 1, 3, 4, 6]: a stack whose 15px hit pads
-    // fully overlapped, so only the last turn in the DOM could be clicked.
-    expect(tops).not.toEqual([0, 1, 3, 4, 6]);
-    for (let i = 1; i < tops.length; i += 1) {
-      expect(tops[i]! - tops[i - 1]!).toBeGreaterThanOrEqual(MIN_DOT_GAP - 1);
-    }
+  it("targets the top while the transcript cannot scroll", () => {
+    expect(jumpTargetFor(500, 400, 400)).toBe(0);
   });
 });
 
@@ -255,64 +355,69 @@ describe("JumpBar", () => {
     (globalThis as { ResizeObserver?: unknown }).ResizeObserver = undefined;
   });
 
-  it("places one dot per turn at its proportional spot", () => {
+  it("puts the first dot at the top and the rest where they were written", () => {
     render(<JumpBar messages={messages} threadEl={thread.el} />);
     expect(document.querySelectorAll(".jump-dot")).toHaveLength(2);
+    // Turn 2 was written halfway through a 400px track that spans 1000..3000.
     expect(dotTops()).toEqual([0, 200]);
   });
 
   it("renders nothing while the transcript holds a single turn", () => {
-    render(<JumpBar messages={[userTurn(1, "only")]} threadEl={thread.el} />);
+    render(<JumpBar messages={[userTurn(1, "only", 1_000)]} threadEl={thread.el} />);
     expect(document.querySelectorAll(".jump-dot")).toHaveLength(0);
   });
 
   it("de-duplicates a replayed turn so its dot cannot swap places", () => {
     render(
       <JumpBar
-        messages={[userTurn(1, "first"), userTurn(1, "replayed"), userTurn(2, "second")]}
+        messages={[userTurn(1, "first", 10), userTurn(1, "replayed", 11), userTurn(2, "b", 12)]}
         threadEl={thread.el}
       />,
     );
     expect(document.querySelectorAll(".jump-dot")).toHaveLength(2);
   });
 
-  it("falls back to an ordered ladder while the transcript is too short to scroll", () => {
-    thread.geom.scrollHeight = thread.geom.clientHeight;
+  it("keeps the dots still when the transcript is scrolled", () => {
     render(<JumpBar messages={messages} threadEl={thread.el} />);
-    expect(dotTops()).toEqual([0, MIN_DOT_GAP]);
-  });
-
-  it("drops the dot of a turn that is not mounted in the transcript", () => {
-    thread.el.querySelector('[data-turn="2"]')?.remove();
-    render(<JumpBar messages={messages} threadEl={thread.el} />);
-    expect(dotTops()).toEqual([0]);
-  });
-
-  it("places the dots at once when an unmeasurable transcript becomes visible", () => {
-    thread.geom.clientHeight = 0;
-    render(<JumpBar messages={messages} threadEl={thread.el} />);
-    expect(document.querySelectorAll(".jump-dot")).toHaveLength(0);
-    // No settle delay once there is a box to draw into again.
-    thread.geom.clientHeight = 400;
+    expect(dotTops()).toEqual([0, 200]);
+    thread.geom.scrollTop = 250;
+    thread.sync();
     fireResize();
     expect(dotTops()).toEqual([0, 200]);
   });
 
-  it("follows content growth on the next frame instead of deferring it", () => {
+  it("keeps the dots still while an answer streams", () => {
     render(<JumpBar messages={messages} threadEl={thread.el} />);
     expect(dotTops()).toEqual([0, 200]);
-    // The transcript grows below the second turn, as a streamed reply would.
-    thread.geom.scrollHeight = 2000;
+    // Growth only moves layout: no record was written, so no dot may move.
+    thread.geom.scrollHeight = 40_000;
     fireResize();
+    expect(dotTops()).toEqual([0, 200]);
+  });
+
+  it("moves a dot only when a message is written", () => {
+    const { rerender } = render(<JumpBar messages={messages} threadEl={thread.el} />);
+    expect(dotTops()).toEqual([0, 200]);
+    rerender(
+      <JumpBar
+        messages={[...messages, { kind: "assistant", turn: 2, ts: 5_000 }]}
+        threadEl={thread.el}
+      />,
+    );
+    // The conversation now ends at 5000, so turn 2's place is 1000/4000 of the track.
     expect(dotTops()).toEqual([0, 100]);
   });
 
-  it("never moves the dots when the transcript is scrolled", () => {
+  it("falls back to turn order for a transcript written before stamps", () => {
+    render(<JumpBar messages={[userTurn(1, "one"), userTurn(2, "two")]} threadEl={thread.el} />);
+    expect(dotTops()).toEqual([0, 400]);
+  });
+
+  it("draws nothing until the track has a height, then places the dots at once", () => {
+    thread.geom.clientHeight = 0;
     render(<JumpBar messages={messages} threadEl={thread.el} />);
-    expect(dotTops()).toEqual([0, 200]);
-    // Scrolling shifts every rect, but not the turn's offset in the content.
-    thread.geom.scrollTop = 250;
-    thread.sync();
+    expect(document.querySelectorAll(".jump-dot")).toHaveLength(0);
+    thread.geom.clientHeight = 400;
     fireResize();
     expect(dotTops()).toEqual([0, 200]);
   });

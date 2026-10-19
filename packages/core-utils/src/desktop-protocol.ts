@@ -866,15 +866,25 @@ export interface PersistedNotice {
   turn: number;
 }
 
+/** A loaded transcript entry. `ts` is when the record was written (epoch ms),
+ *  carried so the UI can place a turn in the conversation's own timeline. */
 export type LoadedMessage =
-  | { kind: "user"; text: string; images?: string[] }
+  | { kind: "user"; text: string; images?: string[]; ts?: number }
   | {
       kind: "assistant";
       turn: number;
       segments: LoadedSegment[];
       pending: false;
+      ts?: number;
     }
-  | { kind: "notice"; id: string; text: string; severity: NoticeSeverity; turn?: number };
+  | {
+      kind: "notice";
+      id: string;
+      text: string;
+      severity: NoticeSeverity;
+      turn?: number;
+      ts?: number;
+    };
 
 export interface SessionLoadedEvent {
   type: "$session_loaded";

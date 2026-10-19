@@ -32,7 +32,7 @@ describe("desktop incoming remote message rendering", () => {
     } as IncomingEvent);
 
     expect(next.busy).toBe(true);
-    expect(next.messages.at(-1)).toEqual({
+    expect(next.messages.at(-1)).toMatchObject({
       kind: "user",
       text: "hello from remote",
       clientId: "remote-42",

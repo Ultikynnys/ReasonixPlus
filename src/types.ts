@@ -83,6 +83,9 @@ export interface ChatMessage {
   /** Machine-generated user record (mid-turn steer, premature-stop nudge). Persisted for
    *  model replay, but never counted as a turn ordinal and never rendered as a user bubble. */
   synthetic?: boolean;
+  /** When the record was written (epoch ms). Transcript metadata for the jump map;
+   *  stripped at the wire boundary, so no provider ever sees it. */
+  ts?: number;
 }
 
 export interface RawUsage {

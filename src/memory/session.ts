@@ -362,10 +362,21 @@ export function ensureSessionDir(name: string): string {
   return dir;
 }
 
+/** One record's `ts`, stamped once at creation and never re-stamped: a replay
+ *  must keep the time the turn happened, not the time it was loaded. A corrupt
+ *  stamp is replaced, so a single bad record cannot unmap the whole transcript. */
+export function stampTranscriptMessage(message: ChatMessage): ChatMessage {
+  const { ts } = message;
+  if (typeof ts === "number" && Number.isFinite(ts)) return message;
+  return { ...message, ts: Date.now() };
+}
+
 export function appendSessionMessage(name: string, message: ChatMessage): void {
   const path = sessionPath(name);
   ensureSessionDir(name);
-  appendJsonlLine(path, message);
+  // Stamped here because this is the only place a record is written: the jump map
+  // reads the stamp, so it must record when the turn happened, not when it loaded.
+  appendJsonlLine(path, stampTranscriptMessage(message));
   chmodPrivate(path);
   touchSessionUpdatedAt(name);
   sessionDirectoryIndex.invalidate();

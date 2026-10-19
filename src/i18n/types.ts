@@ -295,6 +295,8 @@ export interface TranslationSchema {
     truncatedContinue: string;
     truncatedGiveUp: string;
     prematureStopNudge: string;
+    cutOffNudge: string;
+    cutOffWarning: string;
     prematureStopWarning: string;
     prematureStopGiveUp: string;
     repetitionStall: string;

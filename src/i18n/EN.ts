@@ -552,6 +552,10 @@ export const EN: TranslationSchema = {
       "The model kept hitting its output-token limit after {max} continuations — ending the turn with the partial response. Raise the per-turn output cap in Settings or switch model.",
     prematureStopNudge:
       "Your previous message stopped mid-task without completing the work. If the task is now complete, end your reply with the proper final completion message summarizing what was done. If it is not complete, continue working right now with your tools — do not stop halfway.",
+    cutOffNudge:
+      "Your previous message was cut off mid-sentence — the stream ended under you, not because you finished. Resume exactly where that message stopped (do not restart or repeat what you already wrote), and end with the proper final completion message once the work is done.",
+    cutOffWarning:
+      "The model's reply was cut off mid-sentence — prompting it to resume from where it stopped.",
     prematureStopWarning:
       "The model stopped mid-task mid-sentence — prompting it to finish the task or end with a proper completion message.",
     prematureStopGiveUp:

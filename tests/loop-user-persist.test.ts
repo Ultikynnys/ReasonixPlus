@@ -104,7 +104,7 @@ describe("loop persists user message at step entry (issue #943)", () => {
 
     const persisted = loadSessionMessages(sessionName);
     // First entry is the user message; followed by assistant.
-    expect(persisted[0]).toEqual({ role: "user", content: "happy path" });
+    expect(persisted[0]).toMatchObject({ role: "user", content: "happy path" });
     expect(persisted.length).toBeGreaterThanOrEqual(2);
     expect(persisted.some((m) => m.role === "assistant")).toBe(true);
     // No duplicate user copies.

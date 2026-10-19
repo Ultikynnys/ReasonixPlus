@@ -56,7 +56,7 @@ import {
   shrinkImagePartsForRetry,
 } from "./loop/image-retry.js";
 import { buildAssistantMessage, buildSyntheticAssistantMessage } from "./loop/messages.js";
-import { looksLikePrematureStop } from "./loop/premature-stop.js";
+import { looksCutOffMidSentence, looksLikePrematureStop } from "./loop/premature-stop.js";
 import { stripDroppableReasoningContent } from "./loop/reasoning-retention.js";
 import {
   looksLikeCompleteJson,
@@ -81,6 +81,7 @@ import {
   loadSessionMeta,
   patchSessionMeta,
   rewriteSession,
+  stampTranscriptMessage,
 } from "./memory/session.js";
 import { ToolCallRepair } from "./repair/index.js";
 import {
@@ -650,7 +651,7 @@ export class CacheFirstLoop {
   }
 
   appendAndPersist(message: ChatMessage): void {
-    const retained = shrinkMessageForRetention(message);
+    const retained = stampTranscriptMessage(shrinkMessageForRetention(message));
     this.log.append(retained);
     if (this.sessionName) {
       try {
@@ -2410,7 +2411,17 @@ export class CacheFirstLoop {
         // continue working. The partial message stays in the log (it was
         // already yielded as assistant_final); the nudge arrives as the next
         // user message and the turn continues in the same iteration loop.
-        if (turnHadToolActivity && !repetitionStall && looksLikePrematureStop(assistantContent)) {
+        //
+        // A reply cut off mid-sentence ("...all consumers of") is the provider
+        // ending the stream under the model, not the model stopping, so it
+        // fires even before any tool activity — otherwise the turn reports
+        // "Task complete" over a half-written message. The narration-only
+        // signal stays gated on tool activity so plain Q&A answers are never
+        // re-prompted for ending without a completion message.
+        const cutOff = !repetitionStall && looksCutOffMidSentence(assistantContent);
+        const stoppedMidTask =
+          turnHadToolActivity && !repetitionStall && looksLikePrematureStop(assistantContent);
+        if (cutOff || stoppedMidTask) {
           if (this._prematureStopNudges >= CacheFirstLoop.MAX_PREMATURE_STOP_NUDGES) {
             yield {
               turn: this._turn,
@@ -2425,14 +2436,14 @@ export class CacheFirstLoop {
             this._prematureStopNudges++;
             this.appendAndPersist({
               role: "user",
-              content: t("loop.prematureStopNudge"),
+              content: t(cutOff ? "loop.cutOffNudge" : "loop.prematureStopNudge"),
               synthetic: true,
             });
             yield {
               turn: this._turn,
               role: "warning",
               severity: "low",
-              content: t("loop.prematureStopWarning"),
+              content: t(cutOff ? "loop.cutOffWarning" : "loop.prematureStopWarning"),
             };
             continue;
           }

@@ -934,7 +934,7 @@ export class DeepSeekClient {
       // `ollama/<id>` and `<provider>/<id>` namespacing is client-side routing —
       // the server expects the bare id (`ollama/llama3.1:latest` → `llama3.1:latest`).
       model: stripProviderQualifier(opts.model),
-      messages: stripSyntheticMarkers(
+      messages: stripTranscriptMarkers(
         provider === "deepseek" ? stampWireMessageIds(opts.messages) : opts.messages,
       ),
       stream,
@@ -2170,12 +2170,12 @@ function stampWireMessageIds(messages: readonly ChatMessage[]): ChatMessage[] {
   });
 }
 
-/** `synthetic` marks machine-generated user records (mid-turn steer, premature-stop nudge)
- *  for log accounting and timeline filtering. It must never reach the wire: non-DeepSeek
- *  payloads pass messages through verbatim and a strict provider may reject unknown fields. */
-export function stripSyntheticMarkers(messages: readonly ChatMessage[]): ChatMessage[] {
-  if (!messages.some((m) => m.synthetic === true)) return [...messages];
-  return messages.map(({ synthetic: _synthetic, ...rest }) => rest);
+/** Transcript-only bookkeeping must never reach the wire: `synthetic` marks machine
+ *  records, `ts` is when the record was written. Payload builders that pass messages
+ *  through verbatim would hand a strict provider an unknown field. */
+export function stripTranscriptMarkers(messages: readonly ChatMessage[]): ChatMessage[] {
+  if (!messages.some((m) => m.synthetic === true || m.ts !== undefined)) return [...messages];
+  return messages.map(({ synthetic: _synthetic, ts: _ts, ...rest }) => rest);
 }
 
 // Mid-stream chat-completions error frame → {message, code}. `type:
