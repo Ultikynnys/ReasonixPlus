@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -23,6 +23,7 @@ import {
   parseEditResult,
 } from "./cards";
 import { formatDuration } from "./format";
+import { requestAnchorExpansion } from "./transcript-jump";
 
 beforeAll(() => {
   Object.defineProperty(navigator, "clipboard", {
@@ -1030,6 +1031,53 @@ describe("NoticeCard — compaction throbber states", () => {
       wrap(<NoticeCard text="Context compacted." severity="success" running={false} anchor="notice:n1" />),
     );
     expect(container.querySelector('[data-anchor="notice:n1"]')).toBeTruthy();
+  });
+});
+
+describe("NoticeCard — a jump opens the card it lands on", () => {
+  /** The anchored compaction card: its collapse head, and the box carrying the
+   *  open state the jump can force. */
+  const renderAnchored = () => {
+    const { container } = render(
+      wrap(
+        <NoticeCard
+          text="Context compacted."
+          severity="success"
+          running={false}
+          anchor="notice:n1"
+        />,
+      ),
+    );
+    return {
+      head: container.querySelector(".card-head") as HTMLElement,
+      open: () => container.querySelector(".card")?.getAttribute("data-open"),
+    };
+  };
+
+  it("opens a collapsed card the Events tab jumps to", () => {
+    const { head, open } = renderAnchored();
+
+    fireEvent.click(head);
+    expect(open()).toBe("false");
+
+    act(() => requestAnchorExpansion("notice:n1"));
+    expect(open()).toBe("true");
+  });
+
+  it("keeps the reader's own collapse, and a jump elsewhere releases the card", () => {
+    const { head, open } = renderAnchored();
+
+    act(() => requestAnchorExpansion("notice:n1"));
+    expect(open()).toBe("true");
+
+    // A click on the head closes it even though a jump opened it.
+    fireEvent.click(head);
+    expect(open()).toBe("false");
+
+    // A jump to a plain turn (no anchor) takes the forced state back out.
+    act(() => requestAnchorExpansion("notice:n1"));
+    act(() => requestAnchorExpansion(null));
+    expect(open()).toBe("false");
   });
 });
 

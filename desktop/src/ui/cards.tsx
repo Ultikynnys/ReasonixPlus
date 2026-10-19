@@ -15,6 +15,7 @@ import { I } from "../icons";
 import { CardHead } from "./card-head";
 import { FileMenu } from "./file-menu";
 import { formatDuration, tokenLabel } from "./format";
+import { useJumpOpen } from "./jump-expand";
 import { Shortcut } from "./shortcut";
 import { StopButton, usePendingStop } from "./stop-button";
 import { useStickyBottom } from "./useStickyBottom";
@@ -141,7 +142,7 @@ export function Card({
    *  recorded event lands on THIS card instead of its turn's prompt bubble. */
   anchor?: string;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const { open, toggle } = useJumpOpen(anchor, defaultOpen);
   return (
     <div className="card-wrap" data-anchor={anchor}>
       <div className={compact ? "card is-compact" : "card"} data-tone={tone} data-open={open}>
@@ -152,7 +153,7 @@ export function Card({
             name={name}
             meta={meta}
             open={open}
-            onToggle={() => setOpen((v) => !v)}
+            onToggle={toggle}
           />
           {headRight}
         </div>

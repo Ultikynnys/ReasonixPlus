@@ -1,7 +1,8 @@
-import { type ReactNode, useState } from "react";
+import type { ReactNode } from "react";
 import { t, useLang } from "../i18n";
 import { I } from "../icons";
 import { CardHead } from "./card-head";
+import { useJumpOpen } from "./jump-expand";
 
 export type ApprovalTone = "ok" | "warn" | "danger" | "info" | "brand" | "ghost";
 
@@ -45,7 +46,7 @@ export function ApprovalCard({
   anchor?: string;
 }) {
   useLang();
-  const [open, setOpen] = useState(defaultOpen);
+  const { open, toggle } = useJumpOpen(anchor, defaultOpen);
   return (
     <div className="approval" data-tone={tone} data-open={open} data-anchor={anchor}>
       <div className="card-head-row">
@@ -55,7 +56,7 @@ export function ApprovalCard({
           name={title}
           meta={sub}
           open={open}
-          onToggle={() => setOpen((value) => !value)}
+          onToggle={toggle}
         />
       </div>
       {open ? (

@@ -5194,15 +5194,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       emitTabDiagnostic(tab, "tab.runtime.waiting-for-mcp-setup", undefined, "info");
     } else if (tabCurrentModelUsable(tab)) {
       bridgeEndpointEnv();
-      // Focused tab: register the frozen MCP tools BEFORE the runtime exists so
-      // the first tool-spec prefix already contains them — no startup addTool
-      // churn. Other restored tabs still bridge lazily on first activation (see
-      // the tab_activate handler); bridging every tab at startup re-registered
-      // the full tool set once per tab and dominated startup.
-      if (tab === first) await bridgeTabMcp(tab);
       tab.runtime = buildRuntimeFor(tab);
       if (priority > 0) markPhase("first_runtime_ready");
       emitTabDiagnostic(tab, "tab.runtime.ready", undefined, "info");
+      // Bridge AFTER the runtime exists and WITHOUT awaiting it. Every stdio MCP
+      // server costs a process spawn plus a protocol handshake and
+      // reloadFromConfig connects them one after another, so awaiting it here
+      // put the whole MCP latency between the toolset build and `$ready` — on
+      // the focused tab's boot critical path. A late bridge hot-adds its tools
+      // through the same per-server addTool path a mid-session MCP config edit
+      // already takes. Other restored tabs still bridge lazily on first
+      // activation (see the tab_activate handler); bridging every tab at
+      // startup re-registered the full tool set once per tab and dominated
+      // startup.
+      if (tab === first) void bridgeTabMcp(tab);
     } else {
       emitTabDiagnostic(tab, "tab.runtime.waiting-for-credential", undefined, "warn");
     }
@@ -5232,9 +5237,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // splash on a full index refresh, which on a large store (thousands of
     // sessions, transcripts being revalidated while MCP servers warm up) takes
     // tens of seconds. Fire it in the background — `$sessions` streams in when
-    // it resolves — and clear the splash as soon as the toolset/runtime is ready.
+    // it resolves.
     void sessionsInitialized.catch(() => undefined);
-    await tab.initialization;
+    // Only the tab the splash reveals has to be fully ready before the splash
+    // lifts. Waiting on every restored tab's toolset build, semantic bootstrap
+    // and runtime multiplied the splash by the number of open tabs; a
+    // background tab clears as soon as its own settings and transcript are on
+    // screen, and its build is queued behind the focused tab so it is done long
+    // before the user can click it.
+    if (tab === first) await tab.initialization;
     emit({ type: "$workspace_initialized", revision: ++tab.initializationRevision }, tab.id);
   }
 
@@ -5278,15 +5289,39 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
   }
 
-  async function bridgeTabMcp(tab: Tab, loop?: CacheFirstLoop): Promise<void> {
+  // Bridges every configured MCP server into the tab's registry, coalesced per
+  // tab. The focused tab's boot bridge is fired without being awaited (see
+  // initTabToolset) in the same window where tab activation, MCP config edits
+  // and mail setup can also request one; without the latch each request built
+  // its own runtime and registered the same tools twice.
+  const bridgesInFlight = new WeakMap<Tab, Promise<void>>();
+  const bridgeRequestedAgain = new WeakSet<Tab>();
+  function bridgeTabMcp(tab: Tab): Promise<void> {
+    const inFlight = bridgesInFlight.get(tab);
+    if (inFlight) {
+      // Coalesce, but never drop the request: an MCP config edit or a mail
+      // sign-in that lands mid-handshake has to reload once this one settles,
+      // or its server set stays unapplied until the next explicit bridge.
+      bridgeRequestedAgain.add(tab);
+      return inFlight;
+    }
+    const bridge = runBridgeTabMcp(tab)
+      .catch(() => undefined)
+      .finally(() => {
+        bridgesInFlight.delete(tab);
+        if (bridgeRequestedAgain.delete(tab)) void bridgeTabMcp(tab);
+      });
+    bridgesInFlight.set(tab, bridge);
+    return bridge;
+  }
+
+  async function runBridgeTabMcp(tab: Tab): Promise<void> {
     if (!tab.toolset) {
       emitTabDiagnostic(tab, "mcp.bridge.skipped", { reason: "toolset-not-ready" });
       tab.mcpBridgePromise = null;
       return Promise.resolve();
     }
-    // Prefer an explicitly-passed loop (the runtime isn't built yet during a
-    // bridge-before-build); otherwise the live runtime's loop.
-    const activeLoop = loop ?? tab.runtime?.loop;
+    const activeLoop = tab.runtime?.loop;
     const configured = effectiveMcpSpecs(tab);
     emitTabDiagnostic(tab, "mcp.bridge.started", {
       configured: configured.length,
@@ -5316,6 +5351,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         .then(() => {
           emitTabDiagnostic(tab, "mcp.bridge.completed", { mode: "reload" });
           emitMcpSpecs(tab);
+          // A late bridge changes the registry after the boot $settings snapshot.
+          emitSettings(tab);
         })
         .catch((err) => {
           emitDiagnosticError("mcp.bridge.failed", err, {
@@ -5426,6 +5463,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           failed: result.failed.length,
           summaries: result.summaries.length,
         });
+        // Same: refresh the tool list now that the registry has MCP tools.
+        emitSettings(tab);
       })
       .catch((err) => {
         emitDiagnosticError("mcp.bridge.failed", err, {
@@ -6863,15 +6902,23 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         emit({ type: "$needs_setup", reason: "no_api_key" }, tab.id);
       }
 
-      // Launch the toolset/runtime build IMMEDIATELY. `$ready` (the composer's
-      // enable gate) must not depend on the heavy display work below: the full
-      // current-session jsonl read+parse and the synchronous scan of every
-      // session file are pure for the sidebar/conversation view. Running them
-      // before initTabToolset put boot-to-ready behind the entire session
-      // history, once per restored tab. This order ($ready before
-      // $session_loaded) is the same the desktop_resync path already emits, so
-      // the frontend handles it.
-      tab.initialization = initTabToolset(tab, tab === first || restore?.active ? 1 : 0)
+      // Start the toolset/runtime build before the display work below: `$ready`
+      // (the composer's enable gate) must not depend on the full current-session
+      // jsonl read+parse or the session-index scan, which serve only the sidebar
+      // and the conversation view. Because that display work is no longer gated
+      // on this build, `$session_loaded` can now precede `$ready`; the reducer
+      // treats the two events independently, so either order is valid.
+      //
+      // Background tabs queue their build behind the focused one: the gate runs
+      // builds on the single JS thread, so letting every restored tab register
+      // alongside it interleaved ~N synchronous registrations into the boot
+      // critical path. Total work is unchanged; it just no longer competes with
+      // the tab the splash is waiting for.
+      const startToolset = async (): Promise<void> => {
+        if (tab !== first) await firstBootstrapSettled;
+        await initTabToolset(tab, tab === first || restore?.active ? 1 : 0);
+      };
+      tab.initialization = startToolset()
         .then(() => {
           if (tab.mcpSetupPending) {
             // Composer stays disabled until `mcp_session_configure`; surface the picker.
@@ -6904,9 +6951,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           if (tab === first) settleFirstBootstrap();
         });
 
-      // Synchronous sidebar scans can take seconds on network drives and would
-      // starve the toolset promise despite being logically non-gating.
-      await firstBootstrapSettled;
+      // Display work is NOT gated on the focused tab's toolset. The session
+      // list and the transcript are what the user actually sees, and serializing
+      // them behind one tab's build made every restored tab appear in turn; they
+      // only have to interleave with the gate above, not wait for it.
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
       // Non-gating display work — runs in parallel with the toolset build above.
       // Reopen the conversation the tab had, if its jsonl is still readable.
@@ -7017,20 +7066,23 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     ? dedupedTabs.find((t) => sameWorkspaceDir(t.dir, startupDir))
     : dedupedTabs[0];
   const pendingRestores = dedupedTabs.filter((t) => t !== startupTab);
-  void firstBootstrapSettled.then(async () => {
+  first = bootstrapTab(opts.dir ?? dedupedTabs[0]?.dir, startupTab);
+  lastActiveTabId = first.id;
+  // Announce the rest of the restored set in the SAME boot burst. `bootstrapTab`
+  // emits `$tab_opened` synchronously, so gating this loop on
+  // `firstBootstrapSettled` made a restored tab set appear one tab at a time:
+  // each tab waited for the focused tab's toolset build, MCP handshakes and
+  // runtime before it was even announced. The macrotask yield between skeletons
+  // stays — bootstrapping the whole set in one synchronous loop blocked the
+  // event loop for the entire burst, which starved the toolset gate, the MCP
+  // bridges and the RPC reader.
+  void (async () => {
     for (const saved of pendingRestores) {
       bootstrapTab(saved.dir, saved);
-      // Yield to the event loop between tabs. Bootstrapping every restored tab
-      // in one synchronous loop blocked the loop for the entire burst, which
-      // starved the toolset gate and MCP handshakes and held the "Loading
-      // workspaces" splash until the whole set had been constructed. A macrotask
-      // boundary lets the gate, MCP bridges, and the RPC reader make progress.
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     persistOpenTabs();
-  });
-  first = bootstrapTab(opts.dir ?? dedupedTabs[0]?.dir, startupTab);
-  lastActiveTabId = first.id;
+  })();
   // Account-wide quotas change underneath us (other devices, window resets) -
   // poll so the statusbar chips are never stale. Skipped mid-turn so the
   // $turn_complete fetch stays the authoritative turn-cost measurement.

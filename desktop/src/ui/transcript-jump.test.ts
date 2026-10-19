@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from "vitest";
-import { callAnchor, jumpTargetFor, jumpToAnchor, noticeAnchor } from "./transcript-jump";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  EXPAND_EVENT,
+  callAnchor,
+  endJumpAlignment,
+  jumpTargetFor,
+  jumpToAnchor,
+  noticeAnchor,
+} from "./transcript-jump";
 
 const rectOf = (top: number): DOMRect =>
   ({
@@ -48,15 +55,72 @@ function fakeThread(options: { height?: number; content?: number } = {}) {
     if (!node) throw new Error(`no turn ${turn}`);
     node.getBoundingClientRect = () => rectOf(offset - geom.scrollTop);
   };
-  /** Add a card carrying a jump anchor at a content offset. */
-  const placeAnchor = (anchor: string, offset: number, laidOut = true) => {
-    const node = document.createElement("div");
-    node.setAttribute("data-anchor", anchor);
-    node.getBoundingClientRect = () =>
-      laidOut ? rectOf(offset - geom.scrollTop) : ({ ...rectOf(0), width: 0, height: 0 } as DOMRect);
-    el.appendChild(node);
+  /** Mount a card carrying a jump anchor at a content offset. `open` renders the
+   *  collapsible box a `Card` wraps its body in (either state), and `laidOut:
+   *  false` reports the zero rect of a card inside a hidden subtree. */
+  const placeCard = (
+    anchor: string,
+    offset: number,
+    options: { open?: boolean; laidOut?: boolean } = {},
+  ) => {
+    let at = offset;
+    const laidOut = options.laidOut ?? true;
+    const mount = () => {
+      const wrap = document.createElement("div");
+      wrap.setAttribute("data-anchor", anchor);
+      if (options.open !== undefined) {
+        const box = document.createElement("div");
+        box.setAttribute("data-open", String(options.open));
+        wrap.appendChild(box);
+      }
+      wrap.getBoundingClientRect = () =>
+        laidOut
+          ? rectOf(at - geom.scrollTop)
+          : ({ ...rectOf(0), width: 0, height: 0 } as DOMRect);
+      el.appendChild(wrap);
+      return wrap;
+    };
+    let node = mount();
+    return {
+      /** The card opens (or its body finishes loading): it moves to `next`. */
+      openAt: (next: number) => {
+        at = next;
+        node.querySelector("[data-open]")?.setAttribute("data-open", "true");
+      },
+      /** A re-render swaps the card for a fresh element sitting at `next`. */
+      rerenderAt: (next: number) => {
+        node.remove();
+        at = next;
+        node = mount();
+      },
+    };
   };
-  return { el, place, placeAnchor, scrollTo, geom };
+  return { el, place, placeCard, scrollTo, geom };
+}
+
+const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+/** Capture the callback the alignment watcher registers, so a test can report a
+ *  relayout the way a browser would and jsdom never does. */
+function stubResizeObserver() {
+  const callbacks: ResizeObserverCallback[] = [];
+  const original = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    constructor(cb: ResizeObserverCallback) {
+      callbacks.push(cb);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  return {
+    trigger: () => {
+      for (const cb of callbacks) cb([], {} as ResizeObserver);
+    },
+    restore: () => {
+      globalThis.ResizeObserver = original;
+    },
+  };
 }
 
 describe("jumpTargetFor", () => {
@@ -122,25 +186,25 @@ describe("jumpToAnchor", () => {
   it("lands on the event's own card, not on its turn's prompt", () => {
     // The bug this covers: every recorded event carried only a turn, so a plan,
     // choice or fold row always scrolled to the prompt bubble instead of itself.
-    const { el, place, placeAnchor, scrollTo, geom } = fakeThread();
+    const { el, place, placeCard, scrollTo, geom } = fakeThread();
     place(1, 100);
-    placeAnchor("call:c1", 900);
+    placeCard("call:c1", 900);
     expect(jumpToAnchor(el, { turn: 1, anchor: "call:c1" })).toBe(true);
     expect(scrollTo).toHaveBeenCalledWith({ top: 900, behavior: "smooth" });
     expect(geom.scrollTop).toBe(900);
   });
 
   it("falls back to the turn when the anchored card is gone", () => {
-    const { el, place, placeAnchor, geom } = fakeThread();
+    const { el, place, placeCard, geom } = fakeThread();
     place(2, 600);
-    placeAnchor("notice:n2", 100);
+    placeCard("notice:n2", 100);
     expect(jumpToAnchor(el, { turn: 2, anchor: "notice:n1" })).toBe(true);
     expect(geom.scrollTop).toBe(600);
   });
 
   it("lands an anchored event that has no turn at all", () => {
-    const { el, placeAnchor, geom } = fakeThread();
-    placeAnchor("notice:n9", 300);
+    const { el, placeCard, geom } = fakeThread();
+    placeCard("notice:n9", 300);
     expect(jumpToAnchor(el, { turn: 0, anchor: "notice:n9" })).toBe(true);
     expect(geom.scrollTop).toBe(300);
   });
@@ -155,9 +219,9 @@ describe("jumpToAnchor", () => {
   it("does not land on a card that is mounted but not laid out", () => {
     // A card in a hidden subtree reports a zero rect; scrolling to it would land
     // at the transcript top and still report success.
-    const { el, place, placeAnchor, geom } = fakeThread();
+    const { el, place, placeCard, geom } = fakeThread();
     place(2, 600);
-    placeAnchor("call:hidden", 0, false);
+    placeCard("call:hidden", 0, { laidOut: false });
     expect(jumpToAnchor(el, { turn: 2, anchor: "call:hidden" })).toBe(true);
     expect(geom.scrollTop).toBe(600);
   });
@@ -168,5 +232,163 @@ describe("anchor formats", () => {
     expect(callAnchor("call-7")).toEqual({ anchor: "call:call-7" });
     expect(callAnchor(undefined)).toEqual({});
     expect(noticeAnchor("n-1")).toBe("notice:n-1");
+  });
+});
+
+describe("jumpToAnchor — collapsed cards and late layout shifts", () => {
+  afterEach(() => {
+    endJumpAlignment();
+    document.body.replaceChildren();
+  });
+
+  /** A transcript mounted like the real one: the alignment watcher only re-aligns
+   *  a target that is still in the document. */
+  const mountedThread = () => {
+    const thread = fakeThread();
+    document.body.append(thread.el);
+    return thread;
+  };
+
+  it("opens a collapsed card first and measures after it opened", async () => {
+    // A collapsed card is a header now and its whole body a commit later, so an
+    // offset read before that commit lands high by exactly the body height.
+    const { el, placeCard, scrollTo } = mountedThread();
+    const card = placeCard("call:c1", 300, { open: false });
+    const requested: (string | null)[] = [];
+    const onExpand = (event: Event) => requested.push((event as CustomEvent<string | null>).detail);
+    document.addEventListener(EXPAND_EVENT, onExpand);
+
+    expect(jumpToAnchor(el, { turn: 1, anchor: "call:c1" })).toBe(true);
+    expect(requested).toContain("call:c1");
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    card.openAt(900);
+    await nextFrame();
+    expect(scrollTo).toHaveBeenCalledWith({ top: 900, behavior: "smooth" });
+    document.removeEventListener(EXPAND_EVENT, onExpand);
+  });
+
+  it("re-resolves the card when a re-render replaces it before the frame lands", async () => {
+    const { el, placeCard, geom } = mountedThread();
+    const card = placeCard("call:c1", 300, { open: false });
+
+    jumpToAnchor(el, { turn: 1, anchor: "call:c1" });
+    // A gate resolving swaps the collapsed card for an expanded one further down.
+    card.rerenderAt(950);
+    await nextFrame();
+    expect(geom.scrollTop).toBe(950);
+  });
+
+  it("leaves an expanded card's jump immediate", () => {
+    const { el, placeCard, scrollTo } = mountedThread();
+    placeCard("call:c1", 400, { open: true });
+
+    expect(jumpToAnchor(el, { turn: 1, anchor: "call:c1" })).toBe(true);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 400, behavior: "smooth" });
+  });
+
+  it("reads the collapsed state off an approval card's own element", () => {
+    // An `ApprovalCard` carries the anchor and `data-open` on the same node, a
+    // `Card` on a wrapper around it. Both must be recognised as collapsed.
+    const { el, scrollTo } = mountedThread();
+    const card = document.createElement("div");
+    card.setAttribute("data-anchor", "call:p1");
+    card.setAttribute("data-open", "false");
+    card.getBoundingClientRect = () => rectOf(300);
+    el.appendChild(card);
+
+    expect(jumpToAnchor(el, { turn: 1, anchor: "call:p1" })).toBe(true);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("re-aligns the target when a card above it opens after the jump", async () => {
+    // `.thread` disables overflow anchoring, so nothing compensates on its own:
+    // the target slides down by the growing card's height and stays there.
+    const observer = stubResizeObserver();
+    try {
+      const { el, place, geom } = mountedThread();
+      place(2, 600);
+      jumpToAnchor(el, { turn: 2 });
+      expect(geom.scrollTop).toBe(600);
+
+      place(2, 850);
+      observer.trigger();
+      await nextFrame();
+      expect(geom.scrollTop).toBe(850);
+    } finally {
+      observer.restore();
+    }
+  });
+
+  it("accumulates sub-pixel drift instead of dismissing each shift as noise", async () => {
+    // Two relayouts under the epsilon must still land the target: the check is
+    // against where the target belongs now, never against a remembered offset.
+    const observer = stubResizeObserver();
+    try {
+      const { el, place, geom } = mountedThread();
+      place(2, 600);
+      jumpToAnchor(el, { turn: 2 });
+
+      place(2, 600.6);
+      observer.trigger();
+      await nextFrame();
+      expect(geom.scrollTop).toBe(600);
+
+      place(2, 601.2);
+      observer.trigger();
+      await nextFrame();
+      expect(geom.scrollTop).toBeCloseTo(601.2, 5);
+    } finally {
+      observer.restore();
+    }
+  });
+
+  it("leaves the viewport alone when only content below the target changed", async () => {
+    const observer = stubResizeObserver();
+    try {
+      const { el, place, geom } = mountedThread();
+      place(2, 600);
+      jumpToAnchor(el, { turn: 2 });
+
+      // The tail grew or shrank: the target's own place in the content did not.
+      observer.trigger();
+      await nextFrame();
+      expect(geom.scrollTop).toBe(600);
+    } finally {
+      observer.restore();
+    }
+  });
+
+  it("stops re-aligning as soon as the reader takes over", async () => {
+    const observer = stubResizeObserver();
+    try {
+      const { el, place, geom } = mountedThread();
+      place(2, 600);
+      jumpToAnchor(el, { turn: 2 });
+
+      window.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+      place(2, 850);
+      observer.trigger();
+      await nextFrame();
+      expect(geom.scrollTop).toBe(600);
+    } finally {
+      observer.restore();
+    }
+  });
+
+  it("stops re-aligning when the target goes away", async () => {
+    const observer = stubResizeObserver();
+    try {
+      const { el, place, geom } = mountedThread();
+      place(2, 600);
+      jumpToAnchor(el, { turn: 2 });
+
+      el.querySelector('[data-turn="2"]')?.remove();
+      observer.trigger();
+      await nextFrame();
+      expect(geom.scrollTop).toBe(600);
+    } finally {
+      observer.restore();
+    }
   });
 });

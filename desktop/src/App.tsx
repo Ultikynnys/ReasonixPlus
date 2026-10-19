@@ -162,7 +162,13 @@ import {
   UserMsg,
 } from "./ui/thread";
 import { getThreadMaxWidth } from "./ui/thread-layout";
-import { type JumpTarget, callAnchor, jumpToAnchor, noticeAnchor } from "./ui/transcript-jump";
+import {
+  type JumpTarget,
+  callAnchor,
+  endJumpAlignment,
+  jumpToAnchor,
+  noticeAnchor,
+} from "./ui/transcript-jump";
 import { useAutoCollapse } from "./ui/useAutoCollapse";
 import { useAutoScroll } from "./ui/useAutoScroll";
 import { useIsScrollable } from "./ui/useIsScrollable";
@@ -4270,6 +4276,9 @@ function TabRuntime({
    *  turn's prompt only when it does not. Returns whether it actually landed. */
   const jumpToEvent = useCallback(
     (target: JumpTarget): boolean => {
+      // A fresh jump supersedes the previous one, which may still be re-aligning
+      // its own target against a settling transcript.
+      endJumpAlignment();
       unpinForJump();
       return jumpToAnchor(threadRef.current, target);
     },
