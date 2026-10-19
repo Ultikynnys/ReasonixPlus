@@ -16,9 +16,15 @@ import "katex/dist/katex.min.css";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { installFrontendDiagnostics, markFrontendReady } from "./diagnostics";
+import { installScrollJitterProbe } from "./scroll-jitter-probe";
 import { defaultStyleForTheme, isTheme, isThemeStyle, themeForStyle } from "./theme";
 
 installFrontendDiagnostics();
+
+// Dev-only scroll-jitter capture; opt in from a packaged build via the storage flag.
+if (import.meta.env.DEV || localStorage.getItem("reasonix.scrollJitterProbe") === "1") {
+  installScrollJitterProbe();
+}
 
 const stored = localStorage.getItem("reasonix.theme");
 const storedStyle = localStorage.getItem("reasonix.themeStyle");

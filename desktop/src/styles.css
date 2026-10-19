@@ -2260,6 +2260,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   margin-right: 5px;
   padding: 28px 0 40px;
   scroll-padding-bottom: 24px;
+  overflow-anchor: none;
 }
 .thread-inner {
   max-width: var(--thread-max-width, 740px);
@@ -2270,64 +2271,45 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 28px;
 }
 
-/* ---------- JUMP BAR (message navigation dock) ---------- */
+/* ---------- JUMP BAR (message markers on the transcript scrollbar) ---------- */
 
+/* Absolute overlay; `top`, `right` and `height` are set inline so its box
+   matches the live `.thread` scrollbar. Clicks fall through to the scrollbar
+   except on the dots themselves. */
 .jump-bar {
   position: absolute;
-  right: 13px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 0 12px;
+  width: 16px;
   z-index: 20;
+  pointer-events: none;
 }
-.jump-scroll {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 0;
-  max-height: 240px;
-  overflow-y: auto;
-  scrollbar-width: none;
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent 0%,
-    #000 16%,
-    #000 84%,
-    transparent 100%
-  );
-  mask-image: linear-gradient(to bottom, transparent 0%, #000 16%, #000 84%, transparent 100%);
-}
-.jump-scroll::-webkit-scrollbar {
-  display: none;
-}
-.jump-item {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  width: 32px;
-  min-height: 14px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
+/* border/background/cursor/padding come from the global `button` reset. */
 .jump-dot {
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px;
   height: 3px;
   border-radius: 2px;
   background: var(--border-strong);
+  pointer-events: auto;
   transition: background 200ms, width 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.jump-dot[data-d="0"] {
+/* Invisible hit-area pad: the visible dot is only 12x3px, so widen the hover
+   and click target without enlarging the mark itself. */
+.jump-dot::before {
+  content: "";
+  position: absolute;
+  inset: -6px -5px;
+}
+.jump-dot[data-active],
+.jump-dot[data-hover] {
   background: var(--accent);
 }
-.jump-dot[data-d="1"] {
-  background: color-mix(in srgb, var(--accent) 60%, transparent);
+.jump-dot[data-active] {
+  width: 16px;
 }
-.jump-dot[data-d="2"] {
-  background: color-mix(in srgb, var(--accent) 35%, transparent);
+.jump-dot[data-hover] {
+  width: 22px;
 }
 .jump-preview {
   position: absolute;
@@ -3604,6 +3586,10 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   max-height: 260px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* Pinned to its tail while tokens stream: opt out of the browser's scroll
+     anchoring, whose automatic adjust fights the follow and reads as a
+     high-frequency vertical bob. */
+  overflow-anchor: none;
   font-family: var(--font-sans, "Geist", system-ui, sans-serif);
   font-style: italic;
   font-size: 13.5px;
@@ -3687,6 +3673,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   max-height: 240px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  overflow-anchor: none; /* see .reason .stream for the same pinned-tail follow. */
   white-space: pre-wrap;
   border-top: 1px solid var(--border);
   font-size: 13px;
