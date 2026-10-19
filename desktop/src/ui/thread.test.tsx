@@ -695,6 +695,11 @@ describe("AssistantMsg - an open gate never stacks a second card", () => {
     const { container } = renderMsg({ ...choiceSegment, result: "user picked: a" }, false);
     expect(container.querySelectorAll(".approval")).toHaveLength(1);
   });
+
+  it("gives the resolved card the anchor its recorded event jumps to", () => {
+    const { container } = renderMsg({ ...choiceSegment, result: "user picked: a" }, false);
+    expect(container.querySelector('[data-anchor="call:c1"]')).toBeTruthy();
+  });
 });
 
 describe("RevisionApprovalCard — plan rewrite diff", () => {

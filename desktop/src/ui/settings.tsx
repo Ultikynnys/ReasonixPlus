@@ -29,6 +29,7 @@ import {
   MailProvider,
   PLAYWRIGHT_MANAGED_BROWSERS,
   QUICK_SEND_SHORTHAND_MAX_LENGTH,
+  createQuickSendId,
   enforceQuickSendShorthand,
 } from "../protocol";
 import { FONT_FAMILY, FONT_SCALE, type FontFamily, type FontScale } from "../theme";
@@ -618,22 +619,24 @@ function PageGeneral({
                           kind: "up",
                           icon: <I.arrowUp size={12} />,
                           title: t("settings.quickSendMoveUp"),
+                          aria: "settings.quickSendMoveUpAria",
                         },
                         {
                           dir: 1,
                           kind: "down",
                           icon: <I.arrowDown size={12} />,
                           title: t("settings.quickSendMoveDown"),
+                          aria: "settings.quickSendMoveDownAria",
                         },
                       ] as const
-                    ).map(({ dir, kind, icon, title }) => (
+                    ).map(({ dir, kind, icon, title, aria }) => (
                       <button
                         key={kind}
                         type="button"
                         className="mini-btn"
                         disabled={dir < 0 ? i === 0 : i === list.length - 1}
                         title={title}
-                        aria-label={`Move quick send ${kind}: ${q.shorthand}`}
+                        aria-label={t(aria, { shorthand: q.shorthand })}
                         onClick={() => onSave({ quickSends: moveQuickSend(list, i, i + dir) })}
                       >
                         {icon}
@@ -643,7 +646,7 @@ function PageGeneral({
                       type="button"
                       className="mini-btn"
                       title={t("settings.quickSendRemove")}
-                      aria-label={`Remove quick send: ${q.shorthand}`}
+                      aria-label={t("settings.quickSendRemoveAria", { shorthand: q.shorthand })}
                       onClick={() => onSave({ quickSends: list.filter((x) => x.id !== q.id) })}
                     >
                       <I.trash size={12} />
@@ -672,7 +675,7 @@ function PageGeneral({
             onSave({
               quickSends: [
                 ...(settings.quickSends ?? []),
-                { id: `custom-${Date.now()}`, message, shorthand },
+                { id: createQuickSendId(settings.quickSends ?? []), message, shorthand },
               ],
             });
             setQuickSendShorthand("");

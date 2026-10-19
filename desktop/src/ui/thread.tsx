@@ -44,6 +44,7 @@ import {
   type PlanStepChangeKind,
   type PlanStepFieldChange,
 } from "./plan-diff";
+import { callAnchor } from "./transcript-jump";
 
 function downloadImage(dataUrl: string, mimeType: string): void {
   const ext = mimeType.split("/")[1] || "png";
@@ -592,8 +593,10 @@ export const AssistantMsg = memo(function AssistantMsg({
             return file ? <PresentedFileCard key={s.callId ?? `file-${i}`} file={file} /> : null;
           }
           if (s.name === "submit_plan") {
+            // The card's call id is the Events tab's jump target for this plan.
+            const anchor = callAnchor(s.callId).anchor;
             if (activePlan?.callId !== undefined && s.callId === activePlan.callId) {
-              return <ActivePlanTaskCard key={s.callId} plan={activePlan} />;
+              return <ActivePlanTaskCard key={s.callId} plan={activePlan} anchor={anchor} />;
             }
             const submittedPlan = parseSubmittedPlan(s.args);
             return submittedPlan ? (
@@ -604,6 +607,7 @@ export const AssistantMsg = memo(function AssistantMsg({
                 steps={submittedPlan.steps}
                 result={s.result}
                 ok={s.ok}
+                anchor={anchor}
               />
             ) : null;
           }
@@ -616,6 +620,7 @@ export const AssistantMsg = memo(function AssistantMsg({
                 options={choice.options}
                 result={s.result}
                 ok={s.ok}
+                anchor={callAnchor(s.callId).anchor}
               />
             ) : null;
           }
@@ -799,6 +804,7 @@ export function PlanApprovalCard({
   onRefine,
   onCancel,
   onTimerToggle,
+  anchor,
 }: {
   id?: number;
   plan: string;
@@ -811,6 +817,7 @@ export function PlanApprovalCard({
   onRefine?: () => void;
   onCancel?: () => void;
   onTimerToggle?: (enabled: boolean) => void;
+  anchor?: string;
 }) {
   useLang();
   const interactive = Boolean(onApprove);
@@ -856,6 +863,7 @@ export function PlanApprovalCard({
       onSecondary={onCancel}
       tertiaryLabel={interactive ? t("thread.refine") : undefined}
       onTertiary={onRefine}
+      anchor={anchor}
     />
   );
 }
@@ -1291,6 +1299,7 @@ export function ChoiceApprovalCard({
   onPick,
   onCancel,
   onTimerToggle,
+  anchor,
 }: {
   question: string;
   options: { id: string; title: string; summary?: string }[];
@@ -1300,6 +1309,7 @@ export function ChoiceApprovalCard({
   onPick?: (optionId: string) => void;
   onCancel?: () => void;
   onTimerToggle?: (enabled: boolean) => void;
+  anchor?: string;
 }) {
   useLang();
   const interactive = Boolean(onPick);
@@ -1355,6 +1365,7 @@ export function ChoiceApprovalCard({
       meta={interactive ? undefined : structuredCardMeta(result, ok, "Waiting for your choice…")}
       primaryLabel={interactive ? t("thread.cancel") : undefined}
       onPrimary={interactive ? onCancel : undefined}
+      anchor={anchor}
     />
   );
 }
@@ -1370,13 +1381,14 @@ export function activePlanToTaskSteps(plan: ActivePlan): TaskStepView[] {
   }));
 }
 
-export function ActivePlanTaskCard({ plan }: { plan: ActivePlan }) {
+export function ActivePlanTaskCard({ plan, anchor }: { plan: ActivePlan; anchor?: string }) {
   useLang();
   return (
     <TaskCard
       title={t("thread.activePlan")}
       subtitle={plan.summary}
       steps={activePlanToTaskSteps(plan)}
+      anchor={anchor}
     />
   );
 }

@@ -102,6 +102,7 @@ import {
 } from "../../at-mentions.js";
 import { fetchChangelog } from "../../changelog.js";
 import { pickPrimaryBalance } from "../../client.js";
+import { claimingSession, setLiveSessionProbe } from "../../code/plan-claim.js";
 import { type PlanRecord, planRepository } from "../../code/plans.js";
 import { codeSystemPrompt } from "../../code/prompt.js";
 import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
@@ -174,6 +175,7 @@ import {
   loadProjectPathAllowed,
   loadProjectShellAllowed,
   loadQuestionTimerEnabled,
+  loadQuickSendId,
   loadRawTabEnabled,
   loadReasoningEffort,
   loadRecentWorkspaces,
@@ -222,6 +224,7 @@ import {
   saveOpenAIOAuth,
   saveOpencodeOAuth,
   saveQuestionTimerEnabled,
+  saveQuickSendId,
   saveRawTabEnabled,
   saveReasoningEffort,
   saveRepetitionGuardEnabled,
@@ -330,12 +333,14 @@ import {
   firstFreeSessionName,
   listSessionNamesForWorkspaceAsync,
   listSessionsForWorkspaceAsync,
+  loadSessionEvents,
   loadSessionMessages,
   loadSessionMessagesAsync,
   loadSessionMeta,
   loadSessionNotices,
   migrateLegacyFlatSessions,
   normalizeSessionMcpState,
+  normalizeWorkspace,
   patchSessionMeta,
   patchSessionWorkspaceIfMissing,
   prunePendingMcpSessions,
@@ -343,8 +348,10 @@ import {
   sessionExists,
   sessionNoticesPath,
   sessionPath,
+  sessionUiEventsPath,
   stampSessionWorkspace,
   timestampSuffix,
+  writeSessionEvents,
   writeSessionNotices,
 } from "../../memory/session.js";
 import { type MiMoLoginFlow, beginMiMoLoginFlow } from "../../mimo-auth.js";
@@ -862,12 +869,26 @@ function stepResultsOf(completions: Record<string, StepCompletion>): Record<stri
 }
 
 /** Accepted step counts for the in-flight plan (0/0 when none is running). */
-function planCounts(tab: { rootDir: string }): { completed: number; total: number } {
-  const active = tab.rootDir ? planRepository(tab.rootDir).active() : null;
+function planCounts(tab: { rootDir: string; currentSession?: string }): {
+  completed: number;
+  total: number;
+} {
+  const active = activePlanForTab(tab);
   return {
     completed: active ? Object.keys(active.completions).length : 0,
     total: active?.steps.length ?? 0,
   };
+}
+
+/** The plan THIS tab's session is working, never another session's plan in the same
+ *  workspace: ownership is per session, so the rail and the restore hydrate stay
+ *  scoped to the conversation that owns the plan. */
+function activePlanForTab(
+  tab: { rootDir: string; currentSession?: string },
+  opts: { adoptUnclaimed?: boolean } = {},
+): PlanRecord | null {
+  if (!tab.rootDir) return null;
+  return planRepository(tab.rootDir).activeFor(claimingSession(tab.currentSession), opts);
 }
 
 /** Project an accepted mark_step_complete result into the rail's progress tick.
@@ -890,16 +911,19 @@ function emitAcceptedStep(tab: Tab, result: string): void {
   );
 }
 
-/** Build the $plan_restored hydrate event from the repository's active plan — null
- *  when no plan is in flight (a finished/cancelled plan remains history only). */
+/** Build the $plan_restored hydrate event from the plan this session owns — null
+ *  when no plan is in flight for it (a finished/cancelled plan remains history only,
+ *  and another session's in-flight plan is never projected into this tab). */
 export function restorePlanForTab(
-  tab: { rootDir: string },
+  tab: { rootDir: string; currentSession?: string },
   hasPriorMessages: boolean,
 ): PlanRestoredEvent | null {
   if (!tab.rootDir || !hasPriorMessages) return null;
   let active: PlanRecord | null;
   try {
-    active = planRepository(tab.rootDir).active();
+    // A live session asking for a plan adopts an unclaimed pre-ownership plan; one
+    // another live session holds is refused and stays out of this tab.
+    active = activePlanForTab(tab, { adoptUnclaimed: true });
   } catch (err) {
     // A plan read must never break session restore — treat it as "no active plan".
     process.stderr.write(`reasonix: active plan read failed — ${messageOf(err)}\n`);
@@ -1177,14 +1201,17 @@ export async function extractImageMentions(
 function userLoadedMessage(
   content: ChatMessage["content"],
   ts?: number,
+  injected?: boolean,
 ): {
   kind: "user";
   text: string;
   images?: string[];
   ts?: number;
+  injected?: true;
 } {
+  const flag = injected ? ({ injected: true } as const) : {};
   if (typeof content === "string" || content === undefined || content === null) {
-    return { kind: "user", text: content ?? "", ts };
+    return { kind: "user", text: content ?? "", ts, ...flag };
   }
   const textParts: string[] = [];
   const images: string[] = [];
@@ -1200,6 +1227,7 @@ function userLoadedMessage(
     text: textParts.join("\n"),
     images: images.length ? images : undefined,
     ts,
+    ...flag,
   };
 }
 
@@ -1221,7 +1249,7 @@ export function buildLoadedMessages(records: ChatMessage[]): LoadedMessage[] {
       if (rec.synthetic === true) continue;
       turn += 1;
       pendingAssistantIdx = -1;
-      out.push(userLoadedMessage(rec.content, rec.ts));
+      out.push(userLoadedMessage(rec.content, rec.ts, rec.injected === true));
       continue;
     }
     if (rec.role === "assistant") {
@@ -1379,6 +1407,25 @@ function noticeInsertIndex(messages: LoadedMessage[], turn: number): number {
     return at;
   }
   return messages.length;
+}
+
+/** Persist one per-session JSON sidecar from a `*_sync` command: skipped when the
+ *  session holds nothing and nothing is stored, so no untouched session mints an
+ *  empty file. Both sidecars share the rule, and a failure is only diagnostics. */
+function syncSessionSidecar(
+  tab: { id: string; currentSession?: string },
+  kind: "notices" | "events",
+  rows: readonly unknown[],
+  pathFor: (name: string) => string,
+  write: (name: string) => void,
+): void {
+  const name = tab.currentSession;
+  if (!name) return;
+  try {
+    if (rows.length > 0 || existsSync(pathFor(name))) write(name);
+  } catch (err) {
+    emitDiagnosticError(`session.${kind}.sync.failed`, err, { tabId: tab.id });
+  }
 }
 
 function maskApiKey(key: string | undefined): string | undefined {
@@ -1579,6 +1626,7 @@ function emitSettings(tab: Tab): void {
       reasoningEffort: tab.currentReasoningEffort,
       editMode,
       quickSends: loadCustomQuickSends(),
+      quickSendId: loadQuickSendId(),
       feedbackCues: loadFeedbackCues(),
       contextTokens: tab.ctxMaxOverride ?? null,
       maxIterPerTurn: tab.runtime?.loop.maxIterPerTurn ?? loadMaxIterPerTurn(),
@@ -2988,6 +3036,7 @@ function loadSessionIntoTab(
       type: "$session_loaded",
       name,
       messages: loadedMessages,
+      events: loadSessionEvents(name),
       carryover: sessionCarryover(meta),
     },
     tab.id,
@@ -4935,6 +4984,17 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   }
 
   const tabs = new Map<string, Tab>();
+  // Plan ownership needs to tell two sessions in THIS process apart (two tabs share one
+  // pid), and the tab list is the only source of truth for that: a plan whose claiming
+  // session is no longer bound here is takeover-able, one that is bound stays locked.
+  setLiveSessionProbe((workspace, session) => {
+    const want = normalizeWorkspace(workspace);
+    for (const tab of tabs.values()) {
+      if (tab.currentSession !== session) continue;
+      if (tab.rootDir && normalizeWorkspace(tab.rootDir) === want) return true;
+    }
+    return false;
+  });
   publishProviderCatalogs = () => {
     for (const tab of tabs.values()) emitSettings(tab);
   };
@@ -6000,6 +6060,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           type: "$session_loaded",
           name: tab.currentSession,
           messages: [],
+          events: [],
           carryover: emptySessionCarryover(),
         },
         tab.id,
@@ -6174,6 +6235,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         type: "$session_loaded",
         name: tab.currentSession,
         messages: [],
+        events: [],
         carryover: emptySessionCarryover(),
       },
       tab.id,
@@ -6442,7 +6504,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   }
 
   function cancelPendingGates(tab: Tab): void {
-    const hadActivePlan = tab.rootDir.length > 0 && planRepository(tab.rootDir).active() !== null;
+    const hadActivePlan = activePlanForTab(tab) !== null;
     const ids = [...tab.pendingGateIds];
     tab.pendingGateIds.clear();
     for (const id of ids) {
@@ -6890,6 +6952,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             type: "$session_loaded",
             name: tab.currentSession,
             messages: restoredMessages,
+            events: loadSessionEvents(tab.currentSession),
             carryover: sessionCarryover(meta),
           },
           tab.id,
@@ -6900,6 +6963,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             type: "$session_loaded",
             name: tab.currentSession,
             messages: [],
+            events: [],
             carryover: emptySessionCarryover(),
           },
           tab.id,
@@ -7254,6 +7318,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
                     type: "$session_loaded",
                     name: t.currentSession,
                     messages: msgs,
+                    events: loadSessionEvents(t.currentSession),
                     carryover: sessionCarryover(meta),
                     resync: true,
                   },
@@ -7273,6 +7338,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
                     type: "$session_loaded",
                     name: t.currentSession,
                     messages: [],
+                    events: [],
                     carryover: emptySessionCarryover(),
                     resync: true,
                   },
@@ -7888,17 +7954,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "notices_sync") {
-      if (tab.currentSession) {
-        try {
-          // Skip the write when there is nothing stored and nothing to store —
-          // a session with no cards never mints an empty sidecar.
-          if (msg.notices.length > 0 || existsSync(sessionNoticesPath(tab.currentSession))) {
-            writeSessionNotices(tab.currentSession, msg.notices);
-          }
-        } catch (err) {
-          emitDiagnosticError("session.notices.sync.failed", err, { tabId: tab.id });
-        }
-      }
+      syncSessionSidecar(tab, "notices", msg.notices, sessionNoticesPath, (name) =>
+        writeSessionNotices(name, msg.notices),
+      );
+      return;
+    }
+    if (msg.cmd === "events_sync") {
+      syncSessionSidecar(tab, "events", msg.events, sessionUiEventsPath, (name) =>
+        writeSessionEvents(name, msg.events),
+      );
       return;
     }
     if (msg.cmd === "session_load") {
@@ -8462,6 +8526,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         if (msg.quickSends !== undefined) {
           saveCustomQuickSends(msg.quickSends);
         }
+        if (msg.quickSendId !== undefined) {
+          saveQuickSendId(msg.quickSendId);
+          // The marked row is app-global state: every open composer shows the
+          // same default, not only the tab that picked it.
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
         if (msg.contextTokens !== undefined) {
           saveContextTokens(msg.contextTokens);
           const next = loadContextTokens();
@@ -8827,7 +8897,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (msg.cmd === "plan_remove") {
       try {
         const repository = planRepository(tab.rootDir);
-        const wasActive = repository.active()?.id === msg.planId;
+        const wasActive = activePlanForTab(tab)?.id === msg.planId;
         repository.remove(msg.planId);
         emitPlanHistory(tab);
         // A removed active plan must stop driving the rail and the loop's plan context.

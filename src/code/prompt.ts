@@ -75,6 +75,8 @@ Every attempt is persisted to the session's plan history, so it survives restart
 - \`abandon_plan\` discards a plan with a \`reason\` (after approval); partial work is retained, never marked complete.
 - \`list_plans\` lists the session's attempts (IDs, status, dates, progress); \`open_plan\` returns one plan's full steps, results, evidence and revisions. Use these to recover context rather than guessing.
 
+A workspace plan belongs to ONE live session at a time. Two sessions in the same workspace may run two different plans in parallel, but never the same one: \`activate_plan\` on a plan another live session is working comes back as \`rejected:\` naming that session, and \`mark_step_complete\` / \`revise_plan\` / \`abandon_plan\` refuse a plan you do not own. Treat a rejection as final for that plan: pick a different plan or submit your own, and never try to drive a planId this session did not activate.
+
 # The edit gate
 
 \`edit_file\` / \`write_file\` / \`multi_edit\` / \`delete_range\` / \`delete_symbol\`, shell commands and out-of-sandbox path access all route through the edit gate. The user sets its mode in the UI, and the "Permissions (live)" block at the end of this prompt names the mode active right now; that block is authoritative over anything this conversation says about permissions. The three modes:

@@ -960,11 +960,13 @@ export class DeepSeekClient {
     // ignored — we don't strip them here because the server's explicit
     // "setting won't report an error" contract means leaving them in is
     // safe and keeps the request payload diffable against OpenAI tooling.
-    // OpenAI (and Azure) reject the proprietary field — GPT models control
-    // reasoning via reasoning_effort instead, so never send it for them.
-    // Proprietary fields are provider-locked: DeepSeek's thinking toggle and
-    // reasoning_effort are rejected (or ignored) by other backends — Ollama's
-    // OpenAI-compat layer maps only known chat fields.
+    // The toggle is DeepSeek's proprietary extension, so it is allowlisted to
+    // the deepseek provider alone: every other backend either takes the toggle
+    // as a top-level `thinking` (zai/mimo, above) or refuses the unknown field —
+    // OpenAI, OpenCode, and the Experiential Labs gateway answer 400 (the
+    // gateway with code `unsupported_parameter`). Azure serves DeepSeek but
+    // 400s the field, so its endpoint is checked too. An allowlist keeps a new
+    // provider safe by default: it never inherits the proprietary field.
     if (provider === "zai") {
       if (opts.thinking) {
         payload.thinking = { type: "enabled", clear_thinking: false };
@@ -980,13 +982,7 @@ export class DeepSeekClient {
       const thinking =
         opts.tools?.length && loadMimoDisableThinkingWithTools() ? "disabled" : opts.thinking;
       if (thinking) payload.thinking = { type: thinking };
-    } else if (
-      opts.thinking &&
-      !this._isAzureEndpoint() &&
-      !isOllama &&
-      provider !== "openai" &&
-      provider !== "opencode"
-    ) {
+    } else if (provider === "deepseek" && opts.thinking && !this._isAzureEndpoint()) {
       payload.extra_body = { thinking: { type: opts.thinking } };
     }
     if (reasoningEffort && !isOllama && provider !== "mimo") {

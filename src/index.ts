@@ -135,6 +135,11 @@ export {
   registerPlanTool,
 } from "./tools/plan.js";
 export type { PlanStep, PlanStepRisk, PlanToolOptions, StepCompletion } from "./tools/plan.js";
+// Hosts that run several sessions in ONE process must answer "is this session still
+// live?" so a plan is never handed to a second live session, and is freed once the
+// owning one is gone. Without a probe a same-process claim is treated as live.
+export { claimingSession, setLiveSessionProbe } from "./code/plan-claim.js";
+export type { LiveSessionProbe, PlanClaim } from "./code/plan-claim.js";
 export { registerTodoTool } from "./tools/todo.js";
 export type { TodoItem, TodoStatus, TodoToolOptions } from "./tools/todo.js";
 export { registerWaitTool } from "./tools/wait.js";

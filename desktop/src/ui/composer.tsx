@@ -120,6 +120,8 @@ export function Composer({
   setDraft,
   onSend,
   quickSends,
+  activeQuickSendId,
+  onPickQuickSend,
   onAbort,
   disabled,
   busy,
@@ -174,6 +176,10 @@ export function Composer({
   onSend: (text?: string | QueuedSend) => void;
   /** Every selectable quick send (built-ins + customs) — drives the quick-send dropdown. */
   quickSends?: { id: string; message: string; shorthand: string }[];
+  /** The row the dropdown marks as the composer's default. */
+  activeQuickSendId?: string;
+  /** Persist a newly picked default, called alongside the send itself. */
+  onPickQuickSend?: (id: string) => void;
   onAbort: () => void;
   disabled?: boolean;
   busy?: boolean;
@@ -894,8 +900,10 @@ export function Composer({
                         icon={<I.play size={12} />}
                         label={q.shorthand}
                         desc={q.message}
+                        active={q.id === activeQuickSendId}
                         onPick={() => {
                           runQuickSend(q);
+                          onPickQuickSend?.(q.id);
                           closeMenu();
                         }}
                       />

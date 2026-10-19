@@ -6,6 +6,7 @@ type BuildLoadedMessages = (records: ChatMessage[]) => Array<{
   kind: "assistant" | "user";
   text?: string;
   images?: string[];
+  injected?: true;
   segments?: Array<{ kind: string; text?: string; args?: string; result?: string; ok?: boolean }>;
 }>;
 
@@ -77,6 +78,30 @@ describe("desktop session loading", () => {
       expect(user.text).toBe("just text");
       expect(user.images).toBeUndefined();
     }
+  });
+
+  it("flags image-feedback records as injected and keeps their list slot", () => {
+    const records: ChatMessage[] = [
+      { role: "user", content: "real prompt" },
+      {
+        role: "user",
+        injected: true,
+        content: [
+          { type: "text", text: "Screen capture (monitor 0): pixels attached" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+        ],
+      },
+      { role: "user", content: "second prompt" },
+    ];
+
+    const loaded = buildLoadedMessages!(records);
+    // The injected record keeps its slot, so the UI's positional numbering still
+    // counts the second real prompt as turn 3.
+    expect(loaded.map((m) => (m.kind === "user" ? m.injected === true : null))).toEqual([
+      false,
+      true,
+      false,
+    ]);
   });
 
   it("numbers tool-loop assistant records by their owning user turn", () => {

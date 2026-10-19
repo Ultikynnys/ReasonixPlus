@@ -24,6 +24,12 @@ import {
 } from "../memory/session.js";
 import { coercePlanStep, sanitizeEvidence } from "../tools/plan-sanitize.js";
 import type { PlanStep, StepCompletion } from "../tools/plan-types.js";
+import {
+  type PlanClaim,
+  claimOwnerIsLive,
+  claimRefusalMessage,
+  parsePlanClaim,
+} from "./plan-claim.js";
 
 export type PlanStatus =
   | "proposed"
@@ -47,6 +53,9 @@ export interface PlanRecord {
   revisions: Array<{ at: string; reason: string; steps: PlanStep[] }>;
   replacedBy?: string;
   dispositionReason?: string;
+  /** The one live session working this plan. Absent on plans imported from before
+   *  ownership existed; the first live session that asks adopts such a plan. */
+  claim?: PlanClaim;
 }
 
 interface History {
@@ -60,6 +69,10 @@ export type PlanSummary = Omit<PlanRecord, "body" | "steps" | "completions" | "r
   completedSteps: number;
 };
 
+/** A plan a live owner is actively driving. Only these block another session's
+ *  takeover: a finished, superseded, cancelled or sent-back plan belongs to nobody. */
+const WORKING_STATUSES: ReadonlySet<PlanStatus> = new Set<PlanStatus>(["proposed", "active"]);
+
 const statuses = new Set<PlanStatus>([
   "proposed",
   "active",
@@ -69,6 +82,15 @@ const statuses = new Set<PlanStatus>([
   "superseded",
   "refinement_requested",
 ]);
+
+/** Answer to "may this session work this plan?". Refusals are a normal outcome, not
+ *  an error: a live session that asks for a plan gets an accept or a reject. */
+export type PlanClaimRefusal = {
+  accepted: false;
+  reason: "owned_by_another_session";
+  plan: PlanRecord;
+  owner: PlanClaim;
+};
 
 function validate(value: unknown): History {
   const history = value as History;
@@ -100,6 +122,8 @@ function validate(value: unknown): History {
     ids.add(plan.id);
     if (plan.status !== "completed" && plan.finishedAt !== null)
       throw new Error("Only completed plans have a finish date");
+    if (plan.claim !== undefined && !parsePlanClaim(plan.claim))
+      throw new Error("Invalid plan claim");
     for (const [id, completion] of Object.entries(plan.completions)) {
       if (
         !completion ||
@@ -130,8 +154,16 @@ function validate(value: unknown): History {
     )
       throw new Error("Invalid plan steps");
   }
-  if (history.plans.filter((p) => p.status === "active").length > 1)
-    throw new Error("Multiple active plans in one workspace");
+  // One session drives one plan at a time; two sessions may drive two plans in the
+  // same workspace in parallel (unclaimed plans share the "" owner bucket).
+  const activeOwners = new Set<string>();
+  for (const plan of history.plans) {
+    if (plan.status !== "active") continue;
+    const owner = plan.claim?.session ?? "";
+    if (activeOwners.has(owner))
+      throw new Error("Multiple active plans for one session in one workspace");
+    activeOwners.add(owner);
+  }
   return history;
 }
 
@@ -178,20 +210,71 @@ function sealCompletedPlans(history: History): void {
   }
 }
 
-/** A workspace history holds at most one active plan: keep the most recently
- *  updated active, mark the rest superseded so validation stays satisfied. */
+/** Ownership bucket for the one-active-per-session invariant. Plans imported before
+ *  claims existed share the "" bucket, so such a history stays single-active. */
+function ownerKey(plan: PlanRecord): string {
+  return plan.claim?.session ?? "";
+}
+
+/** Stamp a claim for `session`, keeping the takeover time when the same session (in
+ *  the same process) already held it. */
+function claimFor(session: string, existing?: PlanClaim): PlanClaim {
+  if (existing && existing.session === session && existing.pid === process.pid) return existing;
+  const since =
+    existing && existing.session === session ? existing.since : new Date().toISOString();
+  return { session, pid: process.pid, since };
+}
+
+/** The claim that forbids `session` from touching this plan, or null when the plan is
+ *  free: only a LIVE owner of a plan still being worked blocks a takeover. */
+function blockingClaim(workspace: string, plan: PlanRecord, session: string): PlanClaim | null {
+  const claim = plan.claim;
+  if (!claim || claim.session === session) return null;
+  if (!WORKING_STATUSES.has(plan.status)) return null;
+  return claimOwnerIsLive(workspace, claim) ? claim : null;
+}
+
+/** One session works one plan at a time: activating a plan supersedes that owner's
+ *  other active plans and leaves every other session's active plan alone, so two
+ *  sessions can run two plans in one workspace in parallel. */
+function supersedeOwnerActives(
+  history: History,
+  id: string,
+  owner: string | undefined,
+  now: string,
+): void {
+  const key = owner ?? "";
+  for (const other of history.plans) {
+    if (other.id === id || other.status !== "active" || ownerKey(other) !== key) continue;
+    other.status = "superseded";
+    other.replacedBy = id;
+    other.updatedAt = now;
+  }
+}
+
+/** A workspace history holds at most one active plan PER OWNER: keep each owner's
+ *  most recently updated active plan, mark the rest superseded so validation stays
+ *  satisfied. Different owners may each have one. */
 function reconcileActive(plans: PlanRecord[]): void {
-  let keeper: PlanRecord | undefined;
+  const keepers = new Map<string, PlanRecord>();
   for (const plan of plans) {
     if (plan.status !== "active") continue;
-    if (!keeper || plan.updatedAt > keeper.updatedAt) keeper = plan;
+    const key = ownerKey(plan);
+    const keeper = keepers.get(key);
+    if (!keeper || plan.updatedAt > keeper.updatedAt) keepers.set(key, plan);
   }
   for (const plan of plans) {
-    if (plan.status === "active" && plan !== keeper) {
-      plan.status = "superseded";
-      plan.replacedBy = keeper?.id;
-    }
+    if (plan.status !== "active") continue;
+    const keeper = keepers.get(ownerKey(plan));
+    if (!keeper || keeper.id === plan.id) continue;
+    plan.status = "superseded";
+    plan.replacedBy = keeper.id;
   }
+}
+
+/** The plan `session` owns and is still working, newest first. */
+function ownerActive(history: History, session: string): PlanRecord | undefined {
+  return history.plans.findLast((p) => p.status === "active" && p.claim?.session === session);
 }
 
 export class PlanRepository {
@@ -284,12 +367,55 @@ export class PlanRepository {
     return structuredClone(plan);
   }
 
+  /** The newest active plan in the workspace whatever its owner — display and history
+   *  only. Never use this to decide what a session works: that is `activeFor`. */
   active(): PlanRecord | null {
     const plan = this.load().plans.findLast((p) => p.status === "active");
     return plan ? structuredClone(plan) : null;
   }
 
-  propose(body: string, steps: PlanStep[] = [], summary?: string): PlanRecord {
+  /** The plan `session` is working, or null. `adoptUnclaimed` takes over an
+   *  in-flight plan carrying no claim (written before ownership existed); losing
+   *  that race shows nothing rather than a plan another session drives. */
+  activeFor(session: string, opts: { adoptUnclaimed?: boolean } = {}): PlanRecord | null {
+    const own = ownerActive(this.load(), session);
+    if (own) return structuredClone(own);
+    return opts.adoptUnclaimed ? this.adoptUnownedActive(session) : null;
+  }
+
+  /** Read-only answer to "may this session work this plan?": the live holder when it
+   *  may not, null when it may. Lets a surface refuse BEFORE prompting the user. */
+  claimable(id: string, session: string): PlanClaimRefusal | null {
+    const plan = this.find(this.load(), id);
+    const owner = blockingClaim(this.workspace, plan, session);
+    if (!owner) return null;
+    return {
+      accepted: false,
+      reason: "owned_by_another_session",
+      plan: structuredClone(plan),
+      owner,
+    };
+  }
+
+  private adoptUnownedActive(session: string): PlanRecord | null {
+    const candidate = this.load().plans.findLast((p) => p.status === "active" && !p.claim);
+    if (!candidate) return null;
+    try {
+      return this.mutate((history) => {
+        const plan = history.plans.find((p) => p.id === candidate.id);
+        if (!plan || plan.status !== "active" || plan.claim)
+          return ownerActive(history, session) ?? null;
+        plan.claim = claimFor(session);
+        return plan;
+      });
+    } catch {
+      // A live writer holds the store (or the history is unreadable): a plan read on
+      // the message-build path must degrade to "no plan here", never break the turn.
+      return null;
+    }
+  }
+
+  propose(body: string, steps: PlanStep[] = [], summary?: string, session?: string): PlanRecord {
     if (!body.trim()) throw new Error("Plan body is required");
     return this.mutate((history) => {
       const now = new Date().toISOString();
@@ -305,33 +431,41 @@ export class PlanRepository {
         completions: {},
         revisions: [],
       };
+      // Claimed at creation: the proposing session owns the plan before the user is
+      // even asked, so no other session can pick it up while the card is open.
+      if (session) plan.claim = claimFor(session);
       history.plans.push(plan);
       return plan;
     });
   }
 
-  verdict(id: string, status: "active" | "cancelled" | "refinement_requested"): PlanRecord {
+  verdict(
+    id: string,
+    status: "active" | "cancelled" | "refinement_requested",
+    session?: string,
+  ): PlanRecord {
     return this.mutate((history) => {
       const plan = this.findMutable(history, id);
       if (plan.status !== "proposed") throw new Error("Stale plan verdict");
       const now = new Date().toISOString();
-      if (status === "active")
-        for (const previous of history.plans) {
-          if (previous.id !== id && previous.status === "active") {
-            previous.status = "superseded";
-            previous.replacedBy = id;
-            previous.updatedAt = now;
-          }
+      if (status === "active") {
+        if (session) {
+          const owner = blockingClaim(this.workspace, plan, session);
+          if (owner) throw new Error(claimRefusalMessage(id, owner));
+          plan.claim = claimFor(session, plan.claim);
         }
+        supersedeOwnerActives(history, id, plan.claim?.session, now);
+      }
       plan.status = status;
       plan.updatedAt = now;
       return plan;
     });
   }
 
-  complete(id: string, completion: StepCompletion): PlanRecord {
+  complete(id: string, completion: StepCompletion, session?: string): PlanRecord {
     return this.mutate((history) => {
       const plan = this.findActive(history, id);
+      if (session) this.requireOwner(plan, session);
       const next = plan.steps.find((s) => !Object.hasOwn(plan.completions, s.id));
       if (!next || next.id !== completion.stepId)
         throw new Error("Complete exactly the next unfinished plan step");
@@ -346,9 +480,10 @@ export class PlanRepository {
     });
   }
 
-  revise(id: string, reason: string, remaining: PlanStep[]): PlanRecord {
+  revise(id: string, reason: string, remaining: PlanStep[], session?: string): PlanRecord {
     return this.mutate((history) => {
       const plan = this.findActive(history, id);
+      if (session) this.requireOwner(plan, session);
       if (!reason.trim() || remaining.some((s) => Object.hasOwn(plan.completions, s.id)))
         throw new Error("Invalid plan revision");
       plan.revisions.push({
@@ -365,12 +500,16 @@ export class PlanRepository {
     });
   }
 
-  abandon(id: string, reason: string): PlanRecord {
+  abandon(id: string, reason: string, session?: string): PlanRecord {
     if (!reason.trim()) throw new Error("Abandonment reason is required");
     return this.mutate((history) => {
       const plan = this.findMutable(history, id);
       if (plan.status !== "active" && plan.status !== "proposed")
         throw new Error("Plan cannot be abandoned in its current state");
+      if (session) {
+        const owner = blockingClaim(this.workspace, plan, session);
+        if (owner) throw new Error(claimRefusalMessage(id, owner));
+      }
       plan.status = "abandoned";
       plan.dispositionReason = reason.trim();
       plan.updatedAt = new Date().toISOString();
@@ -378,20 +517,21 @@ export class PlanRepository {
     });
   }
 
-  /** Make any non-completed plan the active one, superseding the current active. A
-   *  completed plan is frozen, so it can never be brought back as active. */
-  activate(id: string): PlanRecord {
+  /** Make any non-completed plan this session's active one, superseding this
+   *  session's other active plan. A completed plan is frozen, so it can never be
+   *  brought back as active, and a plan a live session is working is refused. */
+  activate(id: string, session?: string): PlanRecord {
     return this.mutate((history) => {
       const plan = this.findMutable(history, id);
-      if (plan.status === "active") return plan;
-      const now = new Date().toISOString();
-      for (const other of history.plans) {
-        if (other.id !== id && other.status === "active") {
-          other.status = "superseded";
-          other.replacedBy = id;
-          other.updatedAt = now;
-        }
+      const mine = !session || plan.claim?.session === session;
+      if (session) {
+        const owner = blockingClaim(this.workspace, plan, session);
+        if (owner) throw new Error(claimRefusalMessage(id, owner));
+        plan.claim = claimFor(session, plan.claim);
       }
+      if (plan.status === "active" && mine) return plan;
+      const now = new Date().toISOString();
+      supersedeOwnerActives(history, id, plan.claim?.session, now);
       plan.status = "active";
       plan.finishedAt = null;
       plan.replacedBy = undefined;
@@ -428,6 +568,15 @@ export class PlanRepository {
     const plan = this.findMutable(history, id);
     if (plan.status !== "active") throw new Error("Plan is no longer active");
     return plan;
+  }
+
+  /** A session advances only the plan it owns. Ownership is never stolen here: taking
+   *  a plan over is an explicit `activate`, which the owner's liveness gates. */
+  private requireOwner(plan: PlanRecord, session: string): void {
+    if (plan.claim && plan.claim.session !== session)
+      throw new Error(
+        `Plan is owned by session "${plan.claim.session}"; activate it from this session first`,
+      );
   }
 }
 

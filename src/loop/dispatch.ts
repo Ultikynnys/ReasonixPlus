@@ -180,6 +180,8 @@ export async function* dispatchToolCallsChunked(
         ctx.appendAndPersist({
           role: "user",
           content: result,
+          // Machine-written: the Events tab must not list it as a prompt.
+          injected: true,
         });
       }
 

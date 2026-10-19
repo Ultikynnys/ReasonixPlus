@@ -22,6 +22,7 @@ export function ApprovalCard({
   onTertiary,
   onQuaternary,
   defaultOpen = true,
+  anchor,
 }: {
   kind: string;
   tone?: ApprovalTone;
@@ -39,11 +40,14 @@ export function ApprovalCard({
   onTertiary?: () => void;
   onQuaternary?: () => void;
   defaultOpen?: boolean;
+  /** Stable jump target for the Events tab (`call:<id>`), so a recorded event
+   *  lands on THIS card instead of its turn's prompt bubble. */
+  anchor?: string;
 }) {
   useLang();
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="approval" data-tone={tone} data-open={open}>
+    <div className="approval" data-tone={tone} data-open={open} data-anchor={anchor}>
       <div className="card-head-row">
         <CardHead
           icon={<I.shield size={13} />}
@@ -104,16 +108,19 @@ export function TaskCard({
   title,
   subtitle,
   steps,
+  anchor,
 }: {
   title: string;
   subtitle?: string;
   steps: TaskStepView[];
+  /** Jump target for the card hosting this checklist (the plan's tool call). */
+  anchor?: string;
 }) {
   useLang();
   const done = steps.filter((x) => x.state === "done").length;
   const pct = steps.length ? (done / steps.length) * 100 : 0;
   return (
-    <div className="task-card">
+    <div className="task-card" data-anchor={anchor}>
       <div className="th">
         <span className="ico">
           <I.list size={13} />

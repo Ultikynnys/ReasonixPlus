@@ -12,14 +12,18 @@ import type {
   McpSpecInfo,
   MemoryDetail,
   MemoryEntryInfo,
+  SessionEventRecord,
   SettingsPatch,
 } from "../protocol";
 import { toWorkspaceAbsolute } from "../workspace-path";
 import { PanelErrorBoundary } from "./error-boundary";
+import type { TranscriptRecord } from "./events";
+import { EventsPanel } from "./events";
+import type { JumpTarget } from "./transcript-jump";
 import { FileMenu } from "./file-menu";
 import { activationHandler } from "./keyboard";
 
-type Tab = "files" | "parameters" | "mcp" | "context" | "memory" | "rules" | "plan";
+type Tab = "files" | "parameters" | "mcp" | "context" | "memory" | "rules" | "plan" | "events";
 
 /** Side-panel nav order and labels; the tab bar below maps over this one list. */
 const PANEL_TABS: ReadonlyArray<{ id: Tab; label: TKey }> = [
@@ -30,6 +34,7 @@ const PANEL_TABS: ReadonlyArray<{ id: Tab; label: TKey }> = [
   { id: "memory", label: "contextPanel.memoryTab" },
   { id: "rules", label: "contextPanel.rulesTab" },
   { id: "plan", label: "contextPanel.planTab" },
+  { id: "events", label: "contextPanel.eventsTab" },
 ];
 
 /** Rule effect and mode come straight off the wire type, so they cannot drift. */
@@ -78,6 +83,9 @@ export function ContextPanel({
   onReadPlans,
   onReadPlan,
   onRemovePlan,
+  messages = [],
+  sessionEvents = [],
+  onJumpToEvent,
   active = true,
 }: {
   settings: Settings | null;
@@ -116,6 +124,13 @@ export function ContextPanel({
   onReadPlans?: () => void;
   onReadPlan?: (id: string) => void;
   onRemovePlan?: (id: string) => void;
+  /** The live transcript: the Events tab reads its user turns as event rows. */
+  messages?: readonly TranscriptRecord[];
+  /** Gate/fold verdicts recorded for this session, persisted with it. */
+  sessionEvents?: readonly SessionEventRecord[];
+  /** Scroll the chat to a recorded event's location — the Events tab's click
+   *  target. */
+  onJumpToEvent?: (target: JumpTarget) => boolean | void;
   /** True when this tab is the visible one. Background polling (git status)
    *  must only run for the tab the user can actually see. */
   active?: boolean;
@@ -262,6 +277,9 @@ export function ContextPanel({
           )}
           {tab === "plan" ? (
             <CtxPlanHistory key={planSession} history={planHistory ?? []} details={planDetails ?? {}} onReadPlans={onReadPlans} onReadPlan={onReadPlan} onRemovePlan={onRemovePlan} fallback={activePlan} />
+          ) : null}
+          {tab === "events" ? (
+            <EventsPanel messages={messages} events={sessionEvents} onJump={onJumpToEvent} />
           ) : null}
         </PanelErrorBoundary>
       </div>

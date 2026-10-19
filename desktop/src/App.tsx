@@ -87,6 +87,7 @@ import {
   type PlaywrightManagedBrowser,
   type PlaywrightMcpConnectionMode,
   type RevisionVerdict,
+  type SessionEventRecord,
   type SessionProviderCost,
   type SettingsPatch,
   type SettingsPayload,
@@ -97,6 +98,7 @@ import {
   type ZaiQuota,
   type OpencodeQuota,
   allQuickSends,
+  resolveActiveQuickSend,
   rpcSend,
 } from "./protocol";
 import { StartupTimingTracker } from "./startup-timing";
@@ -133,7 +135,6 @@ import { StoredComposer as Composer } from "./ui/composer";
 import { createComposerDraft } from "./ui/composer-draft";
 import { ContextPanel } from "./ui/context-panel";
 import { JobsPop } from "./ui/jobs-pop";
-import { JumpBar } from "./ui/jump-bar";
 import { activationHandler } from "./ui/keyboard";
 import { type ChangelogState } from "./ui/changelog";
 import { McpSetupDialog } from "./ui/mcp-setup";
@@ -161,6 +162,7 @@ import {
   UserMsg,
 } from "./ui/thread";
 import { getThreadMaxWidth } from "./ui/thread-layout";
+import { type JumpTarget, callAnchor, jumpToAnchor, noticeAnchor } from "./ui/transcript-jump";
 import { useAutoCollapse } from "./ui/useAutoCollapse";
 import { useAutoScroll } from "./ui/useAutoScroll";
 import { useIsScrollable } from "./ui/useIsScrollable";
@@ -308,7 +310,9 @@ export type ChatMessage =
       turn: number;
       skill?: SkillOrigin;
       images?: string[];
-      /** When the record was written (epoch ms): the jump map's coordinate. */
+      /** Machine-written record (image tool feedback): not a prompt, so no Events row. */
+      injected?: true;
+      /** When the record was written (epoch ms): the Events timeline's coordinate. */
       ts?: number;
     }
   | {
@@ -590,6 +594,9 @@ type State = {
   skills: SkillInfo[];
   /** Files the agent has read or modified this session — paths as the tool args provided them. */
   sessionFiles: SessionFile[];
+  /** Plan/choice/fold verdicts recorded for the Events tab. Turns are not here:
+   *  they are read from the transcript, which a rewind already prunes. */
+  sessionEvents: SessionEventRecord[];
   memory: MemoryEntryInfo[];
   memoryDetail: MemoryDetail | null;
   /** Outcome of the last memory write/delete/import RPC — shown as a transient banner in the memory panel. */
@@ -652,7 +659,7 @@ type Action =
   | { t: "clear" }
   | { t: "resolve_confirm"; id: number }
   | { t: "resolve_path_access"; id: number }
-  | { t: "resolve_choice"; id: number }
+  | { t: "resolve_choice"; id: number; verdict: ChoiceVerdict }
   | { t: "resolve_plan"; id: number; verdict: PlanVerdict }
   | { t: "resolve_checkpoint"; id: number; verdict: CheckpointVerdict }
   | { t: "resolve_revision"; id: number; verdict: RevisionVerdict }
@@ -788,11 +795,112 @@ function pendingAssistantIndex(messages: ChatMessage[]): number {
 
 /** When a record is written. Monotone within the process, so two records created in
  *  the same millisecond still order by write order: a tie would collapse the
- *  conversation's span, and the jump dots with it. */
+ *  conversation's timeline and list them out of order. */
 let lastWriteStamp = 0;
 export function writeStamp(): number {
   lastWriteStamp = Math.max(Date.now(), lastWriteStamp + 1);
   return lastWriteStamp;
+}
+
+/** Append one Events-tab entry, or refine the entry that id already wrote: a
+ *  fold is recorded when it starts and settled when its card resolves, and the
+ *  pair must stay ONE row. */
+function recordSessionEvent(
+  events: readonly SessionEventRecord[],
+  event: SessionEventRecord,
+): SessionEventRecord[] {
+  const index = events.findIndex((existing) => existing.id === event.id);
+  if (index < 0) return [...events, event];
+  const next = [...events];
+  next[index] = { ...events[index], ...event };
+  return next;
+}
+
+/** A fold's event id, derived from its transcript card so the start and the
+ *  settle of one fold address the same row. */
+function compactionEventId(noticeId: string): string {
+  return `compaction-${noticeId}`;
+}
+
+/** The tool call of the gate currently asking, read from the transcript: the
+ *  resolved gate's card IS that segment, and only a plan carries its call id on
+ *  the wire, so a choice has to be looked up where its card is rendered. */
+function pendingGateCallId(messages: readonly ChatMessage[], tool: string): string | undefined {
+  for (const message of messages) {
+    if (message.kind !== "assistant") continue;
+    for (const segment of message.segments) {
+      if (segment.kind === "tool" && segment.name === tool && segment.result === undefined) {
+        return segment.callId;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Record one Events-tab entry. Every event needs a stamp and the turn it belonged
+ *  to, and those are exactly the parts a new event type would forget to fill in —
+ *  so one function supplies them. `at` overrides both for a fold, whose row must
+ *  carry its transcript card's stamp rather than a fresh one. */
+function recordEvent(
+  state: Pick<State, "messages" | "sessionEvents">,
+  event: Omit<SessionEventRecord, "ts" | "turn">,
+  at?: { ts: number; turn: number },
+): SessionEventRecord[] {
+  return recordSessionEvent(state.sessionEvents, {
+    ...event,
+    ts: at?.ts ?? writeStamp(),
+    turn: at?.turn ?? currentTurnForNotice(state.messages),
+  });
+}
+
+/** Settle a fold in place: its card carries the result, and its Events row learns
+ *  what the fold did. Both always move together, so a fold cannot keep a stale
+ *  row or a card that disagrees with the row's outcome. */
+function settleCompactionCard(
+  state: Pick<State, "messages" | "sessionEvents">,
+  index: number,
+  patch: { text: string; severity: NoticeSeverity },
+): Pick<State, "messages" | "sessionEvents"> {
+  const card = state.messages[index];
+  // A notice that is not a fold settles without an Events row to refine; every
+  // running compaction card carries its trigger from creation.
+  if (card?.kind !== "notice" || !card.trigger) return state;
+  return {
+    messages: state.messages.map((message, i) =>
+      i === index && message.kind === "notice" ? { ...message, ...patch, running: false } : message,
+    ),
+    sessionEvents: recordEvent(
+      state,
+      {
+        id: compactionEventId(card.id),
+        type: "compaction",
+        outcome: card.trigger,
+        label: patch.text,
+        anchor: noticeAnchor(card.id),
+      },
+      { ts: card.ts ?? writeStamp(), turn: card.turn ?? 0 },
+    ),
+  };
+}
+
+/** Fire a `*_sync` command once per distinct (session, payload) pair. Both
+ *  session sidecars are idempotent full-list overwrites, so re-sending is
+ *  harmless but wasteful; nothing is sent before the session is known, or an
+ *  empty payload would wipe what the daemon just loaded from disk. One hook for
+ *  both sidecars keeps that guard from drifting between them. */
+function useSidecarSync(
+  session: string | undefined,
+  command: OutgoingCommand,
+  send: (command: OutgoingCommand) => void,
+): void {
+  const syncedRef = useRef("");
+  useEffect(() => {
+    if (!session) return;
+    const sig = `${session}\n${JSON.stringify(command)}`;
+    if (sig === syncedRef.current) return;
+    syncedRef.current = sig;
+    send(command);
+  }, [session, command, send]);
 }
 
 /** A fresh, empty assistant card for a turn — pending until its turn settles. */
@@ -1155,6 +1263,7 @@ export function reduce(state: State, action: Action): State {
         activePlan: null,
         usage: zeroUsage(),
         sessionFiles: [],
+        sessionEvents: [],
         activeSkill: null,
         queuedSends: [],
         retryNonce: 0,
@@ -1180,14 +1289,54 @@ export function reduce(state: State, action: Action): State {
     }
     case "resolve_choice": {
       const nextChoices = state.pendingChoices.filter((c) => c.id !== action.id);
+      const pending = state.pendingChoices.find((c) => c.id === action.id);
+      const chosen = action.verdict;
+      // "What did the user pick" has to survive the card that asked: record the
+      // option's wording, not just its id.
+      let label = "";
+      if (chosen.type === "pick") {
+        label = pending?.options.find((o) => o.id === chosen.optionId)?.title ?? chosen.optionId;
+      } else if (chosen.type === "text") {
+        label = chosen.text;
+      }
+      const sessionEvents = recordEvent(state, {
+        id: `choice-${action.id}`,
+        type: "choice",
+        outcome: chosen.type,
+        ...(label ? { label } : {}),
+        ...(pending?.question ? { detail: pending.question } : {}),
+        // The options the gate offered, so the record shows what the pick was
+        // chosen from — not only what won.
+        ...(pending && pending.options.length > 0
+          ? { options: pending.options.map((option) => option.title) }
+          : {}),
+        // The card that asked, so this row jumps to the question it answers.
+        ...callAnchor(pendingGateCallId(state.messages, "ask_choice")),
+      });
       return {
         ...state,
         pendingChoices: nextChoices,
+        sessionEvents,
         turnStatus: turnStatusAfterResolve({ ...state, pendingChoices: nextChoices }, state.busy),
       };
     }
     case "resolve_plan": {
       const removed = state.pendingPlans.find((p) => p.id === action.id);
+      const sessionEvents = recordEvent(state, {
+        id: `plan-${action.id}`,
+        type: "plan",
+        outcome: action.verdict.type,
+        ...(removed ? { label: removed.summary ?? removed.plan } : {}),
+        ...(action.verdict.feedback ? { detail: action.verdict.feedback } : {}),
+        // The plan itself and its checklist: a verdict that keeps only the
+        // summary line cannot show what was actually agreed to. `body` is stored
+        // only when `label` is just the summary, so it is never duplicated.
+        ...(removed?.summary ? { body: removed.plan } : {}),
+        ...(removed?.steps?.length ? { steps: removed.steps.map((step) => step.title) } : {}),
+        // The card this verdict answers, so the row jumps to the plan, not to
+        // the prompt that started the turn.
+        ...callAnchor(removed?.callId),
+      });
       let activePlan = state.activePlan;
       if (removed && action.verdict.type === "approve") {
         const pendingSteps = (removed as PendingPlan & { steps?: PlanStep[] }).steps;
@@ -1206,6 +1355,7 @@ export function reduce(state: State, action: Action): State {
         ...state,
         pendingPlans: nextPlans,
         activePlan,
+        sessionEvents,
         turnStatus: turnStatusAfterResolve({ ...state, pendingPlans: nextPlans }, state.busy),
       };
     }
@@ -1487,6 +1637,7 @@ export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
         clientId: `c-loaded-${i}`,
         turn: userTurn,
         ...(m.images ? { images: m.images } : {}),
+        ...(m.injected ? { injected: true as const } : {}),
         ts: m.ts,
       };
     }
@@ -2394,6 +2545,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           reasoningEffort: ev.reasoningEffort,
           editMode: ev.editMode,
           quickSends: ev.quickSends,
+          quickSendId: ev.quickSendId,
           contextTokens: ev.contextTokens ?? null,
           maxIterPerTurn: ev.maxIterPerTurn ?? null,
           maxIterPerTurnOverride: ev.maxIterPerTurnOverride ?? null,
@@ -2500,6 +2652,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           // totals from the backend.
         },
         sessionFiles,
+        sessionEvents: ev.events ?? [],
         activeSkill: null,
         queuedSends: [],
         retryNonce: 0,
@@ -2533,6 +2686,16 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // the loop keeps running, and real turn ends always carry $turn_complete
       // (daemon invariant). Clearing busy here created the UI-idle/
       // daemon-working zombie.
+      // A failed compaction's card IS the error display — overwrite it in place
+      // (the compaction already closed the turn's card), and refine its Events
+      // row with the failure. Without a card the error is a normal boundary.
+      const failedCompactIdx = state.messages.findIndex(
+        (m) => m.kind === "notice" && m.running === true,
+      );
+      const failedCompact =
+        failedCompactIdx >= 0
+          ? settleCompactionCard(state, failedCompactIdx, { text: ev.message, severity })
+          : null;
       return {
         ...state,
         oauthWaiting: ev.message.includes("OAuth") ? false : state.oauthWaiting,
@@ -2544,23 +2707,11 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           ev.message.includes("MiMo") || ev.message.includes("mimo_oauth")
             ? false
             : state.mimoOAuthWaiting,
-        messages: (() => {
-          // A failed compaction's card IS the error display — overwrite it in
-          // place (the compaction already closed the turn's card).
-          const runningIdx = state.messages.findIndex(
-            (m) => m.kind === "notice" && m.running === true,
-          );
-          if (runningIdx >= 0) {
-            return state.messages.map((m, i) =>
-              i === runningIdx && m.kind === "notice"
-                ? { ...m, text: ev.message, severity, running: false }
-                : m,
-            );
-          }
-          // A mid-turn error is a boundary: insertNotice closes the turn's card
-          // so later output opens a NEW card below the error.
-          return insertNotice(state.messages, ev.message, severity, turn);
-        })(),
+        sessionEvents: failedCompact?.sessionEvents ?? state.sessionEvents,
+        // A mid-turn error is a boundary: insertNotice closes the turn's card
+        // so later output opens a NEW card below the error.
+        messages:
+          failedCompact?.messages ?? insertNotice(state.messages, ev.message, severity, turn),
       };
     }
     case "oauth_begin_result":
@@ -2866,6 +3017,12 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         ...state,
         messages: [...mergeByTurn(loaded, settledNotices), ...inflightCards],
         sessionFiles: deriveSessionFiles(loaded),
+        // The Events journal follows the same rule as the notice cards above: a
+        // verdict for a turn the replacement dropped has nowhere to land, so it
+        // goes with the turn instead of becoming a row that jumps to nothing.
+        sessionEvents: state.sessionEvents.filter(
+          (event) => event.turn <= 0 || event.turn <= survivingMaxTurn,
+        ),
       };
     }
     case "$retry_result":
@@ -2884,17 +3041,33 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // finished (spinner off, trailing reasoning stamped). Where later output
       // lands is guaranteed by openAssistantIndex.
       const base = closeTurnCard(state.messages, ev.turn);
+      const noticeId = nextNoticeId();
+      const ts = writeStamp();
+      const turn = currentTurnForNotice(base);
       const notice: ChatMessage = {
         kind: "notice",
-        id: nextNoticeId(),
+        id: noticeId,
         text: t("cards.compactingBody"),
         severity: "info",
-        turn: currentTurnForNotice(base),
+        turn,
         running: true,
         trigger: ev.trigger,
-        ts: writeStamp(),
+        ts,
       };
-      return { ...state, messages: appendNoticeMessage(base, notice) };
+      // Recorded here, while the trigger is known: which path folded the context
+      // is not recoverable from the settled card alone. The row carries the card's
+      // own stamp so the start and the settle are the same row.
+      const sessionEvents = recordEvent(
+        state,
+        {
+          id: compactionEventId(noticeId),
+          type: "compaction",
+          outcome: ev.trigger,
+          anchor: noticeAnchor(noticeId),
+        },
+        { ts, turn },
+      );
+      return { ...state, messages: appendNoticeMessage(base, notice), sessionEvents };
     }
     case "$notice": {
       // Manual compaction's completion signal — settles its card in place.
@@ -2903,12 +3076,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       );
       if (runningIdx >= 0) {
         // Manual compaction's result lands on the running card in place.
-        const messages = state.messages.map((m, i) =>
-          i === runningIdx && m.kind === "notice"
-            ? { ...m, text: ev.text, severity: ev.severity, running: false }
-            : m,
-        );
-        return { ...state, messages };
+        return {
+          ...state,
+          ...settleCompactionCard(state, runningIdx, { text: ev.text, severity: ev.severity }),
+        };
       }
       // A completed action (manual compaction), not a turn status — appended in
       // creation order, after closing the streaming turn's card.
@@ -2925,17 +3096,11 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         // the running card's done text instead of an inline assistant segment.
         // Compose through the shared helper so the card shows the summary that
         // replaced the folded context, not just the token-count header.
-        const messages: ChatMessage[] = state.messages.map((m, i) =>
-          i === runningIdx && m.kind === "notice"
-            ? {
-                ...m,
-                text: compactionCardText(ev.text, ev.compactionSummary),
-                severity: "success",
-                running: false,
-              }
-            : m,
-        );
-        return { ...state, messages };
+        const doneText = compactionCardText(ev.text, ev.compactionSummary);
+        return {
+          ...state,
+          ...settleCompactionCard(state, runningIdx, { text: doneText, severity: "success" }),
+        };
       }
       const seg: AssistantSegment = {
         kind: "warning",
@@ -3212,6 +3377,7 @@ function TabRuntime({
     playwrightBrowserInstall: null,
     skills: [],
     sessionFiles: [],
+    sessionEvents: [],
     memory: [],
     memoryDetail: null,
     memoryResult: null,
@@ -3564,19 +3730,20 @@ function TabRuntime({
 
   // Persist the transcript's annotation cards (notices + assistant warning
   // segments) with the session so none is transient — the daemon stores them in
-  // the session's notices sidecar and merges them back on load/resync. Idempotent
-  // full-list sync, fired only when the set actually changes.
-  const noticesSyncSigRef = useRef("");
-  useEffect(() => {
-    // Skip until the session is known: syncing an empty list before
-    // $session_loaded has merged the persisted cards would wipe them.
-    if (!state.currentSession) return;
-    const notices = collectPersistedNotices(state.messages);
-    const sig = `${state.currentSession}\n${JSON.stringify(notices)}`;
-    if (sig === noticesSyncSigRef.current) return;
-    noticesSyncSigRef.current = sig;
-    sendRpc({ cmd: "notices_sync", notices });
-  }, [state.messages, state.currentSession, sendRpc]);
+  // the session's notices sidecar and merges them back on load/resync.
+  const noticesSync = useMemo<OutgoingCommand>(
+    () => ({ cmd: "notices_sync", notices: collectPersistedNotices(state.messages) }),
+    [state.messages],
+  );
+  useSidecarSync(state.currentSession, noticesSync, sendRpc);
+
+  // Persist the session's recorded events (plan/choice verdicts, folds) so the
+  // Events tab survives a reload. Same sidecar contract as the notices above.
+  const eventsSync = useMemo<OutgoingCommand>(
+    () => ({ cmd: "events_sync", events: state.sessionEvents }),
+    [state.sessionEvents],
+  );
+  useSidecarSync(state.currentSession, eventsSync, sendRpc);
 
   // Vision attachments (gpt-* + DeepSeek vision models): paste carries bytes
   // from the webview; picked/dropped files ship a path the daemon reads.
@@ -3589,6 +3756,12 @@ function TabRuntime({
     state.settings?.model,
     ollamaVisionModels,
     opencodeVisionModels,
+  );
+  /** The quick send the composer marks: the persisted default, resolved so an
+   *  unset or stale id still lands on Proceed. */
+  const activeQuickSend = resolveActiveQuickSend(
+    state.settings?.quickSendId,
+    state.settings?.quickSends ?? [],
   );
   const mediaCapable = modelAcceptsAudioVideo(state.settings?.model);
   const attachPastedImage = useCallback(
@@ -4039,7 +4212,7 @@ function TabRuntime({
   const resolveChoice = useCallback(
     (id: number, response: ChoiceVerdict) => {
       sendRpc({ cmd: "choice_response", id, response });
-      dispatch({ t: "resolve_choice", id });
+      dispatch({ t: "resolve_choice", id, verdict: response });
     },
     [sendRpc],
   );
@@ -4090,6 +4263,18 @@ function TabRuntime({
     active,
   );
   const threadScrollable = useIsScrollable(threadRef, threadInnerRef);
+
+  /** The Events tab's click target. Release the sticky-bottom follow FIRST, or
+   *  a streamed answer snaps the viewport back to the bottom mid-jump. Lands on
+   *  the event's own card (plan, choice, fold) when the record carries one, its
+   *  turn's prompt only when it does not. Returns whether it actually landed. */
+  const jumpToEvent = useCallback(
+    (target: JumpTarget): boolean => {
+      unpinForJump();
+      return jumpToAnchor(threadRef.current, target);
+    },
+    [unpinForJump],
+  );
 
   // Persist the transcript scroll offset per session so a restart reopens
   // the conversation where the user left it (#1244).
@@ -4413,9 +4598,6 @@ function TabRuntime({
         ) : null}
 
         <main className="main" style={{ position: "relative" }}>
-          {threadScrollable ? (
-            <JumpBar messages={state.messages} threadEl={threadRef.current} onJump={unpinForJump} />
-          ) : null}
           {state.sessionsMutation !== null ? (
             <div className="main-progress" role="status" aria-live="polite">
               <span className="spin" aria-hidden="true" />
@@ -4534,6 +4716,7 @@ function TabRuntime({
                                 text={m.text}
                                 severity={m.severity}
                                 running={m.running}
+                                anchor={m.trigger ? noticeAnchor(m.id) : undefined}
                               />
                             );
                           }
@@ -4664,6 +4847,8 @@ function TabRuntime({
                 draftStore={draftStore}
                 onSend={(text) => send(text)}
                 quickSends={allQuickSends(state.settings?.quickSends ?? [])}
+                activeQuickSendId={activeQuickSend.id}
+                onPickQuickSend={(id) => saveSettings({ quickSendId: id })}
                 onAbort={abort}
                 disabled={!state.ready}
                 busy={engaged}
@@ -4833,6 +5018,9 @@ function TabRuntime({
           onReadPlans={() => { void rpcSend({ cmd: "plan_history_get", tabId }); }}
           onReadPlan={(planId) => { void rpcSend({ cmd: "plan_detail_get", planId, tabId }); }}
           onRemovePlan={(planId) => { void rpcSend({ cmd: "plan_remove", planId, tabId }); }}
+          messages={state.messages}
+          sessionEvents={state.sessionEvents}
+          onJumpToEvent={jumpToEvent}
           active={active}
         />
 

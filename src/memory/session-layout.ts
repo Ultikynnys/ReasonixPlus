@@ -14,6 +14,10 @@ export const SESSION_EVENTS_FILENAME = "events.jsonl";
 /** UI annotation cards (notice + warning) persisted so no transcript card is
  *  transient — a single JSON array replaced on every notices_sync. */
 export const SESSION_NOTICES_FILENAME = "notices.json";
+/** UI event log (plan verdicts, choice verdicts, folds) for the Events tab —
+ *  a single JSON array replaced on every events_sync. Distinct from
+ *  SESSION_EVENTS_FILENAME, which is the kernel's own event stream. */
+export const SESSION_UI_EVENTS_FILENAME = "ui-events.json";
 /** Legacy per-session plan file — read once to migrate into plans/history.json. */
 export const SESSION_PLAN_FILENAME = "plan.json";
 /** Plan storage: holds the unified `history.json` plus legacy `.done.json` archives. */
@@ -58,6 +62,10 @@ export function sessionEventsPath(name: string): string {
 
 export function sessionNoticesPath(name: string): string {
   return join(sessionDir(name), SESSION_NOTICES_FILENAME);
+}
+
+export function sessionUiEventsPath(name: string): string {
+  return join(sessionDir(name), SESSION_UI_EVENTS_FILENAME);
 }
 
 export function sessionPlanPath(name: string): string {

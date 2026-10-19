@@ -75,6 +75,18 @@ export function allQuickSends(customs: readonly QuickSend[]): QuickSend[] {
   return out;
 }
 
+/** A new custom quick-send id, unique against the sends already configured:
+ *  `allQuickSends` de-dupes by id, so a second add inside one millisecond would
+ *  otherwise be dropped silently and the new row would never appear. */
+export function createQuickSendId(existing: readonly QuickSend[]): string {
+  const taken = new Set(existing.map((q) => q.id));
+  const base = `custom-${Date.now()}`;
+  if (!taken.has(base)) return base;
+  let suffix = 1;
+  while (taken.has(`${base}-${suffix}`)) suffix += 1;
+  return `${base}-${suffix}`;
+}
+
 /** The active quick send by id, falling back to Proceed when unknown/absent. */
 export function resolveActiveQuickSend(
   id: string | undefined,
@@ -866,10 +878,50 @@ export interface PersistedNotice {
   turn: number;
 }
 
+/** What kind of thing happened in a session, as the Events tab groups it.
+ *  User turns are NOT here: they are read from the transcript records, which
+ *  are already stamped and already pruned by a rewind. Everything else is a
+ *  gate verdict or a fold, which the transcript has no durable record of. */
+export type SessionEventType = "plan" | "choice" | "compaction";
+
+/** One recorded session event (a plan verdict, a choice verdict, a fold) kept in
+ *  the session's UI-events sidecar. Every event carries the stamp of the moment
+ *  it happened, so the tab can merge them with the turns into one timeline. */
+export interface SessionEventRecord {
+  /** Stable id: the upsert key, so a settle can refine an event it already wrote. */
+  id: string;
+  type: SessionEventType;
+  /** When it happened (epoch ms) — never absent. */
+  ts: number;
+  /** Owning turn (1-based real-user count); 0 = before the first user message. */
+  turn: number;
+  /** The verdict or trigger: "approve" | "refine" | "cancel" | "pick" | "text"
+   *  for gates, "manual" | "auto" | "overflow" for a fold. */
+  outcome: string;
+  /** What it was about: the plan title, the chosen option, the fold's summary. */
+  label?: string;
+  /** Supporting line: the question asked, the feedback left, … */
+  detail?: string;
+  /** What was on the table when a choice was answered. Without it a verdict
+   *  records only the pick, never what the pick was chosen from. */
+  options?: readonly string[];
+  /** The plan's own text, stored when `label` is only its summary — otherwise the
+   *  label already carries it. */
+  body?: string;
+  /** The plan's checklist titles, in order: a verdict that keeps only the title
+   *  of the plan loses what was actually agreed to. */
+  steps?: readonly string[];
+  /** The card this event belongs to in the transcript (`call:<id>` for a
+   *  plan/choice gate, `notice:<id>` for a fold), so a jump lands on that card
+   *  rather than on the turn's prompt bubble. */
+  anchor?: string;
+}
+
 /** A loaded transcript entry. `ts` is when the record was written (epoch ms),
- *  carried so the UI can place a turn in the conversation's own timeline. */
+ *  carried so the UI can place a turn in the conversation's own timeline.
+ *  `injected` marks machine-written user records (image tool feedback). */
 export type LoadedMessage =
-  | { kind: "user"; text: string; images?: string[]; ts?: number }
+  | { kind: "user"; text: string; images?: string[]; ts?: number; injected?: true }
   | {
       kind: "assistant";
       turn: number;
@@ -900,6 +952,9 @@ export interface SessionLoadedEvent {
     cacheMissTokens: number;
     totalCompletionTokens: number;
   };
+  /** The session's recorded gate/fold events, loaded from its UI-events sidecar
+   *  so the Events tab survives a reload. Absent on older sessions. */
+  events?: SessionEventRecord[];
   /** Set on `desktop_resync` re-emits — the frontend must not let a resync
    *  echo clobber a live streaming transcript (same session, busy). */
   resync?: boolean;
@@ -979,7 +1034,8 @@ export interface SettingsEvent {
   editMode: EditMode;
   /** Per-type sound/notification cue matrix (Settings → Behavior). Absent = all off. */
   feedbackCues?: FeedbackCueSettings;
-  /** @deprecated No persisted default — optional so older daemons that still emit it typecheck. */
+  /** Id of the quick send the composer dropdown marks as the default. Optional:
+   *  a daemon that predates the persisted default omits it. */
   quickSendId?: string;
   /** User-defined quick sends (built-ins are code-defined). */
   quickSends: QuickSend[];
@@ -1126,7 +1182,7 @@ export interface SettingsEvent {
 
 /** Settings state consumed by the desktop UI, derived from the wire event contract.
  *  Quick-send fields remain optional for compatibility with older daemons. */
-export type SettingsPayload = Omit<SettingsEvent, "type" | "quickSendId" | "quickSends"> &
+export type SettingsPayload = Omit<SettingsEvent, "type" | "quickSends"> &
   Partial<Pick<SettingsEvent, "quickSends">>;
 
 /** Endpoint + auth state for the tab's CURRENT model — the status bar's API
@@ -1455,6 +1511,8 @@ export interface SettingsPatch {
   /** Per-type sound/notification cue matrix (Settings → Behavior). */
   feedbackCues?: FeedbackCueSettings;
   quickSends?: QuickSend[];
+  /** Id of the quick send the composer should mark as the default. */
+  quickSendId?: string;
   /** Context-window cap in tokens, clamped to [128000, 1000000]; null/undefined = per-model default. */
   contextTokens?: number | null;
   /** Per-turn iteration cap, clamped to [50, 100]; null/undefined = default (50). */
@@ -1693,4 +1751,7 @@ export type OutgoingCommand = { tabId?: string } & (
   /** Replace this session's persisted annotation cards (notice + warning) so
    *  they survive reload/resync. Idempotent full-list overwrite. */
   | { cmd: "notices_sync"; notices: PersistedNotice[] }
+  /** Replace this session's recorded gate/fold events so the Events tab keeps
+   *  its history across reload/resync. Idempotent full-list overwrite. */
+  | { cmd: "events_sync"; events: SessionEventRecord[] }
 );

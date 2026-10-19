@@ -122,6 +122,7 @@ export function Card({
   children,
   headRight,
   copyText,
+  anchor,
 }: {
   tone?: Tone;
   icon: ReactNode;
@@ -136,10 +137,13 @@ export function Card({
   headRight?: ReactNode;
   /** Text the hover copy button (right gutter) copies; empty/omitted renders none. */
   copyText?: string;
+  /** Stable jump target for the Events tab (`call:<id>` / `notice:<id>`), so a
+   *  recorded event lands on THIS card instead of its turn's prompt bubble. */
+  anchor?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="card-wrap">
+    <div className="card-wrap" data-anchor={anchor}>
       <div className={compact ? "card is-compact" : "card"} data-tone={tone} data-open={open}>
         <div className="card-head-row">
           <CardHead
@@ -919,6 +923,7 @@ export function NoticeCard({
   severity = "info",
   name,
   running,
+  anchor,
 }: {
   text: string;
   severity?: NoticeSeverity;
@@ -927,6 +932,7 @@ export function NoticeCard({
    *  card in its running (throbber) / done (check) states, mirroring the
    *  thinking card's streaming status. */
   running?: boolean;
+  anchor?: string;
 }) {
   useLang();
   const tone: Tone =
@@ -964,6 +970,7 @@ export function NoticeCard({
       defaultOpen
       compact
       copyText={text}
+      anchor={anchor}
     >
       <div className="notice-body pre-text" data-severity={severity}>
         {sanitizeTerminalText(text)}

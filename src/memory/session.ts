@@ -19,6 +19,7 @@ import { dirname, join, posix as posixPath, win32 as win32Path } from "node:path
 import {
   DAY_MS,
   type PersistedNotice,
+  type SessionEventRecord,
   messageOf,
   parseSessionTimestamp,
   sortSessionsDescending,
@@ -42,6 +43,7 @@ import {
   sessionMetaPath,
   sessionNoticesPath,
   sessionPlanPath,
+  sessionUiEventsPath,
   sessionsDir,
 } from "./session-layout.js";
 
@@ -58,6 +60,7 @@ export {
   SESSION_NOTICES_FILENAME,
   SESSION_PLAN_FILENAME,
   SESSION_PLANS_DIRNAME,
+  SESSION_UI_EVENTS_FILENAME,
   sanitizeName,
   sessionDir,
   sessionEventsPath,
@@ -66,6 +69,7 @@ export {
   sessionNoticesPath,
   sessionPlanPath,
   sessionPlansDir,
+  sessionUiEventsPath,
   sessionsDir,
   workspacesRootDir,
 } from "./session-layout.js";
@@ -374,7 +378,7 @@ export function stampTranscriptMessage(message: ChatMessage): ChatMessage {
 export function appendSessionMessage(name: string, message: ChatMessage): void {
   const path = sessionPath(name);
   ensureSessionDir(name);
-  // Stamped here because this is the only place a record is written: the jump map
+  // Stamped here because this is the only place a record is written: the Events tab
   // reads the stamp, so it must record when the turn happened, not when it loaded.
   appendJsonlLine(path, stampTranscriptMessage(message));
   chmodPrivate(path);
@@ -403,12 +407,19 @@ export function checkpointSessionMessages(
   }
 }
 
+/** Narrow one sidecar row to an id-carrying object, or null when it is not one.
+ *  Both sidecar guards start this way, so a malformed row is rejected once. */
+function sidecarRow(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  return typeof row.id === "string" ? row : null;
+}
+
 /** Shape guard for one persisted annotation card (notice or warning). */
 function isPersistedNotice(value: unknown): value is PersistedNotice {
-  if (!value || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
+  const v = sidecarRow(value);
+  if (!v) return false;
   return (
-    typeof v.id === "string" &&
     (v.kind === "notice" || v.kind === "warning") &&
     typeof v.text === "string" &&
     typeof v.severity === "string" &&
@@ -417,22 +428,62 @@ function isPersistedNotice(value: unknown): value is PersistedNotice {
   );
 }
 
-function isPersistedNoticeArray(value: unknown): value is PersistedNotice[] {
-  return Array.isArray(value) && value.every(isPersistedNotice);
+/** Shape guard for one recorded session event. The optional fields are checked
+ *  too: the tab renders them as text, so a hand-edited number would crash it. */
+function isSessionEventRecord(value: unknown): value is SessionEventRecord {
+  const v = sidecarRow(value);
+  if (!v) return false;
+  const optionalText = (field: unknown) => field === undefined || typeof field === "string";
+  const optionalTextList = (field: unknown) =>
+    field === undefined || (Array.isArray(field) && field.every((row) => typeof row === "string"));
+  return (
+    (v.type === "plan" || v.type === "choice" || v.type === "compaction") &&
+    typeof v.ts === "number" &&
+    Number.isFinite(v.ts) &&
+    typeof v.outcome === "string" &&
+    typeof v.turn === "number" &&
+    Number.isFinite(v.turn) &&
+    optionalText(v.label) &&
+    optionalText(v.detail) &&
+    optionalTextList(v.options) &&
+    optionalText(v.body) &&
+    optionalTextList(v.steps) &&
+    optionalText(v.anchor)
+  );
 }
 
-/** Read a session's persisted UI annotation cards (notice + warning). Returns []
- *  when the sidecar is absent or malformed — older sessions simply have none. */
-export function loadSessionNotices(name: string): PersistedNotice[] {
-  return readJsonFileSilently(sessionNoticesPath(name), isPersistedNoticeArray) ?? [];
+/** Read one per-session JSON-array sidecar, keeping only the rows that pass
+ *  `guard`: one unreadable row must not cost a session every other row. */
+function readSidecarRows<T>(path: string, guard: (value: unknown) => value is T): T[] {
+  const rows = readJsonFileSilently(path, (value): value is unknown[] => Array.isArray(value));
+  return rows ? rows.filter(guard) : [];
 }
 
-/** Replace a session's persisted annotation cards atomically. Idempotent
- *  full-list overwrite: the frontend re-syncs its whole notice list on change. */
-export function writeSessionNotices(name: string, notices: PersistedNotice[]): void {
+/** Replace one per-session JSON-array sidecar atomically. Idempotent full-list
+ *  overwrite: the frontend re-syncs its whole list on change. */
+function writeSidecarRows(name: string, path: string, rows: readonly unknown[]): void {
   ensureSessionDir(name);
-  const path = sessionNoticesPath(name);
-  atomicWriteSync(path, `${JSON.stringify(notices)}\n`, tmpSiblingPath(path));
+  atomicWriteSync(path, `${JSON.stringify(rows)}\n`, tmpSiblingPath(path));
+}
+
+/** Read a session's persisted UI annotation cards (notice + warning). */
+export function loadSessionNotices(name: string): PersistedNotice[] {
+  return readSidecarRows(sessionNoticesPath(name), isPersistedNotice);
+}
+
+/** Replace a session's persisted annotation cards atomically. */
+export function writeSessionNotices(name: string, notices: PersistedNotice[]): void {
+  writeSidecarRows(name, sessionNoticesPath(name), notices);
+}
+
+/** Read a session's recorded gate/fold events for the Events tab. */
+export function loadSessionEvents(name: string): SessionEventRecord[] {
+  return readSidecarRows(sessionUiEventsPath(name), isSessionEventRecord);
+}
+
+/** Replace a session's recorded events atomically. */
+export function writeSessionEvents(name: string, events: SessionEventRecord[]): void {
+  writeSidecarRows(name, sessionUiEventsPath(name), events);
 }
 
 /** Finite-number guard for the write-once creation stamp. */

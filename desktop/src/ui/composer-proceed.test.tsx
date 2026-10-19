@@ -88,6 +88,38 @@ describe("Composer quick send dropdown", () => {
     expect(onSend).toHaveBeenCalledWith({ text: "deploy to production", echo: "deploy" });
   });
 
+  it("marks the persisted default row active in the dropdown", () => {
+    render(<Composer {...baseProps} quickSends={QUICK_SENDS} activeQuickSendId="deploy" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Quick send" }));
+    const active = Array.from(document.querySelectorAll<HTMLElement>(".popup-item")).filter(
+      (row) => row.getAttribute("data-active") === "true",
+    );
+    expect(active).toHaveLength(1);
+    expect(active[0]?.textContent).toContain("deploy to production");
+  });
+
+  it("persists the picked row as the new default", () => {
+    const onSend = vi.fn();
+    const onPickQuickSend = vi.fn();
+    render(
+      <Composer
+        {...baseProps}
+        quickSends={QUICK_SENDS}
+        activeQuickSendId="commit-and-push"
+        onPickQuickSend={onPickQuickSend}
+        onSend={onSend}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Quick send" }));
+    fireEvent.click(screen.getByText("deploy"));
+
+    expect(onPickQuickSend).toHaveBeenCalledWith("deploy");
+    // Marking the default is a side effect; the pick still sends.
+    expect(onSend).toHaveBeenCalledWith({ text: "deploy to production", echo: "deploy" });
+  });
+
   it("clears the draft and echoes the shorthand when a quick send is picked", () => {
     const onSend = vi.fn();
     const setDraft = vi.fn();
@@ -162,6 +194,39 @@ describe("Composer quick send dropdown", () => {
     expect(onSend).not.toHaveBeenCalled();
     expect(onQueueWhileBusy).toHaveBeenCalledTimes(1);
     expect(onQueueWhileBusy).toHaveBeenCalledWith({ text: "deploy to production", echo: "deploy" });
+  });
+
+  it("marks the configured quick send as the active row", () => {
+    render(<Composer {...baseProps} quickSends={QUICK_SENDS} activeQuickSendId="deploy" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Quick send" }));
+
+    expect(screen.getByText("deploy").closest(".popup-item")?.getAttribute("data-active")).toBe(
+      "true",
+    );
+    expect(
+      screen.getByText("commit and push").closest(".popup-item")?.getAttribute("data-active"),
+    ).toBe("false");
+  });
+
+  it("reports the picked row so the default can be persisted", () => {
+    const onSend = vi.fn();
+    const onPickQuickSend = vi.fn();
+    render(
+      <Composer
+        {...baseProps}
+        quickSends={QUICK_SENDS}
+        activeQuickSendId="commit-and-push"
+        onPickQuickSend={onPickQuickSend}
+        onSend={onSend}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Quick send" }));
+    fireEvent.click(screen.getByText("deploy"));
+
+    expect(onPickQuickSend).toHaveBeenCalledWith("deploy");
+    expect(onSend).toHaveBeenCalledWith({ text: "deploy to production", echo: "deploy" });
   });
 });
 

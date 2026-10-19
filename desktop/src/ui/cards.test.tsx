@@ -1024,6 +1024,13 @@ describe("NoticeCard — compaction throbber states", () => {
     expect(container.querySelector('[aria-label="Compacting"]')).toBeNull();
     expect(container.querySelector('[aria-label="Compacted"]')).toBeNull();
   });
+
+  it("carries the jump anchor recorded with its event", () => {
+    const { container } = render(
+      wrap(<NoticeCard text="Context compacted." severity="success" running={false} anchor="notice:n1" />),
+    );
+    expect(container.querySelector('[data-anchor="notice:n1"]')).toBeTruthy();
+  });
 });
 
 describe("DiffCard — terminal escape handling", () => {

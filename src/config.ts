@@ -530,6 +530,8 @@ export interface ReasonixConfig {
   editModeHintShown?: boolean;
   /** User-defined quick sends (built-ins are code-defined). */
   quickSends?: QuickSend[];
+  /** Id of the quick send the composer marks as the default. */
+  quickSendId?: string;
   mouseClipboardHintShown?: boolean;
   /** When false, skip the boot splash animation and show the main UI immediately. Default true. */
   banner?: boolean;
@@ -2674,6 +2676,19 @@ export function saveCustomQuickSends(list: QuickSend[], path: string = defaultCo
       message: q.message,
     };
   });
+  writeConfig(cfg, path);
+}
+
+/** The quick send the composer dropdown marks; absent until a pick is persisted. */
+export function loadQuickSendId(path: string = defaultConfigPath()): string | undefined {
+  const v = readConfig(path).quickSendId;
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+/** Persist the quick send the user last picked from the composer dropdown. */
+export function saveQuickSendId(id: string, path: string = defaultConfigPath()): void {
+  const cfg = readConfig(path);
+  cfg.quickSendId = id;
   writeConfig(cfg, path);
 }
 

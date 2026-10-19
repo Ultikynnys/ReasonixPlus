@@ -1,5 +1,6 @@
 import { flattenText, messageOf, sleep } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "./client.js";
+import { claimingSession } from "./code/plan-claim.js";
 import { type PlanRepository, planRepository } from "./code/plans.js";
 import {
   type EditMode,
@@ -912,7 +913,13 @@ export class CacheFirstLoop {
       this.planRepositoryKey = key;
       this.planRepository = key ? planRepository(this.hookCwd) : undefined;
     }
-    const active = this.planRepository?.active();
+    // Only THIS session's plan: another session's in-flight plan in the same workspace
+    // is not ours to continue, and injecting it is exactly how two sessions end up
+    // driving one plan. An unclaimed pre-ownership plan is adopted on first read.
+    const active =
+      this.planRepository?.activeFor(claimingSession(this.sessionName ?? undefined), {
+        adoptUnclaimed: true,
+      }) ?? null;
     // Only nudge on a plan that still has an unfinished step — a finished leftover
     // (e.g. an imported legacy plan) must not inject "continue the next step" forever.
     const nextStep = active?.steps.find((s) => !Object.hasOwn(active.completions, s.id));
@@ -921,7 +928,7 @@ export class CacheFirstLoop {
         ? [
             {
               role: "user",
-              content: `Authoritative session plan state (not a new user request): ${JSON.stringify({ planId: active.id, summary: active.summary, status: active.status, steps: active.steps, completedStepIds: Object.keys(active.completions), nextStepId: nextStep.id })}\nContinue the next unfinished step in order. Supply this planId to mark_step_complete and revise_plan. Use open_plan for full accepted work and list_plans for history. Do not silently abandon or replace the plan.`,
+              content: `Authoritative session plan state (not a new user request): ${JSON.stringify({ planId: active.id, summary: active.summary, status: active.status, steps: active.steps, completedStepIds: Object.keys(active.completions), nextStepId: nextStep.id })}\nThis plan belongs to this session, so continue the next unfinished step in order. Supply this planId to mark_step_complete and revise_plan. Use open_plan for full accepted work and list_plans for history. Do not silently abandon or replace the plan, and do not work a plan another session holds: only this planId is yours.`,
             },
           ]
         : [];

@@ -1650,9 +1650,13 @@ describe("Desktop App reducer — yolo interactive countdown", () => {
     expect(next.turnStatus).toBe("waiting_user");
     expect(hasPendingIntervention(next)).toBe(true);
 
-    const resolved = reduce(next, { t: "resolve_choice", id: 12 });
+    const resolved = reduce(next, { t: "resolve_choice", id: 12, verdict: { type: "pick", optionId: "A" } });
     expect(hasPendingIntervention(resolved)).toBe(false);
     expect(resolved.turnStatus).toBe("calling_tool");
+    // The Events tab keeps what was picked, not just that the gate closed.
+    expect(resolved.sessionEvents).toEqual([
+      expect.objectContaining({ type: "choice", outcome: "pick", label: "Option A" }),
+    ]);
   });
 });
 
@@ -1884,6 +1888,262 @@ describe("Desktop App reducer — compaction card lifecycle", () => {
     });
     // No second notice card beside it.
     expect(next.messages.filter((m) => m.kind === "notice")).toHaveLength(1);
+  });
+});
+
+describe("Desktop App reducer — Events tab recordings", () => {
+  const compactionStarted = (trigger: "manual" | "auto" | "overflow" = "auto") =>
+    ({
+      type: "compaction.started",
+      id: 90,
+      ts: "2026-05-27T00:00:00.000Z",
+      turn: 1,
+      trigger,
+    }) as const;
+
+  it("records which fold ran, once, with the trigger it started with", () => {
+    const state = reduce(initialState(), { t: "incoming", event: compactionStarted("overflow") });
+    expect(state.sessionEvents).toEqual([
+      expect.objectContaining({ type: "compaction", outcome: "overflow" }),
+    ]);
+    expect(state.sessionEvents[0]?.ts).toBeGreaterThan(0);
+  });
+
+  it("refines that one row with the fold's result when its card settles", () => {
+    const started = reduce(initialState(), { t: "incoming", event: compactionStarted("auto") });
+    const settled = reduce(started, {
+      t: "incoming",
+      event: {
+        type: "warning",
+        id: 91,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        text: "Context compacted: 9 tokens -> 3 tokens.",
+        severity: "high",
+      },
+    });
+    expect(settled.sessionEvents).toHaveLength(1);
+    expect(settled.sessionEvents[0]).toMatchObject({
+      type: "compaction",
+      outcome: "auto",
+      label: "Context compacted: 9 tokens -> 3 tokens.",
+    });
+  });
+
+  it("anchors the fold's row to its card, and keeps it when the card settles", () => {
+    const started = reduce(initialState(), { t: "incoming", event: compactionStarted("auto") });
+    const card = started.messages.find((message) => message.kind === "notice");
+    expect(started.sessionEvents[0]?.anchor).toBe(`notice:${card?.id}`);
+    const settled = reduce(started, {
+      t: "incoming",
+      event: {
+        type: "warning",
+        id: 91,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        text: "Context compacted: 9 tokens -> 3 tokens.",
+        severity: "high",
+      },
+    });
+    expect(settled.sessionEvents[0]?.anchor).toBe(`notice:${card?.id}`);
+  });
+
+  it("records a plan verdict with the plan it was about", () => {
+    const staged = reduce(
+      {
+        ...initialState(),
+        pendingPlans: [
+          {
+            id: 4,
+            plan: "## QuickSend polish\n\nCloses four gaps.",
+            summary: "Ship the tab",
+            steps: [
+              { id: "step-1", title: "Route strings through i18n", action: "Do it" },
+              { id: "step-2", title: "Collision-proof ids", action: "Do it" },
+            ],
+          },
+        ],
+      },
+      { t: "resolve_plan", id: 4, verdict: { type: "approve" } },
+    );
+    expect(staged.sessionEvents).toEqual([
+      expect.objectContaining({
+        type: "plan",
+        outcome: "approve",
+        label: "Ship the tab",
+        // The plan itself and its checklist, not just the summary line.
+        body: "## QuickSend polish\n\nCloses four gaps.",
+        steps: ["Route strings through i18n", "Collision-proof ids"],
+      }),
+    ]);
+  });
+
+  it("does not store a plan body separate from a label that already is it", () => {
+    const staged = reduce(
+      {
+        ...initialState(),
+        pendingPlans: [{ id: 5, plan: "Only the body", steps: [] }],
+      },
+      { t: "resolve_plan", id: 5, verdict: { type: "approve" } },
+    );
+    expect(staged.sessionEvents[0]).toMatchObject({ label: "Only the body" });
+    expect(staged.sessionEvents[0]?.body).toBeUndefined();
+  });
+
+  it("anchors a plan verdict to the card that asked, not to the turn", () => {
+    const staged = reduce(
+      {
+        ...initialState(),
+        pendingPlans: [{ id: 6, plan: "P", callId: "call-7" }],
+      },
+      { t: "resolve_plan", id: 6, verdict: { type: "approve" } },
+    );
+    expect(staged.sessionEvents[0]).toMatchObject({ anchor: "call:call-7" });
+  });
+
+  it("anchors a choice verdict to the card that asked it", () => {
+    // A choice reaches the app without a call id, so the asking card is found
+    // where it is rendered: the gate's still-pending tool segment.
+    const staged = reduce(
+      {
+        ...initialState(),
+        messages: [
+          {
+            kind: "assistant",
+            turn: 1,
+            pending: true,
+            segments: [
+              { kind: "tool", callId: "call-9", name: "ask_choice", args: "{}", startedAt: 1 },
+            ],
+          },
+        ],
+        pendingChoices: [
+          { id: 7, question: "Which?", options: [{ id: "a", title: "A" }], allowCustom: false },
+        ],
+      },
+      { t: "resolve_choice", id: 7, verdict: { type: "pick", optionId: "a" } },
+    );
+    expect(staged.sessionEvents[0]).toMatchObject({ anchor: "call:call-9" });
+  });
+
+  it("leaves a choice unanchored when no asking call is open any more", () => {
+    const staged = reduce(
+      {
+        ...initialState(),
+        messages: [
+          {
+            kind: "assistant",
+            turn: 1,
+            pending: false,
+            segments: [
+              {
+                kind: "tool",
+                callId: "call-9",
+                name: "ask_choice",
+                args: "{}",
+                startedAt: 1,
+                result: "picked",
+              },
+            ],
+          },
+        ],
+        pendingChoices: [
+          { id: 7, question: "Which?", options: [{ id: "a", title: "A" }], allowCustom: false },
+        ],
+      },
+      { t: "resolve_choice", id: 7, verdict: { type: "pick", optionId: "a" } },
+    );
+    expect(staged.sessionEvents[0]?.anchor).toBeUndefined();
+  });
+  it("records the wording the user chose, not just the option id", () => {
+    const staged = reduce(
+      {
+        ...initialState(),
+        pendingChoices: [
+          {
+            id: 2,
+            question: "Which parser?",
+            options: [
+              { id: "a", title: "Rewrite the parser" },
+              { id: "b", title: "Patch the parser" },
+            ],
+            allowCustom: true,
+          },
+        ],
+      },
+      { t: "resolve_choice", id: 2, verdict: { type: "pick", optionId: "b" } },
+    );
+    expect(staged.sessionEvents[0]).toMatchObject({
+      type: "choice",
+      outcome: "pick",
+      label: "Patch the parser",
+      detail: "Which parser?",
+      // The pick alone is useless later: keep what it was chosen from.
+      options: ["Rewrite the parser", "Patch the parser"],
+    });
+  });
+
+  it("keeps a typed answer the same way", () => {
+    const staged = reduce(
+      {
+        ...initialState(),
+        pendingChoices: [
+          { id: 3, question: "Which parser?", options: [], allowCustom: true },
+        ],
+      },
+      { t: "resolve_choice", id: 3, verdict: { type: "text", text: "neither" } },
+    );
+    expect(staged.sessionEvents[0]).toMatchObject({ outcome: "text", label: "neither" });
+  });
+
+  it("drops verdicts for turns a rewind removed, and keeps the rest", () => {
+    const base = {
+      ...initialState(),
+      sessionEvents: [
+        { id: "plan-1", type: "plan" as const, ts: 10, turn: 1, outcome: "approve" },
+        { id: "plan-2", type: "plan" as const, ts: 20, turn: 2, outcome: "approve" },
+      ],
+    };
+    const next = reduce(base, {
+      t: "incoming",
+      event: {
+        type: "session.retracted",
+        id: 10,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 2,
+        kind: "rewind",
+        beforeMessages: 6,
+        afterMessages: 2,
+        replacementMessages: [
+          { kind: "user", text: "ask1" },
+          { kind: "assistant", turn: 1, segments: [], pending: false },
+        ],
+      },
+    });
+    // Turn 2 is gone from the transcript, so its verdict cannot land anywhere.
+    expect(next.sessionEvents.map((event) => event.id)).toEqual(["plan-1"]);
+  });
+
+  it("adopts the loaded session's own events, and starts clean when cleared", () => {
+    const loaded = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$session_loaded",
+        name: "older",
+        messages: [],
+        events: [
+          { id: "plan-1", type: "plan", ts: 1_000, turn: 1, outcome: "refine", label: "Rework" },
+        ],
+        carryover: {
+          totalCostUsd: 0,
+          cacheHitTokens: 0,
+          cacheMissTokens: 0,
+          totalCompletionTokens: 0,
+        },
+      },
+    });
+    expect(loaded.sessionEvents.map((e) => e.id)).toEqual(["plan-1"]);
+    expect(reduce(loaded, { t: "clear" }).sessionEvents).toEqual([]);
   });
 });
 

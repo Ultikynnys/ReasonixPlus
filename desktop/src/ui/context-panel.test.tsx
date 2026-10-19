@@ -245,6 +245,7 @@ describe("ContextPanel plan tab", () => {
       "Memory",
       "Rules",
       "Plan",
+      "Events",
     ]);
 
     fireEvent.click(screen.getByText("Plan"));

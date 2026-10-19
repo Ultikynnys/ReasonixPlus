@@ -37,24 +37,29 @@ describe("reasonixInstallDir", () => {
 });
 
 describe("reasonixDefaultWorkspaceDir", () => {
+  /** Each branch is asserted under a value this block owns: inheriting the
+   *  caller's REASONIX_BROWSER made these pass or fail with the dev server. */
+  const withBrowserFlag = <T>(value: string, run: () => T): T => {
+    const previous = process.env.REASONIX_BROWSER ?? "";
+    process.env.REASONIX_BROWSER = value;
+    try {
+      return run();
+    } finally {
+      process.env.REASONIX_BROWSER = previous;
+    }
+  };
+
   it("points at a local subfolder under the Reasonix+ install dir", () => {
-    const dir = reasonixDefaultWorkspaceDir();
+    const dir = withBrowserFlag("", reasonixDefaultWorkspaceDir);
     expect(dir).toBe(join(reasonixInstallDir(), "local"));
   });
 
   it("ensures the directory exists", () => {
-    const dir = reasonixDefaultWorkspaceDir();
-    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(withBrowserFlag("", reasonixDefaultWorkspaceDir))).toBe(true);
   });
 
   it("returns the install dir itself in browser dev mode, never a local subfolder", () => {
-    const previous = process.env.REASONIX_BROWSER;
-    process.env.REASONIX_BROWSER = "1";
-    try {
-      expect(reasonixDefaultWorkspaceDir()).toBe(reasonixInstallDir());
-    } finally {
-      process.env.REASONIX_BROWSER = previous ?? "";
-    }
+    expect(withBrowserFlag("1", reasonixDefaultWorkspaceDir)).toBe(reasonixInstallDir());
   });
 });
 

@@ -71,6 +71,7 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     playwrightBrowserInstall: null,
     skills: [],
     sessionFiles: [],
+    sessionEvents: [],
     memory: [],
     memoryDetail: null,
     memoryResult: null,
