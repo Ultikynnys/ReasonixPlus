@@ -8,7 +8,6 @@ import {
   type MemoryPriority,
   type MemoryScope,
   MemoryStore,
-  type MemoryType,
   readGlobalReasonixMemory,
 } from "../memory/user.js";
 
@@ -79,6 +78,7 @@ export function readMemoryEntryDetail(
       type: structured.type,
       body: structured.body,
       createdAt: structured.createdAt,
+      ...memoryFidelity(structured),
     };
   }
 
@@ -86,6 +86,17 @@ export function readMemoryEntryDetail(
   return {
     ...entry,
     body: readFileSync(entry.path, "utf8").trim(),
+  };
+}
+
+/** Optional fidelity fields a structured entry may carry; omitted when absent so
+ *  the wire shape stays sparse (matches MemoryEntryInfo's optional fields). */
+function memoryFidelity(
+  entry: Pick<MemoryEntry, "priority" | "expires">,
+): Pick<MemoryEntryInfo, "priority" | "expires"> {
+  return {
+    ...(entry.priority ? { priority: entry.priority } : {}),
+    ...(entry.expires ? { expires: entry.expires } : {}),
   };
 }
 
@@ -97,6 +108,7 @@ function structuredInfo(store: MemoryStore, entry: MemoryEntry): MemoryEntryInfo
     path: store.pathFor(entry.scope, entry.name),
     description: entry.description,
     type: entry.type,
+    ...memoryFidelity(entry),
   };
 }
 
@@ -149,81 +161,4 @@ export function deleteMemoryEntry(
   if (!existsSync(entry.path)) return false;
   unlinkSync(entry.path);
   return true;
-}
-
-export interface MemoryExportBundle {
-  format: "reasonix-memory";
-  version: 1;
-  entries: Array<{
-    name: string;
-    scope: MemoryScope;
-    type: MemoryType;
-    description: string;
-    body: string;
-    priority?: MemoryPriority;
-    expires?: MemoryExpires;
-  }>;
-}
-
-/** Structured entries only — the freeform REASONIX.md files stay in the repo/home. */
-export function exportMemories(
-  projectRoot: string,
-  opts: MemoryBrowserOptions = {},
-): MemoryExportBundle {
-  const store = new MemoryStore({ homeDir: opts.reasonixHome, projectRoot });
-  return {
-    format: "reasonix-memory",
-    version: 1,
-    entries: store.list().map((e) => ({
-      name: e.name,
-      scope: e.scope,
-      type: e.type,
-      description: e.description,
-      body: e.body,
-      ...(e.priority ? { priority: e.priority } : {}),
-      ...(e.expires ? { expires: e.expires } : {}),
-    })),
-  };
-}
-
-/** Import a bundle (from this or another project) into the current workspace.
- *  Global-scope entries land in the shared global store; project-scope entries
- *  land in the current project — that's the cross-project reuse mechanism. */
-export function importMemories(
-  raw: unknown,
-  projectRoot: string,
-  opts: MemoryBrowserOptions = {},
-): { imported: number; skipped: string[] } {
-  const bundle = raw as Partial<MemoryExportBundle> | null;
-  const entries = Array.isArray(bundle?.entries) ? bundle.entries : null;
-  if (bundle?.format !== "reasonix-memory" || !entries) {
-    throw new Error('not a memory bundle — expected {"format":"reasonix-memory","entries":[...]}');
-  }
-  const store = new MemoryStore({ homeDir: opts.reasonixHome, projectRoot });
-  const skipped: string[] = [];
-  let imported = 0;
-  for (const e of entries) {
-    if (!e || typeof e !== "object") {
-      skipped.push("(malformed entry)");
-      continue;
-    }
-    const name = String(e.name ?? "").trim();
-    try {
-      store.write({
-        name,
-        scope: e.scope === "project" ? "project" : "global",
-        type: String(e.type ?? "user"),
-        description: String(e.description ?? ""),
-        body: String(e.body ?? ""),
-        ...(e.priority === "low" || e.priority === "medium" || e.priority === "high"
-          ? { priority: e.priority }
-          : {}),
-        ...(e.expires === "project_end" ? { expires: e.expires } : {}),
-      });
-      imported++;
-    } catch {
-      skipped.push(name || "(unnamed)");
-    }
-  }
-  return { imported, skipped };
 }

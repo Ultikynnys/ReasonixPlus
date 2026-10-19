@@ -745,6 +745,20 @@ export interface CtxBreakdownEvent {
 
 export type MemoryEntryKind = "project_file" | "global_file" | "structured";
 
+/** Structured-memory fidelity fields: the single source of truth for the unions
+ *  the read models, the write command, and the desktop edit form all share. */
+export type MemoryPriority = "low" | "medium" | "high";
+export type MemoryExpires = "project_end";
+
+/** Optional `memory_write` fields; also the desktop edit form's extras. */
+export interface MemoryWriteOptions {
+  type?: string;
+  priority?: MemoryPriority;
+  expires?: MemoryExpires;
+  /** Browser path of the entry being replaced - set on rename / scope move so the old file is removed after the new write. */
+  originalPath?: string;
+}
+
 export interface MemoryEntryInfo {
   kind: MemoryEntryKind;
   scope: "project" | "global";
@@ -752,6 +766,8 @@ export interface MemoryEntryInfo {
   path: string;
   description: string;
   type?: string;
+  priority?: MemoryPriority;
+  expires?: MemoryExpires;
 }
 
 export type MemoryEntryDetail = MemoryEntryInfo & {
@@ -773,11 +789,6 @@ export interface MemoryResultEvent {
   type: "$memory_result";
   ok: boolean;
   message: string;
-}
-
-export interface MemoryExportEvent {
-  type: "$memory_export";
-  text: string;
 }
 
 export type RetryResultEvent = { type: "$retry_result"; text: string };
@@ -1554,18 +1565,14 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "session_rename"; name: string; title: string }
   | { cmd: "session_reorder"; name: string; createdAt?: number }
   | { cmd: "memory_read"; path: string }
-  | {
+  | ({
       cmd: "memory_write";
       scope: "global" | "project";
       name: string;
       description: string;
       body: string;
-      type?: string;
-      priority?: "low" | "medium" | "high";
-    }
+    } & MemoryWriteOptions)
   | { cmd: "memory_delete"; path: string }
-  | { cmd: "memory_export" }
-  | { cmd: "memory_import"; json: string }
   | { cmd: "new_chat" }
   | { cmd: "setup_save_key"; key: string }
   | { cmd: "setup_save_openai_key"; key: string }

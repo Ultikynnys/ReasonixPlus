@@ -11,7 +11,12 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { clipIndexDescription, messageOf } from "@reasonix/core-utils";
+import {
+  type MemoryExpires,
+  type MemoryPriority,
+  clipIndexDescription,
+  messageOf,
+} from "@reasonix/core-utils";
 import {
   type ReasonixConfig,
   loadResolvedSkillPaths,
@@ -40,8 +45,7 @@ export type { BuiltinMemoryType };
 /** Built-ins plus any string declared in `config.memory.customTypes`. Unknown values are accepted (round-tripped verbatim). */
 export type MemoryType = BuiltinMemoryType | (string & {});
 export type MemoryScope = "global" | "project";
-export type MemoryPriority = "low" | "medium" | "high";
-export type MemoryExpires = "project_end";
+export type { MemoryExpires, MemoryPriority };
 
 export interface MemoryEntry {
   name: string;

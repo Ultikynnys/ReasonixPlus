@@ -5,8 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   collectMemoryEntriesForWorkspace,
   deleteMemoryEntry,
-  exportMemories,
-  importMemories,
   readMemoryEntryDetail,
   writeMemoryEntry,
 } from "../src/desktop/memory-browser.js";
@@ -137,50 +135,26 @@ describe("desktop memory browser", () => {
     expect(existsSync(join(root, "REASONIX.md"))).toBe(false);
   });
 
-  it("exportMemories returns a bundle of structured entries", () => {
+  it("surfaces a structured entry's priority and expiry in list and detail", () => {
     writeMemoryEntry(
-      { scope: "project", name: "rule-a", description: "A", body: "body a", priority: "high" },
+      {
+        scope: "project",
+        name: "keep-tight",
+        description: "Tight budget",
+        body: "Cap spend.",
+        priority: "high",
+        expires: "project_end",
+      },
       root,
       { reasonixHome },
     );
-    writeMemoryEntry({ scope: "global", name: "rule-b", description: "B", body: "body b" }, root, {
-      reasonixHome,
-    });
-    const bundle = exportMemories(root, { reasonixHome });
-    expect(bundle.format).toBe("reasonix-memory");
-    expect(bundle.entries.map((e) => e.name).sort()).toEqual(["rule-a", "rule-b"]);
-    const ruleA = bundle.entries.find((e) => e.name === "rule-a")!;
-    expect(ruleA.scope).toBe("project");
-    expect(ruleA.priority).toBe("high");
-    // Freeform files are not part of the bundle.
-    expect(bundle.entries.some((e) => e.kind === "project_file")).toBe(false);
-  });
+    const entries = collectMemoryEntriesForWorkspace(root, { reasonixHome });
+    const info = entries.find((e) => e.name === "keep-tight")!;
+    expect(info.priority).toBe("high");
+    expect(info.expires).toBe("project_end");
 
-  it("importMemories replays a bundle into the current project", () => {
-    writeFileSync(join(root, "REASONIX.md"), "note", "utf8");
-    const bundle = {
-      format: "reasonix-memory",
-      version: 1,
-      entries: [
-        {
-          name: "imported-rule",
-          scope: "project",
-          type: "feedback",
-          description: "Imported",
-          body: "Do the thing.",
-          priority: "high",
-        },
-        { name: "bad name!", scope: "global", description: "x", body: "y" },
-      ],
-    };
-    const result = importMemories(bundle, root, { reasonixHome });
-    expect(result.imported).toBe(1);
-    expect(result.skipped).toEqual(["bad name!"]);
-    const store = new MemoryStore({ homeDir: reasonixHome, projectRoot: root });
-    expect(store.read("project", "imported-rule").priority).toBe("high");
-  });
-
-  it("importMemories rejects non-bundle payloads", () => {
-    expect(() => importMemories({ nope: true }, root, { reasonixHome })).toThrow(/reasonix-memory/);
+    const detail = readMemoryEntryDetail({ path: info.path }, root, { reasonixHome });
+    expect(detail.priority).toBe("high");
+    expect(detail.expires).toBe("project_end");
   });
 });

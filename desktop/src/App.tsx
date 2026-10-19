@@ -134,7 +134,7 @@ import { createComposerDraft } from "./ui/composer-draft";
 import { ContextPanel } from "./ui/context-panel";
 import { JobsPop } from "./ui/jobs-pop";
 import { JumpBar } from "./ui/jump-bar";
-import { activationHandler, escapeHandler } from "./ui/keyboard";
+import { activationHandler } from "./ui/keyboard";
 import { type ChangelogState } from "./ui/changelog";
 import { McpSetupDialog } from "./ui/mcp-setup";
 import { SettingsModal, type PageId as SettingsPageId } from "./ui/settings";
@@ -590,8 +590,6 @@ type State = {
   memoryDetail: MemoryDetail | null;
   /** Outcome of the last memory write/delete/import RPC — shown as a transient banner in the memory panel. */
   memoryResult: { ok: boolean; message: string } | null;
-  /** JSON bundle produced by memory_export — rendered in a copy modal. */
-  memoryExport: string | null;
   /** Latest $context_raw payload — the Raw context debug panel's read side. */
   contextRaw: ContextRaw | null;
   jobs: JobInfo[];
@@ -655,7 +653,6 @@ type Action =
   | { t: "resolve_checkpoint"; id: number; verdict: CheckpointVerdict }
   | { t: "resolve_revision"; id: number; verdict: RevisionVerdict }
   | { t: "dismiss_memory_result" }
-  | { t: "dismiss_memory_export" }
   | { t: "mention_results"; results: MentionResults }
   | { t: "mention_preview"; preview: MentionPreviewState }
   | { t: "enqueue_send"; send?: QueuedSend | string; text?: string }
@@ -1203,8 +1200,6 @@ export function reduce(state: State, action: Action): State {
     }
     case "dismiss_memory_result":
       return { ...state, memoryResult: null };
-    case "dismiss_memory_export":
-      return { ...state, memoryExport: null };
     case "mention_results":
       return { ...state, mentionResults: action.results };
     case "mention_preview":
@@ -2233,8 +2228,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     case "$memory_result":
       return { ...state, memoryResult: { ok: ev.ok, message: ev.message } };
-    case "$memory_export":
-      return { ...state, memoryExport: ev.text };
     case "$jobs": {
       // Keep the prior array when the snapshot is unchanged so memoized rows
       // (and their background-job shell cards) don't re-render on every poll.
@@ -3144,7 +3137,6 @@ function TabRuntime({
     memory: [],
     memoryDetail: null,
     memoryResult: null,
-    memoryExport: null,
     contextRaw: null,
     jobs: [],
     activeSkill: null,
@@ -4740,12 +4732,10 @@ function TabRuntime({
           memoryDetail={state.memoryDetail}
           memoryResult={state.memoryResult}
           onReadMemory={(path) => sendRpc({ cmd: "memory_read", path })}
-          onWriteMemory={(scope, name, description, body) =>
-            sendRpc({ cmd: "memory_write", scope, name, description, body })
+          onWriteMemory={(scope, name, description, body, opts) =>
+            sendRpc({ cmd: "memory_write", scope, name, description, body, ...opts })
           }
           onDeleteMemory={(path) => sendRpc({ cmd: "memory_delete", path })}
-          onExportMemories={() => sendRpc({ cmd: "memory_export" })}
-          onImportMemories={(json) => sendRpc({ cmd: "memory_import", json })}
           onDismissMemoryResult={() => dispatch({ t: "dismiss_memory_result" })}
           rawContext={state.contextRaw}
           onCompact={() => sendRpc({ cmd: "context_compact" })}
@@ -4925,13 +4915,6 @@ function TabRuntime({
           onStopAll={() => sendRpc({ cmd: "jobs_stop_all" })}
         />
 
-        {state.memoryExport !== null ? (
-          <MemoryExportModal
-            text={state.memoryExport}
-            onClose={() => dispatch({ t: "dismiss_memory_export" })}
-          />
-        ) : null}
-
         {splashOn ? <Splash onDone={() => setSplashOn(false)} /> : null}
       </div>
     </WorkspaceProvider>
@@ -4946,76 +4929,6 @@ function WinMinimize() {
   );
 }
 
-/** Export-result modal: shows the memory bundle JSON with a copy button (clipboard + execCommand fallback). */
-function MemoryExportModal({
-  text,
-  onClose,
-}: {
-  text: string;
-  onClose: () => void;
-}): React.ReactElement {
-  const [copied, setCopied] = useState(false);
-  const copy = async (): Promise<void> => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        ta.remove();
-      }
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard blocked — the textarea stays selectable so manual copy works */
-    }
-  };
-  return (
-    <div
-      className="modal-overlay"
-      onClick={onClose}
-      onKeyDown={escapeHandler(onClose)}
-      tabIndex={-1}
-    >
-      <div
-        className="modal memory-export-modal"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-      >
-        <div className="modal-head">
-          <div className="modal-title">{t("memoryExport.title")}</div>
-          <button
-            type="button"
-            className="iconbtn"
-            onClick={onClose}
-            title={t("memoryExport.close")}
-          >
-            ✕
-          </button>
-        </div>
-        <p className="muted">{t("memoryExport.hint")}</p>
-        <textarea
-          className="memory-export-text"
-          readOnly
-          value={text}
-          spellCheck={false}
-          onFocus={(e) => e.currentTarget.select()}
-        />
-        <div className="modal-actions">
-          <button type="button" className="btn" onClick={copy}>
-            {copied ? t("memoryExport.copied") : t("memoryExport.copy")}
-          </button>
-          <button type="button" className="btn ghost" onClick={onClose}>
-            {t("memoryExport.close")}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 function WinMaximize() {
   return (
     <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">

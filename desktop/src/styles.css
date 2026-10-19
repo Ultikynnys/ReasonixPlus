@@ -4214,6 +4214,24 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   background: var(--danger-soft, rgba(244, 63, 94, 0.15));
   color: var(--danger, #f43f5e);
 }
+.mem-edit {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.mem-edit:hover {
+  background: var(--accent-soft);
+  color: var(--fg-1);
+}
 .mem-result {
   display: flex;
   align-items: center;

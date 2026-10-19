@@ -71,7 +71,6 @@ import type {
   MemoryEntryInfo,
   MemoryEntryKind,
   MemoryEvent,
-  MemoryExportEvent,
   MemoryResultEvent,
   MentionPreviewEvent,
   MentionResultsEvent,
@@ -201,7 +200,6 @@ export type {
   MemoryEntryInfo,
   MemoryEntryKind,
   MemoryEvent,
-  MemoryExportEvent,
   MemoryResultEvent,
   MentionPreviewEvent,
   MentionResultsEvent,
@@ -324,7 +322,6 @@ export type IncomingEvent = { tabId?: string } & (
   | MemoryEvent
   | MemoryDetailEvent
   | MemoryResultEvent
-  | MemoryExportEvent
   | JobsEvent
   | DirectKernelWireEvent
   | SessionRetractedEvent

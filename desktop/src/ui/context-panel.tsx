@@ -1,8 +1,8 @@
-import { type RuleRecord, ruleRegexError } from "@reasonix/core-utils";
+import { type MemoryWriteOptions, type RuleRecord, ruleRegexError } from "@reasonix/core-utils";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { ActivePlan, SessionFile, Settings, UsageStats } from "../App";
 import { t, useLang } from "../i18n";
 import type { TKey } from "../i18n";
@@ -61,8 +61,6 @@ export function ContextPanel({
   onReadMemory,
   onWriteMemory,
   onDeleteMemory,
-  onExportMemories,
-  onImportMemories,
   onDismissMemoryResult,
   onAddRule,
   onUpdateRule,
@@ -95,10 +93,9 @@ export function ContextPanel({
     name: string,
     description: string,
     body: string,
+    opts?: MemoryWriteOptions,
   ) => void;
   onDeleteMemory: (path: string) => void;
-  onExportMemories: () => void;
-  onImportMemories: (json: string) => void;
   onDismissMemoryResult: () => void;
   onAddRule?: (rule: RuleRecord) => void;
   onUpdateRule?: (from: RuleRecord, to: RuleRecord) => void;
@@ -249,8 +246,6 @@ export function ContextPanel({
               onRead={onReadMemory}
               onWrite={onWriteMemory}
               onDelete={onDeleteMemory}
-              onExport={onExportMemories}
-              onImport={onImportMemories}
               onDismissResult={onDismissMemoryResult}
             />
           )}
@@ -1652,76 +1647,82 @@ function CtxMemory({
   onRead,
   onWrite,
   onDelete,
-  onExport,
-  onImport,
   onDismissResult,
 }: {
   entries: MemoryEntryInfo[];
   detail: MemoryDetail | null;
   result: { ok: boolean; message: string } | null;
   onRead: (path: string) => void;
-  onWrite: (scope: "global" | "project", name: string, description: string, body: string) => void;
+  onWrite: (
+    scope: "global" | "project",
+    name: string,
+    description: string,
+    body: string,
+    opts?: MemoryWriteOptions,
+  ) => void;
   onDelete: (path: string) => void;
-  onExport: () => void;
-  onImport: (json: string) => void;
   onDismissResult: () => void;
 }) {
   const [composing, setComposing] = useState(false);
+  /** Non-null while the composer edits an existing entry (vs. creating one). */
+  const [editTarget, setEditTarget] = useState<MemoryDetail | null>(null);
   const [name, setName] = useState("");
   const [scope, setScope] = useState<"global" | "project">("project");
   const [body, setBody] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
+  /** Path whose detail must load before the composer can prefill for editing. */
+  const [pendingEdit, setPendingEdit] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!pendingEdit || detail?.path !== pendingEdit) return;
+    setEditTarget(detail);
+    setName(detail.name);
+    setScope(detail.scope);
+    setBody(detail.body);
+    setComposing(true);
+    setPendingEdit(null);
+  }, [pendingEdit, detail]);
+
+  const closeComposer = (): void => {
+    setName("");
+    setBody("");
+    setEditTarget(null);
+    setComposing(false);
+  };
 
   const submit = (): void => {
     const trimmedName = name.trim();
     const trimmedBody = body.trim();
     if (!trimmedName || !trimmedBody) return;
-    onWrite(scope, trimmedName, trimmedBody.slice(0, 150), trimmedBody);
-    setName("");
-    setBody("");
-    setComposing(false);
+    if (editTarget) {
+      const renamed = editTarget.name !== trimmedName || editTarget.scope !== scope;
+      onWrite(
+        scope,
+        trimmedName,
+        editTarget.description || trimmedBody.slice(0, 150),
+        trimmedBody,
+        {
+          ...(editTarget.type ? { type: editTarget.type } : {}),
+          ...(editTarget.priority ? { priority: editTarget.priority } : {}),
+          ...(editTarget.expires ? { expires: editTarget.expires } : {}),
+          ...(renamed ? { originalPath: editTarget.path } : {}),
+        },
+      );
+    } else {
+      onWrite(scope, trimmedName, trimmedBody.slice(0, 150), trimmedBody);
+    }
+    closeComposer();
   };
 
-  const onFile = (e: ChangeEvent<HTMLInputElement>): void => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => onImport(String(reader.result ?? ""));
-    reader.readAsText(file);
+  const startEdit = (path: string): void => {
+    closeComposer();
+    setPendingEdit(path);
+    onRead(path);
   };
 
   return (
     <div className="ctx-block">
       <div className="h">
         <span>{t("contextPanel.memoryTitle")}</span>
-        <span className="right">
-          <span className="mem-actions">
-            <button
-              type="button"
-              className="mem-action"
-              title={t("contextPanel.exportMemories")}
-              onClick={onExport}
-            >
-              ⇪ {t("contextPanel.saveLabel")}
-            </button>
-            <button
-              type="button"
-              className="mem-action"
-              title={t("contextPanel.importMemories")}
-              onClick={() => fileRef.current?.click()}
-            >
-              ⇓ {t("contextPanel.loadLabel")}
-            </button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".json,application/json"
-              style={{ display: "none" }}
-              onChange={onFile}
-            />
-          </span>
-        </span>
       </div>
 
       {result ? (
@@ -1751,6 +1752,20 @@ function CtxMemory({
                   : t("contextPanel.scopeGlobal")}
               </span>
               <span className="txt">{m.description || m.name}</span>
+              {m.kind === "structured" ? (
+                <button
+                  type="button"
+                  className="mem-edit"
+                  title={t("contextPanel.editMemory")}
+                  aria-label={`${t("contextPanel.editMemory")}: ${m.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startEdit(m.path);
+                  }}
+                >
+                  <I.pencil size={11} />
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="mem-del"
@@ -1803,7 +1818,7 @@ function CtxMemory({
             >
               {t("contextPanel.saveMemory")}
             </button>
-            <button type="button" className="btn small ghost" onClick={() => setComposing(false)}>
+            <button type="button" className="btn small ghost" onClick={closeComposer}>
               {t("contextPanel.cancelMemory")}
             </button>
           </div>

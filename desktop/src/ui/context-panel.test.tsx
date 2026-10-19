@@ -68,8 +68,6 @@ function renderPanel(
       onReadMemory={() => {}}
       onWriteMemory={() => {}}
       onDeleteMemory={() => {}}
-      onExportMemories={() => {}}
-      onImportMemories={() => {}}
       onDismissMemoryResult={() => {}}
       activePlan={plan}
     />,
@@ -81,7 +79,7 @@ describe("Session plan history", () => {
     const onReadPlan = vi.fn();
     const onReadPlans = vi.fn();
     const now = "2026-01-01T00:00:00.000Z";
-    render(<ContextPanel settings={settings} usage={usage} mcpSpecs={[]} mcpBridged={false} sessionFiles={[]} memory={[]} memoryDetail={null} memoryResult={null} onReadMemory={() => {}} onWriteMemory={() => {}} onDeleteMemory={() => {}} onExportMemories={() => {}} onImportMemories={() => {}} onDismissMemoryResult={() => {}} onReadPlans={onReadPlans} onReadPlan={onReadPlan} planSession="test" planHistory={[{ id: "old", summary: "Discarded", status: "superseded", createdAt: now, updatedAt: now, finishedAt: null, totalSteps: 2, completedSteps: 1 }, { id: "new", summary: "Current", status: "active", createdAt: now, updatedAt: now, finishedAt: null, totalSteps: 1, completedSteps: 0 }]} planDetails={{ old: { id: "old", summary: "Discarded", status: "superseded", createdAt: now, updatedAt: now, finishedAt: null, body: "Original plan body", steps: [{ id: "one", title: "Accepted first step", action: "First action" }], completions: { one: { stepId: "one", result: "Verified work", notes: "Retained notes", evidence: [{ kind: "verification", summary: "Passed" }] } }, revisions: [] } }} />);
+    render(<ContextPanel settings={settings} usage={usage} mcpSpecs={[]} mcpBridged={false} sessionFiles={[]} memory={[]} memoryDetail={null} memoryResult={null} onReadMemory={() => {}} onWriteMemory={() => {}} onDeleteMemory={() => {}} onDismissMemoryResult={() => {}} onReadPlans={onReadPlans} onReadPlan={onReadPlan} planSession="test" planHistory={[{ id: "old", summary: "Discarded", status: "superseded", createdAt: now, updatedAt: now, finishedAt: null, totalSteps: 2, completedSteps: 1 }, { id: "new", summary: "Current", status: "active", createdAt: now, updatedAt: now, finishedAt: null, totalSteps: 1, completedSteps: 0 }]} planDetails={{ old: { id: "old", summary: "Discarded", status: "superseded", createdAt: now, updatedAt: now, finishedAt: null, body: "Original plan body", steps: [{ id: "one", title: "Accepted first step", action: "First action" }], completions: { one: { stepId: "one", result: "Verified work", notes: "Retained notes", evidence: [{ kind: "verification", summary: "Passed" }] } }, revisions: [] } }} />);
     fireEvent.click(screen.getByText("Plan"));
     expect(onReadPlans).toHaveBeenCalledTimes(1);
     expect(onReadPlan).toHaveBeenCalledWith("new");
@@ -132,8 +130,6 @@ describe("ContextPanel git section", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         active
       />,
@@ -269,8 +265,6 @@ describe("ContextPanel plan tab", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         activePlan={{ ...activePlan, completedStepIds: ["s1"], stepResults: { s1: "done" } }}
       />,
@@ -298,8 +292,6 @@ describe("ContextPanel plan tab", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
       />,
     );
@@ -433,8 +425,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
       />,
     );
@@ -463,8 +453,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
       />,
     );
@@ -512,8 +500,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onAddRule={() => {}}
         onRemoveRule={onRemoveRule}
@@ -561,8 +547,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onAddRule={onAddRule}
       />,
@@ -617,8 +601,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onAddRule={onAddRule}
       />,
@@ -671,8 +653,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onUpdateRule={onUpdateRule}
       />,
@@ -712,8 +692,6 @@ describe("ContextPanel files", () => {
     onReadMemory: () => {},
     onWriteMemory: () => {},
     onDeleteMemory: () => {},
-    onExportMemories: () => {},
-    onImportMemories: () => {},
     onDismissMemoryResult: () => {},
     onAddRule: () => {},
   };
@@ -842,8 +820,6 @@ describe("ContextPanel files", () => {
           onReadMemory={() => {}}
           onWriteMemory={() => {}}
           onDeleteMemory={() => {}}
-          onExportMemories={() => {}}
-          onImportMemories={() => {}}
           onDismissMemoryResult={() => {}}
         />,
       );
@@ -1052,8 +1028,6 @@ describe("ContextPanel files", () => {
           onReadMemory={() => {}}
           onWriteMemory={() => {}}
           onDeleteMemory={() => {}}
-          onExportMemories={() => {}}
-          onImportMemories={() => {}}
           onDismissMemoryResult={() => {}}
         />,
       );
@@ -1131,8 +1105,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onSaveSettings={onSaveSettings}
       />,
@@ -1193,8 +1165,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
       />,
     );
@@ -1234,8 +1204,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onSaveSettings={onSaveSettings}
       />,
@@ -1287,8 +1255,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onSaveSettings={onSaveSettings}
       />,
@@ -1331,8 +1297,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onSaveSettings={onSaveSettings}
       />,
@@ -1406,8 +1370,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
       />,
     );
@@ -1435,8 +1397,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
       />,
     );
@@ -1492,8 +1452,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
       />,
     );
@@ -1528,8 +1486,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onSaveSettings={onSaveSettings}
       />,
@@ -1561,8 +1517,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onSaveSettings={onSaveSettings}
       />,
@@ -1602,8 +1556,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onSaveSettings={onSaveSettings}
       />,
@@ -1643,8 +1595,6 @@ describe("ContextPanel files", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onSaveSettings={onSaveSettings}
       />,
@@ -1679,8 +1629,6 @@ describe("ContextPanel raw context", () => {
     onReadMemory: () => {},
     onWriteMemory: () => {},
     onDeleteMemory: () => {},
-    onExportMemories: () => {},
-    onImportMemories: () => {},
     onDismissMemoryResult: () => {},
   };
 
@@ -1849,8 +1797,6 @@ describe("Compact now button", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onCompact={onCompact}
       />,
@@ -1881,8 +1827,6 @@ describe("Automatic compaction settings", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onSaveSettings={onSaveSettings}
       />,
@@ -1911,8 +1855,6 @@ describe("Automatic compaction settings", () => {
         onReadMemory={() => {}}
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
-        onExportMemories={() => {}}
-        onImportMemories={() => {}}
         onDismissMemoryResult={() => {}}
         onSaveSettings={onSaveSettings}
       />,
@@ -1944,5 +1886,61 @@ describe("Automatic compaction settings", () => {
   it("hides the compaction threshold when automatic compaction is off", () => {
     renderPanel({ autoCompact: false });
     expect(screen.queryByTestId("compact-threshold")).toBeNull();
+  });
+});
+
+describe("ContextPanel memory panel", () => {
+  const info = {
+    kind: "structured" as const,
+    scope: "project" as const,
+    name: "budget-cap",
+    path: "/home/.reasonix/memory/project/budget-cap.md",
+    description: "Cap the budget",
+    type: "feedback",
+    priority: "high" as const,
+  };
+  const detail = { ...info, body: "Keep spend under $50." };
+
+  it("edits a structured memory in place, preserving its role and path", () => {
+    const onReadMemory = vi.fn();
+    const onWriteMemory = vi.fn();
+    const panel = (shown: typeof detail | null) => (
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[info]}
+        memoryDetail={shown}
+        memoryResult={null}
+        onReadMemory={onReadMemory}
+        onWriteMemory={onWriteMemory}
+        onDeleteMemory={() => {}}
+        onDismissMemoryResult={() => {}}
+      />
+    );
+
+    const { rerender } = render(panel(null));
+    fireEvent.click(screen.getByText("Memory"));
+    fireEvent.click(screen.getByRole("button", { name: "edit this memory: budget-cap" }));
+    expect(onReadMemory).toHaveBeenCalledWith(info.path);
+
+    // The arriving detail prefills the composer for editing.
+    rerender(panel(detail));
+    fireEvent.change(screen.getByDisplayValue("Keep spend under $50."), {
+      target: { value: "Keep spend under $100." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Scope + name are unchanged, so the edit rewrites in place and keeps the
+    // entry's role (type) and priority; no originalPath is sent (no delete).
+    expect(onWriteMemory).toHaveBeenCalledWith(
+      "project",
+      "budget-cap",
+      "Cap the budget",
+      "Keep spend under $100.",
+      { type: "feedback", priority: "high" },
+    );
   });
 });
