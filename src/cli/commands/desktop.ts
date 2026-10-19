@@ -5014,6 +5014,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   const firstBootstrapSettled = new Promise<void>((resolve) => {
     settleFirstBootstrap = resolve;
   });
+  // Resolved once the boot announce burst has created the restored tabs. A
+  // `desktop_resync` arriving mid-burst must not publish a tab snapshot yet: the
+  // frontend prunes its tab set to exactly what the snapshot lists, so a partial
+  // one would blank the tabs whose `$tab_opened` is still queued.
+  let announceBurstDone = false;
+  let settleAnnounceBurst!: () => void;
+  const announceBurstSettled = new Promise<void>((resolve) => {
+    settleAnnounceBurst = resolve;
+  });
 
   function emitSessionsForWorkspace(
     workspaceDir: string,
@@ -5500,6 +5509,53 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // best-effort — disk / perms shouldn't break tab management, but LOG
       process.stderr.write(`reasonix: open tabs persist failed — ${messageOf(err)}\n`);
     }
+  }
+
+  /** Publishes the tab set, waiting out a boot announce burst still in flight so
+   *  callers that can run mid-boot never publish a PARTIAL set. */
+  function publishTabsSnapshot(): void {
+    if (announceBurstDone) emitTabsSnapshot();
+    else void announceBurstSettled.then(emitTabsSnapshot);
+  }
+
+  /** The `$tab_opened` projection, shared by a fresh announce and a resync replay
+   *  so the two cannot disagree about a tab's shape. */
+  function emitTabOpened(tab: Tab, active?: boolean, creating?: boolean): void {
+    emit(
+      {
+        type: "$tab_opened",
+        workspaceDir: tab.rootDir,
+        active,
+        groupId: tab.groupId,
+        sessions: [tab.currentSession],
+        activeSession: tab.currentSession,
+        creating,
+      },
+      tab.id,
+    );
+  }
+
+  /** The authoritative tab set, also emitted at boot so the frontend renders the
+   *  whole ribbon before any tab finishes initializing. */
+  function emitTabsSnapshot(): void {
+    emit({
+      type: "$tabs_snapshot",
+      tabs: Array.from(tabs.values()).map((t) => ({
+        id: t.id,
+        workspaceDir: t.rootDir,
+        active: t.id === lastActiveTabId,
+        groupId: t.groupId,
+        activeSession: t.currentSession,
+      })),
+    });
+  }
+
+  /** One catalog refresh per launch or WebView reload — the endpoints and keys
+   *  are app-global, so a single fetch broadcasts to every tab. */
+  function refreshLaunchCatalogs(): void {
+    void refreshOllamaModels(true);
+    void refreshOpencodeModels(false);
+    void refreshProviderCatalogs();
   }
 
   /** The channel (tab) that owns `name` as its current session, if any. A
@@ -6806,26 +6862,28 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   // `$ready` when it completes — until then `state.ready` keeps the
   // composer disabled, so users can't send a message before the runtime
   // exists. emitBalance was already fire-and-forget.
-  function bootstrapTab(
-    initialDir?: string,
-    restore?: {
-      id?: string;
-      session?: string;
-      active?: boolean;
-      groupId?: string;
-      pending?: boolean;
-      /** Explicit model prefs for a fresh channel (New chat) so the new tab
-       *  inherits the current session's models instead of the global default. */
-      model?: string;
-      reasoningEffort?: import("../../config.js").ReasoningEffort;
-      subagentModel?: string;
-      /** Marks this channel as a just-minted session so the frontend shows a
-       *  "Creating session…" indicator until the first `$sessions` lands. */
-      creating?: boolean;
-      /** Fresh chat: enter the MCP-setup state (picker + withheld $ready). */
-      mcpSetup?: boolean;
-    },
-  ): Tab {
+  type TabRestore = {
+    id?: string;
+    session?: string;
+    active?: boolean;
+    groupId?: string;
+    pending?: boolean;
+    /** Explicit model prefs for a fresh channel (New chat) so the new tab
+     *  inherits the current session's models instead of the global default. */
+    model?: string;
+    reasoningEffort?: import("../../config.js").ReasoningEffort;
+    subagentModel?: string;
+    /** Marks this channel as a just-minted session so the frontend shows a
+     *  "Creating session…" indicator until the first `$sessions` lands. */
+    creating?: boolean;
+    /** Fresh chat: enter the MCP-setup state (picker + withheld $ready). */
+    mcpSetup?: boolean;
+  };
+
+  /** Announcing is the cheap half of opening a tab: skeleton plus `$tab_opened`.
+   *  Split out so a restored set is announced in one burst before any tab's
+   *  disk work starts. */
+  function announceTab(initialDir?: string, restore?: TabRestore): Tab {
     const tab = createTabSkeleton(initialDir, restore?.id, restore, restore?.pending ?? false);
     emitTabDiagnostic(
       tab,
@@ -6837,38 +6895,29 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       },
       "info",
     );
-    // Emit $tab_opened FIRST so the UI shell mounts every tab immediately.
-    // The conversation load below is async and must not gate the next tab's
-    // $tab_opened — otherwise a multi-tab restore opens tabs one at a time,
-    // each blocked behind the previous tab's full session jsonl read+parse.
-    emit(
-      {
-        type: "$tab_opened",
-        workspaceDir: tab.rootDir,
-        active: restore?.active,
-        groupId: tab.groupId,
-        sessions: [tab.currentSession],
-        activeSession: tab.currentSession,
-        creating: restore?.creating,
-      },
-      tab.id,
-    );
+    // Announce before anything else: the UI shell mounts on this event, and the
+    // deferred work lives in startTabInit so a restored set is announced in one
+    // burst instead of one tab per macrotask.
+    emitTabOpened(tab, restore?.active, restore?.creating);
     // A pending (workspace-less) tab has no session, toolset, hooks or sidebar
     // to build — it exists only so the UI can prompt for a workspace. Assigning
     // one runs switchWorkspace, which does the full build. Do NOT emit $ready,
     // so the composer stays disabled until a workspace is chosen.
-    if (restore?.pending) {
+    if (tab.pending) {
       emitSettings(tab);
-      emit({ type: "$workspace_initialized", revision: ++tab.initializationRevision }, tab.id);
+      void emitWorkspaceInitialized(tab, Promise.resolve());
       emitTabDiagnostic(tab, "tab.bootstrap.pending", undefined, "info");
-      return tab;
     }
-    // Defer ALL per-tab work off the synchronous open path. An async function
-    // runs synchronously up to its first await, so we yield with `setImmediate`
-    // before emitSettings/emitMcpSpecs/emitSkills (settings build, config read,
-    // filesystem skill scan) and the toolset build. Doing that work inline for
-    // every restored tab blocked the tab-creation loop on the event loop and
-    // held the "Loading workspaces" splash until the last tab was constructed.
+    return tab;
+  }
+
+  /** Starts an announced tab's deferred work: settings/MCP/skills projections,
+   *  the session restore and the toolset build. It yields before touching disk so
+   *  a caller's announce burst is never blocked by one tab's I/O. */
+  function startTabInit(tab: Tab, restore?: TabRestore): void {
+    // A pending tab has nothing to initialize: announceTab already surfaced its
+    // settings and cleared the splash gate for it.
+    if (tab.pending) return;
     void (async () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       emitSettings(tab);
@@ -7027,7 +7076,21 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       void emitAntigravityQuota(tab);
       void emitZaiQuota(tab);
       void emitOpencodeQuota(tab);
-    })();
+    })().catch((err) => {
+      // This display work sits outside tab.initialization, so without a catch a
+      // throw here would vanish as an unhandled rejection instead of a diagnostic.
+      emitDiagnosticError("tab.bootstrap.display_failed", err, {
+        tabId: tab.id,
+        details: tabDiagnosticState(tab),
+      });
+    });
+  }
+
+  /** Announce a tab and start its deferred work — every caller but the restored-
+   *  set loop wants both halves at once. */
+  function bootstrapTab(initialDir?: string, restore?: TabRestore): Tab {
+    const tab = announceTab(initialDir, restore);
+    startTabInit(tab, restore);
     return tab;
   }
 
@@ -7066,22 +7129,52 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     ? dedupedTabs.find((t) => sameWorkspaceDir(t.dir, startupDir))
     : dedupedTabs[0];
   const pendingRestores = dedupedTabs.filter((t) => t !== startupTab);
-  first = bootstrapTab(opts.dir ?? dedupedTabs[0]?.dir, startupTab);
+  try {
+    first = bootstrapTab(opts.dir ?? dedupedTabs[0]?.dir, startupTab);
+  } catch (err) {
+    // A workspace can vanish between the stat above and the skeleton build (or the
+    // session mint can fail): fall back to a fresh tab so boot still completes.
+    emitDiagnosticError("tabs.restore.focused_failed", err, {
+      details: { workspaceDir: startupTab?.dir ?? null },
+    });
+    first = bootstrapTab(undefined, { active: true });
+  }
   lastActiveTabId = first.id;
-  // Announce the rest of the restored set in the SAME boot burst. `bootstrapTab`
-  // emits `$tab_opened` synchronously, so gating this loop on
-  // `firstBootstrapSettled` made a restored tab set appear one tab at a time:
-  // each tab waited for the focused tab's toolset build, MCP handshakes and
-  // runtime before it was even announced. The macrotask yield between skeletons
-  // stays — bootstrapping the whole set in one synchronous loop blocked the
-  // event loop for the entire burst, which starved the toolset gate, the MCP
-  // bridges and the RPC reader.
+  // Announce the whole restored set BEFORE initializing any of it. Announcing and
+  // starting the deferred work in one loop let each tab's $settings/$sessions
+  // emission and toolset build run between two `$tab_opened` events, so the
+  // ribbon filled one tab at a time over seconds. The macrotask yield between
+  // skeletons stays: building the whole set synchronously starved the event loop.
   void (async () => {
-    for (const saved of pendingRestores) {
-      bootstrapTab(saved.dir, saved);
+    const announced: Array<{ tab: Tab; restore: TabRestore }> = [];
+    try {
+      for (const saved of pendingRestores) {
+        try {
+          announced.push({ tab: announceTab(saved.dir, saved), restore: saved });
+        } catch (err) {
+          // One unreadable workspace must not strand the rest of the set: a deleted
+          // dir, a malformed hook file and a failed session mint all land here.
+          emitDiagnosticError("tabs.restore.announce_failed", err, {
+            details: { workspaceDir: saved.dir },
+          });
+          process.stderr.write(
+            `reasonix: tab restore failed for ${saved.dir} — ${messageOf(err)}\n`,
+          );
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      emitTabsSnapshot();
+      persistOpenTabs();
+    } finally {
+      // Released before the inits below: a resync waiting here needs only the tab
+      // SET, and holding it for every toolset build would delay its snapshot.
+      announceBurstDone = true;
+      settleAnnounceBurst();
+    }
+    for (const { tab, restore } of announced) {
+      startTabInit(tab, restore);
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
-    persistOpenTabs();
   })();
   // Account-wide quotas change underneath us (other devices, window resets) -
   // poll so the statusbar chips are never stale. Skipped mid-turn so the
@@ -7303,16 +7396,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // which workspaces to expect, and the per-tab settings/MCP/skills
       // re-emission below is synchronous and non-trivial for large tab sets —
       // doing it before the snapshot delayed the frontend's startup bookkeeping.
-      emit({
-        type: "$tabs_snapshot",
-        tabs: Array.from(tabs.values()).map((t) => ({
-          id: t.id,
-          workspaceDir: t.rootDir,
-          active: t.id === lastActiveTabId,
-          groupId: t.groupId,
-          activeSession: t.currentSession,
-        })),
-      });
+      publishTabsSnapshot();
+      if (msg.replay === false) {
+        refreshLaunchCatalogs();
+        return;
+      }
       // Replay per-tab state in yielding batches. Emitting $settings + MCP +
       // skills for every tab in one synchronous loop froze the event loop long
       // enough to starve tab creation and the toolset gate — the bulk of the
@@ -7320,17 +7408,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       void (async () => {
         let n = 0;
         for (const t of tabs.values()) {
-          emit(
-            {
-              type: "$tab_opened",
-              workspaceDir: t.rootDir,
-              active: t.id === lastActiveTabId,
-              groupId: t.groupId,
-              sessions: [t.currentSession],
-              activeSession: t.currentSession,
-            },
-            t.id,
-          );
+          emitTabOpened(t, t.id === lastActiveTabId);
           emitSettings(t);
           if (!t.pending) {
             emitMcpSpecs(t);
@@ -7402,15 +7480,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           void emitWorkspaceInitialized(t, sessionsInitialized);
         }
       });
-      // Auto-refresh the Ollama catalog once per launch/WebView reload — the
-      // catalog is app-global (endpoint + key are global config), so a single
-      // fetch broadcasts to every tab. Unconditional: even a tab on a
-      // DeepSeek/OpenAI model benefits when a local Ollama daemon is up, and a
-      // failure only surfaces on the Models settings page (the composer hides
-      // the error unless the tab's model is an Ollama model).
-      void refreshOllamaModels(true);
-      void refreshOpencodeModels(false);
-      void refreshProviderCatalogs();
+      // Unconditional: even a tab on a DeepSeek/OpenAI model benefits when a local
+      // Ollama daemon is up, and a failure only surfaces on the Models settings
+      // page (the composer hides the error unless the tab's model is Ollama).
+      refreshLaunchCatalogs();
       return;
     }
     if (msg.cmd === "jobs_list") {

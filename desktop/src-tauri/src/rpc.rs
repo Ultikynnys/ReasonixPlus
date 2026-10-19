@@ -148,15 +148,15 @@ fn find_real_node() -> Result<PathBuf> {
 }
 
 #[tauri::command]
-pub fn rpc_spawn(app: AppHandle, state: State<'_, RpcState>) -> Result<(), String> {
+pub fn rpc_spawn(app: AppHandle, state: State<'_, RpcState>) -> Result<bool, String> {
     let started = Instant::now();
     diagnostics::record("info", "rpc.spawn_started", serde_json::json!({}))?;
     let mut guard = state.inner.lock();
     if guard.is_some() {
         // Idempotent — a second call (effect re-run, WebView reload) keeps the
-        // existing Node child. The frontend follows up with `desktop_resync`
-        // so a reloaded React app catches up on bootstrap events it missed.
-        return Ok(());
+        // existing Node child. Reported as false so the frontend asks for the
+        // full `desktop_resync` replay of the bootstrap events this app missed.
+        return Ok(false);
     }
 
     let (program, args) = resolve_cli(&app).map_err(|e| e.to_string())?;
@@ -252,7 +252,9 @@ pub fn rpc_spawn(app: AppHandle, state: State<'_, RpcState>) -> Result<(), Strin
         }
     });
 
-    Ok(())
+    // True: this call created the child, so its boot emissions reach the WebView
+    // live and the frontend can skip the `desktop_resync` replay.
+    Ok(true)
 }
 
 fn kill_process_tree(pid: u32) {

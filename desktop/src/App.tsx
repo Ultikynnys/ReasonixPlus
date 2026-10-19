@@ -177,7 +177,7 @@ import { useResizable } from "./ui/useResizable";
 import { useTurnWatchdog } from "./ui/useTurnWatchdog";
 import { WorkdirPop } from "./ui/workdir-pop";
 import { anyVoiceModelDownloaded } from "./voice/models";
-import { areWorkspacesLoaded } from "./workspace-loading";
+import { areWorkspacesLoaded, isWorkspaceRevealReady } from "./workspace-loading";
 import { toWorkspaceRelative } from "./workspace-path";
 
 /** Thumbnail icons for queued audio/video attachments — real data-URL images so
@@ -6400,27 +6400,51 @@ export function App() {
     }
   }, []);
 
-  const markWorkspaceInitialized = useCallback((tabId: string) => {
-    initializedTabsRef.current.add(tabId);
+  // The splash exists to cover an unusable UI, not to police background tabs: it
+  // The splash exists to cover an unusable UI, not to police background tabs: it
+  // lifts once the tab the user is actually shown has acked, while every other
+  // restored tab keeps initializing behind it. One helper so the ack, snapshot and
+  // close paths cannot drift on what "loaded enough" means.
+  const remainingTabIds = useCallback((): string[] => {
     const expected = expectedTabsRef.current;
-    const remaining = expected
-      ? Array.from(expected).filter((id) => !initializedTabsRef.current.has(id))
-      : [];
-    timingTrackerRef.current.mark("workspace_initialized_ui_acknowledged", {
-      tabId,
-      details: {
-        totalExpected: expected?.size ?? null,
-        initializedCount: initializedTabsRef.current.size,
-        remainingTabs: remaining,
-      },
-    });
-    if (areWorkspacesLoaded(expectedTabsRef.current, initializedTabsRef.current)) {
-      timingTrackerRef.current.finish("all_workspaces_initialized", {
-        tabs: Array.from(initializedTabsRef.current),
-      });
-      setLoadingWorkspaces(false);
-    }
+    if (!expected) return [];
+    return Array.from(expected).filter((id) => !initializedTabsRef.current.has(id));
   }, []);
+
+  const revealWorkspacesIfReady = useCallback(
+    (
+      tracker: StartupTimingTracker,
+      reason: string,
+      activeTabId: string | null = activeTabIdRef.current,
+    ) => {
+      const expected = expectedTabsRef.current;
+      const initialized = initializedTabsRef.current;
+      if (!isWorkspaceRevealReady(expected, initialized, activeTabId)) return false;
+      tracker.finish(
+        areWorkspacesLoaded(expected, initialized) ? "all_workspaces_initialized" : reason,
+        { tabs: Array.from(initialized), remainingTabs: remainingTabIds() },
+      );
+      setLoadingWorkspaces(false);
+      return true;
+    },
+    [remainingTabIds],
+  );
+
+  const markWorkspaceInitialized = useCallback(
+    (tabId: string) => {
+      initializedTabsRef.current.add(tabId);
+      timingTrackerRef.current.mark("workspace_initialized_ui_acknowledged", {
+        tabId,
+        details: {
+          totalExpected: expectedTabsRef.current?.size ?? null,
+          initializedCount: initializedTabsRef.current.size,
+          remainingTabs: remainingTabIds(),
+        },
+      });
+      revealWorkspacesIfReady(timingTrackerRef.current, "focused_workspace_initialized");
+    },
+    [remainingTabIds, revealWorkspacesIfReady],
+  );
 
   const retryStartup = useCallback(() => {
     setStartupRetryNonce((n) => n + 1);
@@ -6633,9 +6657,9 @@ export function App() {
               });
               forgetTab(tabId);
               expectedTabsRef.current?.delete(tabId);
-              if (areWorkspacesLoaded(expectedTabsRef.current, initializedTabsRef.current)) {
-                setLoadingWorkspaces(false);
-              }
+              // Closing a tab can be what completes the boot gate, so re-check
+              // instead of leaving the splash up on a set that can only shrink.
+              revealWorkspacesIfReady(timingTrackerRef.current, "tabs_closed_during_boot");
               return;
             }
 
@@ -6654,12 +6678,11 @@ export function App() {
                   initializedCount: initializedTabsRef.current.size,
                 },
               });
-              if (areWorkspacesLoaded(ids, initializedTabsRef.current)) {
-                tracker.finish("tabs_snapshot_already_initialized", {
-                  tabs: Array.from(ids),
-                });
-                setLoadingWorkspaces(false);
-              }
+              revealWorkspacesIfReady(
+                tracker,
+                "tabs_snapshot_already_initialized",
+                activeTabIdRef.current || (ev.tabs.find((t) => t.active)?.id ?? null),
+              );
               setTabs((prev) => {
                 const busyById = new Map(prev.map((t) => [t.id, t.busy]));
                 return ev.tabs.map((t) => ({
@@ -6901,14 +6924,18 @@ export function App() {
       cleanups.push(...subs);
       try {
         tracker.mark("rpc_spawn_invoked");
-        await invoke("rpc_spawn");
-        tracker.mark("rpc_spawn_resolved");
-        // WebView reload (DevTools F5, host respawn) keeps the Node child
-        // alive but loses every $tab_opened / $settings / $needs_setup that
-        // already fired. Ask the desktop server to re-emit them.
+        const spawnedFresh = (await invoke<boolean>("rpc_spawn")) === true;
+        tracker.mark("rpc_spawn_resolved", { details: { spawnedFresh } });
+        // A daemon this call just spawned already wrote every boot event into the
+        // listeners registered above, so replaying them would repeat the whole
+        // cold start. Only a REUSED daemon (WebView reload, retry) missed them.
         if (!cancelled) {
-          tracker.mark("desktop_resync_sent");
-          await rpcSend({ cmd: "desktop_resync" });
+          tracker.mark("desktop_resync_sent", { details: { replay: !spawnedFresh } });
+          await rpcSend(
+            spawnedFresh
+              ? ({ cmd: "desktop_resync", replay: false } as const)
+              : ({ cmd: "desktop_resync" } as const),
+          );
           tracker.mark("desktop_resync_acknowledged");
         }
       } catch (err) {

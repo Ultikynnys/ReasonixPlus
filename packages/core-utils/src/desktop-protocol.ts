@@ -1617,7 +1617,10 @@ export type OutgoingCommand = { tabId?: string } & (
    *  the backend still resolved at expiry. */
   | { cmd: "gate_timer"; id: number; enabled: boolean }
   | { cmd: "session_list" }
-  | { cmd: "desktop_resync" }
+  /** `replay: false` asks only for transport state, the tab snapshot and the
+   *  catalog refreshes — no per-tab re-emission. A caller that just spawned this
+   *  daemon already received the boot emissions; a reloaded WebView needs them. */
+  | { cmd: "desktop_resync"; replay?: boolean }
   /** Pull one tab's live turn state ($tab_status reply) — the reconciliation
    *  probe the desktop polls while busy so a lost terminal event can't wedge it. */
   | { cmd: "tab_status" }
