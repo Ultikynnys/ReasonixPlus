@@ -32,19 +32,19 @@ it("PLAN_INTERACTIVE_TOOL_NAMES is exactly the registered plan tools that gate",
     .filter((name) => tools.isUserIntervention(name));
   expect(new Set(gated)).toEqual(new Set(PLAN_INTERACTIVE_TOOL_NAMES));
 });
-it("creates, inspects, revises and completes one session-owned plan", async () => {
+it("creates, inspects, revises and completes one workspace-owned plan", async () => {
   const tools = registerPlanTool(new ToolRegistry());
-  const sessionName = "pipeline";
+  const workspace = "pipeline";
   const created = await tools.dispatch(
     "submit_plan",
     { plan: "Plan", steps: [{ id: "one", title: "First", action: "Do first" }] },
-    { sessionName, confirmationGate: gate("approve") },
+    { rootDir: workspace, confirmationGate: gate("approve") },
   );
   const planId = String(created).split("planId: ")[1];
   expect(planId).toBeTruthy();
-  expect(JSON.parse(String(await tools.dispatch("list_plans", {}, { sessionName })))[0].id).toBe(
-    planId,
-  );
+  expect(
+    JSON.parse(String(await tools.dispatch("list_plans", {}, { rootDir: workspace })))[0].id,
+  ).toBe(planId);
   await tools.dispatch(
     "revise_plan",
     {
@@ -55,37 +55,41 @@ it("creates, inspects, revises and completes one session-owned plan", async () =
         { id: "two", title: "Check", action: "Verify" },
       ],
     },
-    { sessionName, confirmationGate: gate("accepted") },
+    { rootDir: workspace, confirmationGate: gate("accepted") },
   );
   const rejected = await tools.dispatch(
     "mark_step_complete",
     { planId, stepId: "one", result: "Done" },
-    { sessionName, confirmationGate: gate("stop") },
+    { rootDir: workspace, confirmationGate: gate("stop") },
   );
   expect(String(rejected)).toContain("stopped");
-  let detail = JSON.parse(String(await tools.dispatch("open_plan", { planId }, { sessionName })));
+  let detail = JSON.parse(
+    String(await tools.dispatch("open_plan", { planId }, { rootDir: workspace })),
+  );
   expect(detail.completions).toEqual({});
   for (const stepId of ["one", "two"])
     await tools.dispatch(
       "mark_step_complete",
       { planId, stepId, result: "Done", evidence: [{ kind: "verification", summary: "Passed" }] },
-      { sessionName, confirmationGate: gate("continue") },
+      { rootDir: workspace, confirmationGate: gate("continue") },
     );
-  detail = JSON.parse(String(await tools.dispatch("open_plan", { planId }, { sessionName })));
+  detail = JSON.parse(
+    String(await tools.dispatch("open_plan", { planId }, { rootDir: workspace })),
+  );
   expect(detail.status).toBe("completed");
   expect(detail.revisions).toHaveLength(1);
   expect(detail.completions.one.evidence).toHaveLength(1);
-  expect(String(await tools.dispatch("open_plan", { planId }, { sessionName: "other" }))).toContain(
+  expect(String(await tools.dispatch("open_plan", { planId }, { rootDir: "other" }))).toContain(
     "Unknown plan",
   );
 });
 it("requires correct plan identity and retains explicit abandonment", async () => {
   const tools = registerPlanTool(new ToolRegistry());
-  const sessionName = "abandon";
+  const workspace = "abandon";
   const created = await tools.dispatch(
     "submit_plan",
     { plan: "Plan" },
-    { sessionName, confirmationGate: gate("approve") },
+    { rootDir: workspace, confirmationGate: gate("approve") },
   );
   const planId = String(created).split("planId: ")[1];
   expect(
@@ -93,37 +97,37 @@ it("requires correct plan identity and retains explicit abandonment", async () =
       await tools.dispatch(
         "mark_step_complete",
         { stepId: "one", result: "Done" },
-        { sessionName },
+        { rootDir: workspace },
       ),
     ),
   ).toContain("planId");
   await tools.dispatch(
     "abandon_plan",
     { planId, reason: "New requirements" },
-    { sessionName, confirmationGate: gate("pick", "abandon") },
+    { rootDir: workspace, confirmationGate: gate("pick", "abandon") },
   );
   expect(
-    JSON.parse(String(await tools.dispatch("open_plan", { planId }, { sessionName }))),
+    JSON.parse(String(await tools.dispatch("open_plan", { planId }, { rootDir: workspace }))),
   ).toMatchObject({ status: "abandoned", dispositionReason: "New requirements", finishedAt: null });
 });
 it("activates a non-completed plan and refuses a completed one", async () => {
   const tools = registerPlanTool(new ToolRegistry());
-  const sessionName = "activate-tools";
+  const workspace = "activate-tools";
   const a = await tools.dispatch(
     "submit_plan",
     { plan: "A", steps: [{ id: "one", title: "First", action: "Do first" }] },
-    { sessionName, confirmationGate: gate("approve") },
+    { rootDir: workspace, confirmationGate: gate("approve") },
   );
   const aId = String(a).split("planId: ")[1];
   await tools.dispatch(
     "mark_step_complete",
     { planId: aId, stepId: "one", result: "Done" },
-    { sessionName, confirmationGate: gate("continue") },
+    { rootDir: workspace, confirmationGate: gate("continue") },
   );
   const b = await tools.dispatch(
     "submit_plan",
     { plan: "B" },
-    { sessionName, confirmationGate: gate("approve") },
+    { rootDir: workspace, confirmationGate: gate("approve") },
   );
   const bId = String(b).split("planId: ")[1];
 
@@ -132,7 +136,7 @@ it("activates a non-completed plan and refuses a completed one", async () => {
       await tools.dispatch(
         "activate_plan",
         { planId: bId },
-        { sessionName, confirmationGate: gate("pick", "activate") },
+        { rootDir: workspace, confirmationGate: gate("pick", "activate") },
       ),
     ),
   );
@@ -144,7 +148,7 @@ it("activates a non-completed plan and refuses a completed one", async () => {
       await tools.dispatch(
         "activate_plan",
         { planId: aId },
-        { sessionName, confirmationGate: gate("pick", "activate") },
+        { rootDir: workspace, confirmationGate: gate("pick", "activate") },
       ),
     );
   } catch (err) {

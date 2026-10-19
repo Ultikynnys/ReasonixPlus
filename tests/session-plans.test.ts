@@ -2,13 +2,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { SessionPlanRepository } from "../src/code/session-plans.js";
+import { PlanRepository } from "../src/code/plans.js";
 
 let home: string;
 let oldHome: string | undefined;
 let oldProfile: string | undefined;
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), "session-plans-"));
+  home = mkdtempSync(join(tmpdir(), "plans-"));
   oldHome = process.env.HOME;
   oldProfile = process.env.USERPROFILE;
   process.env.HOME = home;
@@ -24,7 +24,7 @@ const steps = [
   { id: "two", title: "Second", action: "Do second" },
 ];
 it("retains partial superseded work across repository recreation", () => {
-  const repo = new SessionPlanRepository("first");
+  const repo = new PlanRepository("first");
   const first = repo.propose("First plan", steps);
   repo.verdict(first.id, "active");
   repo.complete(first.id, {
@@ -35,7 +35,7 @@ it("retains partial superseded work across repository recreation", () => {
   });
   const second = repo.propose("Replacement");
   repo.verdict(second.id, "active");
-  const restored = new SessionPlanRepository("first");
+  const restored = new PlanRepository("first");
   expect(restored.open(first.id)).toMatchObject({
     status: "superseded",
     replacedBy: second.id,
@@ -44,10 +44,10 @@ it("retains partial superseded work across repository recreation", () => {
   });
   expect(restored.active()?.id).toBe(second.id);
   expect(restored.list()).toHaveLength(2);
-  expect(new SessionPlanRepository("second").list()).toEqual([]);
+  expect(new PlanRepository("second").list()).toEqual([]);
 });
 it("rejects stale verdicts and out-of-order or duplicate completion", () => {
-  const repo = new SessionPlanRepository("order");
+  const repo = new PlanRepository("order");
   const plan = repo.propose("Plan", steps);
   repo.verdict(plan.id, "active");
   expect(() => repo.verdict(plan.id, "active")).toThrow("Stale");
@@ -63,7 +63,7 @@ it("rejects stale verdicts and out-of-order or duplicate completion", () => {
   expect(done.finishedAt).toBe(done.updatedAt);
 });
 it("preserves markdown-only cancelled and refined attempts", () => {
-  const repo = new SessionPlanRepository("attempts");
+  const repo = new PlanRepository("attempts");
   const first = repo.propose("Markdown only");
   repo.verdict(first.id, "cancelled");
   const second = repo.propose("Refine me");
@@ -74,27 +74,27 @@ it("preserves markdown-only cancelled and refined attempts", () => {
   ]);
 });
 it("refreshes an existing repository after another instance writes", () => {
-  const first = new SessionPlanRepository("shared");
+  const first = new PlanRepository("shared");
   expect(first.list()).toEqual([]);
-  const second = new SessionPlanRepository("shared");
+  const second = new PlanRepository("shared");
   const plan = second.propose("New plan");
   expect(first.open(plan.id).body).toBe("New plan");
   first.verdict(plan.id, "active");
   expect(second.active()?.id).toBe(plan.id);
 });
 it("fails closed on malformed history without overwriting it", () => {
-  const repo = new SessionPlanRepository("broken");
+  const repo = new PlanRepository("broken");
   repo.propose("Valid");
   writeFileSync(repo.path, "broken JSON");
   expect(() => repo.propose("Do not overwrite")).toThrow();
-  expect(() => new SessionPlanRepository("broken").list()).toThrow();
+  expect(() => new PlanRepository("broken").list()).toThrow();
 });
 it("retains abandonment reasons and rejects subsequent completion", () => {
-  const repo = new SessionPlanRepository("abandon");
+  const repo = new PlanRepository("abandon");
   const plan = repo.propose("Plan", steps);
   repo.verdict(plan.id, "active");
   repo.abandon(plan.id, "Requirements changed");
-  expect(new SessionPlanRepository("abandon").open(plan.id)).toMatchObject({
+  expect(new PlanRepository("abandon").open(plan.id)).toMatchObject({
     status: "abandoned",
     finishedAt: null,
     dispositionReason: "Requirements changed",
@@ -104,14 +104,14 @@ it("retains abandonment reasons and rejects subsequent completion", () => {
   ).toThrow("no longer active");
 });
 it("does not steal a live writer lock", () => {
-  const repo = new SessionPlanRepository("locked");
+  const repo = new PlanRepository("locked");
   repo.propose("First");
   writeFileSync(`${repo.path}.lock`, String(process.pid));
   expect(() => repo.propose("Second")).toThrow();
   expect(repo.list()).toHaveLength(1);
 });
 it("keeps original steps when revising and retained completion details", () => {
-  const repo = new SessionPlanRepository("revision");
+  const repo = new PlanRepository("revision");
   const plan = repo.propose("Plan", steps);
   repo.verdict(plan.id, "active");
   repo.complete(plan.id, { kind: "step_completed", stepId: "one", result: "Done" });
@@ -122,7 +122,7 @@ it("keeps original steps when revising and retained completion details", () => {
   expect(revised.steps.map((s) => s.id)).toEqual(["one", "three"]);
 });
 it("treats a sealed fully-completed active plan as complete, never in-flight", () => {
-  const repo = new SessionPlanRepository("sealed");
+  const repo = new PlanRepository("sealed");
   const plan = repo.propose("Plan", [{ id: "one", title: "First", action: "Do first" }]);
   repo.verdict(plan.id, "active");
   repo.complete(plan.id, { kind: "step_completed", stepId: "one", result: "Done" });
@@ -134,12 +134,12 @@ it("treats a sealed fully-completed active plan as complete, never in-flight", (
   raw.plans[0]!.finishedAt = null;
   writeFileSync(repo.path, JSON.stringify(raw));
 
-  const reread = new SessionPlanRepository("sealed");
+  const reread = new PlanRepository("sealed");
   expect(reread.active()).toBeNull();
   expect(reread.list()[0]?.status).toBe("completed");
 });
 it("freezes a completed plan: it cannot be completed, revised, abandoned or activated", () => {
-  const repo = new SessionPlanRepository("frozen");
+  const repo = new PlanRepository("frozen");
   const plan = repo.propose("Plan", steps);
   repo.verdict(plan.id, "active");
   repo.complete(plan.id, { kind: "step_completed", stepId: "one", result: "Done" });
@@ -155,7 +155,7 @@ it("freezes a completed plan: it cannot be completed, revised, abandoned or acti
   expect(() => repo.activate(plan.id)).toThrow(/completed/);
 });
 it("activates any non-completed plan, superseding the current active", () => {
-  const repo = new SessionPlanRepository("activate");
+  const repo = new PlanRepository("activate");
   const first = repo.propose("First", steps);
   repo.verdict(first.id, "active");
   const second = repo.propose("Second", steps);
@@ -172,4 +172,26 @@ it("activates any non-completed plan, superseding the current active", () => {
   repo.verdict(third.id, "cancelled");
   expect(repo.activate(third.id).status).toBe("active");
   expect(repo.active()?.id).toBe(third.id);
+});
+it("removes a plan for good in every state and refuses an unknown id", () => {
+  const repo = new PlanRepository("remove");
+  const active = repo.propose("Active", steps);
+  repo.verdict(active.id, "active");
+  const completed = repo.propose("Done", [{ id: "one", title: "t", action: "a" }]);
+  repo.verdict(completed.id, "active");
+  repo.complete(completed.id, { kind: "step_completed", stepId: "one", result: "Done" });
+  const cancelled = repo.propose("Cancelled");
+  repo.verdict(cancelled.id, "cancelled");
+  expect(repo.list()).toHaveLength(3);
+
+  // Removing the active plan is allowed and leaves no in-flight plan behind.
+  repo.remove(active.id);
+  expect(repo.active()).toBeNull();
+  expect(() => repo.open(active.id)).toThrow("Unknown plan ID");
+  // A completed record can be removed too — a manual delete is the user's explicit call.
+  repo.remove(completed.id);
+  repo.remove(cancelled.id);
+  expect(repo.list()).toEqual([]);
+  expect(new PlanRepository("remove").list()).toEqual([]);
+  expect(() => repo.remove("does-not-exist")).toThrow("Unknown plan ID");
 });

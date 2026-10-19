@@ -1,6 +1,6 @@
 import { flattenText, messageOf, sleep } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "./client.js";
-import { type SessionPlanRepository, sessionPlanRepository } from "./code/session-plans.js";
+import { type PlanRepository, planRepository } from "./code/plans.js";
 import {
   type EditMode,
   type ReasoningEffort,
@@ -854,13 +854,16 @@ export class CacheFirstLoop {
   /** Running count of user turns processed so far. */
   private _userTurnCount = 0;
 
-  private planRepository: SessionPlanRepository | undefined;
-  private planRepositorySession: string | null = null;
+  private planRepository: PlanRepository | undefined;
+  private planRepositoryKey: string | null = null;
   private buildMessages(): ChatMessage[] {
     const healedMessages = this.healActiveLogBeforeSend();
-    if (this.sessionName !== this.planRepositorySession) {
-      this.planRepositorySession = this.sessionName;
-      this.planRepository = this.sessionName ? sessionPlanRepository(this.sessionName) : undefined;
+    // Plan context belongs to a bound conversation: a session-less loop (REPL or a
+    // test harness) injects nothing, and a workspace/session switch repoints the store.
+    const key = this.sessionName ? `${this.hookCwd}\0${this.sessionName}` : null;
+    if (key !== this.planRepositoryKey) {
+      this.planRepositoryKey = key;
+      this.planRepository = key ? planRepository(this.hookCwd) : undefined;
     }
     const active = this.planRepository?.active();
     // Only nudge on a plan that still has an unfinished step — a finished leftover

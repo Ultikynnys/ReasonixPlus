@@ -77,6 +77,7 @@ export function ContextPanel({
   planSession,
   onReadPlans,
   onReadPlan,
+  onRemovePlan,
   active = true,
 }: {
   settings: Settings | null;
@@ -114,6 +115,7 @@ export function ContextPanel({
   planSession?: string;
   onReadPlans?: () => void;
   onReadPlan?: (id: string) => void;
+  onRemovePlan?: (id: string) => void;
   /** True when this tab is the visible one. Background polling (git status)
    *  must only run for the tab the user can actually see. */
   active?: boolean;
@@ -259,7 +261,7 @@ export function ContextPanel({
             />
           )}
           {tab === "plan" ? (
-            <CtxPlanHistory key={planSession} history={planHistory ?? []} details={planDetails ?? {}} onReadPlans={onReadPlans} onReadPlan={onReadPlan} fallback={activePlan} />
+            <CtxPlanHistory key={planSession} history={planHistory ?? []} details={planDetails ?? {}} onReadPlans={onReadPlans} onReadPlan={onReadPlan} onRemovePlan={onRemovePlan} fallback={activePlan} />
           ) : null}
         </PanelErrorBoundary>
       </div>
@@ -267,11 +269,12 @@ export function ContextPanel({
   );
 }
 
-function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, fallback }: {
+function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, onRemovePlan, fallback }: {
   history: import("@reasonix/core-utils").PlanHistoryItem[];
   details: Record<string, import("@reasonix/core-utils").PlanDetail>;
   onReadPlans?: () => void;
   onReadPlan?: (id: string) => void;
+  onRemovePlan?: (id: string) => void;
   fallback?: ActivePlan | null;
 }) {
   const [selection, setSelection] = useState("");
@@ -299,19 +302,34 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, fallback }:
         <div className="ctx-section-title">{t("contextPanel.planHistoryTitle")}</div>
         <div className="ctx-plan-progress">{history.length}</div>
       </div>
-      <select
-        className="ctx-plan-select"
-        aria-label={t("contextPanel.planHistoryAria")}
-        value={selected}
-        onChange={(event) => setSelection(event.target.value)}
-      >
-        {history.map((plan, index) => (
-          <option key={plan.id} value={plan.id}>
-            {index + 1}. {plan.summary ?? t("contextPanel.planUntitled")} · {plan.status} ·{" "}
-            {plan.completedSteps}/{plan.totalSteps}
-          </option>
-        ))}
-      </select>
+      <div className="ctx-plan-picker">
+        <select
+          className="ctx-plan-select"
+          aria-label={t("contextPanel.planHistoryAria")}
+          value={selected}
+          onChange={(event) => setSelection(event.target.value)}
+        >
+          {history.map((plan, index) => (
+            <option key={plan.id} value={plan.id}>
+              {index + 1}. {plan.summary ?? t("contextPanel.planUntitled")} · {plan.status} ·{" "}
+              {plan.completedSteps}/{plan.totalSteps}
+            </option>
+          ))}
+        </select>
+        {onRemovePlan && selected ? (
+          <button
+            type="button"
+            className="mini-btn"
+            title={t("contextPanel.planRemove")}
+            aria-label={t("contextPanel.planRemove")}
+            onClick={() => {
+              if (window.confirm(t("contextPanel.planRemoveConfirm"))) onRemovePlan(selected);
+            }}
+          >
+            <I.trash size={12} />
+          </button>
+        ) : null}
+      </div>
       {detail ? (
         <CtxPlan plan={{ plan: detail.body, summary: detail.summary, steps: detail.steps, completedStepIds: Object.keys(detail.completions), stepResults: Object.fromEntries(Object.entries(detail.completions).map(([id, completion]) => [id, completion.result])), status: detail.status === "active" ? "active" : detail.status === "completed" ? "finished" : "cancelled" }} />
       ) : (

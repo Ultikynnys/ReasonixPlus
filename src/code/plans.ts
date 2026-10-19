@@ -1,7 +1,7 @@
-/** The ONE plan store: per-session history at `plans/history.json`. Plan tools are
- *  the only writers; legacy plan.json / .done.json records migrate in on first read. */
+/** The ONE plan store: per-workspace history.json under the workspace directory,
+ *  written only by the plan tools; legacy plan.json records migrate in on first read. */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -12,13 +12,20 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { readJsonFileSilently } from "../core/json-file.js";
-import { sessionPlanPath, sessionPlansDir } from "../memory/session.js";
+import {
+  listSessionNamesForWorkspace,
+  normalizeWorkspace,
+  sanitizeName,
+  sessionPlanPath,
+  sessionPlansDir,
+  workspacesRootDir,
+} from "../memory/session.js";
 import { coercePlanStep, sanitizeEvidence } from "../tools/plan-sanitize.js";
 import type { PlanStep, StepCompletion } from "../tools/plan-types.js";
 
-export type SessionPlanStatus =
+export type PlanStatus =
   | "proposed"
   | "active"
   | "completed"
@@ -27,9 +34,9 @@ export type SessionPlanStatus =
   | "superseded"
   | "refinement_requested";
 
-export interface SessionPlan {
+export interface PlanRecord {
   id: string;
-  status: SessionPlanStatus;
+  status: PlanStatus;
   createdAt: string | null;
   updatedAt: string;
   finishedAt: string | null;
@@ -45,18 +52,15 @@ export interface SessionPlan {
 interface History {
   version: 1;
   revision: number;
-  plans: SessionPlan[];
+  plans: PlanRecord[];
 }
 
-export type SessionPlanSummary = Omit<
-  SessionPlan,
-  "body" | "steps" | "completions" | "revisions"
-> & {
+export type PlanSummary = Omit<PlanRecord, "body" | "steps" | "completions" | "revisions"> & {
   totalSteps: number;
   completedSteps: number;
 };
 
-const statuses = new Set<SessionPlanStatus>([
+const statuses = new Set<PlanStatus>([
   "proposed",
   "active",
   "completed",
@@ -74,7 +78,7 @@ function validate(value: unknown): History {
     !Number.isInteger(history.revision) ||
     !Array.isArray(history.plans)
   )
-    throw new Error("Invalid session plan history");
+    throw new Error("Invalid plan history");
   const ids = new Set<string>();
   for (const plan of history.plans) {
     if (
@@ -92,7 +96,7 @@ function validate(value: unknown): History {
       !Number.isFinite(Date.parse(plan.updatedAt)) ||
       (plan.finishedAt !== null && !Number.isFinite(Date.parse(plan.finishedAt)))
     )
-      throw new Error("Invalid session plan record");
+      throw new Error("Invalid plan record");
     ids.add(plan.id);
     if (plan.status !== "completed" && plan.finishedAt !== null)
       throw new Error("Only completed plans have a finish date");
@@ -124,21 +128,34 @@ function validate(value: unknown): History {
       ) ||
       new Set(plan.steps.map((s) => s.id)).size !== plan.steps.length
     )
-      throw new Error("Invalid session plan steps");
+      throw new Error("Invalid plan steps");
   }
   if (history.plans.filter((p) => p.status === "active").length > 1)
-    throw new Error("Multiple active plans in one session");
+    throw new Error("Multiple active plans in one workspace");
   return history;
 }
 
-const repositories = new Map<string, SessionPlanRepository>();
+/** Stable, filesystem-safe key for a workspace: sanitized basename plus a short
+ *  hash of the normalized absolute path, so two distinct workspaces never collide. */
+function workspaceKey(workspace: string): string {
+  const normalized = normalizeWorkspace(workspace);
+  const hash = createHash("sha1").update(normalized).digest("hex").slice(0, 16);
+  return `${sanitizeName(basename(normalized) || "workspace")}-${hash}`;
+}
 
-/** One repository per session path so the loop, tools and desktop share a cache. */
-export function sessionPlanRepository(session: string): SessionPlanRepository {
-  const key = join(sessionPlansDir(session), "history.json");
+/** Workspace-scoped plan storage — one folder per workspace under `~/.reasonix/workspaces/`. */
+export function workspacePlansDir(workspace: string): string {
+  return join(workspacesRootDir(), workspaceKey(workspace), "plans");
+}
+
+const repositories = new Map<string, PlanRepository>();
+
+/** One repository per workspace path so the loop, tools and desktop share a cache. */
+export function planRepository(workspace: string): PlanRepository {
+  const key = join(workspacePlansDir(workspace), "history.json");
   let repository = repositories.get(key);
   if (!repository) {
-    repository = new SessionPlanRepository(session);
+    repository = new PlanRepository(workspace);
     repositories.set(key, repository);
     if (repositories.size > 64) repositories.delete(repositories.keys().next().value as string);
   }
@@ -161,73 +178,61 @@ function sealCompletedPlans(history: History): void {
   }
 }
 
-export class SessionPlanRepository {
+/** A workspace history holds at most one active plan: keep the most recently
+ *  updated active, mark the rest superseded so validation stays satisfied. */
+function reconcileActive(plans: PlanRecord[]): void {
+  let keeper: PlanRecord | undefined;
+  for (const plan of plans) {
+    if (plan.status !== "active") continue;
+    if (!keeper || plan.updatedAt > keeper.updatedAt) keeper = plan;
+  }
+  for (const plan of plans) {
+    if (plan.status === "active" && plan !== keeper) {
+      plan.status = "superseded";
+      plan.replacedBy = keeper?.id;
+    }
+  }
+}
+
+export class PlanRepository {
   private signature = "";
   private cached: History | undefined;
   readonly path: string;
 
-  constructor(private readonly session: string) {
-    if (!session.trim()) throw new Error("Session is required for plan access");
-    this.path = join(sessionPlansDir(session), "history.json");
+  constructor(private readonly workspace: string) {
+    if (!workspace.trim()) throw new Error("Workspace is required for plan access");
+    this.path = join(workspacePlansDir(workspace), "history.json");
   }
 
   private load(): History {
     const stat = existsSync(this.path) ? statSync(this.path) : null;
     const signature = stat ? `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}` : "missing";
     if (this.cached && signature === this.signature) return this.cached;
-    const history = stat ? validate(JSON.parse(readFileSync(this.path, "utf8"))) : this.legacy();
+    const history = stat ? validate(JSON.parse(readFileSync(this.path, "utf8"))) : this.migrate();
     sealCompletedPlans(history);
     this.cached = history;
     this.signature = signature;
     return history;
   }
 
-  /** Seal any legacy plan.json / .done.json records into the unified history shape. */
-  private legacy(): History {
-    const plans: SessionPlan[] = [];
-    for (const archive of readLegacyArchives(this.session)) {
-      const completed =
-        archive.steps.length > 0 &&
-        archive.steps.every((s) => archive.completedStepIds.includes(s.id));
-      plans.push({
-        ...legacyCompletions(archive.completedStepIds, archive.stepCompletions),
-        id: `legacy-${Buffer.from(archive.path).toString("base64url")}`,
-        status: completed ? "completed" : "abandoned",
-        createdAt: null,
-        updatedAt: archive.completedAt,
-        finishedAt: completed ? archive.completedAt : null,
-        body: archive.body ?? "",
-        summary: archive.summary,
-        steps: archive.steps,
-        revisions: [],
-        dispositionReason:
-          "Imported legacy archive; original creation date and disposition are unavailable",
-      });
+  /** First read for a workspace: aggregate every session plan store that belongs
+   *  to it (current per-session history.json plus legacy plan.json / *.done.json). */
+  private migrate(): History {
+    const byId = new Map<string, PlanRecord>();
+    const add = (plan: PlanRecord): void => {
+      const existing = byId.get(plan.id);
+      if (!existing || plan.updatedAt > existing.updatedAt) byId.set(plan.id, plan);
+    };
+    for (const session of listSessionNamesForWorkspace(this.workspace)) {
+      for (const plan of readSessionHistory(session)) add(plan);
+      for (const plan of legacyPlans(session)) add(plan);
     }
-    const active = readLegacyActivePlan(this.session);
-    if (active) {
-      // A legacy plan whose steps are all done is finished, not in-flight —
-      // otherwise it would re-inject "continue the next step" forever.
-      const activeDone =
-        active.steps.length > 0 &&
-        active.steps.every((s) => active.completedStepIds.includes(s.id));
-      const activeUpdatedAt = active.updatedAt || new Date().toISOString();
-      plans.push({
-        ...legacyCompletions(active.completedStepIds, active.stepCompletions),
-        id: "legacy-active",
-        status: activeDone ? "completed" : "active",
-        createdAt: null,
-        updatedAt: activeUpdatedAt,
-        finishedAt: activeDone ? activeUpdatedAt : null,
-        body: active.body ?? "",
-        summary: active.summary,
-        steps: active.steps,
-        revisions: [],
-        dispositionReason: activeDone
-          ? "Imported legacy completed plan; original creation date is unavailable"
-          : "Imported legacy active plan; original creation date is unavailable",
-      });
-    }
+    const plans = [...byId.values()].sort(
+      (a, b) =>
+        (a.createdAt ?? a.updatedAt).localeCompare(b.createdAt ?? b.updatedAt) ||
+        a.updatedAt.localeCompare(b.updatedAt),
+    );
+    reconcileActive(plans);
     return { version: 1, revision: 0, plans };
   }
 
@@ -263,7 +268,7 @@ export class SessionPlanRepository {
     }
   }
 
-  list(): SessionPlanSummary[] {
+  list(): PlanSummary[] {
     return this.load()
       .plans.map(({ body: _body, steps, completions, revisions: _revisions, ...summary }) => ({
         ...summary,
@@ -273,22 +278,22 @@ export class SessionPlanRepository {
       .reverse();
   }
 
-  open(id: string): SessionPlan {
+  open(id: string): PlanRecord {
     const plan = this.load().plans.find((p) => p.id === id);
     if (!plan) throw new Error(`Unknown plan ID: ${id}`);
     return structuredClone(plan);
   }
 
-  active(): SessionPlan | null {
+  active(): PlanRecord | null {
     const plan = this.load().plans.findLast((p) => p.status === "active");
     return plan ? structuredClone(plan) : null;
   }
 
-  propose(body: string, steps: PlanStep[] = [], summary?: string): SessionPlan {
+  propose(body: string, steps: PlanStep[] = [], summary?: string): PlanRecord {
     if (!body.trim()) throw new Error("Plan body is required");
     return this.mutate((history) => {
       const now = new Date().toISOString();
-      const plan: SessionPlan = {
+      const plan: PlanRecord = {
         id: randomUUID(),
         status: "proposed",
         createdAt: now,
@@ -305,7 +310,7 @@ export class SessionPlanRepository {
     });
   }
 
-  verdict(id: string, status: "active" | "cancelled" | "refinement_requested"): SessionPlan {
+  verdict(id: string, status: "active" | "cancelled" | "refinement_requested"): PlanRecord {
     return this.mutate((history) => {
       const plan = this.findMutable(history, id);
       if (plan.status !== "proposed") throw new Error("Stale plan verdict");
@@ -324,7 +329,7 @@ export class SessionPlanRepository {
     });
   }
 
-  complete(id: string, completion: StepCompletion): SessionPlan {
+  complete(id: string, completion: StepCompletion): PlanRecord {
     return this.mutate((history) => {
       const plan = this.findActive(history, id);
       const next = plan.steps.find((s) => !Object.hasOwn(plan.completions, s.id));
@@ -341,7 +346,7 @@ export class SessionPlanRepository {
     });
   }
 
-  revise(id: string, reason: string, remaining: PlanStep[]): SessionPlan {
+  revise(id: string, reason: string, remaining: PlanStep[]): PlanRecord {
     return this.mutate((history) => {
       const plan = this.findActive(history, id);
       if (!reason.trim() || remaining.some((s) => Object.hasOwn(plan.completions, s.id)))
@@ -360,7 +365,7 @@ export class SessionPlanRepository {
     });
   }
 
-  abandon(id: string, reason: string): SessionPlan {
+  abandon(id: string, reason: string): PlanRecord {
     if (!reason.trim()) throw new Error("Abandonment reason is required");
     return this.mutate((history) => {
       const plan = this.findMutable(history, id);
@@ -375,7 +380,7 @@ export class SessionPlanRepository {
 
   /** Make any non-completed plan the active one, superseding the current active. A
    *  completed plan is frozen, so it can never be brought back as active. */
-  activate(id: string): SessionPlan {
+  activate(id: string): PlanRecord {
     return this.mutate((history) => {
       const plan = this.findMutable(history, id);
       if (plan.status === "active") return plan;
@@ -396,27 +401,49 @@ export class SessionPlanRepository {
     });
   }
 
-  private find(history: History, id: string): SessionPlan {
+  /** Delete a plan for good, whatever its state. Completed records are frozen for
+   *  edits but a manual remove is the user's explicit call; unknown ids are refused. */
+  remove(id: string): void {
+    this.mutate((history) => {
+      const index = history.plans.findIndex((plan) => plan.id === id);
+      if (index === -1) throw new Error(`Unknown plan ID: ${id}`);
+      history.plans.splice(index, 1);
+    });
+  }
+
+  private find(history: History, id: string): PlanRecord {
     const plan = history.plans.find((p) => p.id === id);
     if (!plan) throw new Error(`Unknown plan ID: ${id}`);
     return plan;
   }
 
   /** A completed plan is frozen for good — mutating it would falsify the record. */
-  private findMutable(history: History, id: string): SessionPlan {
+  private findMutable(history: History, id: string): PlanRecord {
     const plan = this.find(history, id);
     if (plan.status === "completed") throw new Error("Plan is completed and cannot be modified");
     return plan;
   }
 
-  private findActive(history: History, id: string): SessionPlan {
+  private findActive(history: History, id: string): PlanRecord {
     const plan = this.findMutable(history, id);
     if (plan.status !== "active") throw new Error("Plan is no longer active");
     return plan;
   }
 }
 
-/** Read-only migration of the retired plan.json + plans/*.done.json format. */
+/** Read a session's current per-session history.json; a malformed file is skipped
+ *  so one bad session can't abort the whole workspace migration. */
+function readSessionHistory(session: string): PlanRecord[] {
+  const path = join(sessionPlansDir(session), "history.json");
+  if (!existsSync(path)) return [];
+  try {
+    return validate(JSON.parse(readFileSync(path, "utf8"))).plans;
+  } catch {
+    return [];
+  }
+}
+
+/** Read-only migration of the retired per-session plan.json + plans/*.done.json format. */
 
 interface LegacyPlanFile {
   version?: unknown;
@@ -545,4 +572,53 @@ function readLegacyArchives(
   // Ascending (oldest first) so the push order matches fresh plans; list() reverses to newest-first.
   archives.sort((a, b) => a.completedAt.localeCompare(b.completedAt));
   return archives;
+}
+
+/** Convert one session's legacy plan.json / *.done.json records into PlanRecords,
+ *  keyed by source path so ids never collide across sessions in a merge. */
+function legacyPlans(session: string): PlanRecord[] {
+  const plans: PlanRecord[] = [];
+  for (const archive of readLegacyArchives(session)) {
+    const completed =
+      archive.steps.length > 0 &&
+      archive.steps.every((s) => archive.completedStepIds.includes(s.id));
+    plans.push({
+      ...legacyCompletions(archive.completedStepIds, archive.stepCompletions),
+      id: `legacy-${Buffer.from(archive.path).toString("base64url")}`,
+      status: completed ? "completed" : "abandoned",
+      createdAt: null,
+      updatedAt: archive.completedAt,
+      finishedAt: completed ? archive.completedAt : null,
+      body: archive.body ?? "",
+      summary: archive.summary,
+      steps: archive.steps,
+      revisions: [],
+      dispositionReason:
+        "Imported legacy archive; original creation date and disposition are unavailable",
+    });
+  }
+  const active = readLegacyActivePlan(session);
+  if (active) {
+    // A legacy plan whose steps are all done is finished, not in-flight —
+    // otherwise it would re-inject "continue the next step" forever.
+    const activeDone =
+      active.steps.length > 0 && active.steps.every((s) => active.completedStepIds.includes(s.id));
+    const activeUpdatedAt = active.updatedAt || new Date().toISOString();
+    plans.push({
+      ...legacyCompletions(active.completedStepIds, active.stepCompletions),
+      id: `legacy-${Buffer.from(sessionPlanPath(session)).toString("base64url")}`,
+      status: activeDone ? "completed" : "active",
+      createdAt: null,
+      updatedAt: activeUpdatedAt,
+      finishedAt: activeDone ? activeUpdatedAt : null,
+      body: active.body ?? "",
+      summary: active.summary,
+      steps: active.steps,
+      revisions: [],
+      dispositionReason: activeDone
+        ? "Imported legacy completed plan; original creation date is unavailable"
+        : "Imported legacy active plan; original creation date is unavailable",
+    });
+  }
+  return plans;
 }

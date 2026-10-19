@@ -1,6 +1,6 @@
-import { type SessionPlan, sessionPlanRepository } from "../code/session-plans.js";
+import { type PlanRecord, type PlanRepository, planRepository } from "../code/plans.js";
 import { pauseGate } from "../core/pause-gate.js";
-import type { ToolRegistry } from "../tools.js";
+import type { ToolCallContext, ToolRegistry } from "../tools.js";
 import { coercePlanStep, sanitizeEvidence } from "./plan-sanitize.js";
 import type { PlanStep, StepCompletion, StepEvidence } from "./plan-types.js";
 
@@ -82,9 +82,15 @@ function compactStepCompletion(update: StepCompletion): StepCompletion {
   return compact;
 }
 
+/** The workspace-scoped plan store for a tool call, or undefined when the context
+ *  carries no workspace root (a direct dispatch outside the loop). */
+function repositoryFor(ctx: ToolCallContext | undefined): PlanRepository | undefined {
+  return ctx?.rootDir ? planRepository(ctx.rootDir) : undefined;
+}
+
 /** Confirmation-card label for a plan. Never the raw UUID: prefer the one-line
  *  summary, else the first heading/line of the body, else a neutral fallback. */
-function planLabel(plan: SessionPlan): string {
+function planLabel(plan: PlanRecord): string {
   const summary = plan.summary?.trim();
   if (summary) return summary;
   const line = plan.body
@@ -131,7 +137,7 @@ function registerSubmitPlan(registry: ToolRegistry, opts: PlanToolOptions): void
       const steps = sanitizeSteps(args?.steps);
       const summary =
         typeof args?.summary === "string" ? args.summary.trim() || undefined : undefined;
-      const repository = ctx?.sessionName ? sessionPlanRepository(ctx.sessionName) : undefined;
+      const repository = repositoryFor(ctx);
       const record = repository?.propose(plan, steps, summary);
       opts.onPlanSubmitted?.(plan, steps);
       // Block until the user approves, refines, or cancels
@@ -245,7 +251,7 @@ function registerMarkStepComplete(registry: ToolRegistry, opts: PlanToolOptions)
       if (title) update.title = title;
       if (notes) update.notes = notes;
       if (evidence) update.evidence = evidence;
-      const repository = ctx?.sessionName ? sessionPlanRepository(ctx.sessionName) : undefined;
+      const repository = repositoryFor(ctx);
       const active = repository?.active();
       if (repository && (!active || args.planId !== active.id))
         throw new Error("mark_step_complete: supply the owning active planId");
@@ -328,7 +334,7 @@ function registerRevisePlan(registry: ToolRegistry, opts: PlanToolOptions): void
       }
       const summary =
         typeof args?.summary === "string" ? args.summary.trim() || undefined : undefined;
-      const repository = ctx?.sessionName ? sessionPlanRepository(ctx.sessionName) : undefined;
+      const repository = repositoryFor(ctx);
       const active = repository?.active();
       if (repository && (!active || args.planId !== active.id))
         throw new Error("revise_plan: supply the owning active planId");
@@ -397,15 +403,15 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
         required: name === "list_plans" ? [] : isAbandon ? ["planId", "reason"] : ["planId"],
       },
       fn: async (args: { planId?: string; reason?: string }, ctx) => {
-        if (!ctx?.sessionName) throw new Error("Plan tools require an owning session");
-        const repository = sessionPlanRepository(ctx.sessionName);
+        const repository = repositoryFor(ctx);
+        if (!repository) throw new Error("Plan tools require an owning workspace");
         if (name === "list_plans") return JSON.stringify(repository.list());
         if (!args.planId) throw new Error("planId is required");
         if (name === "open_plan") return JSON.stringify(repository.open(args.planId));
         if (isAbandon) {
           if (!args.reason?.trim()) throw new Error("Abandonment reason is required");
           const plan = repository.open(args.planId);
-          const verdict = await (ctx.confirmationGate ?? pauseGate).ask({
+          const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
             kind: "choice",
             payload: {
               question: `Abandon plan "${planLabel(plan)}": ${args.reason}?`,
@@ -424,7 +430,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
         const plan = repository.open(args.planId);
         if (plan.status === "completed")
           throw new Error("activate_plan: a completed plan cannot be modified or activated");
-        const verdict = await (ctx.confirmationGate ?? pauseGate).ask({
+        const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
           kind: "choice",
           payload: {
             question: `Set plan "${planLabel(plan)}" as the active plan?`,

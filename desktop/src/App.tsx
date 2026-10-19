@@ -4794,6 +4794,7 @@ function TabRuntime({
           planSession={state.currentSession}
           onReadPlans={() => { void rpcSend({ cmd: "plan_history_get", tabId }); }}
           onReadPlan={(planId) => { void rpcSend({ cmd: "plan_detail_get", planId, tabId }); }}
+          onRemovePlan={(planId) => { void rpcSend({ cmd: "plan_remove", planId, tabId }); }}
           active={active}
         />
 

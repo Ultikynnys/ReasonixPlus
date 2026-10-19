@@ -102,8 +102,8 @@ import {
 } from "../../at-mentions.js";
 import { fetchChangelog } from "../../changelog.js";
 import { pickPrimaryBalance } from "../../client.js";
+import { type PlanRecord, planRepository } from "../../code/plans.js";
 import { codeSystemPrompt } from "../../code/prompt.js";
-import { type SessionPlan, sessionPlanRepository } from "../../code/session-plans.js";
 import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
 import { fetchCodexQuotaViaOAuth } from "../../codex-backend.js";
 import {
@@ -852,7 +852,7 @@ function wireEventDetails(ev: EmittableEvent): Record<string, unknown> {
       return {};
   }
 }
-/** The session plan repository (session-plans.ts) is the ONE plan store; the daemon
+/** The plan repository (plans.ts) is the ONE workspace-scoped plan store; the daemon
  *  only projects its state into UI events and keeps no plan mirror of its own. */
 
 function stepResultsOf(completions: Record<string, StepCompletion>): Record<string, string> {
@@ -862,8 +862,8 @@ function stepResultsOf(completions: Record<string, StepCompletion>): Record<stri
 }
 
 /** Accepted step counts for the in-flight plan (0/0 when none is running). */
-function planCounts(tab: { currentSession: string }): { completed: number; total: number } {
-  const active = tab.currentSession ? sessionPlanRepository(tab.currentSession).active() : null;
+function planCounts(tab: { rootDir: string }): { completed: number; total: number } {
+  const active = tab.rootDir ? planRepository(tab.rootDir).active() : null;
   return {
     completed: active ? Object.keys(active.completions).length : 0,
     total: active?.steps.length ?? 0,
@@ -893,13 +893,13 @@ function emitAcceptedStep(tab: Tab, result: string): void {
 /** Build the $plan_restored hydrate event from the repository's active plan — null
  *  when no plan is in flight (a finished/cancelled plan remains history only). */
 export function restorePlanForTab(
-  tab: { currentSession: string },
+  tab: { rootDir: string },
   hasPriorMessages: boolean,
 ): PlanRestoredEvent | null {
-  if (!tab.currentSession || !hasPriorMessages) return null;
-  let active: SessionPlan | null;
+  if (!tab.rootDir || !hasPriorMessages) return null;
+  let active: PlanRecord | null;
   try {
-    active = sessionPlanRepository(tab.currentSession).active();
+    active = planRepository(tab.rootDir).active();
   } catch (err) {
     // A plan read must never break session restore — treat it as "no active plan".
     process.stderr.write(`reasonix: active plan read failed — ${messageOf(err)}\n`);
@@ -921,7 +921,7 @@ export function restorePlanForTab(
  *  has past plans but none is in flight. The repository is the single source. */
 function emitRestoredPlan(tab: Tab, hasPriorMessages: boolean): void {
   emitPlanHistory(tab);
-  if (!hasPriorMessages || !tab.currentSession) return;
+  if (!hasPriorMessages || !tab.rootDir) return;
   const event = restorePlanForTab(tab, true);
   if (event) {
     emit(event, tab.id);
@@ -929,7 +929,7 @@ function emitRestoredPlan(tab: Tab, hasPriorMessages: boolean): void {
   }
   let hasHistory = false;
   try {
-    hasHistory = sessionPlanRepository(tab.currentSession).list().length > 0;
+    hasHistory = planRepository(tab.rootDir).list().length > 0;
   } catch (err) {
     process.stderr.write(`reasonix: plan history read failed — ${messageOf(err)}\n`);
   }
@@ -939,12 +939,12 @@ function emitRestoredPlan(tab: Tab, hasPriorMessages: boolean): void {
 }
 
 function emitPlanHistory(tab: Tab): void {
-  if (!tab.currentSession) return;
+  if (!tab.rootDir) return;
   // A corrupt or unreadable history.json must not abort session load — degrade
   // to an empty projection rather than failing the whole tab restore.
   let items: import("@reasonix/core-utils").PlanHistoryItem[];
   try {
-    items = sessionPlanRepository(tab.currentSession).list();
+    items = planRepository(tab.rootDir).list();
   } catch (err) {
     process.stderr.write(`reasonix: plan history read failed — ${messageOf(err)}\n`);
     items = [];
@@ -6427,8 +6427,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   }
 
   function cancelPendingGates(tab: Tab): void {
-    const hadActivePlan =
-      tab.currentSession.length > 0 && sessionPlanRepository(tab.currentSession).active() !== null;
+    const hadActivePlan = tab.rootDir.length > 0 && planRepository(tab.rootDir).active() !== null;
     const ids = [...tab.pendingGateIds];
     tab.pendingGateIds.clear();
     for (const id of ids) {
@@ -8796,7 +8795,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           {
             type: "$plan_detail",
             sessionName: tab.currentSession,
-            plan: sessionPlanRepository(tab.currentSession).open(msg.planId),
+            plan: planRepository(tab.rootDir).open(msg.planId),
           },
           tab.id,
         );
@@ -8807,6 +8806,21 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           { type: "$error", message: `plan_detail_get failed: ${(err as Error).message}` },
           tab.id,
         );
+      }
+      return;
+    }
+    if (msg.cmd === "plan_remove") {
+      try {
+        const repository = planRepository(tab.rootDir);
+        const wasActive = repository.active()?.id === msg.planId;
+        repository.remove(msg.planId);
+        emitPlanHistory(tab);
+        // A removed active plan must stop driving the rail and the loop's plan context.
+        if (wasActive) emit({ type: "$plan_cleared" }, tab.id);
+      } catch (err) {
+        // A stale/unknown plan id or a missing workspace must not throw out of the
+        // stdin line handler — surface it as an error event instead.
+        emit({ type: "$error", message: `plan_remove failed: ${(err as Error).message}` }, tab.id);
       }
       return;
     }

@@ -857,6 +857,8 @@ export const en = {
     planHistoryTitle: "Plan history",
     planUntitled: "Untitled plan",
     planDetailsLoading: "Loading plan details...",
+    planRemove: "Remove plan",
+    planRemoveConfirm: "Remove this plan permanently? This cannot be undone.",
     rawTab: "Raw",
     rawTitle: "Raw context",
     rawHelp:

@@ -23,6 +23,12 @@ export function sessionsRootDir(): string {
   return join(reasonixHome(), "sessions");
 }
 
+/** Root of workspace-scoped state: one folder per project workspace under
+ *  `~/.reasonix/workspaces/`, keyed by the workspace's absolute path. */
+export function workspacesRootDir(): string {
+  return join(reasonixHome(), "workspaces");
+}
+
 /** Historical name for the sessions root — kept because every caller (session.ts,
  *  the plan repository, tests) already imports it by this name. */
 export function sessionsDir(): string {

@@ -67,6 +67,7 @@ export {
   sessionPlanPath,
   sessionPlansDir,
   sessionsDir,
+  workspacesRootDir,
 } from "./session-layout.js";
 
 /** Sidecar suffixes from the pre-folder flat layout — consumed by the migration, never written anymore. */

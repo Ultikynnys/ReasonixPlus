@@ -1,4 +1,4 @@
-/** Defensive arg sanitizers shared by plan-core (tool args) and session-plans
+/** Defensive arg sanitizers shared by plan-core (tool args) and plans
  *  (persisted files + legacy migration). Pure — no registry / pause-gate deps. */
 
 import type { PlanStep, PlanStepRisk, StepEvidence } from "./plan-types.js";

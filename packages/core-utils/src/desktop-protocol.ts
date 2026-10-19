@@ -1658,6 +1658,9 @@ export type OutgoingCommand = { tabId?: string } & (
   /** Request the full request context as editable plaintext ($context_raw reply). */
   | { cmd: "plan_history_get" }
   | { cmd: "plan_detail_get"; planId: string }
+  /** Delete a plan for good, whatever its status. Replies with a fresh $plan_history
+   *  (and $plan_cleared when the removed plan was the active one). */
+  | { cmd: "plan_remove"; planId: string }
   | { cmd: "context_raw_get" }
   /** Replace the live context (system prompt + messages) from edited plaintext.
    *  Refused while a turn is in flight; re-healed server-side before applying. */

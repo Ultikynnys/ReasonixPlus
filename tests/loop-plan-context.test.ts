@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { SessionPlanRepository } from "../src/code/session-plans.js";
+import { PlanRepository } from "../src/code/plans.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { ImmutablePrefix } from "../src/memory/runtime.js";
 import type { ChatMessage } from "../src/types.js";
@@ -19,12 +19,15 @@ afterEach(() => {
   [process.env.HOME, process.env.USERPROFILE] = previous;
   rmSync(home, { recursive: true, force: true });
 });
-function makeLoop(session: string) {
+function makeLoop(workspace: string) {
   return new CacheFirstLoop({
     client: makeFakeClient([]).client,
     prefix: new ImmutablePrefix({ system: "System" }),
     model: "deepseek-chat",
-    session,
+    session: workspace,
+    // The plan store is workspace-scoped; point the loop at the same workspace
+    // the test repository is created for.
+    hookCwd: workspace,
     stream: false,
   });
 }
@@ -32,7 +35,7 @@ function request(loop: CacheFirstLoop) {
   return (loop as unknown as { buildMessages(): ChatMessage[] }).buildMessages();
 }
 it("rebuilds exact active-plan obligations after a log rewrite and harness recreation", () => {
-  const repo = new SessionPlanRepository("active");
+  const repo = new PlanRepository("active");
   const plan = repo.propose("Full body", [
     { id: "one", title: "First", action: "Do first" },
     { id: "two", title: "Second", action: "Do second" },

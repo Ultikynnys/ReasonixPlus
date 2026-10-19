@@ -2292,7 +2292,8 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border-radius: 2px;
   background: var(--border-strong);
   pointer-events: auto;
-  transition: background 200ms, width 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* `top` eases so a settled re-projection glides instead of snapping. */
+  transition: background 200ms, width 400ms cubic-bezier(0.34, 1.56, 0.64, 1), top 180ms ease-out;
 }
 /* Invisible hit-area pad: the visible dot is only 12x3px, so widen the hover
    and click target without enlarging the mark itself. */
@@ -3446,6 +3447,19 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .ctx-plan-select option {
   background: var(--bg-2);
   color: var(--fg);
+}
+.ctx-plan-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+.ctx-plan-picker .ctx-plan-select {
+  flex: 1;
+  margin: 0;
+}
+.ctx-plan-picker .mini-btn:hover {
+  color: var(--danger);
 }
 .ctx-plan-list {
   list-style: none;
