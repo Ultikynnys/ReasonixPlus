@@ -1,4 +1,4 @@
-import { claimRefusalMessage, claimingSession } from "../code/plan-claim.js";
+import { type PlanClaim, claimRefusalMessage, claimingSession } from "../code/plan-claim.js";
 import { type PlanRecord, type PlanRepository, planRepository } from "../code/plans.js";
 import { pauseGate } from "../core/pause-gate.js";
 import type { ToolCallContext, ToolRegistry } from "../tools.js";

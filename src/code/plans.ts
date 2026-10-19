@@ -159,7 +159,7 @@ function validate(value: unknown): History {
   const activeOwners = new Set<string>();
   for (const plan of history.plans) {
     if (plan.status !== "active") continue;
-    const owner = plan.claim?.session ?? "";
+    const owner = ownerKey(plan);
     if (activeOwners.has(owner))
       throw new Error("Multiple active plans for one session in one workspace");
     activeOwners.add(owner);
@@ -274,7 +274,7 @@ function reconcileActive(plans: PlanRecord[]): void {
 
 /** The plan `session` owns and is still working, newest first. */
 function ownerActive(history: History, session: string): PlanRecord | undefined {
-  return history.plans.findLast((p) => p.status === "active" && p.claim?.session === session);
+  return history.plans.findLast((p) => p.status === "active" && ownerKey(p) === session);
 }
 
 export class PlanRepository {
@@ -367,9 +367,10 @@ export class PlanRepository {
     return structuredClone(plan);
   }
 
-  /** The newest active plan in the workspace whatever its owner — display and history
-   *  only. Never use this to decide what a session works: that is `activeFor`. */
-  active(): PlanRecord | null {
+  /** The newest active plan in the workspace whatever its owner. Display and history
+   *  only — it cannot say whose plan it is, so `activeFor(session)` is the only correct
+   *  way to decide what a session works. */
+  newestActivePlan(): PlanRecord | null {
     const plan = this.load().plans.findLast((p) => p.status === "active");
     return plan ? structuredClone(plan) : null;
   }
