@@ -4,8 +4,8 @@
 import type { EditMode } from "../config.js";
 import type { PauseRequest } from "./pause-gate.js";
 
-/** never-ask plan/choice gates wait this long before auto-selecting the first option. */
-export const NEVER_ASK_PLAN_COUNTDOWN_MS = 30_000;
+/** Every never-ask picker waits this long before selecting its first option. */
+export const NEVER_ASK_PICKER_COUNTDOWN_MS = 30_000;
 
 /** Mirrors shell.ts's allowAll bypass: only read-only still pauses on checkpoints. */
 export function shouldAutoResolveCheckpoint(editMode: EditMode): boolean {
@@ -22,8 +22,55 @@ function forcedByAskRule(req: PauseRequest): boolean {
 }
 
 export interface PausePolicyOptions {
+  /** Set false to make ask_choice wait for a manual pick. On by default, so every
+   *  never-ask picker (choice, plan, revision) auto-advances the same way. */
   enableChoiceTimer?: boolean;
 }
+
+/** Surface the picker, then select its first option when the window elapses: a
+ *  watching user keeps the override, an unattended run never strands the loop. */
+function pickerCountdown(verdict: unknown): AutoResolveOutcome {
+  return { kind: "countdown", verdict, ms: NEVER_ASK_PICKER_COUNTDOWN_MS };
+}
+
+function instant(verdict: unknown): AutoResolveOutcome {
+  return { kind: "instant", verdict };
+}
+
+/** The option a choice gate falls back to, matching the card's top button. */
+function firstOptionId(req: PauseRequest): string | null {
+  const payload = req.payload as { options?: unknown[] } | undefined;
+  const first = Array.isArray(payload?.options) ? payload.options[0] : undefined;
+  const id = first && typeof first === "object" ? (first as { id?: unknown }).id : undefined;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+type NeverAskRule = (
+  req: PauseRequest,
+  opts: PausePolicyOptions | undefined,
+) => AutoResolveOutcome | null;
+
+/** One entry per pause kind, exhaustive by type: a new gate cannot compile without
+ *  stating how Never Ask resolves it, which is the drift guard this file exists for. */
+const NEVER_ASK_RULES: Record<PauseRequest["kind"], NeverAskRule> = {
+  // A rule the user marked "ask" outranks never-ask, so those gates still surface.
+  run_command: (req) => (forcedByAskRule(req) ? null : instant({ type: "run_once" })),
+  run_background: (req) => (forcedByAskRule(req) ? null : instant({ type: "run_once" })),
+  path_access: (req) => (forcedByAskRule(req) ? null : instant({ type: "run_once" })),
+  // Follow-Rules-only gate: gateWrite returns before asking in any other mode.
+  edit: () => null,
+  // Sending mail is irreversible, so it is the one gate never-ask still asks about.
+  outlook_send: () => null,
+  plan_checkpoint: () => instant({ type: "continue" }),
+  plan_proposed: () => pickerCountdown({ type: "approve" }),
+  plan_revision: () => pickerCountdown({ type: "accepted" }),
+  choice: (req, opts) => {
+    if (opts?.enableChoiceTimer === false) return null;
+    const id = firstOptionId(req);
+    // Hang-proof fallback: a choice with no well-formed option cannot be picked.
+    return id ? pickerCountdown({ type: "pick", optionId: id }) : instant({ type: "cancel" });
+  },
+};
 
 /** null = surface to user indefinitely; instant = resolve gate immediately;
  *  countdown = surface the picker, and the UI shows a countdown and resolves with
@@ -33,59 +80,13 @@ export function autoResolveVerdict(
   editMode: EditMode,
   opts?: PausePolicyOptions,
 ): AutoResolveOutcome | null {
+  // Follow Rules also auto-continues checkpoints, so this precedes the mode gate.
   if (req.kind === "plan_checkpoint" && shouldAutoResolveCheckpoint(editMode)) {
-    return { kind: "instant", verdict: { type: "continue" } };
+    return instant({ type: "continue" });
   }
-  // never-ask mirrors shell.ts's allowAll bypass: outside-sandbox reads/writes
-  // pass through too. Stays "run_once" rather than "always_allow" so the session
-  // doesn't pollute the on-disk allowlist with every transient path it touched.
-  if (req.kind === "path_access" && editMode === "never-ask" && !forcedByAskRule(req)) {
-    return { kind: "instant", verdict: { type: "run_once" } };
-  }
-  // Shell commands in never-ask: shell.ts's `allowAll` callback should already
-  // have skipped gate.ask for these, but that closure reads on-disk config via
-  // `loadEditMode()` while a runtime-only never-ask source doesn't write to
-  // config. Without this second layer those paths surface a confirmation prompt
-  // even though the user chose never-ask. `run_once` matches shell.ts's
-  // behavior: don't pollute the persistent allowlist with every transient command.
-  if (
-    (req.kind === "run_command" || req.kind === "run_background") &&
-    editMode === "never-ask" &&
-    !forcedByAskRule(req)
-  ) {
-    return { kind: "instant", verdict: { type: "run_once" } };
-  }
-  // never-ask: plan_proposed. Instead of approving instantly, surface the
-  // picker with a countdown so a watching user can still cancel/refine; the first
-  // option (approve) is auto-selected when the window elapses.
-  if (req.kind === "plan_proposed" && editMode === "never-ask") {
-    return { kind: "countdown", verdict: { type: "approve" }, ms: NEVER_ASK_PLAN_COUNTDOWN_MS };
-  }
-  // never-ask: plan_revision. Without this the rewrite gate surfaces and
-  // stalls forever (nobody is watching in headless). Same countdown semantics:
-  // the first option (accept rewrite) is auto-selected after the window.
-  if (req.kind === "plan_revision" && editMode === "never-ask") {
-    return { kind: "countdown", verdict: { type: "accepted" }, ms: NEVER_ASK_PLAN_COUNTDOWN_MS };
-  }
-  // never-ask: surface ask_choice with the same manual override window as plan
-  // gates, then auto-pick the leading branch so unattended runs cannot strand the
-  // loop. Cancel malformed choices immediately as a hang-proof fallback; choice.ts
-  // already sanitizes options before gating.
-  if (req.kind === "choice" && editMode === "never-ask") {
-    if (!opts?.enableChoiceTimer) {
-      return null;
-    }
-    const payload = req.payload as { options?: unknown[] };
-    const first = Array.isArray(payload.options) ? payload.options[0] : undefined;
-    const id = first && typeof first === "object" ? (first as { id?: unknown }).id : undefined;
-    if (typeof id === "string" && id.length > 0) {
-      return {
-        kind: "countdown",
-        verdict: { type: "pick", optionId: id },
-        ms: NEVER_ASK_PLAN_COUNTDOWN_MS,
-      };
-    }
-    return { kind: "instant", verdict: { type: "cancel" } };
-  }
-  return null;
+  if (editMode !== "never-ask") return null;
+  // The record is exhaustive at compile time; the runtime guard covers a caller
+  // outside the typed surface, where a missing rule must surface rather than throw.
+  const rule: NeverAskRule | undefined = NEVER_ASK_RULES[req.kind];
+  return rule ? rule(req, opts) : null;
 }

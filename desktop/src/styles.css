@@ -2826,15 +2826,22 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border-top: 1px solid var(--border);
   margin: 20px 0;
 }
-.msg-text table,
-.markdown table {
-  width: 100%;
-  border-collapse: collapse;
+/* Chat tables are owned by the wrapper Markdown.tsx emits. It stays inside the
+   text column (a row's paint containment and a card's rounded overflow:hidden
+   clip any bleed), and a table wider than the column scrolls inside it. */
+.markdown-table-wrap {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
   margin: 14px 0;
+}
+.markdown-table-wrap > table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
   font-size: 13px;
 }
-.msg-text th,
-.markdown th {
+.markdown-table-wrap th {
   text-align: left;
   font-weight: 600;
   color: var(--fg-2);
@@ -2845,31 +2852,17 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.msg-text td,
-.markdown td {
+.markdown-table-wrap td {
   padding: 7px 12px;
   border: 1px solid var(--border);
   color: var(--fg);
   vertical-align: top;
 }
-.msg-text tbody tr:nth-child(even),
-.markdown tbody tr:nth-child(even) {
+.markdown-table-wrap tbody tr:nth-child(even) {
   background: var(--card);
 }
-.msg-text tbody tr:hover,
-.markdown tbody tr:hover {
+.markdown-table-wrap tbody tr:hover {
   background: var(--card-hover);
-}
-.markdown-table-wrap {
-  width: calc(100% + 32px);
-  max-width: calc(100% + 32px);
-  overflow-x: auto;
-  margin: 14px -16px;
-}
-.markdown-table-wrap > table {
-  width: max-content;
-  min-width: 100%;
-  margin: 0;
 }
 
 .msg-actions {
@@ -3232,9 +3225,12 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 
 .card-head {
+  --head-icon: 20px;
+  --head-gap: 9px;
   display: flex;
-  align-items: center;
-  gap: 9px;
+  flex-direction: column;
+  align-items: stretch;
+  row-gap: 3px;
   padding: 10px 14px;
   font-family: inherit;
   font-size: 13.5px;
@@ -3243,9 +3239,16 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   user-select: none;
   background: var(--card);
 }
+/* The title line; a `.sub` below it indents under `.kind` via `--head-icon`. */
+.card-head-top {
+  display: flex;
+  align-items: center;
+  gap: var(--head-gap);
+  min-width: 0;
+}
 .card-head .ico {
-  width: 20px;
-  height: 20px;
+  width: var(--head-icon);
+  height: var(--head-icon);
   border-radius: 6px;
   display: inline-flex;
   align-items: center;
@@ -3271,16 +3274,23 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Headings that carry agent prose (the whole ask_choice question): wrap to as
-   many lines as it needs, and top-align the row so the icon stays beside the
-   first line instead of floating in the middle of a long paragraph. */
-.card-head[data-wrap="true"] {
+/* Agent prose in a head runs onto as many lines as it needs: the ask_choice
+   question in the name slot, a plan summary in `.sub`. */
+.card-head[data-wrap="true"] .card-head-top {
   align-items: flex-start;
 }
-.card-head[data-wrap="true"] .name {
+.card-head[data-wrap="true"] .name,
+.card-head .sub {
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.45;
+}
+/* Its own row under the title, so long prose never squeezes the title away. */
+.card-head .sub {
+  padding-left: calc(var(--head-icon) + var(--head-gap));
+  min-width: 0;
+  color: var(--fg-2);
+  font-size: 13px;
 }
 .card-head .grow {
   flex: 1;
@@ -3292,7 +3302,10 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   align-items: center;
   color: var(--muted);
   font-size: 12px;
-  flex-shrink: 0;
+  /* Shrinkable: a long chip (a command line, a path) trims itself instead of
+     shoving the title and the chevron off the card. */
+  min-width: 0;
+  overflow: hidden;
   white-space: nowrap;
 }
 .card-head .chev {
@@ -3311,13 +3324,12 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 
 /* Compact header — thinking / tool-call process cards stay visually quiet. */
 .card.is-compact .card-head {
+  --head-icon: 16px;
+  --head-gap: 7px;
   padding: 5px 12px;
-  gap: 7px;
   font-size: 12px;
 }
 .card.is-compact .card-head .ico {
-  width: 16px;
-  height: 16px;
   border-radius: 5px;
 }
 .card.is-compact .card-head .name {
@@ -4974,18 +4986,6 @@ html[data-platform="macos"] .startup-loading-overlay {
   font-size: 14px;
   color: var(--muted);
   border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.popup .ph .tok {
-  color: var(--accent);
-  background: var(--accent-soft);
-  padding: 1px 6px;
-  border-radius: 4px;
-}
-.popup .ph .grow {
-  flex: 1;
 }
 .popup-list {
   overflow-y: auto;

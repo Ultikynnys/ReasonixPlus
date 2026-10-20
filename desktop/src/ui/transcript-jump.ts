@@ -10,6 +10,12 @@
  *  lets go on its own. */
 const JUMP_HOLD_MS = 1_000;
 
+/** How often the hold re-measures while it runs. Every measurement forces layout,
+ *  so this is deliberately slower than a frame: a card that mounts or an image that
+ *  decodes moves the target by more than 20 ms of drift can hide, while holding for
+ *  a whole second otherwise cost sixty layouts on a long transcript. */
+const JUMP_ALIGN_INTERVAL_MS = 50;
+
 /** How far the target may sit from the top before the hold re-pins it: less than
  *  this is sub-pixel layout noise, more is the target having moved. */
 const ALIGN_EPSILON = 1;
@@ -27,6 +33,9 @@ export interface JumpTarget {
   turn: number;
   /** `call:<id>` for a plan/choice card, `notice:<id>` for a compaction card. */
   anchor?: string;
+  /** The same card under its other id: a plan gate names the tool call the way the
+   *  loop does, while the live transcript names it the way the wire does. */
+  anchorAlias?: string;
 }
 
 /** Escape for a quoted attribute value: only `"` and `\` need it. */
@@ -61,19 +70,36 @@ function hasLayout(el: HTMLElement): boolean {
   return rect.width > 0 || rect.height > 0;
 }
 
-/** Ask the collapsible cards to open the one carrying `anchor` (and to release
- *  any card an earlier jump forced open). The state change lands on React's next
- *  commit, which the hold below re-pins after. */
-export function requestAnchorExpansion(anchor: string | null): void {
-  document.dispatchEvent(new CustomEvent(EXPAND_EVENT, { detail: anchor }));
+/** Ask the collapsible cards to open the one carrying any of `anchors` (and to
+ *  release any card an earlier jump forced open). All of a record's ids go in one
+ *  request: a card answers to exactly one of them, and which one is not known until
+ *  it is mounted. The state change lands on React's next commit, which the hold
+ *  below re-pins after. */
+export function requestAnchorExpansion(anchors: readonly string[]): void {
+  document.dispatchEvent(new CustomEvent(EXPAND_EVENT, { detail: anchors }));
+}
+
+/** The ids a target's card may be addressed by, most specific first. */
+function anchorIds(target: JumpTarget): string[] {
+  return [target.anchor, target.anchorAlias].filter((id): id is string => Boolean(id));
+}
+
+/** The laid-out card a record names, under whichever of its ids this transcript
+ *  uses: `call:call_…` in a reloaded one, `call:tc-…` in a live one. */
+function findAnchoredCard(threadEl: HTMLElement, target: JumpTarget): HTMLElement | null {
+  for (const id of anchorIds(target)) {
+    const anchored = findAnchorElement(threadEl, id);
+    if (anchored && hasLayout(anchored)) return anchored;
+  }
+  return null;
 }
 
 /** What a target points at right now: the anchored card once it is laid out, else
  *  its turn's prompt bubble. Re-asked on every frame of a hold, because the card a
  *  record names can be missing when the jump starts and appear a commit later. */
 function findTarget(threadEl: HTMLElement, target: JumpTarget): HTMLElement | null {
-  const anchored = target.anchor ? findAnchorElement(threadEl, target.anchor) : null;
-  if (anchored && hasLayout(anchored)) return anchored;
+  const anchored = findAnchoredCard(threadEl, target);
+  if (anchored) return anchored;
   return Number.isFinite(target.turn) && target.turn > 0
     ? findTurnElement(threadEl, target.turn)
     : null;
@@ -127,6 +153,7 @@ function holdOnTarget(threadEl: HTMLElement, target: JumpTarget): void {
   const deadline = performance.now() + JUMP_HOLD_MS;
   let stopped = false;
   let frame = 0;
+  let nextCheck = 0;
 
   const stop = () => {
     if (stopped) return;
@@ -147,10 +174,15 @@ function holdOnTarget(threadEl: HTMLElement, target: JumpTarget): void {
       stop();
       return;
     }
-    const element = findTarget(threadEl, target);
-    if (element) {
-      const desired = landingScrollTop(threadEl, element);
-      if (Math.abs(desired - threadEl.scrollTop) >= ALIGN_EPSILON) threadEl.scrollTop = desired;
+    // Re-measure on the throttle interval, not every frame: each measurement reads
+    // layout, and the target only moves when something mounts, opens or decodes.
+    if (now >= nextCheck) {
+      nextCheck = now + JUMP_ALIGN_INTERVAL_MS;
+      const element = findTarget(threadEl, target);
+      if (element) {
+        const desired = landingScrollTop(threadEl, element);
+        if (Math.abs(desired - threadEl.scrollTop) >= ALIGN_EPSILON) threadEl.scrollTop = desired;
+      }
     }
     frame = requestAnimationFrame(tick);
   };
@@ -177,7 +209,7 @@ export function jumpToAnchor(threadEl: HTMLElement | null, target: JumpTarget): 
   if (!element) return false;
   // Not conditioned on the card looking collapsed: a jump is the reader asking to
   // see the event, and `useJumpOpen` ignores the ask for a card already open.
-  requestAnchorExpansion(target.anchor ?? null);
+  requestAnchorExpansion(anchorIds(target));
   threadEl.scrollTo({ top: landingScrollTop(threadEl, element), behavior: "instant" });
   holdOnTarget(threadEl, target);
   return true;

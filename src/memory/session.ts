@@ -29,7 +29,7 @@ import { toPosixPath } from "@reasonix/core-utils/path-utils";
 import { type ReasoningEffort, isReasoningEffort } from "../config.js";
 import { atomicWriteSync, tmpSiblingPath } from "../core/atomic-write.js";
 import { readJsonFileSilently, readJsonFileSilentlyAsync } from "../core/json-file.js";
-import { appendJsonlLine, parseJsonl } from "../core/jsonl.js";
+import { appendJsonlLine, countJsonlLines, parseJsonl } from "../core/jsonl.js";
 import {
   SessionDirectoryIndex,
   type SessionDirectoryRecord,
@@ -132,6 +132,11 @@ export interface SessionMeta {
   createdAt?: number;
   totalCostUsd?: number;
   turnCount?: number;
+  /** Byte length of messages.jsonl when this meta was last written, with the
+   *  record count for exactly those bytes. The directory index trusts the pair to
+   *  list a session without reading its transcript; a mismatch counts as usual. */
+  messagesBytes?: number;
+  messageCount?: number;
   /** Highest turn ordinal ever issued; the loop floors its resume baseline on
    *  this so a rebuilt runtime can't reissue a number the desktop rendered. */
   lastTurn?: number;
@@ -387,6 +392,29 @@ export function stampTranscriptMessage(message: ChatMessage): ChatMessage {
   return { ...message, ts: Date.now() };
 }
 
+/** The transcript's (bytes, records) pair, measured from disk: one stat, plus a
+ *  single line count for a session written before the pair existed. Undefined when
+ *  the file cannot be measured, which only means the next listing counts it. */
+function transcriptShape(
+  name: string,
+): { messagesBytes: number; messageCount: number } | undefined {
+  try {
+    const path = sessionPath(name);
+    const bytes = statSync(path).size;
+    const meta = loadSessionMeta(name);
+    const recorded =
+      typeof meta.messagesBytes === "number" && typeof meta.messageCount === "number"
+        ? meta.messageCount
+        : null;
+    return {
+      messagesBytes: bytes,
+      messageCount: recorded === null ? countJsonlLines(path) : recorded + 1,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export function appendSessionMessage(name: string, message: ChatMessage): void {
   const path = sessionPath(name);
   ensureSessionDir(name);
@@ -394,7 +422,8 @@ export function appendSessionMessage(name: string, message: ChatMessage): void {
   // reads the stamp, so it must record when the turn happened, not when it loaded.
   appendJsonlLine(path, stampTranscriptMessage(message));
   chmodPrivate(path);
-  touchSessionUpdatedAt(name);
+  // The size/count pair rides the same meta write, so a cold listing can trust it.
+  touchSessionUpdatedAt(name, transcriptShape(name));
   sessionDirectoryIndex.invalidate();
 }
 
@@ -464,7 +493,8 @@ function isSessionEventRecord(value: unknown): value is SessionEventRecord {
     optionalTextList(v.options) &&
     optionalText(v.body) &&
     optionalTextList(v.steps) &&
-    optionalText(v.anchor)
+    optionalText(v.anchor) &&
+    optionalText(v.anchorAlias)
   );
 }
 
@@ -524,7 +554,10 @@ function creationStampFor(
 const isSessionMeta = (v: unknown): v is SessionMeta => !!v && typeof v === "object";
 
 /** Stamp `meta.updatedAt` on every append so resume-picking has an explicit, copy-safe "last activity" timestamp (falls back to mtime on failure). */
-function touchSessionUpdatedAt(name: string): void {
+function touchSessionUpdatedAt(
+  name: string,
+  shape?: { messagesBytes: number; messageCount: number },
+): void {
   try {
     const p = sessionMetaPath(name);
     const cur = readJsonFileSilently(p, isSessionMeta);
@@ -534,6 +567,7 @@ function touchSessionUpdatedAt(name: string): void {
       // Write-once: anchored to the name's mint timestamp for legacy
       // sessions, never refreshed afterward.
       createdAt: creationStampFor(cur, name),
+      ...(shape ?? {}),
     };
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, JSON.stringify(next), "utf8");
@@ -743,6 +777,12 @@ const sessionDirectoryIndex = new SessionDirectoryIndex<SessionMeta>(
     summary: meta.summary,
     ...(meta.mcpPending === true ? { mcpPending: true } : {}),
   }),
+  // The (bytes, records) pair every append records, so a cold listing trusts it
+  // instead of reading each transcript just to count its lines.
+  (meta) =>
+    typeof meta.messagesBytes === "number" && typeof meta.messageCount === "number"
+      ? { bytes: meta.messagesBytes, count: meta.messageCount }
+      : null,
 );
 
 /** Projects indexed records into one workspace's session list. Shared by the

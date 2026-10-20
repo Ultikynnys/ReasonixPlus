@@ -269,12 +269,13 @@ describe("desktop — no-session main-area state", () => {
     expect(screen.getAllByText("Creating session…")).toHaveLength(1);
     expect(screen.queryByText("Creating…")).toBeNull();
 
-    // The channel's first snapshot settles the indicator.
+    // The channel's first snapshot settles the indicator. Same epoch as the seed:
+    // one daemon lifetime produced both, and only a restart resets the epoch.
     await feed(
       {
         type: "$sessions",
-        epoch: "e2",
-        revision: 1,
+        epoch: "e1",
+        revision: 2,
         items: [
           { name: "A", messageCount: 2, mtime: new Date(1).toISOString() },
           { name: "B", messageCount: 0, mtime: new Date(2).toISOString() },
@@ -316,8 +317,8 @@ describe("desktop — no-session main-area state", () => {
     await feed(
       {
         type: "$sessions",
-        epoch: "e2",
-        revision: 1,
+        epoch: "e1",
+        revision: 2,
         items: [{ name: "A", messageCount: 2, mtime: new Date(1).toISOString() }],
       },
       "t2",
@@ -329,8 +330,8 @@ describe("desktop — no-session main-area state", () => {
     await feed(
       {
         type: "$sessions",
-        epoch: "e2",
-        revision: 2,
+        epoch: "e1",
+        revision: 3,
         items: [
           { name: "A", messageCount: 2, mtime: new Date(1).toISOString() },
           { name: "B", messageCount: 0, mtime: new Date(2).toISOString() },

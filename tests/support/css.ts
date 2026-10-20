@@ -1,5 +1,5 @@
 // Layout contracts that jsdom cannot check are pinned by asserting on the real
-// stylesheet: read `desktop/src/styles.css` and match one rule's declarations.
+// stylesheet: read `desktop/src/styles.css` and match a rule's declarations.
 // Shared by the MCP / models / composer / card-head layout tests.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -11,11 +11,20 @@ export function sourceFile(relPath: string): string {
 
 export const stylesCss = sourceFile("desktop/src/styles.css");
 
-/** Declarations of the first rule whose selector is exactly `selector`. It must
- *  start its own line, so `.name[data-wrap]` or a longer descendant selector is
- *  never mistaken for `.name`. */
+/** Declarations of the first rule whose selector list holds exactly `selector`. */
 export function cssRule(selector: string, css: string = stylesCss): string {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`^${escaped}\\s*\\{(?<body>[^}]*)\\}`, "m").exec(css);
-  return match?.groups?.body ?? "";
+  return cssRules(selector, css)[0] ?? "";
+}
+
+/** Every rule whose selector list holds exactly `selector`, in source order: an
+ *  element's declarations can be split over a shared block plus its own. */
+export function cssRules(selector: string, css: string = stylesCss): string[] {
+  // Comment text would otherwise be read as part of the next rule's selector.
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const found: string[] = [];
+  for (const rule of bare.matchAll(/^([^{}]+)\{([^}]*)\}/gm)) {
+    const selectors = (rule[1] ?? "").split(",").map((s) => s.trim());
+    if (selectors.includes(selector)) found.push(rule[2] ?? "");
+  }
+  return found;
 }

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { sameSessionListItems, toSessionListItems } from "../src/desktop/session-listing.js";
+import { toSessionListItems } from "../src/desktop/session-listing.js";
 import type { SessionInfo } from "../src/memory/session.js";
 
+// Priming is now subordinate on the wire (`$sessions.primed`), so it never needs a
+// "did the cache match the scan?" comparison: the client ignores a primed payload
+// once a workspace is confirmed. What still matters here is the projection itself.
 function session(name: string, overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
     name,
@@ -22,7 +25,7 @@ function session(name: string, overrides: Partial<SessionInfo> = {}): SessionInf
   };
 }
 
-describe("session list priming", () => {
+describe("session list projection", () => {
   it("projects sessions onto exactly the fields the sidebar renders", () => {
     const [item] = toSessionListItems([session("one")]);
     expect(item).toEqual({
@@ -46,50 +49,23 @@ describe("session list priming", () => {
     ]);
   });
 
-  it("treats a cached list that matches the scan as already on screen", () => {
-    const cached = toSessionListItems([session("one"), session("two")]);
-    const scanned = toSessionListItems([session("one"), session("two")]);
-    expect(sameSessionListItems(cached, scanned)).toBe(true);
-    expect(sameSessionListItems([], [])).toBe(true);
-  });
-
-  it("reports a difference for every field the sidebar can show", () => {
-    const base = toSessionListItems([session("one")]);
-    const differing: Array<[string, SessionInfo]> = [
-      ["name", session("renamed")],
-      ["messageCount", session("one", { messageCount: 3 })],
-      ["mtime", session("one", { mtime: new Date("2026-01-02T03:04:06.000Z") })],
-      [
-        "updatedAt",
-        session("one", {
-          meta: { workspace: "C:\\ws", summary: "Title", updatedAt: 1_700_000_000_001 },
-        }),
-      ],
-      ["createdAt", session("one", { createdAt: 1_600_000_000_001 })],
-      [
-        "summary",
-        session("one", {
-          meta: { workspace: "C:\\ws", summary: "Renamed", updatedAt: 1_700_000_000_000 },
-        }),
-      ],
-      ["workspaceStatus", session("one", { workspaceStatus: "legacy_missing_meta" })],
-    ];
-    for (const [field, changed] of differing) {
-      expect(sameSessionListItems(base, toSessionListItems([changed])), field).toBe(false);
-    }
-  });
-
-  it("treats a dropped, added or reordered row as a change", () => {
-    const two = toSessionListItems([session("one"), session("two")]);
-    expect(sameSessionListItems(two, toSessionListItems([session("one")]))).toBe(false);
-    expect(
-      sameSessionListItems(
-        two,
-        toSessionListItems([session("one"), session("two"), session("three")]),
-      ),
-    ).toBe(false);
-    expect(sameSessionListItems(two, toSessionListItems([session("two"), session("one")]))).toBe(
-      false,
-    );
+  it("carries the meta stamps the sidebar sorts and labels by", () => {
+    const [item] = toSessionListItems([
+      session("one", {
+        createdAt: 1_600_000_000_001,
+        lastActive: 1_700_000_000_009,
+        meta: {
+          workspace: "C:\\ws",
+          summary: "Title",
+          updatedAt: 1_700_000_000_005,
+          createdAt: 1_600_000_000_000,
+        },
+      }),
+    ]);
+    // Creation drives the order, meta.updatedAt the relative label.
+    expect(item?.createdAt).toBe(1_600_000_000_001);
+    expect(item?.updatedAt).toBe(1_700_000_000_005);
+    // `lastActive` is a daemon-side record field and never crosses the wire.
+    expect(item === undefined || "lastActive" in item).toBe(false);
   });
 });

@@ -18,6 +18,7 @@
     "process:allow-restart",
     "dialog:allow-open",
     "dialog:allow-save",
+    "dialog:allow-confirm",
     "notification:default",
     {
       "identifier": "opener:allow-open-url",

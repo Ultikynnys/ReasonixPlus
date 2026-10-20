@@ -360,7 +360,7 @@ describe("QuestionTimerRow — toggle stays in sync with the backend", () => {
     expect(onTimerToggle).toHaveBeenLastCalledWith(true);
   });
 
-  it("exposes the same toggle on a plan card, and hides it when there is no countdown", () => {
+  it("exposes the same toggle on a plan card, and renders no timer row when there is no countdown", () => {
     const onTimerToggle = vi.fn();
     const props = {
       onApprove: () => {},
@@ -382,7 +382,8 @@ describe("QuestionTimerRow — toggle stays in sync with the backend", () => {
 
     rerender(<PlanApprovalCard id={2} plan="Do the thing" {...props} />);
     expect(screen.queryByRole("button", { name: "Disable timer" })).toBeNull();
-    expect(screen.getByText("Question timer disabled")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Enable timer" })).toBeNull();
+    expect(screen.queryByText("Question timer disabled")).toBeNull();
   });
 });
 
@@ -395,6 +396,32 @@ describe("user-input cards render agent markdown", () => {
     );
     expect(container.querySelector(".markdown strong")?.textContent).toBe("Bold");
     expect(container.querySelectorAll(".markdown li")).toHaveLength(2);
+  });
+
+  it("puts the plan summary on the header's sub row, not in the title line", () => {
+    const summary = "Bound the frontend at 10 workspaces x 100 sessions x 2000 messages";
+    const { container } = render(
+      <PlanApprovalCard id={1} plan="Body" summary={summary} onApprove={noop} />,
+    );
+    expect(container.querySelector(".card-head .name")?.textContent).toBe("Start plan");
+    expect(container.querySelector(".card-head .sub")?.textContent).toBe(summary);
+    expect(container.querySelector(".card-head .meta")).toBeNull();
+  });
+
+  it("keeps a step count on the title row when there is no summary", () => {
+    const { container } = render(
+      <PlanApprovalCard
+        id={1}
+        plan="Body"
+        steps={[
+          { id: "s1", title: "one", action: "edit" },
+          { id: "s2", title: "two", action: "edit" },
+        ]}
+        onApprove={noop}
+      />,
+    );
+    expect(container.querySelector(".card-head .meta")?.textContent).toBe("2 step(s)");
+    expect(container.querySelector(".card-head .sub")).toBeNull();
   });
 
   it("formats the choice question as inline markdown without a block wrapper", () => {

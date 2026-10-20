@@ -167,6 +167,27 @@ describe("jumpToAnchor — anchored cards", () => {
     expect(geom.scrollTop).toBe(900);
   });
 
+  it("lands on the card that answers to the record's other id", () => {
+    // A plan row carries two ids: the gate's (what a reloaded transcript renders)
+    // and the live wire's `tc-…`. A live session only has the second one mounted.
+    const { el, place, placeCard, geom } = fakeThread();
+    place(2, 600);
+    placeCard("call:tc-7", 900);
+    expect(
+      jumpToAnchor(el, { turn: 2, anchor: "call:call-loop-7", anchorAlias: "call:tc-7" }),
+    ).toBe(true);
+    expect(geom.scrollTop).toBe(900);
+  });
+
+  it("prefers the primary id when the record's ids both resolve", () => {
+    const { el, place, placeCard, geom } = fakeThread();
+    place(2, 600);
+    placeCard("call:call-loop-7", 900);
+    placeCard("call:tc-7", 1_200);
+    jumpToAnchor(el, { turn: 2, anchor: "call:call-loop-7", anchorAlias: "call:tc-7" });
+    expect(geom.scrollTop).toBe(900);
+  });
+
   it("falls back to the turn while the anchored card is gone", () => {
     const { el, place, placeCard, geom } = fakeThread();
     place(2, 600);
@@ -202,8 +223,9 @@ describe("jumpToAnchor — anchored cards", () => {
 
 describe("jumpToAnchor — holding the target", () => {
   const requests = () => {
-    const seen: (string | null)[] = [];
-    const onExpand = (event: Event) => seen.push((event as CustomEvent<string | null>).detail);
+    const seen: (readonly string[])[] = [];
+    const onExpand = (event: Event) =>
+      seen.push((event as CustomEvent<readonly string[]>).detail ?? []);
     document.addEventListener(EXPAND_EVENT, onExpand);
     return { seen, done: () => document.removeEventListener(EXPAND_EVENT, onExpand) };
   };
@@ -217,7 +239,22 @@ describe("jumpToAnchor — holding the target", () => {
     jumpToAnchor(el, { turn: 1, anchor: "call:c1" });
     jumpToAnchor(el, { turn: 1 });
 
-    expect(expand.seen).toEqual(["call:c1", null]);
+    expect(expand.seen).toEqual([["call:c1"], []]);
+    expand.done();
+  });
+
+  it("offers every id a record carries, so the card that mounts answers one of them", () => {
+    // The card this transcript renders answers to the alias, and a card that mounts
+    // a commit later answers to whichever id its own segment minted: asking for both
+    // at once covers either without guessing.
+    const { el, place, placeCard } = mountedThread();
+    place(2, 600);
+    placeCard("call:tc-7", 900);
+    const expand = requests();
+
+    jumpToAnchor(el, { turn: 2, anchor: "call:call-loop-7", anchorAlias: "call:tc-7" });
+
+    expect(expand.seen).toEqual([["call:call-loop-7", "call:tc-7"]]);
     expand.done();
   });
 

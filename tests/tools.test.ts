@@ -43,10 +43,23 @@ describe("ToolRegistry", () => {
     ]);
   });
 
-  it("returns structured error for unknown tool", async () => {
+  it("returns structured error for unknown tool, naming the nearest real ones", async () => {
     const reg = new ToolRegistry();
-    const out = await reg.dispatch("nope", "{}");
-    expect(JSON.parse(out)).toEqual({ error: "unknown tool: nope" });
+    reg.register({ name: "read_file", description: "read a file", fn: () => "ok" });
+    const out = await reg.dispatch("red_file", "{}");
+    const parsed = JSON.parse(out);
+    expect(parsed.error).toMatch(/unknown tool: red_file/);
+    expect(parsed.error).toMatch(/Did you mean read_file/);
+    expect(parsed.didYouMean).toEqual(["read_file"]);
+    expect(parsed.toolCount).toBe(1);
+  });
+
+  it("omits the suggestion when nothing is close", async () => {
+    const reg = new ToolRegistry();
+    reg.register({ name: "read_file", description: "read a file", fn: () => "ok" });
+    const parsed = JSON.parse(await reg.dispatch("zzzzzzzzzzzz", "{}"));
+    expect(parsed.didYouMean).toEqual([]);
+    expect(parsed.error).not.toMatch(/Did you mean/);
   });
 
   it("handles invalid JSON arguments gracefully", async () => {
@@ -787,5 +800,85 @@ describe("ToolRegistry", () => {
         writeSpy.mockRestore();
       }
     });
+  });
+});
+
+describe("origin-scoped tool names", () => {
+  it("refuses a bridged tool that would shadow a built-in", () => {
+    const reg = new ToolRegistry();
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(
+        reg.tryRegister({ name: "web_search", description: "built-in", fn: () => "built-in" }),
+      ).toBe(true);
+      expect(
+        reg.tryRegister(
+          { name: "web_search", description: "mcp version", fn: () => "mcp" },
+          { origin: "mcp:web" },
+        ),
+      ).toBe(false);
+      expect(reg.get("web_search")?.description).toBe("built-in");
+      const writes = writeSpy.mock.calls.map((c) => String(c[0]));
+      expect(writes.some((w) => w.includes('refused tool "web_search" from mcp:web'))).toBe(true);
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+
+  it("allows same-origin re-registration (JEV re-enable, MCP reconnect)", () => {
+    const reg = new ToolRegistry();
+    reg.register({ name: "x", description: "v1", fn: () => "1" }, { origin: "mcp:a" });
+    expect(
+      reg.tryRegister({ name: "x", description: "v2", fn: () => "2" }, { origin: "mcp:a" }),
+    ).toBe(true);
+    expect(reg.get("x")?.description).toBe("v2");
+  });
+
+  it("reports a collision once, not on every reconnect", () => {
+    const reg = new ToolRegistry();
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      reg.register({ name: "n", description: "builtin", fn: () => "" });
+      const mcpTool = { name: "n", description: "mcp", fn: () => "" };
+      reg.register(mcpTool, { origin: "mcp:s" });
+      reg.register(mcpTool, { origin: "mcp:s" });
+      expect(writeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+});
+
+describe("dotted parameter names", () => {
+  it("skips flattening when a top-level param already contains a dot", async () => {
+    const reg = new ToolRegistry();
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      reg.register({
+        name: "dotted",
+        description: "has a dotted parameter name",
+        parameters: {
+          type: "object",
+          properties: {
+            "a.b": { type: "string" },
+            outer: {
+              type: "object",
+              properties: {
+                mid: { type: "object", properties: { deep: { type: "string" } } },
+              },
+            },
+          },
+          required: ["a.b"],
+        },
+        fn: (args: Record<string, unknown>) => JSON.stringify(args),
+      });
+      // Deep enough to flatten normally, but the dotted key makes dot-paths ambiguous.
+      expect(reg.wasFlattened("dotted")).toBe(false);
+      expect(JSON.parse(await reg.dispatch("dotted", '{"a.b":"x"}'))).toEqual({ "a.b": "x" });
+      const writes = writeSpy.mock.calls.map((c) => String(c[0]));
+      expect(writes.some((w) => w.includes('not flattening tool "dotted"'))).toBe(true);
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 });

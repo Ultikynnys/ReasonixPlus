@@ -185,6 +185,10 @@ export class SessionDirectoryIndex<M> {
      *  back to `M` when a cache is seeded, so it must keep every field this index's
      *  consumers read. Defaults to persisting meta whole. */
     private readonly persistMeta: (meta: M) => unknown = (meta) => meta,
+    /** Reads the (bytes, records) pair a session recorded when its transcript was
+     *  last written. An exact byte match means nothing was appended since, so the
+     *  listing trusts the record count instead of reading the whole transcript. */
+    private readonly countHint: (meta: M) => { bytes: number; count: number } | null = () => null,
   ) {}
 
   private cacheFilePath(): string | undefined {
@@ -460,6 +464,24 @@ export class SessionDirectoryIndex<M> {
       }
       if (previous && unchanged(previous.identity, fileIdentity)) {
         return metaReused ? previous : { ...previous, meta, metaIdentity: nextMetaIdentity };
+      }
+      // A warm meta records the transcript's size and record count from its last
+      // write. While the byte length still matches exactly, nothing has been
+      // appended since, so the whole-transcript scan a cold listing otherwise pays
+      // per session is skipped; any mismatch counts as usual. `endedWithNewline` is
+      // safe to assert here: every append writes a terminating newline.
+      const hint = this.countHint(meta);
+      if (hint && hint.bytes === fileIdentity.size) {
+        return {
+          name,
+          path,
+          identity: fileIdentity,
+          messageCount: hint.count,
+          endedWithNewline: true,
+          mtime: new Date(Number(fileStats.mtimeMs)),
+          meta,
+          metaIdentity: nextMetaIdentity,
+        };
       }
       const appendOnly =
         previous &&

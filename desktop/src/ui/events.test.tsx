@@ -203,6 +203,26 @@ describe("EventsPanel", () => {
     expect(onJump).toHaveBeenCalledWith({ turn: 1, anchor: "call:p1" });
   });
 
+  it("carries both ids a card answers to, so a live chat can still land on it", () => {
+    const onJump = vi.fn();
+    render(
+      <EventsPanel
+        messages={messages}
+        events={[planEvent({ anchor: "call:call-loop-7", anchorAlias: "call:tc-7" })]}
+        onJump={onJump}
+      />,
+    );
+    const planRow = document.querySelector('.ctx-evt[data-kind="plan"]');
+    fireEvent.click(
+      within(planRow as HTMLElement).getByRole("button", { name: "Jump to this event" }),
+    );
+    expect(onJump).toHaveBeenCalledWith({
+      turn: 1,
+      anchor: "call:call-loop-7",
+      anchorAlias: "call:tc-7",
+    });
+  });
+
   it("keeps an anchored row clickable when it has no turn", () => {
     const onJump = vi.fn();
     render(

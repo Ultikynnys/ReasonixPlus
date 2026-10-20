@@ -63,6 +63,8 @@ interface SpecRecord {
   registeredNames: string[];
   /** ToolSpec snapshots captured AFTER bridge — handed to loop.prefix.addTool on hot-add. */
   registeredSpecs: ToolSpec[];
+  /** Tools the server listed that the bridge refused or deferred (name collision or spec budget). */
+  skipped: Array<{ name: string; reason: string }>;
   /** Fingerprint of the env/headers this bridge was spawned with. A change (e.g.
    *  a rotated extension token) must force a respawn — `specToRaw` omits these,
    *  so a raw-spec diff alone would silently keep a stale bridge. */
@@ -115,6 +117,8 @@ export interface McpRuntime {
   summaries(): McpServerSummary[];
   /** Last bridge failure per spec — drives the "not bridged" reason shown in the dashboard. */
   failures(): McpFailure[];
+  /** Tools a server listed that the bridge refused (name owned by another origin) or deferred (spec budget). */
+  toolSkips(): Array<{ server: string; name: string; reason: string }>;
   /** Call a server tool directly without registering it in the model-facing tool registry. */
   callServerTool(
     serverName: string,
@@ -367,6 +371,7 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
         registeredSpecs,
         runtimeKey: runtimeFingerprint(spec),
         sharedKey,
+        skipped: bridge.skipped,
       });
       insertionOrder.push(raw);
       resolveReady();
@@ -376,6 +381,19 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
         tools: bridge.registeredNames.length,
         ms,
       });
+      // Refusals and deferrals would otherwise be invisible: the dashboard shows "connected".
+      if (bridge.skipped.length > 0) {
+        const preview = bridge.skipped
+          .slice(0, 3)
+          .map((s) => `${s.name} (${s.reason})`)
+          .join("; ");
+        const extra = bridge.skipped.length > 3 ? ` and ${bridge.skipped.length - 3} more` : "";
+        sink({
+          state: "warn",
+          name: label,
+          reason: `${bridge.skipped.length} tool(s) not bridged: ${preview}${extra}`,
+        });
+      }
 
       // Non-critical: inspect + hot-add. Failures here don't un-bridge.
       let report: InspectionReport;
@@ -420,13 +438,21 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
         registeredSpecs,
         runtimeKey: runtimeFingerprint(spec),
         sharedKey,
+        skipped: bridge.skipped,
       });
       // Hot-add: shift the prefix so the live loop sees the new tools
       // on the very next turn. Each addTool is one cache-miss turn.
       if (loop)
         for (const s of registeredSpecs)
           try {
-            loop.prefix.addTool(s);
+            // false (not a throw) means the prefix already holds that name, so the model cannot see this tool.
+            if (!loop.prefix.addTool(s)) {
+              sink({
+                state: "warn",
+                name: label,
+                reason: `prompt prefix already holds a tool named ${s.function.name}, so this bridged tool stays hidden from the model`,
+              });
+            }
           } catch (err) {
             sink({
               state: "warn",
@@ -553,6 +579,15 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
   function failures(): McpFailure[] {
     return [...failureMap.values()];
   }
+  function toolSkips(): Array<{ server: string; name: string; reason: string }> {
+    const out: Array<{ server: string; name: string; reason: string }> = [];
+    for (const record of records.values()) {
+      for (const skip of record.skipped) {
+        out.push({ server: record.summary.label, name: skip.name, reason: skip.reason });
+      }
+    }
+    return out;
+  }
   async function callServerTool(
     serverName: string,
     toolName: string,
@@ -574,6 +609,7 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
     specs,
     summaries,
     failures,
+    toolSkips,
     callServerTool,
     addSpec,
     removeSpec,

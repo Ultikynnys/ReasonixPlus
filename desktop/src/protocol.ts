@@ -104,6 +104,7 @@ import type {
   SessionEmptyEvent,
   SessionEventRecord,
   SessionEventType,
+  SessionHistoryEvent,
   SessionLoadedEvent,
   SessionProviderCost,
   SessionRetractedEvent,
@@ -227,6 +228,7 @@ export type {
   SessionEmptyEvent,
   SessionEventRecord,
   SessionEventType,
+  SessionHistoryEvent,
   SessionLoadedEvent,
   SessionRetractedEvent,
   SessionsEvent,
@@ -290,6 +292,7 @@ export type IncomingEvent = { tabId?: string } & (
   | PlanRequiredEvent
   | SessionsEvent
   | SessionLoadedEvent
+  | SessionHistoryEvent
   | SessionEmptyEvent
   | NeedsSetupEvent
   | SettingsEvent

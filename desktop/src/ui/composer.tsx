@@ -803,7 +803,7 @@ export function Composer({
               </button>
               {openMenu === "model" ? (
                 <MenuPop width={420}>
-                  <MenuHeader tok="M" label={t("composer.switchModel")} />
+                  <MenuHeader label={t("composer.switchModel")} />
                   <ModelList
                     activeModel={modelLabel}
                     onPick={(m) => {
@@ -833,7 +833,7 @@ export function Composer({
               </button>
               {openMenu === "subagent" ? (
                 <MenuPop width={420}>
-                  <MenuHeader tok="S" label={t("composer.switchSubagentModel")} />
+                  <MenuHeader label={t("composer.switchSubagentModel")} />
                   <ModelList
                     activeModel={subagentModelLabel}
                     onPick={(m) => {
@@ -866,7 +866,7 @@ export function Composer({
               </button>
               {openMenu === "effort" && !effortControlDisabled ? (
                 <MenuPop width={320}>
-                  <MenuHeader tok="E" label={t("composer.switchEffort")} />
+                  <MenuHeader label={t("composer.switchEffort")} />
                   <div className="popup-list effort-menu-list">
                     {efforts.map((e) => (
                       <MenuRow
@@ -906,7 +906,7 @@ export function Composer({
               </button>
               {openMenu === "quick" ? (
                 <MenuPop width={320}>
-                  <MenuHeader tok="Q" label={t("composer.quickSendTitle")} />
+                  <MenuHeader label={t("composer.quickSendTitle")} />
                   <div className="popup-list">
                     {quickSendOptions.map((q) => (
                       <MenuRow
@@ -1195,14 +1195,9 @@ function ModelList({
   );
 }
 
-/** Dropdown title row — a token chip + the section label. */
-function MenuHeader({ tok, label }: { tok: string; label: string }) {
-  return (
-    <div className="ph">
-      <span className="tok">{tok}</span>
-      <span>{label}</span>
-    </div>
-  );
+/** Dropdown title row: names the menu above its options. */
+function MenuHeader({ label }: { label: string }) {
+  return <div className="ph">{label}</div>;
 }
 
 /** Shared dropdown row — icon + label + optional description, activated by

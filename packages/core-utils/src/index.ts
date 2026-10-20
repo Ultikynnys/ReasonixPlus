@@ -245,6 +245,7 @@ export type {
   PersistedNotice,
   SessionEventRecord,
   SessionEventType,
+  SessionHistoryEvent,
   SessionLoadedEvent,
   SessionProviderCost,
   SessionRetractedEvent,
@@ -281,6 +282,7 @@ export type {
   OutgoingCommand,
   UserImageAttachment,
   QuickSend,
+  PickerWindow,
   RuleRecord,
   StatusBarToggles,
 } from "./desktop-protocol.js";

@@ -16,28 +16,3 @@ export function toSessionListItems(sessions: readonly SessionInfo[]): SessionLis
     workspaceStatus: session.workspaceStatus,
   }));
 }
-
-/** True when the cache-primed list already carries the authoritative values, so a
- *  second revision would only churn the sidebar. Order counts: the list is sorted. */
-export function sameSessionListItems(
-  a: readonly SessionListItem[],
-  b: readonly SessionListItem[],
-): boolean {
-  if (a.length !== b.length) return false;
-  for (let index = 0; index < a.length; index += 1) {
-    const left = a[index]!;
-    const right = b[index]!;
-    if (
-      left.name !== right.name ||
-      left.messageCount !== right.messageCount ||
-      left.mtime !== right.mtime ||
-      left.updatedAt !== right.updatedAt ||
-      left.createdAt !== right.createdAt ||
-      left.summary !== right.summary ||
-      left.workspaceStatus !== right.workspaceStatus
-    ) {
-      return false;
-    }
-  }
-  return true;
-}

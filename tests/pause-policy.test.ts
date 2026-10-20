@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { PauseGate } from "../src/core/pause-gate.js";
-import { NEVER_ASK_PLAN_COUNTDOWN_MS, autoResolveVerdict } from "../src/core/pause-policy.js";
+import type { PauseRequest } from "../src/core/pause-gate.js";
+import { NEVER_ASK_PICKER_COUNTDOWN_MS, autoResolveVerdict } from "../src/core/pause-policy.js";
 
 // Mirrors the never-ask listener body in src/cli/commands/desktop.ts (the
 // desktop backend's pause-gate bridge).
@@ -28,7 +29,106 @@ function makeListener(
 
 describe("autoResolveVerdict (never-ask mode)", () => {
   it("uses a 30-second manual override window for interactive gates", () => {
-    expect(NEVER_ASK_PLAN_COUNTDOWN_MS).toBe(30_000);
+    expect(NEVER_ASK_PICKER_COUNTDOWN_MS).toBe(30_000);
+  });
+
+  /** One sample per pause kind, so this suite covers every gate instead of only the
+   *  three pickers. Compiler-enforced exhaustiveness lives in NEVER_ASK_RULES (the
+   *  policy), because tests are outside the root tsconfig's include. */
+  const SAMPLES: Record<
+    PauseRequest["kind"],
+    { payload: unknown; behavior: "countdown" | "instant" | "manual" }
+  > = {
+    run_command: { payload: { command: "ls" }, behavior: "instant" },
+    run_background: { payload: { command: "npm dev" }, behavior: "instant" },
+    path_access: {
+      payload: {
+        path: "/tmp/x",
+        intent: "read",
+        toolName: "read_file",
+        sandboxRoot: "/work",
+        allowPrefix: "/tmp",
+      },
+      behavior: "instant",
+    },
+    edit: {
+      payload: {
+        path: "/work/a.ts",
+        toolName: "edit_file",
+        sandboxRoot: "/work",
+        allowPrefix: "/work",
+      },
+      behavior: "manual",
+    },
+    outlook_send: {
+      payload: {
+        toolName: "send-mail",
+        from: "a@b.c",
+        to: [],
+        cc: [],
+        bcc: [],
+        subject: "s",
+        body: "b",
+        attachments: [],
+      },
+      behavior: "manual",
+    },
+    plan_checkpoint: { payload: { stepId: "s1", result: "done" }, behavior: "instant" },
+    plan_proposed: { payload: { plan: "p", steps: [{ id: "s1" }] }, behavior: "countdown" },
+    plan_revision: {
+      payload: { reason: "why", remainingSteps: [{ id: "s2" }] },
+      behavior: "countdown",
+    },
+    choice: {
+      payload: { question: "q", options: [{ id: "a", title: "A" }], allowCustom: false },
+      behavior: "countdown",
+    },
+  };
+
+  const sampleRequest = (kind: PauseRequest["kind"]): PauseRequest => ({
+    id: 1,
+    kind,
+    payload: SAMPLES[kind].payload,
+  });
+
+  it("gives every pause kind an explicit never-ask outcome, all pickers on one window", () => {
+    for (const [kind, sample] of Object.entries(SAMPLES)) {
+      const outcome = autoResolveVerdict(sampleRequest(kind as PauseRequest["kind"]), "never-ask");
+      if (sample.behavior === "manual") {
+        expect(outcome, kind).toBeNull();
+        continue;
+      }
+      expect(outcome?.kind, kind).toBe(sample.behavior);
+      if (outcome?.kind === "countdown") {
+        expect(outcome.ms, kind).toBe(NEVER_ASK_PICKER_COUNTDOWN_MS);
+      }
+    }
+  });
+
+  it("auto-advances every picker to its first option", () => {
+    const verdictOf = (kind: PauseRequest["kind"]) =>
+      autoResolveVerdict(sampleRequest(kind), "never-ask")?.verdict;
+    expect(verdictOf("plan_checkpoint")).toEqual({ type: "continue" });
+    expect(verdictOf("plan_proposed")).toEqual({ type: "approve" });
+    expect(verdictOf("plan_revision")).toEqual({ type: "accepted" });
+    expect(verdictOf("choice")).toEqual({ type: "pick", optionId: "a" });
+  });
+
+  it("leaves gates alone outside never-ask, so read-only and follow still ask", () => {
+    for (const kind of Object.keys(SAMPLES) as PauseRequest["kind"][]) {
+      const req = sampleRequest(kind);
+      expect(autoResolveVerdict(req, "read-only"), `${kind} read-only`).toBeNull();
+      // Checkpoints auto-continue in follow too - it mirrors shell.ts's allowAll.
+      const follow = autoResolveVerdict(req, "follow");
+      const behavior = follow === null ? "manual" : follow.kind;
+      expect(behavior, `${kind} follow`).toBe(kind === "plan_checkpoint" ? "instant" : "manual");
+    }
+  });
+
+  it("surfaces an unknown gate kind instead of throwing (a caller outside the types)", () => {
+    const req = { id: 1, kind: "not_a_gate", payload: {} } as unknown as PauseRequest;
+    // A throw here would be swallowed by the gate listener and strand the caller.
+    expect(autoResolveVerdict(req, "never-ask")).toBeNull();
   });
 
   it("auto-continues plan_checkpoint when opts.yolo is true even if config says read-only", async () => {
@@ -199,7 +299,7 @@ describe("autoResolveVerdict (never-ask mode)", () => {
       void promise.then(() => {
         settled = true;
       });
-      await vi.advanceTimersByTimeAsync(NEVER_ASK_PLAN_COUNTDOWN_MS - 1);
+      await vi.advanceTimersByTimeAsync(NEVER_ASK_PICKER_COUNTDOWN_MS - 1);
       expect(settled).toBe(false);
       expect(bridged).toBe(true);
 
@@ -242,7 +342,7 @@ describe("autoResolveVerdict (never-ask mode)", () => {
 
       // The rewrite picker used to hang indefinitely in never-ask; now the
       // first option (accept rewrite) is auto-selected once the window elapses.
-      await vi.advanceTimersByTimeAsync(NEVER_ASK_PLAN_COUNTDOWN_MS);
+      await vi.advanceTimersByTimeAsync(NEVER_ASK_PICKER_COUNTDOWN_MS);
       await expect(promise).resolves.toEqual({ type: "accepted" });
       expect(bridged).toBe(true);
     } finally {
@@ -266,7 +366,7 @@ describe("autoResolveVerdict (never-ask mode)", () => {
     expect(bridgedReqId).not.toBeNull();
   });
 
-  it("bridges ask_choice without timer by default with --yolo (timer disabled by default)", async () => {
+  it("counts down and auto-picks the first ask_choice option by default with --yolo - same window as the plan gates", async () => {
     vi.useFakeTimers();
     try {
       const gate = new PauseGate();
@@ -291,20 +391,23 @@ describe("autoResolveVerdict (never-ask mode)", () => {
       void promise.then(() => {
         settled = true;
       });
-      await vi.advanceTimersByTimeAsync(NEVER_ASK_PLAN_COUNTDOWN_MS + 5_000);
+      await vi.advanceTimersByTimeAsync(NEVER_ASK_PICKER_COUNTDOWN_MS - 1);
       expect(settled).toBe(false);
       expect(bridged).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(promise).resolves.toEqual({ type: "pick", optionId: "option-1" });
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("waits 30 seconds before auto-picking the first ask_choice option with --yolo when timer is enabled", async () => {
+  it("waits for a manual pick when the host explicitly opts out of the choice timer", async () => {
     vi.useFakeTimers();
     try {
       const gate = new PauseGate();
       let bridged = false;
-      makeListener({ yolo: true, enableChoiceTimer: true }, "read-only")(gate, () => {
+      makeListener({ yolo: true, enableChoiceTimer: false }, "read-only")(gate, () => {
         bridged = true;
       });
 
@@ -324,12 +427,9 @@ describe("autoResolveVerdict (never-ask mode)", () => {
       void promise.then(() => {
         settled = true;
       });
-      await vi.advanceTimersByTimeAsync(NEVER_ASK_PLAN_COUNTDOWN_MS - 1);
+      await vi.advanceTimersByTimeAsync(NEVER_ASK_PICKER_COUNTDOWN_MS + 5_000);
       expect(settled).toBe(false);
       expect(bridged).toBe(true);
-
-      await vi.advanceTimersByTimeAsync(1);
-      await expect(promise).resolves.toEqual({ type: "pick", optionId: "option-1" });
     } finally {
       vi.useRealTimers();
     }
@@ -340,7 +440,7 @@ describe("autoResolveVerdict (never-ask mode)", () => {
     try {
       const gate = new PauseGate();
       let bridgedReqId: number | null = null;
-      makeListener({ yolo: true, enableChoiceTimer: true }, "read-only")(gate, (id) => {
+      makeListener({ yolo: true }, "read-only")(gate, (id) => {
         bridgedReqId = id;
       });
 
@@ -356,7 +456,7 @@ describe("autoResolveVerdict (never-ask mode)", () => {
         },
       });
 
-      await vi.advanceTimersByTimeAsync(NEVER_ASK_PLAN_COUNTDOWN_MS - 1_000);
+      await vi.advanceTimersByTimeAsync(NEVER_ASK_PICKER_COUNTDOWN_MS - 1_000);
       expect(bridgedReqId).not.toBeNull();
       gate.resolve(bridgedReqId!, { type: "pick", optionId: "option-2" });
       await expect(promise).resolves.toEqual({ type: "pick", optionId: "option-2" });
@@ -368,10 +468,10 @@ describe("autoResolveVerdict (never-ask mode)", () => {
     }
   });
 
-  it("cancels a malformed choice (no well-formed options) rather than hanging when timer is enabled", async () => {
+  it("cancels a malformed choice (no well-formed options) rather than hanging by default", async () => {
     const gate = new PauseGate();
     let bridged = false;
-    makeListener({ yolo: true, enableChoiceTimer: true }, "read-only")(gate, () => {
+    makeListener({ yolo: true }, "read-only")(gate, () => {
       bridged = true;
     });
 

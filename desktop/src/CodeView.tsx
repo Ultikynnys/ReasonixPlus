@@ -1,5 +1,5 @@
 import { Highlight, type PrismTheme } from "prism-react-renderer";
-import { useEffect, useRef, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 const DARK_THEME: PrismTheme = {
   plain: { color: "#dde1ea", backgroundColor: "transparent" },
@@ -57,24 +57,36 @@ const LIGHT_THEME: PrismTheme = {
   ],
 };
 
+/** One theme watcher for the whole app: every code block reads this store instead
+ *  of each mounting its own MutationObserver on <html>. */
+const themeListeners = new Set<() => void>();
+let themeObserver: MutationObserver | null = null;
+
+const currentTheme = (): "dark" | "light" =>
+  document.documentElement.dataset.theme === "light" ? "light" : "dark";
+
+function subscribeTheme(listener: () => void): () => void {
+  themeListeners.add(listener);
+  if (themeObserver === null && typeof MutationObserver !== "undefined") {
+    themeObserver = new MutationObserver(() => {
+      for (const notify of themeListeners) notify();
+    });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+  }
+  return () => {
+    themeListeners.delete(listener);
+    if (themeListeners.size === 0 && themeObserver !== null) {
+      themeObserver.disconnect();
+      themeObserver = null;
+    }
+  };
+}
+
 function usePrismTheme(): PrismTheme {
-  const [theme, setTheme] = useState<"dark" | "light">(() =>
-    document.documentElement.dataset.theme === "light" ? "light" : "dark",
-  );
-  const prevRef = useRef(theme);
-  useEffect(() => {
-    const el = document.documentElement;
-    const cb = () => {
-      const t = el.dataset.theme === "light" ? "light" : "dark";
-      if (t !== prevRef.current) {
-        prevRef.current = t;
-        setTheme(t);
-      }
-    };
-    const mo = new MutationObserver(cb);
-    mo.observe(el, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => mo.disconnect();
-  }, []);
+  const theme = useSyncExternalStore(subscribeTheme, currentTheme, currentTheme);
   return theme === "dark" ? DARK_THEME : LIGHT_THEME;
 }
 

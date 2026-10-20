@@ -145,6 +145,19 @@ describe("per-session Events sidecar", () => {
     expect(loadSessionEvents("events-anchor")).toEqual([anchored]);
   });
 
+  it("keeps the second id the same card answers to", () => {
+    // A plan row records the gate's call id and the live transcript's, because the
+    // two id spaces never meet in a running session.
+    const anchored: SessionEventRecord = {
+      ...planVerdict,
+      anchor: "call:call-loop-7",
+      anchorAlias: "call:tc-7",
+    };
+    ensureSessionDir("events-alias");
+    writeSessionEvents("events-alias", [anchored]);
+    expect(loadSessionEvents("events-alias")).toEqual([anchored]);
+  });
+
   it("keeps a subagent spawn with the instruction it was given", () => {
     const spawn: SessionEventRecord = {
       id: "subagent-tc-7",
@@ -168,6 +181,15 @@ describe("per-session Events sidecar", () => {
       JSON.stringify([planVerdict, { ...planVerdict, id: "x", anchor: 42 }]),
     );
     expect(loadSessionEvents("bad-anchor")).toEqual([planVerdict]);
+  });
+
+  it("drops a row whose second id is not text", () => {
+    const dir = ensureSessionDir("bad-alias");
+    writeFileSync(
+      join(dir, "ui-events.json"),
+      JSON.stringify([planVerdict, { ...planVerdict, id: "x", anchorAlias: 42 }]),
+    );
+    expect(loadSessionEvents("bad-alias")).toEqual([planVerdict]);
   });
 
   it("writes JSON the next load can parse", () => {

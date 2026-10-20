@@ -10,6 +10,7 @@ export function ApprovalCard({
   kind,
   tone = "info",
   title,
+  chip,
   sub,
   body,
   preview,
@@ -28,6 +29,9 @@ export function ApprovalCard({
   kind: string;
   tone?: ApprovalTone;
   title: ReactNode;
+  /** Short value that rides the title row, right-aligned (a path, "2 options"). */
+  chip?: string;
+  /** Prose about the title (a plan summary): wraps over as many rows as it needs. */
   sub?: string;
   body?: ReactNode;
   preview?: ReactNode;
@@ -54,7 +58,8 @@ export function ApprovalCard({
           icon={<I.shield size={13} />}
           kind={kind}
           name={title}
-          meta={sub}
+          meta={chip}
+          sub={sub}
           open={open}
           onToggle={toggle}
           wrapName

@@ -1376,16 +1376,16 @@ describe("config", () => {
     expect(loadAutoCompactTrigger(path)).toBe(DEFAULT_AUTO_COMPACT_TRIGGER);
   });
 
-  it("questionTimerEnabled defaults to false and persists either state", () => {
-    expect(loadQuestionTimerEnabled(path)).toBe(false);
-
-    saveQuestionTimerEnabled(true, path);
+  it("questionTimerEnabled defaults to true (every Never Ask picker auto-advances) and persists either state", () => {
     expect(loadQuestionTimerEnabled(path)).toBe(true);
-    expect(readConfig(path).questionTimerEnabled).toBe(true);
 
     saveQuestionTimerEnabled(false, path);
     expect(loadQuestionTimerEnabled(path)).toBe(false);
     expect(readConfig(path).questionTimerEnabled).toBe(false);
+
+    saveQuestionTimerEnabled(true, path);
+    expect(loadQuestionTimerEnabled(path)).toBe(true);
+    expect(readConfig(path).questionTimerEnabled).toBe(true);
   });
 
   it("rawTabEnabled defaults to false and persists either state", () => {

@@ -329,37 +329,44 @@ type MarkdownPlugins = ComponentProps<typeof ReactMarkdown>;
 const REMARK_PLUGINS: MarkdownPlugins["remarkPlugins"] = [remarkGfm, remarkBreaks, remarkMath];
 const REHYPE_PLUGINS: MarkdownPlugins["rehypePlugins"] = [[rehypeKatex, { throwOnError: false }]];
 
+/** Block-level element overrides shared by every markdown surface. Hoisted so its
+ *  identity is stable: an inline literal would force react-markdown to rebuild its
+ *  tree every time the card re-renders. */
+const MARKDOWN_COMPONENTS: MarkdownPlugins["components"] = {
+  pre: ({ children }) => {
+    // react-markdown v9 nests children unpredictably — flatten all text.
+    const rawText = flattenChildText(children).trimEnd();
+    return <CodeBlock lang={extractFencedLang(children)} text={rawText} />;
+  },
+  code: ({ className, children }) => {
+    const text = String(children ?? "");
+    const parsed = !className ? parseFileRef(text.trim()) : null;
+    if (parsed) return <FilePill path={parsed.path} line={parsed.line} />;
+    return <code className={className}>{children}</code>;
+  },
+  a: ({ href, children }) => <SafeLink href={href}>{children}</SafeLink>,
+  p: ({ children }) => <p>{withFilePills(children)}</p>,
+  li: ({ children }) => <li>{withFilePills(children)}</li>,
+  table: ({ children }) => (
+    <div className="markdown-table-wrap">
+      <table>{children}</table>
+    </div>
+  ),
+  td: ({ children }) => <td>{withFilePills(children)}</td>,
+};
+
 /** Block markdown: the shared renderer for agent-authored prose anywhere in the
  *  transcript or a card body (assistant text, plan / checkpoint / revision /
- *  email bodies, subagent results). */
+ *  email bodies, subagent results). Memoized on `source` alone, so a mounted
+ *  transcript never re-parses; a REMOUNT does re-parse, which is why the app keeps
+ *  the previously visible tab's transcript mounted rather than unmounting it. */
 export const Markdown = memo(function Markdown({ source }: { source: string }) {
   return (
     <div className="markdown">
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
-        components={{
-          pre: ({ children }) => {
-            // react-markdown v9 nests children unpredictably — flatten all text.
-            const rawText = flattenChildText(children).trimEnd();
-            return <CodeBlock lang={extractFencedLang(children)} text={rawText} />;
-          },
-          code: ({ className, children }) => {
-            const text = String(children ?? "");
-            const parsed = !className ? parseFileRef(text.trim()) : null;
-            if (parsed) return <FilePill path={parsed.path} line={parsed.line} />;
-            return <code className={className}>{children}</code>;
-          },
-          a: ({ href, children }) => <SafeLink href={href}>{children}</SafeLink>,
-          p: ({ children }) => <p>{withFilePills(children)}</p>,
-          li: ({ children }) => <li>{withFilePills(children)}</li>,
-          table: ({ children }) => (
-            <div className="markdown-table-wrap">
-              <table>{children}</table>
-            </div>
-          ),
-          td: ({ children }) => <td>{withFilePills(children)}</td>,
-        }}
+        components={MARKDOWN_COMPONENTS}
       >
         {normalizeMathDelimiters(source)}
       </ReactMarkdown>

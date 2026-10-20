@@ -1117,14 +1117,14 @@ describe("NoticeCard — a jump opens the card it lands on", () => {
     fireEvent.click(head);
     expect(open()).toBe("false");
 
-    act(() => requestAnchorExpansion("notice:n1"));
+    act(() => requestAnchorExpansion(["notice:n1"]));
     expect(open()).toBe("true");
   });
 
   it("keeps the reader's own collapse, and a jump elsewhere releases the card", () => {
     const { head, open } = renderAnchored();
 
-    act(() => requestAnchorExpansion("notice:n1"));
+    act(() => requestAnchorExpansion(["notice:n1"]));
     expect(open()).toBe("true");
 
     // A click on the head closes it even though a jump opened it.
@@ -1132,9 +1132,19 @@ describe("NoticeCard — a jump opens the card it lands on", () => {
     expect(open()).toBe("false");
 
     // A jump to a plain turn (no anchor) takes the forced state back out.
-    act(() => requestAnchorExpansion("notice:n1"));
-    act(() => requestAnchorExpansion(null));
+    act(() => requestAnchorExpansion(["notice:n1"]));
+    act(() => requestAnchorExpansion([]));
     expect(open()).toBe("false");
+  });
+
+  it("opens on any of the ids one record carries, so an alias reaches the card", () => {
+    const { head, open } = renderAnchored();
+
+    fireEvent.click(head);
+    expect(open()).toBe("false");
+
+    act(() => requestAnchorExpansion(["call:call-loop-7", "notice:n1"]));
+    expect(open()).toBe("true");
   });
 });
 

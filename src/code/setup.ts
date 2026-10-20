@@ -90,6 +90,8 @@ export interface CodeToolsetOpts {
   /** Live effective MCP specs (config + session overlay) for list_mcp_bridges, so
    *  the tool reports the session's toggle state rather than the config default. */
   getMcpSpecs?: () => McpServerSpec[];
+  /** Tools a bridge refused or deferred, so list_mcp_bridges can name them. */
+  getMcpToolSkips?: () => Array<{ server: string; name: string; reason: string }>;
   /** Whether this SESSION was minted with `spawn_subagent`. The host reads it from the
    *  session's frozen meta; omitted means no spawn tool is registered. */
   subagentsEnabled?: boolean;
@@ -168,7 +170,11 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
   registerSeeImageTool(tools, { rootDir: opts.rootDir });
   registerScreenCaptureTool(tools, { rootDir: opts.rootDir });
   registerComputerUseTool(tools);
-  registerScaffoldTools(tools, { projectRoot: opts.rootDir, getMcpSpecs: opts.getMcpSpecs });
+  registerScaffoldTools(tools, {
+    projectRoot: opts.rootDir,
+    getMcpSpecs: opts.getMcpSpecs,
+    getMcpToolSkips: opts.getMcpToolSkips,
+  });
   // OAuth-only: image generation bills the user's ChatGPT/OpenAI plan, so it is
   // registered solely when an OpenAI OAuth session is present.
   if (hasOpenAIOAuthSession(opts.configPath)) {

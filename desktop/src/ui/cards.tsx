@@ -476,6 +476,7 @@ export function ShellCard({
   onAddWorkspaceRule,
   onAddGlobalRule,
   onStop,
+  history,
 }: {
   command: string;
   output?: string;
@@ -495,6 +496,9 @@ export function ShellCard({
   onAddWorkspaceRule?: () => void;
   onAddGlobalRule?: () => void;
   onStop?: () => void;
+  /** A card restored from history, outside the live turn: it starts collapsed so a
+   *  long transcript never mounts every command's output at once. */
+  history?: boolean;
 }) {
   useLang();
   // The Stop button throbs until the command actually leaves `running`.
@@ -520,7 +524,7 @@ export function ShellCard({
       name="shell"
       compact
       copyText={copyText}
-      defaultOpen={state !== "done"}
+      defaultOpen={!history && state !== "done"}
       meta={
         <>
           {state === "await" ? (
@@ -630,6 +634,8 @@ export function truncate(text: string, max: number): string {
  *  a `read_file` result or pretty-printed args stay useful when expanded. */
 const ARGS_TRUNC = 2000;
 const RESULT_TRUNC = 4000;
+/** Diff lines rendered per card before the rest waits behind an explicit expand. */
+const DIFF_LINE_CAP = 120;
 
 /** Pretty-print JSON tool args so an expanded card reads as an indented block
  *  rather than a single-line blob; non-JSON text passes through untouched. */
@@ -811,16 +817,25 @@ export function DiffCard({
   applied,
   onApply,
   onDiscard,
+  history,
 }: {
   filename: string;
   lines: DiffLine[];
   applied?: boolean;
   onApply?: () => void;
   onDiscard?: () => void;
+  /** A card restored from history (or sealed by a boundary), outside the live turn:
+   *  it starts collapsed, and a huge diff renders one page behind an explicit expand. */
+  history?: boolean;
 }) {
   useLang();
+  const [showAll, setShowAll] = useState(false);
   const adds = lines.filter((x) => x.t === "add").length;
   const rms = lines.filter((x) => x.t === "rm").length;
+  // One page of lines at a time: a multi-thousand-line edit is the largest DOM
+  // contributor in a long transcript and is unreadable in full anyway.
+  const capped = lines.length > DIFF_LINE_CAP && !showAll;
+  const visibleLines = capped ? lines.slice(0, DIFF_LINE_CAP) : lines;
   const diffText = lines
     .map((ln) => {
       if (ln.t === "add") return `+${ln.s}`;
@@ -848,10 +863,11 @@ export function DiffCard({
       }
       headRight={<OpenFileButton path={filename} label={t("cards.showInExplorer")} />}
       copyText={`${filename}\n\n${diffText}`}
+      defaultOpen={!history}
     >
       <div className="diff">
         <div className="lines">
-          {lines.map((ln, i) => {
+          {visibleLines.map((ln, i) => {
             if (ln.t === "hunk")
               return (
                 // biome-ignore lint/suspicious/noArrayIndexKey: static diff snapshot
@@ -875,6 +891,11 @@ export function DiffCard({
             );
           })}
         </div>
+        {capped ? (
+          <button type="button" className="btn ghost" onClick={() => setShowAll(true)}>
+            {t("cards.diffShowAll", { count: lines.length })}
+          </button>
+        ) : null}
         {!applied && (onApply || onDiscard) ? (
           <div className="approve-row">
             <div className="why">

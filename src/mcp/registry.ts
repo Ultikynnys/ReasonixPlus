@@ -5,6 +5,12 @@ import { countTokens, countTokensBounded } from "../tokenizer.js";
 import { WIRE_TOOL_NAME_MAX, sanitizeWireToolName, toolNameDisambiguator } from "../tool-name.js";
 import { ToolRegistry } from "../tools.js";
 import type { ToolCallContext } from "../tools.js";
+import {
+  fitsSpecBudgetBytes,
+  resolveSpecBudgetBytes,
+  specBytes,
+  toolSpecBytes,
+} from "../tools/spec-budget.js";
 import type { JSONSchema } from "../types.js";
 import type { McpClient } from "./client.js";
 import { LatencyTracker, type SlowEvent } from "./latency.js";
@@ -15,6 +21,12 @@ import type { CallToolResult, McpContentBlock, McpTool } from "./types.js";
 export interface BridgeOptions {
   /** Prefix for tool names — disambiguates collisions when bridging multiple servers. */
   namePrefix?: string;
+  /** Ownership tag recorded on each bridged tool, so a server cannot claim a name a different origin owns.
+   *  Defaults to `mcp:<serverName>`. */
+  origin?: string;
+  /** Ceiling for the whole spec array (desc + schema bytes). Tools over it are deferred, not registered.
+   *  Defaults to REASONIX_SPEC_BUDGET_BYTES or MAX_TOOL_SPEC_BYTES. */
+  specBudgetBytes?: number;
   /** Registry to populate. Creates a fresh one if omitted. */
   registry?: ToolRegistry;
   /** Auto-flatten deep schemas (Pillar 3). Defaults to the registry's own default (true). */
@@ -101,6 +113,8 @@ export interface BridgeEnv {
   registry: ToolRegistry;
   host: McpClientHost;
   prefix: string;
+  /** Ownership tag for collision checks; see BridgeOptions.origin. */
+  origin?: string;
   maxResultChars: number;
   tracker: LatencyTracker | null;
   onProgress?: BridgeOptions["onProgress"];
@@ -163,97 +177,103 @@ export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string 
     timeoutKey = "_mcpTimeoutSec";
     while (Object.hasOwn(properties, timeoutKey)) timeoutKey = `_${timeoutKey}`;
   }
-  env.registry.register({
-    name: registeredName,
-    description: withDescriptionSuffix(
-      stableTool.description,
-      env.descriptionSuffix,
-      stableTool.name,
-    ),
-    parameters: {
-      ...schema,
-      properties: {
-        ...properties,
-        [timeoutKey]: {
-          type: "integer",
-          minimum: 1,
-          maximum: 2_147_483,
-          description:
-            "Override the MCP call deadline in seconds; omitted uses the client default (normally 60s). Host-only, not sent to the server.",
+  const registered = env.registry.tryRegister(
+    {
+      name: registeredName,
+      description:
+        withDescriptionSuffix(stableTool.description, env.descriptionSuffix, stableTool.name) ??
+        `MCP tool ${stableTool.name} from the ${env.serverName ?? (env.prefix.replace(/_$/, "") || "MCP")} server (no description supplied by the server; read the parameter schema).`,
+      parameters: {
+        ...schema,
+        properties: {
+          ...properties,
+          [timeoutKey]: {
+            type: "integer",
+            minimum: 1,
+            maximum: 2_147_483,
+            description:
+              "Override the MCP call deadline in seconds; omitted uses the client default (normally 60s). Host-only, not sent to the server.",
+          },
         },
       },
-    },
-    readOnly: env.readOnlyTool?.(stableTool.name) || undefined,
-    fn: async (args: Record<string, unknown>, ctx) => {
-      const timeoutSec = args[timeoutKey];
-      if (
-        timeoutSec !== undefined &&
-        (typeof timeoutSec !== "number" ||
-          !Number.isInteger(timeoutSec) ||
-          timeoutSec < 1 ||
-          timeoutSec > 2_147_483)
-      ) {
-        throw new Error(`MCP ${timeoutKey} must be an integer between 1 and 2147483`);
-      }
-      const upstreamArgs = { ...args };
-      delete upstreamArgs[timeoutKey];
-      if (env.ready) {
-        await waitForReady(
-          env.ready,
-          env.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
-          env.serverName ?? (env.prefix.replace(/_$/, "") || "anon"),
-          ctx?.signal,
-        );
-      }
-      let params = upstreamArgs;
-      if (env.transformArgs) {
+      readOnly: env.readOnlyTool?.(stableTool.name) || undefined,
+      fn: async (args: Record<string, unknown>, ctx) => {
+        const timeoutSec = args[timeoutKey];
+        if (
+          timeoutSec !== undefined &&
+          (typeof timeoutSec !== "number" ||
+            !Number.isInteger(timeoutSec) ||
+            timeoutSec < 1 ||
+            timeoutSec > 2_147_483)
+        ) {
+          throw new Error(`MCP ${timeoutKey} must be an integer between 1 and 2147483`);
+        }
+        const upstreamArgs = { ...args };
+        delete upstreamArgs[timeoutKey];
+        if (env.ready) {
+          await waitForReady(
+            env.ready,
+            env.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+            env.serverName ?? (env.prefix.replace(/_$/, "") || "anon"),
+            ctx?.signal,
+          );
+        }
+        let params = upstreamArgs;
+        if (env.transformArgs) {
+          try {
+            const next = await env.transformArgs(stableTool.name, upstreamArgs, ctx);
+            if (next) params = next;
+          } catch (err) {
+            return JSON.stringify({ error: messageOf(err) });
+          }
+        }
+        if (env.beforeCall) {
+          const blocked = await env.beforeCall(stableTool.name, params, ctx);
+          if (blocked !== null) return blocked;
+        }
+        const t0 = performance.now();
         try {
-          const next = await env.transformArgs(stableTool.name, upstreamArgs, ctx);
-          if (next) params = next;
-        } catch (err) {
-          return JSON.stringify({ error: messageOf(err) });
+          const live = env.host.client;
+          const toolResult = await live.callTool(stableTool.name, params, {
+            onProgress: env.onProgress
+              ? (info) => env.onProgress!({ toolName: registeredName, ...info })
+              : undefined,
+            signal: ctx?.signal,
+            timeoutMs: timeoutSec === undefined ? undefined : (timeoutSec as number) * 1000,
+          });
+          const durationMs = performance.now() - t0;
+          env.tracker?.record(durationMs);
+          recordDiagnostic("mcp.tool.completed", {
+            durationMs,
+            details: { server: env.serverName, tool: registeredName, ok: true },
+          });
+          const flat = flattenMcpResult(toolResult, { maxChars: env.maxResultChars });
+          const text = env.transformResult
+            ? env.transformResult(stableTool.name, flat, params)
+            : flat;
+          if (env.toolingNotice && !env.toolingNoticeSeen) {
+            env.toolingNoticeSeen = true;
+            return `${text}\n\n${env.toolingNotice}`;
+          }
+          return text;
+        } catch (error) {
+          recordDiagnostic("mcp.tool.completed", {
+            level: "error",
+            durationMs: performance.now() - t0,
+            message: messageOf(error),
+            details: { server: env.serverName, tool: registeredName, ok: false },
+          });
+          throw error;
         }
-      }
-      if (env.beforeCall) {
-        const blocked = await env.beforeCall(stableTool.name, params, ctx);
-        if (blocked !== null) return blocked;
-      }
-      const t0 = performance.now();
-      try {
-        const live = env.host.client;
-        const toolResult = await live.callTool(stableTool.name, params, {
-          onProgress: env.onProgress
-            ? (info) => env.onProgress!({ toolName: registeredName, ...info })
-            : undefined,
-          signal: ctx?.signal,
-          timeoutMs: timeoutSec === undefined ? undefined : (timeoutSec as number) * 1000,
-        });
-        const durationMs = performance.now() - t0;
-        env.tracker?.record(durationMs);
-        recordDiagnostic("mcp.tool.completed", {
-          durationMs,
-          details: { server: env.serverName, tool: registeredName, ok: true },
-        });
-        const flat = flattenMcpResult(toolResult, { maxChars: env.maxResultChars });
-        const text = env.transformResult
-          ? env.transformResult(stableTool.name, flat, params)
-          : flat;
-        if (env.toolingNotice && !env.toolingNoticeSeen) {
-          env.toolingNoticeSeen = true;
-          return `${text}\n\n${env.toolingNotice}`;
-        }
-        return text;
-      } catch (error) {
-        recordDiagnostic("mcp.tool.completed", {
-          level: "error",
-          durationMs: performance.now() - t0,
-          message: messageOf(error),
-          details: { server: env.serverName, tool: registeredName, ok: false },
-        });
-        throw error;
-      }
+      },
     },
-  });
+    { origin: env.origin ?? `mcp:${env.serverName ?? "anon"}` },
+  );
+  if (!registered) {
+    // A refused registration leaves no tool behind, so the toggle map must not claim it either.
+    env.bareNames?.delete(registeredName);
+    return "";
+  }
   return registeredName;
 }
 
@@ -329,6 +349,7 @@ export async function bridgeMcpTools(
     transformArgs: opts.transformArgs,
     transformResult: opts.transformResult,
     readOnlyTool: opts.readOnlyTool,
+    origin: opts.origin,
     bareNames: new Map(),
   };
   const listed = await client.listTools();
@@ -338,6 +359,10 @@ export async function bridgeMcpTools(
   const stableTools = listed.tools
     .map((tool) => canonicalizeMcpToolForCache(tool))
     .sort((a, b) => `${prefix}${a.name}`.localeCompare(`${prefix}${b.name}`));
+  // Every spec byte ships in every request, so the array is capped at the seam where growth is unbounded.
+  // The running total is exact: each added tool is measured through the same mapping specs() emits.
+  const specBudget = opts.specBudgetBytes ?? resolveSpecBudgetBytes();
+  let usedSpecBytes = toolSpecBytes(registry.specs());
   for (const mcpTool of stableTools) {
     if (!mcpTool.name) {
       result.skipped.push({ name: "?", reason: "empty tool name" });
@@ -348,7 +373,27 @@ export async function bridgeMcpTools(
       continue;
     }
     const registeredName = registerSingleMcpTool(mcpTool, env);
-    if (registeredName) result.registeredNames.push(registeredName);
+    if (!registeredName) {
+      result.skipped.push({
+        name: mcpTool.name,
+        reason: "refused by the registry: another origin owns this name",
+      });
+      continue;
+    }
+    const spec = registry.specOf(registeredName);
+    const cost = spec ? specBytes(spec) : 0;
+    if (!fitsSpecBudgetBytes(usedSpecBytes, cost, specBudget)) {
+      // Deferred, not disabled: the per-tool toggle can restore it once the budget allows.
+      registry.unregister(registeredName);
+      env.bareNames?.delete(registeredName);
+      result.skipped.push({
+        name: mcpTool.name,
+        reason: `deferred: spec budget ${usedSpecBytes}/${specBudget} bytes would be exceeded (+${cost})`,
+      });
+      continue;
+    }
+    usedSpecBytes += cost;
+    result.registeredNames.push(registeredName);
   }
   return { ...result, env };
 }

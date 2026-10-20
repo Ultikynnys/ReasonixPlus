@@ -2761,7 +2761,10 @@ export function saveFeedbackCues(
 
 export function loadQuestionTimerEnabled(path: string = defaultConfigPath()): boolean {
   const cfg = readConfig(path);
-  return cfg.questionTimer === true || cfg.questionTimerEnabled === true;
+  // On unless the user turned it off: every never-ask picker (choice, plan,
+  // revision) counts down to its first option, so an unset config must not leave
+  // choice gates as the one kind that waits forever.
+  return cfg.questionTimerEnabled ?? cfg.questionTimer ?? true;
 }
 
 export function saveQuestionTimerEnabled(

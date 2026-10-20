@@ -2,6 +2,7 @@ import {
   type ChangelogRelease,
   DEFAULT_MODEL,
   type MemoryWriteOptions,
+  type PickerWindow,
   type RuleRecord,
   clipText,
   compactionCardText,
@@ -14,7 +15,6 @@ import {
   modelAcceptsImages,
   modelDisplayName,
   sanitizeFilename,
-  sortSessionsByCreationDescending,
 } from "@reasonix/core-utils";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -39,8 +39,8 @@ import {
   useState,
 } from "react";
 import { WorkspaceProvider } from "./Markdown";
-import { recordFrontendDiagnostic, recordFrontendFailure } from "./diagnostics";
 import { type AbortDraftSource, nextAbortDraftCandidate, restoreAbortedDraft } from "./abort-draft";
+import { recordFrontendFailure } from "./diagnostics";
 import { type FeedbackSoundPlayer, feedbackSounds, primeFeedbackSounds } from "./feedback-sounds";
 import { formatBytes } from "./format";
 import { t, useLang } from "./i18n";
@@ -102,7 +102,19 @@ import {
   resolveActiveQuickSend,
   rpcSend,
 } from "./protocol";
-import { keepStable, sameStringList, sameStringSet } from "./stable-identity";
+import {
+  type SessionsStore,
+  applySessionsSnapshot,
+  beginIntent,
+  emptySessionsStore,
+  hiddenNames,
+  mutationFor,
+  openIntentId,
+  patchSession,
+  sessionsEntry,
+  visibleSessions,
+} from "./sessions-store";
+import { keepStable, sameStringSet } from "./stable-identity";
 import { StartupTimingTracker } from "./startup-timing";
 import { StreamRateTracker } from "./stream-rate";
 import {
@@ -203,15 +215,15 @@ const RIGHT_SIDEBAR_COLLAPSE_WIDTH = 1120;
  *  `settings_save`, so the UI never queues a round-trip per keystroke/click. */
 const SETTINGS_SAVE_DEBOUNCE_MS = 200;
 
+/** How long an unconfirmed session mutation may stay silent before the channel asks
+ *  for the authoritative list. It only REQUESTS a snapshot; it never reveals a row,
+ *  so unlike the old wall-clock release it cannot resurrect a real delete. */
+const INTENT_RECONCILE_TIMEOUT_MS = 10_000;
+
 /** How long a locally-written settings field stays authoritative against the
  *  daemon's `$settings` echo. Long enough to outlast any in-flight echo, short
  *  enough that a value the daemon normalizes (a clamped number) still settles. */
 const SETTINGS_OVERRIDE_TTL_MS = 2000;
-
-/** How long a session delete/clear may stay unconfirmed before the sidebar
- *  releases its optimistic hide. Outlasts a slow daemon-side delete without
- *  leaving the UI stuck mid-delete when the settled snapshot never arrives. */
-const SESSION_MUTATION_TIMEOUT_MS = 15_000;
 
 /** Structural equality for settings values (primitives, arrays, plain objects).
  *  Used to tell an echo that already reflects a local write from a stale one. */
@@ -365,24 +377,20 @@ export type PendingPathAccess = {
   prompt: import("@reasonix/core-utils").ApprovalPrompt;
 };
 
-export type PendingChoice = {
+export type PendingChoice = PickerWindow & {
   id: number;
   question: string;
   options: { id: string; title: string; summary?: string }[];
   allowCustom: boolean;
-  /** YOLO auto-selection window (ms) — the card picks the first option at expiry. */
-  countdownMs?: number;
 };
 
-export type PendingPlan = {
+export type PendingPlan = PickerWindow & {
   id: number;
   plan: string;
   summary?: string;
   steps?: PlanStep[];
   /** Stable submit_plan tool call that anchors live progress in the chat timeline. */
   callId?: string;
-  /** YOLO auto-approval window (ms) — the card auto-picks the first option at expiry. */
-  countdownMs?: number;
 };
 
 export type ActivePlan = {
@@ -406,15 +414,13 @@ export type PendingCheckpoint = {
   total: number;
 };
 
-export type PendingRevision = {
+export type PendingRevision = PickerWindow & {
   id: number;
   reason: string;
   remainingSteps: PlanStep[];
   /** The plan's current remaining steps at proposal time, for the rewrite diff. */
   previousSteps?: PlanStep[];
   summary?: string;
-  /** YOLO auto-approval window (ms) — the card auto-picks accept rewrite at expiry. */
-  countdownMs?: number;
 };
 
 export type UsageStats = {
@@ -537,6 +543,10 @@ type State = {
   model?: string;
   currentSession?: string;
   messages: ChatMessage[];
+  /** Bumped whenever a card, segment, flag or tool result changes — never by text
+   *  streaming into a segment that already exists. A memoized row list can key on
+   *  this instead of the array identity, which changes on every delta frame. */
+  messagesVersion: number;
   pendingConfirms: PendingConfirm[];
   pendingPathAccess: PendingPathAccess[];
   pendingChoices: PendingChoice[];
@@ -547,16 +557,13 @@ type State = {
   planHistory?: import("@reasonix/core-utils").PlanHistoryItem[];
   planDetails?: Record<string, import("@reasonix/core-utils").PlanDetail>;
   usage: UsageStats;
-  sessions: SessionInfo[];
-  sessionsEpoch: string;
-  sessionsRevision: number;
+  /** True while the loaded transcript is only the newest page: the transcript then
+   *  offers a load-older control instead of silently hiding the rest. */
+  historyHasOlder: boolean;
+  /** Wire records the loaded transcript was built from, counted from the session's
+   *  end — the cursor the load-older command asks the page above. */
+  historyLoaded: number;
   workspaceInitializationRevision: number;
-  pendingSessionDeletes: string[];
-  /** The one in-flight session mutation for this channel, or null. Its `kind`
-   *  carries everything the indicator needs (including the session a "create"
-   *  is waiting for), so no sibling field can disagree with it. Cleared when
-   *  the daemon's settled snapshot lands or the watchdog releases it. */
-  sessionsMutation: SessionMutation | null;
   settings: Settings | null;
   balance: Balance | null;
   codexQuota: CodexQuota | null;
@@ -681,11 +688,6 @@ type Action =
   | { t: "dequeue_send"; index: number }
   | { t: "shift_queued_send" }
   | { t: "settings_patch"; patch: SettingsPatch }
-  | { t: "session_delete_requested"; name: string }
-  | { t: "session_clear_requested" }
-  | { t: "session_mutation_release" }
-  | { t: "session_rename_requested"; name: string; title: string }
-  | { t: "session_bump_requested"; name: string; createdAt?: number }
   | { t: "workspace_recent_removed"; path: string }
   | { t: "oauth_waiting"; waiting: boolean }
   | { t: "antigravity_oauth_waiting"; waiting: boolean }
@@ -804,6 +806,17 @@ function pendingAssistantIndex(messages: ChatMessage[]): number {
   return -1;
 }
 
+/** Index of the card a streamed token lands in — the transcript tail, when that
+ *  tail is an assistant card nothing has sealed — or -1 when a delta would open a
+ *  fresh card. This is the only row a delta can change, so the transcript renders
+ *  it outside the memoized history. */
+export function streamingTailIndex(messages: readonly ChatMessage[]): number {
+  const idx = messages.length - 1;
+  const card = messages[idx];
+  if (card?.kind !== "assistant" || card.closed) return -1;
+  return idx;
+}
+
 /** When a record is written. Monotone within the process, so two records created in
  *  the same millisecond still order by write order: a tie would collapse the
  *  conversation's timeline and list them out of order. */
@@ -886,25 +899,56 @@ function settleSubagentEvent(
  *  resolved gate's card IS that segment, and only a plan carries its call id on
  *  the wire, so a choice has to be looked up where its card is rendered. */
 function pendingGateCallId(messages: readonly ChatMessage[], tool: string): string | undefined {
-  for (const message of messages) {
-    if (message.kind !== "assistant") continue;
-    for (const segment of message.segments) {
-      if (segment.kind === "tool" && segment.name === tool && segment.result === undefined) {
-        return segment.callId;
-      }
+  return toolCallId(messages, tool, { unsettled: true });
+}
+
+/** A tool call's id in the transcript, newest first. `turn` scopes the search to
+ *  one turn; `unsettled` keeps it to a call still waiting for its result, which is
+ *  the gate that is asking right now. */
+function toolCallId(
+  messages: readonly ChatMessage[],
+  tool: string,
+  options: { turn?: number; unsettled?: boolean } = {},
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.kind !== "assistant") continue;
+    if (options.turn !== undefined && message.turn !== options.turn) continue;
+    for (let k = message.segments.length - 1; k >= 0; k -= 1) {
+      const segment = message.segments[k];
+      if (segment?.kind !== "tool" || segment.name !== tool || !segment.callId) continue;
+      if (options.unsettled && segment.result !== undefined) continue;
+      return segment.callId;
     }
   }
   return undefined;
 }
 
+/** Both ids a plan row has to carry to land on its card: the gate's (what a
+ *  reloaded transcript calls the card) and the transcript's live one. */
+function planAnchors(
+  gateCallId: string | undefined,
+  wireCallId: string | undefined,
+): Pick<SessionEventRecord, "anchor" | "anchorAlias"> {
+  const gate = callAnchor(gateCallId).anchor;
+  const wire = callAnchor(wireCallId).anchor;
+  // The gate's id stays primary (it survives a reload); without one the live id is
+  // all this row has, and it is better than a jump to the prompt bubble.
+  const anchor = gate ?? wire;
+  return {
+    ...(anchor ? { anchor } : {}),
+    ...(gate && wire && wire !== gate ? { anchorAlias: wire } : {}),
+  };
+}
+
 /** Record one Events-tab entry. Every event needs a stamp and the turn it belonged
  *  to, and those are exactly the parts a new event type would forget to fill in —
- *  so one function supplies them. `at` overrides both for a fold, whose row must
- *  carry its transcript card's stamp rather than a fresh one. */
+ *  so one function supplies them. `at` overrides either, for a fold whose row must
+ *  carry its transcript card's stamp, or a row that already knows its turn. */
 function recordEvent(
   state: Pick<State, "messages" | "sessionEvents">,
   event: Omit<SessionEventRecord, "ts" | "turn">,
-  at?: { ts: number; turn: number },
+  at?: { ts?: number; turn?: number },
 ): SessionEventRecord[] {
   return recordSessionEvent(state.sessionEvents, {
     ...event,
@@ -1040,17 +1084,25 @@ function cardTurn(m: ChatMessage): number {
  *  extras' order. Used to carry notice cards back into a rebuilt conversation so
  *  they sit beside the turn they annotate instead of being forced to the tail. */
 function mergeByTurn(base: ChatMessage[], extras: ChatMessage[]): ChatMessage[] {
-  let out = base;
-  for (const extra of extras) {
+  if (extras.length === 0) return base;
+  // One pass instead of one insertion per extra: a rebuilt conversation carrying
+  // many notices used to re-scan and re-copy the whole list per notice. A stable
+  // sort by turn keeps equal-turn extras in arrival order, which is exactly what
+  // repeated end-of-group insertion produced.
+  const ordered = [...extras].sort((a, b) => cardTurn(a) - cardTurn(b));
+  const out: ChatMessage[] = [];
+  let cursor = 0;
+  for (const extra of ordered) {
     const turn = cardTurn(extra);
-    let idx = out.length;
-    for (let i = 0; i < out.length; i++) {
-      if (cardTurn(out[i]!) > turn) {
-        idx = i;
-        break;
-      }
+    while (cursor < base.length && cardTurn(base[cursor]!) <= turn) {
+      out.push(base[cursor]!);
+      cursor += 1;
     }
-    out = [...out.slice(0, idx), extra, ...out.slice(idx)];
+    out.push(extra);
+  }
+  while (cursor < base.length) {
+    out.push(base[cursor]!);
+    cursor += 1;
   }
   return out;
 }
@@ -1087,31 +1139,6 @@ function turnStatusAfterResolve(
   return currentBusy ? "calling_tool" : null;
 }
 
-/** True when two $sessions snapshots list the same rows with the same metadata,
- *  so the reducer can keep the prior array reference. The sidebar memoizes on
- *  this array and re-sorts it per workspace row, so a refresh that changed
- *  nothing must not hand it a new one. */
-function sameSessionRows(a: readonly SessionInfo[], b: readonly SessionInfo[]): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i]!;
-    const y = b[i]!;
-    if (
-      x.name !== y.name ||
-      x.messageCount !== y.messageCount ||
-      x.mtime !== y.mtime ||
-      x.updatedAt !== y.updatedAt ||
-      x.createdAt !== y.createdAt ||
-      x.summary !== y.summary ||
-      x.workspaceStatus !== y.workspaceStatus
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
 /** True when two $jobs snapshots are identical, so the reducer can keep the
  *  prior array reference and avoid re-rendering every assistant row on each
  *  poll tick. Background-job shell cards read this array, so a stable identity
@@ -1139,7 +1166,7 @@ function sameJobInfos(a: JobInfo[], b: JobInfo[]): boolean {
   return true;
 }
 
-export function reduce(state: State, action: Action): State {
+export function reduceAction(state: State, action: Action): State {
   switch (action.t) {
     case "send_user": {
       return {
@@ -1209,49 +1236,6 @@ export function reduce(state: State, action: Action): State {
             settings: { ...state.settings, ...sanitizeSettingsPatch(action.patch) },
           }
         : state;
-    }
-    case "session_delete_requested":
-      return {
-        ...state,
-        sessions: state.sessions.filter((session) => session.name !== action.name),
-        pendingSessionDeletes: [...new Set([...state.pendingSessionDeletes, action.name])],
-        sessionsMutation: { kind: "delete" },
-      };
-    case "session_clear_requested":
-      return {
-        ...state,
-        sessions: [],
-        pendingSessionDeletes: [
-          ...new Set([...state.pendingSessionDeletes, ...state.sessions.map((s) => s.name)]),
-        ],
-        sessionsMutation: { kind: "clear" },
-      };
-    case "session_mutation_release":
-      // The daemon never settled this mutation (a wedged daemon, a dropped
-      // snapshot). Release the optimistic hide so the sidebar can't sit stuck.
-      if (state.sessionsMutation === null && state.pendingSessionDeletes.length === 0) {
-        return state;
-      }
-      recordFrontendDiagnostic("frontend.session_mutation_unconfirmed", {}, "warn");
-      return { ...state, pendingSessionDeletes: [], sessionsMutation: null };
-    case "session_rename_requested": {
-      const title = flattenText(action.title).slice(0, 200);
-      return {
-        ...state,
-        sessions: state.sessions.map((session) =>
-          session.name === action.name ? { ...session, summary: title || undefined } : session,
-        ),
-      };
-    }
-    case "session_bump_requested": {
-      const now = action.createdAt ?? Date.now();
-      const nextSessions = state.sessions.map((session) =>
-        session.name === action.name ? { ...session, createdAt: now } : session,
-      );
-      return {
-        ...state,
-        sessions: nextSessions.sort(sortSessionsByCreationDescending),
-      };
     }
     case "workspace_recent_removed":
       return state.settings
@@ -1337,6 +1321,8 @@ export function reduce(state: State, action: Action): State {
         compacting: false,
         currentSession: undefined,
         messages: [],
+        historyHasOlder: false,
+        historyLoaded: 0,
         pendingConfirms: [],
         pendingPathAccess: [],
         pendingChoices: [],
@@ -1405,21 +1391,30 @@ export function reduce(state: State, action: Action): State {
     }
     case "resolve_plan": {
       const removed = state.pendingPlans.find((p) => p.id === action.id);
-      const sessionEvents = recordEvent(state, {
-        id: `plan-${action.id}`,
-        type: "plan",
-        outcome: action.verdict.type,
-        ...(removed ? { label: removed.summary ?? removed.plan } : {}),
-        ...(action.verdict.feedback ? { detail: action.verdict.feedback } : {}),
-        // The plan itself and its checklist: a verdict that keeps only the
-        // summary line cannot show what was actually agreed to. `body` is stored
-        // only when `label` is just the summary, so it is never duplicated.
-        ...(removed?.summary ? { body: removed.plan } : {}),
-        ...(removed?.steps?.length ? { steps: removed.steps.map((step) => step.title) } : {}),
-        // The card this verdict answers, so the row jumps to the plan, not to
-        // the prompt that started the turn.
-        ...callAnchor(removed?.callId),
-      });
+      // A plan's gate blocks the turn that submitted it, so the row and the card it
+      // names share one turn — and scoping the lookup to it keeps an older plan's
+      // card out of the alias.
+      const turn = currentTurnForNotice(state.messages);
+      const sessionEvents = recordEvent(
+        state,
+        {
+          id: `plan-${action.id}`,
+          type: "plan",
+          outcome: action.verdict.type,
+          ...(removed ? { label: removed.summary ?? removed.plan } : {}),
+          ...(action.verdict.feedback ? { detail: action.verdict.feedback } : {}),
+          // The plan itself and its checklist: a verdict that keeps only the
+          // summary line cannot show what was actually agreed to. `body` is stored
+          // only when `label` is just the summary, so it is never duplicated.
+          ...(removed?.summary ? { body: removed.plan } : {}),
+          ...(removed?.steps?.length ? { steps: removed.steps.map((step) => step.title) } : {}),
+          // The card this verdict answers, so the row jumps to the plan, not to
+          // the prompt that started the turn. Two ids, because the gate and the live
+          // transcript name the same tool call differently.
+          ...planAnchors(removed?.callId, toolCallId(state.messages, "submit_plan", { turn })),
+        },
+        { turn },
+      );
       let activePlan = state.activePlan;
       if (removed && action.verdict.type === "approve") {
         const pendingSteps = (removed as PendingPlan & { steps?: PlanStep[] }).steps;
@@ -1516,6 +1511,67 @@ export function reduce(state: State, action: Action): State {
       };
     }
   }
+}
+
+/** True when two card lists differ only in the text of a segment that already
+ *  existed — the streaming case. Anything else (a new card, a new segment, a
+ *  flag or result change) is structural: it changes what a row renders. */
+function isTextOnlyGrowth(prev: readonly ChatMessage[], next: readonly ChatMessage[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < next.length; i += 1) {
+    const before = prev[i];
+    const after = next[i];
+    if (before === after) continue;
+    if (!before || !after) return false;
+    if (before.kind !== "assistant" || after.kind !== "assistant") return false;
+    if (
+      before.turn !== after.turn ||
+      before.pending !== after.pending ||
+      before.closed !== after.closed ||
+      before.ts !== after.ts ||
+      before.segments.length !== after.segments.length
+    ) {
+      return false;
+    }
+    const last = after.segments.length - 1;
+    for (let s = 0; s <= last; s += 1) {
+      const from = before.segments[s];
+      const to = after.segments[s];
+      if (from === to) continue;
+      // Only the trailing segment may differ, and only by appended text.
+      if (s !== last || !from || !to) return false;
+      if (from.kind !== "text" && from.kind !== "reasoning") return false;
+      if (to.kind !== from.kind) return false;
+      if (!sameSegmentExceptText(from, to)) return false;
+      if (!to.text.startsWith(from.text)) return false;
+    }
+  }
+  return true;
+}
+
+/** Everything about a segment except its text: a grown segment keeps its kind,
+ *  timing and tool result, so any other difference means the card re-rendered. */
+function sameSegmentExceptText(from: AssistantSegment, to: AssistantSegment): boolean {
+  const left = from as unknown as Record<string, unknown>;
+  const right = to as unknown as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  for (const key of keys) {
+    if (key === "text") continue;
+    if (left[key] !== right[key]) return false;
+  }
+  return true;
+}
+
+/** The one entry point to the reducer, so no individual case has to remember to
+ *  bump `messagesVersion`: text growing inside an existing segment keeps the
+ *  previous revision, every other transcript change bumps it once. */
+export function reduce(state: State, action: Action): State {
+  const next = reduceAction(state, action);
+  if (next.messages === state.messages) return next;
+  if (isTextOnlyGrowth(state.messages, next.messages)) return next;
+  return { ...next, messagesVersion: state.messagesVersion + 1 };
 }
 
 type FileStat = { filename: string; added: number; removed: number };
@@ -1646,6 +1702,7 @@ const AssistantRow = memo(function AssistantRow({
         segments={m.segments}
         pending={m.pending && !isInterventionPending}
         model={model}
+        history={m.closed === true}
         onApproveConfirm={onApproveConfirm}
         onRejectConfirm={onRejectConfirm}
         onRuleConfirm={onRuleConfirm}
@@ -1705,12 +1762,14 @@ function mergeSessionFiles(existing: SessionFile[], adds: SessionFile[]): Sessio
  *  Left open, a later delta whose ordinal happens to match would be written into
  *  that history card — above whatever boundary (a compaction notice) sits after
  *  it — and vanish from the transcript. */
-export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
+export function mapLoadedMessages(loaded: LoadedMessage[], turnBase = 0): ChatMessage[] {
   // User turns are counted by user-message position (1-based), matching live
   // numbering. List index i+1 would drift: the loaded list interleaves
   // assistant messages, so the 2nd user message would render as turn 3 and
   // rewind's index mapping (turn - 1) would point past the log's user entries.
-  let userTurn = 0;
+  // `turnBase` is how many user turns the page sits BELOW, so a paged or
+  // prepended window keeps the absolute numbers the Events tab and rewind use.
+  let userTurn = turnBase;
   return loaded.map((m, i) => {
     if (m.kind === "user") {
       userTurn += 1;
@@ -1730,7 +1789,7 @@ export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
         id: m.id,
         text: m.text,
         severity: m.severity,
-        turn: m.turn,
+        turn: m.turn === undefined ? undefined : m.turn + turnBase,
         ts: m.ts,
       };
     }
@@ -1760,7 +1819,7 @@ export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
     // closed: history can never be the streaming target (see openAssistantIndex).
     return {
       kind: "assistant",
-      turn: m.turn,
+      turn: m.turn + turnBase,
       segments,
       pending: false,
       closed: true,
@@ -1769,46 +1828,93 @@ export function mapLoadedMessages(loaded: LoadedMessage[]): ChatMessage[] {
   });
 }
 
+/** A card's own annotation records. A card object is replaced whenever anything
+ *  about it changes, so a cache hit means this card contributes exactly what it
+ *  did last time. */
+const noticesByCard = new WeakMap<ChatMessage, PersistedNotice[]>();
+
+function noticesOfCard(card: ChatMessage): PersistedNotice[] {
+  const cached = noticesByCard.get(card);
+  if (cached) return cached;
+  const own: PersistedNotice[] = [];
+  if (card.kind === "notice") {
+    own.push({
+      id: card.id,
+      kind: "notice",
+      text: card.text,
+      severity: card.severity,
+      turn: card.turn ?? 0,
+    });
+  } else if (card.kind === "assistant") {
+    for (const segment of card.segments) {
+      if (segment.kind !== "warning") continue;
+      own.push({
+        id: segment.id,
+        kind: "warning",
+        text: segment.text,
+        severity: segment.severity ?? "high",
+        turn: card.turn,
+      });
+    }
+  }
+  noticesByCard.set(card, own);
+  return own;
+}
+
+/** The last flattened list, reused while the annotations are unchanged. The
+ *  sidecar sync keys on this identity, so a streamed token must not hand it a
+ *  fresh array (and a fresh stringify) sixty times a second. */
+let noticesCache: { key: readonly ChatMessage[]; value: PersistedNotice[] } | null = null;
+
+function sameNoticeList(a: readonly PersistedNotice[], b: readonly PersistedNotice[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 /** Flatten the live transcript's annotation cards (notice cards + assistant
  *  warning segments) into the persisted shape the daemon stores per session, so
  *  none is transient across reload / resync / restart. */
-export function collectPersistedNotices(messages: ChatMessage[]): PersistedNotice[] {
+export function collectPersistedNotices(messages: readonly ChatMessage[]): PersistedNotice[] {
+  if (noticesCache?.key === messages) return noticesCache.value;
   const out: PersistedNotice[] = [];
-  for (const m of messages) {
-    if (m.kind === "notice") {
-      out.push({ id: m.id, kind: "notice", text: m.text, severity: m.severity, turn: m.turn ?? 0 });
-      continue;
-    }
-    if (m.kind !== "assistant") continue;
-    for (const s of m.segments) {
-      if (s.kind === "warning") {
-        out.push({
-          id: s.id,
-          kind: "warning",
-          text: s.text,
-          severity: s.severity ?? "high",
-          turn: m.turn,
-        });
-      }
-    }
+  for (const card of messages) {
+    for (const notice of noticesOfCard(card)) out.push(notice);
   }
-  return out;
+  const stable = noticesCache && sameNoticeList(noticesCache.value, out) ? noticesCache.value : out;
+  noticesCache = { key: messages, value: stable };
+  return stable;
 }
 
 /** Re-derive the "Files in context" list from a conversation: paths from tool
  *  segments. Used by $session_loaded and session.retracted. */
 function deriveSessionFiles(loaded: ChatMessage[]): SessionFile[] {
-  let sessionFiles: SessionFile[] = [];
+  const files: SessionFile[] = [];
+  const indexByPath = new Map<string, number>();
   for (const m of loaded) {
     if (m.kind !== "assistant") continue;
     for (const s of m.segments) {
       if (s.kind !== "tool") continue;
       // For replayed sessions we don't have tool.result ok-status here, but
       // segments only survive into history if the call completed. Trust it.
-      sessionFiles = mergeSessionFiles(sessionFiles, extractToolFiles(s.name, s.args));
+      for (const add of extractToolFiles(s.name, s.args)) {
+        const at = indexByPath.get(add.path);
+        if (at === undefined) {
+          indexByPath.set(add.path, files.length);
+          files.push(add);
+          continue;
+        }
+        const prev = files[at];
+        // Never downgrade a modified file back to merely-in-context.
+        if (!prev || prev.status === "m" || prev.status === add.status) continue;
+        files[at] = add;
+      }
     }
   }
-  return sessionFiles;
+  return files;
 }
 
 function zeroUsage(): UsageStats {
@@ -2455,61 +2561,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         },
       };
     }
-    case "$sessions": {
-      const sameEpoch = ev.epoch === state.sessionsEpoch;
-      if (sameEpoch && ev.revision < state.sessionsRevision) return state;
-      const settledNames = new Set(ev.settledDeletes?.map((result) => result.name) ?? []);
-      const filteredDeletes =
-        sameEpoch && settledNames.size > 0
-          ? state.pendingSessionDeletes.filter((name) => !settledNames.has(name))
-          : state.pendingSessionDeletes;
-      const pendingSessionDeletes = sameEpoch
-        ? keepStable(state.pendingSessionDeletes, filteredDeletes, sameStringList)
-        : state.pendingSessionDeletes.length === 0
-          ? state.pendingSessionDeletes
-          : [];
-      const hidden = new Set(pendingSessionDeletes);
-      const unique = new Map<string, SessionInfo>();
-      for (const session of ev.items) {
-        // Every session the backend lists shows as-is — an empty session is a
-        // real session (New chat materializes it eagerly on disk), so there is
-        // no message-count visibility filter here anymore.
-        if (!hidden.has(session.name)) {
-          unique.set(session.name, session);
-        }
-      }
-      // A create settles only when the session it is waiting for is listed; an
-      // unrelated refresh must not tear the "Creating session..." indicator
-      // down. With no known target there is nothing to match, so accept the
-      // snapshot (the mutation watchdog is the final release).
-      const mutation = state.sessionsMutation;
-      const createSettled =
-        mutation?.kind !== "create" ||
-        mutation.awaitingName === undefined ||
-        ev.items.some((item) => item.name === mutation.awaitingName);
-      const sorted = [...unique.values()].sort(sortSessionsByCreationDescending);
-      const sessions = sameSessionRows(state.sessions, sorted) ? state.sessions : sorted;
-      // Every hidden name was settled by this snapshot — drop the in-flight marker.
-      const sessionsMutation =
-        pendingSessionDeletes.length > 0 || !createSettled ? state.sessionsMutation : null;
-      if (
-        sessions === state.sessions &&
-        sessionsMutation === state.sessionsMutation &&
-        pendingSessionDeletes === state.pendingSessionDeletes &&
-        ev.epoch === state.sessionsEpoch &&
-        ev.revision === state.sessionsRevision
-      ) {
-        return state;
-      }
-      return {
-        ...state,
-        sessions,
-        sessionsEpoch: ev.epoch,
-        sessionsRevision: ev.revision,
-        pendingSessionDeletes,
-        sessionsMutation,
-      };
-    }
     case "$mcp_setup":
       return {
         ...state,
@@ -2654,10 +2705,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turnStatus: releaseTurn ? null : state.turnStatus,
         turnStatusTool: releaseTurn ? null : state.turnStatusTool,
         messages: wsChanged ? [] : state.messages,
-        // A session list belongs to ONE workspace. Keeping the previous
-        // workspace's rows after a switch let a click open a foreign session in
-        // this tab, which then persisted a channel bound across workspaces.
-        sessions: wsChanged ? [] : state.sessions,
         pendingConfirms: wsChanged ? [] : state.pendingConfirms,
         pendingPathAccess: wsChanged ? [] : state.pendingPathAccess,
         pendingChoices: wsChanged ? [] : state.pendingChoices,
@@ -2751,7 +2798,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // so a real switch (different session) still applies.
       if (ev.resync && ev.name === state.currentSession) return state;
       const sessionName = ev.name;
-      const loaded = mapLoadedMessages(ev.messages);
+      const loaded = mapLoadedMessages(ev.messages, ev.turnBase ?? 0);
       const sessionFiles = deriveSessionFiles(loaded);
       return {
         ...state,
@@ -2760,6 +2807,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         currentSession: sessionName,
         compacting: false,
         messages: loaded,
+        historyHasOlder: ev.hasOlder === true,
+        historyLoaded: ev.messages.length,
         pendingConfirms: [],
         pendingPathAccess: [],
         pendingChoices: [],
@@ -2785,6 +2834,17 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         activeSkill: null,
         queuedSends: [],
         retryNonce: 0,
+      };
+    }
+    case "$session_history": {
+      const older = mapLoadedMessages(ev.messages, ev.turnBase);
+      const prepended = [...older, ...state.messages];
+      return {
+        ...state,
+        messages: prepended,
+        historyHasOlder: ev.hasOlder,
+        historyLoaded: state.historyLoaded + ev.messages.length,
+        sessionFiles: deriveSessionFiles(prepended),
       };
     }
     case "$session_empty": {
@@ -3170,6 +3230,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return {
         ...state,
         messages: [...mergeByTurn(loaded, settledNotices), ...inflightCards],
+        // A retraction replaces the transcript wholesale, so it is no longer a
+        // windowed page and there is nothing older left to fetch.
+        historyHasOlder: false,
+        historyLoaded: ev.replacementMessages.length,
         sessionFiles: deriveSessionFiles(loaded),
         // The Events journal follows the same rule as the notice cards above: a
         // verdict for a turn the replacement dropped has nowhere to land, so it
@@ -3348,24 +3412,40 @@ function duplicateModelOptions(
 type TabAction = Action;
 type TabDispatcher = (action: TabAction) => void;
 
+/** Asks the daemon for the authoritative session list — the one reconciliation entry
+ *  point. Neither an escaped hide nor a stuck intent reveals a row by itself. */
+function requestSessionList(tabId: string): void {
+  void rpcSend({ tabId, cmd: "session_list" }).catch((err) =>
+    recordFrontendFailure("frontend.session_list_resync_failed", err),
+  );
+}
+
 interface TabRuntimeProps {
   tabId: string;
   active: boolean;
+  /** True for the tab that was visible a moment ago: its transcript stays mounted
+   *  (hidden) so returning to it does not remount and re-parse the conversation. */
+  keepAlive?: boolean;
   backendConnected: boolean;
   currency: "CNY" | "USD";
   registerDispatch: (tabId: string, d: TabDispatcher | null) => void;
   onWorkspaceInitialized: (tabId: string) => void;
   onNewTab: () => void;
-  /** Session list to seed this channel's sidebar with at mount — the
-   *  workspace's last-known list, so a freshly opened channel never blanks the
-   *  sidebar while its own first $sessions snapshot is in flight. */
-  initialSessionSeed?: SessionInfo[];
-  /** True when this channel was opened for a fresh, not-yet-listed session.
-   *  Starts the "Creating session..." indicator until $sessions lists it. */
-  creatingSession?: boolean;
-  /** The session name this channel was opened for, when `creatingSession` is
-   *  set: the create indicator stays up until exactly this name is listed. */
-  expectedSessionName?: string;
+  /** This channel's workspace session list — owned by App and shared by every
+   *  channel on the same directory, so no channel can disagree with another. */
+  sessionView: SessionView;
+  /** Records a delete/clear/create the user asked for on this channel's workspace. */
+  onSessionIntent: (
+    workspaceDir: string | undefined,
+    kind: SessionMutation["kind"],
+    name?: string,
+  ) => void;
+  /** Applies an optimistic row edit (rename/reorder) until a snapshot confirms it. */
+  onSessionPatch: (
+    workspaceDir: string | undefined,
+    name: string,
+    patch: Partial<SessionInfo>,
+  ) => void;
   /** Reports this channel's running-agent state so the tab dot can count them. */
   onBusyChange: (tabId: string, busy: boolean) => void;
   /** Live provider output rate (tokens/second) keyed by session name, for the
@@ -3440,14 +3520,21 @@ const MemoStatusBar = memo(StatusBar);
 const TabRuntime = memo(function TabRuntime({
   tabId,
   active,
+  keepAlive,
   backendConnected,
   currency,
   registerDispatch,
   onWorkspaceInitialized,
   onNewTab,
-  initialSessionSeed,
-  creatingSession,
-  expectedSessionName,
+  sessionView: {
+    items: sessions,
+    mutation: sessionsMutation,
+    pendingDeleteCount,
+    confirmed: sessionsConfirmed,
+    openIntentId: sessionIntentId,
+  },
+  onSessionIntent,
+  onSessionPatch,
   onBusyChange,
   sessionRates,
   theme,
@@ -3494,6 +3581,9 @@ const TabRuntime = memo(function TabRuntime({
     awaitingAck: false,
     compacting: false,
     messages: [],
+    messagesVersion: 0,
+    historyHasOlder: false,
+    historyLoaded: 0,
     pendingConfirms: [],
     pendingPathAccess: [],
     pendingChoices: [],
@@ -3502,18 +3592,7 @@ const TabRuntime = memo(function TabRuntime({
     pendingRevisions: [],
     activePlan: null,
     usage: zeroUsage(),
-    // Seed the sidebar with the workspace's last-known list so a freshly opened
-    // channel (New chat) never blanks the session list while its own first
-    // $sessions snapshot is in flight. Read once at mount; the daemon's
-    // $sessions is the source of truth from here on.
-    sessions: initialSessionSeed ?? [],
-    sessionsEpoch: "",
-    sessionsRevision: 0,
     workspaceInitializationRevision: 0,
-    pendingSessionDeletes: [],
-    sessionsMutation: creatingSession
-      ? { kind: "create", awaitingName: expectedSessionName }
-      : null,
     settings: null,
     balance: null,
     codexQuota: null,
@@ -3842,6 +3921,9 @@ const TabRuntime = memo(function TabRuntime({
     [sendRpc],
   );
   const newChat = useCallback(() => {
+    // One workspace mutation at a time: the shortcut must not stack creates behind a
+    // delete that is still waiting for its settling snapshot.
+    if (sessionsMutation !== null) return;
     clearAbortDraft();
     // Composer state belongs to the old conversation — drop it now so a
     // half-typed draft can't leak into the fresh session.
@@ -3858,7 +3940,7 @@ const TabRuntime = memo(function TabRuntime({
         severity: "error",
       });
     });
-  }, [clearAbortDraft, tabId]);
+  }, [clearAbortDraft, sessionsMutation, tabId]);
 
   const pickWorkspace = useCallback(async () => {
     try {
@@ -3910,10 +3992,8 @@ const TabRuntime = memo(function TabRuntime({
   // Persist the transcript's annotation cards (notices + assistant warning
   // segments) with the session so none is transient — the daemon stores them in
   // the session's notices sidecar and merges them back on load/resync.
-  const noticesSync = useMemo<OutgoingCommand>(
-    () => ({ cmd: "notices_sync", notices: collectPersistedNotices(state.messages) }),
-    [state.messages],
-  );
+  const notices = useMemo(() => collectPersistedNotices(state.messages), [state.messages]);
+  const noticesSync = useMemo<OutgoingCommand>(() => ({ cmd: "notices_sync", notices }), [notices]);
   useSidecarSync(state.currentSession, noticesSync, sendRpc);
 
   // Persist the session's recorded events (plan/choice verdicts, folds) so the
@@ -4189,21 +4269,6 @@ const TabRuntime = memo(function TabRuntime({
     probe: probeTabStatus,
     onStaleAck: releaseStaleSend,
   });
-
-  // Session-mutation watchdog: a delete/clear/create shows its indicator and
-  // waits for the daemon's settled $sessions snapshot. If that never lands the
-  // UI would sit mid-mutation forever, so release it past the deadline.
-  useEffect(() => {
-    if (state.sessionsMutation === null) return;
-    const id = window.setTimeout(() => {
-      dispatch({ t: "session_mutation_release" });
-      // Re-sync instead of only dropping the indicator: past the deadline we
-      // cannot tell "wedged daemon" from "still deleting on a slow disk", so
-      // ask for the authoritative list rather than leaving the UI guessing.
-      sendRpc({ cmd: "session_list" });
-    }, SESSION_MUTATION_TIMEOUT_MS);
-    return () => window.clearTimeout(id);
-  }, [state.sessionsMutation, state.pendingSessionDeletes.length, sendRpc]);
 
   // When retry returns the last user text, set it as the composer draft.
   // Only fire when retryNonce changes — retryText alone would re-fire on re-renders.
@@ -4554,7 +4619,7 @@ const TabRuntime = memo(function TabRuntime({
     : "Reasonix+";
   const session = (() => {
     if (state.currentSession) {
-      const s = state.sessions.find((x) => x.name === state.currentSession);
+      const s = sessions.find((x) => x.name === state.currentSession);
       if (s?.summary?.trim()) return s.summary.trim();
     }
     const firstUser = state.messages.find((m) => m.kind === "user");
@@ -4692,72 +4757,122 @@ const TabRuntime = memo(function TabRuntime({
     onBusyChange(tabId, state.busy);
   }, [onBusyChange, tabId, state.busy]);
 
+  // A mutation whose settling snapshot never arrives must not hide a row forever.
+  // One bounded request per intent asks the daemon for the truth; the store's
+  // content rule (and its escape) is what actually decides visibility.
+  const reconciledIntentRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (sessionIntentId === null || reconciledIntentRef.current === sessionIntentId) return;
+    const timer = window.setTimeout(() => {
+      reconciledIntentRef.current = sessionIntentId;
+      requestSessionList(tabId);
+    }, INTENT_RECONCILE_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [sessionIntentId, tabId]);
+
+  // The right panel reaches the transcript only through its Events tab, which reads
+  // turns and stamps, never streamed text. A revision-keyed array keeps memo() able
+  // to bail out while a turn streams.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the structural revision by design
+  const panelMessages = useMemo(() => view.messages, [view.messagesVersion]);
+
+  // Loading an older page prepends rows ABOVE the viewport, so the scroll offset
+  // has to grow by exactly what the content grew or the reader's place jumps.
+  const historyAnchorRef = useRef<{ height: number; top: number } | null>(null);
+  const loadOlder = useCallback(() => {
+    const el = threadRef.current;
+    if (el) historyAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+    sendRpc({
+      cmd: "session_history_page",
+      name: view.currentSession ?? "",
+      before: view.historyLoaded,
+    });
+  }, [sendRpc, view.currentSession, view.historyLoaded]);
+
+  useEffect(() => {
+    const anchor = historyAnchorRef.current;
+    const el = threadRef.current;
+    if (!anchor || !el) return;
+    historyAnchorRef.current = null;
+    el.scrollTop = anchor.top + (el.scrollHeight - anchor.height);
+  }, [view.messagesVersion]);
+
   // Rebuilding the transcript on every unrelated state change walked every
   // message; the rows are memoized, so reuse the same elements until something
   // a row actually reads changes.
   const interventionPending = hasPendingIntervention(view);
-  const transcriptRows = useMemo(
-    () =>
-      view.messages.map((m, i) => {
-        if (m.kind === "user") {
-          const dividerLabel = `turn ${m.turn}`;
-          const prev = view.messages[i - 1];
-          const needsDivider = !prev || prev.kind === "user";
-          return (
-            <div key={`u-${m.turn}`} data-turn={m.turn} className="thread-row">
-              {needsDivider ? <TurnDivider label={dividerLabel} /> : null}
-              <UserMsg text={m.text} images={m.images} skill={m.skill} />
-            </div>
-          );
-        }
-        if (m.kind === "assistant") {
-          return (
-            <div key={`a-${m.turn}-${i}`} className="thread-row">
-              <AssistantRow
-                m={m}
-                model={view.model}
-                pendingConfirms={view.pendingConfirms}
-                activePlan={activePlanForMessage(m, view.activePlan)}
-                onApproveConfirm={onApproveConfirm}
-                onRejectConfirm={onRejectConfirm}
-                onRuleConfirm={onRuleConfirm}
-                onStopTool={onStopTool}
-                jobs={view.jobs}
-                tabId={tabId}
-                onStopJob={onStopJob}
-                isInterventionPending={interventionPending}
-              />
-            </div>
-          );
-        }
-        if (m.kind === "notice") {
-          return (
-            <NoticeCard
-              key={m.id}
-              text={m.text}
-              severity={m.severity}
-              running={m.running}
-              anchor={m.trigger ? noticeAnchor(m.id) : undefined}
-            />
-          );
-        }
-        return null;
-      }),
-    [
-      view.messages,
-      view.model,
-      view.pendingConfirms,
-      view.activePlan,
-      view.jobs,
-      tabId,
-      interventionPending,
-      onApproveConfirm,
-      onRejectConfirm,
-      onRuleConfirm,
-      onStopTool,
-      onStopJob,
-    ],
-  );
+  const renderRow = (m: ChatMessage, i: number) => {
+    if (m.kind === "user") {
+      const dividerLabel = `turn ${m.turn}`;
+      const prev = view.messages[i - 1];
+      const needsDivider = !prev || prev.kind === "user";
+      return (
+        <div key={`u-${m.turn}`} data-turn={m.turn} className="thread-row">
+          {needsDivider ? <TurnDivider label={dividerLabel} /> : null}
+          <UserMsg text={m.text} images={m.images} skill={m.skill} />
+        </div>
+      );
+    }
+    if (m.kind === "assistant") {
+      return (
+        <div key={`a-${m.turn}-${i}`} className="thread-row">
+          <AssistantRow
+            m={m}
+            model={view.model}
+            pendingConfirms={view.pendingConfirms}
+            activePlan={activePlanForMessage(m, view.activePlan)}
+            onApproveConfirm={onApproveConfirm}
+            onRejectConfirm={onRejectConfirm}
+            onRuleConfirm={onRuleConfirm}
+            onStopTool={onStopTool}
+            jobs={view.jobs}
+            tabId={tabId}
+            onStopJob={onStopJob}
+            isInterventionPending={interventionPending}
+          />
+        </div>
+      );
+    }
+    if (m.kind === "notice") {
+      return (
+        <NoticeCard
+          key={m.id}
+          text={m.text}
+          severity={m.severity}
+          running={m.running}
+          anchor={m.trigger ? noticeAnchor(m.id) : undefined}
+        />
+      );
+    }
+    return null;
+  };
+
+  // The streaming card is the only row a delta can change, so it lives outside the
+  // memoized history: one frame reconciles a stable element list plus one fresh row
+  // instead of every row in the transcript.
+  const tailIndex = streamingTailIndex(view.messages);
+  const historyEnd = tailIndex < 0 ? view.messages.length : tailIndex;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: renderRow closes over the props listed here, and the history is keyed on the structural revision by design
+  const historyRows = useMemo(() => {
+    const rows: ReactNode[] = [];
+    for (let i = 0; i < historyEnd; i += 1) rows.push(renderRow(view.messages[i]!, i));
+    return rows;
+  }, [
+    view.messagesVersion,
+    historyEnd,
+    view.model,
+    view.pendingConfirms,
+    view.activePlan,
+    view.jobs,
+    tabId,
+    interventionPending,
+    onApproveConfirm,
+    onRejectConfirm,
+    onRuleConfirm,
+    onStopTool,
+    onStopJob,
+  ]);
+  const tailRow = tailIndex >= 0 ? renderRow(view.messages[tailIndex]!, tailIndex) : null;
 
   // Props handed to memoized children must keep their identity across renders,
   // otherwise memo() can never bail out of their subtree.
@@ -4794,28 +4909,30 @@ const TabRuntime = memo(function TabRuntime({
 
   const deleteSession = useCallback(
     (name: string) => {
-      dispatch({ t: "session_delete_requested", name });
+      if (sessionsMutation !== null) return;
+      onSessionIntent(state.settings?.workspaceDir, "delete", name);
       sendRpc({ cmd: "session_delete", name });
     },
-    [sendRpc],
+    [onSessionIntent, sessionsMutation, state.settings?.workspaceDir, sendRpc],
   );
 
   const clearSessions = useCallback(() => {
+    if (sessionsMutation !== null) return;
     // Echo the exact names being hidden so the daemon can settle every one even
     // if its own workspace listing misses some — otherwise the rows stay hidden
     // forever and the app looks wedged.
-    const names = state.sessions.map((session) => session.name);
-    dispatch({ t: "session_clear_requested" });
+    const names = sessions.map((session) => session.name);
+    onSessionIntent(state.settings?.workspaceDir, "clear");
     sendRpc({ cmd: "session_clear", names });
-  }, [state.sessions, sendRpc]);
+  }, [onSessionIntent, sessions, sessionsMutation, state.settings?.workspaceDir, sendRpc]);
 
   const reorderSession = useCallback(
     (name: string) => {
       const now = Date.now();
-      dispatch({ t: "session_bump_requested", name, createdAt: now });
+      onSessionPatch(state.settings?.workspaceDir, name, { createdAt: now });
       sendRpc({ cmd: "session_reorder", name, createdAt: now });
     },
-    [sendRpc],
+    [onSessionPatch, state.settings?.workspaceDir, sendRpc],
   );
 
   const openWorkdir = useCallback((anchor: { top?: number; bottom?: number; left: number }) => {
@@ -4868,6 +4985,11 @@ const TabRuntime = memo(function TabRuntime({
     [tabId],
   );
 
+  // The empty-list prompt may only replace an EMPTY transcript. Gating on the list
+  // alone unmounted a live conversation whenever a snapshot momentarily listed
+  // nothing, which read to the user as "my session vanished".
+  const showNoSessions = sessionsConfirmed && sessions.length === 0 && state.messages.length === 0;
+
   return (
     <WorkspaceProvider value={{ dir: state.settings?.workspaceDir }}>
       <div
@@ -4903,14 +5025,14 @@ const TabRuntime = memo(function TabRuntime({
         />
 
         <MemoSidebar
-          sessions={view.sessions}
+          sessions={sessions}
           activeName={view.currentSession}
           workspaceDir={view.settings?.workspaceDir}
           onNewChat={newChat}
           runningSessions={runningSessions}
           sessionRates={sessionRates}
           planLabels={sessionPlanLabels}
-          sessionMutation={view.sessionsMutation}
+          sessionMutation={sessionsMutation}
           onLoadSession={loadSession}
           onDeleteSession={deleteSession}
           onClearSessions={clearSessions}
@@ -4930,12 +5052,12 @@ const TabRuntime = memo(function TabRuntime({
         ) : null}
 
         <main className="main" style={{ position: "relative" }}>
-          {state.sessionsMutation !== null ? (
+          {/* Workspace-scoped, but surfaced once: only the channel the user is
+              looking at paints the pill, so a hidden tab adds no second copy. */}
+          {active && sessionsMutation !== null ? (
             <div className="main-progress" role="status" aria-live="polite">
               <span className="spin" aria-hidden="true" />
-              <span>
-                {sessionMutationLabel(state.sessionsMutation, state.pendingSessionDeletes.length)}
-              </span>
+              <span>{sessionMutationLabel(sessionsMutation, pendingDeleteCount)}</span>
             </div>
           ) : null}
           {state.settings != null && !state.settings.workspaceDir ? (
@@ -4954,7 +5076,7 @@ const TabRuntime = memo(function TabRuntime({
               onPickWorkspace={pickWorkspace}
               onOpenSettings={() => openSettingsAt("models")}
             />
-          ) : state.sessionsRevision > 0 && state.sessions.length === 0 ? (
+          ) : showNoSessions ? (
             <NoSessionsView onNewChat={newChat} />
           ) : (
             <>
@@ -4974,10 +5096,8 @@ const TabRuntime = memo(function TabRuntime({
                 }}
                 onRename={(title) => {
                   if (state.currentSession) {
-                    dispatch({
-                      t: "session_rename_requested",
-                      name: state.currentSession,
-                      title,
+                    onSessionPatch(state.settings?.workspaceDir, state.currentSession, {
+                      summary: flattenText(title).slice(0, 200) || undefined,
                     });
                     sendRpc({ cmd: "session_rename", name: state.currentSession, title });
                   }
@@ -4999,8 +5119,20 @@ const TabRuntime = memo(function TabRuntime({
                 ) : null}
                 <div className="thread" ref={threadRef}>
                   <div className="thread-inner" ref={threadInnerRef}>
-                    {active ? (
+                    {active || keepAlive ? (
                       <>
+                        {view.historyHasOlder && view.messages.length > 0 ? (
+                          <div className="thread-history">
+                            <button
+                              type="button"
+                              className="btn ghost"
+                              onClick={loadOlder}
+                              disabled={state.busy}
+                            >
+                              {t("thread.loadOlder")}
+                            </button>
+                          </div>
+                        ) : null}
                         {view.messages.length === 0 ? (
                           <EmptyState
                             onPick={(text) => send(text)}
@@ -5008,7 +5140,8 @@ const TabRuntime = memo(function TabRuntime({
                           />
                         ) : null}
 
-                        {transcriptRows}
+                        {historyRows}
+                        {tailRow}
 
                         {/* Pending approvals */}
                         {state.pendingPlans.map((p) => (
@@ -5300,11 +5433,11 @@ const TabRuntime = memo(function TabRuntime({
           planHistory={view.planHistory}
           planDetails={view.planDetails}
           planSession={view.currentSession}
-          sessions={view.sessions}
+          sessions={sessions}
           onReadPlans={readPlans}
           onReadPlan={readPlan}
           onRemovePlan={removePlan}
-          messages={view.messages}
+          messages={panelMessages}
           sessionEvents={view.sessionEvents}
           onJumpToEvent={jumpToEvent}
           active={active}
@@ -6409,9 +6542,24 @@ type TabMeta = {
   session?: string;
   /** Visual workspace-tab id shared by sibling session channels. */
   group?: string;
-  /** True for a channel opened for a fresh, not-yet-listed session (New chat /
-   *  duplicate); drives the create indicator. Consumed once, at channel mount. */
-  creating?: boolean;
+};
+
+/** Everything one channel needs to render a workspace's shared session list. */
+type SessionView = {
+  items: SessionInfo[];
+  mutation: SessionMutation | null;
+  pendingDeleteCount: number;
+  confirmed: boolean;
+  /** Id of the mutation in flight, so a channel reconciles once per intent. */
+  openIntentId: number | null;
+};
+
+const EMPTY_SESSION_VIEW: SessionView = {
+  items: [],
+  mutation: null,
+  pendingDeleteCount: 0,
+  confirmed: false,
+  openIntentId: null,
 };
 
 export function App() {
@@ -6468,24 +6616,55 @@ export function App() {
     tabsRef.current = tabs;
   }, [tabs]);
 
-  // Last-known session list per normalized workspace. A freshly opened channel
-  // (New chat / duplicate) seeds its sidebar from this so the workspace's
-  // sessions never blank out while the channel's own first $sessions snapshot
-  // is in flight.
-  const sessionsByWorkspaceRef = useRef<Map<string, SessionInfo[]>>(new Map());
-  // A $sessions broadcast replaces the ref's array, and the seed is read once at
-  // mount — but a fresh array is a fresh prop that would wake every tab of the
-  // workspace it belongs to. Same contents, same array.
-  const sessionSeedRef = useRef<Map<string, SessionInfo[]>>(new Map());
-  const sessionSeedFor = (workspaceDir?: string): SessionInfo[] | undefined => {
-    const workspace = normalizeWorkspacePath(workspaceDir);
-    const fresh = sessionsByWorkspaceRef.current.get(workspace);
-    if (!fresh) return undefined;
-    const prior = sessionSeedRef.current.get(workspace);
-    const seed = keepStable(prior, fresh, sameSessionRows);
-    if (seed !== prior) sessionSeedRef.current.set(workspace, seed);
-    return seed;
-  };
+  // ONE session list per workspace, shared by every channel on it: a channel never
+  // owns rows, so two channels can never disagree about the same directory.
+  const [sessionsStore, setSessionsStore] = useState<SessionsStore>(emptySessionsStore);
+  const sessionsStoreRef = useRef<SessionsStore>(sessionsStore);
+  // The ref stays authoritative for synchronous reads (the event listener, the
+  // handlers); the state copy is what re-renders, and only when rows changed.
+  const commitSessionsStore = useCallback((next: SessionsStore, changed: boolean) => {
+    sessionsStoreRef.current = next;
+    if (changed) setSessionsStore(next);
+  }, []);
+  const beginSessionIntent = useCallback(
+    (workspaceDir: string | undefined, kind: SessionMutation["kind"], name?: string) => {
+      commitSessionsStore(
+        beginIntent(sessionsStoreRef.current, workspaceDir, { kind, name }),
+        true,
+      );
+    },
+    [commitSessionsStore],
+  );
+  const patchSessionRow = useCallback(
+    (workspaceDir: string | undefined, name: string, patch: Partial<SessionInfo>) => {
+      const current = sessionsStoreRef.current;
+      const next = patchSession(current, workspaceDir, name, patch);
+      commitSessionsStore(next, next !== current);
+    },
+    [commitSessionsStore],
+  );
+  // One derived view per workspace, rebuilt when the store or the tab set changes.
+  // The row array keeps its identity in the store, so memoized rows still bail out.
+  const sessionViews = useMemo(() => {
+    const views = new Map<string, SessionView>();
+    for (const tab of tabs) {
+      const key = normalizeWorkspacePath(tab.workspaceDir);
+      if (views.has(key)) continue;
+      views.set(key, {
+        items: visibleSessions(sessionsStore, tab.workspaceDir),
+        mutation: mutationFor(sessionsStore, tab.workspaceDir),
+        pendingDeleteCount: hiddenNames(sessionsStore, tab.workspaceDir).length,
+        confirmed: sessionsEntry(sessionsStore, tab.workspaceDir).confirmed,
+        openIntentId: openIntentId(sessionsStore, tab.workspaceDir),
+      });
+    }
+    return views;
+  }, [tabs, sessionsStore]);
+  const sessionViewFor = useCallback(
+    (workspaceDir?: string): SessionView =>
+      sessionViews.get(normalizeWorkspacePath(workspaceDir)) ?? EMPTY_SESSION_VIEW,
+    [sessionViews],
+  );
 
   // Mirror of activeTabId for listener closures — the startup effect must
   // NOT re-run on every tab switch (it tears down and re-fires desktop_resync,
@@ -6497,6 +6676,18 @@ export function App() {
     activeTabIdRef.current = activeTabId;
   }, [activeTabId]);
 
+  // The tab that was visible a moment ago keeps its transcript mounted (hidden), so
+  // switching back does not remount and re-parse the conversation. Derived during
+  // render, not in an effect: an effect lands a commit late, by which point the
+  // transcript has already unmounted.
+  const previousActiveRef = useRef("");
+  const lastActiveRef = useRef("");
+  if (activeTabId !== lastActiveRef.current) {
+    previousActiveRef.current = lastActiveRef.current;
+    lastActiveRef.current = activeTabId;
+  }
+  const previousActiveTabId = previousActiveRef.current;
+
   const requestOllamaModels = useCallback((force?: boolean) => {
     rpcSend({ tabId: activeTabIdRef.current, cmd: "ollama_models_list", force }).catch((err) =>
       recordFrontendFailure("frontend.ollama_models_failed", err),
@@ -6507,9 +6698,7 @@ export function App() {
     rpcSend({
       tabId: activeTabIdRef.current,
       cmd: "antigravity_models_refresh",
-    }).catch((err) =>
-      recordFrontendFailure("frontend.antigravity_models_failed", err),
-    );
+    }).catch((err) => recordFrontendFailure("frontend.antigravity_models_failed", err));
   }, []);
 
   const requestOpencodeModels = useCallback((force?: boolean) => {
@@ -6517,9 +6706,7 @@ export function App() {
       tabId: activeTabIdRef.current,
       cmd: "opencode_models_refresh",
       force,
-    }).catch((err) =>
-      recordFrontendFailure("frontend.opencode_models_failed", err),
-    );
+    }).catch((err) => recordFrontendFailure("frontend.opencode_models_failed", err));
   }, []);
 
   const requestChangelog = useCallback((force?: boolean) => {
@@ -6839,8 +7026,13 @@ export function App() {
                   active: ev.active ?? false,
                 },
               });
+              const openedSession = ev.activeSession ?? ev.sessions?.[0];
+              // A fresh channel's session is not on disk yet, so record the create
+              // here, where the workspace it belongs to is known.
+              if (ev.creating === true && openedSession && ev.workspaceDir) {
+                beginSessionIntent(ev.workspaceDir, "create", openedSession);
+              }
               setTabs((prev) => {
-                const session = ev.activeSession ?? ev.sessions?.[0];
                 const idx = prev.findIndex((t) => t.id === tabId);
                 if (idx === -1) {
                   return [
@@ -6848,9 +7040,8 @@ export function App() {
                     {
                       id: tabId,
                       workspaceDir: ev.workspaceDir,
-                      session,
+                      session: openedSession,
                       group: ev.groupId,
-                      creating: ev.creating,
                     },
                   ];
                 }
@@ -6858,11 +7049,8 @@ export function App() {
                 const merged: TabMeta = {
                   ...prev[idx],
                   workspaceDir: ev.workspaceDir,
-                  session: session ?? prev[idx]!.session,
+                  session: openedSession ?? prev[idx]!.session,
                   group: ev.groupId ?? prev[idx]!.group,
-                  // Only a fresh (New chat / duplicate) open sets this; a later
-                  // re-emit leaves it in place. Consumed once, at channel mount.
-                  creating: ev.creating ?? prev[idx]!.creating,
                 };
                 const copy = prev.slice();
                 copy[idx] = merged;
@@ -7095,10 +7283,17 @@ export function App() {
                 tabId,
                 details: { count: ev.items.length, epoch: ev.epoch, revision: ev.revision },
               });
-              // Cache this channel's list for its workspace so a channel opened
-              // later on the same workspace seeds its sidebar instead of blanking.
+              // The store is the ONLY handler: no channel keeps its own copy, so one
+              // snapshot updates every channel of the workspace at once.
               const ws = tabsRef.current.find((t) => t.id === tabId)?.workspaceDir;
-              if (ws) sessionsByWorkspaceRef.current.set(normalizeWorkspacePath(ws), ev.items);
+              if (ws) {
+                const result = applySessionsSnapshot(sessionsStoreRef.current, ws, ev);
+                commitSessionsStore(result.store, result.changed);
+                // A hide the daemon never settled: ask for the authoritative list
+                // once rather than keep a row hidden forever.
+                if (result.escaped.length > 0) requestSessionList(tabId);
+              }
+              return;
             }
 
             if (ev.type === "$workspace_initialized" && tabId) {
@@ -7376,12 +7571,13 @@ export function App() {
           key={t.id}
           tabId={t.id}
           active={t.id === activeTabId}
+          keepAlive={t.id === previousActiveTabId}
           backendConnected={backendConnected}
           currency={currency}
           registerDispatch={registerDispatch}
-          initialSessionSeed={sessionSeedFor(t.workspaceDir)}
-          creatingSession={t.creating === true}
-          expectedSessionName={t.session}
+          sessionView={sessionViewFor(t.workspaceDir)}
+          onSessionIntent={beginSessionIntent}
+          onSessionPatch={patchSessionRow}
           onWorkspaceInitialized={markWorkspaceInitialized}
           onNewTab={openTab}
           onBusyChange={reportTabBusy}

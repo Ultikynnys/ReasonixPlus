@@ -46,12 +46,30 @@ export function readCappedFile(path: string, maxChars: number): CappedPath | nul
   return { path, ...capped };
 }
 
-/** Assemble a memory block (heading + intro + code fence) into the prompt prefix. */
+/** Longest run of consecutive backticks in `text` — the fence must be longer than this. */
+function longestBacktickRun(text: string): number {
+  let longest = 0;
+  let run = 0;
+  for (const ch of text) {
+    if (ch === "`") {
+      run += 1;
+      if (run > longest) longest = run;
+    } else {
+      run = 0;
+    }
+  }
+  return longest;
+}
+
+/** Assemble a memory block (heading + intro + code fence) into the prompt prefix.
+ *  The fence is one backtick longer than the longest run inside `content`, so interpolated text
+ *  can never close it early. Nothing is escaped or stripped, so the block stays byte-deterministic. */
 export function applyMemoryBlock(
   basePrompt: string,
   heading: string,
   intro: string,
   content: string,
 ): string {
-  return [basePrompt, "", heading, "", intro, "", "```", content, "```"].join("\n");
+  const fence = "`".repeat(Math.max(3, longestBacktickRun(content) + 1));
+  return [basePrompt, "", heading, "", intro, "", fence, content, fence].join("\n");
 }

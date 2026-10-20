@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { invoke } from "@tauri-apps/api/core";
+import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -235,6 +236,61 @@ describe("Session plan history", () => {
     // Finishing a plan ends its ownership: the owner line disappears entirely.
     fireEvent.change(select, { target: { value: "done-plan" } });
     expect(container.querySelector(".ctx-plan-owner")).toBeNull();
+  });
+
+  function renderRemovablePlan(onRemovePlan: (id: string) => void) {
+    const now = "2026-01-01T00:00:00.000Z";
+    render(
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onDismissMemoryResult={() => {}}
+        planSession="test"
+        planHistory={[
+          {
+            id: "doomed",
+            summary: "Doomed plan",
+            status: "superseded",
+            createdAt: now,
+            updatedAt: now,
+            finishedAt: null,
+            totalSteps: 1,
+            completedSteps: 0,
+          },
+        ]}
+        onRemovePlan={onRemovePlan}
+      />,
+    );
+    fireEvent.click(screen.getByText("Plan"));
+    return screen.getByRole("button", { name: "Remove plan" });
+  }
+
+  it("keeps the plan when the confirm dialog is cancelled", async () => {
+    const onRemovePlan = vi.fn();
+    vi.mocked(confirmDialog).mockResolvedValue(false);
+    fireEvent.click(renderRemovablePlan(onRemovePlan));
+    await waitFor(() =>
+      expect(confirmDialog).toHaveBeenCalledWith(
+        "Remove this plan permanently? This cannot be undone.",
+      ),
+    );
+    expect(onRemovePlan).not.toHaveBeenCalled();
+  });
+
+  it("removes the plan only after the confirm dialog resolves true", async () => {
+    const onRemovePlan = vi.fn();
+    vi.mocked(confirmDialog).mockResolvedValue(true);
+    fireEvent.click(renderRemovablePlan(onRemovePlan));
+    await waitFor(() => expect(onRemovePlan).toHaveBeenCalledWith("doomed"));
   });
 });
 

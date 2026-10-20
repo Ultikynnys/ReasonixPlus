@@ -36,8 +36,12 @@ export interface ToolCallContext {
 
 export interface ToolDefinition<A = any, R = any> {
   name: string;
-  description?: string;
+  /** Required: every tool's purpose must ship in the spec array, which is the model's only usage manual. */
+  description: string;
   parameters?: JSONSchema;
+  /** Who owns this name. Same-name replacement is allowed only within one origin, so a bridged MCP tool cannot
+   *  silently shadow a built-in. Defaults to "builtin". */
+  origin?: string;
   /** Safe in plan mode — registry refuses non-readonly calls when `planMode` is on. */
   readOnly?: boolean;
   /** Per-args check; takes precedence over `readOnly`. e.g. `run_command` + allowlisted argv. */
@@ -97,6 +101,10 @@ export class ToolRegistry {
   private readonly _lastMalformed = new Map<string, string>();
   /** Per-tool fingerprint of the last host-side gate rejection. */
   private readonly _lastGateRejection = new Map<string, string>();
+  /** Collision diagnostics already reported — a reconnect loop must not re-spam stderr. */
+  private readonly _collisionNotices = new Set<string>();
+  /** Tools skipped for flattening because of a dotted param name — report once each. */
+  private readonly _dottedSchemaNotices = new Set<string>();
 
   constructor(opts: ToolRegistryOptions = {}) {
     this._autoFlatten = opts.autoFlatten !== false;
@@ -149,17 +157,56 @@ export class ToolRegistry {
     return this._rateLimiter.policy;
   }
 
-  register<A, R>(def: ToolDefinition<A, R>): this {
+  /** Chainable registration, kept as the public contract because src/index.ts exports the registry.
+   *  Use `tryRegister` when the caller must learn whether a foreign origin already owns the name. */
+  register<A, R>(def: ToolDefinition<A, R>, opts: { origin?: string } = {}): this {
+    this.tryRegister(def, opts);
+    return this;
+  }
+
+  /** Registers the tool and reports the outcome. Same-name replacement is allowed only within one origin:
+   *  JEV re-enable, subagent re-sync, MCP reconnect and rooted-set rebuild all re-register by design. */
+  tryRegister<A, R>(def: ToolDefinition<A, R>, opts: { origin?: string } = {}): boolean {
     if (!def.name) throw new Error("tool requires a name");
-    const internal: InternalTool = { ...(def as ToolDefinition) };
+    const origin = opts.origin ?? def.origin ?? "builtin";
+    const existing = this._tools.get(def.name);
+    if (existing) {
+      const existingOrigin = existing.origin ?? "builtin";
+      if (existingOrigin !== origin) {
+        this._reportOnce(
+          this._collisionNotices,
+          `${def.name}\u0000${existingOrigin}\u0000${origin}`,
+          `reasonix: refused tool "${def.name}" from ${origin} - the name is already registered by ${existingOrigin}. Rename one of them.\n`,
+        );
+        return false;
+      }
+    }
+    const internal: InternalTool = { ...(def as ToolDefinition), origin };
     if (this._autoFlatten && def.parameters) {
-      const decision = analyzeSchema(def.parameters);
-      if (decision.shouldFlatten) {
-        internal.flatSchema = flattenSchema(def.parameters);
+      // A top-level key containing "." is indistinguishable from a flattened path, so flattening a schema that
+      // already has one would make nestArguments split a legitimate key on dispatch.
+      if (hasDottedKey(Object.keys(def.parameters.properties ?? {}))) {
+        this._reportOnce(
+          this._dottedSchemaNotices,
+          def.name,
+          `reasonix: not flattening tool "${def.name}" - a parameter name contains "." so dot-path flattening would be ambiguous.\n`,
+        );
+      } else {
+        const decision = analyzeSchema(def.parameters);
+        if (decision.shouldFlatten) {
+          internal.flatSchema = flattenSchema(def.parameters);
+        }
       }
     }
     this._tools.set(def.name, internal);
-    return this;
+    return true;
+  }
+
+  /** Diagnostics fire once per key: a reconnect loop or a repeated register must not spam stderr. */
+  private _reportOnce(notices: Set<string>, key: string, message: string): void {
+    if (notices.has(key)) return;
+    notices.add(key);
+    process.stderr.write(message);
   }
 
   /** Drop a registered tool. Returns true if the name was present. Used by MCP hot-unbridge. */
@@ -194,15 +241,28 @@ export class ToolRegistry {
     return this._tools.get(name)?.userIntervention === true;
   }
 
-  specs(): ToolSpec[] {
-    return [...this._tools.values()].map((t) => ({
+  /** The exact spec `specs()` emits for one tool, or undefined when the name is unregistered. */
+  specOf(name: string): ToolSpec | undefined {
+    const t = this._tools.get(name);
+    if (!t) return undefined;
+    return {
       type: "function",
       function: {
         name: t.name,
+        // `description` is required on ToolDefinition, but the wire shape must tolerate an untyped caller.
         description: t.description ?? "",
         parameters: t.flatSchema ?? t.parameters ?? { type: "object", properties: {} },
       },
-    }));
+    };
+  }
+
+  specs(): ToolSpec[] {
+    const out: ToolSpec[] = [];
+    for (const name of this._tools.keys()) {
+      const spec = this.specOf(name);
+      if (spec) out.push(spec);
+    }
+    return out;
   }
 
   async dispatch(
@@ -228,7 +288,14 @@ export class ToolRegistry {
   ): Promise<string | UserContentPart[]> {
     const tool = this._tools.get(name);
     if (!tool) {
-      return JSON.stringify({ error: `unknown tool: ${name}` });
+      // A bare "unknown tool" is a dead end for the model: name the nearest real tools and the size of the space.
+      const didYouMean = nearestToolNames(name, this._tools.keys());
+      const hint = didYouMean.length > 0 ? ` Did you mean ${didYouMean.join(", ")}?` : "";
+      return JSON.stringify({
+        error: `unknown tool: ${name}.${hint} Use an exact name from the tool spec (${this._tools.size} tools are available).`,
+        didYouMean,
+        toolCount: this._tools.size,
+      });
     }
     const rawFingerprint = rawFingerprintArgs(argumentsRaw);
     let args: Record<string, unknown>;
@@ -255,7 +322,7 @@ export class ToolRegistry {
     // (b) the incoming args actually use dot keys.
     // The second condition handles the case where a model ignores the flat
     // spec and emits nested args anyway — we shouldn't double-process them.
-    if (tool.flatSchema && args && typeof args === "object" && hasDotKey(args)) {
+    if (tool.flatSchema && args && typeof args === "object" && hasDottedKey(Object.keys(args))) {
       args = nestArguments(args);
     }
     const fingerprint = fingerprintArgs(args);
@@ -550,11 +617,48 @@ export function isReadOnlyTool(
   return def.readOnly === true;
 }
 
-function hasDotKey(obj: Record<string, unknown>): boolean {
-  for (const k of Object.keys(obj)) {
-    if (k.includes(".")) return true;
+/** A dot in a key is ambiguous two ways: a flattened arg path, or a param name flattening would corrupt. */
+function hasDottedKey(keys: readonly string[]): boolean {
+  return keys.some((k) => k.includes("."));
+}
+
+/** Bounded edit distance: bails out at max+1 once no cell in a row can still fit the bound. */
+function editDistanceWithin(a: string, b: string, max: number): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
+  let cur: number[] = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    cur[0] = i;
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const keep = (prev[j - 1] as number) + cost;
+      const value = Math.min((prev[j] as number) + 1, (cur[j - 1] as number) + 1, keep);
+      cur[j] = value;
+      if (value < rowMin) rowMin = value;
+    }
+    if (rowMin > max) return max + 1;
+    const swap = prev;
+    prev = cur;
+    cur = swap;
   }
-  return false;
+  return prev[b.length] as number;
+}
+
+/** Closest registered names to a hallucinated one. Deterministic: distance first, then codepoint order. */
+function nearestToolNames(name: string, candidates: Iterable<string>, limit = 3): string[] {
+  const target = name.toLowerCase();
+  const max = Math.max(2, Math.floor(target.length / 3));
+  const scored: Array<{ name: string; distance: number }> = [];
+  for (const candidate of candidates) {
+    if (candidate === name) continue;
+    const distance = editDistanceWithin(target, candidate.toLowerCase(), max);
+    if (distance <= max) scored.push({ name: candidate, distance });
+  }
+  scored.sort(
+    (x, y) => x.distance - y.distance || (x.name < y.name ? -1 : x.name > y.name ? 1 : 0),
+  );
+  return scored.slice(0, limit).map((s) => s.name);
 }
 
 /** Raw key for invalid JSON, where there is no parsed argument object to normalize. */

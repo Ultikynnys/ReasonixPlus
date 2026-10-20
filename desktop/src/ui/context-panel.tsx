@@ -7,6 +7,7 @@ import {
   ruleRegexError,
 } from "@reasonix/core-utils";
 import { invoke } from "@tauri-apps/api/core";
+import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -307,6 +308,15 @@ export function ContextPanel({
   );
 }
 
+/** A denied or failed dialog must never read as approval, so errors mean "no". */
+async function dialogConfirmed(message: string): Promise<boolean> {
+  try {
+    return await confirmDialog(message);
+  } catch {
+    return false;
+  }
+}
+
 function CtxPlanHistory({
   history,
   details,
@@ -406,7 +416,10 @@ function CtxPlanHistory({
             title={t("contextPanel.planRemove")}
             aria-label={t("contextPanel.planRemove")}
             onClick={() => {
-              if (window.confirm(t("contextPanel.planRemoveConfirm"))) onRemovePlan(selected);
+              const planId = selected;
+              void dialogConfirmed(t("contextPanel.planRemoveConfirm")).then((confirmed) => {
+                if (confirmed) onRemovePlan(planId);
+              });
             }}
           >
             <I.trash size={12} />

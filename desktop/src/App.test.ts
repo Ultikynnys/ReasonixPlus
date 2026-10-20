@@ -2034,6 +2034,99 @@ describe("Desktop App reducer — Events tab recordings", () => {
     expect(staged.sessionEvents[0]).toMatchObject({ anchor: "call:call-7" });
   });
 
+  it("records the live transcript's own id alongside the gate's", () => {
+    // A running transcript names a tool call the way the wire does (`tc-…`), while
+    // the plan gate carries the loop's id (`call_…`). A row that kept only the
+    // gate's id never matched the rendered card, so the jump landed on the prompt
+    // bubble of the turn instead. The card already carries its result here: a
+    // never-ask countdown can settle the call before the verdict reaches the UI.
+    const staged = reduce(
+      {
+        ...initialState(),
+        pendingPlans: [{ id: 6, plan: "P", callId: "call-loop-7" }],
+        messages: [
+          {
+            kind: "assistant",
+            turn: 1,
+            pending: false,
+            segments: [
+              {
+                kind: "tool",
+                callId: "tc-3",
+                name: "submit_plan",
+                args: "{}",
+                startedAt: 1,
+                result: "plan approved",
+                ok: true,
+              },
+            ],
+          },
+        ],
+      },
+      { t: "resolve_plan", id: 6, verdict: { type: "approve" } },
+    );
+    expect(staged.sessionEvents[0]).toMatchObject({
+      anchor: "call:call-loop-7",
+      anchorAlias: "call:tc-3",
+    });
+  });
+
+  it("does not borrow an older plan's card for its alias", () => {
+    // The gate blocks the turn that submitted it, so a plan card from an earlier
+    // turn belongs to a different plan: anchoring to it would send the jump there.
+    const staged = reduce(
+      {
+        ...initialState(),
+        pendingPlans: [{ id: 6, plan: "P", callId: "call-loop-9" }],
+        messages: [
+          { kind: "user", turn: 1, text: "first", clientId: "c-1" },
+          {
+            kind: "assistant",
+            turn: 1,
+            pending: false,
+            closed: true,
+            segments: [
+              {
+                kind: "tool",
+                callId: "tc-1",
+                name: "submit_plan",
+                args: "{}",
+                startedAt: 1,
+                result: "plan approved",
+                ok: true,
+              },
+            ],
+          },
+          { kind: "user", turn: 2, text: "second", clientId: "c-2" },
+        ],
+      },
+      { t: "resolve_plan", id: 6, verdict: { type: "approve" } },
+    );
+    expect(staged.sessionEvents[0]).toMatchObject({ turn: 2, anchor: "call:call-loop-9" });
+    expect(staged.sessionEvents[0]?.anchorAlias).toBeUndefined();
+  });
+
+  it("keeps the live id alone when no gate id reached the record", () => {
+    const staged = reduce(
+      {
+        ...initialState(),
+        messages: [
+          {
+            kind: "assistant",
+            turn: 2,
+            pending: false,
+            segments: [
+              { kind: "tool", callId: "tc-8", name: "submit_plan", args: "{}", startedAt: 1 },
+            ],
+          },
+        ],
+      },
+      { t: "resolve_plan", id: 99, verdict: { type: "approve" } },
+    );
+    expect(staged.sessionEvents[0]).toMatchObject({ anchor: "call:tc-8" });
+    expect(staged.sessionEvents[0]?.anchorAlias).toBeUndefined();
+  });
+
   it("anchors a choice verdict to the card that asked it", () => {
     // A choice reaches the app without a call id, so the asking card is found
     // where it is rendered: the gate's still-pending tool segment.
@@ -3041,489 +3134,7 @@ describe("Desktop App session sorting", () => {
     expect(sorted.map((s) => s.name)).toEqual([newest.name, legacy.name, oldButActive.name]);
   });
 
-  it("the $sessions reducer sorts the sidebar by creation date, not recency", () => {
-    const state = initialState();
-    const oldButActive = {
-      name: "desktop-20260901100000-1",
-      messageCount: 9,
-      mtime: new Date(9000).toISOString(),
-      updatedAt: 9000,
-      createdAt: Date.UTC(2026, 8, 1, 10, 0, 0),
-    };
-    const newestCreated = {
-      name: "desktop-20260905120000-1",
-      messageCount: 0,
-      mtime: new Date(1000).toISOString(),
-      updatedAt: 1000,
-      createdAt: Date.UTC(2026, 8, 5, 12, 0, 0),
-    };
-    const next = reduce(state, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 1,
-        items: [oldButActive, newestCreated],
-      },
-    });
-    // Creation order wins over the activity stamps: the Sep 5 session —
-    // never touched since mint — still lists first.
-    expect(next.sessions.map((s) => s.name)).toEqual([newestCreated.name, oldButActive.name]);
-  });
 
-  it("session_bump_requested sets creation date to now and moves session to top", () => {
-    const state = initialState();
-    const session1 = {
-      name: "desktop-20260901100000-1",
-      messageCount: 2,
-      mtime: new Date(1000).toISOString(),
-      createdAt: 1000,
-    };
-    const session2 = {
-      name: "desktop-20260905120000-1",
-      messageCount: 5,
-      mtime: new Date(5000).toISOString(),
-      createdAt: 5000,
-    };
-    const populated = reduce(state, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 1,
-        items: [session1, session2],
-      },
-    });
-    expect(populated.sessions.map((s) => s.name)).toEqual([session2.name, session1.name]);
-
-    const bumped = reduce(populated, {
-      t: "session_bump_requested",
-      name: session1.name,
-      createdAt: 10000,
-    });
-    expect(bumped.sessions.map((s) => s.name)).toEqual([session1.name, session2.name]);
-    expect(bumped.sessions[0]?.createdAt).toBe(10000);
-  });
-
-  it("session_rename_requested updates session summary optimistically", () => {
-    const state = initialState();
-    const session = {
-      name: "desktop-20260901100000-1",
-      messageCount: 2,
-      mtime: new Date(1000).toISOString(),
-      summary: "Old Title",
-    };
-    const populated = reduce(state, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 1,
-        items: [session],
-      },
-    });
-    expect(populated.sessions[0]?.summary).toBe("Old Title");
-
-    const renamed = reduce(populated, {
-      t: "session_rename_requested",
-      name: session.name,
-      title: "New Title",
-    });
-    expect(renamed.sessions[0]?.summary).toBe("New Title");
-  });
-
-  it("orders, deduplicates, and keeps empty sessions — empty is a real session", () => {
-    const state = initialState();
-    const older = {
-      name: "desktop-20260901100000-1",
-      messageCount: 2,
-      mtime: new Date(1000).toISOString(),
-    };
-    const empty = {
-      name: "desktop-20260905120000-1",
-      messageCount: 0,
-      mtime: new Date(5000).toISOString(),
-    };
-    const next = reduce(state, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 1,
-        items: [older, older, empty],
-      },
-    });
-    // Empty sessions list like any other (newest first) and are never dropped
-    // for having zero messages.
-    expect(next.sessions.map((s) => s.name)).toEqual([empty.name, older.name]);
-  });
-
-  it("switching sessions never reorders or drops others — only the snapshot content matters", () => {
-    const a = {
-      name: "desktop-20260901100000-1",
-      messageCount: 2,
-      mtime: new Date(1000).toISOString(),
-      summary: "first chat",
-    };
-    const b = {
-      name: "desktop-20260902100000-1",
-      messageCount: 4,
-      mtime: new Date(2000).toISOString(),
-      summary: "second chat",
-    };
-    const base = { ...initialState(), currentSession: b.name };
-    const listed = reduce(base, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 1, items: [b, a] },
-    });
-    expect(listed.sessions.map((s) => s.name)).toEqual([b.name, a.name]);
-
-    // Switch to the other conversation: b (with messages) must STILL be listed
-    // and the order must stay recency-based — a must not be reordered to the
-    // top just because it is now current.
-    const switched = reduce(listed, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 2, items: [b, a] },
-    });
-    void (function setCurrentSession() {
-      // simulate the $session_loaded side effect of switching
-      switched.currentSession = a.name;
-    })();
-    const refreshed = reduce(switched, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 3, items: [b, a] },
-    });
-    expect(refreshed.sessions.map((s) => s.name)).toEqual([b.name, a.name]);
-  });
-
-  it("an empty session SURVIVES switching away — only an explicit delete removes it", () => {
-    const empty = {
-      name: "desktop-20260905120000-1",
-      messageCount: 0,
-      mtime: new Date(1000).toISOString(),
-    };
-    const other = {
-      name: "desktop-20260902100000-1",
-      messageCount: 3,
-      mtime: new Date(2000).toISOString(),
-    };
-    const base = { ...initialState(), currentSession: empty.name };
-    const withEmpty = reduce(base, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 1, items: [other, empty] },
-    });
-    expect(withEmpty.sessions.map((s) => s.name)).toEqual([empty.name, other.name]);
-
-    // Switch to the other conversation: the empty session stays listed and
-    // the recency order is untouched.
-    const afterSwitch = reduce(withEmpty, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 2, items: [other, empty] },
-    });
-    expect(afterSwitch.sessions.map((s) => s.name)).toEqual([empty.name, other.name]);
-
-    // Now select the empty session again
-    const loadEmpty = reduce(afterSwitch, {
-      t: "incoming",
-      event: {
-        type: "$session_loaded",
-        name: empty.name,
-        messages: [],
-        carryover: {
-          totalCostUsd: 0,
-          cacheHitTokens: 0,
-          cacheMissTokens: 0,
-          totalCompletionTokens: 0,
-        },
-      },
-    });
-    expect(loadEmpty.currentSession).toBe(empty.name);
-    expect(loadEmpty.sessions.map((s) => s.name)).toEqual([empty.name, other.name]);
-
-    // Another $sessions broadcast keeps it intact
-    const afterReselect = reduce(loadEmpty, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 3, items: [other, empty] },
-    });
-    expect(afterReselect.sessions.map((s) => s.name)).toEqual([empty.name, other.name]);
-  });
-
-  it("keeps optimistic deletion hidden until its authoritative snapshot settles", () => {
-    const session = {
-      name: "desktop-20260901100000-1",
-      messageCount: 2,
-      mtime: new Date(1000).toISOString(),
-    };
-    const deleting = reduce(
-      { ...initialState(), sessions: [session], sessionsEpoch: "daemon-1" },
-      {
-        t: "session_delete_requested",
-        name: session.name,
-      },
-    );
-    const unrelatedSnapshot = reduce(deleting, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 1, items: [session] },
-    });
-    expect(unrelatedSnapshot.sessions).toEqual([]);
-    expect(unrelatedSnapshot.pendingSessionDeletes).toEqual([session.name]);
-
-    const failedSnapshot = reduce(unrelatedSnapshot, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 2,
-        settledDeletes: [{ name: session.name, removed: false }],
-        items: [session],
-      },
-    });
-    expect(failedSnapshot.sessions).toEqual([session]);
-    expect(failedSnapshot.pendingSessionDeletes).toEqual([]);
-  });
-
-  it("tracks an in-flight clear-all and drops the marker once the snapshot settles", () => {
-    const a = { name: "a", messageCount: 1, mtime: new Date(1000).toISOString() };
-    const b = { name: "b", messageCount: 2, mtime: new Date(2000).toISOString() };
-    const base = { ...initialState(), sessions: [a, b], sessionsEpoch: "daemon-1" };
-
-    const clearing = reduce(base, { t: "session_clear_requested" });
-    expect(clearing.sessions).toEqual([]);
-    expect(clearing.sessionsMutation).toEqual({ kind: "clear" });
-    expect(clearing.pendingSessionDeletes).toEqual(["a", "b"]);
-
-    // One name still unconfirmed — the in-flight marker must survive.
-    const partial = reduce(clearing, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 1,
-        settledDeletes: [{ name: "a", removed: true }],
-        items: [],
-      },
-    });
-    expect(partial.pendingSessionDeletes).toEqual(["b"]);
-    expect(partial.sessionsMutation).toEqual({ kind: "clear" });
-
-    const settled = reduce(partial, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 2,
-        settledDeletes: [{ name: "b", removed: true }],
-        items: [],
-      },
-    });
-    expect(settled.pendingSessionDeletes).toEqual([]);
-    expect(settled.sessionsMutation).toBeNull();
-  });
-
-  it("releases an unconfirmed delete so the sidebar can't stick mid-delete", () => {
-    const session = { name: "stuck", messageCount: 1, mtime: new Date(1000).toISOString() };
-    const deleting = reduce(
-      { ...initialState(), sessions: [session], sessionsEpoch: "daemon-1" },
-      { t: "session_delete_requested", name: session.name },
-    );
-    expect(deleting.sessionsMutation).toEqual({ kind: "delete" });
-
-    const released = reduce(deleting, { t: "session_mutation_release" });
-    expect(released.pendingSessionDeletes).toEqual([]);
-    expect(released.sessionsMutation).toBeNull();
-  });
-
-  it("clears an in-flight marker when a fresh-epoch snapshot replaces the list", () => {
-    const session = { name: "x", messageCount: 1, mtime: new Date(1000).toISOString() };
-    const deleting = reduce(
-      { ...initialState(), sessions: [session], sessionsEpoch: "daemon-1" },
-      { t: "session_delete_requested", name: session.name },
-    );
-    const rebooted = reduce(deleting, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-2", revision: 1, items: [session] },
-    });
-    expect(rebooted.sessionsMutation).toBeNull();
-  });
-
-  it("ignores an out-of-order session snapshot", () => {
-    const newest = {
-      name: "newest",
-      messageCount: 1,
-      mtime: new Date(2000).toISOString(),
-    };
-    const state = {
-      ...initialState(),
-      sessions: [newest],
-      sessionsEpoch: "daemon-1",
-      sessionsRevision: 3,
-    };
-    const next = reduce(state, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 2,
-        items: [{ name: "stale", messageCount: 1, mtime: new Date(1000).toISOString() }],
-      },
-    });
-    expect(next).toBe(state);
-  });
-
-  it("accepts a lower revision after the daemon snapshot epoch changes", () => {
-    const state = {
-      ...initialState(),
-      sessionsEpoch: "daemon-1",
-      sessionsRevision: 20,
-    };
-    const restarted = {
-      name: "after-restart",
-      messageCount: 1,
-      mtime: new Date(3000).toISOString(),
-    };
-    const next = reduce(state, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-2", revision: 1, items: [restarted] },
-    });
-    expect(next.sessions).toEqual([restarted]);
-    expect(next.sessionsEpoch).toBe("daemon-2");
-    expect(next.sessionsRevision).toBe(1);
-  });
-
-  it("keeps the session list's identity when a snapshot repeats itself", () => {
-    // The sidebar memoizes on this array and re-sorts it per workspace, and the
-    // backend rebroadcasts the same listing on unrelated mutations — so a snapshot
-    // that lists nothing new must be a no-op, not a rebuild of every row.
-    const listed = [
-      { name: "b", messageCount: 2, mtime: new Date(2000).toISOString(), summary: "second" },
-      { name: "a", messageCount: 1, mtime: new Date(1000).toISOString() },
-    ];
-    const first = reduce(initialState(), {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 1, items: listed },
-    });
-    const repeated = reduce(first, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 1, items: listed },
-    });
-    expect(repeated).toBe(first);
-
-    // A newer revision with the same rows keeps the array: only the counters move.
-    const bumped = reduce(first, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 2, items: listed },
-    });
-    expect(bumped.sessions).toBe(first.sessions);
-    expect(bumped.sessionsRevision).toBe(2);
-
-    // A row that actually changed still gets a fresh list.
-    const changed = reduce(bumped, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 3,
-        items: [listed[0]!, { ...listed[1]!, messageCount: 5 }],
-      },
-    });
-    expect(changed.sessions).not.toBe(bumped.sessions);
-    expect(changed.sessions.find((s) => s.name === "a")?.messageCount).toBe(5);
-  });
-
-  it("keeps the pending-delete list when a settle drops nothing", () => {
-    // A settle naming someone else leaves the list untouched; rebuilding it would
-    // hand the tab a new array for a fact that did not change.
-    const deleting = {
-      ...initialState(),
-      sessionsEpoch: "daemon-1",
-      sessionsRevision: 1,
-      pendingSessionDeletes: ["gone"],
-      sessionsMutation: { kind: "delete" } as const,
-    };
-    const next = reduce(deleting, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 2,
-        settledDeletes: [{ name: "unrelated", removed: false }],
-        items: [],
-      },
-    });
-    expect(next.pendingSessionDeletes).toBe(deleting.pendingSessionDeletes);
-    expect(next.pendingSessionDeletes).toEqual(["gone"]);
-    expect(next.sessionsMutation).toEqual({ kind: "delete" });
-  });
-
-  it("clears a create mutation once the channel's first snapshot lands", () => {
-    const creating = { ...initialState(), sessionsMutation: { kind: "create" } as const };
-    const listed = reduce(creating, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "daemon-1", revision: 1, items: [] },
-    });
-    expect(listed.sessionsMutation).toBeNull();
-  });
-
-  it("keeps a create mutation until the session it waits for is listed", () => {
-    const creating = {
-      ...initialState(),
-      sessionsMutation: { kind: "create", awaitingName: "fresh" } as const,
-    };
-    // A snapshot that predates the mint must not finish the indicator...
-    const stale = reduce(creating, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 1,
-        items: [{ name: "older", messageCount: 2, mtime: new Date(1000).toISOString() }],
-      },
-    });
-    expect(stale.sessionsMutation).toEqual({ kind: "create", awaitingName: "fresh" });
-    // ...the one listing it does.
-    const listed = reduce(stale, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "daemon-1",
-        revision: 2,
-        items: [{ name: "fresh", messageCount: 0, mtime: new Date(2000).toISOString() }],
-      },
-    });
-    expect(listed.sessionsMutation).toBeNull();
-  });
-
-  it("releases a create mutation the daemon never confirms", () => {
-    const creating = {
-      ...initialState(),
-      sessionsMutation: { kind: "create", awaitingName: "fresh" } as const,
-    };
-    const released = reduce(creating, { t: "session_mutation_release" });
-    expect(released.sessionsMutation).toBeNull();
-  });
-
-  it("keeps a delete indicator until the daemon's settled echo arrives", () => {
-    const requested = reduce(initialState(), { t: "session_delete_requested", name: "gone" });
-    expect(requested.sessionsMutation).toEqual({ kind: "delete" });
-    // A snapshot the delete did not ask for leaves the row hidden and the pill
-    // up, so the indicator tracks the real round-trip rather than any reply.
-    const unrelated = reduce(requested, {
-      t: "incoming",
-      event: { type: "$sessions", epoch: "", revision: 1, items: [] },
-    });
-    expect(unrelated.sessionsMutation).toEqual({ kind: "delete" });
-    const settled = reduce(unrelated, {
-      t: "incoming",
-      event: {
-        type: "$sessions",
-        epoch: "",
-        revision: 2,
-        items: [],
-        settledDeletes: [{ name: "gone", removed: true }],
-      },
-    });
-    expect(settled.sessionsMutation).toBeNull();
-  });
 
   it("maps each in-flight session mutation to one wording", () => {
     expect(sessionMutationLabel({ kind: "create" }, 0)).toBe("Creating session…");

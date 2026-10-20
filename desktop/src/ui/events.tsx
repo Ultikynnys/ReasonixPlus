@@ -154,10 +154,13 @@ export function EventsPanel({ messages, events, onJump }: EventsPanelProps) {
   const jump = (event: SessionEvent) => {
     if (!onJump) return;
     // The anchor is the event's own card; without one the row falls back to its
-    // turn's prompt bubble.
-    const target: JumpTarget = event.anchor
-      ? { turn: event.turn, anchor: event.anchor }
-      : { turn: event.turn };
+    // turn's prompt bubble. A card that carries two ids keeps both: which one
+    // this transcript answers to depends on whether it is live or reloaded.
+    const target: JumpTarget = {
+      turn: event.turn,
+      ...(event.anchor === undefined ? {} : { anchor: event.anchor }),
+      ...(event.anchorAlias === undefined ? {} : { anchorAlias: event.anchorAlias }),
+    };
     if (onJump(target) === false) return;
     setActive(event.id);
   };
@@ -170,7 +173,9 @@ export function EventsPanel({ messages, events, onJump }: EventsPanelProps) {
         <div className="ctx-evt-list">
           {all.map((event) => {
             const expanded = open === event.id;
-            const jumpable = (event.turn > 0 || event.anchor !== undefined) && onJump !== undefined;
+            const jumpable =
+              (event.turn > 0 || event.anchor !== undefined || event.anchorAlias !== undefined) &&
+              onJump !== undefined;
             const clock = clockLabel(event.ts);
             // The label is suppressed only when the body below already shows the
             // same text: a picked option (marked in the offered list) or the whole
@@ -201,7 +206,7 @@ export function EventsPanel({ messages, events, onJump }: EventsPanelProps) {
                       type="button"
                       className="ctx-evt-main"
                       aria-label={
-                        event.anchor
+                        (event.anchor ?? event.anchorAlias)
                           ? t("contextPanel.eventsJumpCard")
                           : t("contextPanel.eventsJump", { turn: event.turn })
                       }

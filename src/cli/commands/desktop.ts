@@ -75,6 +75,7 @@ import type {
   RetryResultEvent,
   RevisionRequiredEvent,
   SessionEmptyEvent,
+  SessionHistoryEvent,
   SessionLoadedEvent,
   SessionRetractedEvent,
   SessionsEvent,
@@ -252,7 +253,8 @@ import {
   writeMemoryEntry,
 } from "../../desktop/memory-browser.js";
 import { toPlanHistoryItems } from "../../desktop/plan-listing.js";
-import { sameSessionListItems, toSessionListItems } from "../../desktop/session-listing.js";
+import { toSessionListItems } from "../../desktop/session-listing.js";
+import { MAX_OPEN_TABS, pickTabToEvict } from "../../desktop/tab-cap.js";
 import { recordDiagnostic } from "../../diagnostics.js";
 import { buildDuplicateContext } from "../../duplicate-session.js";
 import { normalizeImageToDataUrls } from "../../image-format.js";
@@ -537,6 +539,7 @@ export type EmittableEvent =
   | PlanRestoredEvent
   | SessionsEvent
   | SessionLoadedEvent
+  | SessionHistoryEvent
   | SessionEmptyEvent
   | NeedsSetupEvent
   | SettingsEvent
@@ -1360,6 +1363,30 @@ export function buildLoadedMessages(records: ChatMessage[]): LoadedMessage[] {
     }
   }
   return elideLoadedMessages(out);
+}
+
+/** How many transcript records one page carries. A session's whole history is a
+ *  multi-megabyte payload and the transcript only ever shows its tail first, so
+ *  the newest page ships and older pages are fetched on demand. */
+const SESSION_PAGE_SIZE = 300;
+
+/** The window ending `before` messages from the end of the transcript, or the whole
+ *  list when it fits. `turnBase` counts user turns above it, so a page's rows keep
+ *  the absolute turn numbers the live transcript and the Events tab address. */
+function sessionWindow(
+  messages: LoadedMessage[],
+  before: number,
+): { page: LoadedMessage[]; hasOlder: boolean; turnBase: number } {
+  const end = Math.max(0, messages.length - Math.max(0, before));
+  const start = Math.max(0, end - SESSION_PAGE_SIZE);
+  if (start === 0 && end === messages.length) {
+    return { page: messages, hasOlder: false, turnBase: 0 };
+  }
+  let turnBase = 0;
+  for (let i = 0; i < start; i += 1) {
+    if (messages[i]?.kind === "user") turnBase += 1;
+  }
+  return { page: messages.slice(start, end), hasOlder: start > 0, turnBase };
 }
 
 /** Re-insert persisted annotation cards into a loaded transcript so none is
@@ -2992,6 +3019,10 @@ async function emitSessions(
   options: { primeFromCache?: boolean } = {},
 ): Promise<void> {
   const startedAt = performance.now();
+  // Stamped before the first await so a slow scan can never publish under a newer
+  // revision than a fast one. A settle emit re-stamps at send (see below).
+  const epoch = DESKTOP_SESSIONS_EPOCH;
+  const requestRevision = nextSessionsRevision(tab.rootDir);
   const source = listSessionsForWorkspaceAsync(tab.rootDir);
   const request = {
     cache: source.cache,
@@ -3010,8 +3041,9 @@ async function emitSessions(
         emit(
           {
             type: "$sessions",
-            epoch: tab.sessionsEpoch,
-            revision: ++tab.sessionsRevision,
+            epoch,
+            revision: requestRevision,
+            primed: true,
             items: primed,
           },
           tab.id,
@@ -3022,21 +3054,18 @@ async function emitSessions(
         });
       }
     }
+    // Always follow a primed paint with the scan: the client only initialises from a
+    // primed payload, so the authoritative one is what establishes its revision.
     const items = await request.value;
-    if (primed !== null && sameSessionListItems(primed, items)) {
-      // Already on screen — a second revision would only churn the sidebar.
-      emitTabDiagnostic(tab, "sessions.list.primed_current", {
-        count: items.length,
-        cache: request.cache,
-        durationMs: Number((performance.now() - startedAt).toFixed(3)),
-      });
-      return;
-    }
+    // A settle confirmation re-stamps: its payload already reflects the delete, and
+    // dropping it behind a concurrently started scan would strand an optimistic hide.
+    const revision =
+      settledDeletes === undefined ? requestRevision : nextSessionsRevision(tab.rootDir);
     emit(
       {
         type: "$sessions",
-        epoch: tab.sessionsEpoch,
-        revision: ++tab.sessionsRevision,
+        epoch,
+        revision,
         items,
         settledDeletes,
       },
@@ -3108,11 +3137,14 @@ function loadSessionIntoTab(
       emit({ type: "$session_empty", name, sizeBytes }, tab.id);
     }
   }
+  const paged = sessionWindow(loadedMessages, 0);
   emit(
     {
       type: "$session_loaded",
       name,
-      messages: loadedMessages,
+      messages: paged.page,
+      hasOlder: paged.hasOlder,
+      turnBase: paged.turnBase,
       events: loadSessionEvents(name),
       carryover: sessionCarryover(meta),
     },
@@ -4378,10 +4410,6 @@ interface Tab {
   mcpSetupPending: boolean;
   /** True while a session switch is in progress — prevents stale events from the old turn. */
   switching: boolean;
-  /** Identifies session snapshots from this daemon lifetime. */
-  sessionsEpoch: string;
-  /** Monotonic ordering for asynchronous session-list snapshots. */
-  sessionsRevision: number;
   /** Plan progress for the diagnostics projection. Refreshed wherever plan state is
    *  consulted or changed; `tabDiagnosticState` must never read the store itself. */
   planSummary: { completed: number; total: number };
@@ -4464,12 +4492,33 @@ function nextGroupId(): string {
   return `g${groupCounter}`;
 }
 
-/** True when two workspace dirs point at one directory (case-insensitive on
- *  Windows, where the same path can arrive with different casing). */
+/** Absolute, case-folded directory key: Windows paths are case-insensitive, so the
+ *  same workspace can arrive with different casing. */
+function workspaceKey(dir: string): string {
+  const resolved = resolve(dir);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+/** True when two workspace dirs point at one directory. */
 function sameWorkspaceDir(a: string, b: string): boolean {
-  const ra = resolve(a);
-  const rb = resolve(b);
-  return process.platform === "win32" ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+  return workspaceKey(a) === workspaceKey(b);
+}
+
+/** One epoch per daemon lifetime. A per-tab epoch made a freshly opened channel
+ *  look like a restarted daemon, which dropped the frontend's optimistic deletes. */
+const DESKTOP_SESSIONS_EPOCH = randomUUID();
+
+/** Revisions are per workspace: every channel serving one directory receives the
+ *  same snapshots, so their revisions have to be comparable. */
+const sessionsRevisions = new Map<string, number>();
+
+/** Advances and returns the workspace's snapshot revision. `workspaceKey` is what
+ *  makes two channels' snapshots on one directory comparable. */
+function nextSessionsRevision(dir: string): number {
+  const key = workspaceKey(dir);
+  const next = (sessionsRevisions.get(key) ?? 0) + 1;
+  sessionsRevisions.set(key, next);
+  return next;
 }
 
 /** A workspace is usable only while it still exists as a directory — a deleted
@@ -5191,6 +5240,36 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   // Frontend-reported focused tab — persisted so a restart reopens on it (#1244).
   let lastActiveTabId = "";
 
+  // MAX_OPEN_TABS and the eviction rule live in ../../desktop/tab-cap.js so the
+  // policy can be unit-tested without standing up the daemon.
+  /** Focus recency per tab. Creation order is not the same thing: the user's
+   *  attention is what decides which tab is safe to drop. */
+  const tabFocusedAt = new Map<string, number>();
+  let focusStamp = 0;
+  function markTabFocused(tabId: string): void {
+    focusStamp += 1;
+    tabFocusedAt.set(tabId, focusStamp);
+  }
+  /** The tab a new one may replace, by the shared policy: least recently focused,
+   *  never the one the user is acting from, never one with a turn in flight. */
+  function idleTabToEvict(): Tab | undefined {
+    const picked = pickTabToEvict(
+      [...tabs.values()].map((tab) => ({
+        id: tab.id,
+        focusedAt: tabFocusedAt.get(tab.id),
+        running: Boolean(tab.aborter || tab.activeTurn),
+      })),
+      lastActiveTabId,
+    );
+    return picked ? tabs.get(picked.id) : undefined;
+  }
+  /** How a tab is named in the eviction notice: workspace folder plus session. */
+  function tabLabel(tab: Tab): string {
+    const folder = tab.rootDir ? tab.rootDir.split(/[\\/]/).filter(Boolean).pop() : undefined;
+    const where = folder ?? "untitled tab";
+    return tab.currentSession ? `${where} · ${tab.currentSession}` : where;
+  }
+
   function activeRunningTab(): Tab | undefined {
     const id = tabContext.getStore();
     return id ? tabs.get(id) : undefined;
@@ -5214,8 +5293,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   function emitSessionsForWorkspace(
     workspaceDir: string,
     settledDeletes?: SessionsEvent["settledDeletes"],
+    options: { exceptTabId?: string } = {},
   ): void {
     for (const t of tabsInWorkspace(workspaceDir)) {
+      if (t.id === options.exceptTabId) continue;
       void emitSessions(t, settledDeletes);
     }
   }
@@ -5295,8 +5376,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       mcpBridgePromise: null,
       mcpSetupPending: gateSession,
       switching: false,
-      sessionsEpoch: randomUUID(),
-      sessionsRevision: 0,
       planSummary: { completed: 0, total: 0 },
       hooks: pending ? [] : loadHooks({ projectRoot: dir }),
     };
@@ -5686,7 +5765,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             session: t.currentSession || undefined,
             groupId: t.groupId,
             active: t.id === lastActiveTabId,
-          })),
+          }))
+          // The restore path reads this list, so the cap is enforced here too: a
+          // restart can never reopen more tabs than the cap allows, and the tab
+          // the user was on always survives the cut.
+          .sort((a, b) => Number(b.active) - Number(a.active))
+          .slice(0, MAX_OPEN_TABS),
       );
     } catch (err) {
       emitDiagnosticError("tabs.persist.failed", err, {
@@ -6759,6 +6843,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     return {
       rootDir,
       getMcpSpecs: () => effectiveMcpSpecs(tab),
+      getMcpToolSkips: () => tab.mcpRuntime?.toolSkips() ?? [],
       subagentsEnabled: sessionSubagentsEnabled(tab),
       onJobsChanged: () => emitJobs(),
       onRulesChanged: () => emitSettingsToAllTabs(),
@@ -6922,10 +7007,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // the frontend mirrors it for visible countdown feedback and resolves first
     // when the user picks manually. The card's timer toggle drives this handle
     // via `gate_timer`, so pausing the UI clock also pauses auto-resolve.
-    const countdownMs = auto?.kind === "countdown" ? auto.ms : undefined;
     if (auto?.kind === "countdown") {
       armGateCountdown(req.id, auto.verdict, auto.ms);
     }
+    // One spread for every picker: the card and the backend timer both read
+    // `countdownMs`, so the field is attached in exactly one place.
+    const countdown = auto?.kind === "countdown" ? { countdownMs: auto.ms } : {};
     if (
       req.kind === "run_command" ||
       req.kind === "run_background" ||
@@ -7036,7 +7123,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           question: payload.question,
           options: payload.options,
           allowCustom: payload.allowCustom,
-          ...(countdownMs !== undefined ? { countdownMs } : {}),
+          ...countdown,
         },
         tabId,
       );
@@ -7057,7 +7144,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           steps: payload.steps,
           summary: payload.summary,
           callId: payload.callId,
-          ...(countdownMs !== undefined ? { countdownMs } : {}),
+          ...countdown,
         },
         tabId,
       );
@@ -7101,7 +7188,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           remainingSteps: payload.remainingSteps,
           previousSteps: payload.previousSteps,
           summary: payload.summary,
-          ...(countdownMs !== undefined ? { countdownMs } : {}),
+          ...countdown,
         },
         tabId,
       );
@@ -7313,14 +7400,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         stampSessionWorkspace(tab.currentSession, tab.rootDir);
       }
       const sessionsInitialized = emitSessions(tab, undefined, { primeFromCache: true });
+      // A freshly minted session must reach every channel on the workspace at once,
+      // the way a delete already does; a restored tab broadcasts nothing.
+      if (!restore) emitSessionsForWorkspace(tab.rootDir, undefined, { exceptTabId: tab.id });
       emitMemory(tab);
       if (restoredMessages) {
         const meta = loadSessionMeta(tab.currentSession);
+        const paged = sessionWindow(restoredMessages, 0);
         emit(
           {
             type: "$session_loaded",
             name: tab.currentSession,
-            messages: restoredMessages,
+            messages: paged.page,
+            hasOlder: paged.hasOlder,
+            turnBase: paged.turnBase,
             events: loadSessionEvents(tab.currentSession),
             carryover: sessionCarryover(meta),
           },
@@ -7531,11 +7624,33 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // assigning one runs switchWorkspace.
         const target = msg.workspaceDir ? resolve(msg.workspaceDir) : undefined;
         const existing = target ? workspaceTabFor(target) : undefined;
+        // Cap the tab set: the desktop keeps every tab's transcript and runtime
+        // alive, so an unbounded set is the fastest way to exhaust the webview.
+        let evictionNote = "";
+        if (tabs.size >= MAX_OPEN_TABS) {
+          const victim = idleTabToEvict();
+          if (!victim) {
+            emit(
+              {
+                type: "$notice",
+                text: `Tab limit reached (${MAX_OPEN_TABS}); every other tab is running an agent.`,
+                severity: "warning",
+              },
+              msg.tabId,
+            );
+            return;
+          }
+          evictionNote = `Closed ${tabLabel(victim)} to stay within ${MAX_OPEN_TABS} open tabs.`;
+          void closeWorkspaceTab(victim, { persist: false });
+        }
         const opened = target
           ? bootstrapTab(target, { active: true, groupId: existing?.groupId })
           : bootstrapTab(undefined, { active: true, pending: true });
         lastActiveTabId = opened.id;
+        markTabFocused(opened.id);
         persistOpenTabs();
+        if (evictionNote)
+          emit({ type: "$notice", text: evictionNote, severity: "info" }, opened.id);
       } catch (err) {
         emitDiagnosticError("tab.open.failed", err);
         emit({ type: "$error", message: `tab_open failed: ${(err as Error).message}` });
@@ -7552,6 +7667,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           "info",
         );
         lastActiveTabId = msg.tabId;
+        markTabFocused(msg.tabId);
         persistOpenTabs();
         // Refetch immediately — the tab may have sat idle for hours, and
         // the statusbar must show the current quota the moment it's shown.
@@ -7712,11 +7828,14 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
                   loadSessionNotices(t.currentSession),
                   meta.lastTurn,
                 );
+                const paged = sessionWindow(msgs, 0);
                 emit(
                   {
                     type: "$session_loaded",
                     name: t.currentSession,
-                    messages: msgs,
+                    messages: paged.page,
+                    hasOlder: paged.hasOlder,
+                    turnBase: paged.turnBase,
                     events: loadSessionEvents(t.currentSession),
                     carryover: sessionCarryover(meta),
                     resync: true,
@@ -8379,6 +8498,32 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "session_open") {
       openOrFocusSession(tab, msg.name, false);
+      return;
+    }
+    if (msg.cmd === "session_history_page") {
+      const name = msg.name || tab.currentSession;
+      if (!name) return;
+      try {
+        const meta = loadSessionMeta(name);
+        const full = mergeNoticesIntoLoaded(
+          buildLoadedMessages(loadSessionMessages(name)),
+          loadSessionNotices(name),
+          meta.lastTurn,
+        );
+        const window = sessionWindow(full, msg.before);
+        emit(
+          {
+            type: "$session_history",
+            name,
+            messages: window.page,
+            hasOlder: window.hasOlder,
+            turnBase: window.turnBase,
+          },
+          tab.id,
+        );
+      } catch (err) {
+        emit({ type: "$error", message: `session_history_page failed: ${messageOf(err)}` }, tab.id);
+      }
       return;
     }
     if (msg.cmd === "memory_read") {

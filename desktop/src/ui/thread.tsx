@@ -1,7 +1,7 @@
 import type { ApprovalAction, ApprovalPrompt } from "@reasonix/core-utils";
 import { sanitizeTerminalText } from "@reasonix/core-utils";
 import { formatBytes } from "@reasonix/core-utils";
-import type { PlanStep } from "@reasonix/core-utils";
+import type { PickerWindow, PlanStep } from "@reasonix/core-utils";
 import { PLAN_INTERACTIVE_TOOL_NAMES } from "@reasonix/core-utils";
 import { derivePrefix } from "@reasonix/core-utils/derive-prefix";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -469,6 +469,7 @@ export const AssistantMsg = memo(function AssistantMsg({
   tabId,
   onStopJob,
   isInterventionPending,
+  history,
 }: {
   segments: AssistantSegment[];
   pending: boolean;
@@ -489,6 +490,9 @@ export const AssistantMsg = memo(function AssistantMsg({
   tabId?: string;
   onStopJob?: (jobId: number, tabId: string) => void;
   isInterventionPending?: boolean;
+  /** A card restored from history (or sealed by a boundary), outside the live turn:
+   *  its sub-cards start collapsed so a long transcript mounts no card bodies. */
+  history?: boolean;
 }) {
   // A gate that is waiting on the user is owned by the approval strip; the
   // transcript must not stack a second (record) card for the same call. The
@@ -635,6 +639,7 @@ export const AssistantMsg = memo(function AssistantMsg({
               <ShellCard
                 // biome-ignore lint/suspicious/noArrayIndexKey: streamed segments are append-only
                 key={i}
+                history={history}
                 command={cmd}
                 // While the job runs, the live tail is the source of truth — the
                 // tool result only holds the (already stale) startup banner.
@@ -711,6 +716,7 @@ export const AssistantMsg = memo(function AssistantMsg({
                     filename={f.filename}
                     lines={f.lines}
                     applied={s.ok !== false}
+                    history={history}
                   />
                 ))}
               </Fragment>
@@ -868,6 +874,12 @@ export function findBackgroundJob(
 
 // ---- Approval bindings ----
 
+/** The Never Ask window a picker card mirrors: the countdown it renders and the
+ *  backend pause/resume it signals, so the three cards cannot drift apart. */
+type PickerTimerProps = Pick<PickerWindow, "countdownMs"> & {
+  onTimerToggle?: (enabled: boolean) => void;
+};
+
 export function PlanApprovalCard({
   id,
   plan,
@@ -886,15 +898,13 @@ export function PlanApprovalCard({
   plan: string;
   summary?: string;
   steps?: { id: string; title: string; action: string; risk?: string }[];
-  countdownMs?: number;
   result?: string;
   ok?: boolean;
   onApprove?: () => void;
   onRefine?: () => void;
   onCancel?: () => void;
-  onTimerToggle?: (enabled: boolean) => void;
   anchor?: string;
-}) {
+} & PickerTimerProps) {
   useLang();
   const interactive = Boolean(onApprove);
   const stepViews: TaskStepView[] = (steps ?? []).map((step, index) => ({
@@ -904,15 +914,16 @@ export function PlanApprovalCard({
     hint: step.action,
     durationLabel: undefined,
   }));
-  const sub =
-    summary ??
-    (stepViews.length > 0 ? t("thread.planStepCount", { count: stepViews.length }) : undefined);
+  const stepCount =
+    stepViews.length > 0 ? t("thread.planStepCount", { count: stepViews.length }) : undefined;
   return (
     <ApprovalCard
       kind={t("thread.planConfirmationKind")}
       tone={interactive ? "info" : structuredCardTone(result, ok)}
       title={t("thread.startPlan")}
-      sub={sub}
+      // A real summary is prose and gets its own row; the step count is a chip.
+      sub={summary}
+      chip={summary ? undefined : stepCount}
       body={
         <>
           {interactive ? (
@@ -961,7 +972,7 @@ export function CheckpointApprovalCard({
       kind={t("thread.checkpointKind")}
       tone="brand"
       title={c.title ?? t("thread.checkpointTitle", { completed: c.completed, total: c.total })}
-      sub={t("thread.checkpointSub", { completed: c.completed, total: c.total })}
+      chip={t("thread.checkpointSub", { completed: c.completed, total: c.total })}
       body={
         <>
           <Markdown source={c.result} />
@@ -1123,15 +1134,14 @@ export function RevisionApprovalCard({
   r: PendingRevision;
   onAccept: () => void;
   onReject: () => void;
-  onTimerToggle?: (enabled: boolean) => void;
-}) {
+} & Pick<PickerTimerProps, "onTimerToggle">) {
   useLang();
   return (
     <ApprovalCard
       kind={t("thread.planRevisionKind")}
       tone="warn"
       title={t("thread.rewritePlan")}
-      sub={t("thread.keepSteps", { n: r.remainingSteps.length })}
+      chip={t("thread.keepSteps", { n: r.remainingSteps.length })}
       body={
         <>
           <QuestionTimerRow
@@ -1207,7 +1217,7 @@ export function ConfirmApprovalCard({
       }
       tone={mapTone(prompt.tone)}
       title={prompt.title}
-      sub={prompt.subtitle}
+      chip={prompt.subtitle}
       preview={
         prompt.kind === "email" ? (
           <>
@@ -1269,7 +1279,7 @@ export function PathAccessApprovalCard({
       kind={prompt.kind === "edit" ? t("thread.editConfirmationKind") : t("thread.pathAccessKind")}
       tone={mapTone(prompt.tone)}
       title={prompt.title}
-      sub={prompt.subtitle}
+      chip={prompt.subtitle}
       preview={
         <>
           <div>{sanitizeTerminalText(prompt.preview ?? prompt.subtitle ?? "")}</div>
@@ -1294,10 +1304,9 @@ export function PathAccessApprovalCard({
   );
 }
 
-/** Countdown + per-card enable/disable toggle shared by the question (ask_choice)
- *  card and the plan cards (plan confirmation + plan revision). Owns the toggle
- *  state so the timer logic lives in one place; disabling suppresses the countdown
- *  and the frontend auto-pick until the timer is switched back on. */
+/** Countdown + enable/disable toggle shared by every picker card: ask_choice, plan
+ *  confirmation and plan revision. Renders nothing without a window, so a card
+ *  never claims a disabled timer it never had. */
 function QuestionTimerRow({
   countdownMs,
   onExpire,
@@ -1312,7 +1321,8 @@ function QuestionTimerRow({
   useLang();
   const [timerDisabled, setTimerDisabled] = useState(false);
   const remaining = useAutoApproveCountdown(timerDisabled ? undefined : countdownMs, onExpire);
-  const active = Boolean(countdownMs) && !timerDisabled;
+  if (!countdownMs) return null;
+  const active = !timerDisabled;
   return (
     <div
       style={{
@@ -1320,7 +1330,7 @@ function QuestionTimerRow({
         alignItems: "center",
         justifyContent: "space-between",
         marginBottom: 2,
-        fontSize: countdownMs ? 11.5 : 11,
+        fontSize: 11.5,
         color: active ? "var(--tone-warn)" : "var(--muted)",
       }}
     >
@@ -1329,20 +1339,18 @@ function QuestionTimerRow({
           ? t("thread.autoApproveIn", { n: remaining ?? 0 })
           : t("thread.questionTimerDisabled")}
       </span>
-      {countdownMs ? (
-        <button
-          type="button"
-          className="mini-btn"
-          style={{ fontSize: 11, cursor: "pointer", padding: "1px 6px" }}
-          onClick={() => {
-            const next = !timerDisabled;
-            setTimerDisabled(next);
-            onToggleTimer?.(!next);
-          }}
-        >
-          {timerDisabled ? t("thread.enableTimer") : t("thread.disableTimer")}
-        </button>
-      ) : null}
+      <button
+        type="button"
+        className="mini-btn"
+        style={{ fontSize: 11, cursor: "pointer", padding: "1px 6px" }}
+        onClick={() => {
+          const next = !timerDisabled;
+          setTimerDisabled(next);
+          onToggleTimer?.(!next);
+        }}
+      >
+        {timerDisabled ? t("thread.enableTimer") : t("thread.disableTimer")}
+      </button>
     </div>
   );
 }
@@ -1380,14 +1388,12 @@ export function ChoiceApprovalCard({
 }: {
   question: string;
   options: { id: string; title: string; summary?: string }[];
-  countdownMs?: number;
   result?: string;
   ok?: boolean;
   onPick?: (optionId: string) => void;
   onCancel?: () => void;
-  onTimerToggle?: (enabled: boolean) => void;
   anchor?: string;
-}) {
+} & PickerTimerProps) {
   useLang();
   const interactive = Boolean(onPick);
   const selected = selectedChoiceId(result);
@@ -1397,7 +1403,7 @@ export function ChoiceApprovalCard({
       kind={t("thread.userChoiceKind")}
       tone={interactive ? "info" : structuredCardTone(result, ok)}
       title={<InlineMarkdown source={question} />}
-      sub={t("thread.optionCount", { count: options.length })}
+      chip={t("thread.optionCount", { count: options.length })}
       body={
         <>
           {interactive ? (

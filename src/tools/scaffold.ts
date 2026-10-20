@@ -13,6 +13,8 @@ export interface ScaffoldToolsOptions {
   /** Live spec provider (config + per-session overlay). When set, list_mcp_bridges
    *  reflects the session's toggle state instead of re-reading config. */
   getMcpSpecs?: () => McpServerSpec[];
+  /** Tools a bridge refused (name owned elsewhere) or deferred (spec budget). */
+  getMcpToolSkips?: () => Array<{ server: string; name: string; reason: string }>;
 }
 
 const VALID_SERVER_NAME = /^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/;
@@ -147,7 +149,7 @@ export function registerScaffoldTools(
       const configured =
         opts.getMcpSpecs?.() ?? loadEffectiveMcpConfig(opts.projectRoot, configPath);
       const registeredSpecs = registry.specs();
-
+      const skippedTools = opts.getMcpToolSkips?.() ?? [];
       const bridges = configured
         .filter((s) => !filterName || s.name === filterName)
         .map((s) => {
@@ -160,6 +162,7 @@ export function registerScaffoldTools(
                   description: spec.function.description ?? "",
                 }))
             : [];
+          const skippedForServer = skippedTools.filter((k) => k.server === (s.name ?? "anon"));
           const isBridged = tools.length > 0;
           // Live wins: a registered tool means the bridge is usable, even if the
           // config default marked the server disabled (a session enabled it).
@@ -174,6 +177,7 @@ export function registerScaffoldTools(
               : { url: s.url }),
             tool_count: tools.length,
             tools,
+            ...(skippedForServer.length > 0 ? { skipped_tools: skippedForServer } : {}),
           };
         });
 

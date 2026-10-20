@@ -401,17 +401,22 @@ export interface EditRequiredEvent {
   prompt?: ApprovalPrompt;
 }
 
-export interface ChoiceRequiredEvent {
+/** Never Ask override window shared by every picker gate: the card shows a
+ *  countdown and its first option wins at expiry. One type so the three pickers
+ *  cannot drift apart again. */
+export interface PickerWindow {
+  countdownMs?: number;
+}
+
+export interface ChoiceRequiredEvent extends PickerWindow {
   type: "$choice_required";
   id: number;
   question: string;
   options: ChoiceOption[];
   allowCustom: boolean;
-  /** YOLO auto-selection window (ms) — the card picks the first option at expiry. */
-  countdownMs?: number;
 }
 
-export interface PlanRequiredEvent {
+export interface PlanRequiredEvent extends PickerWindow {
   type: "$plan_required";
   id: number;
   plan: string;
@@ -419,8 +424,6 @@ export interface PlanRequiredEvent {
   summary?: string;
   /** Stable submit_plan tool call that anchors live progress in the chat timeline. */
   callId?: string;
-  /** YOLO auto-approval window (ms) — the card auto-picks the first option at expiry. */
-  countdownMs?: number;
 }
 
 export interface CheckpointRequiredEvent {
@@ -434,7 +437,7 @@ export interface CheckpointRequiredEvent {
   total: number;
 }
 
-export interface RevisionRequiredEvent {
+export interface RevisionRequiredEvent extends PickerWindow {
   type: "$revision_required";
   id: number;
   reason: string;
@@ -442,8 +445,6 @@ export interface RevisionRequiredEvent {
   /** The plan's current remaining steps, so the card can diff the rewrite against it. */
   previousSteps?: PlanStep[];
   summary?: string;
-  /** YOLO auto-approval window (ms) — the card auto-picks accept rewrite at expiry. */
-  countdownMs?: number;
 }
 
 export interface StepCompletedEvent {
@@ -515,10 +516,16 @@ export interface PlanRestoredEvent {
 
 export interface SessionsEvent {
   type: "$sessions";
-  /** Identifies the daemon lifetime that produced this snapshot. */
+  /** Identifies the daemon lifetime that produced this snapshot. Shared by every
+   *  channel of every workspace, so an epoch change means the daemon restarted. */
   epoch: string;
-  /** Monotonic per-tab snapshot revision. Older async results must be ignored. */
+  /** Monotonic per-workspace snapshot revision, stamped when the scan is requested.
+   *  Older async results must be ignored. */
   revision: number;
+  /** A paint from the persisted index cache rather than a scan. It may only
+   *  initialise a workspace the client has never listed, and never advances
+   *  `revision`, so a cache read can never outrank a settled snapshot. */
+  primed?: boolean;
   /** Delete operations settled by this authoritative snapshot. */
   settledDeletes?: { name: string; removed: boolean }[];
   items: {
@@ -936,6 +943,11 @@ export interface SessionEventRecord {
    *  plan/choice gate, `notice:<id>` for a fold), so a jump lands on that card
    *  rather than on the turn's prompt bubble. */
   anchor?: string;
+  /** The same card's other address. One tool call carries two ids — the loop's own
+   *  (which the persisted log, and so a reloaded transcript, keeps) and the wire's
+   *  `tc-…` (which a live transcript renders) — and a row is written while only one
+   *  of them is in reach. The jump tries this when `anchor` finds no card. */
+  anchorAlias?: string;
 }
 
 /** A loaded transcript entry. `ts` is when the record was written (epoch ms),
@@ -963,6 +975,11 @@ export interface SessionLoadedEvent {
   type: "$session_loaded";
   name: string;
   messages: LoadedMessage[];
+  /** Older history exists beyond this page: the newest window ships first and the
+   *  rest is fetched with `session_history_page`. */
+  hasOlder?: boolean;
+  /** User turns dropped from the front of this page, so turn numbers stay absolute. */
+  turnBase?: number;
   carryover: {
     totalCostUsd: number;
     /** Per-provider cumulative costs in each provider's native unit (USD for
@@ -979,6 +996,17 @@ export interface SessionLoadedEvent {
   /** Set on `desktop_resync` re-emits — the frontend must not let a resync
    *  echo clobber a live streaming transcript (same session, busy). */
   resync?: boolean;
+}
+
+/** One older page of a session's transcript, requested by `session_history_page`.
+ *  `turnBase` is how many user turns precede it, so the frontend numbers the
+ *  prepended rows exactly as the live transcript would. */
+export interface SessionHistoryEvent {
+  type: "$session_history";
+  name: string;
+  messages: LoadedMessage[];
+  hasOlder: boolean;
+  turnBase: number;
 }
 
 /** Per-provider cumulative session usage in the provider's native unit. Mirrors
@@ -1639,6 +1667,10 @@ export type OutgoingCommand = { tabId?: string } & (
    *  fresh full window. Without this, "disable timer" only stopped the UI while
    *  the backend still resolved at expiry. */
   | { cmd: "gate_timer"; id: number; enabled: boolean }
+  /** Fetch one page of older transcript: `before` is how many messages from the
+   *  session's end the caller already holds, so the reply is the window just above
+   *  them. */
+  | { cmd: "session_history_page"; name: string; before: number }
   | { cmd: "session_list" }
   /** `replay: false` asks only for transport state, the tab snapshot and the
    *  catalog refreshes — no per-tab re-emission. A caller that just spawned this

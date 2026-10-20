@@ -1,5 +1,5 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type SessionInfo, type SessionMutation, sortSessionsByCreationDescending } from "../App";
 import { recordFrontendFailure } from "../diagnostics";
 import { t, useLang } from "../i18n";
@@ -84,19 +84,28 @@ export function Sidebar({
   const [query, setQuery] = useState("");
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [pendingClear, setPendingClear] = useState<PendingClear | null>(null);
+  // One minute-resolution clock for the whole list: the labels are relative, so they
+  // must refresh on their own. Local state keeps the tick out of App's render path.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
   // Lock only: the in-flight indicator itself lives in the main-area pill, so
   // this surface never restates it as a second throbber.
   const busy = sessionMutation != null;
   const workspaceLabel = workspaceDir
     ? workspaceDir.split(/[\\/]/).pop() || workspaceDir
     : t("sidebarPanel.noWorkspace");
-  const sortedSessions = [...sessions].sort(sortSessionsByCreationDescending);
-  const filtered = query
-    ? sortedSessions.filter((s) => {
-        const q = query.toLowerCase();
-        return sessionTitle(s).toLowerCase().includes(q) || s.name.toLowerCase().includes(q);
-      })
-    : sortedSessions;
+  const filtered = useMemo(() => {
+    const sorted = [...sessions].sort(sortSessionsByCreationDescending);
+    if (!query) return sorted;
+    const needle = query.toLowerCase();
+    return sorted.filter(
+      (s) =>
+        sessionTitle(s).toLowerCase().includes(needle) || s.name.toLowerCase().includes(needle),
+    );
+  }, [sessions, query]);
 
   useEffect(() => {
     if (!pendingDelete && !pendingClear) return;
@@ -124,7 +133,7 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="side-head">
-        <button type="button" className="new-btn" onClick={onNewChat}>
+        <button type="button" className="new-btn" onClick={onNewChat} disabled={busy}>
           <I.plus size={14} />
           <span className="label">{t("sidebarPanel.newChat")}</span>
           <Shortcut keys={["mod", "N"]} />
@@ -230,8 +239,10 @@ export function Sidebar({
           ) : null}
           {filtered.map((s) => {
             const active = s.name === activeName;
-            const mtime = Date.parse(s.mtime);
-            const updated = Number.isFinite(mtime) ? relative(Date.now() - mtime) : s.mtime;
+            // meta.updatedAt is the real last-activity stamp: a copied or restored
+            // session keeps a filesystem mtime that lies about when it was touched.
+            const stamp = s.updatedAt ?? Date.parse(s.mtime);
+            const updated = Number.isFinite(stamp) ? relative(now - stamp) : s.mtime;
             const running = runningSessions?.has(s.name) ?? false;
             const rate = running ? sessionRates?.get(s.name) : undefined;
             const plan = planLabels?.get(s.name);
@@ -313,6 +324,7 @@ export function Sidebar({
                   className="delete-btn"
                   title={t("sidebarPanel.deleteSession")}
                   aria-label={t("sidebarPanel.deleteSession")}
+                  disabled={busy}
                   onClick={(e) => {
                     e.stopPropagation();
                     const rect = e.currentTarget.getBoundingClientRect();

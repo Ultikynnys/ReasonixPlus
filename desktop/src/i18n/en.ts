@@ -694,6 +694,7 @@ export const en = {
     diffDiscard: "Discard",
     diffApply: "Apply",
     diffAwaiting: "Waiting approval",
+    diffShowAll: "Show all {count} lines",
     file: "file",
     showInExplorer: "Show in file explorer",
     errorName: COMMON_STRINGS.errorLabel,
@@ -978,8 +979,9 @@ export const en = {
     enableQuestionTimer: "Enable question timer",
     disableQuestionTimer: "Disable question timer",
     questionTimerEnabledDesc:
-      "Auto-picks the first option after a 30s countdown for choice questions in Never Ask mode.",
-    questionTimerDisabledDesc: "Off by default: questions with options wait for manual selection.",
+      "Picks the first option after a 30s countdown on every Never Ask picker (questions, plans, revisions).",
+    questionTimerDisabledDesc:
+      "Off: choice questions (ask_choice, abandon/activate plan) wait for a manual pick in Never Ask mode.",
     duplicateSessionLimit: "Duplicate session limit",
     duplicateSessionLimitDesc:
       "Token budget kept when duplicating a session: the newest part of the transcript is kept and the oldest is dropped.",
@@ -1128,6 +1130,7 @@ export const en = {
     unknownKind: "# unknown card kind: fallback render",
   },
   thread: {
+    loadOlder: "Load older messages",
     keepSteps: "Keep {n} remaining step(s)",
     keepOriginal: "Keep original",
     you: "You",

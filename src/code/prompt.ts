@@ -1,10 +1,13 @@
 import { join } from "node:path";
 import { type EditMode, loadEditMode } from "../config.js";
-import { readCappedTextFile } from "../memory/read-capped.js";
+import { applyMemoryBlock, readCappedTextFile, truncateWithMarker } from "../memory/read-capped.js";
 import { applyMemoryStack } from "../memory/user.js";
 import { TUI_FORMATTING_RULES, escalationContract } from "../prompt-fragments.js";
 
 const DEFAULT_CODE_MODEL = "deepseek-v4-flash";
+
+/** Cap on user-supplied prompt append text, matching project memory so one source cannot crowd out the rest. */
+export const SYSTEM_APPEND_MAX_CHARS = 8_000;
 
 /** Rendered only for a session minted with subagents on. A session without the tool
  *  gets no subagent text at all: instructions for a tool the model cannot see are
@@ -28,11 +31,15 @@ Bad: \`"look into the auth code"\`. Good: \`"List every caller of validateToken 
 
 /** Built per-session against the resolved model id so the contract names the actual tier (#582). */
 function codeSystemBase(modelId: string, subagentsEnabled = false): string {
-  const base = CODE_SYSTEM_TEMPLATE.replace("__ESCALATION_CONTRACT__", escalationContract(modelId));
+  // Function replacers insert the text literally, so a "$" in the model id cannot expand into a
+  // capture-group pattern (string replacements treat $&, $', $` specially).
+  const base = CODE_SYSTEM_TEMPLATE.replace("__ESCALATION_CONTRACT__", () =>
+    escalationContract(modelId),
+  );
   // A disabled session gets the template with the section spliced out (placeholder
   // and one of its two blank-line guards), so the prefix carries no trace of it.
   return subagentsEnabled
-    ? base.replace("__SUBAGENT_SECTION__", SUBAGENT_SECTION)
+    ? base.replace("__SUBAGENT_SECTION__", () => SUBAGENT_SECTION)
     : base.replace("\n\n__SUBAGENT_SECTION__\n", "\n");
 }
 
@@ -146,7 +153,7 @@ When you edit code, keep its comments honest: if your change makes a nearby comm
 
 # Trust what you already know
 
-Before exploring to answer a factual question, check context first: the user's message, prior turns (including \`remember\` results), the pinned memory blocks above. User-stated facts outrank what the files say; don't re-derive what the user just told you.
+Before exploring to answer a factual question, check context first: the user's message, prior turns (including \`remember\` results), the pinned memory blocks above, as of this session's start (a memory saved this session is not in them yet). User-stated facts outrank what the files say; don't re-derive what the user just told you.
 
 # Execution policy
 
@@ -204,9 +211,8 @@ __ESCALATION_CONTRACT__
 ${TUI_FORMATTING_RULES}
 `;
 
-/** Backward-compat — public-API const, frozen at the historical flash phrasing and
- *  without the subagent section (a session opts in per-mint). Internal callers use
- *  codeSystemPrompt(rootDir, { modelId, subagentsEnabled }) so both match the session. */
+/** @deprecated Frozen at the historical flash phrasing without a subagent section, so it can disagree with the
+ *  session that is actually running. Internal callers use codeSystemPrompt(rootDir, { modelId, subagentsEnabled }). */
 export const CODE_SYSTEM_PROMPT = codeSystemBase(DEFAULT_CODE_MODEL);
 
 /** Cap on the embedded .gitignore preview. */
@@ -252,6 +258,9 @@ export interface CodeSystemPromptOptions {
   editMode?: EditMode;
   /** Override config path — tests point this at a tmp file. */
   configPath?: string;
+  /** Home directory the memory stack resolves against. Defaults to the real home; hosts and tests pass
+   *  it so a prompt can be composed hermetically instead of picking up whatever the machine happens to hold. */
+  homeDir?: string;
   /** Whether this SESSION was minted with the subagent tool. Read from the session's
    *  frozen meta by the host: a live settings edit must not rewrite a cached prefix. */
   subagentsEnabled?: boolean;
@@ -262,14 +271,24 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
     opts.modelId ?? DEFAULT_CODE_MODEL,
     opts.subagentsEnabled === true,
   );
-  const withMemory = applyMemoryStack(codeBase, rootDir);
+  const withMemory = applyMemoryStack(codeBase, rootDir, { homeDir: opts.homeDir });
   const gitignorePath = join(rootDir, ".gitignore");
   let result = withMemory;
   const gitignore = readCappedTextFile(gitignorePath, GITIGNORE_MAX_CHARS);
   if (gitignore) {
-    result = `${result}\n\n# Project .gitignore\n\nThe user's repo ships this .gitignore; treat every pattern as "don't traverse or edit inside these paths unless explicitly asked":\n\n\`\`\`\n${gitignore.content}\n\`\`\`\n`;
+    // Same builder as every memory block: the fence is sized above any backtick run in the body.
+    result = `${applyMemoryBlock(
+      result,
+      "# Project .gitignore",
+      "The user's repo ships this .gitignore; treat every pattern as \"don't traverse or edit inside these paths unless explicitly asked\":",
+      gitignore.content,
+    )}\n`;
   }
-  const appendParts = [opts.systemAppend, opts.systemAppendFile].filter(Boolean);
+  const appendParts = [opts.systemAppend, opts.systemAppendFile]
+    .filter((part): part is string => Boolean(part))
+    // Capped like project memory: an oversized append must not crowd out the tool spec or the rest of the
+    // prefix, and the truncation marker makes the cut visible instead of silent.
+    .map((part) => truncateWithMarker(part, SYSTEM_APPEND_MAX_CHARS).content);
   if (appendParts.length > 0) {
     result = `${result}\n\n# User System Append\n\n${appendParts.join("\n\n")}`;
   }
