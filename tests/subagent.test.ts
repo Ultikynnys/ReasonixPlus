@@ -1,12 +1,18 @@
 /** Subagent tool — registration, child-loop isolation, fork-registry exclusion, abort propagation, plan-mode inheritance. */
 
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { DeepSeekClient, Usage } from "../src/client.js";
+import { planRepository } from "../src/code/plans.js";
+import { PauseGate } from "../src/core/pause-gate.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { bridgeMcpTools } from "../src/mcp/registry.js";
 import { ImmutablePrefix } from "../src/memory/runtime.js";
 import { estimateRequestTokens } from "../src/tokenizer.js";
 import { ToolRegistry } from "../src/tools.js";
+import { registerPlanTool } from "../src/tools/plan.js";
 import {
   NEVER_INHERITED_TOOLS,
   type SubagentEvent,
@@ -38,6 +44,13 @@ function makeToolCallResponses(n: number): FakeResponseShape[] {
       },
     ],
   }));
+}
+
+/** Approves every gate the plan tools raise, so a plan can be created in a test. */
+function approvingGate(): PauseGate {
+  const gate = new PauseGate();
+  gate.on((request) => gate.resolve(request.id, { type: "approve" } as never));
+  return gate;
 }
 
 function makeSink(): { sink: SubagentSink; events: SubagentEvent[] } {
@@ -943,6 +956,25 @@ describe("spawnSubagent allowedTools", () => {
     expect(seen[0]).not.toContain("write_file");
     expect(seen[0]).toContain("unreal_mcp_spawn_actor");
   });
+
+  it("cannot resurrect a plan tool through a skill allow-list", () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "read_file", readOnly: true, fn: () => "ok" });
+    registerPlanTool(parent, { rootDir: ".", confirmationGate: approvingGate() });
+
+    // alsoExclude wins over allow: naming a plan tool in `allowed-tools` must not hand a
+    // child read or write access to the parent's plan.
+    const child = forkRegistryWithAllowList(
+      parent,
+      new Set(["read_file", "submit_plan", "open_plan", "list_plans"]),
+      NEVER_INHERITED_TOOLS,
+    );
+
+    expect(child.has("read_file")).toBe(true);
+    expect(child.has("submit_plan")).toBe(false);
+    expect(child.has("open_plan")).toBe(false);
+    expect(child.has("list_plans")).toBe(false);
+  });
 });
 
 describe("iteration-cap recovery", () => {
@@ -1287,5 +1319,94 @@ describe("inherited loop options", () => {
     await parent.dispatch("spawn_subagent", JSON.stringify({ task: "answer me" }));
 
     expect(events.at(-1)).toMatchObject({ kind: "end", contextMax: 400_000 });
+  }, 30_000);
+});
+
+describe("plan isolation", () => {
+  it("never lets a child see the parent's plan, by tools or by injected context", async () => {
+    // Plans AND sessions both live under the user home, so redirect it: this test must not
+    // read the real plan store, nor leave a real session behind.
+    const home = mkdtempSync(join(tmpdir(), "subagent-plan-home-"));
+    const workspace = join(home, "workspace");
+    mkdirSync(workspace, { recursive: true });
+    const previousHome = [process.env.HOME, process.env.USERPROFILE];
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      // An ACTIVE and UNCLAIMED plan: exactly the state any loop in this workspace may
+      // adopt, which is what makes the isolation below meaningful.
+      const repository = planRepository(workspace);
+      const plan = repository.propose("SECRET-PLAN-MARKER: rewrite the parser", [
+        { id: "s1", title: "Rewrite", action: "Rewrite the parser" },
+      ]);
+      repository.activate(plan.id);
+
+      // 1. The child shares the parent's workspace (inherited hookCwd) and its registry,
+      //    which carries the plan tools. It must adopt nothing and be offered no plan tool.
+      const parent = new ToolRegistry();
+      registerPlanTool(parent, { rootDir: workspace, confirmationGate: approvingGate() });
+      const child: Array<{ messages?: unknown; tools?: Array<{ function: { name: string } }> }> =
+        [];
+      // The child tries to author a plan it was never asked for. The registry it inherits
+      // has the tool dropped, so the call must die as an unknown name, not pause for a gate.
+      await spawnSubagent({
+        client: makeFakeClient(
+          [
+            {
+              content: "",
+              tool_calls: [
+                {
+                  id: "call_plan",
+                  type: "function" as const,
+                  function: {
+                    name: "submit_plan",
+                    arguments: JSON.stringify({
+                      plan: "CHILD-PLAN-MARKER: do the parent's job",
+                      steps: [{ id: "c1", title: "Sneak", action: "Do it" }],
+                    }),
+                  },
+                },
+              ],
+            },
+            { content: "done" },
+          ],
+          { capture: (r) => child.push(r) },
+        ).client,
+        parentRegistry: parent,
+        system: "gather facts",
+        task: "look at the code",
+        inherited: { hookCwd: workspace },
+      });
+
+      const wire = JSON.stringify(child.map((r) => r.messages));
+      expect(wire).not.toContain("Authoritative session plan state");
+      expect(wire).not.toContain("SECRET-PLAN-MARKER");
+      // The write attempt was refused, and nothing it named reached the store.
+      expect(wire).toContain("unknown tool: submit_plan");
+      expect(repository.list()).toHaveLength(1);
+      expect(repository.open(plan.id).body).not.toContain("CHILD-PLAN-MARKER");
+      const offered = child.flatMap((r) => (r.tools ?? []).map((t) => t.function.name));
+      for (const planTool of ["list_plans", "open_plan", "submit_plan", "mark_step_complete"]) {
+        expect(offered).not.toContain(planTool);
+      }
+
+      // 2. Control, run AFTER the child: an ordinary loop adopts that same plan, so it was
+      //    still adoptable all along and step 1 proved isolation rather than an empty store.
+      const control: Array<{ messages?: unknown }> = [];
+      const controlLoop = new CacheFirstLoop({
+        client: makeFakeClient([{ content: "ok" }], { capture: (r) => control.push(r) }).client,
+        prefix: new ImmutablePrefix({ system: "parent" }),
+        session: "parent-session",
+        hookCwd: workspace,
+        stream: false,
+      });
+      for await (const _event of controlLoop.step("go")) {
+        // drain
+      }
+      expect(JSON.stringify(control)).toContain("Authoritative session plan state");
+    } finally {
+      [process.env.HOME, process.env.USERPROFILE] = previousHome;
+      rmSync(home, { recursive: true, force: true });
+    }
   }, 30_000);
 });

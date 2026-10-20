@@ -1,7 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PLAN_INTERACTIVE_TOOL_NAMES } from "@reasonix/core-utils";
+import {
+  PLAN_INTERACTIVE_TOOL_NAMES,
+  PLAN_TOOL_NAMES,
+  PLAN_UNGATED_TOOL_NAMES,
+} from "@reasonix/core-utils";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { PauseGate } from "../src/core/pause-gate.js";
 import { ToolRegistry } from "../src/tools.js";
@@ -24,13 +28,16 @@ function gate(type: string, optionId?: string): PauseGate {
   return gate;
 }
 
-it("PLAN_INTERACTIVE_TOOL_NAMES is exactly the registered plan tools that gate", () => {
+it("plan name sets cover every registered plan tool, so a new one cannot leak to a child", () => {
   const tools = registerPlanTool(new ToolRegistry());
-  const gated = tools
-    .specs()
-    .map((spec) => spec.function.name)
-    .filter((name) => tools.isUserIntervention(name));
-  expect(new Set(gated)).toEqual(new Set(PLAN_INTERACTIVE_TOOL_NAMES));
+  const all = tools.specs().map((spec) => spec.function.name);
+  const gated = all.filter((name) => tools.isUserIntervention(name));
+
+  // Derived from the registry, never hand-listed: an eighth plan tool must fail here
+  // rather than silently reach a subagent through NEVER_INHERITED_TOOLS.
+  expect(new Set(PLAN_TOOL_NAMES)).toEqual(new Set(all));
+  expect(new Set(PLAN_INTERACTIVE_TOOL_NAMES)).toEqual(new Set(gated));
+  expect(new Set(PLAN_UNGATED_TOOL_NAMES)).toEqual(new Set(all.filter((n) => !gated.includes(n))));
 });
 it("creates, inspects, revises and completes one workspace-owned plan", async () => {
   const tools = registerPlanTool(new ToolRegistry());

@@ -248,6 +248,9 @@ export interface CacheFirstLoopOptions {
   rebuildSystem?: () => string;
   /** When true, the stream repetition / "stuck re-thinking" guard may abort a degenerating stream. Defaults to false (opt-in). */
   repetitionGuardEnabled?: boolean;
+  /** Inject this session's active plan into outgoing requests. Default true; a subagent
+   *  sets false so it can never adopt or continue the parent's plan. */
+  planContext?: boolean;
   /** Runs with no operator to answer the loop's prompts (a subagent): the iteration
    *  cap's human-facing pause becomes a self-driven wrap-up, then a forced summary.
    *  Attended turns keep the pause. */
@@ -479,6 +482,7 @@ export class CacheFirstLoop {
   private _wrapUpAsked = false;
   /** True when nobody can type "continue" to this loop — see CacheFirstLoopOptions.unattended. */
   private readonly _unattended: boolean;
+  private readonly _planContext: boolean;
   /** Live edit-mode getter — hosts that don't pass it keep the default pause. */
   private readonly _getEditMode: (() => EditMode) | undefined;
   /** Latched once per turn — the empty-completion guard retries exactly once. */
@@ -555,6 +559,7 @@ export class CacheFirstLoop {
     this.maxIterPerTurn = opts.maxIterPerTurn ?? CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN;
     this._getEditMode = opts.getEditMode;
     this._unattended = opts.unattended === true;
+    this._planContext = opts.planContext !== false;
     this._repetitionGuardEnabled = Boolean(opts.repetitionGuardEnabled);
     this.ctxMaxOverride = opts.ctxMaxOverride;
     this.autoCompact = opts.autoCompact ?? true;
@@ -923,6 +928,7 @@ export class CacheFirstLoop {
   /** This session's in-flight plan, or null. Plan context is additive, the conversation
    *  is not: an unreadable or lock-held store must not take the turn down with it. */
   private activePlanForSession(): PlanRecord | null {
+    if (!this._planContext) return null;
     try {
       return (
         this.planRepository?.activeFor(claimingSession(this.sessionName), {

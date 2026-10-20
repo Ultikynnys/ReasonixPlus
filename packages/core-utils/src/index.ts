@@ -105,7 +105,11 @@ export {
   stripProviderQualifier,
 } from "./models.js";
 export type { ParsedModelRef } from "./models.js";
-export { PLAN_INTERACTIVE_TOOL_NAMES } from "./plan-tools.js";
+export {
+  PLAN_INTERACTIVE_TOOL_NAMES,
+  PLAN_TOOL_NAMES,
+  PLAN_UNGATED_TOOL_NAMES,
+} from "./plan-tools.js";
 export type {
   ConfirmationChoice,
   RuleScope,

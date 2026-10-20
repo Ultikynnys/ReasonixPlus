@@ -1,7 +1,7 @@
-/** Isolated child loop. Inherits the parent registry minus delegation entry points
- *  and the interactive plan tools; no hooks; non-streaming. */
+/** Isolated child loop. Inherits the parent registry minus delegation entry points and
+ *  every plan tool; inherits the parent's hooks and loop policy, bar forced invariants. */
 
-import { PLAN_INTERACTIVE_TOOL_NAMES } from "@reasonix/core-utils";
+import { PLAN_TOOL_NAMES } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "../client.js";
 import {
   type ModelProvider,
@@ -243,11 +243,12 @@ export const DEFAULT_SUBAGENT_MODEL = "deepseek-flash";
 const DEFAULT_SUBAGENT_EFFORT: import("../config.js").ReasoningEffort = "high";
 
 const SUBAGENT_TOOL_NAME = "spawn_subagent";
-/** Delegation entry points are excluded → depth=1 hard cap; the interactive plan tools
- *  are excluded too → a subagent must never surface a plan picker or checkpoint gate mid-parent-turn. */
-export const NEVER_INHERITED_TOOLS = new Set<string>([
+/** Delegation entry points are excluded → depth=1 hard cap; every plan tool is excluded
+ *  too, ungated ones included: a child that can read the parent's plan will work a task
+ *  nobody delegated to it, and a plan picker must never surface mid-parent-turn. */
+export const NEVER_INHERITED_TOOLS: ReadonlySet<string> = new Set<string>([
   SUBAGENT_TOOL_NAME,
-  ...PLAN_INTERACTIVE_TOOL_NAMES,
+  ...PLAN_TOOL_NAMES,
   "run_skill",
   "explore",
   "research",
@@ -412,6 +413,8 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     // Nobody can type "continue" into a child: the loop drives the cap's own
     // recovery (wrap-up nudge, then a forced summary carrying the reason).
     unattended: true,
+    // A plan belongs to the session that authored it: no injection, no adoption.
+    planContext: false,
   });
   // Wire parent-abort → child-abort. Two pitfalls we have to handle:
   //
@@ -894,8 +897,8 @@ export function registerSubagentTool(
   return parentRegistry;
 }
 
-/** Plan-mode state propagates — a subagent spawned in plan mode MUST NOT escape it. */
-// Registry forks inherit the policy but start with fresh counters, preserving session-local limits.
+/** Registry forks inherit policy but start fresh counters (session-local limits); plan
+ *  mode propagates, so a child spawned in plan mode cannot escape it. */
 export function forkRegistryExcluding(
   parent: ToolRegistry,
   exclude: ReadonlySet<string>,
