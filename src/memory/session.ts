@@ -392,38 +392,105 @@ export function stampTranscriptMessage(message: ChatMessage): ChatMessage {
   return { ...message, ts: Date.now() };
 }
 
-/** The transcript's (bytes, records) pair, measured from disk: one stat, plus a
- *  single line count for a session written before the pair existed. Undefined when
- *  the file cannot be measured, which only means the next listing counts it. */
-function transcriptShape(
-  name: string,
-): { messagesBytes: number; messageCount: number } | undefined {
-  try {
-    const path = sessionPath(name);
-    const bytes = statSync(path).size;
-    const meta = loadSessionMeta(name);
-    const recorded =
-      typeof meta.messagesBytes === "number" && typeof meta.messageCount === "number"
-        ? meta.messageCount
-        : null;
-    return {
-      messagesBytes: bytes,
-      messageCount: recorded === null ? countJsonlLines(path) : recorded + 1,
-    };
-  } catch {
-    return undefined;
+/** Per-session append bookkeeping: the record count this process last wrote, so an
+ *  append needs no read of meta.json and no second read of the log it appends to.
+ *  Entries are dropped wherever the folder is replaced. */
+interface AppendBook {
+  count: number;
+  metaWrittenAt: number;
+  pending?: ReturnType<typeof setTimeout>;
+}
+
+const appendBooks = new Map<string, AppendBook>();
+/** Sessions whose folder, empty log and 0600 mode this process already set up. */
+const preparedSessions = new Set<string>();
+/** How often a burst of records re-stamps meta.updatedAt and the count pair. */
+const META_STAMP_INTERVAL_MS = 500;
+
+function forgetAppendBook(name: string): void {
+  const book = appendBooks.get(name);
+  if (book?.pending) clearTimeout(book.pending);
+  appendBooks.delete(name);
+  preparedSessions.delete(name);
+}
+
+/** The book's count, seeded once per session per process: from the meta pair when it
+ *  has one, otherwise one byte scan of a log written before the pair existed. */
+function appendBookFor(name: string): AppendBook {
+  const existing = appendBooks.get(name);
+  if (existing) return existing;
+  const meta = loadSessionMeta(name);
+  let count = 0;
+  if (typeof meta.messageCount === "number" && Number.isFinite(meta.messageCount)) {
+    count = meta.messageCount;
+  } else {
+    try {
+      count = countJsonlLines(readFileSync(sessionPath(name), "utf8"));
+    } catch {
+      count = 0;
+    }
   }
+  const book: AppendBook = { count, metaWrittenAt: 0 };
+  appendBooks.set(name, book);
+  return book;
+}
+
+/** Stamp meta.updatedAt plus the (bytes, records) pair, at most once per interval.
+ *  The trailing stamp is scheduled rather than dropped, so the last record of a turn
+ *  always lands; unref'd so a pending stamp never holds the process open. */
+function stampSessionMetaSoon(name: string, book: AppendBook): void {
+  const write = (): void => {
+    book.pending = undefined;
+    try {
+      const p = sessionMetaPath(name);
+      const cur = readJsonFileSilently(p, isSessionMeta);
+      const next: SessionMeta = {
+        ...(cur ?? {}),
+        updatedAt: Date.now(),
+        createdAt: creationStampFor(cur, name),
+        messagesBytes: statSync(sessionPath(name)).size,
+        messageCount: book.count,
+      };
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify(next), "utf8");
+      chmodPrivate(p);
+      book.metaWrittenAt = Date.now();
+    } catch {
+      void 0; /* best-effort — mtime fallback keeps sorting correct */
+    }
+  };
+  if (Date.now() - book.metaWrittenAt >= META_STAMP_INTERVAL_MS) {
+    write();
+    return;
+  }
+  if (book.pending) return;
+  book.pending = setTimeout(write, META_STAMP_INTERVAL_MS);
+  book.pending.unref?.();
 }
 
 export function appendSessionMessage(name: string, message: ChatMessage): void {
   const path = sessionPath(name);
-  ensureSessionDir(name);
+  // The folder, the empty log and its mode survive every later append, so this setup
+  // runs once per session per process rather than once per record.
+  if (!preparedSessions.has(name)) {
+    ensureSessionDir(name);
+    preparedSessions.add(name);
+  }
+  const book = appendBookFor(name);
   // Stamped here because this is the only place a record is written: the Events tab
   // reads the stamp, so it must record when the turn happened, not when it loaded.
-  appendJsonlLine(path, stampTranscriptMessage(message));
-  chmodPrivate(path);
-  // The size/count pair rides the same meta write, so a cold listing can trust it.
-  touchSessionUpdatedAt(name, transcriptShape(name));
+  const record = stampTranscriptMessage(message);
+  try {
+    appendJsonlLine(path, record);
+  } catch {
+    // The folder can vanish under us (removed by another process): rebuild once.
+    preparedSessions.delete(name);
+    ensureSessionDir(name);
+    preparedSessions.add(name);
+    appendJsonlLine(path, record);
+  }
+  book.count += 1;
+  stampSessionMetaSoon(name, book);
   sessionDirectoryIndex.invalidate();
 }
 
@@ -952,6 +1019,10 @@ export function renameSession(oldName: string, newName: string): boolean {
     return false;
   }
   preserveCreationStampAcrossRename(newName, oldName);
+  // The count pair is per name and per folder: drop both, letting the next append
+  // re-seed from the meta this rename just patched.
+  forgetAppendBook(oldName);
+  forgetAppendBook(safeNew);
   sessionDirectoryIndex.invalidate();
   return true;
 }
@@ -1033,6 +1104,7 @@ async function pendingMcpCandidateNames(): Promise<string[]> {
 /** Filesystem-only removal of a session folder (or its legacy flat files),
  *  leaving the directory index untouched so callers can batch the persist. */
 function removeSessionFiles(name: string): boolean {
+  forgetAppendBook(name);
   const dir = sessionDir(name);
   if (existsSync(dir)) {
     rmSync(dir, { recursive: true, force: true });
@@ -1101,7 +1173,14 @@ export function rewriteSession(name: string, messages: ChatMessage[]): void {
     chmodPrivate(backup);
   }
   atomicWriteSync(path, body ? `${body}\n` : "", tmp);
-  touchSessionUpdatedAt(name);
+  const book = appendBooks.get(name);
+  if (book?.pending) clearTimeout(book.pending);
+  appendBooks.set(name, { count: messages.length, metaWrittenAt: Date.now() });
+  preparedSessions.add(name);
+  touchSessionUpdatedAt(name, {
+    messagesBytes: statSync(path).size,
+    messageCount: messages.length,
+  });
   sessionDirectoryIndex.invalidate();
 }
 
