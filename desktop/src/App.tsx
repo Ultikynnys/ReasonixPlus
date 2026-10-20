@@ -38,6 +38,7 @@ import {
   useState,
 } from "react";
 import { WorkspaceProvider } from "./Markdown";
+import { recordFrontendDiagnostic } from "./diagnostics";
 import { type AbortDraftSource, nextAbortDraftCandidate, restoreAbortedDraft } from "./abort-draft";
 import { type FeedbackSoundPlayer, feedbackSounds, primeFeedbackSounds } from "./feedback-sounds";
 import { formatBytes } from "./format";
@@ -1199,9 +1200,7 @@ export function reduce(state: State, action: Action): State {
       if (state.sessionsMutation === null && state.pendingSessionDeletes.length === 0) {
         return state;
       }
-      console.warn(
-        "[reasonix frontend] session mutation was not confirmed by the agent — releasing the optimistic state",
-      );
+      recordFrontendDiagnostic("frontend.session_mutation_unconfirmed", {}, "warn");
       return { ...state, pendingSessionDeletes: [], sessionsMutation: null };
     case "session_rename_requested": {
       const title = flattenText(action.title).slice(0, 200);
@@ -3622,7 +3621,9 @@ function TabRuntime({
   const sendRpc = useCallback(
     (cmd: OutgoingCommand) => {
       const queued = rpcQueue.current.then(() => rpcSend({ tabId, ...cmd }));
-      rpcQueue.current = queued.catch((err) => console.error(`${cmd.cmd} failed`, err));
+      rpcQueue.current = queued.catch((err) =>
+        recordFrontendDiagnostic("frontend.rpc_failed", { cmd: cmd.cmd, error: err }, "error"),
+      );
     },
     [tabId],
   );
@@ -3769,7 +3770,7 @@ function TabRuntime({
     // clearing optimistically here orphans the UI on a blank screen when the
     // RPC fails while the backend still points at the old session.
     rpcSend({ tabId, cmd: "new_chat" }).catch((err) => {
-      console.error("new_chat failed", err);
+      recordFrontendDiagnostic("frontend.new_chat_failed", { error: err }, "error");
       dispatch({
         t: "push_notice",
         text: `Couldn't start a new chat: ${messageOf(err)}. Your current conversation is untouched.`,
@@ -3791,7 +3792,7 @@ function TabRuntime({
         saveSettings({ workspaceDir: picked });
       }
     } catch (err) {
-      console.error("[reasonix frontend] pickWorkspace failed", err);
+      recordFrontendDiagnostic("frontend.pick_workspace_failed", { error: err }, "error");
     }
   }, [clearAbortDraft, saveSettings, state.settings?.workspaceDir]);
 
@@ -3875,7 +3876,7 @@ function TabRuntime({
           },
         ]);
       } catch (err) {
-        console.error("[reasonix frontend] clipboard image attach failed", err);
+        recordFrontendDiagnostic("frontend.image_attach_failed", { error: err }, "error");
         appendNotice(t("composer.imageAttachFailed"), "error");
       }
     },
@@ -3995,7 +3996,7 @@ function TabRuntime({
         if (cancelled) handle();
         else unlisten = handle;
       } catch (err) {
-        console.error("[reasonix frontend] drag-drop listen failed", err);
+        recordFrontendDiagnostic("frontend.dragdrop_listen_failed", { error: err }, "error");
       }
     })();
     return () => {
@@ -4213,10 +4214,7 @@ function TabRuntime({
 
     void getCurrentWindow()
       .isFocused()
-      .catch((err) => {
-        console.debug("[reasonix frontend] window focus query unavailable", err);
-        return true;
-      })
+      .catch(() => true)
       .then((focused) => {
         if (
           shouldAppendCompletionNotice({
@@ -4516,7 +4514,7 @@ function TabRuntime({
       await invoke("write_text_file", { path, content: md });
       appendNotice(t("app.toast.exportedMd"), "success");
     } catch (err) {
-      console.error("[reasonix frontend] export failed", err);
+      recordFrontendDiagnostic("frontend.export_failed", { error: err }, "error");
       appendNotice(t("app.toast.exportFailed", { error: String(err) }), "error");
     }
   }, [state.messages, session, appendNotice]);
@@ -4629,7 +4627,7 @@ function TabRuntime({
           setActive={setActiveTabId}
           onClose={(id) => {
             rpcSend({ cmd: "tab_close", tabId: id }).catch((err) =>
-              console.error("tab_close failed", err),
+              recordFrontendDiagnostic("frontend.tab_close_failed", { error: err }, "error"),
             );
           }}
           onNew={onNewTab}
@@ -4649,7 +4647,7 @@ function TabRuntime({
             );
             for (const target of targets) {
               rpcSend({ cmd: "tab_close", tabId: target.id }).catch((err) =>
-                console.error("tab_close failed", err),
+                recordFrontendDiagnostic("frontend.tab_close_failed", { error: err }, "error"),
               );
             }
           }}
