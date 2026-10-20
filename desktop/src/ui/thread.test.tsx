@@ -30,8 +30,9 @@ vi.mock("./cards", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AssistantSegment } from "../App";
-import { ApprovalCard } from "./extra-cards";
+import { ApprovalCard, TaskCard, type TaskStepView } from "./extra-cards";
 import {
+  ActivePlanTaskCard,
   AssistantMsg,
   CheckpointApprovalCard,
   ChoiceApprovalCard,
@@ -812,5 +813,97 @@ describe("RevisionApprovalCard — plan rewrite diff", () => {
     );
     expect(container.querySelectorAll(".plan-diff-row")).toHaveLength(0);
     expect(container.textContent).toContain("Only");
+  });
+});
+
+// Long approval cards (a submitted plan, a checkpoint, a plan rewrite) ride the
+// same bounded row window as the thinking and shell cards, so the body scrolls
+// itself and the action buttons stay on screen. A short prompt or an option list
+// must never be windowed, or the user answers a question they cannot fully read.
+describe("approval card body windowing", () => {
+  const steps = [
+    { id: "s1", title: "Update card", action: "Edit the renderer", risk: "low" },
+    { id: "s2", title: "Add a test", action: "Cover the window", risk: "low" },
+  ];
+  const planSteps: TaskStepView[] = [
+    { n: "1", state: "queued", label: "Update card", hint: "Edit the renderer" },
+    { n: "2", state: "queued", label: "Add a test", hint: "Cover the window" },
+  ];
+
+  it("windows a submitted plan's body", () => {
+    const { container } = render(
+      <PlanApprovalCard plan={`## Plan\n\n${"detail\n\n".repeat(40)}`} steps={steps} />,
+    );
+    const body = container.querySelector(".ap-body");
+    expect(body?.classList.contains("row-scroll")).toBe(true);
+    // The whole plan stays in the DOM: this is a window, not a truncation.
+    expect(body?.textContent?.match(/detail/g)).toHaveLength(40);
+  });
+
+  it("leaves the plan's step list to the body's single window", () => {
+    const { container } = render(<PlanApprovalCard plan="do it" steps={steps} />);
+    const list = container.querySelector(".task-card .tb");
+    expect(list?.classList.contains("row-scroll")).toBe(false);
+    expect(container.querySelectorAll(".task-step")).toHaveLength(2);
+  });
+
+  it("windows a checkpoint's result body", () => {
+    const { container } = render(
+      <CheckpointApprovalCard
+        c={{ id: 1, stepId: "step-1", completed: 1, total: 2, result: "done so far" }}
+        onContinue={() => {}}
+        onRevise={() => {}}
+        onStop={() => {}}
+      />,
+    );
+    expect(container.querySelector(".ap-body")?.classList.contains("row-scroll")).toBe(true);
+  });
+
+  it("leaves an ask_choice option list fully visible", () => {
+    const { container } = render(
+      <ChoiceApprovalCard
+        question="Which approach?"
+        options={[
+          { id: "a", title: "Rewrite the renderer" },
+          { id: "b", title: "Patch it" },
+        ]}
+      />,
+    );
+    const body = container.querySelector(".ap-body");
+    expect(body?.classList.contains("row-scroll")).toBe(false);
+    expect(container.textContent).toContain("Rewrite the renderer");
+  });
+
+  it("windows a checklist that has no windowed body above it", () => {
+    const { container } = render(
+      <ApprovalCard kind="plan" title="Steps" body={<TaskCard title="" steps={planSteps} />} />,
+    );
+    expect(container.querySelector(".task-card .tb")?.classList.contains("row-scroll")).toBe(true);
+  });
+
+  it("windows the steps of an executing plan and follows its live edge", () => {
+    const pinned = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(500);
+    const { container } = render(
+      <ActivePlanTaskCard
+        plan={{
+          plan: "harden the card",
+          callId: "c1",
+          summary: "harden the card",
+          steps: Array.from({ length: 8 }, (_, i) => ({
+            id: `s${i}`,
+            title: `Step ${i + 1}`,
+            action: "do it",
+          })),
+          completedStepIds: ["s0"],
+          stepResults: {},
+        }}
+      />,
+    );
+    const list = container.querySelector<HTMLElement>(".task-card .tb");
+    expect(list?.classList.contains("row-scroll")).toBe(true);
+    // The running step is the live edge, so the window opens on it.
+    expect(list?.scrollTop).toBe(500);
+    expect(container.querySelectorAll(".task-step")).toHaveLength(8);
+    pinned.mockRestore();
   });
 });

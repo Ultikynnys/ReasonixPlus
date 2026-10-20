@@ -3687,23 +3687,36 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   margin-top: 4px;
 }
 
+/* ---- Bounded card body (shared by every long card) ---- */
+
+/* One window for every long card body: thinking, shell output, plan confirmation
+   and subagent all show --scroll-rows rows of their own line-height, then scroll.
+   --scroll-line drives the cap AND the rendered line-height, so the two cannot
+   drift apart; RowScroll (ui/row-scroll.tsx) adds the class. */
+.row-scroll {
+  --scroll-rows: 6;
+  --scroll-line: 1.6;
+  line-height: var(--scroll-line);
+  max-height: calc(var(--scroll-rows) * var(--scroll-line) * 1em);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* A tail-pinned follower opts out of scroll anchoring: the browser's automatic
+     adjust fights the follow and reads as a high-frequency vertical bob. */
+  overflow-anchor: none;
+  /* Content-box adds padding outside the cap instead of eating one of the rows. */
+  box-sizing: content-box;
+}
+
 /* ---- Reasoning card ---- */
 
 .reason {
   padding: 12px 16px 14px;
 }
 .reason .stream {
-  max-height: 260px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  /* Pinned to its tail while tokens stream: opt out of the browser's scroll
-     anchoring, whose automatic adjust fights the follow and reads as a
-     high-frequency vertical bob. */
-  overflow-anchor: none;
+  --scroll-line: 1.7;
   font-family: var(--font-sans, "Geist", system-ui, sans-serif);
   font-style: italic;
   font-size: 13.5px;
-  line-height: 1.7;
   color: var(--fg-2);
   position: relative;
   padding-left: 14px;
@@ -3780,14 +3793,9 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   padding: 10px 14px;
   background: var(--bg-2);
   color: var(--fg-2);
-  max-height: 240px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  overflow-anchor: none; /* see .reason .stream for the same pinned-tail follow. */
   white-space: pre-wrap;
   border-top: 1px solid var(--border);
   font-size: 13px;
-  line-height: 1.6;
   /* Match the code-view: no programming ligatures, so `===` / `!==` / `=>`
      render as literal glyphs in captured command output instead of joined
      shapes that read as corrupted syntax. */
@@ -8190,10 +8198,20 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   transform: rotate(-90deg);
 }
 .approval .ap-body {
+  --scroll-line: 1.6;
   padding: 0 14px 10px 14px;
   font-size: 14px;
   color: var(--fg-2);
-  line-height: 1.6;
+  line-height: var(--scroll-line);
+}
+/* The auto-approve countdown rides the top of a windowed body: pausing it must
+   never require scrolling back through the plan. */
+.row-scroll .ap-timer {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 2px 0;
+  background: var(--card);
 }
 .approval .ap-body code {
   background: var(--panel);

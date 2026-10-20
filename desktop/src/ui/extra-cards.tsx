@@ -3,6 +3,7 @@ import { t, useLang } from "../i18n";
 import { I } from "../icons";
 import { CardHead } from "./card-head";
 import { useJumpOpen } from "./jump-expand";
+import { RowScroll, useInRowWindow } from "./row-scroll";
 
 export type ApprovalTone = "ok" | "warn" | "danger" | "info" | "brand" | "ghost";
 
@@ -24,6 +25,7 @@ export function ApprovalCard({
   onTertiary,
   onQuaternary,
   defaultOpen = true,
+  scrollBody = false,
   anchor,
 }: {
   kind: string;
@@ -36,6 +38,10 @@ export function ApprovalCard({
   body?: ReactNode;
   preview?: ReactNode;
   meta?: ReactNode;
+  /** Window `body` to the shared row cap (a long plan / checkpoint / revision)
+   *  instead of letting it push the action buttons off screen. Off by default:
+   *  an option list or a short prompt must stay fully visible. */
+  scrollBody?: boolean;
   primaryLabel?: string;
   secondaryLabel?: string;
   tertiaryLabel?: string;
@@ -67,7 +73,13 @@ export function ApprovalCard({
       </div>
       {open ? (
         <>
-          {body ? <div className="ap-body">{body}</div> : null}
+          {body ? (
+            scrollBody ? (
+              <RowScroll className="ap-body">{body}</RowScroll>
+            ) : (
+              <div className="ap-body">{body}</div>
+            )
+          ) : null}
           {preview ? <div className="ap-preview">{preview}</div> : null}
           <div className="ap-foot">
             {onPrimary ? (
@@ -124,8 +136,24 @@ export function TaskCard({
   anchor?: string;
 }) {
   useLang();
+  // Inside a windowed body (a plan confirmation) the checklist scrolls with that
+  // body; standing alone (an executing plan) it gets a window of its own and
+  // follows its live edge only while a step is actually running.
+  const windowed = useInRowWindow();
+  const runningStep = steps.find((x) => x.state === "running")?.n;
   const done = steps.filter((x) => x.state === "done").length;
   const pct = steps.length ? (done / steps.length) * 100 : 0;
+  const rows = steps.map((st) => (
+    <div className="task-step" key={st.n} data-state={st.state}>
+      <span className="nx">step.{st.n}</span>
+      <span className="st" />
+      <div className="l">
+        {st.label}
+        {st.hint ? <div className="h">{st.hint}</div> : null}
+      </div>
+      <span className="t">{st.durationLabel ?? "-"}</span>
+    </div>
+  ));
   return (
     <div className="task-card" data-anchor={anchor}>
       <div className="th">
@@ -144,19 +172,17 @@ export function TaskCard({
           <span style={{ width: `${pct}%` }} />
         </div>
       </div>
-      <div className="tb">
-        {steps.map((st) => (
-          <div className="task-step" key={st.n} data-state={st.state}>
-            <span className="nx">step.{st.n}</span>
-            <span className="st" />
-            <div className="l">
-              {st.label}
-              {st.hint ? <div className="h">{st.hint}</div> : null}
-            </div>
-            <span className="t">{st.durationLabel ?? "-"}</span>
-          </div>
-        ))}
-      </div>
+      {windowed ? (
+        <div className="tb">{rows}</div>
+      ) : (
+        <RowScroll
+          className="tb"
+          follow={runningStep !== undefined}
+          followKey={runningStep ?? steps.length}
+        >
+          {rows}
+        </RowScroll>
+      )}
     </div>
   );
 }

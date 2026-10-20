@@ -125,15 +125,17 @@ describe("reasoning scroll lifecycle", () => {
     expect(container.querySelector<HTMLElement>(".reason .stream")?.scrollTop).toBe(900);
   });
 
-  it("pins updates, completion and resize, and disconnects observers on collapse", () => {
+  it("pins updates, completion and resize, and keeps one observer until collapse", () => {
     vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(700);
     const disconnect = vi.fn();
     let onResize = () => {};
+    let created = 0;
     vi.stubGlobal(
       "ResizeObserver",
       class {
         constructor(callback: () => void) {
           onResize = callback;
+          created += 1;
         }
         observe = vi.fn();
         disconnect = disconnect;
@@ -145,6 +147,9 @@ describe("reasoning scroll lifecycle", () => {
     stream.scrollTop = 0;
     rerender(wrap(<ReasoningCard text="first\nsecond" streaming />));
     expect(stream.scrollTop).toBe(700);
+    // A token append re-pins the view without rebuilding the observer that keeps
+    // it pinned, so a long stream allocates one observer, not one per token.
+    expect(created).toBe(1);
     stream.scrollTop = 0;
     rerender(wrap(<ReasoningCard text="first\nsecond" streaming={false} />));
     expect(stream.scrollTop).toBe(700);
@@ -152,7 +157,7 @@ describe("reasoning scroll lifecycle", () => {
     onResize();
     expect(stream.scrollTop).toBe(700);
     fireEvent.click(screen.getByRole("button", { name: /reasoning/i }));
-    expect(disconnect).toHaveBeenCalledTimes(3);
+    expect(disconnect).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a manually scrolled thinking card put until it is scrolled back to the bottom", () => {
@@ -1240,5 +1245,46 @@ describe("ShellCard — command line sanitization", () => {
     const cmd = container.querySelector(".shell .cmd .text")?.textContent ?? "";
     expect(cmd).not.toContain(ESC);
     expect(cmd).toBe("echo hi");
+  });
+});
+
+// Every long card body shares one bounded box (`.row-scroll`): the same window
+// the thinking and shell streams use, so nothing is truncated and nothing runs
+// the full transcript height.
+describe("long card bodies share the row window", () => {
+  const run = {
+    runId: "run-window",
+    task: "Inspect quota rendering",
+    skillName: "explore",
+    status: "done" as const,
+    tools: [],
+  };
+
+  it("windows the thinking stream", () => {
+    const { container } = render(wrap(<ReasoningCard text="a\n\nb" streaming={false} />));
+    fireEvent.click(screen.getByRole("button", { name: /reasoning/i }));
+    const box = container.querySelector(".reason .stream");
+    expect(box?.classList.contains("row-scroll")).toBe(true);
+  });
+
+  it("windows the shell output stream", () => {
+    const { container } = render(
+      wrap(<ShellCard command="npm test" liveOutput={"line 1\nline 2"} state="running" />),
+    );
+    const box = container.querySelector(".shell .stream");
+    expect(box?.classList.contains("row-scroll")).toBe(true);
+  });
+
+  it("windows a subagent's run rows and result", () => {
+    const { container } = render(wrap(<SubagentCard name="explore" runs={[run]} result="done" />));
+    const box = container.querySelector(".sub-card");
+    expect(box?.classList.contains("row-scroll")).toBe(true);
+    expect(box?.querySelector(".subagent-result")?.textContent).toBe("done");
+  });
+
+  it("keeps every run row mounted so the box scrolls instead of truncating", () => {
+    const runs = Array.from({ length: 8 }, (_, i) => ({ ...run, runId: `run-${i}` }));
+    const { container } = render(wrap(<SubagentCard name="explore" runs={runs} />));
+    expect(container.querySelectorAll(".sub-row")).toHaveLength(8);
   });
 });

@@ -1,14 +1,5 @@
 import { sanitizeTerminalText } from "@reasonix/core-utils";
-import {
-  type CSSProperties,
-  type ReactNode,
-  memo,
-  useContext,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type CSSProperties, type ReactNode, memo, useContext, useMemo, useState } from "react";
 import { Markdown, WorkspaceContext, resolveAgainstWorkspace, revealInExplorer } from "../Markdown";
 import { t, useLang } from "../i18n";
 import { I } from "../icons";
@@ -16,9 +7,9 @@ import { CardHead } from "./card-head";
 import { FileMenu } from "./file-menu";
 import { formatDuration, tokenLabel } from "./format";
 import { useJumpOpen } from "./jump-expand";
+import { RowScroll, liveFollowKey } from "./row-scroll";
 import { Shortcut } from "./shortcut";
 import { StopButton, usePendingStop } from "./stop-button";
-import { useStickyBottom } from "./useStickyBottom";
 
 type Tone = "default" | "success" | "warning" | "danger" | "accent" | "violet";
 
@@ -281,55 +272,6 @@ const ReasoningRow = memo(function ReasoningRow({ row }: { row: string }) {
   return <p>{inlineReasoningNodes(row)}</p>;
 });
 
-/** px from the bottom within which a follow stream still counts as "pinned". */
-const FOLLOW_PIN_THRESHOLD = 8;
-
-/**
- * The scroll body shared by the thinking and shell cards. It mounts only while
- * the card is expanded (Card gates its body on `open`), so a collapsed card
- * holding thousands of lines costs nothing; when open, its content stays inside
- * a bounded, self-scrolling box. Auto-follow keeps it pinned to the tail, an
- * up-scroll releases it, and returning to the bottom re-pins.
- */
-function FollowStream({
-  text,
-  streaming,
-  label,
-  children,
-}: {
-  text: string;
-  streaming: boolean;
-  label: string;
-  children: ReactNode;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const sticky = useStickyBottom(ref, {
-    threshold: FOLLOW_PIN_THRESHOLD,
-    scrollToBottom: () => {
-      const el = ref.current;
-      if (el) el.scrollTop = el.scrollHeight;
-    },
-  });
-
-  // Pin on mount and whenever the content or the streaming flag changes, and keep
-  // following resizes while pinned.
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    sticky.follow();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => sticky.follow());
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [text, streaming, sticky]);
-
-  return (
-    <div className="stream" ref={ref} role="log" aria-label={label}>
-      {children}
-    </div>
-  );
-}
-
 /**
  * Mounted only while expanded (Card gates its body on `open`), so it always
  * renders the WHOLE reasoning text: every earlier row stays reachable by
@@ -342,12 +284,17 @@ function ReasoningStream({ text, streaming }: { text: string; streaming: boolean
   const rows = streaming ? text.split(/\r?\n/).filter((row) => row.trim()) : text.split(/\n\n+/);
 
   return (
-    <FollowStream text={text} streaming={streaming} label={t("cards.reasoningStreamLabel")}>
+    <RowScroll
+      className="stream"
+      label={t("cards.reasoningStreamLabel")}
+      follow
+      followKey={liveFollowKey(text, streaming)}
+    >
       {rows.map((row, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: append-only stream, no per-row state
         <ReasoningRow key={i} row={row} />
       ))}
-    </FollowStream>
+    </RowScroll>
   );
 }
 
@@ -450,16 +397,17 @@ function ShellOutput({ text, streaming }: { text: string; streaming: boolean }) 
   }, [text, streaming]);
 
   return (
-    <FollowStream
-      text={text}
-      streaming={streaming}
+    <RowScroll
+      className="stream"
       label={streaming ? t("cards.shellLiveLabel") : t("cards.shellOutputLabel")}
+      follow
+      followKey={liveFollowKey(text, streaming)}
     >
       {lines.map((line, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: append-only stream, no per-row state
         <ShellRow key={i} line={line} />
       ))}
-    </FollowStream>
+    </RowScroll>
   );
 }
 
@@ -1240,7 +1188,9 @@ export function SubagentCard({
         </>
       }
     >
-      <div className="sub-card">
+      {/* Windowed like every long card body: follows the live edge while the child
+          runs, opens at the top once the run has settled. */}
+      <RowScroll className="sub-card" follow={!settled} followKey={status}>
         {runs.map((run) => (
           <div className="sub-row" key={run.runId}>
             <span className="av">AI</span>
@@ -1311,7 +1261,7 @@ export function SubagentCard({
             <Markdown source={result} />
           </div>
         ) : null}
-      </div>
+      </RowScroll>
     </Card>
   );
 }

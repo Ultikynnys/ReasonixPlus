@@ -924,6 +924,7 @@ export function PlanApprovalCard({
       // A real summary is prose and gets its own row; the step count is a chip.
       sub={summary}
       chip={summary ? undefined : stepCount}
+      scrollBody
       body={
         <>
           {interactive ? (
@@ -973,6 +974,7 @@ export function CheckpointApprovalCard({
       tone="brand"
       title={c.title ?? t("thread.checkpointTitle", { completed: c.completed, total: c.total })}
       chip={t("thread.checkpointSub", { completed: c.completed, total: c.total })}
+      scrollBody
       body={
         <>
           <Markdown source={c.result} />
@@ -1142,6 +1144,7 @@ export function RevisionApprovalCard({
       tone="warn"
       title={t("thread.rewritePlan")}
       chip={t("thread.keepSteps", { n: r.remainingSteps.length })}
+      scrollBody
       body={
         <>
           <QuestionTimerRow
@@ -1325,6 +1328,7 @@ function QuestionTimerRow({
   const active = !timerDisabled;
   return (
     <div
+      className="ap-timer"
       style={{
         display: "flex",
         alignItems: "center",
