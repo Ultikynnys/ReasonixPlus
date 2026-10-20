@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -120,33 +120,13 @@ describe("buildCodeToolset", () => {
     await toolset.jobs.shutdown();
   });
 
-  it("registers no spawn tool when subagents are disabled, and run_skill stays a reader", async () => {
+  it("registers no spawn tool when subagents are disabled", async () => {
     saveEnableSubagents(false, cfgPath);
-    const skillDir = join(tmpRoot, ".reasonix", "skills", "custom-audit");
-    mkdirSync(skillDir, { recursive: true });
-    writeFileSync(
-      join(skillDir, "SKILL.md"),
-      [
-        "---",
-        "name: custom-audit",
-        "description: Run a custom audit",
-        "---",
-        "",
-        "Audit the requested area.",
-      ].join("\n"),
-      "utf8",
-    );
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
 
     // Knowledge-level gate: the spawn tool is not offered at all.
     expect(toolset.tools.has("spawn_subagent")).toBe(false);
-    // run_skill reads the playbook inline; it never spawns, so it cannot be gated.
-    const result = await toolset.tools.dispatch(
-      "run_skill",
-      JSON.stringify({ name: "custom-audit", arguments: "inspect auth" }),
-    );
-    expect(result).toContain("Audit the requested area.");
     expect(fetchSpy).not.toHaveBeenCalled();
     await toolset.jobs.shutdown();
   });

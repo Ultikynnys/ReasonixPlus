@@ -27,10 +27,8 @@ describe("codeSystemPrompt", () => {
   });
 
   it("does not append a .gitignore section when none exists", () => {
-    // We can no longer assert raw equality with CODE_SYSTEM_PROMPT —
-    // the bundled builtin skills (`explore`, `research`) always inject
-    // a `# Skills` block via applySkillsIndex. Assert the absence of
-    // the .gitignore-specific section instead.
+    // The composed prompt is the frozen base plus the live permissions tail;
+    // nothing else is injected for a workspace with no .gitignore.
     const out = codeSystemPrompt(root);
     expect(out).not.toMatch(/# Project \.gitignore/);
     expect(out).toContain(CODE_SYSTEM_PROMPT);
@@ -198,7 +196,7 @@ describe("codeSystemPrompt", () => {
       expect(off).not.toContain("__SUBAGENT_SECTION__");
     });
 
-    it("lists a skill as a plain playbook identifier, subagent or not", () => {
+    it("never injects a skills index", () => {
       writeFileSync(cfgPath, JSON.stringify({ enableSubagents: false }), "utf8");
       const skillDir = join(root, ".reasonix", "skills", "my-audit");
       mkdirSync(skillDir, { recursive: true });
@@ -208,10 +206,9 @@ describe("codeSystemPrompt", () => {
         "utf8",
       );
       const out = codeSystemPrompt(root, { configPath: cfgPath });
-      // A skill is instructions, not a spawner: the index stays the same either way,
-      // and the old `[subagent]` tag decoration is gone.
-      expect(out).toContain("- my-audit: Run a custom audit");
-      expect(out).not.toContain("[subagent]");
+      // The model has no skill entry point, so on-disk skills cost no prefix tokens.
+      expect(out).not.toContain("# Skills");
+      expect(out).not.toContain("my-audit");
     });
   });
 

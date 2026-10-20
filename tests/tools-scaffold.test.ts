@@ -1,4 +1,4 @@
-/** create_skill / add_mcp_server — temp homeDir + configPath so the tool never touches the real config. */
+/** add_mcp_server / list_mcp_bridges — temp configPath so the tool never touches the real config. */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readConfig, writeConfig } from "../src/config.js";
 import { ToolRegistry } from "../src/tools.js";
-import { registerScaffoldTools, serializeSkill } from "../src/tools/scaffold.js";
+import { registerScaffoldTools } from "../src/tools/scaffold.js";
 
 interface Setup {
   home: string;
@@ -20,7 +20,7 @@ function setup(): Setup {
   const projectRoot = mkdtempSync(join(tmpdir(), "reasonix-scaffold-proj-"));
   const configPath = join(home, "config.json");
   const reg = new ToolRegistry();
-  registerScaffoldTools(reg, { homeDir: home, projectRoot, configPath });
+  registerScaffoldTools(reg, { projectRoot, configPath });
   return { home, projectRoot, configPath, reg };
 }
 
@@ -33,98 +33,6 @@ async function call(reg: ToolRegistry, name: string, args: Record<string, unknow
   const out = await reg.dispatch(name, JSON.stringify(args));
   return JSON.parse(out);
 }
-
-describe("create_skill", () => {
-  let s: Setup;
-  beforeEach(() => {
-    s = setup();
-  });
-  afterEach(() => {
-    teardown(s);
-  });
-
-  it("scaffolds a project-scope skill with the structured frontmatter", async () => {
-    const r = await call(s.reg, "create_skill", {
-      name: "lint-before-commit",
-      description: "Run typecheck + lint before letting the user commit.",
-      body: "# lint-before-commit\n\nRun `npm run verify` ...",
-    });
-    expect(r.success).toBe(true);
-    expect(r.scope).toBe("project");
-    expect(r.path).toContain(".reasonix");
-    expect(existsSync(r.path)).toBe(true);
-    const content = readFileSync(r.path, "utf8");
-    expect(content).toContain("name: lint-before-commit");
-    expect(content).toContain("description: Run typecheck + lint before letting the user commit.");
-    expect(content).toContain("# lint-before-commit");
-  });
-
-  it("emits only name/description frontmatter: a skill is a plain playbook", async () => {
-    const r = await call(s.reg, "create_skill", {
-      name: "deep-explore",
-      description: "Wide-net read-only investigation.",
-      body: "Use read_file + search_content.",
-    });
-    expect(r.success).toBe(true);
-    const content = readFileSync(r.path, "utf8");
-    expect(content).toContain("name: deep-explore");
-    expect(content).not.toContain("runAs:");
-    expect(content).not.toContain("allowed-tools:");
-    expect(content).not.toContain("model:");
-  });
-
-  it("rejects an invalid skill name", async () => {
-    const r = await call(s.reg, "create_skill", {
-      name: "../escape",
-      description: "x",
-      body: "y",
-    });
-    expect(r.error).toMatch(/invalid skill name/);
-  });
-
-  it("refuses to overwrite an existing skill", async () => {
-    await call(s.reg, "create_skill", {
-      name: "twice",
-      description: "first",
-      body: "first body",
-    });
-    const r = await call(s.reg, "create_skill", {
-      name: "twice",
-      description: "second",
-      body: "second body",
-    });
-    expect(r.error).toMatch(/already exists/);
-  });
-
-  it("ignores the retired subagent options instead of writing them", async () => {
-    const r = await call(s.reg, "create_skill", {
-      name: "no-subagent-fields",
-      description: "x",
-      body: "y",
-      run_as: "subagent",
-      allowed_tools: ["read_file"],
-      model: "deepseek-v4-pro",
-    });
-    expect(r.success).toBe(true);
-    expect(readFileSync(r.path, "utf8")).not.toContain("allowed-tools:");
-  });
-});
-
-describe("serializeSkill", () => {
-  it("omits optional frontmatter fields when not set", () => {
-    const out = serializeSkill({
-      name: "minimal",
-      description: "no extras",
-      runAs: "inline",
-      body: "body here",
-    });
-    expect(out).toContain("name: minimal");
-    expect(out).toContain("description: no extras");
-    expect(out).not.toContain("runAs:");
-    expect(out).not.toContain("allowed-tools:");
-    expect(out).not.toContain("model:");
-  });
-});
 
 describe("add_mcp_server", () => {
   let s: Setup;

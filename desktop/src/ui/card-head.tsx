@@ -29,6 +29,7 @@ export function CardHead({
       className="card-head"
       onClick={onToggle}
       aria-expanded={open}
+      data-wrap={wrapName ? "true" : undefined}
       style={{
         flex: 1,
         minWidth: 0,
@@ -42,11 +43,7 @@ export function CardHead({
     >
       <span className="ico">{icon}</span>
       <span className="kind">{kind}</span>
-      {name ? (
-        <span className="name" data-wrap={wrapName ? "true" : undefined}>
-          {name}
-        </span>
-      ) : null}
+      {name ? <span className="name">{name}</span> : null}
       <span className="grow" />
       {meta ? <span className="meta">{meta}</span> : null}
       <span className="chev">

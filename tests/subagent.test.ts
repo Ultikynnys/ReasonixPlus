@@ -681,8 +681,6 @@ describe("forkRegistryExcluding", () => {
     expect([...NEVER_INHERITED_TOOLS]).toEqual(
       expect.arrayContaining(["spawn_subagent", "submit_plan", "mark_step_complete"]),
     );
-    // run_skill is a playbook reader, not a delegation path: a child may hold it.
-    expect(NEVER_INHERITED_TOOLS.has("run_skill")).toBe(false);
   });
 
   it("copies all tools except the excluded names", () => {

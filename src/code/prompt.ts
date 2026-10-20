@@ -262,9 +262,7 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
     opts.modelId ?? DEFAULT_CODE_MODEL,
     opts.subagentsEnabled === true,
   );
-  const withMemory = applyMemoryStack(codeBase, rootDir, {
-    subagents: opts.subagentsEnabled === true,
-  });
+  const withMemory = applyMemoryStack(codeBase, rootDir);
   const gitignorePath = join(rootDir, ".gitignore");
   let result = withMemory;
   const gitignore = readCappedTextFile(gitignorePath, GITIGNORE_MAX_CHARS);

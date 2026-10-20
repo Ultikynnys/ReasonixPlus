@@ -69,7 +69,7 @@ describe("saveTruncatedResult", () => {
 
     try {
       const fsRoot = process.platform === "win32" ? "C:\\" : "/";
-      const path = saveTruncatedResult("root cwd", "run_skill", fsRoot);
+      const path = saveTruncatedResult("root cwd", "search_content", fsRoot);
       expect(path).toMatch(/\.reasonix\/truncated-results\//);
       expect(path.startsWith("/.reasonix")).toBe(false);
       expect(existsSync(path)).toBe(true);

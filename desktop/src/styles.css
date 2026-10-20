@@ -3272,8 +3272,12 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   white-space: nowrap;
 }
 /* Headings that carry agent prose (the whole ask_choice question): wrap to as
-   many lines as it needs. Ellipsising there hid the question outright. */
-.card-head .name[data-wrap="true"] {
+   many lines as it needs, and top-align the row so the icon stays beside the
+   first line instead of floating in the middle of a long paragraph. */
+.card-head[data-wrap="true"] {
+  align-items: flex-start;
+}
+.card-head[data-wrap="true"] .name {
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.45;

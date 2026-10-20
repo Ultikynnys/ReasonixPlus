@@ -17,15 +17,9 @@ import {
   clipIndexDescription,
   messageOf,
 } from "@reasonix/core-utils";
-import {
-  type ReasonixConfig,
-  loadResolvedSkillPaths,
-  memoryTypeDefaults,
-  resolveSkillPaths,
-} from "../config.js";
+import { type ReasonixConfig, memoryTypeDefaults } from "../config.js";
 import { parseFrontmatter } from "../frontmatter.js";
 import { reasonixHome } from "../reasonix-home.js";
-import { applySkillsIndex } from "../skills.js";
 import { BUILTIN_MEMORY_TYPES, type BuiltinMemoryType } from "./builtin-types.js";
 import {
   PROJECT_MEMORY_MAX_CHARS,
@@ -404,7 +398,7 @@ export function applyUserMemory(
 export function applyMemoryStack(
   basePrompt: string,
   rootDir: string,
-  opts: { homeDir?: string; cfg?: ReasonixConfig; subagents?: boolean } = {},
+  opts: { homeDir?: string; cfg?: ReasonixConfig } = {},
 ): string {
   const homeDir = opts.homeDir;
   const cfg = opts.cfg;
@@ -414,17 +408,5 @@ export function applyMemoryStack(
     homeDir ? join(homeDir, ".reasonix") : undefined,
   );
   const withGlobalClaude = applyGlobalClaudeMemory(withGlobal);
-  const withMemory = applyUserMemory(withGlobalClaude, { projectRoot: rootDir, homeDir, cfg });
-  const customSkillPaths = cfg?.skills?.paths
-    ? resolveSkillPaths(cfg.skills.paths, rootDir)
-    : loadResolvedSkillPaths(rootDir);
-  return applySkillsIndex(
-    withMemory,
-    {
-      projectRoot: rootDir,
-      homeDir,
-      customSkillPaths,
-    },
-    opts.subagents === true,
-  );
+  return applyUserMemory(withGlobalClaude, { projectRoot: rootDir, homeDir, cfg });
 }

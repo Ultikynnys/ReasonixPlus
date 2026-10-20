@@ -66,11 +66,6 @@ export class SkillStore {
     this.disableBuiltins = opts.disableBuiltins === true;
   }
 
-  /** True iff this store was configured with a project root. */
-  hasProjectScope(): boolean {
-    return this.projectRoot !== undefined;
-  }
-
   /** Project scope first so per-repo skill overrides custom/global entries with the same name. */
   roots(): SkillRoot[] {
     const out: Array<{ dir: string; scope: Exclude<SkillScope, "builtin"> }> = [];

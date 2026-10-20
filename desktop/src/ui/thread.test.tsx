@@ -425,7 +425,7 @@ describe("user-input cards render agent markdown", () => {
       />,
     );
     const name = container.querySelector(".card-head .name");
-    expect(name?.getAttribute("data-wrap")).toBe("true");
+    expect(container.querySelector(".card-head")?.getAttribute("data-wrap")).toBe("true");
     expect(name?.textContent).toBe("Keep the index, re-word it");
   });
 

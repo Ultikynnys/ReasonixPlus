@@ -1017,21 +1017,16 @@ export function subagentInstruction(args?: string): string {
 }
 
 /** What a subagent call itself carried: the instruction verbatim (no preview, no
- *  display fallback), the skill it named, and the model it pinned. Display code adds
- *  its own fallback; recording code must not, or an argless call would log its skill
- *  name as if it were the task. */
+ *  display fallback) and the model it pinned. Display code adds its own fallback;
+ *  recording code must not, or an argless call would log its label as the task. */
 export function subagentCallDetails(
   name: string,
   args?: string,
 ): { instruction: string; skillName: string; model?: string } {
-  let skillName = name;
   let model: string | undefined;
   if (args) {
     try {
       const parsed = JSON.parse(args);
-      if (name === "run_skill" && typeof parsed.name === "string") {
-        skillName = parsed.name;
-      }
       if (typeof parsed.model === "string") {
         model = parsed.model;
       }
@@ -1039,7 +1034,7 @@ export function subagentCallDetails(
       // Not JSON: the args ARE the instruction, resolved below.
     }
   }
-  return { instruction: subagentInstruction(args), skillName, model };
+  return { instruction: subagentInstruction(args), skillName: name, model };
 }
 
 /** Whether `preview` is only the head of `full`. A spawn's start event carries the

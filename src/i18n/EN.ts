@@ -1118,10 +1118,9 @@ export const EN: TranslationSchema = {
       listGlobalScope: "  · ~/.reasonix/skills/<name>/SKILL.md  (or <name>.md)  — global scope",
       listProjectOnly: "  (project scope is only active in code mode)",
       listFrontmatter: "Each file's frontmatter needs at least `name` and `description`.",
-      listInvoke:
-        "Ask the model to run a skill with `run_skill`, or invoke one from the skills panel.",
+      listInvoke: "Invoke a skill by name from the skills panel.",
       listHeader: "User skills ({count}):",
-      listFooter: "View, run, or scaffold skills from the skills panel.",
+      listFooter: "View or run skills from the skills panel.",
       listEmptyNewHint:
         "There's no remote registry yet — author skills directly as SKILL.md files (project scope).",
       showUsage: "show a skill by name",
@@ -1706,17 +1705,6 @@ export const EN: TranslationSchema = {
     noRecords: "no records",
     untracked: "(untracked)",
     churned: "(churned \u00d7{count})",
-  },
-  builtinSkills: {
-    explore:
-      "Explore the codebase in an isolated subagent: wide-net read-only investigation that returns one distilled answer. Best for: 'find all places that\u2026', 'how does X work across the project', 'survey the code for Y'.",
-    research:
-      "Research a question by combining web search + code reading in an isolated subagent. Best for: 'is X feature supported by lib Y', 'what\u2019s the canonical way to do Z', 'compare our impl against the spec'.",
-    review:
-      "Review the pending changes (current branch diff by default) in an isolated subagent: flags correctness, security, missing tests, hidden behavior changes; reports verdict + per-issue file:line. Read-only; the parent decides what to act on.",
-    securityReview:
-      "Security-focused review of the current branch diff in an isolated subagent: flags injection/authz/secrets/deserialization/path-traversal/crypto issues, severity-tagged. Read-only. Use when shipping changes that touch auth, input parsing, file IO, or external requests.",
-    test: "Run the project\u2019s test suite, diagnose failures, propose SEARCH/REPLACE fixes, re-run until green (or stop after 2 fix attempts on the same failure). Inlined: runs in the parent loop so you see the edit blocks and can apply them directly. Detects npm/pnpm/yarn/pytest/go/cargo.",
   },
   shortcutsHelp: {
     title: COMMON_STRINGS.shortcutsLabel,

@@ -14,15 +14,14 @@ import { registerMemoryTools } from "../src/tools/memory.js";
 import { registerPlanTool } from "../src/tools/plan.js";
 import { registerScaffoldTools } from "../src/tools/scaffold.js";
 import { registerShellTools } from "../src/tools/shell.js";
-import { registerSkillTools } from "../src/tools/skills.js";
 import { registerTodoTool } from "../src/tools/todo.js";
 import { registerWebTools } from "../src/tools/web.js";
 
-/** Base system prompt — no memory, no .gitignore, no built-in skills index. */
+/** Base system prompt — no memory, no .gitignore, no skills index. */
 const SYSTEM_PROMPT_BUDGET = 24_500;
-/** Adds the built-in skills index `applySkillsIndex` injects on top of the base. */
-const SYSTEM_PROMPT_BUDGET_WITH_SKILLS = 26_500;
-/** Full code-mode tool spec list — descriptions + JSON-schema parameters, all 35 tools. */
+/** Base + the live permissions tail `codeSystemPrompt` appends last. */
+const SYSTEM_PROMPT_BUDGET_COMPOSED = 26_500;
+/** Full code-mode tool spec list — descriptions + JSON-schema parameters, every registered tool. */
 const TOOL_LIST_BUDGET = 40_000;
 
 function buildCodeToolset(root: string): ToolRegistry {
@@ -36,7 +35,6 @@ function buildCodeToolset(root: string): ToolRegistry {
   registerTodoTool(tools);
   registerScaffoldTools(tools, { projectRoot: root });
   registerWebTools(tools);
-  registerSkillTools(tools, { projectRoot: root, disableBuiltins: true });
   return tools;
 }
 
@@ -113,7 +111,7 @@ describe("prompt budget — cache prefix size regression net", () => {
     const root = mkdtempSync(join(tmpdir(), "reasonix-budget-"));
     try {
       const built = codeSystemPrompt(root);
-      expect(built.length).toBeLessThanOrEqual(SYSTEM_PROMPT_BUDGET_WITH_SKILLS);
+      expect(built.length).toBeLessThanOrEqual(SYSTEM_PROMPT_BUDGET_COMPOSED);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

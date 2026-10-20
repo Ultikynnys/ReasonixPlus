@@ -618,8 +618,6 @@ describe("SubagentCard — model visibility", () => {
 
   it("identifies the one spawn tool and nothing else", () => {
     expect(isSubagentTool("spawn_subagent")).toBe(true);
-    // Skills are playbooks: invoking one never spawns a child.
-    expect(isSubagentTool("run_skill")).toBe(false);
     expect(isSubagentTool("read_file")).toBe(false);
     expect(isSubagentTool("run_command")).toBe(false);
   });

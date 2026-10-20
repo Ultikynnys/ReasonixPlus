@@ -1,12 +1,10 @@
-/** Skills store + prefix-index composer — temp homeDir / projectRoot per test, no real skill dirs touched. */
+/** Skills store — temp homeDir / projectRoot per test, no real skill dirs touched. */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SkillStore, applySkillsIndex, validateSkillFrontmatter } from "../src/skills.js";
-
-const BASE = "You are a test assistant.";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SkillStore } from "../src/skills.js";
 
 type SkillRoot = "project" | "global" | "custom";
 
@@ -67,13 +65,6 @@ describe("SkillStore", () => {
   it("returns an empty list when no skill dirs exist", () => {
     const store = new SkillStore({ homeDir: home, projectRoot, disableBuiltins: true });
     expect(store.list()).toEqual([]);
-  });
-
-  it("hasProjectScope reflects constructor argument", () => {
-    expect(new SkillStore({ homeDir: home, disableBuiltins: true }).hasProjectScope()).toBe(false);
-    expect(
-      new SkillStore({ homeDir: home, projectRoot, disableBuiltins: true }).hasProjectScope(),
-    ).toBe(true);
   });
 
   it("parses a SKILL.md dir-layout entry from the global scope", () => {
@@ -151,7 +142,6 @@ describe("SkillStore", () => {
     const store = new SkillStore({ homeDir: home, disableBuiltins: true }); // no projectRoot
     const names = store.list().map((s) => s.name);
     expect(names).toEqual(["review"]);
-    expect(store.hasProjectScope()).toBe(false);
   });
 
   it("rejects invalid skill names on read()", () => {
@@ -265,150 +255,6 @@ describe("SkillStore", () => {
     expect(store.list()).toEqual([]);
     expect(store.customRoots().map((r) => r.status)).toEqual(["missing", "not-directory"]);
   });
-
-  describe("create() — new-skill scaffold (#366)", () => {
-    it("writes a project-scope stub when projectRoot is set", () => {
-      const store = new SkillStore({ homeDir: home, projectRoot, disableBuiltins: true });
-      const r = store.create("frontend-writer", "project");
-      expect("path" in r).toBe(true);
-      const list = store.list();
-      const made = list.find((s) => s.name === "frontend-writer");
-      expect(made?.scope).toBe("project");
-      expect(made?.description).toMatch(/one-liner/i);
-    });
-
-    it("falls back to global scope when projectRoot is absent", () => {
-      const store = new SkillStore({ homeDir: home, disableBuiltins: true });
-      const r = store.create("global-skill", "global");
-      expect("path" in r).toBe(true);
-      const list = store.list();
-      expect(list.find((s) => s.name === "global-skill")?.scope).toBe("global");
-    });
-
-    it("refuses to overwrite an existing skill", () => {
-      const store = new SkillStore({ homeDir: home, projectRoot, disableBuiltins: true });
-      store.create("dup", "project");
-      const second = store.create("dup", "project");
-      expect("error" in second).toBe(true);
-    });
-
-    it("rejects invalid skill names", () => {
-      const store = new SkillStore({ homeDir: home, projectRoot, disableBuiltins: true });
-      const r = store.create("../etc/passwd", "project");
-      expect("error" in r).toBe(true);
-    });
-
-    it("refuses project scope when no projectRoot is configured", () => {
-      const store = new SkillStore({ homeDir: home, disableBuiltins: true });
-      const r = store.create("nope", "project");
-      expect("error" in r).toBe(true);
-    });
-  });
-});
-
-describe("applySkillsIndex", () => {
-  let home: string;
-  let projectRoot: string;
-
-  beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), "reasonix-skills-idx-"));
-    projectRoot = mkdtempSync(join(tmpdir(), "reasonix-skills-idx-proj-"));
-  });
-
-  afterEach(() => {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  it("returns the prompt unchanged when no skills exist", () => {
-    const out = applySkillsIndex(BASE, { homeDir: home, projectRoot, disableBuiltins: true });
-    expect(out).toBe(BASE);
-  });
-
-  it("emits a Skills section with one-liners but not bodies", () => {
-    writeSkillDir(
-      projectRoot,
-      "global",
-      "review",
-      { description: "Review a pull request" },
-      "BODY-THAT-MUST-NOT-APPEAR",
-      home,
-    );
-    writeSkillDir(
-      projectRoot,
-      "global",
-      "init",
-      { description: "Initialize a CLAUDE.md" },
-      "ALSO-SECRET",
-      home,
-    );
-    const out = applySkillsIndex(BASE, { homeDir: home, projectRoot, disableBuiltins: true });
-    expect(out).toContain("# Skills");
-    expect(out).toContain("- init: Initialize a CLAUDE.md");
-    expect(out).toContain("- review: Review a pull request");
-    expect(out).not.toContain("BODY-THAT-MUST-NOT-APPEAR");
-    expect(out).not.toContain("ALSO-SECRET");
-  });
-
-  it("merges project + global skills into a single index", () => {
-    writeSkillDir(projectRoot, "global", "hello", { description: "global hello" }, "x", home);
-    writeSkillDir(projectRoot, "project", "deploy", { description: "project deploy" }, "y", home);
-    const out = applySkillsIndex(BASE, { homeDir: home, projectRoot, disableBuiltins: true });
-    expect(out).toContain("- deploy: project deploy");
-    expect(out).toContain("- hello: global hello");
-  });
-
-  it("surfaces skills with blank descriptions using a placeholder so the model can name + flag them (#583)", () => {
-    writeSkillDir(projectRoot, "global", "has-desc", { description: "I have one" }, "body", home);
-    writeSkillDir(projectRoot, "global", "no-desc", {}, "body", home);
-    const out = applySkillsIndex(BASE, { homeDir: home, projectRoot, disableBuiltins: true });
-    expect(out).toContain("- has-desc: I have one");
-    expect(out).toContain("- no-desc");
-    expect(out).toContain('"description:"');
-  });
-
-  it("is byte-stable across two calls with the same filesystem state", () => {
-    writeSkillDir(projectRoot, "global", "a", { description: "one" }, "x", home);
-    writeSkillDir(projectRoot, "global", "b", { description: "two" }, "y", home);
-    const first = applySkillsIndex(BASE, { homeDir: home, projectRoot, disableBuiltins: true });
-    const second = applySkillsIndex(BASE, { homeDir: home, projectRoot, disableBuiltins: true });
-    expect(first).toBe(second);
-  });
-
-  it("lists a skill as a plain identifier with no runAs decoration", () => {
-    writeSkillDir(
-      projectRoot,
-      "global",
-      "fmt",
-      { description: "Format the codebase" },
-      "body",
-      home,
-    );
-    const out = applySkillsIndex(BASE, { homeDir: home, projectRoot, disableBuiltins: true });
-    expect(out).toContain("- fmt: Format the codebase");
-  });
-});
-
-describe("validateSkillFrontmatter (#583 install gate)", () => {
-  it("accepts content with a non-empty description line", () => {
-    const result = validateSkillFrontmatter("---\ndescription: does a thing\n---\nbody\n");
-    expect(result).toEqual({ ok: true });
-  });
-
-  it("rejects content with no frontmatter at all", () => {
-    const result = validateSkillFrontmatter("# just a body\n");
-    expect("error" in result && result.error).toMatch(/description/);
-  });
-
-  it("rejects frontmatter that omits description", () => {
-    const result = validateSkillFrontmatter("---\nname: foo\n---\nbody\n");
-    expect("error" in result && result.error).toMatch(/description/);
-  });
-
-  it("rejects frontmatter where description is whitespace-only", () => {
-    const result = validateSkillFrontmatter("---\ndescription:    \n---\nbody\n");
-    expect("error" in result && result.error).toMatch(/description/);
-  });
 });
 
 describe("Claude SKILL.md aliases", () => {
@@ -498,13 +344,5 @@ describe("Built-in skills", () => {
     const store = new SkillStore({ homeDir: home, disableBuiltins: true });
     expect(store.read("explore")).toBeNull();
     expect(store.list()).toEqual([]);
-  });
-
-  it("builtins surface as plain identifiers in applySkillsIndex", () => {
-    const out = applySkillsIndex(BASE, { homeDir: home }); // builtins ON
-    expect(out).toContain("# Skills");
-    expect(out).toContain("test:");
-    // Skills are playbooks, never subagents: no decoration to copy into a tool call.
-    expect(out).not.toContain("[subagent]");
   });
 });

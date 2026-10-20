@@ -995,13 +995,6 @@ export interface TranslationSchema {
     untracked: string;
     churned: string;
   };
-  builtinSkills: {
-    explore: string;
-    research: string;
-    review: string;
-    securityReview: string;
-    test: string;
-  };
   shortcutsHelp: {
     title: string;
     groupInput: string;

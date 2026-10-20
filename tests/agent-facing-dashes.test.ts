@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildCodeToolset } from "../src/code/setup.js";
 import { MCP_CATALOG } from "../src/mcp/catalog.js";
-import { SkillStore, applySkillsIndex } from "../src/skills.js";
+import { SkillStore } from "../src/skills.js";
 import { resetTypesafeValidationCache } from "../src/tools/jev.js";
 
 const EM_DASH = "\u2014";
@@ -80,11 +80,6 @@ describe("agent-facing text is free of em/en dashes", () => {
       if (firstDash(skill.description)) offenders.push(`${skill.name}.description`);
     }
     expect(offenders).toEqual([]);
-  });
-
-  it("the pinned skills index is dash-free", () => {
-    const index = applySkillsIndex("BASE PROMPT", { homeDir: home, projectRoot });
-    expect(firstDash(index)).toBeNull();
   });
 
   it("the built-in MCP catalog summaries and notes are dash-free", () => {
