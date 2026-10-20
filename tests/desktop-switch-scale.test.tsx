@@ -178,6 +178,50 @@ describe("switching at 2 workspaces x 10 sessions x 2000 messages", () => {
     expect(users.length + assistants.length).toBeGreaterThan(100);
   }, 120_000);
 
+  it("splits an assistant row by segment kind", () => {
+    const ui = app.mapLoadedMessages(wireSessionOfSize(200, 1));
+    const base = ui.find((m) => m.kind === "assistant");
+    expect(base && base.kind === "assistant").toBe(true);
+    if (!base || base.kind !== "assistant") return;
+
+    for (const kind of ["reasoning", "text", "tool"] as const) {
+      const segments = base.segments.filter((s) => s.kind === kind);
+      if (segments.length === 0) {
+        console.log(`segment split: no ${kind} segment in the fixture`);
+        continue;
+      }
+      const started = performance.now();
+      const view = render(
+        <div>
+          {Array.from({ length: 100 }, (_, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: fixed-size synthetic row list
+            <div key={i} className="thread-row">
+              <AssistantMsg
+                segments={segments}
+                pending={false}
+                model="deepseek-v4-flash"
+                history={true}
+                onApproveConfirm={noop}
+                onRejectConfirm={noop}
+                onRuleConfirm={noopRule}
+                onStopTool={noop}
+                pendingConfirms={[]}
+              />
+            </div>
+          ))}
+        </div>,
+      );
+      const ms = performance.now() - started;
+      const nodes = view.container.querySelectorAll("*").length;
+      const bodies = view.container.querySelectorAll(".card-body").length;
+      view.unmount();
+      console.log(
+        `segment split: 100x ${kind}-only rows ${ms.toFixed(0)} ms, ${nodes} nodes, ` +
+          `${bodies} mounted card bodies`,
+      );
+    }
+  }, 120_000);
+
   it("swaps one session's transcript for another's", () => {
     const pageA = app.mapLoadedMessages(wireSessionOfSize(200, 1));
     const pageB = app.mapLoadedMessages(wireSessionOfSize(200, 2));
