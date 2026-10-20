@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { I } from "../icons";
 import type { McpSetupServer } from "../protocol";
+import { Throbber } from "./throbber";
 
 /** Fresh-chat MCP server picker. The chat cannot run until the user confirms
  *  which servers this session may use; the chosen set is frozen for the session. */
@@ -16,6 +17,9 @@ export function McpSetupDialog({
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(servers.filter((s) => s.enabled).map((s) => s.name)),
   );
+  // Bridging the confirmed servers takes seconds and the dialog stays up until
+  // $ready, so the confirm click must read as "working", not as a dead button.
+  const [starting, setStarting] = useState(false);
   const toggle = (name: string): void => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -120,7 +124,17 @@ export function McpSetupDialog({
             borderTop: "1px solid var(--border)",
           }}
         >
-          <button type="button" className="btn primary" onClick={() => onConfirm([...selected])}>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={starting}
+            aria-busy={starting}
+            onClick={() => {
+              setStarting(true);
+              onConfirm([...selected]);
+            }}
+          >
+            {starting ? <Throbber label="Starting session" /> : null}
             Confirm and start
           </button>
         </div>

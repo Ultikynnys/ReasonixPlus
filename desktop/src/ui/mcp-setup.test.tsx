@@ -34,4 +34,29 @@ describe("McpSetupDialog", () => {
     const enabled = onConfirm.mock.calls[0]?.[0] as string[];
     expect([...enabled].sort()).toEqual(["blender", "playwright"]);
   });
+
+  it("greys out the confirm button and throbs while the session starts", () => {
+    const onConfirm = vi.fn();
+    render(<McpSetupDialog servers={servers} onConfirm={onConfirm} onCancel={vi.fn()} />);
+    const confirm = screen.getByRole("button", { name: /Confirm and start/ });
+    expect(confirm.hasAttribute("disabled")).toBe(false);
+    expect(confirm.querySelector(".btn-throbber")).toBeNull();
+
+    fireEvent.click(confirm);
+
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(confirm.hasAttribute("disabled")).toBe(true);
+    expect(confirm.getAttribute("aria-busy")).toBe("true");
+    expect(confirm.querySelector(".spin.btn-throbber")).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Starting session" })).toBeTruthy();
+  });
+
+  it("ignores extra confirm clicks while the session is starting", () => {
+    const onConfirm = vi.fn();
+    render(<McpSetupDialog servers={servers} onConfirm={onConfirm} onCancel={vi.fn()} />);
+    const confirm = screen.getByRole("button", { name: /Confirm and start/ });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
 });

@@ -13,7 +13,7 @@ describe("StopButton", () => {
     );
     const btn = container.querySelector("button")!;
     expect(btn.textContent).toContain("Close");
-    expect(btn.querySelector(".stop-throbber")).toBeNull();
+    expect(btn.querySelector(".btn-throbber")).toBeNull();
     expect(btn.hasAttribute("disabled")).toBe(false);
   });
 
@@ -23,7 +23,7 @@ describe("StopButton", () => {
       <StopButton label="Close" title="Close it" iconSize={10} busy onClick={onClick} />,
     );
     const btn = container.querySelector("button")!;
-    expect(btn.querySelector(".stop-throbber")).toBeTruthy();
+    expect(btn.querySelector(".btn-throbber")).toBeTruthy();
     expect(btn.hasAttribute("disabled")).toBe(true);
     expect(btn.getAttribute("aria-busy")).toBe("true");
     fireEvent.click(btn);

@@ -3727,6 +3727,11 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .btn.primary:hover {
   background: var(--accent-strong);
 }
+/* A greyed-out primary keeps its accent fill on hover: the faded fill is the
+   "working" cue, so a hover highlight would read as a live control. */
+.btn.primary:disabled:hover {
+  background: var(--accent);
+}
 .btn.danger {
   background: var(--danger);
   border-color: transparent;
@@ -6135,7 +6140,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .spin,
 .spin-meta,
 .voice-throbber,
-.stop-throbber {
+.btn-throbber {
   animation: spin-chase 0.9s linear infinite;
 }
 .spin {
@@ -10578,9 +10583,9 @@ html[data-platform="macos"] .splash {
   cursor: progress;
 }
 
-/* Throbber shown on a stop button while its cancel is in flight. Reads light on
-   the accent fill via currentColor. */
-.stop-throbber {
+/* Light-on-accent throbber for filled buttons whose action is in flight (stop,
+   confirm-and-start). Reads light on the accent fill via currentColor. */
+.btn-throbber {
   width: 11px;
   height: 11px;
   border-width: 2px;

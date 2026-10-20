@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { I } from "../icons";
+import { Throbber } from "./throbber";
 
 /** Tracks a cancel that is in flight: `start()` flips it on, and it clears the
  *  moment `done` turns true — or after a safety timeout, so a stop that never
@@ -52,7 +53,7 @@ export function StopButton({
       }}
     >
       {busy ? (
-        <span className="spin stop-throbber" role="status" aria-label={title} />
+        <Throbber label={title} />
       ) : iconSize !== undefined ? (
         <I.stop size={iconSize} />
       ) : null}
