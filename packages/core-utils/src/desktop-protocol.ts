@@ -1098,6 +1098,10 @@ export interface SettingsEvent {
    *  flag is frozen into each session at creation, so this is a creation default, not a
    *  live switch. */
   enableSubagents?: boolean;
+  /** Whether THIS session was minted with the subagent tool — the frozen per-chat
+   *  capability, unlike `enableSubagents`. Drives whether the composer offers the
+   *  subagent model picker at all: without the tool the choice has no effect. */
+  subagents?: boolean;
   /** Whether `run_command` may run commands elevated via Windows UAC. Defaults to false. */
   elevationEnabled?: boolean;
   /** Whether the stream repetition / "stuck re-thinking" guard may abort a
@@ -1136,6 +1140,10 @@ export interface SettingsEvent {
    *  models are hidden). Global persistent setting (`enabledModels` in
    *  config.json), edited from Settings → Models. */
   enabledModels?: string[];
+  /** Ordered backup models (`fallbackModels` in config.json), edited from
+   *  Settings → Backup models. When the active provider reports an exhausted
+   *  quota the chat falls over to the first usable entry and continues. */
+  fallbackModels?: string[];
   /** Ollama chat endpoint (OpenAI-compatible) — shown in the Models settings page. */
   ollamaBaseUrl?: string;
   webSearchEngine?: WebSearchEngineName;
@@ -1591,6 +1599,9 @@ export interface SettingsPatch {
   /** Model ids offered by every model picker. Replaces the whole persisted
    *  `enabledModels` allow-list; empty array disables everything. */
   enabledModels?: string[];
+  /** Ordered backup models for automatic quota failover. Replaces the whole
+   *  persisted `fallbackModels` list; empty array turns failover off. */
+  fallbackModels?: string[];
   /** Per-tab subagent model — default for subagent skills without an explicit `model:` frontmatter. */
   subagentModel?: string;
   /** Ollama chat endpoint override (OpenAI-compatible). null = back to the local default. */

@@ -162,6 +162,8 @@ export const en = {
     pageGeneralDesc: "Appearance, behavior",
     pageModelsLabel: "Models",
     pageModelsDesc: "Default model & sampling parameters",
+    pageFallbacksLabel: "Backup models",
+    pageFallbacksDesc: "Automatic failover when a provider runs out of quota",
     pageMcpLabel: "MCP Servers",
     pageMcpDesc: "Manage MCP protocol tool servers",
     pageShortcutsLabel: COMMON_STRINGS.shortcutsLabel,
@@ -269,6 +271,21 @@ export const en = {
     modelSearchPlaceholder: "Search models",
     modelSearchEmpty: "No models match your search.",
     modelSearchClear: "Clear search",
+    // backup models (automatic quota failover)
+    fallbacksSection: "Backup model order",
+    fallbacksHint:
+      "When the active model's provider reports an exhausted quota or rate limit, the chat switches to the first usable model below and keeps working, so a queued or overnight run never sits idle. Order is priority. The switch applies to the open conversation only: it never changes the default model for new chats.",
+    fallbacksEmpty:
+      "No backup models yet. Add one below to survive a provider that runs out of quota mid-conversation.",
+    fallbackAdd: "Add backup model",
+    fallbackAddAria: "Add a backup model",
+    fallbackRowLabel: "Backup model {index}",
+    fallbackRemove: "Remove this backup model",
+    fallbackRemoveAria: "Remove backup model {model}",
+    fallbackMoveUp: "Higher priority",
+    fallbackMoveDown: "Lower priority",
+    fallbackMoveUpAria: "Give {model} higher priority",
+    fallbackMoveDownAria: "Give {model} lower priority",
     ollamaBaseUrl: "Ollama base URL",
     ollamaBaseUrlHint:
       "OpenAI-compatible endpoint. Empty = Ollama cloud https://ollama.com/v1 (requires the API key below); set http://localhost:11434/v1 for a local daemon.",
@@ -637,8 +654,7 @@ export const en = {
       one: "Deleting session…",
       bulk: "Deleting {count} sessions…",
     },
-    deleteRunningRefused:
-      "That session is running. Stop its agent first, then delete it.",
+    deleteRunningRefused: "That session is running. Stop its agent first, then delete it.",
     workspaceBusyNotice:
       "A session here is being created or deleted. Wait for it to finish, then change the workspace.",
     creatingSession: "Creating session…",

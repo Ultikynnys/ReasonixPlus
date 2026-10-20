@@ -528,6 +528,12 @@ export const EN: TranslationSchema = {
       "The model provider returned an error before producing a visible response — retrying automatically.",
     providerServerErrorRetry:
       "The model provider reported a temporary server error before producing a visible response: retrying automatically in 10 seconds.",
+    failoverSwitching:
+      "{failed} has no quota left: continuing this turn on the backup model {next}.",
+    failoverNoBackup:
+      "{failed} ran out of quota and no backup model is configured. Add backup models in Settings → Backup models so an overnight or queued run keeps going after a provider runs dry.",
+    failoverAllExhausted:
+      "{failed} ran out of quota and no backup model could take over. Top up a provider, or add a backup model whose provider has a credential (Settings → Backup models).",
     imagePayloadShrunk:
       "The model provider rejected the request because the attached image(s) made it too large. The images in context were {fate}; the turn is retrying. If you need image detail, load or produce a smaller or cropped image instead of a full-size one.",
     upstreamRefusalRetry:

@@ -510,6 +510,10 @@ export interface ReasonixConfig {
    *  Opt-in allow-list — models not listed here are hidden. Global persistent
    *  setting — edited from Settings → Models, stored here. */
   enabledModels?: string[];
+  /** Ordered backup models (Settings → Backup models): when the active model's
+   *  provider reports an exhausted quota the chat falls over to the first usable
+   *  entry here. Empty/absent = no failover. */
+  fallbackModels?: string[];
   /** Env overlay per MCP server name (matches the `name=` prefix of the spec). Stdio transports merge this over process.env; SSE/HTTP ignore it. */
   mcpEnv?: Record<string, Record<string, string>>;
   /** Canonical MCP server configuration — merges with and overrides legacy `mcp`/`mcpEnv`/`mcpDisabled`. */
@@ -1012,6 +1016,7 @@ const STRING_ARRAY_FIELDS: Array<readonly string[]> = [
   ["mcp"],
   ["mcpDisabled"],
   ["enabledModels"],
+  ["fallbackModels"],
   ["recentWorkspaces"],
   ["skills", "paths"],
 ];
@@ -1516,6 +1521,40 @@ export function anyProviderConfigured(path: string = defaultConfigPath()): boole
   if (cfg.opencodeOAuth?.accessToken) return true;
   if (cfg.antigravityOAuth?.accessToken) return true;
   return !!process.env.OLLAMA_BASE_URL || !!cfg.ollamaBaseUrl;
+}
+
+/** True for the keyless local Ollama daemon (localhost / 127.0.0.1 / ::1);
+ *  cloud endpoints are NOT keyless. An unresolved endpoint counts as local. */
+function isLocalOllamaEndpoint(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return true;
+  try {
+    const host = new URL(baseUrl).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/** Whether `model` can run right now: its provider has a credential in config/env,
+ *  or it is a keyless local Ollama daemon. Shared by the desktop's per-turn gate
+ *  and every quota-failover path, so none can disagree about a backup. */
+export function modelUsableFor(model: string, path: string = defaultConfigPath()): boolean {
+  const provider = providerForModel(model, path);
+  if (provider === "openai") {
+    if (loadEndpointForModel(model, path).apiKey) return true;
+    return !!readConfig(path).openaiOAuth?.accessToken;
+  }
+  if (provider === "ollama") {
+    const ep = loadOllamaEndpoint(path);
+    if (ep.apiKey) return true;
+    return isLocalOllamaEndpoint(ep.baseUrl);
+  }
+  if (provider === "gemini") return !!readConfig(path).antigravityOAuth?.accessToken;
+  if (provider === "zai") return !!loadZaiApiKey(path);
+  if (provider === "mimo") return !!loadMimoApiKey(path);
+  if (provider === "experiential") return !!loadExperientialApiKey(path);
+  if (provider === "opencode") return true;
+  return !!loadApiKey(path);
 }
 
 export function loadBaseUrl(path: string = defaultConfigPath()): string | undefined {
@@ -2776,30 +2815,67 @@ export function saveQuestionTimerEnabled(
   writeConfig(cfg, path);
 }
 
-/** Model ids offered by every model picker. Empty/absent = none enabled (all hidden). */
-export function loadEnabledModels(path: string = defaultConfigPath()): string[] {
-  const v = readConfig(path).enabledModels;
-  if (!Array.isArray(v)) return [];
+/** Trimmed, duplicate-free, ORDER-PRESERVING model-id list: the enabled allow-list
+ *  and the backup-model failover order both rely on the caller's order surviving. */
+function sanitizeModelIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
-  for (const s of v) {
-    if (typeof s !== "string") continue;
-    const trimmed = s.trim();
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
     if (trimmed) seen.add(trimmed);
   }
   return [...seen];
 }
 
+/** Model ids offered by every model picker. Empty/absent = none enabled (all hidden). */
+export function loadEnabledModels(path: string = defaultConfigPath()): string[] {
+  return sanitizeModelIds(readConfig(path).enabledModels);
+}
+
 /** Persist the enabled-model allow-list. Dedupes + trims; empty clears the field. */
 export function saveEnabledModels(models: string[], path: string = defaultConfigPath()): void {
   const cfg = readConfig(path);
-  const seen = new Set<string>();
-  for (const s of models) {
-    if (typeof s !== "string") continue;
-    const trimmed = s.trim();
-    if (trimmed) seen.add(trimmed);
-  }
-  cfg.enabledModels = seen.size > 0 ? [...seen] : undefined;
+  const cleaned = sanitizeModelIds(models);
+  cfg.enabledModels = cleaned.length > 0 ? cleaned : undefined;
   writeConfig(cfg, path);
+}
+
+/** Ordered backup models tried when the active provider runs out of quota.
+ *  Order is priority: the first entry that is usable takes over. */
+export function loadFallbackModels(path: string = defaultConfigPath()): string[] {
+  return sanitizeModelIds(readConfig(path).fallbackModels);
+}
+
+/** Persist the backup-model list. Trims + dedupes in place; empty clears the field. */
+export function saveFallbackModels(models: string[], path: string = defaultConfigPath()): void {
+  const cfg = readConfig(path);
+  const cleaned = sanitizeModelIds(models);
+  cfg.fallbackModels = cleaned.length > 0 ? cleaned : undefined;
+  writeConfig(cfg, path);
+}
+
+/** First backup model that can take over: the configured order, minus the models
+ *  this run already failed on, minus any that cannot run here. `tried` is the
+ *  caller's chain state, so successive calls walk the list exactly once. */
+export function pickFallbackModel(
+  configured: readonly string[],
+  tried: ReadonlySet<string>,
+  usable: (model: string) => boolean,
+): string | null {
+  for (const raw of configured) {
+    const id = raw.trim();
+    if (!id || tried.has(id)) continue;
+    try {
+      if (!usable(id)) continue;
+    } catch {
+      // A credential lookup that throws means "cannot run it here" — skip rather
+      // than let one broken provider entry abort the whole failover chain.
+      continue;
+    }
+    return id;
+  }
+  return null;
 }
 
 /** Bytes above which `read_file` flips to outline mode. Returns `undefined` so callers can apply the registered default; non-positive / non-numeric config values fall through to the default too. */

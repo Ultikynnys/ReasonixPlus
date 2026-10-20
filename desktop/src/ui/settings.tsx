@@ -91,8 +91,9 @@ function keyStatusHint(prefix: string | undefined, trailing?: ReactNode): ReactN
   );
 }
 
-/** Reorder a quick send within the persisted list; out-of-range moves are no-ops. */
-function moveQuickSend<T>(list: readonly T[], from: number, to: number): T[] {
+/** Reorder an ordered settings list (quick sends, backup models); out-of-range
+ *  moves are no-ops. Returns a new array — callers persist it through onSave. */
+function moveInList<T>(list: readonly T[], from: number, to: number): T[] {
   if (to < 0 || to >= list.length) return [...list];
   const next = list.slice();
   const [moved] = next.splice(from, 1);
@@ -100,11 +101,12 @@ function moveQuickSend<T>(list: readonly T[], from: number, to: number): T[] {
   return next;
 }
 
-export type PageId = "general" | "models" | "mcp" | "changelog" | "shortcuts";
+export type PageId = "general" | "models" | "fallbacks" | "mcp" | "changelog" | "shortcuts";
 
 const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
   { id: "general", icon: "cog" },
   { id: "models", icon: "brain" },
+  { id: "fallbacks", icon: "layers" },
   { id: "mcp", icon: "wrench" },
   { id: "changelog", icon: "history" },
   { id: "shortcuts", icon: "cpu" },
@@ -367,6 +369,16 @@ export function SettingsModal({
                 onMiMoOAuthBegin={onMiMoOAuthBegin}
                 onMiMoOAuthCancel={onMiMoOAuthCancel}
                 onMiMoOAuthSignOut={onMiMoOAuthSignOut}
+              />
+            )}
+            {page === "fallbacks" && (
+              <PageFallbacks
+                settings={settings}
+                onSave={onSave}
+                ollamaModels={ollamaModels}
+                opencodeModels={opencodeModels}
+                ollamaVisionModels={ollamaVisionModels}
+                opencodeVisionModels={opencodeVisionModels}
               />
             )}
             {page === "mcp" && (
@@ -637,7 +649,7 @@ function PageGeneral({
                         disabled={dir < 0 ? i === 0 : i === list.length - 1}
                         title={title}
                         aria-label={t(aria, { shorthand: q.shorthand })}
-                        onClick={() => onSave({ quickSends: moveQuickSend(list, i, i + dir) })}
+                        onClick={() => onSave({ quickSends: moveInList(list, i, i + dir) })}
                       >
                         {icon}
                       </button>
@@ -2571,6 +2583,151 @@ function MailStatusLine({
             })
           : (mail?.message ?? t(ui.statusUnknown))}
     </div>
+  );
+}
+
+/** Automatic quota failover: an ordered list of backup models, tried top-down
+ *  when the active provider reports an exhausted quota. Order IS the priority, so
+ *  each row carries move-up / move-down controls rather than a sort. */
+function PageFallbacks({
+  settings,
+  onSave,
+  ollamaModels,
+  opencodeModels,
+  ollamaVisionModels,
+  opencodeVisionModels,
+}: {
+  settings: SettingsType;
+  onSave: (patch: SettingsPatch) => void;
+  ollamaModels?: string[];
+  opencodeModels?: string[];
+  ollamaVisionModels?: ReadonlySet<string>;
+  opencodeVisionModels?: ReadonlySet<string>;
+}) {
+  const catalog = deriveModelCatalog({
+    providerCatalogs: settings.providerCatalogs,
+    discoveredAntigravityModels: settings.antigravityOAuth?.models,
+    opencodeModels,
+    includeAntigravity: Boolean(settings.antigravityOAuth?.signedIn),
+    ollamaVisionModels,
+    opencodeVisionModels,
+  });
+  const ollamaList = (ollamaModels ?? []).map((id) => `ollama/${id}`);
+  // One option group per provider: a backup from ANY reachable provider is the
+  // whole point of the list, so every catalog contributes rows.
+  const groups: ReadonlyArray<{ key: string; label: string; models: readonly string[] }> = [
+    ...catalog.groups.map((group) => ({
+      key: group.key as string,
+      label: t(MODEL_CATALOG_GROUP_LABELS[group.key]),
+      models: group.models,
+    })),
+    ...(ollamaList.length > 0
+      ? [{ key: "ollama", label: t("settings.ollamaSection"), models: ollamaList }]
+      : []),
+  ];
+  const known = new Set(groups.flatMap((group) => [...group.models]));
+  const list = settings.fallbackModels ?? [];
+  const save = (next: string[]): void => onSave({ fallbackModels: next });
+  const move = (from: number, to: number): void => save(moveInList(list, from, to));
+  const firstUnused = groups
+    .flatMap((group) => [...group.models])
+    .find((model) => !list.includes(model));
+
+  return (
+    <section className="section">
+      <div className="stitle">{t("settings.fallbacksSection")}</div>
+      <div className="h" style={{ marginBottom: 12 }}>
+        {t("settings.fallbacksHint")}
+      </div>
+
+      {list.length === 0 && (
+        <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
+          {t("settings.fallbacksEmpty")}
+        </div>
+      )}
+
+      {list.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+          {list.map((id, i) => (
+            <div className="rule" key={`${i}-${id}`}>
+              <div className="top">
+                <span className="pat">{i + 1}</span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    disabled={i === 0}
+                    title={t("settings.fallbackMoveUp")}
+                    aria-label={t("settings.fallbackMoveUpAria", { model: id })}
+                    onClick={() => move(i, i - 1)}
+                  >
+                    <I.arrowUp size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    disabled={i === list.length - 1}
+                    title={t("settings.fallbackMoveDown")}
+                    aria-label={t("settings.fallbackMoveDownAria", { model: id })}
+                    onClick={() => move(i, i + 1)}
+                  >
+                    <I.arrowDown size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    title={t("settings.fallbackRemove")}
+                    aria-label={t("settings.fallbackRemoveAria", { model: id })}
+                    onClick={() => save(list.filter((_, idx) => idx !== i))}
+                  >
+                    <I.trash size={12} />
+                  </button>
+                </div>
+              </div>
+              <select
+                className="field"
+                aria-label={t("settings.fallbackRowLabel", { index: i + 1 })}
+                value={id}
+                onChange={(e) =>
+                  save(list.map((value, idx) => (idx === i ? e.target.value : value)))
+                }
+              >
+                {/* A saved id the catalogs no longer offer still renders, so the
+                    row never shows a blank select and the user can keep it. */}
+                {known.has(id) ? null : <option value={id}>{modelDisplayName(id)}</option>}
+                {groups.map((group) => (
+                  <optgroup key={group.key} label={group.label}>
+                    {group.models.map((model) => (
+                      <option
+                        key={model}
+                        value={model}
+                        disabled={model !== id && list.includes(model)}
+                      >
+                        {modelDisplayName(model)}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button
+        type="button"
+        className="mini-btn"
+        disabled={firstUnused === undefined}
+        title={t("settings.fallbackAdd")}
+        aria-label={t("settings.fallbackAddAria")}
+        onClick={() => {
+          if (firstUnused === undefined) return;
+          save([...list, firstUnused]);
+        }}
+      >
+        <I.plus size={12} /> {t("settings.fallbackAdd")}
+      </button>
+    </section>
   );
 }
 

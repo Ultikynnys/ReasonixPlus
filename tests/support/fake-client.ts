@@ -34,6 +34,13 @@ export interface MakeFakeClientOptions {
   echoMessages?: boolean;
   /** Called with each captured request body, in order. */
   capture?: (req: CapturedRequest) => void;
+  /** Per-model failures, keyed by the request's model id: the response is returned
+   *  instead of a canned one, so a test can make ONE model hit an HTTP wall (quota,
+   *  auth) while the rest answer normally. Failures do not consume `responses`. */
+  failModels?: Record<string, { status: number; body: unknown }>;
+  /** Override the client's retry policy. Pass `{ maxAttempts: 1 }` when a test wants
+   *  to observe the caller's own handling of a failure instead of the client retrying. */
+  retry?: { maxAttempts: number };
 }
 
 export interface MakeFakeClientResult {
@@ -74,6 +81,13 @@ export function makeFakeClient(
     };
     captured.push(req);
     opts.capture?.(req);
+    const fail = opts.failModels?.[req.model];
+    if (fail) {
+      return new Response(JSON.stringify(fail.body), {
+        status: fail.status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     const resp = responses[i++] ?? responses[responses.length - 1]!;
     const usage = resp.usage ?? DEFAULT_USAGE;
     if (body.stream === true) {
@@ -116,6 +130,7 @@ export function makeFakeClient(
     client: new DeepSeekClient({
       apiKey: "sk-test",
       fetch: fetchMock as unknown as typeof fetch,
+      ...(opts.retry ? { retry: opts.retry } : {}),
     }),
     fetchMock,
     captured,

@@ -10,6 +10,7 @@ import { fireEvent, render } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./composer";
+import { makeComposerBaseProps } from "./composer-test-fixtures";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 afterEach(() => {
@@ -20,22 +21,13 @@ function renderComposer(props?: Partial<React.ComponentProps<typeof Composer>>) 
   const textareaRef = createRef<HTMLTextAreaElement>();
   const utils = render(
     <Composer
-      draft=""
-      setDraft={vi.fn()}
-      onSend={vi.fn()}
-      onAbort={vi.fn()}
-      disabled={false}
-      busy={false}
-      modelLabel="deepseek-v4-flash"
-      reasoningEffort="high"
-      onModelChange={vi.fn()}
-      onEffortChange={vi.fn()}
-      editMode="follow"
-      onEditModeChange={vi.fn()}
-      onVoiceError={vi.fn()}
-      textareaRef={textareaRef}
-      workspaceDir="/repo"
-      {...props}
+      {...makeComposerBaseProps({
+        modelLabel: "deepseek-v4-flash",
+        textareaRef,
+        workspaceDir: "/repo",
+        subagentsEnabled: true,
+        ...props,
+      })}
     />,
   );
 

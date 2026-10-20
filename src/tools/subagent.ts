@@ -5,12 +5,16 @@ import { PLAN_TOOL_NAMES } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "../client.js";
 import {
   type ModelProvider,
+  loadFallbackModels,
   loadMaxIterPerTurn,
   loadMaxOutputTokens,
+  modelUsableFor,
+  pickFallbackModel,
   providerForModel,
 } from "../config.js";
 import type { ResolvedHook } from "../hooks.js";
 import { CacheFirstLoop } from "../loop.js";
+import { isQuotaExhaustedError } from "../loop/errors.js";
 import type { WarningCause } from "../loop/types.js";
 import { applyProjectMemory } from "../memory/project.js";
 import { ImmutablePrefix } from "../memory/runtime.js";
@@ -193,6 +197,9 @@ export interface SubagentResult {
   /** Machine tag for that stop. `repetition-guard` means the run was terminated
    *  as lost (degenerate loop) and is the one stop that may carry no answer. */
   stopCause?: WarningCause;
+  /** The provider's quota/credits ran out, so replaying this model cannot help.
+   *  The spawn site walks the configured backup models while this is set. */
+  quotaExhausted?: boolean;
   budgetExhausted?: "tool-iters" | "elapsed";
   maxToolIters?: number;
   maxElapsedMs?: number;
@@ -478,6 +485,7 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
 
   let final = "";
   let errorMessage: string | undefined;
+  let quotaExhausted = false;
   let stopReason: string | undefined;
   let stopCause: WarningCause | undefined;
   let toolIter = 0;
@@ -631,6 +639,9 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
       }
       if (ev.role === "error") {
         errorMessage = ev.error ?? "subagent error";
+        // Only a quota/credits refusal is worth another spawn on a different
+        // model; a malformed request or a bad key would fail just as fast.
+        if (isQuotaExhaustedError(ev.errorDetail?.message)) quotaExhausted = true;
       }
       if (ev.role === "warning" && ev.severity === "high" && ev.content) {
         // The child loop's only statement of WHY it stopped. A warning never
@@ -742,6 +753,7 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     budgetExhausted,
     maxToolIters,
     maxElapsedMs,
+    ...(quotaExhausted ? { quotaExhausted: true } : {}),
   };
 }
 
@@ -890,48 +902,87 @@ export function registerSubagentTool(
             (name): name is string => typeof name === "string" && name.trim() !== "",
           )
         : [];
-      const model = resolveModel();
-      const billing = opts.billingFor?.(model);
-      const result = await spawnSubagent({
-        client: resolveClient(model),
-        parentRegistry,
-        system: `${defaultSystemBase}\n\n${escalationContract(model)}`,
-        task,
-        model,
-        maxResultChars,
-        sink: opts.sink,
-        billingContext: {
-          kind: billing?.kind ?? "usd",
-          provider: billing?.provider ?? providerForModel(model, opts.configPath),
-        },
-        ...(billing?.measureQuota ? { measureQuota: billing.measureQuota } : {}),
-        // The whitelist IS the child's tool set; absent means "inherit mine".
-        ...(tools.length > 0 ? { allowedTools: tools } : {}),
-        // This call's own identity, so every progress event names the card that
-        // spawned it. Two parallel spawns in one turn are otherwise
-        // indistinguishable and the UI cannot attach either run's rows.
-        ...(ctx?.callId ? { parentCallId: ctx.callId } : {}),
-        ...(ctx?.turn !== undefined ? { parentTurn: ctx.turn } : {}),
-        parentSignal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
-        inherited: opts.inherited?.(),
-      });
-      sessionSpawnCount++;
-      sessionSpawnTokens += result.usage.totalTokens;
-      if (opts.recordExternal && result.usage) {
-        try {
-          opts.recordExternal(result.model, result.usage, {
-            kind: result.billingKind ?? "usd",
-            quotaUsedPct: result.quotaUsedPct,
-          });
-        } catch {
-          // Stats folding must never break the spawn-tool dispatch.
+      /** One spawn attempt on `model`, with its per-spawn bookkeeping. Split out so
+       *  the quota fallback below can re-spawn without duplicating any of it. */
+      const runSpawn = async (spawnModel: string): Promise<SubagentResult> => {
+        const billing = opts.billingFor?.(spawnModel);
+        const result = await spawnSubagent({
+          client: resolveClient(spawnModel),
+          parentRegistry,
+          system: `${defaultSystemBase}\n\n${escalationContract(spawnModel)}`,
+          task,
+          model: spawnModel,
+          maxResultChars,
+          sink: opts.sink,
+          billingContext: {
+            kind: billing?.kind ?? "usd",
+            provider: billing?.provider ?? providerForModel(spawnModel, opts.configPath),
+          },
+          ...(billing?.measureQuota ? { measureQuota: billing.measureQuota } : {}),
+          // The whitelist IS the child's tool set; absent means "inherit mine".
+          ...(tools.length > 0 ? { allowedTools: tools } : {}),
+          // This call's own identity, so every progress event names the card that
+          // spawned it. Two parallel spawns in one turn are otherwise
+          // indistinguishable and the UI cannot attach either run's rows.
+          ...(ctx?.callId ? { parentCallId: ctx.callId } : {}),
+          ...(ctx?.turn !== undefined ? { parentTurn: ctx.turn } : {}),
+          parentSignal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
+          inherited: opts.inherited?.(),
+        });
+        sessionSpawnCount++;
+        sessionSpawnTokens += result.usage.totalTokens;
+        if (opts.recordExternal && result.usage) {
+          try {
+            opts.recordExternal(result.model, result.usage, {
+              kind: result.billingKind ?? "usd",
+              quotaUsedPct: result.quotaUsedPct,
+            });
+          } catch {
+            // Stats folding must never break the spawn-tool dispatch.
+          }
         }
-      }
-      if (opts.onSpawnComplete) {
+        if (opts.onSpawnComplete) {
+          try {
+            opts.onSpawnComplete(result);
+          } catch {
+            // Telemetry callback errors must not break the spawn-tool dispatch.
+          }
+        }
+        return result;
+      };
+
+      // A child whose provider runs out of quota would otherwise burn its whole
+      // budget on one dead model and hand the parent nothing. Walk the same
+      // backup list the main chat uses, in order, while the attempt reports a
+      // quota wall and the parent has not cancelled.
+      //
+      // Only a per-model client resolver can route a backup to its own provider and
+      // endpoint; a single fixed client is bound to the primary's, so pushing another
+      // provider's model id through it would hit the wrong endpoint. No resolver, no
+      // failover. A partial answer also stops the chain: the parent already has work
+      // to use, and re-spawning would redo its side effects.
+      const canReroute = typeof opts.client === "function";
+      const fallbacks = loadFallbackModels(opts.configPath);
+      const primaryModel = resolveModel();
+      const triedModels = new Set([primaryModel]);
+      let result = await runSpawn(primaryModel);
+      while (canReroute && result.quotaExhausted && !result.output.trim()) {
+        if (ctx?.signal?.aborted || ctx?.cancelSignal?.aborted) break;
+        const next = pickFallbackModel(fallbacks, triedModels, (candidate) =>
+          modelUsableFor(candidate, opts.configPath),
+        );
+        if (!next) break;
+        triedModels.add(next);
         try {
-          opts.onSpawnComplete(result);
-        } catch {
-          // Telemetry callback errors must not break the spawn-tool dispatch.
+          result = await runSpawn(next);
+        } catch (err) {
+          // Building or running the backup threw (e.g. its provider credential
+          // vanished between the screen and the spawn). Keep the first attempt's
+          // honest quota failure rather than escalating into a bare exception.
+          process.stderr.write(
+            `reasonix: subagent failover to ${next} failed — ${(err as Error).message}\n`,
+          );
+          break;
         }
       }
       const formatted = formatSubagentResult(result);

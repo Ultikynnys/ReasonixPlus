@@ -280,6 +280,9 @@ export interface TranslationSchema {
     thinkingOnlyGiveUp: string;
     providerErrorRetry: string;
     providerServerErrorRetry: string;
+    failoverSwitching: string;
+    failoverNoBackup: string;
+    failoverAllExhausted: string;
     imagePayloadShrunk: string;
     upstreamRefusalRetry: string;
     upstreamRefusalTrimming: string;

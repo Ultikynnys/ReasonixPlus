@@ -138,6 +138,7 @@ export function Composer({
   stuckLabel,
   modelLabel,
   subagentModelLabel = DEFAULT_MODEL,
+  subagentsEnabled = false,
   reasoningEffort,
   supportedEfforts,
   onModelChange,
@@ -201,6 +202,10 @@ export function Composer({
   modelLabel: string;
   /** Per-tab subagent model shown in the menu's subagent column. Defaults to the shared model default. */
   subagentModelLabel?: string;
+  /** Whether this session was minted with the subagent tool. Without the tool the
+   *  subagent model has nothing to spawn, so its picker is hidden rather than
+   *  disabled — the capability is frozen at chat creation, never toggled here. */
+  subagentsEnabled?: boolean;
   reasoningEffort: ReasoningEffort;
   /** Effort levels the active model accepts. The menu offers only these and
    *  the pill shows the clamped value. Undefined = all levels apply; empty =
@@ -312,6 +317,13 @@ export function Composer({
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
   }, [openMenu]);
+
+  // The subagent pill unmounts when the session loses the tool, so a menu left open
+  // across that switch would survive the state and pop open, unclicked, on the next
+  // chat that has it.
+  useEffect(() => {
+    if (!subagentsEnabled) setOpenMenu((cur) => (cur === "subagent" ? null : cur));
+  }, [subagentsEnabled]);
 
   const attachFile = async () => {
     try {
@@ -815,36 +827,38 @@ export function Composer({
                 </MenuPop>
               ) : null}
             </div>
-            <div
-              ref={(el) => {
-                menuWraps.current.subagent = el;
-              }}
-              className="model-pill-wrap"
-            >
-              <button
-                type="button"
-                className="model-pill subagent-pill"
-                onClick={() => toggleMenu("subagent")}
-                title={t("composer.switchSubagentModel")}
+            {subagentsEnabled ? (
+              <div
+                ref={(el) => {
+                  menuWraps.current.subagent = el;
+                }}
+                className="model-pill-wrap"
               >
-                <I.bot size={12} />
-                <span>{modelDisplayName(subagentModelLabel)}</span>
-                <I.chev size={10} />
-              </button>
-              {openMenu === "subagent" ? (
-                <MenuPop width={420}>
-                  <MenuHeader label={t("composer.switchSubagentModel")} />
-                  <ModelList
-                    activeModel={subagentModelLabel}
-                    onPick={(m) => {
-                      onSubagentModelChange(m);
-                      closeMenu();
-                    }}
-                    {...modelListProps}
-                  />
-                </MenuPop>
-              ) : null}
-            </div>
+                <button
+                  type="button"
+                  className="model-pill subagent-pill"
+                  onClick={() => toggleMenu("subagent")}
+                  title={t("composer.switchSubagentModel")}
+                >
+                  <I.bot size={12} />
+                  <span>{modelDisplayName(subagentModelLabel)}</span>
+                  <I.chev size={10} />
+                </button>
+                {openMenu === "subagent" ? (
+                  <MenuPop width={420}>
+                    <MenuHeader label={t("composer.switchSubagentModel")} />
+                    <ModelList
+                      activeModel={subagentModelLabel}
+                      onPick={(m) => {
+                        onSubagentModelChange(m);
+                        closeMenu();
+                      }}
+                      {...modelListProps}
+                    />
+                  </MenuPop>
+                ) : null}
+              </div>
+            ) : null}
             <div
               ref={(el) => {
                 menuWraps.current.effort = el;

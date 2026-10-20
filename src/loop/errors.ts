@@ -89,6 +89,25 @@ export function is4xxError(err: unknown): boolean {
   return new RegExp(`^${PROVIDER_ERROR_PREFIX} 4\\d{2}:`).test(err.message ?? "");
 }
 
+/** True when a provider refused the call because the account's quota, credits or
+ *  rate allowance is spent: replaying the same model cannot get past it, so the
+ *  only way to keep an unattended run alive is a different model. */
+export function isQuotaExhaustedError(err: unknown): boolean {
+  const msg = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+  const match = new RegExp(`^(${PROVIDER_ERROR_BRANDS}) (\\d{3}):\\s*([\\s\\S]*)$`).exec(msg);
+  if (!match) return false;
+  const status = match[2]!;
+  const inner = extractProviderErrorMessage(match[3]!);
+  // 402 means "payment required" by definition; 429 covers both a spent quota and
+  // a per-key rate limit. Neither is fixed by re-sending the same request to the
+  // same model, so both are failover-eligible.
+  if (status === "402" || status === "429") return true;
+  // Some gateways report an exhausted balance as a plain 403 (access denied) or a
+  // 400 on the stream-failure path instead of a 402/429.
+  if (status === "403" || status === "400") return OUT_OF_CREDITS_429.test(inner);
+  return false;
+}
+
 /** True when the provider rejected the request for exceeding the context
  *  window. Recoverable by compaction; mirrors the message patterns that
  *  formatLoopError classifies as the "context" error kind. */

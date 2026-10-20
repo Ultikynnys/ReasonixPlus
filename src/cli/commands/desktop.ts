@@ -159,6 +159,7 @@ import {
   loadEndpointForModel,
   loadExaApiKey,
   loadExperientialApiKey,
+  loadFallbackModels,
   loadFeedbackCues,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
@@ -191,6 +192,8 @@ import {
   loadZaiApiKey,
   mergeMcpServerEntry,
   modelAcceptsImages,
+  modelUsableFor,
+  pickFallbackModel,
   providerForModel,
   pushRecentWorkspace,
   readConfig,
@@ -215,6 +218,7 @@ import {
   saveElevationEnabled,
   saveEnableSubagents,
   saveEnabledModels,
+  saveFallbackModels,
   saveFeedbackCues,
   saveGmailOAuth,
   saveMailProvider,
@@ -306,6 +310,7 @@ import {
   type LoopEvent,
 } from "../../index.js";
 import { createLogger } from "../../logging.js";
+import { isQuotaExhaustedError } from "../../loop/errors.js";
 import { MCP_CATALOG, catalogStdioCommand } from "../../mcp/catalog.js";
 import {
   GMAIL_MAIL_SERVER_NAME,
@@ -1797,6 +1802,9 @@ function emitSettings(tab: Tab): void {
       maxIterPerTurnOverride:
         typeof config.maxIterPerTurn === "number" ? config.maxIterPerTurn : null,
       enableSubagents: loadEnableSubagents(),
+      // The session's frozen capability, not the creation default: it is what the
+      // composer's subagent model picker hides behind.
+      subagents: tab.subagents,
       elevationEnabled: loadElevationEnabled(),
       repetitionGuardEnabled:
         tab.runtime?.loop.repetitionGuardEnabled ?? loadRepetitionGuardEnabled(),
@@ -1807,6 +1815,7 @@ function emitSettings(tab: Tab): void {
       duplicateSessionTokens: loadDuplicateSessionTokens(),
       duplicateSessionAutoProceed: loadDuplicateSessionAutoProceed(),
       enabledModels: loadEnabledModels(),
+      fallbackModels: loadFallbackModels(),
       baseUrl: ep.baseUrl,
       apiKeyPrefix: ep.apiKey ? `${ep.apiKey.slice(0, 6)}…${ep.apiKey.slice(-3)}` : undefined,
       workspaceDir: tab.rootDir,
@@ -4437,6 +4446,20 @@ interface RuntimeState {
   };
 }
 
+/** One turn-generator drive's outcome: what settlement reports, plus the
+ *  quota-exhaustion signal the backup-model failover acts on. */
+interface TurnAttempt {
+  aborted: boolean;
+  lastTurn: number;
+  sawAssistantFinal: boolean;
+  producedAnswer: boolean;
+  sawError: boolean;
+  lastStopReason: string;
+  /** The attempt died because the provider's quota/credits ran out, so replaying
+   *  the SAME model cannot help — only a different model can. */
+  quotaExhausted: boolean;
+}
+
 type SymbolEntry = { name: string; path: string; line: number; kind: string };
 
 interface Tab {
@@ -4967,50 +4990,10 @@ export function turnStartRejection(
   return null;
 }
 
-/** Whether the tab's CURRENT model can be run now — the strict per-turn gate.
- *  gpt needs an OpenAI key/OAuth; deepseek needs its key; local Ollama is
- *  keyless but cloud Ollama needs ollamaApiKey. */
+/** Whether the tab's CURRENT model can be run now — see config's modelUsableFor,
+ *  which the quota-failover paths also screen backups with. */
 export function tabCurrentModelUsable(tab: Tab): boolean {
-  if (providerForModel(tab.currentModel) === "openai") {
-    const ep = loadEndpointForModel(tab.currentModel);
-    if (ep.apiKey) return true;
-    return !!readConfig().openaiOAuth?.accessToken;
-  }
-  // Local Ollama omits the Authorization header; a cloud endpoint (default
-  // https://ollama.com/v1) needs ollamaApiKey — a missing key is a per-turn 401.
-  if (providerForModel(tab.currentModel) === "ollama") {
-    const ep = loadOllamaEndpoint();
-    if (ep.apiKey) return true;
-    return isLocalOllamaEndpoint(ep.baseUrl);
-  }
-  if (providerForModel(tab.currentModel) === "gemini") {
-    return !!readConfig().antigravityOAuth?.accessToken;
-  }
-  if (providerForModel(tab.currentModel) === "zai") {
-    return !!loadZaiApiKey();
-  }
-  if (providerForModel(tab.currentModel) === "mimo") {
-    return !!loadMimoApiKey();
-  }
-  if (providerForModel(tab.currentModel) === "experiential") {
-    return !!loadExperientialApiKey();
-  }
-  if (providerForModel(tab.currentModel) === "opencode") {
-    return true;
-  }
-  return !!loadApiKey();
-}
-
-/** True for the keyless local Ollama daemon (localhost / 127.0.0.1 / ::1);
- *  cloud endpoints are NOT keyless. */
-function isLocalOllamaEndpoint(baseUrl: string | undefined): boolean {
-  if (!baseUrl) return true; // no endpoint resolved → treat as local
-  try {
-    const host = new URL(baseUrl).hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "::1";
-  } catch {
-    return false;
-  }
+  return modelUsableFor(tab.currentModel);
 }
 
 /** Setup/readiness gate: usable if the current model's provider has a
@@ -5118,6 +5101,49 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
   const eventizer = new Eventizer();
   const ctx = { model: tab.currentModel, prefixHash: prefix.fingerprint, reasoningEffort };
   return { loop, eventizer, ctx };
+}
+
+/** Switch a tab's model in place (prompt + runtime, rolled back if the rebuild
+ *  throws) and never aborts a turn. `persistDefault` also writes the global
+ *  default, so an automatic failover stays scoped to this conversation. */
+function applyTabModel(tab: Tab, next: string, opts: { persistDefault: boolean }): void {
+  const prevModel = tab.currentModel;
+  const prevSystem = tab.system;
+  tab.currentModel = next;
+  try {
+    if (opts.persistDefault) saveModel(next);
+    persistSessionModelPrefs(tab);
+    if (tab.toolset) {
+      refreshTabSystemPrompt(tab);
+      // Build even when the tab had no runtime (e.g. a gated welcome tab that
+      // just picked a model) — only if the new model is usable, else drop a
+      // stale runtime.
+      if (tabCurrentModelUsable(tab)) tab.runtime = buildRuntimeFor(tab);
+      else tab.runtime = null;
+    }
+  } catch (err) {
+    tab.currentModel = prevModel;
+    if (opts.persistDefault) {
+      try {
+        saveModel(prevModel);
+      } catch (saveErr) {
+        process.stderr.write(
+          `reasonix: model prefs rollback save failed — ${messageOf(saveErr)}\n`,
+        );
+      }
+    }
+    persistSessionModelPrefs(tab);
+    if (tab.toolset) {
+      tab.system = prevSystem;
+      try {
+        if (tabCurrentModelUsable(tab)) tab.runtime = buildRuntimeFor(tab);
+        else tab.runtime = null;
+      } catch {
+        tab.runtime = null;
+      }
+    }
+    throw err;
+  }
 }
 
 const TS_EXPORT_RE =
@@ -6180,7 +6206,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       endTurn("aborted");
       return;
     }
-    const rt = tab.runtime;
+    let rt = tab.runtime;
     // First turn of a fresh conversation records the model/effort it runs
     // with; a later resume restores them even after a reinstall wiped the
     // config. Never overwrites an existing stored pair (see stampSessionModelPrefs).
@@ -6271,146 +6297,251 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // when the next event arrives, so Send now / Stop mid-await never reached
       // $turn_complete and the queued-sends drain never ran. raceLoopStep
       // resolves `null` the moment the aborter fires instead.
-      const gen = rt.loop.step(text, images);
-      let aborted = false;
-      let lastTurn = -1;
-      let sawAssistantFinal = false;
-      // Terminal-outcome tracking: `producedAnswer` distinguishes a real reply from
-      // a model that stopped silently, so the UI never shows false success.
-      let producedAnswer = false;
-      let sawError = false;
-      let lastStopReason = "";
-      try {
-        let emittedTurnContext = false;
-        while (true) {
-          const next = await raceLoopStep(gen, tab.aborter?.signal);
-          if (next === null) {
-            aborted = true;
-            break;
-          }
-          if (next.done) break;
-          const ev = next.value;
-          lastTurn = ev.turn;
-          if (!emittedTurnContext) {
-            emittedTurnContext = true;
-            // Daemon-authoritative turn echo, before this turn's events so
-            // the reconciled bubble sits above the turn's cards.
-            if (clientId) {
-              emitKernelEvent(
-                rt.eventizer.emitUserMessage(rt.loop.currentTurn, text, clientId),
-                tab.id,
-              );
+      //
+      // Factored out of the settlement below so a quota failover can drive ONE
+      // more attempt on a backup model without opening a second turn lifecycle.
+      const notify = (text: string, severity: "warning" | "error" = "warning"): void =>
+        emit({ type: "$notice", text, severity }, tab.id);
+      const driveAttempt = async (prompt: string): Promise<TurnAttempt> => {
+        const gen = rt.loop.step(prompt, images);
+        let aborted = false;
+        let lastTurn = -1;
+        let sawAssistantFinal = false;
+        // Terminal-outcome tracking: `producedAnswer` distinguishes a real reply from
+        // a model that stopped silently, so the UI never shows false success.
+        let producedAnswer = false;
+        let sawError = false;
+        let lastStopReason = "";
+        let quotaExhausted = false;
+        try {
+          let emittedTurnContext = false;
+          while (true) {
+            const next = await raceLoopStep(gen, tab.aborter?.signal);
+            if (next === null) {
+              aborted = true;
+              break;
             }
-            emitCtxBreakdown(tab);
+            if (next.done) break;
+            const ev = next.value;
+            lastTurn = ev.turn;
+            if (!emittedTurnContext) {
+              emittedTurnContext = true;
+              // Daemon-authoritative turn echo, before this turn's events so
+              // the reconciled bubble sits above the turn's cards.
+              if (clientId) {
+                emitKernelEvent(
+                  rt.eventizer.emitUserMessage(rt.loop.currentTurn, prompt, clientId),
+                  tab.id,
+                );
+              }
+              emitCtxBreakdown(tab);
+            }
+            if (ev.role === "assistant_final") {
+              sawAssistantFinal = true;
+              if (ev.content?.trim()) producedAnswer = true;
+              if (ev.content) lastAssistantText = ev.content;
+            }
+            if (ev.role === "done" && ev.content?.trim()) producedAnswer = true;
+            if (ev.role === "error") {
+              sawError = true;
+              if (ev.error) lastStopReason = ev.error;
+              // The loop exhausted every in-loop recovery it has for this model,
+              // so only a DIFFERENT model can still finish the turn.
+              if (isQuotaExhaustedError(ev.errorDetail?.message)) quotaExhausted = true;
+            }
+            if (ev.role === "warning" && ev.severity === "high" && ev.content) {
+              lastStopReason = ev.content;
+            }
+            for (const kev of rt.eventizer.consume(ev, rt.ctx)) emitKernelEvent(kev, tab.id);
+            if (ev.role === "assistant_final" || ev.role === "tool") {
+              emitCtxBreakdown(tab);
+            }
+            // Memory tools mutate disk state behind the loop's back — the UI
+            // panel won't know until we re-emit. Without this the right-hand
+            // panel only updates on tab reopen.
+            if (ev.role === "tool" && PLAN_INTERACTIVE_TOOL_NAMES.has(ev.toolName ?? "")) {
+              // The plan tools just wrote the repository — project its accepted state.
+              if (ev.toolName === "mark_step_complete") emitAcceptedStep(tab, ev.content);
+              emitRestoredPlan(tab, true);
+            }
+            if (ev.role === "tool" && (ev.toolName === "remember" || ev.toolName === "forget")) {
+              emitMemory(tab);
+            }
           }
-          if (ev.role === "assistant_final") {
-            sawAssistantFinal = true;
-            if (ev.content?.trim()) producedAnswer = true;
-            if (ev.content) lastAssistantText = ev.content;
+        } catch (err) {
+          emit({ type: "$error", message: (err as Error).message }, tab.id);
+        } finally {
+          if (aborted) {
+            // Manual compaction must wait for the suspended dispatch to unwind.
+            const cleanup = gen.return(undefined).then(() => undefined);
+            tab.turnCleanup = cleanup;
+            if (tab.compactingManual) await cleanup;
+            else void cleanup.catch(() => undefined);
           }
-          if (ev.role === "done" && ev.content?.trim()) producedAnswer = true;
-          if (ev.role === "error") {
-            sawError = true;
-            if (ev.error) lastStopReason = ev.error;
-          }
-          if (ev.role === "warning" && ev.severity === "high" && ev.content) {
-            lastStopReason = ev.content;
-          }
-          for (const kev of rt.eventizer.consume(ev, rt.ctx)) emitKernelEvent(kev, tab.id);
-          if (ev.role === "assistant_final" || ev.role === "tool") {
-            emitCtxBreakdown(tab);
-          }
-          // Memory tools mutate disk state behind the loop's back — the UI
-          // panel won't know until we re-emit. Without this the right-hand
-          // panel only updates on tab reopen.
-          if (ev.role === "tool" && PLAN_INTERACTIVE_TOOL_NAMES.has(ev.toolName ?? "")) {
-            // The plan tools just wrote the repository — project its accepted state.
-            if (ev.toolName === "mark_step_complete") emitAcceptedStep(tab, ev.content);
-            emitRestoredPlan(tab, true);
-          }
-          if (ev.role === "tool" && (ev.toolName === "remember" || ev.toolName === "forget")) {
-            emitMemory(tab);
-          }
-        }
-      } catch (err) {
-        emit({ type: "$error", message: (err as Error).message }, tab.id);
-      } finally {
-        if (aborted) {
-          // Manual compaction must wait for the suspended dispatch to unwind.
-          const cleanup = gen.return(undefined).then(() => undefined);
-          tab.turnCleanup = cleanup;
-          if (tab.compactingManual) await cleanup;
-          else void cleanup.catch(() => undefined);
-        }
-        tab.aborter = null;
-        emitTabDiagnostic(
-          tab,
-          "turn.finished",
-          {
-            aborted,
-            lastTurn,
-            sawAssistantFinal,
-            lastAssistantChars: lastAssistantText.length,
-          },
-          aborted ? "warn" : "info",
-        );
-        // If a session switch happened while this turn was running,
-        // suppress stale events to avoid UI state corruption (#1217).
-        if (!tab.switching) {
-          if (aborted && lastTurn >= 0 && !sawAssistantFinal) {
-            // The loop's own abort path never ran (the generator was
-            // closed mid-await), so settle the still-pending assistant
-            // card here — $turn_complete alone leaves it spinning.
-            emitKernelEvent(rt.eventizer.emitAbortedFinal(lastTurn), tab.id);
-          }
-          const outcome: TurnOutcome = aborted
-            ? "aborted"
-            : producedAnswer
-              ? "success"
-              : sawError
-                ? "failed"
-                : "stopped";
-          const reason = producedAnswer ? undefined : lastStopReason || t("loop.stoppedNoAnswer");
-          endTurn(outcome, {
-            ...(lastTurn >= 0 ? { turn: lastTurn } : {}),
-            ...(reason ? { reason } : {}),
-          });
-          refreshPlanSummary(tab);
           emitTabDiagnostic(
             tab,
-            "turn.complete.emitted",
-            { planProgress: tab.planSummary },
-            "info",
+            "turn.finished",
+            {
+              aborted,
+              lastTurn,
+              sawAssistantFinal,
+              lastAssistantChars: lastAssistantText.length,
+            },
+            aborted ? "warn" : "info",
           );
-          void emitSessions(tab);
-          void emitBalance(tab);
-          void emitCodexQuota(tab, { force: true });
-          void emitOllamaQuota(tab);
-          void emitAntigravityQuota(tab);
-          void emitZaiQuota(tab);
-          void emitOpencodeQuota(tab);
-          void emitMiMoQuota(tab);
-          if (tab.hooks.some((h) => h.event === "Stop")) {
-            const stopReport = await runHooks({
-              hooks: tab.hooks,
-              payload: {
-                event: "Stop",
-                cwd: tab.rootDir,
-                lastAssistantText,
-                turn: rt.loop.stats.summary().turns,
-              },
-            });
-            for (const o of stopReport.outcomes) {
-              if (o.decision === "pass") continue;
-              emit(
-                { type: "$notice", text: formatHookOutcomeMessage(o), severity: "warning" },
-                tab.id,
-              );
-            }
+        }
+        return {
+          aborted,
+          lastTurn,
+          sawAssistantFinal,
+          producedAnswer,
+          sawError,
+          lastStopReason,
+          quotaExhausted,
+        };
+      };
+
+      let attempt = await driveAttempt(text);
+      // Automatic backup-model failover: a provider that runs out of quota
+      // mid-conversation would otherwise end the turn here, leaving an
+      // unattended (overnight) run idle until someone wakes up to switch models.
+      // Each backup is switched to, then the prompt is replayed exactly like the
+      // desktop's Retry, until an attempt answers or the chain runs out.
+      const configuredFallbacks = loadFallbackModels();
+      const triedModels = new Set([tab.currentModel]);
+      let failedOverTo: string | null = null;
+      let failoverBroken = false;
+      while (attempt.quotaExhausted && !attempt.aborted && !attempt.producedAnswer) {
+        const next = pickFallbackModel(configuredFallbacks, triedModels, modelUsableFor);
+        if (!next) break;
+        triedModels.add(next);
+        const failedModel = tab.currentModel;
+        try {
+          // Session-scoped: an automatic switch must never rewrite the user's
+          // global default model behind their back.
+          applyTabModel(tab, next, { persistDefault: false });
+        } catch (err) {
+          notify(`Backup model switch to ${next} failed: ${messageOf(err)}`, "error");
+          failoverBroken = true;
+          break;
+        }
+        if (!tab.runtime) {
+          // The backup has no usable runtime here (its credential went away
+          // between the screening check and the rebuild). Put the model the turn
+          // was running on back, so the tab is never stranded without a runtime.
+          try {
+            applyTabModel(tab, failedModel, { persistDefault: false });
+          } catch (rollbackErr) {
+            process.stderr.write(
+              `reasonix: backup-model rollback to ${failedModel} failed — ${messageOf(rollbackErr)}\n`,
+            );
+          }
+          if (!tab.runtime) {
+            notify(
+              "No usable model runtime after the quota failover — pick a model in the composer to continue.",
+              "error",
+            );
+          }
+          failoverBroken = true;
+          break;
+        }
+        rt = tab.runtime;
+        failedOverTo = next;
+        // Rewind on the NEW runtime, never before the switch: the truncation is
+        // persisted to the session file, so doing it first would drop the prompt
+        // from the log whenever the switch itself failed.
+        const before = rt.loop.log.length;
+        if (rt.loop.retryLastUser() !== text) {
+          // The prompt is no longer the log's last real user turn (compaction
+          // folded it away, or it carried attachments), so replaying would send a
+          // different request. Keep the switch and report the failure honestly.
+          failoverBroken = true;
+          break;
+        }
+        emitKernelEvent(
+          rt.eventizer.emitSessionRetracted(
+            rt.loop.currentTurn,
+            "retry",
+            before,
+            rt.loop.log.length,
+            rt.loop.log.entries,
+          ),
+          tab.id,
+        );
+        // The turn's own aborter is still live here (nothing releases it until the
+        // whole turn settles), so Stop keeps cancelling the retry too.
+        notify(t("loop.failoverSwitching", { failed: failedModel, next }));
+        attempt = await driveAttempt(text);
+      }
+      if (
+        attempt.quotaExhausted &&
+        !attempt.aborted &&
+        !attempt.producedAnswer &&
+        !failoverBroken
+      ) {
+        // Nothing left to try: point at the setting that fixes it rather than
+        // letting the turn die with only a provider error card. An empty list and
+        // a list nothing could be taken from need different advice.
+        notify(
+          configuredFallbacks.length === 0
+            ? t("loop.failoverNoBackup", { failed: tab.currentModel })
+            : t("loop.failoverAllExhausted", { failed: tab.currentModel }),
+        );
+      }
+      tab.aborter = null;
+      // If a session switch happened while this turn was running,
+      // suppress stale events to avoid UI state corruption (#1217).
+      if (!tab.switching) {
+        if (attempt.aborted && attempt.lastTurn >= 0 && !attempt.sawAssistantFinal) {
+          // The loop's own abort path never ran (the generator was
+          // closed mid-await), so settle the still-pending assistant
+          // card here — $turn_complete alone leaves it spinning.
+          emitKernelEvent(rt.eventizer.emitAbortedFinal(attempt.lastTurn), tab.id);
+        }
+        const outcome: TurnOutcome = attempt.aborted
+          ? "aborted"
+          : attempt.producedAnswer
+            ? "success"
+            : attempt.sawError
+              ? "failed"
+              : "stopped";
+        const reason = attempt.producedAnswer
+          ? undefined
+          : attempt.lastStopReason || t("loop.stoppedNoAnswer");
+        endTurn(outcome, {
+          ...(attempt.lastTurn >= 0 ? { turn: attempt.lastTurn } : {}),
+          ...(reason ? { reason } : {}),
+        });
+        // The model chip has to follow a failover. Emitted AFTER $turn_complete
+        // so the desktop's model-change handler cannot release a busy turn.
+        if (failedOverTo) emitSettings(tab);
+        refreshPlanSummary(tab);
+        emitTabDiagnostic(tab, "turn.complete.emitted", { planProgress: tab.planSummary }, "info");
+        void emitSessions(tab);
+        void emitBalance(tab);
+        void emitCodexQuota(tab, { force: true });
+        void emitOllamaQuota(tab);
+        void emitAntigravityQuota(tab);
+        void emitZaiQuota(tab);
+        void emitOpencodeQuota(tab);
+        void emitMiMoQuota(tab);
+        if (tab.hooks.some((h) => h.event === "Stop")) {
+          const stopReport = await runHooks({
+            hooks: tab.hooks,
+            payload: {
+              event: "Stop",
+              cwd: tab.rootDir,
+              lastAssistantText,
+              turn: rt.loop.stats.summary().turns,
+            },
+          });
+          for (const o of stopReport.outcomes) {
+            if (o.decision === "pass") continue;
+            notify(formatHookOutcomeMessage(o));
           }
         }
-        tab.switching = false;
       }
+      tab.switching = false;
     });
   }
 
@@ -8255,6 +8386,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // Bind before the runtime exists: the spawn tool and its prompt section have
         // to be in the prefix `unlock` builds.
         bindSessionSubagents(tab, subagents);
+        // The answer is now frozen into the session, so the composer must learn it
+        // before it renders (its subagent model picker keys off `$settings.subagents`).
+        emitSettings(tab);
         emitMcpSpecs(tab);
         const unlock = (): void => {
           if (tabCurrentModelUsable(tab) && tab.toolset && !tab.runtime) {
@@ -9374,6 +9508,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           saveEnabledModels(Array.isArray(msg.enabledModels) ? msg.enabledModels : []);
           for (const openTab of tabs.values()) emitSettings(openTab);
         }
+        if (msg.fallbackModels !== undefined) {
+          // Read at failover time, not snapshotted onto the tab: the list applies
+          // to every open conversation the moment it is saved.
+          saveFallbackModels(Array.isArray(msg.fallbackModels) ? msg.fallbackModels : []);
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
         if (msg.ollamaGeneration !== undefined) {
           saveOllamaGenerationPatch(msg.ollamaGeneration);
           for (const openTab of tabs.values()) emitSettings(openTab);
@@ -9503,11 +9643,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         if (msg.model !== undefined) {
           const next = msg.model.trim();
           if (next && next !== tab.currentModel) {
-            // Snapshot so a failed switch can roll back: without this the UI
-            // (optimistic settings_patch) shows a model the daemon never
-            // built a runtime for, and every later send misfires.
-            const prevModel = tab.currentModel;
-            const prevSystem = tab.system;
             // Release a running turn before the rebuild. The in-flight runTurn
             // captured the previous runtime, so it keeps driving the old
             // loop/client and never adopts the new model; a wedged request then
@@ -9516,41 +9651,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             // is the one stopped, and WITHOUT the `switching` flag so the
             // turn's $turn_complete still lands and the FE settles + drains.
             if (tab.aborter) abortTurn(tab, desktopUserAbortLoopOptions());
-            try {
-              tab.currentModel = next;
-              saveModel(next);
-              persistSessionModelPrefs(tab);
-              if (tab.toolset) {
-                refreshTabSystemPrompt(tab);
-                // Build even when the tab had no runtime (e.g. a gated welcome
-                // tab that just picked an Ollama model) — only if the new model
-                // is actually usable, else drop a stale runtime.
-                if (tabCurrentModelUsable(tab)) tab.runtime = buildRuntimeFor(tab);
-                else tab.runtime = null;
-              }
-            } catch (modelErr) {
-              // Best-effort restore of the last working model so the daemon
-              // keeps serving the conversation the UI still displays.
-              tab.currentModel = prevModel;
-              try {
-                saveModel(prevModel);
-              } catch (saveErr) {
-                process.stderr.write(
-                  `reasonix: model prefs rollback save failed — ${messageOf(saveErr)}\n`,
-                );
-              }
-              persistSessionModelPrefs(tab);
-              if (tab.toolset) {
-                tab.system = prevSystem;
-                try {
-                  if (tabCurrentModelUsable(tab)) tab.runtime = buildRuntimeFor(tab);
-                  else tab.runtime = null;
-                } catch {
-                  tab.runtime = null;
-                }
-              }
-              throw modelErr;
-            }
+            // applyTabModel rolls the tab back to the previous model if the
+            // rebuild throws, so the UI never shows a model the daemon never
+            // built a runtime for.
+            applyTabModel(tab, next, { persistDefault: true });
           }
         }
         emitSettings(tab);

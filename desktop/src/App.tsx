@@ -2730,6 +2730,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           maxIterPerTurn: ev.maxIterPerTurn ?? null,
           maxIterPerTurnOverride: ev.maxIterPerTurnOverride ?? null,
           enableSubagents: ev.enableSubagents === true,
+          // Frozen per session. A daemon that predates the field only knows the
+          // creation default, which is the closest available estimate for this chat;
+          // reading absence as "off" would drop a working picker on a stale build.
+          subagents: ev.subagents ?? ev.enableSubagents ?? false,
           elevationEnabled: ev.elevationEnabled ?? false,
           repetitionGuardEnabled: ev.repetitionGuardEnabled ?? false,
           autoCompact: ev.autoCompact ?? true,
@@ -2745,6 +2749,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           model: ev.model,
           providerCatalogs: ev.providerCatalogs,
           enabledModels: ev.enabledModels,
+          fallbackModels: ev.fallbackModels,
           webSearchEngine: ev.webSearchEngine,
           webSearchEndpoint: ev.webSearchEndpoint,
           webSearchApiKeys: ev.webSearchApiKeys,
@@ -5376,6 +5381,7 @@ const TabRuntime = memo(function TabRuntime({
                 subagentModelLabel={
                   state.settings?.subagentModel ?? state.settings?.model ?? DEFAULT_MODEL
                 }
+                subagentsEnabled={state.settings?.subagents ?? false}
                 reasoningEffort={state.settings?.reasoningEffort ?? "high"}
                 supportedEfforts={state.settings?.modelEndpoint?.reasoningEfforts}
                 ollamaModels={ollamaModels}
@@ -7652,27 +7658,30 @@ export function App() {
     });
   }, []);
 
-  const onRemoveWorkspace = useCallback((path: string) => {
-    // Forgetting a workspace closes every tab on it, so it cannot run while any
-    // channel is mid-mutation: read the shared store, not one channel's flag.
-    if (hasOpenSessionIntent(sessionsStoreRef.current)) {
-      const target = activeTabIdRef.current || tabsRef.current[0]?.id;
-      if (target) {
-        deliverToTab(target, {
-          t: "push_notice",
-          text: t("app.workspaceBusyNotice"),
-          severity: "warning",
-        });
+  const onRemoveWorkspace = useCallback(
+    (path: string) => {
+      // Forgetting a workspace closes every tab on it, so it cannot run while any
+      // channel is mid-mutation: read the shared store, not one channel's flag.
+      if (hasOpenSessionIntent(sessionsStoreRef.current)) {
+        const target = activeTabIdRef.current || tabsRef.current[0]?.id;
+        if (target) {
+          deliverToTab(target, {
+            t: "push_notice",
+            text: t("app.workspaceBusyNotice"),
+            severity: "warning",
+          });
+        }
+        return;
       }
-      return;
-    }
-    for (const d of dispatchersRef.current.values()) {
-      d({ t: "workspace_recent_removed", path });
-    }
-    rpcSend({ cmd: "workspace_recent_remove", path }).catch((err) =>
-      recordFrontendFailure("frontend.workspace_forget_failed", err),
-    );
-  }, [deliverToTab]);
+      for (const d of dispatchersRef.current.values()) {
+        d({ t: "workspace_recent_removed", path });
+      }
+      rpcSend({ cmd: "workspace_recent_remove", path }).catch((err) =>
+        recordFrontendFailure("frontend.workspace_forget_failed", err),
+      );
+    },
+    [deliverToTab],
+  );
 
   if (startupFailure && tabs.length === 0) {
     return <StartupFailure details={startupFailure.details} onRetry={retryStartup} />;
