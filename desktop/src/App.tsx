@@ -1,6 +1,7 @@
 import {
-  DEFAULT_MODEL,
   type ChangelogRelease,
+  DEFAULT_MODEL,
+  type RuleRecord,
   clipText,
   compactionCardText,
   extractPathsFromArgs,
@@ -11,11 +12,8 @@ import {
   modelAcceptsAudioVideo,
   modelAcceptsImages,
   modelDisplayName,
-  redactDiagnosticText,
-  redactDiagnosticValue,
   sanitizeFilename,
   sortSessionsByCreationDescending,
-  type RuleRecord,
 } from "@reasonix/core-utils";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -56,6 +54,7 @@ import {
   playEnabledCue,
   shouldAppendCompletionNotice,
 } from "./notifications";
+import { planLabelsBySession } from "./plan-labels";
 import {
   type AntigravityQuota,
   type CheckpointVerdict,
@@ -63,7 +62,6 @@ import {
   type CodexQuota,
   type ConfirmationChoice,
   type ContextRawEvent,
-  type DesktopDiagnosticEvent,
   type FeedbackCueId,
   type FeedbackCueSettings,
   type IncomingEvent,
@@ -73,11 +71,12 @@ import {
   MailProvider,
   type McpExtensionCheck,
   type McpExtensionStatus,
-  type McpSpecInfo,
   type McpSetupServer,
+  type McpSpecInfo,
   type MemoryDetail,
   type MemoryEntryInfo,
   type OllamaQuota,
+  type OpencodeQuota,
   type OutgoingCommand,
   type PersistedNotice,
   type PlanStep,
@@ -96,12 +95,10 @@ import {
   type TurnOutcome,
   type UserImageAttachment,
   type ZaiQuota,
-  type OpencodeQuota,
   allQuickSends,
   resolveActiveQuickSend,
   rpcSend,
 } from "./protocol";
-import { planLabelsBySession } from "./plan-labels";
 import { StartupTimingTracker } from "./startup-timing";
 import { StreamRateTracker } from "./stream-rate";
 import {
@@ -134,12 +131,12 @@ import {
   parseEditResult,
   subagentCallDetails,
 } from "./ui/cards";
+import type { ChangelogState } from "./ui/changelog";
 import { StoredComposer as Composer } from "./ui/composer";
 import { createComposerDraft } from "./ui/composer-draft";
 import { ContextPanel } from "./ui/context-panel";
 import { JobsPop } from "./ui/jobs-pop";
 import { activationHandler } from "./ui/keyboard";
-import { type ChangelogState } from "./ui/changelog";
 import { McpSetupDialog } from "./ui/mcp-setup";
 import { SettingsModal, type PageId as SettingsPageId } from "./ui/settings";
 import { localizeShortcutText } from "./ui/shortcut";
@@ -174,8 +171,8 @@ import {
 } from "./ui/transcript-jump";
 import { useAutoCollapse } from "./ui/useAutoCollapse";
 import { useAutoScroll } from "./ui/useAutoScroll";
-import { useIsScrollable } from "./ui/useIsScrollable";
 import { useDisableTextAssist } from "./ui/useDisableTextAssist";
+import { useIsScrollable } from "./ui/useIsScrollable";
 import { useResizable } from "./ui/useResizable";
 import { useTurnWatchdog } from "./ui/useTurnWatchdog";
 import { WorkdirPop } from "./ui/workdir-pop";
@@ -308,7 +305,6 @@ export type AssistantSegment =
 
 export type SkillOrigin = {
   name: string;
-  runAs: "inline" | "subagent";
 };
 
 export type ChatMessage =
@@ -1909,7 +1905,6 @@ function currentTurnForNotice(messages: ChatMessage[]): number {
   return last;
 }
 
-
 function insertNotice(
   messages: ChatMessage[],
   text: string,
@@ -2398,7 +2393,15 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     case "$plan_history": {
       if (state.currentSession && ev.sessionName !== state.currentSession) return state;
       const items = Array.isArray(ev.items) ? ev.items : [];
-      return { ...state, planHistory: items, planDetails: Object.fromEntries(Object.entries(state.planDetails ?? {}).filter(([id, detail]) => items.some(item => item.id === id && item.updatedAt === detail.updatedAt))) };
+      return {
+        ...state,
+        planHistory: items,
+        planDetails: Object.fromEntries(
+          Object.entries(state.planDetails ?? {}).filter(([id, detail]) =>
+            items.some((item) => item.id === id && item.updatedAt === detail.updatedAt),
+          ),
+        ),
+      };
     }
     case "$plan_detail": {
       if (state.currentSession && ev.sessionName !== state.currentSession) return state;
@@ -2618,7 +2621,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           contextTokens: ev.contextTokens ?? null,
           maxIterPerTurn: ev.maxIterPerTurn ?? null,
           maxIterPerTurnOverride: ev.maxIterPerTurnOverride ?? null,
-          enableSubagents: ev.enableSubagents ?? true,
+          enableSubagents: ev.enableSubagents === true,
           elevationEnabled: ev.elevationEnabled ?? false,
           repetitionGuardEnabled: ev.repetitionGuardEnabled ?? false,
           autoCompact: ev.autoCompact ?? true,
@@ -2911,7 +2914,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // A subagent spawn is a session event of its own: it is recorded HERE,
       // where the instruction the child was given is on the wire, and settled
       // when its card resolves.
-      const sessionEvents = isSubagentTool(ev.name, ev.args)
+      const sessionEvents = isSubagentTool(ev.name)
         ? recordSubagentSpawn(state, ev.turn, ev.callId, ev.name, ev.args)
         : state.sessionEvents;
       return {
@@ -2971,7 +2974,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
             message: mi,
             segment: si,
             callId: segment.callId,
-            spawn: isSubagentTool(segment.name, segment.args),
+            spawn: isSubagentTool(segment.name),
             empty: (segment.subagentRuns?.length ?? 0) === 0,
             owns: segment.subagentRuns?.some((run) => run.runId === ev.runId) ?? false,
           });
@@ -2985,7 +2988,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       const adoptable = hosts.filter((h) => h.spawn && h.empty);
       const host =
         hosts.find((h) => h.owns) ??
-        (ev.parentCallId ? hosts.find((h) => h.spawn && h.callId === ev.parentCallId) : undefined) ??
+        (ev.parentCallId
+          ? hosts.find((h) => h.spawn && h.callId === ev.parentCallId)
+          : undefined) ??
         (adoptable.length === 1 ? adoptable[0] : undefined);
       if (!host) return state;
       const hostMessage = host.message;
@@ -5119,9 +5124,15 @@ function TabRuntime({
           planDetails={state.planDetails}
           planSession={state.currentSession}
           sessions={state.sessions}
-          onReadPlans={() => { void rpcSend({ cmd: "plan_history_get", tabId }); }}
-          onReadPlan={(planId) => { void rpcSend({ cmd: "plan_detail_get", planId, tabId }); }}
-          onRemovePlan={(planId) => { void rpcSend({ cmd: "plan_remove", planId, tabId }); }}
+          onReadPlans={() => {
+            void rpcSend({ cmd: "plan_history_get", tabId });
+          }}
+          onReadPlan={(planId) => {
+            void rpcSend({ cmd: "plan_detail_get", planId, tabId });
+          }}
+          onRemovePlan={(planId) => {
+            void rpcSend({ cmd: "plan_remove", planId, tabId });
+          }}
           messages={state.messages}
           sessionEvents={state.sessionEvents}
           onJumpToEvent={jumpToEvent}
@@ -6639,43 +6650,9 @@ export function App() {
               return;
             }
 
-            if (ev.type === "$diagnostic") {
-              const diagnostic = ev as DesktopDiagnosticEvent & { tabId?: string };
-              tracker.mark(`diagnostic:${diagnostic.event}`, {
-                tabId: diagnostic.tabId,
-                details: {
-                  source: diagnostic.source,
-                  level: diagnostic.level,
-                  ...(diagnostic.details ?? {}),
-                },
-              });
-              const prefix = `[reasonix ${diagnostic.source}] ${diagnostic.event}`;
-              const safeMessage = diagnostic.message
-                ? redactDiagnosticText(diagnostic.message)
-                : undefined;
-              const payload = {
-                ...diagnostic,
-                ...(safeMessage ? { message: safeMessage } : {}),
-                ...(diagnostic.details
-                  ? {
-                      details: redactDiagnosticValue(diagnostic.details) as Record<string, unknown>,
-                    }
-                  : {}),
-                ...(diagnostic.tabId ? { tabId: diagnostic.tabId } : {}),
-              };
-              if (safeMessage) payload.message = safeMessage;
-              if (diagnostic.details) {
-                payload.details = redactDiagnosticValue(diagnostic.details) as Record<
-                  string,
-                  unknown
-                >;
-              }
-              if (diagnostic.level === "error") console.error(prefix, payload);
-              else if (diagnostic.level === "warn") console.warn(prefix, payload);
-              else if (diagnostic.level === "info") console.info(prefix, payload);
-              else console.debug(prefix, payload);
-              return;
-            }
+            // The daemon already persists every diagnostic to its rotating log; mirroring
+            // each one to the console doubled every wire event and starved the event loop.
+            if (ev.type === "$diagnostic") return;
 
             if (ev.type === "$tab_opened" && tabId) {
               expectedTabsRef.current?.add(tabId);

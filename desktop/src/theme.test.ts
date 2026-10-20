@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  THEME,
-  THEME_STYLES,
-  THEME_STYLE_THEME,
-  isThemeStyle,
-  themeForStyle,
-} from "./theme";
+import { THEME, THEME_STYLES, THEME_STYLE_THEME, isThemeStyle, themeForStyle } from "./theme";
 
 describe("theme styles", () => {
   it("offers at least 15 styles", () => {

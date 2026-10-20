@@ -1,22 +1,8 @@
-/** runAs: inline appends the body to the parent log; subagent spawns an isolated child loop and only returns the final answer. */
+/** Skills are playbooks: `run_skill` returns the body for the caller to follow in its own
+ *  loop. Isolated work is `spawn_subagent({task, tools})`, a separate tool. */
 
-import {
-  type Skill,
-  SkillStore,
-  type SkillToolArgs,
-  parseSkillDraft,
-  persistSkillDraft,
-} from "../skills.js";
+import { SkillStore, type SkillToolArgs, parseSkillDraft, persistSkillDraft } from "../skills.js";
 import type { ToolRegistry } from "../tools.js";
-
-/** Returns serialized tool-result string — dispatch path is pure pass-through. */
-export type SubagentRunner = (
-  skill: Skill,
-  task: string,
-  signal?: AbortSignal,
-  parentCallId?: string,
-  parentTurn?: number,
-) => Promise<string>;
 
 /** Fired after a successful `install_skill` write — host wires this to push a fresh `$skills` event so the desktop sidebar updates without a tab reload. */
 export type SkillInstalledHook = (info: {
@@ -30,147 +16,10 @@ export interface SkillToolsOptions {
   homeDir?: string;
   projectRoot?: string;
   customSkillPaths?: readonly string[];
-  /** When omitted, subagent skills error rather than silently falling back to inline (loses isolation). */
-  subagentRunner?: SubagentRunner;
   /** Hide built-in skills (test-only knob; production callers leave off). */
   disableBuiltins?: boolean;
   /** Called synchronously after `install_skill` successfully writes a new skill file. */
   onSkillInstalled?: SkillInstalledHook;
-  /** Per-skill model override for `runAs: subagent` skills — sourced from config.json's `subagentModels`. */
-  subagentModels?: Record<string, "flash" | "pro">;
-  /** Knowledge-level subagent gate (`enableSubagents` in Settings → Tools): when false the
-   *  dedicated subagent tools (explore / research / review / security_review) aren't registered
-   *  and the store hides runAs-subagent skills from list surfaces. Defaults to true. */
-  subagentsEnabled?: boolean;
-}
-
-interface BuiltinSubagentToolSpec {
-  toolName: string;
-  skillName: string;
-  description: string;
-  taskDescription: string;
-}
-
-function registerBuiltinSubagentTool(
-  registry: ToolRegistry,
-  store: SkillStore,
-  subagentRunner: SubagentRunner | undefined,
-  spec: BuiltinSubagentToolSpec,
-): void {
-  // Eager presence check — keeps disableBuiltins test mode clean (no
-  // phantom tool spec when its skill body is absent).
-  if (!store.read(spec.skillName)) return;
-  registry.register({
-    name: spec.toolName,
-    description: spec.description,
-    readOnly: true,
-    parallelSafe: true,
-    parameters: {
-      type: "object",
-      properties: {
-        task: { type: "string", description: spec.taskDescription },
-      },
-      required: ["task"],
-    },
-    fn: async (args: { task?: unknown }, ctx) => {
-      if (!subagentRunner) {
-        return JSON.stringify({
-          error: `${spec.toolName}: no subagent runner is configured for this session: run inside a code-mode session, or pass \`subagentRunner\` to \`registerSkillTools\`.`,
-        });
-      }
-      const task = typeof args.task === "string" ? args.task.trim() : "";
-      if (!task) {
-        return JSON.stringify({
-          error: `${spec.toolName} requires a non-empty 'task' argument: describe the concrete question.`,
-        });
-      }
-      const skill = store.read(spec.skillName);
-      if (!skill) {
-        return JSON.stringify({
-          error: `${spec.toolName}: built-in skill ${JSON.stringify(spec.skillName)} is no longer registered`,
-        });
-      }
-      // A user-supplied skill with the same name but `runAs: inline`
-      // would silently lose isolation if we dispatched it here — bounce
-      // back to run_skill where inline is well-defined.
-      if (skill.runAs !== "subagent") {
-        return JSON.stringify({
-          error: `${spec.toolName}: skill ${JSON.stringify(spec.skillName)} is overridden as inline; invoke it via run_skill instead.`,
-        });
-      }
-      return subagentRunner(skill, task, ctx?.signal, ctx?.callId, ctx?.turn);
-    },
-  });
-}
-
-/** The four dedicated top-level subagent spawn tools — single source of truth for
- *  registration (registerSkillTools) and mid-session re-sync (syncDedicatedSubagentTools). */
-export const DEDICATED_SUBAGENT_TOOLS = [
-  "explore",
-  "research",
-  "review",
-  "security_review",
-] as const;
-
-/** Registers the four dedicated spawn tools — same subagentRunner path as run_skill,
- *  but the tool name matches the verb in the question. Shared by build-time registration
- *  and the mid-session toggle re-sync so the two never drift. */
-function registerDedicatedSubagentTools(
-  registry: ToolRegistry,
-  store: SkillStore,
-  subagentRunner: SubagentRunner | undefined,
-): void {
-  registerBuiltinSubagentTool(registry, store, subagentRunner, {
-    toolName: "explore",
-    skillName: "explore",
-    description:
-      "Run a focused read-only codebase investigation in an isolated subagent. **Use for broad survey questions across multiple files**: 'find all places that X', 'how does Y work across the project', 'audit Z'. Returns one distilled answer with file:line citations. Chained `read_file` is the wrong tool for these: it bloats your context with raw file contents; `explore`'s reads + reasoning never enter your log.",
-    taskDescription:
-      "Concrete investigation question. The subagent has none of your context: write a self-contained prompt naming the symbol / pattern / behavior you want surveyed.",
-  });
-  registerBuiltinSubagentTool(registry, store, subagentRunner, {
-    toolName: "research",
-    skillName: "research",
-    description:
-      "Combine web search + code reading in an isolated subagent. **Use when the answer needs both external reference and local verification**: 'is X supported by lib Y in version Z', 'compare our impl against the spec', 'what's the canonical way to do Q'. Returns one synthesis citing code (file:line) and web (URL). Reads + searches stay in the subagent.",
-    taskDescription:
-      "Concrete research question. The subagent has none of your context: name the external thing to look up and the local code to compare against.",
-  });
-  registerBuiltinSubagentTool(registry, store, subagentRunner, {
-    toolName: "review",
-    skillName: "review",
-    description:
-      "Review the pending changes (current branch diff) in an isolated subagent: flags correctness / security / missing-tests / hidden behavior per file:line. Read-only; you decide what to act on. Use before suggesting a PR-shaped change, or when you've finished a multi-step edit and want a second pass.",
-    taskDescription:
-      "What to focus the review on (e.g. 'focus on the auth changes' or 'general'). The subagent reads the diff itself.",
-  });
-  registerBuiltinSubagentTool(registry, store, subagentRunner, {
-    toolName: "security_review",
-    skillName: "security-review",
-    description:
-      "Security-focused review of current branch diff in an isolated subagent: injection / authz / secrets / deserialization / path-traversal / crypto issues, severity-tagged. Use when shipping changes that touch auth, input parsing, file IO, or external requests. Read-only.",
-    taskDescription:
-      "Optional scope hint (e.g. 'focus on token handling in src/auth/') or 'full' for everything in the diff.",
-  });
-}
-
-/** Live `enableSubagents` toggle — knowledge-level sync for an already-built toolset.
- *  Disabled: the four dedicated spawn tools leave the registry. Enabled: re-registered
- *  with the supplied runner — pass the same opts the toolset was built with. */
-export function syncDedicatedSubagentTools(registry: ToolRegistry, opts: SkillToolsOptions): void {
-  const store = new SkillStore({
-    homeDir: opts.homeDir,
-    projectRoot: opts.projectRoot,
-    customSkillPaths: opts.customSkillPaths,
-    disableBuiltins: opts.disableBuiltins,
-    subagentModels: opts.subagentModels,
-    subagentsEnabled: opts.subagentsEnabled,
-  });
-  if (store.allowsSubagents()) {
-    registerDedicatedSubagentTools(registry, store, opts.subagentRunner);
-  } else {
-    for (const name of DEDICATED_SUBAGENT_TOOLS) registry.unregister(name);
-  }
 }
 
 export function registerSkillTools(
@@ -182,17 +31,14 @@ export function registerSkillTools(
     projectRoot: opts.projectRoot,
     customSkillPaths: opts.customSkillPaths,
     disableBuiltins: opts.disableBuiltins,
-    subagentModels: opts.subagentModels,
-    subagentsEnabled: opts.subagentsEnabled,
   });
-  const subagentRunner = opts.subagentRunner;
   const onSkillInstalled = opts.onSkillInstalled;
   const hasProjectScope = store.hasProjectScope();
 
   registry.register({
     name: "run_skill",
     description:
-      "Invoke a user-defined playbook from the Skills index pinned in the system prompt. **For the built-in subagent skills (explore / research / review / security_review), prefer the dedicated top-level tools by the same name; they're cheaper to pick and produce the same result.** Pass `name` as the BARE skill identifier (e.g. 'my-custom-skill'), NOT the `[subagent]` tag that appears after it in the index. Entries tagged `[subagent]` spawn an isolated subagent, and only the final distilled answer comes back. Plain skills are inlined: the body becomes a tool result you read and follow. For subagent skills, supply 'arguments' describing the concrete task, since they'll be the only context the subagent has.",
+      "Read a playbook from the Skills index pinned in the system prompt and follow it in THIS loop: the body comes back as the tool result. Pass `name` as the bare skill identifier, exactly as the index lists it. For work you want done in isolation, do not look for a skill: call `spawn_subagent({ task, tools })` with the whole instruction in `task`.",
     readOnly: true,
     parallelSafe: true,
     parameters: {
@@ -201,37 +47,32 @@ export function registerSkillTools(
         name: {
           type: "string",
           description:
-            "Skill identifier as it appears in the pinned Skills index (e.g. 'explore', 'review', 'security-review'). Case-sensitive.",
+            "Skill identifier as it appears in the pinned Skills index, case-sensitive (e.g. 'test').",
         },
         arguments: {
           type: "string",
           description:
-            "Free-form arguments the skill should act on. For inline skills: appended to the body as an 'Arguments:' line; the skill's own instructions decide how to consume them. For `[subagent]` skills: REQUIRED; becomes the entire task description the subagent receives, since it has no other context.",
+            "Free-form arguments the skill should act on, appended to the body as an 'Arguments:' line; the skill's own instructions decide how to consume them.",
         },
       },
       required: ["name"],
     },
-    fn: async (args: { name?: unknown; arguments?: unknown }, ctx) => {
+    fn: async (args: { name?: unknown; arguments?: unknown }) => {
       const raw = typeof args.name === "string" ? args.name.trim() : "";
       if (!raw) {
         return JSON.stringify({ error: "run_skill requires a 'name' argument" });
       }
-      // Defensive: The Skills index writes entries like
-      // `explore [subagent]`, and models sometimes copy the
-      // decoration verbatim into the `name` argument instead of just
-      // the identifier. Rather than reject those calls:
-      //   1. Drop any `[...]` bracketed tag (possibly containing
-      //      emoji + "subagent" label).
-      //   2. Find the first whitespace-delimited token whose first
-      //      char is alphanumeric — that's the skill identifier,
-      //      whether the tag came before or after the name.
-      const stripped = raw.replace(/\[[^\]]*\]/g, " ").trim();
-      const tokens = stripped.split(/\s+/).filter(Boolean);
+      // The index lists plain identifiers; a model that decorates the value still gets
+      // its first identifier-shaped token, so a stray label is not an error round-trip.
+      const tokens = raw
+        .replace(/\[[^\]]*\]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean);
       const name = tokens.find((t) => /^[a-zA-Z0-9]/.test(t)) ?? "";
       if (!name) {
         return JSON.stringify({
           error: "run_skill requires a 'name' argument",
-          hint: `'${raw}' is just a marker/tag, not a skill name`,
+          hint: `'${raw}' is just a marker, not a skill name`,
         });
       }
       const skill = store.read(name);
@@ -247,20 +88,6 @@ export function registerSkillTools(
       }
       const rawArgs = typeof args.arguments === "string" ? args.arguments.trim() : "";
 
-      if (skill.runAs === "subagent") {
-        if (!subagentRunner) {
-          return JSON.stringify({
-            error: `run_skill: skill ${JSON.stringify(name)} is marked runAs=subagent but no subagent runner is configured for this session. Skill authors who need isolation should run inside a code-mode session (or a library setup that passes subagentRunner to registerSkillTools).`,
-          });
-        }
-        if (!rawArgs) {
-          return JSON.stringify({
-            error: `run_skill: skill ${JSON.stringify(name)} is a subagent and requires 'arguments': the subagent has no other context, so describe the concrete task in the arguments field.`,
-          });
-        }
-        return subagentRunner(skill, rawArgs, ctx?.signal, ctx?.callId, ctx?.turn);
-      }
-
       const header = [
         `# Skill: ${skill.name}`,
         skill.description ? `> ${skill.description}` : "",
@@ -272,16 +99,6 @@ export function registerSkillTools(
       return `${header}\n\n${skill.body}${argsBlock}`;
     },
   });
-
-  // Top-level wrappers for built-in subagent skills. Same underlying
-  // subagentRunner path as `run_skill(name="explore", ...)`, but the
-  // tool name matches the verb in the question — models pick it
-  // because affordance design > prompt rules.
-  // Skipped entirely when subagents are disabled — the tools must not
-  // appear in the model's tool spec at all (knowledge-level gate).
-  if (store.allowsSubagents()) {
-    registerDedicatedSubagentTools(registry, store, subagentRunner);
-  }
 
   const installScopeDesc = hasProjectScope
     ? "'project' (default) writes to <repo>/.reasonix/skills/, scoped to this workspace only; 'global' writes to ~/.reasonix/skills/, available in every project."
@@ -307,41 +124,21 @@ export function registerSkillTools(
         body: {
           type: "string",
           description:
-            "Markdown playbook. For subagent skills, write the subagent's persona/rules: it gets no context besides `arguments` at runtime.",
+            "Markdown playbook the model reads when it invokes this skill: the rules to follow in its own loop.",
         },
         scope: {
           type: "string",
           enum: ["project", "global"],
           description: installScopeDesc,
         },
-        runAs: {
-          type: "string",
-          enum: ["inline", "subagent"],
-          description:
-            "inline (default) appends body to parent log. subagent spawns isolated child loop; only final answer returns (use for context-heavy work).",
-        },
-        model: {
-          type: "string",
-          description:
-            "Optional `deepseek-*` model override for runAs=subagent. Ignored otherwise.",
-        },
-        allowedTools: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Optional tool allowlist for runAs=subagent (e.g. ['read_file','search_content']).",
-        },
       },
       required: ["name", "description", "body"],
     },
-    fn: async (args: SkillToolArgs & { runAs?: unknown; allowedTools?: unknown }) => {
+    fn: async (args: SkillToolArgs) => {
       const draft = parseSkillDraft({
         name: args.name,
         description: args.description,
         body: args.body,
-        runAs: args.runAs,
-        model: args.model,
-        allowedTools: args.allowedTools,
       });
       if ("error" in draft) return JSON.stringify({ error: draft.error });
 
@@ -373,7 +170,6 @@ export function registerSkillTools(
         name: draft.name,
         scope,
         path: result.path,
-        runAs: draft.runAs,
         note: "Skill is callable right now via run_skill({ name }). It will appear in the pinned Skills index after the next new session or launch.",
       });
     },

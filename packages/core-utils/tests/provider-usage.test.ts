@@ -1,4 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type {
+  AntigravityQuota,
+  CodexQuota,
+  OllamaQuota,
+  OpencodeQuota,
+  ZaiQuota,
+} from "../src/desktop-protocol.js";
 import {
   antigravityUsageView,
   codexUsageView,
@@ -8,13 +15,6 @@ import {
   quotaWindowsSummary,
   zaiUsageView,
 } from "../src/provider-usage.js";
-import type {
-  AntigravityQuota,
-  CodexQuota,
-  OllamaQuota,
-  OpencodeQuota,
-  ZaiQuota,
-} from "../src/desktop-protocol.js";
 
 const CODEX: CodexQuota = {
   plan: "plus",
@@ -41,7 +41,9 @@ describe("codexUsageView", () => {
   });
 
   it("drops windows the plan omits", () => {
-    expect(codexUsageView({ ...CODEX, fiveHour: null }).windows.map((w) => w.label)).toEqual(["wk"]);
+    expect(codexUsageView({ ...CODEX, fiveHour: null }).windows.map((w) => w.label)).toEqual([
+      "wk",
+    ]);
   });
 });
 

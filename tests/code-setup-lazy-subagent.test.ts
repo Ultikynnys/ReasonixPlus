@@ -120,7 +120,7 @@ describe("buildCodeToolset", () => {
     await toolset.jobs.shutdown();
   });
 
-  it("blocks dedicated and custom subagent skills before constructing a client", async () => {
+  it("registers no spawn tool when subagents are disabled, and run_skill stays a reader", async () => {
     saveEnableSubagents(false, cfgPath);
     const skillDir = join(tmpRoot, ".reasonix", "skills", "custom-audit");
     mkdirSync(skillDir, { recursive: true });
@@ -130,7 +130,6 @@ describe("buildCodeToolset", () => {
         "---",
         "name: custom-audit",
         "description: Run a custom audit",
-        "runAs: subagent",
         "---",
         "",
         "Audit the requested area.",
@@ -140,45 +139,50 @@ describe("buildCodeToolset", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
 
-    // Knowledge-level gate: the dedicated subagent tools are no longer even
-    // registered — the tool spec never offers what can't run.
-    expect(toolset.tools.has("explore")).toBe(false);
-    expect(toolset.tools.has("research")).toBe(false);
-    expect(toolset.tools.has("review")).toBe(false);
-    expect(toolset.tools.has("security_review")).toBe(false);
-    // run_skill still resolves the custom skill by name; the runner gate
-    // stays as the backstop with the actionable error message.
+    // Knowledge-level gate: the spawn tool is not offered at all.
+    expect(toolset.tools.has("spawn_subagent")).toBe(false);
+    // run_skill reads the playbook inline; it never spawns, so it cannot be gated.
     const result = await toolset.tools.dispatch(
       "run_skill",
       JSON.stringify({ name: "custom-audit", arguments: "inspect auth" }),
     );
-    expect(JSON.parse(result).error).toMatch(/subagents are disabled/i);
+    expect(result).toContain("Audit the requested area.");
     expect(fetchSpy).not.toHaveBeenCalled();
     await toolset.jobs.shutdown();
   });
 
-  it("registers the dedicated subagent tools when subagents are enabled", async () => {
-    // Pin an explicit enabled config — a dev machine's real ~/.reasonix/config.json
-    // may have subagents disabled, and then the gate keeping the tools out is correct.
-    writeFileSync(cfgPath, JSON.stringify({ enableSubagents: true }), "utf8");
-    const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
-    expect(toolset.tools.has("explore")).toBe(true);
-    expect(toolset.tools.has("research")).toBe(true);
-    expect(toolset.tools.has("review")).toBe(true);
-    expect(toolset.tools.has("security_review")).toBe(true);
+  it("registers exactly one spawn tool when the session opts in", async () => {
+    const toolset = await buildCodeToolset({
+      rootDir: tmpRoot,
+      configPath: cfgPath,
+      subagentsEnabled: true,
+    });
+    expect(toolset.tools.has("spawn_subagent")).toBe(true);
+    // The four verb-named wrappers are gone: one tool, one contract.
+    for (const name of ["explore", "research", "review", "security_review"]) {
+      expect(toolset.tools.has(name)).toBe(false);
+    }
 
-    // Live toggle round trip — the same call the desktop's settings handler makes.
+    // Session-boundary resync only: binding a session that was minted without the
+    // tool removes it, and binding one that opted in brings it back.
     toolset.syncSubagentTools(false);
-    expect(toolset.tools.has("explore")).toBe(false);
-    expect(toolset.tools.has("research")).toBe(false);
-    expect(toolset.tools.has("review")).toBe(false);
-    expect(toolset.tools.has("security_review")).toBe(false);
+    expect(toolset.tools.has("spawn_subagent")).toBe(false);
 
     toolset.syncSubagentTools(true);
-    expect(toolset.tools.has("explore")).toBe(true);
-    expect(toolset.tools.has("research")).toBe(true);
-    expect(toolset.tools.has("review")).toBe(true);
-    expect(toolset.tools.has("security_review")).toBe(true);
+    expect(toolset.tools.has("spawn_subagent")).toBe(true);
+    // Idempotent in both directions: a re-bind that repeats the current state must
+    // neither throw nor leave two registrations behind.
+    toolset.syncSubagentTools(true);
+    toolset.syncSubagentTools(false);
+    toolset.syncSubagentTools(false);
+    expect(toolset.tools.has("spawn_subagent")).toBe(false);
+    await toolset.jobs.shutdown();
+  });
+
+  it("ignores the config default: only the per-session option decides", async () => {
+    writeFileSync(cfgPath, JSON.stringify({ enableSubagents: true }), "utf8");
+    const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
+    expect(toolset.tools.has("spawn_subagent")).toBe(false);
     await toolset.jobs.shutdown();
   });
 
@@ -218,11 +222,12 @@ describe("buildCodeToolset", () => {
       rootDir: tmpRoot,
       configPath: cfgPath,
       subagentModel: () => "gemini-3.7-flash-tiered",
+      subagentsEnabled: true,
     });
 
     const result = await toolset.tools.dispatch(
-      "explore",
-      JSON.stringify({ task: "investigate repo structure" }),
+      "spawn_subagent",
+      JSON.stringify({ task: "investigate repo structure", tools: ["read_file"] }),
     );
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);

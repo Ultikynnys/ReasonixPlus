@@ -26,10 +26,10 @@ import { toWorkspaceAbsolute } from "../workspace-path";
 import { PanelErrorBoundary } from "./error-boundary";
 import type { TranscriptRecord } from "./events";
 import { EventsPanel } from "./events";
-import type { JumpTarget } from "./transcript-jump";
 import { FileMenu } from "./file-menu";
 import { activationHandler } from "./keyboard";
 import { sessionTitle } from "./session-title";
+import type { JumpTarget } from "./transcript-jump";
 
 type Tab = "files" | "parameters" | "mcp" | "context" | "memory" | "rules" | "plan" | "events";
 
@@ -261,9 +261,7 @@ export function ContextPanel({
           {tab === "parameters" && (
             <CtxParameters settings={settings} usage={usage} onSaveSettings={onSaveSettings} />
           )}
-          {tab === "mcp" && (
-            <CtxMcp specs={mcpSpecs} bridged={mcpBridged} />
-          )}
+          {tab === "mcp" && <CtxMcp specs={mcpSpecs} bridged={mcpBridged} />}
           {tab === "context" && settings?.rawTabEnabled && (
             <CtxRaw raw={rawContext ?? null} onRead={onReadContext} onWrite={onWriteContext} />
           )}
@@ -288,7 +286,17 @@ export function ContextPanel({
             />
           )}
           {tab === "plan" ? (
-            <CtxPlanHistory key={planSession} currentSession={planSession} sessions={sessions} history={planHistory ?? []} details={planDetails ?? {}} onReadPlans={onReadPlans} onReadPlan={onReadPlan} onRemovePlan={onRemovePlan} fallback={activePlan} />
+            <CtxPlanHistory
+              key={planSession}
+              currentSession={planSession}
+              sessions={sessions}
+              history={planHistory ?? []}
+              details={planDetails ?? {}}
+              onReadPlans={onReadPlans}
+              onReadPlan={onReadPlan}
+              onRemovePlan={onRemovePlan}
+              fallback={activePlan}
+            />
           ) : null}
           {tab === "events" ? (
             <EventsPanel messages={messages} events={sessionEvents} onJump={onJumpToEvent} />
@@ -299,7 +307,16 @@ export function ContextPanel({
   );
 }
 
-function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, onRemovePlan, fallback, currentSession, sessions }: {
+function CtxPlanHistory({
+  history,
+  details,
+  onReadPlans,
+  onReadPlan,
+  onRemovePlan,
+  fallback,
+  currentSession,
+  sessions,
+}: {
   history: PlanHistoryItem[];
   details: Record<string, PlanDetail>;
   onReadPlans?: () => void;
@@ -313,15 +330,16 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, onRemovePla
 }) {
   const [selection, setSelection] = useState("");
   const selectedPlan =
-    history.find(p => p.id === selection) ??
-    history.find(p => p.status === "active") ??
+    history.find((p) => p.id === selection) ??
+    history.find((p) => p.status === "active") ??
     history[0];
   const selected = selectedPlan?.id;
   const detail = selected ? details[selected] : undefined;
   // One title per known session, so naming every option does not re-parse the
   // same session name. An unknown owner still gets its name-derived title.
   const sessionTitles = useMemo(
-    () => new Map((sessions ?? []).map(session => [session.name, sessionTitle(session)] as const)),
+    () =>
+      new Map((sessions ?? []).map((session) => [session.name, sessionTitle(session)] as const)),
     [sessions],
   );
   // The owner of a plan, or null when there is no owner to name: ownership only
@@ -345,8 +363,12 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, onRemovePla
   const readPlan = useRef(onReadPlan);
   readPlans.current = onReadPlans;
   readPlan.current = onReadPlan;
-  useEffect(() => { readPlans.current?.(); }, []);
-  useEffect(() => { if (selected && !detail) readPlan.current?.(selected); }, [selected, detail]);
+  useEffect(() => {
+    readPlans.current?.();
+  }, []);
+  useEffect(() => {
+    if (selected && !detail) readPlan.current?.(selected);
+  }, [selected, detail]);
   if (!history.length)
     return fallback ? (
       <CtxPlan plan={fallback} />
@@ -398,7 +420,23 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, onRemovePla
         </div>
       ) : null}
       {detail ? (
-        <CtxPlan plan={{ plan: detail.body, summary: detail.summary, steps: detail.steps, completedStepIds: Object.keys(detail.completions), stepResults: Object.fromEntries(Object.entries(detail.completions).map(([id, completion]) => [id, completion.result])), status: detail.status === "active" ? "active" : detail.status === "completed" ? "finished" : "cancelled" }} />
+        <CtxPlan
+          plan={{
+            plan: detail.body,
+            summary: detail.summary,
+            steps: detail.steps,
+            completedStepIds: Object.keys(detail.completions),
+            stepResults: Object.fromEntries(
+              Object.entries(detail.completions).map(([id, completion]) => [id, completion.result]),
+            ),
+            status:
+              detail.status === "active"
+                ? "active"
+                : detail.status === "completed"
+                  ? "finished"
+                  : "cancelled",
+          }}
+        />
       ) : (
         // Keep the summary + progress header from the history item, so a slow or
         // failed detail fetch never leaves the panel blank.
@@ -648,10 +686,7 @@ function CtxCollapsible({
           onClick={() => setCollapsed((c) => !c)}
         >
           <span className="ctx-chev" aria-hidden="true">
-            <I.chevR
-              size={12}
-              style={{ transform: collapsed ? "none" : "rotate(90deg)" }}
-            />
+            <I.chevR size={12} style={{ transform: collapsed ? "none" : "rotate(90deg)" }} />
           </span>
           <span>{title}</span>
         </button>
@@ -1548,13 +1583,13 @@ function CtxParameters({
       <CtxToggleRow
         label={t("contextPanel.subagents")}
         desc={
-          settings?.enableSubagents === false
-            ? t("contextPanel.subagentsDisabledDesc")
-            : t("contextPanel.subagentsEnabledDesc")
+          settings?.enableSubagents === true
+            ? t("contextPanel.subagentsEnabledDesc")
+            : t("contextPanel.subagentsDisabledDesc")
         }
         onLabel={t("contextPanel.subagentsEnabled")}
         offLabel={t("contextPanel.subagentsDisabled")}
-        enabled={settings?.enableSubagents !== false}
+        enabled={settings?.enableSubagents === true}
         onToggle={(enabled) => onSaveSettings?.({ enableSubagents: enabled })}
         onAriaLabel={t("contextPanel.enableSubagents")}
         offAriaLabel={t("contextPanel.disableSubagents")}
@@ -2006,8 +2041,7 @@ function CtxRules({
   const otherWorkspaces = (settings?.workspacesWithRules ?? []).filter(
     (w) => w.rootDir !== settings?.workspaceDir,
   );
-  const noCopySource =
-    settings?.workspacesWithRules !== undefined && otherWorkspaces.length === 0;
+  const noCopySource = settings?.workspacesWithRules !== undefined && otherWorkspaces.length === 0;
   const sections = [
     {
       titleKey: "contextPanel.workspaceRulesTitle" as TKey,
@@ -2027,8 +2061,14 @@ function CtxRules({
     e.preventDefault();
     const trimmed = pattern.trim();
     if (!trimmed || regexError || ruleMode === null) return;
-    const next: RuleRecord = { mode: ruleMode, effect: activeEffect, kind: "shell", scope,
-      pattern: trimmed, ...(match === "regex" ? { match } : {}) };
+    const next: RuleRecord = {
+      mode: ruleMode,
+      effect: activeEffect,
+      kind: "shell",
+      scope,
+      pattern: trimmed,
+      ...(match === "regex" ? { match } : {}),
+    };
     if (editing) onUpdateRule?.(editing, next);
     else onAddRule?.(next);
     setPattern("");
@@ -2060,181 +2100,215 @@ function CtxRules({
       {ruleMode !== null &&
         sections.map((section) => {
           const adding = addingTo === section.scope;
-        return (
-          <div className="ctx-block" style={{ marginTop: 14 }} key={section.scope}>
-            <div className="h">
-              <span style={{ position: "relative", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                <span>{t(section.titleKey)}</span>
-                {section.scope === "workspace" && onCopyWorkspaceRules && (
-                  <button
-                    type="button"
-                    className="copy-rules-btn"
-                    title={
-                      noCopySource
-                        ? t("contextPanel.copyRulesNoSource")
-                        : t("contextPanel.copyRulesHint")
-                    }
-                    aria-label={t("contextPanel.copyWorkspaceRules")}
-                    aria-expanded={copyOpen}
-                    disabled={noCopySource}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setCopyOpen((open) => !open);
-                    }}
-                  >
-                    <I.folder size={12} />
-                    {t("contextPanel.copyRulesButton")}
-                  </button>
-                )}
-                {copyOpen && section.scope === "workspace" && onCopyWorkspaceRules && (
-                  <div className="rules-copy-pop">
-                    <div className="note">{t("contextPanel.copyRulesReplaceNote")}</div>
-                    {otherWorkspaces.map((w) => (
-                      <button
-                        key={w.rootDir}
-                        type="button"
-                        className="item"
-                        title={w.rootDir}
-                        onClick={() => {
-                          onCopyWorkspaceRules(w.rootDir);
-                          setCopyOpen(false);
-                        }}
-                      >
-                        {w.rootDir.split(/[\\/]/).filter(Boolean).pop() ?? w.rootDir}
-                      </button>
-                    ))}
+          return (
+            <div className="ctx-block" style={{ marginTop: 14 }} key={section.scope}>
+              <div className="h">
+                <span
+                  style={{
+                    position: "relative",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <span>{t(section.titleKey)}</span>
+                  {section.scope === "workspace" && onCopyWorkspaceRules && (
+                    <button
+                      type="button"
+                      className="copy-rules-btn"
+                      title={
+                        noCopySource
+                          ? t("contextPanel.copyRulesNoSource")
+                          : t("contextPanel.copyRulesHint")
+                      }
+                      aria-label={t("contextPanel.copyWorkspaceRules")}
+                      aria-expanded={copyOpen}
+                      disabled={noCopySource}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCopyOpen((open) => !open);
+                      }}
+                    >
+                      <I.folder size={12} />
+                      {t("contextPanel.copyRulesButton")}
+                    </button>
+                  )}
+                  {copyOpen && section.scope === "workspace" && onCopyWorkspaceRules && (
+                    <div className="rules-copy-pop">
+                      <div className="note">{t("contextPanel.copyRulesReplaceNote")}</div>
+                      {otherWorkspaces.map((w) => (
+                        <button
+                          key={w.rootDir}
+                          type="button"
+                          className="item"
+                          title={w.rootDir}
+                          onClick={() => {
+                            onCopyWorkspaceRules(w.rootDir);
+                            setCopyOpen(false);
+                          }}
+                        >
+                          {w.rootDir.split(/[\\/]/).filter(Boolean).pop() ?? w.rootDir}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </span>
+                <span
+                  className="right"
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                >
+                  {section.rules.length}
+                  {onAddRule && (
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      title={`${t("contextPanel.addRuleBtn")}: ${t(section.titleKey)}`}
+                      aria-label={`${t("contextPanel.addRuleBtn")}: ${t(section.titleKey)}`}
+                      aria-expanded={adding}
+                      onClick={() => {
+                        setAddingTo(adding ? null : section.scope);
+                        setEditing(null);
+                        setPattern("");
+                      }}
+                    >
+                      <I.plus size={12} />
+                    </button>
+                  )}
+                </span>
+              </div>
+              {section.rules.map((r) => (
+                <div
+                  className="rule"
+                  key={`${section.scope}-${r.kind}-${r.effect}-${r.match ?? "pattern"}-${r.pattern}`}
+                >
+                  <div className="top">
+                    <span className="pat">
+                      {r.match === "regex" ? `Regex: ${r.pattern}` : r.pattern}
+                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {onUpdateRule ? (
+                        <button
+                          type="button"
+                          className={`sw ${VERDICT[r.effect].tone} editable`}
+                          title={t("contextPanel.changeEffectHint")}
+                          aria-label={`${t("contextPanel.changeEffect")}: ${r.pattern} (${t(
+                            VERDICT[r.effect].label,
+                          )})`}
+                          onClick={() =>
+                            onUpdateRule(r, {
+                              ...r,
+                              effect: effects[(effects.indexOf(r.effect) + 1) % effects.length]!,
+                            })
+                          }
+                        >
+                          {t(VERDICT[r.effect].label)}
+                        </button>
+                      ) : (
+                        <span className={`sw ${VERDICT[r.effect].tone}`}>
+                          {t(VERDICT[r.effect].label)}
+                        </span>
+                      )}
+                      {onUpdateRule && r.kind === "shell" && (
+                        <button
+                          type="button"
+                          className="mini-btn"
+                          aria-label={`${t("contextPanel.editRule")}: ${r.pattern}`}
+                          onClick={() => {
+                            setEditing(r);
+                            setAddingTo(r.scope);
+                            setPattern(r.pattern);
+                            setMatch(r.match ?? "pattern");
+                            setEffect(r.effect);
+                          }}
+                        >
+                          <I.pencil size={12} />
+                        </button>
+                      )}
+                      {onRemoveRule && (
+                        <button
+                          type="button"
+                          className="mini-btn"
+                          title={t("contextPanel.deleteRuleTooltip")}
+                          aria-label={`Remove rule: ${r.pattern}`}
+                          onClick={() => onRemoveRule(r)}
+                        >
+                          <I.trash size={12} />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
-              </span>
-              <span
-                className="right"
-                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-              >
-                {section.rules.length}
-                {onAddRule && (
-                  <button
-                    type="button"
-                    className="mini-btn"
-                    title={`${t("contextPanel.addRuleBtn")}: ${t(section.titleKey)}`}
-                    aria-label={`${t("contextPanel.addRuleBtn")}: ${t(section.titleKey)}`}
-                    aria-expanded={adding}
-                    onClick={() => {
-                      setAddingTo(adding ? null : section.scope);
-                      setEditing(null);
-                      setPattern("");
-                    }}
+                </div>
+              ))}
+              {section.rules.length === 0 && !adding && (
+                <div style={{ color: "var(--muted)", fontSize: 12, padding: "4px 0" }}>
+                  {t(section.emptyKey)}
+                </div>
+              )}
+              {adding && (onAddRule || editing) && (
+                <form className="rule-composer" onSubmit={(e) => handleAdd(e, section.scope)}>
+                  <select
+                    className="rule-select"
+                    aria-label={t("contextPanel.ruleMatchType")}
+                    value={match}
+                    onChange={(event) => setMatch(event.target.value as "pattern" | "regex")}
                   >
-                    <I.plus size={12} />
-                  </button>
-                )}
-              </span>
+                    <option value="pattern">{t("contextPanel.ruleMatchPattern")}</option>
+                    <option value="regex">{t("contextPanel.ruleMatchRegex")}</option>
+                  </select>
+                  {match === "regex" && (
+                    <div className="note">{t("contextPanel.ruleRegexHint")}</div>
+                  )}
+                  {regexError && (
+                    <div role="alert" style={{ color: "var(--danger)" }}>
+                      {regexError}
+                    </div>
+                  )}
+                  <div className="rule-composer-row">
+                    <button
+                      type="button"
+                      className={`sw ${VERDICT[activeEffect].tone} editable`}
+                      title={t("contextPanel.changeEffectHint")}
+                      aria-label={`${t("contextPanel.changeEffect")}: ${t(VERDICT[activeEffect].label)}`}
+                      onClick={() =>
+                        setEffect(effects[(effects.indexOf(activeEffect) + 1) % effects.length]!)
+                      }
+                    >
+                      {t(VERDICT[activeEffect].label)}
+                    </button>
+                    <input
+                      type="text"
+                      className="rule-input"
+                      placeholder={
+                        match === "regex"
+                          ? String.raw`^(?=.*\bgit\b)(?=.*\bpush\b).*`
+                          : t("contextPanel.rulePatternPlaceholder")
+                      }
+                      value={pattern}
+                      onChange={(e) => setPattern(e.target.value)}
+                      aria-label="Rule pattern"
+                      autoFocus
+                    />
+                    <button
+                      type="submit"
+                      className="btn small"
+                      disabled={
+                        !pattern.trim() ||
+                        Boolean(regexError) ||
+                        (Boolean(editing) && !onUpdateRule)
+                      }
+                      title={editing ? t("contextPanel.saveRule") : t("contextPanel.addRuleBtn")}
+                      aria-label={
+                        editing ? t("contextPanel.saveRule") : t("contextPanel.addRuleBtn")
+                      }
+                    >
+                      {editing ? t("contextPanel.saveRule") : <I.plus size={12} />}
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
-            {section.rules.map((r) => (
-              <div className="rule" key={`${section.scope}-${r.kind}-${r.effect}-${r.match ?? "pattern"}-${r.pattern}`}>
-                <div className="top">
-                  <span className="pat">{r.match === "regex" ? `Regex: ${r.pattern}` : r.pattern}</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    {onUpdateRule ? (
-                      <button
-                        type="button"
-                        className={`sw ${VERDICT[r.effect].tone} editable`}
-                        title={t("contextPanel.changeEffectHint")}
-                        aria-label={`${t("contextPanel.changeEffect")}: ${r.pattern} (${t(
-                          VERDICT[r.effect].label,
-                        )})`}
-                        onClick={() =>
-                          onUpdateRule(r, {
-                            ...r,
-                            effect: effects[(effects.indexOf(r.effect) + 1) % effects.length]!,
-                          })
-                        }
-                      >
-                        {t(VERDICT[r.effect].label)}
-                      </button>
-                    ) : (
-                      <span className={`sw ${VERDICT[r.effect].tone}`}>
-                        {t(VERDICT[r.effect].label)}
-                      </span>
-                    )}
-                    {onUpdateRule && r.kind === "shell" && (
-                      <button type="button" className="mini-btn"
-                        aria-label={`${t("contextPanel.editRule")}: ${r.pattern}`}
-                        onClick={() => {
-                          setEditing(r);
-                          setAddingTo(r.scope);
-                          setPattern(r.pattern);
-                          setMatch(r.match ?? "pattern");
-                          setEffect(r.effect);
-                        }}>
-                        <I.pencil size={12} />
-                      </button>
-                    )}
-                    {onRemoveRule && (
-                      <button
-                        type="button"
-                        className="mini-btn"
-                        title={t("contextPanel.deleteRuleTooltip")}
-                        aria-label={`Remove rule: ${r.pattern}`}
-                        onClick={() => onRemoveRule(r)}
-                      >
-                        <I.trash size={12} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-            {section.rules.length === 0 && !adding && (
-              <div style={{ color: "var(--muted)", fontSize: 12, padding: "4px 0" }}>
-                {t(section.emptyKey)}
-              </div>
-            )}
-            {adding && (onAddRule || editing) && (
-              <form className="rule-composer" onSubmit={(e) => handleAdd(e, section.scope)}>
-                <select className="rule-select" aria-label={t("contextPanel.ruleMatchType")} value={match}
-                  onChange={(event) => setMatch(event.target.value as "pattern" | "regex")}>
-                  <option value="pattern">{t("contextPanel.ruleMatchPattern")}</option>
-                  <option value="regex">{t("contextPanel.ruleMatchRegex")}</option>
-                </select>
-                {match === "regex" && <div className="note">{t("contextPanel.ruleRegexHint")}</div>}
-                {regexError && <div role="alert" style={{ color: "var(--danger)" }}>{regexError}</div>}
-                <div className="rule-composer-row">
-                  <button
-                    type="button"
-                    className={`sw ${VERDICT[activeEffect].tone} editable`}
-                    title={t("contextPanel.changeEffectHint")}
-                    aria-label={`${t("contextPanel.changeEffect")}: ${t(VERDICT[activeEffect].label)}`}
-                    onClick={() =>
-                      setEffect(effects[(effects.indexOf(activeEffect) + 1) % effects.length]!)
-                    }
-                  >
-                    {t(VERDICT[activeEffect].label)}
-                  </button>
-                  <input
-                    type="text"
-                    className="rule-input"
-                    placeholder={match === "regex" ? String.raw`^(?=.*\bgit\b)(?=.*\bpush\b).*` : t("contextPanel.rulePatternPlaceholder")}
-                    value={pattern}
-                    onChange={(e) => setPattern(e.target.value)}
-                    aria-label="Rule pattern"
-                    autoFocus
-                  />
-                  <button
-                    type="submit"
-                    className="btn small"
-                    disabled={!pattern.trim() || Boolean(regexError) || (Boolean(editing) && !onUpdateRule)}
-                    title={editing ? t("contextPanel.saveRule") : t("contextPanel.addRuleBtn")}
-                    aria-label={editing ? t("contextPanel.saveRule") : t("contextPanel.addRuleBtn")}
-                  >
-                    {editing ? t("contextPanel.saveRule") : <I.plus size={12} />}
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
-        );
-      })}
-
+          );
+        })}
     </>
   );
 }

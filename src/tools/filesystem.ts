@@ -18,7 +18,7 @@ import {
   rulePatterns,
 } from "../config.js";
 import { type ConfirmationChoice, pauseGate as defaultPauseGate } from "../core/pause-gate.js";
-import { DEFAULT_INDEX_EXCLUDES } from "../index/config.js";
+import { BINARY_FILE_EXTENSIONS, WALK_SKIP_DIR_NAMES } from "../ignore-dirs.js";
 import { memoryEnabled } from "../memory/project.js";
 import {
   findDirMemory,
@@ -88,16 +88,6 @@ const OUTLINE_SCAN_LINES = 2000;
 /** Shape of the `range` argument ("A-B"). Also used to detect a scoped read, which streams a bounded window and therefore stays available at any file size. */
 const LINE_RANGE_RE = /^\d+\s*-\s*\d+$/;
 
-// Skipped unless `include_deps:true`. Derived from the semantic indexer's exclude
-// list, minus `.reasonix` — the indexer shouldn't embed session logs / cache, but
-// user skills live at `<root>/.reasonix/skills/` (and `~/.reasonix/skills/`) and
-// must stay reachable to read_file / search_files / search_content (#1357).
-const SKIP_DIR_NAMES: ReadonlySet<string> = new Set(
-  DEFAULT_INDEX_EXCLUDES.dirs.filter((d) => d !== ".reasonix"),
-);
-
-/** First line of binary defense; NUL-byte sniff is the second (catches mislabeled `.txt`). */
-const BINARY_EXTENSIONS: ReadonlySet<string> = new Set(DEFAULT_INDEX_EXCLUDES.exts);
 const DELETE_SYMBOL_KINDS: ReadonlySet<SymbolKind> = new Set([
   "function",
   "class",
@@ -123,7 +113,7 @@ export function compileNameFilter(
 function isLikelyBinaryByName(name: string): boolean {
   const dot = name.lastIndexOf(".");
   if (dot < 0) return false;
-  return BINARY_EXTENSIONS.has(name.slice(dot).toLowerCase());
+  return BINARY_FILE_EXTENSIONS.has(name.slice(dot).toLowerCase());
 }
 
 /** Parse a "A-B" range string into 1-based start/end. `totalLines` clamps the
@@ -509,7 +499,7 @@ export function registerFilesystemTools(
     name: "directory_tree",
     parallelSafe: true,
     skipTruncationSave: true,
-    description: `Recursively list entries with indented tree structure (dirs marked '/'). Budget-aware: maxDepth defaults to 2, large subtrees (>50 children) auto-collapse to "[N hidden, list_directory to inspect]", and ${[...SKIP_DIR_NAMES].sort().join(" / ")} are skipped unless include_deps:true. For single-level use list_directory; for path lookups use search_files; for code lookups use search_content.`,
+    description: `Recursively list entries with indented tree structure (dirs marked '/'). Budget-aware: maxDepth defaults to 2, large subtrees (>50 children) auto-collapse to "[N hidden, list_directory to inspect]", and ${[...WALK_SKIP_DIR_NAMES].sort().join(" / ")} are skipped unless include_deps:true. For single-level use list_directory; for path lookups use search_files; for code lookups use search_content.`,
     readOnly: true,
     parameters: {
       type: "object",
@@ -559,7 +549,7 @@ export function registerFilesystemTools(
           // "node_modules" is fine to list). Anything in the skip set
           // still shows up as a single node with a trailing " (skipped)"
           // hint so the model knows the dir exists but wasn't walked.
-          const skip = e.isDirectory() && !includeDeps && SKIP_DIR_NAMES.has(e.name);
+          const skip = e.isDirectory() && !includeDeps && WALK_SKIP_DIR_NAMES.has(e.name);
           if (emitted >= PER_DIR_CHILD_CAP) {
             const remaining = entries.length - emitted;
             let restFiles = 0;
@@ -638,7 +628,7 @@ export function registerFilesystemTools(
       toolCtx,
     ) =>
       searchFiles(
-        { rootDir, maxListBytes, skipDirNames: SKIP_DIR_NAMES },
+        { rootDir, maxListBytes, skipDirNames: WALK_SKIP_DIR_NAMES },
         await safePath(args.path ?? ".", "search_files", toolCtx),
         { ...args, signal: toolCtx?.signal },
       ),
@@ -711,7 +701,7 @@ export function registerFilesystemTools(
         {
           rootDir,
           maxListBytes,
-          skipDirNames: SKIP_DIR_NAMES,
+          skipDirNames: WALK_SKIP_DIR_NAMES,
           isBinaryByName: isLikelyBinaryByName,
           nameMatch: compileNameFilter(typeof args.glob === "string" ? args.glob : null),
         },
@@ -768,7 +758,7 @@ export function registerFilesystemTools(
       toolCtx,
     ) =>
       globFiles(
-        { rootDir, skipDirNames: SKIP_DIR_NAMES },
+        { rootDir, skipDirNames: WALK_SKIP_DIR_NAMES },
         await safePath(args.path ?? ".", "glob", toolCtx),
         { ...args, signal: toolCtx?.signal },
       ),

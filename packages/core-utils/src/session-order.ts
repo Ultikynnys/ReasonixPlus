@@ -14,9 +14,7 @@ export interface SessionRecencyInput {
 
 /** Parse compact timestamp (YYYYMMDDHHmmss or YYYYMMDDHHmm) from a session name. */
 export function parseSessionTimestamp(name: string): number {
-  const match = name.match(
-    /(?:^|[-_])(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(?:(\d{2}))?(?:[-_]|$)/,
-  );
+  const match = name.match(/(?:^|[-_])(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(?:(\d{2}))?(?:[-_]|$)/);
   if (!match) return 0;
   const [, year, month, day, hour, minute, second] = match;
   return Date.UTC(
@@ -44,7 +42,11 @@ export function sessionRecency(session: SessionRecencyInput): number {
       : typeof session.updatedAt === "number" && Number.isFinite(session.updatedAt)
         ? session.updatedAt
         : 0;
-  return Math.max(lastActive, mtimeMilliseconds(session.mtime), parseSessionTimestamp(session.name));
+  return Math.max(
+    lastActive,
+    mtimeMilliseconds(session.mtime),
+    parseSessionTimestamp(session.name),
+  );
 }
 
 /** Deterministic newest-first ordering with a descending-name tie-break. */
@@ -67,7 +69,10 @@ export function sessionCreationTime(session: SessionRecencyInput): number {
 /** Newest-created-first ordering with a descending-name tie-break — used for
  *  workspace session lists, where the sidebar sorts by creation date rather
  *  than last activity. */
-export function sortSessionsByCreationDescending<T extends SessionRecencyInput>(a: T, b: T): number {
+export function sortSessionsByCreationDescending<T extends SessionRecencyInput>(
+  a: T,
+  b: T,
+): number {
   const createdDiff = sessionCreationTime(b) - sessionCreationTime(a);
   return createdDiff || b.name.localeCompare(a.name);
 }

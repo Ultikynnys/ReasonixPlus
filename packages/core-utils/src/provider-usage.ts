@@ -158,8 +158,7 @@ export function antigravityUsageView(
   quota: AntigravityQuota,
   activeModelId?: string | null,
 ): ProviderUsageView {
-  const active =
-    quota.windows.find((w) => w.modelId === activeModelId) ?? quota.windows[0] ?? null;
+  const active = quota.windows.find((w) => w.modelId === activeModelId) ?? quota.windows[0] ?? null;
   const windows: QuotaWindowView[] = active
     ? [
         {

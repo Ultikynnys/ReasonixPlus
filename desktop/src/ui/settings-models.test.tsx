@@ -118,9 +118,13 @@ describe("PageModels default-model enum", () => {
     const onRefreshOpencodeModels = vi.fn();
     const onRefreshOllamaModels = vi.fn();
     const { container } = render(
-      <SettingsModal {...baseProps} initialPage="models"
-        onSaveApiKey={onSaveApiKey} onSaveOpenAIApiKey={onSaveOpenAIApiKey}
-        onRefreshOpencodeModels={onRefreshOpencodeModels} onRefreshOllamaModels={onRefreshOllamaModels}
+      <SettingsModal
+        {...baseProps}
+        initialPage="models"
+        onSaveApiKey={onSaveApiKey}
+        onSaveOpenAIApiKey={onSaveOpenAIApiKey}
+        onRefreshOpencodeModels={onRefreshOpencodeModels}
+        onRefreshOllamaModels={onRefreshOllamaModels}
       />,
     );
     container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
@@ -197,7 +201,10 @@ describe("PageModels default-model enum", () => {
 
     const select = screen.getByRole("combobox", { name: "Default model" }) as HTMLSelectElement;
     expect(select.value).toBe("gpt-5.6-sol");
-    expect(Array.from(select.options).map((o) => o.value)).toEqual(["gpt-5.6-sol", "deepseek-v4-pro"]);
+    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      "gpt-5.6-sol",
+      "deepseek-v4-pro",
+    ]);
   });
 
   it("grays out and explains when no models are enabled", () => {

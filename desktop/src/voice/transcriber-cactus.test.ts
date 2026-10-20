@@ -8,23 +8,26 @@ interface EngineText {
   decodeTps: number;
 }
 
-const { loadModel, engineTranscribe, engineState, downloadWhistleWeights, getCachedWhistleWeights } =
-  vi.hoisted(() => ({
-    engineState: { loaded: false },
-    loadModel: vi.fn(async (_bytes: Uint8Array): Promise<void> => {}),
-    engineTranscribe: vi.fn(
-      async (_pcm: Float32Array): Promise<EngineText> => ({
-        text: "hello there",
-        language: "en",
-        ttftMs: 1,
-        decodeTps: 2,
-      }),
-    ),
-    downloadWhistleWeights: vi.fn(async (): Promise<Uint8Array> => new Uint8Array([1, 2, 3])),
-    getCachedWhistleWeights: vi.fn(
-      async (): Promise<Uint8Array | null> => new Uint8Array([4, 5, 6]),
-    ),
-  }));
+const {
+  loadModel,
+  engineTranscribe,
+  engineState,
+  downloadWhistleWeights,
+  getCachedWhistleWeights,
+} = vi.hoisted(() => ({
+  engineState: { loaded: false },
+  loadModel: vi.fn(async (_bytes: Uint8Array): Promise<void> => {}),
+  engineTranscribe: vi.fn(
+    async (_pcm: Float32Array): Promise<EngineText> => ({
+      text: "hello there",
+      language: "en",
+      ttftMs: 1,
+      decodeTps: 2,
+    }),
+  ),
+  downloadWhistleWeights: vi.fn(async (): Promise<Uint8Array> => new Uint8Array([1, 2, 3])),
+  getCachedWhistleWeights: vi.fn(async (): Promise<Uint8Array | null> => new Uint8Array([4, 5, 6])),
+}));
 
 vi.mock("./whistle-engine", () => ({
   CACTUS_SAMPLE_RATE: 16000,

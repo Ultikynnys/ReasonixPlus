@@ -7,7 +7,6 @@ import {
   loadAllShellAllowed,
   loadEditMode,
   loadElevationEnabled,
-  loadEnableSubagents,
   loadFilesystemOutlineThresholdBytes,
   loadJavaSourceEnabled,
   loadProjectShellAllowed,
@@ -22,7 +21,6 @@ import {
   rulePatterns,
   searchEnabled,
 } from "../config.js";
-import { bootstrapSemanticSearchInCodeMode } from "../index/semantic/tool.js";
 import type { McpServerSpec } from "../mcp/spec.js";
 import { createModelClient } from "../model-client.js";
 import { hasOpenAIOAuthSession } from "../oauth.js";
@@ -42,18 +40,12 @@ import { registerScaffoldTools } from "../tools/scaffold.js";
 import { registerScreenCaptureTool } from "../tools/screen-capture.js";
 import { registerSeeImageTool } from "../tools/see-image.js";
 import { registerShellTools } from "../tools/shell.js";
-import {
-  type SkillInstalledHook,
-  type SubagentRunner,
-  registerSkillTools,
-  syncDedicatedSubagentTools,
-} from "../tools/skills.js";
+import { type SkillInstalledHook, registerSkillTools } from "../tools/skills.js";
 import {
   SHARED_SUBAGENT_SINK,
   type SubagentLoopOptions,
   type SubagentSink,
-  formatSubagentResult,
-  spawnSubagent,
+  registerSubagentTool,
 } from "../tools/subagent.js";
 import { registerTodoTool } from "../tools/todo.js";
 import { registerWaitTool } from "../tools/wait.js";
@@ -102,6 +94,9 @@ export interface CodeToolsetOpts {
   /** Live effective MCP specs (config + session overlay) for list_mcp_bridges, so
    *  the tool reports the session's toggle state rather than the config default. */
   getMcpSpecs?: () => McpServerSpec[];
+  /** Whether this SESSION was minted with `spawn_subagent`. The host reads it from the
+   *  session's frozen meta; omitted means no spawn tool is registered. */
+  subagentsEnabled?: boolean;
   onPhase?: (phase: string) => void;
 }
 
@@ -109,11 +104,9 @@ export interface CodeToolset {
   tools: ToolRegistry;
   jobs: JobRegistry;
   registerRooted: (root: string) => void;
-  reBootstrapSemantic: (root: string) => Promise<{ enabled: boolean }>;
-  semantic: { enabled: boolean };
-  /** Live `enableSubagents` toggle — re-registers/unregisters the dedicated spawn tools
-   *  on this toolset's registry so later runtimes carry the new state. The prompt +
-   *  skills-index half is the host's job (rebuild via codeSystemPrompt). */
+  /** Session-boundary resync of the spawn tool. Call this only when the tab binds a
+   *  DIFFERENT session (whose frozen flag differs), never for a live settings flip:
+   *  changing the tool set mid-conversation invalidates the cached prompt prefix. */
   syncSubagentTools: (enabled: boolean) => void;
   /** Knowledge-level JEV sync. Validation must complete before enabled=true. */
   syncJevTool: (enabled: boolean) => void;
@@ -168,12 +161,6 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
     registerCodeQueryTools(tools, { rootDir: root });
   };
 
-  const reBootstrapSemantic = async (root: string): Promise<{ enabled: boolean }> => {
-    const result = await bootstrapSemanticSearchInCodeMode(tools, root);
-    if (!result.enabled) tools.unregister("semantic_search");
-    return result;
-  };
-
   registerRooted(opts.rootDir);
   registerPlanTool(tools);
   registerChoiceTool(tools);
@@ -212,84 +199,52 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
   }
   // Lazy per-model: constructing DeepSeekClient throws when the provider's API
   // key is unset, which would kill `reasonix code` before the setup wizard can
-  // prompt for one. Defer to first subagent dispatch — by then the user has
-  // either keyed in or we error per-call instead of at boot. Keyed by resolved
-  // model id so `model: gpt-5.6-sol` skills route to the OpenAI endpoint and
-  // DeepSeek skills to theirs.
+  // prompt for one. Defer to first spawn, keyed by resolved model id so a model
+  // switch mid-session routes the next child to the right endpoint.
   const subagentClients = new Map<string, DeepSeekClient>();
-  // Hoisted so syncSubagentTools re-registers against the SAME runner closure —
-  // re-enabled tools must dispatch through the client cache below unchanged.
+  const subagentClientFor = (model: string): DeepSeekClient => {
+    let client = subagentClients.get(model);
+    if (!client) {
+      client = createModelClient({ model, configPath: opts.configPath });
+      subagentClients.set(model, client);
+    }
+    return client;
+  };
   const skillOpts = {
     projectRoot: opts.rootDir,
     customSkillPaths: loadResolvedSkillPaths(opts.rootDir),
-    subagentModels: loadSubagentModels(),
     onSkillInstalled: opts.onSkillInstalled,
-    // Knowledge-level gate: read once at registration so a disabled setting
-    // keeps the dedicated subagent tools out of the tool spec and subagent
-    // skills out of the pinned Skills index. The runner still re-checks
-    // per call, so re-enabling mid-session works without a toolset rebuild.
-    subagentsEnabled: loadEnableSubagents(opts.configPath),
   };
-  const subagentRunner: SubagentRunner = async (skill, task, signal, parentCallId, parentTurn) => {
-    if (!loadEnableSubagents(opts.configPath)) {
-      return JSON.stringify({
-        error: "Subagents are disabled in Settings → Tools.",
-      });
+  registerSkillTools(tools, skillOpts);
+
+  // The one subagent tool. Everything the child runs with comes from this tab: model
+  // (live getter), billing unit, loop policy, hooks and cwd, resolved at spawn time.
+  const registerSpawnTool = (enabled: boolean): void => {
+    if (!enabled) {
+      tools.unregister("spawn_subagent");
+      return;
     }
-    // Per-tab default wins over the skill's explicit model (frontmatter or the
-    // per-skill config override baked into `skill.model`), so the desktop's
-    // subagent selector is authoritative; DEFAULT_MODEL is the last resort.
-    const model = opts.subagentModel?.() ?? skill.model ?? DEFAULT_MODEL;
-    let subagentClient = subagentClients.get(model);
-    if (!subagentClient) {
-      subagentClient = createModelClient({ model, configPath: opts.configPath });
-      subagentClients.set(model, subagentClient);
-    }
-    const billing = opts.subagentBilling?.(model);
-    const result = await spawnSubagent({
-      client: subagentClient,
-      parentRegistry: tools,
-      parentSignal: signal,
-      system: skill.body,
-      task,
-      model,
-      billingContext: billing ?? {
-        kind: "usd",
-        provider: providerForModel(model, opts.configPath),
-      },
-      measureQuota: billing?.kind === "quota" ? billing.measureQuota : undefined,
-      allowedTools: skill.allowedTools,
-      skillName: skill.name,
-      parentCallId,
-      parentTurn,
-      maxToolIters: skill.maxToolIters,
-      maxElapsedMs: skill.maxElapsedMs,
-      // Read per spawn, not at registration: the tab's loop can be reconfigured
-      // mid-session without rebuilding this toolset.
-      inherited: opts.subagentLoopOptions?.(),
+    registerSubagentTool(tools, {
+      client: subagentClientFor,
+      configPath: opts.configPath,
+      projectRoot: opts.rootDir,
+      defaultModel: () => opts.subagentModel?.() ?? DEFAULT_MODEL,
+      billingFor: (model) => opts.subagentBilling?.(model),
+      inherited: opts.subagentLoopOptions,
       // Late-bound: the TUI's `useSubagent` writes the live callback into
       // SHARED_SUBAGENT_SINK after mount. Until then `.current` is null
-      // and the events are silently dropped — that's fine for non-TUI
-      // callers (`reasonix chat --transcript`, library use).
+      // and the events are silently dropped — that's fine for non-TUI callers.
       sink: opts.subagentSink ?? SHARED_SUBAGENT_SINK,
     });
-    return formatSubagentResult(result);
   };
-  registerSkillTools(tools, { ...skillOpts, subagentRunner });
+  registerSpawnTool(opts.subagentsEnabled === true);
 
   opts.onPhase?.("tool_registration_completed");
   return {
     tools,
     jobs,
     registerRooted,
-    reBootstrapSemantic,
-    semantic: { enabled: false },
-    syncSubagentTools: (enabled) =>
-      syncDedicatedSubagentTools(tools, {
-        ...skillOpts,
-        subagentRunner,
-        subagentsEnabled: enabled,
-      }),
+    syncSubagentTools: registerSpawnTool,
     syncJevTool: (enabled) => {
       if (enabled) registerJevTool(tools, { configPath: opts.configPath });
       else tools.unregister("jev_evaluate");

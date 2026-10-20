@@ -53,8 +53,7 @@ function endpointFor(model: string): ModelEndpointInfo {
       opencodeAuth: "oauth",
       opencodePlan: "go",
     };
-  if (model.startsWith("mimo-"))
-    return { provider: "mimo", baseUrl: "https://api.mimo.ai/v1" };
+  if (model.startsWith("mimo-")) return { provider: "mimo", baseUrl: "https://api.mimo.ai/v1" };
   return { provider: "deepseek", baseUrl: "https://api.deepseek.com" };
 }
 

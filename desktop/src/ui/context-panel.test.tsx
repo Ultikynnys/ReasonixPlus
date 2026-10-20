@@ -79,7 +79,68 @@ describe("Session plan history", () => {
     const onReadPlan = vi.fn();
     const onReadPlans = vi.fn();
     const now = "2026-01-01T00:00:00.000Z";
-    render(<ContextPanel settings={settings} usage={usage} mcpSpecs={[]} mcpBridged={false} sessionFiles={[]} memory={[]} memoryDetail={null} memoryResult={null} onReadMemory={() => {}} onWriteMemory={() => {}} onDeleteMemory={() => {}} onDismissMemoryResult={() => {}} onReadPlans={onReadPlans} onReadPlan={onReadPlan} planSession="test" planHistory={[{ id: "old", summary: "Discarded", status: "superseded", createdAt: now, updatedAt: now, finishedAt: null, totalSteps: 2, completedSteps: 1 }, { id: "new", summary: "Current", status: "active", createdAt: now, updatedAt: now, finishedAt: null, totalSteps: 1, completedSteps: 0 }]} planDetails={{ old: { id: "old", summary: "Discarded", status: "superseded", createdAt: now, updatedAt: now, finishedAt: null, body: "Original plan body", steps: [{ id: "one", title: "Accepted first step", action: "First action" }], completions: { one: { stepId: "one", result: "Verified work", notes: "Retained notes", evidence: [{ kind: "verification", summary: "Passed" }] } }, revisions: [] } }} />);
+    render(
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onDismissMemoryResult={() => {}}
+        onReadPlans={onReadPlans}
+        onReadPlan={onReadPlan}
+        planSession="test"
+        planHistory={[
+          {
+            id: "old",
+            summary: "Discarded",
+            status: "superseded",
+            createdAt: now,
+            updatedAt: now,
+            finishedAt: null,
+            totalSteps: 2,
+            completedSteps: 1,
+          },
+          {
+            id: "new",
+            summary: "Current",
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+            finishedAt: null,
+            totalSteps: 1,
+            completedSteps: 0,
+          },
+        ]}
+        planDetails={{
+          old: {
+            id: "old",
+            summary: "Discarded",
+            status: "superseded",
+            createdAt: now,
+            updatedAt: now,
+            finishedAt: null,
+            body: "Original plan body",
+            steps: [{ id: "one", title: "Accepted first step", action: "First action" }],
+            completions: {
+              one: {
+                stepId: "one",
+                result: "Verified work",
+                notes: "Retained notes",
+                evidence: [{ kind: "verification", summary: "Passed" }],
+              },
+            },
+            revisions: [],
+          },
+        }}
+      />,
+    );
     fireEvent.click(screen.getByText("Plan"));
     expect(onReadPlans).toHaveBeenCalledTimes(1);
     expect(onReadPlan).toHaveBeenCalledWith("new");
@@ -125,10 +186,22 @@ describe("Session plan history", () => {
           { name: "theirs", summary: "Their chat", messageCount: 1, mtime: now },
         ]}
         planHistory={[
-          { ...base, id: "theirs-plan", summary: "Their work", status: "active", ownerSession: "theirs" },
+          {
+            ...base,
+            id: "theirs-plan",
+            summary: "Their work",
+            status: "active",
+            ownerSession: "theirs",
+          },
           { ...base, id: "mine-plan", summary: "My work", status: "active", ownerSession: "mine" },
           // Still claimed on disk, but finished: it owns nothing and shows no owner.
-          { ...base, id: "done-plan", summary: "Done work", status: "completed", ownerSession: "mine" },
+          {
+            ...base,
+            id: "done-plan",
+            summary: "Done work",
+            status: "completed",
+            ownerSession: "mine",
+          },
           { ...base, id: "orphan-plan", summary: "Orphan work", status: "active" },
         ]}
         planDetails={{}}
@@ -235,14 +308,16 @@ describe("ContextPanel MCP tab count", () => {
   });
 
   it("shows the throbber and number before the label for one enabled server", () => {
-    const { container } = renderPanel({}, null, [{
-      raw: "server",
-      name: "server",
-      transport: "stdio",
-      summary: "server",
-      status: "connected",
-      toolCount: 1,
-    }]);
+    const { container } = renderPanel({}, null, [
+      {
+        raw: "server",
+        name: "server",
+        transport: "stdio",
+        summary: "server",
+        status: "connected",
+        toolCount: 1,
+      },
+    ]);
     const badge = container.querySelector(".ctx-tab-count");
     expect(badge?.textContent).toBe("1");
     const indicator = badge?.parentElement;
@@ -710,7 +785,15 @@ describe("ContextPanel files", () => {
         settings={{
           ...settings,
           editMode: "never-ask",
-          rules: [{ mode: "never-ask", effect: "deny", kind: "shell", scope: "workspace", pattern: "git push" }],
+          rules: [
+            {
+              mode: "never-ask",
+              effect: "deny",
+              kind: "shell",
+              scope: "workspace",
+              pattern: "git push",
+            },
+          ],
         }}
         usage={usage}
         mcpSpecs={[]}
@@ -895,11 +978,7 @@ describe("ContextPanel files", () => {
 
     const readOnly = mount("read-only");
     fireEvent.click(screen.getByText("Rules"));
-    expectRows([
-      "Read tools=ALLOW",
-      "Shell allowlist=ALLOW",
-      "Outside-sandbox paths=ASK",
-    ]);
+    expectRows(["Read tools=ALLOW", "Shell allowlist=ALLOW", "Outside-sandbox paths=ASK"]);
     readOnly.unmount();
 
     const follow = mount("follow");
@@ -919,9 +998,7 @@ describe("ContextPanel files", () => {
   });
 
   it("does not render a rule row that has no rules", () => {
-    render(
-      <ContextPanel settings={{ ...settings, editMode: "follow" }} {...sideProps} />,
-    );
+    render(<ContextPanel settings={{ ...settings, editMode: "follow" }} {...sideProps} />);
     fireEvent.click(screen.getByText("Rules"));
 
     // Nothing configured, so only the rules that always apply keep a row.
@@ -1035,7 +1112,13 @@ describe("ContextPanel files", () => {
     fireEvent.click(screen.getByRole("button", { name: "Change effect for: npm publish (ASK)" }));
     expect(onUpdateRule).toHaveBeenLastCalledWith(
       { mode: "follow", effect: "ask", kind: "shell", scope: "workspace", pattern: "npm publish" },
-      { mode: "follow", effect: "ignore", kind: "shell", scope: "workspace", pattern: "npm publish" },
+      {
+        mode: "follow",
+        effect: "ignore",
+        kind: "shell",
+        scope: "workspace",
+        pattern: "npm publish",
+      },
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Change effect for: git push (ALLOW)" }));
@@ -1544,7 +1627,8 @@ describe("ContextPanel files", () => {
     const onSaveSettings = vi.fn();
     render(
       <ContextPanel
-        settings={settings}
+        // Default off: the creation default is opt-in, so the fixture states it.
+        settings={{ ...settings, enableSubagents: true }}
         usage={usage}
         mcpSpecs={[]}
         mcpBridged={false}
@@ -1561,8 +1645,8 @@ describe("ContextPanel files", () => {
     );
     fireEvent.click(screen.getByText("Parameters"));
 
-    const enableBtn = screen.getByRole("button", { name: "Enable subagents" });
-    const disableBtn = screen.getByRole("button", { name: "Disable subagents" });
+    const enableBtn = screen.getByRole("button", { name: "Enable subagents for new chats" });
+    const disableBtn = screen.getByRole("button", { name: "Disable subagents for new chats" });
     expect(enableBtn.getAttribute("data-on")).toBe("true");
     expect(enableBtn.getAttribute("aria-pressed")).toBe("true");
     expect(disableBtn.getAttribute("data-on")).toBe("false");

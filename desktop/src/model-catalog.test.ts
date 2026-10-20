@@ -36,7 +36,9 @@ describe("deriveModelCatalog", () => {
         deepseek: { models: ["deepseek-live"], source: "live" },
       },
     });
-    expect(catalog.groups.find((group) => group.key === "deepseek")?.models).toContain("deepseek-live");
+    expect(catalog.groups.find((group) => group.key === "deepseek")?.models).toContain(
+      "deepseek-live",
+    );
   });
 
   it("uses dynamic OpenCode vision evidence", () => {

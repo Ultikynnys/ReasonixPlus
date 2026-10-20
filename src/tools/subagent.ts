@@ -5,7 +5,6 @@ import { PLAN_TOOL_NAMES } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "../client.js";
 import {
   type ModelProvider,
-  isKnownModelId,
   loadMaxIterPerTurn,
   loadMaxOutputTokens,
   providerForModel,
@@ -24,7 +23,6 @@ import {
 import { resolveContextTokens } from "../telemetry/stats.js";
 import { ToolRegistry } from "../tools.js";
 import { mergeSignals } from "./jobs.js";
-import { SUBAGENT_TYPE_NAMES, getSubagentType } from "./subagent-types.js";
 
 /** Side-channel — subagents run inside a tool-dispatch frame, can't go through parent's `LoopEvent` stream. */
 export interface SubagentEvent {
@@ -147,7 +145,9 @@ export interface SpawnSubagentOptions {
   skillName?: string;
   parentCallId?: string;
   parentTurn?: number;
-  /** Scopes the child registry to these literal tool names; NEVER_INHERITED still wins. Driven by skill `allowed-tools` frontmatter. */
+  /** Scopes the child registry to these names, MCP tools included; an entry ending in
+   *  `*` grants a name prefix (`ghidra_*`), so one list can span several servers.
+   *  NEVER_INHERITED still wins. Driven by the skill's `allowed-tools` frontmatter. */
   allowedTools?: readonly string[];
   /** Enforced count of real child tool dispatches. */
   maxToolIters?: number;
@@ -199,12 +199,27 @@ export interface SubagentResult {
 }
 
 export interface SubagentToolOptions {
-  client: DeepSeekClient;
+  /** A client, or a per-model resolver so a mid-session model switch applies to the next
+   *  spawn without rebuilding the toolset. */
+  client: DeepSeekClient | ((model: string) => DeepSeekClient);
+  /** Config path for provider resolution when no `billingFor` is supplied. */
+  configPath?: string;
   defaultSystem?: string;
   projectRoot?: string;
-  defaultModel?: string;
+  /** Fixed model id, or a live getter read at spawn time. */
+  defaultModel?: string | (() => string);
   maxResultChars?: number;
   sink?: SubagentSink;
+  /** Per-spawn billing resolution (unit + quota probe), so a quota-billed child reports
+   *  its consumption the way the parent loop does. */
+  billingFor?: (model: string) =>
+    | {
+        kind: "usd" | "quota" | "none";
+        /** Defaults to the provider resolved from the model id. */
+        provider?: ModelProvider;
+        measureQuota?: () => Promise<number | null>;
+      }
+    | undefined;
   /** Fires once per spawn, after `spawnSubagent` returns and before its result is formatted for the parent. Bind a `SubagentTelemetry.record` here for automatic distillation capture. */
   onSpawnComplete?: (result: SubagentResult) => void;
   /** Folds the child loop's usage (cost, cache hit/miss, completion tokens) into the
@@ -225,7 +240,7 @@ const SUBAGENT_BASE_SYSTEM = `You are a Reasonix+ subagent. The parent agent spa
 
 Rules:
 - Stay on the task you were given. Do not expand scope.
-- Use tools as needed, including the parent's MCP tools (bridged names are prefixed with the server name). You share its sandbox and safety rules.
+- Use the tools you have. A tool you cannot see was not granted to this run: MCP tools, when this run has them, arrive under their server-name prefix. You share the parent's sandbox and safety rules.
 - When you're done, your final assistant message is the only thing the parent will see: make it complete and self-contained. Always state your findings, conclusion, and reason for stopping. Never end silently. No follow-up offers, no questions, no "let me know if you need more."
 - Prefer one clear, distilled answer over a long log of what you tried.
 - You must return an answer. Ending a run with nothing is a failure, and nobody will ask you again: when your budget runs out, stop calling tools and return the best answer you have, naming what you could not verify.
@@ -249,12 +264,26 @@ const SUBAGENT_TOOL_NAME = "spawn_subagent";
 export const NEVER_INHERITED_TOOLS: ReadonlySet<string> = new Set<string>([
   SUBAGENT_TOOL_NAME,
   ...PLAN_TOOL_NAMES,
-  "run_skill",
-  "explore",
-  "research",
-  "review",
-  "security_review",
 ]);
+
+/** One `allowed-tools` entry against one tool name: exact, or a prefix when the entry
+ *  ends in `*` (`ghidra_*` grants a bridged server's surface without listing every
+ *  tool). No other pattern syntax is read, so an entry is never an accidental regex. */
+export function allowEntryCovers(entry: string, toolName: string): boolean {
+  const trimmed = entry.trim();
+  if (!trimmed) return false;
+  return trimmed.endsWith("*") ? toolName.startsWith(trimmed.slice(0, -1)) : trimmed === toolName;
+}
+
+/** Whether the allow-list grants this tool. The fork and the spawn-time validation read
+ *  the list through this one rule, so a pattern cannot widen the child and still be
+ *  reported as an unregistered name. */
+export function allowListCovers(allow: Iterable<string>, toolName: string): boolean {
+  for (const entry of allow) {
+    if (allowEntryCovers(entry, toolName)) return true;
+  }
+  return false;
+}
 
 /** Per-session spawn count past which the soft hint fires on every subsequent return. */
 const SOFT_HINT_AFTER_SPAWNS = 1;
@@ -325,9 +354,12 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   });
 
   if (opts.allowedTools) {
-    const missing = opts.allowedTools.filter((n) => !opts.parentRegistry.has(n));
+    const registered = opts.parentRegistry.specs().map((spec) => spec.function.name);
+    const missing = opts.allowedTools.filter(
+      (entry) => !registered.some((name) => allowEntryCovers(entry, name)),
+    );
     if (missing.length > 0) {
-      const errorMessage = `subagent allow-list names tool(s) not registered in the parent: ${missing.join(", ")}. Fix the skill's \`allowed-tools\` frontmatter or check spelling.`;
+      const errorMessage = `subagent allow-list names tool(s) the parent does not register: ${missing.join(", ")}. Fix the skill's \`allowed-tools\` frontmatter or check spelling. An entry ending in "*" matches by name prefix.`;
       emit({
         kind: "end",
         runId,
@@ -464,17 +496,14 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   // counter has company.
   const STREAM_EMIT_INTERVAL_MS = 200;
   const STREAM_EMIT_CHARS = 400;
-  const maybeEmitStreamProgress = (now: number, force: boolean): void => {
-    if (!sink?.current) return;
-    if (
-      !force &&
-      now - lastStreamEmitAt < STREAM_EMIT_INTERVAL_MS &&
-      charsSinceLastEmit < STREAM_EMIT_CHARS
-    ) {
-      return;
-    }
+  /** Cadence of the silence-breaker below. */
+  const HEARTBEAT_MS = 1000;
+  /** The one place a live-counter event is built, so a new counter cannot reach the
+   *  throttled path and miss the heartbeat. `resetCharBudget` is the caller's: a
+   *  heartbeat reports the clock without spending the delta budget it does not own. */
+  const emitStreamProgress = (now: number, resetCharBudget: boolean): void => {
     lastStreamEmitAt = now;
-    charsSinceLastEmit = 0;
+    if (resetCharBudget) charsSinceLastEmit = 0;
     emit({
       kind: "stream-progress",
       runId,
@@ -491,6 +520,36 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
       ...(recentThought ? { thought: recentThought } : {}),
     });
   };
+  const maybeEmitStreamProgress = (now: number, force: boolean): void => {
+    if (!sink?.current) return;
+    if (
+      !force &&
+      now - lastStreamEmitAt < STREAM_EMIT_INTERVAL_MS &&
+      charsSinceLastEmit < STREAM_EMIT_CHARS
+    ) {
+      return;
+    }
+    emitStreamProgress(now, true);
+  };
+  // Nothing else reports while the child waits on its provider: the wrapper speaks on a
+  // delta, a tool, or a stop, and a request sitting queued for minutes is none of those.
+  // Without this tick the card keeps the `start` event's elapsed of 0s, so a slow spawn
+  // and a hung one draw identically. Gated on the delta interval so it only fills
+  // silences; every early return above leaves before this timer exists.
+  const heartbeatTick = (): void => {
+    if (!sink?.current) return;
+    const now = Date.now();
+    if (now - lastStreamEmitAt < STREAM_EMIT_INTERVAL_MS) return;
+    try {
+      emitStreamProgress(now, false);
+    } catch {
+      // A timer callback has no caller to report to, and a transport that died under
+      // the card must not escalate a clock tick into an uncaught exception. The stamp
+      // above is already advanced, so the next beat simply retries.
+    }
+  };
+  const heartbeat = setInterval(heartbeatTick, HEARTBEAT_MS);
+  heartbeat.unref?.();
   try {
     for await (const ev of childLoop.step(opts.task)) {
       emit({ kind: "inner", runId, task: taskPreview, skillName, model, inner: ev });
@@ -584,6 +643,7 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     errorMessage = (err as Error).message;
   } finally {
     if (deadlineTimer) clearTimeout(deadlineTimer);
+    clearInterval(heartbeat);
     opts.parentSignal?.removeEventListener("abort", onParentAbort);
   }
   // The loop yields `done` without an `error` event when its API call
@@ -766,7 +826,9 @@ export function formatSubagentResult(r: SubagentResult): string {
   });
 }
 
-/** Library surface only — `reasonix code` uses Skills `runAs: subagent` as the user-facing path. */
+/** The one subagent tool: a child is its `task` plus, optionally, the tools it may use.
+ *  Everything else (model, effort, caps, compaction, hooks, cwd) is inherited from the
+ *  parent loop, and the task carries the instructions. */
 export function registerSubagentTool(
   parentRegistry: ToolRegistry,
   opts: SubagentToolOptions,
@@ -782,9 +844,13 @@ export function registerSubagentTool(
   const defaultSystemBase = opts.projectRoot
     ? applyProjectMemory(baseSystem, opts.projectRoot)
     : baseSystem;
-  const defaultModel = opts.defaultModel ?? DEFAULT_SUBAGENT_MODEL;
+  /** Read per spawn, so a model switch mid-session applies to the next child. */
+  const resolveModel = (): string =>
+    (typeof opts.defaultModel === "function" ? opts.defaultModel() : opts.defaultModel) ??
+    DEFAULT_SUBAGENT_MODEL;
+  const resolveClient = (model: string): DeepSeekClient =>
+    typeof opts.client === "function" ? opts.client(model) : opts.client;
   const maxResultChars = opts.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
-  const sink = opts.sink;
   // Per-session counters survive across spawn calls because registerSubagentTool
   // runs once per parent registry — closure scope is the session scope.
   let sessionSpawnCount = 0;
@@ -794,79 +860,54 @@ export function registerSubagentTool(
     name: SUBAGENT_TOOL_NAME,
     parallelSafe: true,
     description:
-      "Spawn an isolated subagent to handle a self-contained subtask in a fresh context, returning only its final answer. **Prefer direct tools.** Spawn primarily for parallel fan-out (2+ independent investigations issued in one tool batch) or when the work would otherwise need >10 file reads/searches whose trail you don't need to keep. Single greps, 1-3 file cross-references, and 'keep my context clean for one question' are NOT good reasons to spawn: direct tools are cheaper and let you reference the evidence later. Each fresh spawn pays a prefix-cache miss plus a full child loop. The subagent inherits your tools but runs in its own isolated message log; only the final assistant message comes back. The subagent runs to completion: same stops as top-level chat (token-context guard, storm breaker, parent Esc cascade).",
+      "Run one subtask in an isolated subagent and get back only its final answer. It shares your sandbox, safety rules, model and limits, but has none of your conversation: put everything it needs in 'task', including what to check and what the answer must contain. **Prefer direct tools**; spawn for parallel fan-out (2+ independent tasks issued in one batch) or when the work needs more than 10 reads whose trail you do not want to keep.",
     parameters: {
       type: "object",
       properties: {
         task: {
           type: "string",
           description:
-            'The subtask the subagent should perform. Be specific and self-contained: the subagent has none of your conversation context, only what you write here. When resuming via `resume_session`, this becomes a continuation nudge (e.g. "finish what you started" or a delta instruction).',
+            "The complete instruction for the subagent: what to do, the files or symbols involved, and what the final answer must contain. It sees nothing else of this conversation.",
         },
-        system: {
-          type: "string",
+        tools: {
+          type: "array",
+          items: { type: "string" },
           description:
-            "Optional override for the subagent's system prompt. The default tells it to stay focused and return a concise answer; override only when the subtask needs a specialized persona. Ignored on resume: the prior session keeps its original system prompt for cache stability.",
-        },
-        model: {
-          type: "string",
-          enum: ["deepseek-flash", "deepseek-v4-pro"],
-          description:
-            "Which DeepSeek model the subagent runs on. Default is 'deepseek-flash' (V4.1 Flash), cheap and fast, fine for explore/research-style subtasks. Override to 'deepseek-v4-pro' when the subtask genuinely needs the stronger model: cross-file architecture, subtle bug hunts, anything where flash has empirically underperformed.",
-        },
-        resume_session: {
-          type: "string",
-          description:
-            "Provide a previous subagent's session name to continue it. When set, prior messages are loaded from disk and the original system prompt is reused (cache-friendly). `task` becomes a continuation nudge.",
-        },
-        type: {
-          type: "string",
-          enum: [...SUBAGENT_TYPE_NAMES],
-          description:
-            "Optional persona shaping the system prompt. 'explore' = wide-net read-only investigation, returns a distilled answer. 'verify' = narrow yes/no check with evidence. Omit when supplying your own 'system' or when the default generic persona fits.",
+            "Optional tool whitelist for this subtask, e.g. ['read_file','search_content'], or ['ghidra_*'] for a whole MCP server. Omit to give the subagent every tool you have, minus delegation and plan tools.",
         },
       },
       required: ["task"],
     },
-    fn: async (
-      args: {
-        task?: unknown;
-        system?: unknown;
-        model?: unknown;
-        type?: unknown;
-        resume_session?: unknown;
-      },
-      ctx,
-    ) => {
+    fn: async (args: { task?: unknown; tools?: unknown }, ctx) => {
       const task = typeof args.task === "string" ? args.task.trim() : "";
       if (!task) {
         return JSON.stringify({
           error: "spawn_subagent requires a non-empty 'task' argument.",
         });
       }
-      const typeSpec = getSubagentType(args.type);
-      // Accept only ids with positive evidence (catalog, discovery, explicit
-      // `models` mapping, or the ollama/ scheme) — never a name-shape guess.
-      const model =
-        typeof args.model === "string" && isKnownModelId(args.model) ? args.model : defaultModel;
-      const system =
-        typeof args.system === "string" && args.system.trim().length > 0
-          ? args.system.trim()
-          : (typeSpec?.system ?? `${defaultSystemBase}\n\n${escalationContract(model)}`);
-      const resumeSession =
-        typeof args.resume_session === "string" && args.resume_session.trim().length > 0
-          ? args.resume_session.trim()
-          : undefined;
+      const tools = Array.isArray(args.tools)
+        ? args.tools.filter(
+            (name): name is string => typeof name === "string" && name.trim() !== "",
+          )
+        : [];
+      const model = resolveModel();
+      const billing = opts.billingFor?.(model);
       const result = await spawnSubagent({
-        client: opts.client,
+        client: resolveClient(model),
         parentRegistry,
-        system,
+        system: `${defaultSystemBase}\n\n${escalationContract(model)}`,
         task,
         model,
         maxResultChars,
-        sink,
+        sink: opts.sink,
+        billingContext: {
+          kind: billing?.kind ?? "usd",
+          provider: billing?.provider ?? providerForModel(model, opts.configPath),
+        },
+        ...(billing?.measureQuota ? { measureQuota: billing.measureQuota } : {}),
+        // The whitelist IS the child's tool set; absent means "inherit mine".
+        ...(tools.length > 0 ? { allowedTools: tools } : {}),
         parentSignal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
-        resumeSession,
         inherited: opts.inherited?.(),
       });
       sessionSpawnCount++;
@@ -918,7 +959,8 @@ export function forkRegistryExcluding(
   return child;
 }
 
-/** alsoExclude wins over allow so NEVER_INHERITED still drops `spawn_subagent` even if a skill allow-list names it. */
+/** alsoExclude wins over allow so NEVER_INHERITED still drops `spawn_subagent` even if a
+ *  skill allow-list names it. */
 export function forkRegistryWithAllowList(
   parent: ToolRegistry,
   allow: ReadonlySet<string>,
@@ -928,13 +970,9 @@ export function forkRegistryWithAllowList(
   for (const spec of parent.specs()) {
     const name = spec.function.name;
     if (alsoExclude.has(name)) continue;
+    if (!allowListCovers(allow, name)) continue;
     const def = parent.get(name);
     if (!def) continue;
-    // A bridged MCP tool is the session's capability surface, not a tool this build
-    // defines: a skill's allow-list narrows the built-in set and must not take the
-    // user's MCP servers away from the child. Every subagent then sees the same MCP
-    // tools the main agent does.
-    if (!allow.has(name) && def.bridged !== true) continue;
     child.register(def);
   }
   if (parent.planMode) child.setPlanMode(true);

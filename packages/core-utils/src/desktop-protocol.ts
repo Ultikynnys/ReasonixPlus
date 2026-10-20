@@ -477,11 +477,23 @@ export interface PlanDetail {
   body: string;
   summary?: string;
   steps: PlanStep[];
-  completions: Record<string, { stepId: string; result: string; notes?: string; evidence?: Array<{ kind: string; summary: string; command?: string; paths?: string[] }> }>;
+  completions: Record<
+    string,
+    {
+      stepId: string;
+      result: string;
+      notes?: string;
+      evidence?: Array<{ kind: string; summary: string; command?: string; paths?: string[] }>;
+    }
+  >;
   revisions: Array<{ at: string; reason: string; steps: PlanStep[] }>;
   dispositionReason?: string;
 }
-export type PlanHistoryEvent = { type: "$plan_history"; sessionName: string; items: PlanHistoryItem[] };
+export type PlanHistoryEvent = {
+  type: "$plan_history";
+  sessionName: string;
+  items: PlanHistoryItem[];
+};
 export type PlanDetailEvent = { type: "$plan_detail"; sessionName: string; plan: PlanDetail };
 export type PlanClearedEvent = { type: "$plan_cleared" };
 
@@ -735,8 +747,6 @@ export interface SkillInfo {
   description: string;
   scope: SkillScope;
   path: string;
-  runAs: "inline" | "subagent";
-  model?: string;
 }
 
 export interface SkillsEvent {
@@ -1054,7 +1064,9 @@ export interface SettingsEvent {
   maxIterPerTurn?: number | null;
   /** Explicit config override; null means environment/default resolution is active. */
   maxIterPerTurnOverride?: number | null;
-  /** Whether subagent skills may run. Defaults to true when absent. */
+  /** Whether a NEW chat starts with the subagent tool. Defaults to false (opt-in): the
+   *  flag is frozen into each session at creation, so this is a creation default, not a
+   *  live switch. */
   enableSubagents?: boolean;
   /** Whether `run_command` may run commands elevated via Windows UAC. Defaults to false. */
   elevationEnabled?: boolean;
@@ -1530,7 +1542,7 @@ export interface SettingsPatch {
   autoCompact?: boolean;
   /** Auto-compaction trigger fraction, clamped to [0.5, 0.95]; null/undefined = default (0.8). */
   autoCompactTrigger?: number | null;
-  /** Allow dedicated and skill-based subagents to run. */
+  /** Default for chats created from now on (the flag is frozen per session at mint). */
   enableSubagents?: boolean;
   /** Allow `run_command` to run commands elevated via Windows UAC. */
   elevationEnabled?: boolean;

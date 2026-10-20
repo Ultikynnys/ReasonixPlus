@@ -29,11 +29,6 @@ import {
 } from "@reasonix/core-utils";
 import { z } from "zod";
 import { atomicWriteSync, tmpSiblingPath } from "./core/atomic-write.js";
-import {
-  type IndexUserConfig,
-  type ResolvedIndexConfig,
-  resolveIndexConfig,
-} from "./index/config.js";
 import { loadDotMcpJson } from "./mcp/dot-mcp-json.js";
 import { type McpServerSpec, parseMcpSpec } from "./mcp/spec.js";
 import { BUILTIN_MEMORY_TYPES } from "./memory/builtin-types.js";
@@ -312,77 +307,6 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
 }
 
 export type HistoryScrollMode = "auto" | "native" | "app";
-
-export type EmbeddingProvider = "ollama" | "openai-compat";
-
-export interface OllamaEmbeddingUserConfig {
-  baseUrl?: string;
-  model?: string;
-}
-
-export interface OpenAICompatEmbeddingUserConfig {
-  baseUrl?: string;
-  apiKey?: string;
-  model?: string;
-  extraBody?: Record<string, unknown>;
-  batchSize?: number;
-  timeoutMs?: number;
-}
-
-export interface SemanticEmbeddingUserConfig {
-  provider?: EmbeddingProvider;
-  ollama?: OllamaEmbeddingUserConfig;
-  openaiCompat?: OpenAICompatEmbeddingUserConfig;
-}
-
-export interface ResolvedOllamaEmbeddingConfig {
-  provider: "ollama";
-  baseUrl: string;
-  model: string;
-  timeoutMs: number;
-}
-
-export interface ResolvedOpenAICompatEmbeddingConfig {
-  provider: "openai-compat";
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  extraBody: Record<string, unknown>;
-  timeoutMs: number;
-  batchSize: number;
-}
-
-export type ResolvedEmbeddingConfig =
-  | ResolvedOllamaEmbeddingConfig
-  | ResolvedOpenAICompatEmbeddingConfig;
-
-/** Flat embedding overrides accepted by the semantic tools / CLI; every field is
- *  optional and unset fields fall back to config-file / env defaults. */
-export interface EmbeddingOverrides {
-  provider?: EmbeddingProvider;
-  baseUrl?: string;
-  apiKey?: string;
-  model?: string;
-  extraBody?: Record<string, unknown>;
-  timeoutMs?: number;
-  batchSize?: number;
-}
-
-export interface SemanticEmbeddingConfigView {
-  provider: EmbeddingProvider;
-  ollama: {
-    baseUrl: string;
-    model: string;
-  };
-  openaiCompat: {
-    baseUrl: string;
-    apiKey: string;
-    apiKeySet: boolean;
-    model: string;
-    extraBody: Record<string, unknown>;
-    batchSize: number;
-  };
-}
 
 export interface McpServerConfig {
   command?: string;
@@ -697,8 +621,6 @@ export interface ReasonixConfig {
     /** Glob-style filename patterns (matched against basename, case-insensitive). */
     patterns?: string[];
   };
-  index?: IndexUserConfig;
-  semantic?: SemanticEmbeddingUserConfig;
   skills?: {
     paths?: string[];
   };
@@ -1079,11 +1001,6 @@ export function loadOllamaRepeatLastN(path: string = defaultConfigPath()): numbe
 export function loadBraveApiKey(path: string = defaultConfigPath()): string | undefined {
   return resolveApiKey(["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"], "braveApiKey", path);
 }
-
-const DEFAULT_OLLAMA_URL = "http://localhost:11434";
-const DEFAULT_EMBED_MODEL = "nomic-embed-text";
-const DEFAULT_TIMEOUT_MS = 180_000;
-const DEFAULT_BATCH_SIZE = 10;
 
 export function defaultConfigPath(): string {
   const envConfig = process.env.REASONIX_CONFIG?.trim();
@@ -2742,12 +2659,15 @@ export function saveDuplicateSessionAutoProceed(
   writeConfig(cfg, path);
 }
 
-/** Whether subagent skills may run. Defaults to true for backward compatibility. */
+/** Whether a NEW chat starts with the subagent tool. Defaults to false: subagents
+ *  are a session-creation choice (they change the system prompt and tool spec), so
+ *  the capability is opt-in and a mid-session flip can never invalidate the prefix. */
 export function loadEnableSubagents(path: string = defaultConfigPath()): boolean {
-  return readConfig(path).enableSubagents !== false;
+  return readConfig(path).enableSubagents === true;
 }
 
-/** Persist whether subagent skills may run. */
+/** Persist the default that a NEW chat starts with. Sessions already minted keep
+ *  the value frozen in their meta. */
 export function saveEnableSubagents(enabled: boolean, path: string = defaultConfigPath()): void {
   const cfg = readConfig(path);
   cfg.enableSubagents = enabled;
@@ -3159,88 +3079,6 @@ export function saveDesktopOpenTabs(
   writeConfig(cfg, path);
 }
 
-export function loadIndexUserConfig(path: string = defaultConfigPath()): IndexUserConfig {
-  return readConfig(path).index ?? {};
-}
-
-export function loadIndexConfig(path: string = defaultConfigPath()): ResolvedIndexConfig {
-  return resolveIndexConfig(readConfig(path).index);
-}
-
-export function saveIndexConfig(user: IndexUserConfig, path: string = defaultConfigPath()): void {
-  const cfg = readConfig(path);
-  cfg.index = user;
-  writeConfig(cfg, path);
-}
-
-export function loadSemanticEmbeddingUserConfig(
-  path: string = defaultConfigPath(),
-): SemanticEmbeddingUserConfig {
-  return normalizeSemanticEmbeddingUserConfig(readConfig(path).semantic);
-}
-
-export function saveSemanticEmbeddingConfig(
-  user: SemanticEmbeddingUserConfig,
-  path: string = defaultConfigPath(),
-): void {
-  const cfg = readConfig(path);
-  cfg.semantic = normalizeSemanticEmbeddingUserConfig(user);
-  writeConfig(cfg, path);
-}
-
-export function resolveSemanticEmbeddingConfig(
-  path: string = defaultConfigPath(),
-): ResolvedEmbeddingConfig {
-  const user = loadSemanticEmbeddingUserConfig(path);
-  const provider = user.provider ?? "ollama";
-  if (provider === "openai-compat") {
-    const baseUrl = user.openaiCompat?.baseUrl?.trim() ?? "";
-    const apiKey = user.openaiCompat?.apiKey?.trim() ?? "";
-    const model = user.openaiCompat?.model?.trim() ?? "";
-    if (!baseUrl) throw new Error("OpenAI-compatible embeddings require an API URL.");
-    requireValidUrl(baseUrl, "OpenAI-compatible API URL");
-    if (!apiKey) throw new Error("OpenAI-compatible embeddings require an API key.");
-    if (!model) throw new Error("OpenAI-compatible embeddings require a model.");
-    return {
-      provider,
-      baseUrl,
-      apiKey,
-      model,
-      extraBody: normalizeExtraBody(user.openaiCompat?.extraBody),
-      timeoutMs: user.openaiCompat?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      batchSize: user.openaiCompat?.batchSize ?? DEFAULT_BATCH_SIZE,
-    };
-  }
-  return {
-    provider: "ollama",
-    baseUrl: user.ollama?.baseUrl?.trim() || process.env.OLLAMA_URL || DEFAULT_OLLAMA_URL,
-    model: user.ollama?.model?.trim() || process.env.REASONIX_EMBED_MODEL || DEFAULT_EMBED_MODEL,
-    timeoutMs: DEFAULT_TIMEOUT_MS,
-  };
-}
-
-export function redactSemanticEmbeddingConfig(
-  user: SemanticEmbeddingUserConfig,
-): SemanticEmbeddingConfigView {
-  const normalized = normalizeSemanticEmbeddingUserConfig(user);
-  return {
-    provider: normalized.provider ?? "ollama",
-    ollama: {
-      baseUrl: normalized.ollama?.baseUrl?.trim() || process.env.OLLAMA_URL || DEFAULT_OLLAMA_URL,
-      model:
-        normalized.ollama?.model?.trim() || process.env.REASONIX_EMBED_MODEL || DEFAULT_EMBED_MODEL,
-    },
-    openaiCompat: {
-      baseUrl: normalized.openaiCompat?.baseUrl?.trim() ?? "",
-      apiKey: normalized.openaiCompat?.apiKey ? redactKey(normalized.openaiCompat.apiKey) : "",
-      apiKeySet: Boolean(normalized.openaiCompat?.apiKey?.trim()),
-      model: normalized.openaiCompat?.model?.trim() ?? "",
-      extraBody: normalizeExtraBody(normalized.openaiCompat?.extraBody),
-      batchSize: normalized.openaiCompat?.batchSize ?? DEFAULT_BATCH_SIZE,
-    },
-  };
-}
-
 /** Mark the onboarding tip as shown so subsequent launches skip it. */
 export function markEditModeHintShown(path: string = defaultConfigPath()): void {
   const cfg = readConfig(path);
@@ -3261,51 +3099,6 @@ export function redactKey(key: string): string {
   if (!key) return "";
   if (key.length <= 12) return "****";
   return `${key.slice(0, 6)}…${key.slice(-4)}`;
-}
-
-function normalizeSemanticEmbeddingUserConfig(
-  cfg: SemanticEmbeddingUserConfig | undefined,
-): SemanticEmbeddingUserConfig {
-  return {
-    provider: cfg?.provider === "openai-compat" ? "openai-compat" : "ollama",
-    ollama: {
-      baseUrl: normalizeOptionalString(cfg?.ollama?.baseUrl),
-      model: normalizeOptionalString(cfg?.ollama?.model),
-    },
-    openaiCompat: {
-      baseUrl: normalizeOptionalString(cfg?.openaiCompat?.baseUrl),
-      apiKey: normalizeOptionalString(cfg?.openaiCompat?.apiKey),
-      model: normalizeOptionalString(cfg?.openaiCompat?.model),
-      extraBody: normalizeExtraBody(cfg?.openaiCompat?.extraBody),
-      timeoutMs: normalizePositiveInt(cfg?.openaiCompat?.timeoutMs),
-      batchSize: normalizePositiveInt(cfg?.openaiCompat?.batchSize),
-    },
-  };
-}
-
-function normalizeOptionalString(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-function normalizePositiveInt(value: number | undefined): number | undefined {
-  return value !== undefined && Number.isInteger(value) && value > 0 ? value : undefined;
-}
-
-function normalizeExtraBody(value: Record<string, unknown> | undefined): Record<string, unknown> {
-  if (value === undefined) return {};
-  if (!isPlainObject(value)) {
-    throw new Error("Semantic embedding extraBody must be a JSON object.");
-  }
-  return { ...value };
-}
-
-function requireValidUrl(value: string, label: string): void {
-  try {
-    new URL(value);
-  } catch {
-    throw new Error(`${label} must be a valid URL.`);
-  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

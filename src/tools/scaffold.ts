@@ -40,7 +40,7 @@ export function registerScaffoldTools(
   registry.register({
     name: "create_skill",
     description:
-      'Scaffold a SKILL.md the user can later invoke via `run_skill`. Frontmatter (description / allowed_tools / run_as / model) is filled from structured args here. Use `run_as: "subagent"` for read-and-synthesize playbooks; default inline appends body to parent log. Refuses to overwrite existing skills.',
+      "Scaffold a SKILL.md the user can later invoke via `run_skill`. Frontmatter (name / description) is filled from structured args here; the body is the playbook the model reads and follows in its own loop. Refuses to overwrite existing skills.",
     parameters: {
       type: "object",
       properties: {
@@ -63,35 +63,14 @@ export function registerScaffoldTools(
           description:
             "`project` (default) = workspace .reasonix/skills/; `global` = ~/.reasonix/skills/.",
         },
-        allowed_tools: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Optional tool allowlist for `run_as: subagent`. Omit for full inherited toolset.",
-        },
-        run_as: {
-          type: "string",
-          enum: ["inline", "subagent"],
-          description:
-            "inline (default) appends body to parent log. subagent spawns isolated child; only final answer returns.",
-        },
-        model: {
-          type: "string",
-          enum: ["deepseek-flash", "deepseek-v4-pro"],
-          description:
-            "Subagent model override. Default flash; use pro only when the playbook needs it.",
-        },
       },
       required: ["name", "description", "body"],
     },
-    fn: async (args: SkillToolArgs & { allowed_tools?: unknown; run_as?: unknown }) => {
+    fn: async (args: SkillToolArgs) => {
       const draft = parseSkillDraft({
         name: args.name,
         description: args.description,
         body: args.body,
-        runAs: args.run_as,
-        allowedTools: args.allowed_tools,
-        model: args.model,
       });
       if ("error" in draft) return JSON.stringify({ error: draft.error });
       const scope: "project" | "global" =
@@ -112,7 +91,6 @@ export function registerScaffoldTools(
         path: result.path,
         scope,
         name: draft.name,
-        run_as: draft.runAs,
       });
     },
   });

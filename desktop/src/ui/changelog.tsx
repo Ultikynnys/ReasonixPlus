@@ -73,7 +73,11 @@ export function PageChangelog({
     return (
       <section className="section">
         <div className="changelog-status">
-          <span>{changelog.error ? t("changelog.failed", { message: changelog.error }) : t("changelog.empty")}</span>
+          <span>
+            {changelog.error
+              ? t("changelog.failed", { message: changelog.error })
+              : t("changelog.empty")}
+          </span>
           <button
             type="button"
             className="changelog-retry"
@@ -110,7 +114,8 @@ export function PageChangelog({
         const key = release.version ?? "unreleased";
         const open = isOpen(key, index);
         const date = formatDate(release.date);
-        const isInstalled = release.version !== null && release.version.replace(/^v/, "") === installed;
+        const isInstalled =
+          release.version !== null && release.version.replace(/^v/, "") === installed;
         const sections = groupSections(release);
         return (
           <div key={key} className="changelog-release" data-open={open}>
@@ -121,11 +126,15 @@ export function PageChangelog({
               role="button"
               tabIndex={0}
             >
-              <span className="changelog-caret">{open ? <I.chevU size={12} /> : <I.chev size={12} />}</span>
+              <span className="changelog-caret">
+                {open ? <I.chevU size={12} /> : <I.chev size={12} />}
+              </span>
               <span className="changelog-version">
                 {release.unreleased ? t("changelog.unreleased") : `v${release.version}`}
               </span>
-              {isInstalled ? <span className="changelog-badge">{t("changelog.installed")}</span> : null}
+              {isInstalled ? (
+                <span className="changelog-badge">{t("changelog.installed")}</span>
+              ) : null}
               <span className="grow" />
               {date ? <span className="changelog-date">{date}</span> : null}
               <span className="changelog-count">

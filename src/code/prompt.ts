@@ -1,35 +1,39 @@
 import { join } from "node:path";
-import { type EditMode, loadEditMode, loadEnableSubagents } from "../config.js";
+import { type EditMode, loadEditMode } from "../config.js";
 import { readCappedTextFile } from "../memory/read-capped.js";
 import { applyMemoryStack } from "../memory/user.js";
 import { TUI_FORMATTING_RULES, escalationContract } from "../prompt-fragments.js";
 
 const DEFAULT_CODE_MODEL = "deepseek-v4-flash";
 
-/** Rendered when subagents are enabled — the default. Kept verbatim so the frozen
- *  CODE_SYSTEM_PROMPT back-compat const and existing cache prefixes stay stable. */
-const SUBAGENT_SECTION_ENABLED = `# Delegating to subagents via Skills
+/** Rendered only for a session minted with subagents on. A session without the tool
+ *  gets no subagent text at all: instructions for a tool the model cannot see are
+ *  worse than silence, and the section is dead weight in the cached prefix. */
+const SUBAGENT_SECTION = `# Subagents
 
-The pinned Skills index below lists every available playbook (built-ins + user-installed). Entries tagged \`[subagent]\` spawn an isolated child loop and return only the final answer; their tool calls never enter your context. Pass \`name\` as the BARE identifier (e.g. \`"explore"\`), not the \`[subagent]\` tag.
+One tool, \`spawn_subagent({ task, tools })\`. It runs one subtask in an isolated child loop and returns only its final answer; its tool calls never enter your context. The child inherits your model, limits, hooks and sandbox, but sees none of this conversation.
 
-**Default: don't delegate.** Direct tools are cheaper and keep evidence in your context. Spawn ONLY for (a) true parallelism (2+ independent investigations in one batch) or (b) context blow-up (>10 file reads where you only need the conclusion). Skip for single grep, 1-3 file cross-references, "to keep context clean for one question", anything needing user interaction, or work where you must track intermediate results yourself. Always pass clear, self-contained \`arguments\`, because the subagent gets no other context.`;
+**The task is the whole brief.** Nobody reads your context, so write it like a handoff to a capable stranger who cannot ask you anything:
 
-/** Knowledge-level subagent gate (Settings → Tools, `enableSubagents`): when disabled the
- *  Skills index omits subagent skills and the dedicated spawn tools aren't registered —
- *  this section must not tell the model to spawn either, so it swaps to a short note. */
-const SUBAGENT_SECTION_DISABLED = `# Subagents are disabled
+- **What to do**, in one imperative sentence. One deliverable per spawn.
+- **Where to look**: the files, symbols, directories or servers involved. Name them; do not say "the relevant files".
+- **What the answer must contain**: the specific shape you will act on (a list of \`file:line\`, a yes/no plus why, a patch sketch, a ranking).
+- **What to ignore**, when the search space is noisy.
 
-Subagent skills and the dedicated subagent tools (explore / research / review / security_review) are turned off for this session (Settings → Tools). They are absent from the tool spec and the Skills index; don't attempt to spawn subagents, and handle the work inline with your direct tools instead.`;
+Bad: \`"look into the auth code"\`. Good: \`"List every caller of validateToken in src/auth/ (file:line), and for each say whether it passes the token from a header or a cookie. Ignore tests/."\`
+
+**Tools.** \`tools\` optionally narrows the child's toolset: exact names, or \`server_*\` for a whole MCP server. Omit it to hand over everything you have, minus delegation and plan tools (a child never spawns grandchildren).
+
+**Default: don't delegate.** Direct tools are cheaper and keep evidence in your context. Spawn ONLY for (a) true parallelism (2+ independent tasks in one batch) or (b) context blow-up (>10 file reads where you only need the conclusion). Skip for a single grep, 1-3 file cross-references, "to keep context clean for one question", anything needing user interaction, or work where you must track intermediate results yourself.`;
 
 /** Built per-session against the resolved model id so the contract names the actual tier (#582). */
-function codeSystemBase(modelId: string, subagentsEnabled = true): string {
-  return CODE_SYSTEM_TEMPLATE.replace(
-    "__ESCALATION_CONTRACT__",
-    escalationContract(modelId),
-  ).replace(
-    "__SUBAGENT_SECTION__",
-    subagentsEnabled ? SUBAGENT_SECTION_ENABLED : SUBAGENT_SECTION_DISABLED,
-  );
+function codeSystemBase(modelId: string, subagentsEnabled = false): string {
+  const base = CODE_SYSTEM_TEMPLATE.replace("__ESCALATION_CONTRACT__", escalationContract(modelId));
+  // A disabled session gets the template with the section spliced out (placeholder
+  // and one of its two blank-line guards), so the prefix carries no trace of it.
+  return subagentsEnabled
+    ? base.replace("__SUBAGENT_SECTION__", SUBAGENT_SECTION)
+    : base.replace("\n\n__SUBAGENT_SECTION__\n", "\n");
 }
 
 const CODE_SYSTEM_TEMPLATE = `You are Reasonix+, a coding assistant. The tool spec is authoritative for tool names and parameters; the sections below explain how to use them.
@@ -200,20 +204,10 @@ __ESCALATION_CONTRACT__
 ${TUI_FORMATTING_RULES}
 `;
 
-/** Backward-compat — public-API const, frozen at the historical flash phrasing. Internal callers use codeSystemPrompt(rootDir, { modelId }) so the contract names the real tier (#582). */
+/** Backward-compat — public-API const, frozen at the historical flash phrasing and
+ *  without the subagent section (a session opts in per-mint). Internal callers use
+ *  codeSystemPrompt(rootDir, { modelId, subagentsEnabled }) so both match the session. */
 export const CODE_SYSTEM_PROMPT = codeSystemBase(DEFAULT_CODE_MODEL);
-
-/** Stack order (stable for cache prefix): base → REASONIX.md → global → project → .gitignore. */
-const SEMANTIC_SEARCH_ROUTING = `
-
-# Search routing
-
-You have BOTH \`semantic_search\` (vector index) and \`search_content\` (literal grep).
-
-- **Descriptive queries** ("where do we handle X", "which file owns Y", "how does Z work", "find the logic that does …", "the code responsible for …") → call \`semantic_search\` FIRST. It indexes the project by meaning, so it finds the right file even when your phrasing shares no tokens with the code.
-- **Exact-token queries** (a specific identifier, regex, or "find every call to foo") → call \`search_content\`.
-
-If \`semantic_search\` returns nothing useful (low scores, off-topic), THEN fall back to \`search_content\`. Don't go the other way; grepping a paraphrased question wastes turns.`;
 
 /** Cap on the embedded .gitignore preview. */
 const GITIGNORE_MAX_CHARS = 2000;
@@ -244,10 +238,6 @@ This block is the authoritative permission state. It is rebuilt from the user's 
 }
 
 export interface CodeSystemPromptOptions {
-  /** True when semantic_search is registered for this run. Adds an
-   *  explicit routing fragment so the model picks it for intent-style
-   *  queries instead of defaulting to grep. */
-  hasSemanticSearch?: boolean;
   /** Inline string appended after the generated code system prompt.
    *  Preserves the default prompt — this is append-only, not a replacement. */
   systemAppend?: string;
@@ -262,15 +252,19 @@ export interface CodeSystemPromptOptions {
   editMode?: EditMode;
   /** Override config path — tests point this at a tmp file. */
   configPath?: string;
+  /** Whether this SESSION was minted with the subagent tool. Read from the session's
+   *  frozen meta by the host: a live settings edit must not rewrite a cached prefix. */
+  subagentsEnabled?: boolean;
 }
 
 export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions = {}): string {
-  // Knowledge-level subagent gate: shapes the prompt section AND the skills index in
-  // one pass, captured at session build so the cache prefix stays stable per session.
-  const subagentsEnabled = loadEnableSubagents(opts.configPath);
-  const codeBase = codeSystemBase(opts.modelId ?? DEFAULT_CODE_MODEL, subagentsEnabled);
-  const base = opts.hasSemanticSearch ? `${codeBase}${SEMANTIC_SEARCH_ROUTING}` : codeBase;
-  const withMemory = applyMemoryStack(base, rootDir, { subagentsEnabled });
+  const codeBase = codeSystemBase(
+    opts.modelId ?? DEFAULT_CODE_MODEL,
+    opts.subagentsEnabled === true,
+  );
+  const withMemory = applyMemoryStack(codeBase, rootDir, {
+    subagents: opts.subagentsEnabled === true,
+  });
   const gitignorePath = join(rootDir, ".gitignore");
   let result = withMemory;
   const gitignore = readCappedTextFile(gitignorePath, GITIGNORE_MAX_CHARS);

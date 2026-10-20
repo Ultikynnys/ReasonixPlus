@@ -1,10 +1,10 @@
 import {
   DEEPSEEK_RATE_SCHEDULE,
+  type RateSchedule,
   isOffPeakRate,
   isPeakRate,
   isRateScheduleWeekend,
   minutesUntilRateChangeForSchedule,
-  type RateSchedule,
 } from "@reasonix/core-utils";
 
 /**

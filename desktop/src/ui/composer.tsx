@@ -21,11 +21,10 @@ import type { QueuedSend } from "../App";
 import { type TKey, t } from "../i18n";
 import { I } from "../icons";
 import { isAudioVideoPath, isImagePath, resolveImagePath } from "../image-attach";
-import { toWorkspaceRelative } from "../workspace-path";
 import {
+  MODEL_CATALOG_GROUP_LABELS,
   type ProviderCatalogKey,
   type ProviderCatalogView,
-  MODEL_CATALOG_GROUP_LABELS,
   deriveModelCatalog,
 } from "../model-catalog";
 import {
@@ -38,8 +37,9 @@ import {
 import { AudioRecorder } from "../voice/audio-recorder";
 import { getSelectedAudioInputDeviceId } from "../voice/device";
 import { speechTranscriber } from "../voice/transcriber";
-import { DEFAULT_COMPOSER_ROWS } from "./composer-sizing";
+import { toWorkspaceRelative } from "../workspace-path";
 import type { ComposerDraft } from "./composer-draft";
+import { DEFAULT_COMPOSER_ROWS } from "./composer-sizing";
 import { activationHandler } from "./keyboard";
 import { StuckLabel, TimerSpan } from "./live";
 import { Shortcut } from "./shortcut";
@@ -116,7 +116,9 @@ export function ModeSwitch({
 export function StoredComposer({
   draftStore,
   ...props
-}: Omit<React.ComponentProps<typeof Composer>, "draft" | "setDraft"> & { draftStore: ComposerDraft }) {
+}: Omit<React.ComponentProps<typeof Composer>, "draft" | "setDraft"> & {
+  draftStore: ComposerDraft;
+}) {
   const draft = useSyncExternalStore(draftStore.subscribe, draftStore.getSnapshot);
   return <Composer {...props} draft={draft} setDraft={draftStore.setDraft} />;
 }
@@ -190,7 +192,7 @@ export function Composer({
   onAbort: () => void;
   disabled?: boolean;
   busy?: boolean;
-  /** Replaces the hint-row left side while the agent is running — typically "Reasoning" or "Skill · <name>". */
+  /** Drives the status row above the hint row while the agent is running — typically "Reasoning" or "Skill · <name>". */
   busyLabel?: string;
   /** Renders the "stuck Ns" hint once the turn has been silent this long. The 1s
    *  poll lives inside StuckLabel so the conversation never re-renders per second. */
@@ -265,7 +267,10 @@ export function Composer({
   /** MiMo path for picked/dropped audio/video paths — daemon reads the bytes. */
   onPickMedia?: (path: string) => void;
   /** Updates per-attachment video settings (MiMo fps / resolution). */
-  onUpdateMedia?: (id: string, patch: { fps?: number; mediaResolution?: "default" | "max" }) => void;
+  onUpdateMedia?: (
+    id: string,
+    patch: { fps?: number; mediaResolution?: "default" | "max" },
+  ) => void;
   /** Surfaces every voice-input failure as a durable in-chat error notice. */
   onVoiceError: (message: string) => void;
   /** True when at least one voice model is downloaded — the voice button is
@@ -559,6 +564,11 @@ export function Composer({
     }
   };
 
+  // Single source for "a turn is engaged": the status row, its timers and the
+  // queue/interrupt hints must never disagree about it.
+  const turnActive = busy ?? false;
+  const statusText = turnActive && busyLabel ? busyLabel : null;
+
   const modelListProps = {
     ollamaModels,
     ollamaModelsError,
@@ -654,42 +664,40 @@ export function Composer({
           </div>
         ) : null}
 
+        {statusText ? (
+          <div className="composer-busy-row">
+            <span className="composer-busy-pip" />
+            <span className="composer-busy-label">{statusText}</span>
+            <TimerSpan active={turnActive} className="composer-busy-time" />
+            {stuckLabel ? (
+              <StuckLabel
+                active={turnActive}
+                sinceMs={stuckLabel.sinceMs}
+                render={(sec) => (
+                  <span className="composer-busy-stuck">{stuckLabel.render(sec)}</span>
+                )}
+              />
+            ) : null}
+          </div>
+        ) : null}
+
         <div className="hint-row">
-          {busy && busyLabel ? (
-            <>
-              <span className="composer-busy-status">
-                <span className="composer-busy-pip" />
-                <span className="composer-busy-label">{busyLabel}</span>
-                <TimerSpan active={busy ?? false} className="composer-busy-time" />
-                {stuckLabel ? (
-                  <StuckLabel
-                    active={busy ?? false}
-                    sinceMs={stuckLabel.sinceMs}
-                    render={(sec) => (
-                      <span className="composer-busy-stuck">{stuckLabel.render(sec)}</span>
-                    )}
-                  />
-                ) : null}
-              </span>
-              <span className="grow" />
-              <ModeSwitch mode={editMode} onChange={onEditModeChange} />
-              <span className="hint-sep" />
-              <span>
+          <span className="grow" />
+          <ModeSwitch mode={editMode} onChange={onEditModeChange} />
+          <span className="hint-sep" />
+          <span>
+            {statusText ? (
+              <>
                 <Shortcut keys={["enter"]} /> {t("composer.queue")} &nbsp;·&nbsp;{" "}
                 <Shortcut keys={["esc"]} /> {t("composer.interrupt")}
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="grow" />
-              <ModeSwitch mode={editMode} onChange={onEditModeChange} />
-              <span className="hint-sep" />
-              <span>
+              </>
+            ) : (
+              <>
                 <Shortcut keys={["enter"]} /> {t("composer.send")} &nbsp;{" "}
                 <Shortcut keys={["shift", "enter"]} /> {t("composer.newline")}
-              </span>
-            </>
-          )}
+              </>
+            )}
+          </span>
         </div>
 
         <div className="composer">
@@ -1174,8 +1182,12 @@ function ModelList({
           onClick={() => onPick(activeModel)}
           onKeyDown={activationHandler(() => onPick(activeModel))}
         >
-          <span className="ico"><I.brain size={12} /></span>
-          <div className="nm"><span className="cmd">{modelDisplayName(activeModel)}</span></div>
+          <span className="ico">
+            <I.brain size={12} />
+          </span>
+          <div className="nm">
+            <span className="cmd">{modelDisplayName(activeModel)}</span>
+          </div>
         </div>
       )}
     </div>

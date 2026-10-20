@@ -332,8 +332,7 @@ export const en = {
     // MCP
     mcpConfigured: "Configured · {count}",
     mcpBridged: "· Bridged",
-    mcpNotBridged:
-      "· Current desktop session not bridged: restart Reasonix+ to take effect",
+    mcpNotBridged: "· Current desktop session not bridged: restart Reasonix+ to take effect",
     mcpEmpty: "No MCP servers configured yet. Enter a spec below to add one.",
     mcpRemove: "Remove",
     mcpEnable: "Enable",
@@ -958,10 +957,12 @@ export const en = {
     subagents: "Subagents",
     subagentsEnabled: "Enabled",
     subagentsDisabled: "Disabled",
-    enableSubagents: "Enable subagents",
-    disableSubagents: "Disable subagents",
-    subagentsEnabledDesc: "Dedicated and skill-based subagents can run.",
-    subagentsDisabledDesc: "Subagent calls are blocked. Inline skills remain available.",
+    enableSubagents: "Enable subagents for new chats",
+    disableSubagents: "Disable subagents for new chats",
+    subagentsEnabledDesc:
+      "New chats can spawn subtasks. Applies to chats you start from now on; an open chat keeps the choice it was created with.",
+    subagentsDisabledDesc:
+      "New chats cannot spawn subtasks. Applies to chats you start from now on; an open chat keeps the choice it was created with.",
     elevation: "Elevation (Windows UAC)",
     elevationEnabled: "Enabled",
     elevationDisabled: "Disabled",
@@ -1065,7 +1066,8 @@ export const en = {
     ruleMatchType: "Rule matching",
     ruleMatchPattern: "Prefix / glob",
     ruleMatchRegex: "Regex",
-    ruleRegexHint: "Case-insensitive regex against the full command. Require both words: ^(?=.*\\bgit\\b)(?=.*\\bpush\\b).* (no / delimiters). Slow patterns refuse the command.",
+    ruleRegexHint:
+      "Case-insensitive regex against the full command. Require both words: ^(?=.*\\bgit\\b)(?=.*\\bpush\\b).* (no / delimiters). Slow patterns refuse the command.",
     editRule: "Edit rule",
     saveRule: "Save rule",
     deleteRuleTooltip: "Remove rule",
@@ -1222,7 +1224,8 @@ export const en = {
     zoomIn: "Zoom in",
     zoomOut: "Zoom out",
     previewLoading: "Loading preview…",
-    previewFailed: "Preview could not be loaded. The file may be missing or its format unsupported. Use Open with or Save as to view it externally.",
+    previewFailed:
+      "Preview could not be loaded. The file may be missing or its format unsupported. Use Open with or Save as to view it externally.",
     previewUnsupported: "No inline preview for this format. Use Open with or Save as.",
     previewTruncated: "Preview limited to the first 64 KiB. Save or open the file to see the rest.",
   },

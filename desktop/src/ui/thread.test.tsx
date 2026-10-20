@@ -449,17 +449,20 @@ describe("user-input cards render agent markdown", () => {
 
 describe("AssistantMsg - presented files", () => {
   const noop = () => {};
-  const renderFile = (name: string) => render(
-    <AssistantMsg
-      segments={[{ ...segment, result: JSON.stringify({ path: `C:/repo/${name}`, name, size: 4096 }) }]}
-      pending={false}
-      pendingConfirms={[]}
-      onApproveConfirm={noop}
-      onRejectConfirm={noop}
-      onRuleConfirm={noop}
-      onStopTool={noop}
-    />,
-  );
+  const renderFile = (name: string) =>
+    render(
+      <AssistantMsg
+        segments={[
+          { ...segment, result: JSON.stringify({ path: `C:/repo/${name}`, name, size: 4096 }) },
+        ]}
+        pending={false}
+        pendingConfirms={[]}
+        onApproveConfirm={noop}
+        onRejectConfirm={noop}
+        onRuleConfirm={noop}
+        onStopTool={noop}
+      />,
+    );
   const segment: Extract<AssistantSegment, { kind: "tool" }> = {
     kind: "tool",
     callId: "file-call",
@@ -473,18 +476,25 @@ describe("AssistantMsg - presented files", () => {
     const { readFile } = await import("node:fs/promises");
     const config = JSON.parse(await readFile("desktop/src-tauri/tauri.conf.json", "utf8"));
     for (const directive of ["img-src", "media-src", "connect-src", "frame-src"]) {
-      const policy = config.app.security.csp.split(";").find((part: string) => part.trim().startsWith(`${directive} `));
+      const policy = config.app.security.csp
+        .split(";")
+        .find((part: string) => part.trim().startsWith(`${directive} `));
       expect(policy).toContain("http://asset.localhost");
     }
   });
 
-  it.each(["chart.png", "voice.mp3", "clip.mp4"])("shows loading errors for %s without removing file actions", (name) => {
-    const { container } = renderFile(name);
-    fireEvent.error(container.querySelector("img, audio, video")!);
-    expect(screen.getByRole("alert").textContent).toContain("Preview could not be loaded");
-    expect(screen.getByRole("button", { name: "Save as…" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: name.endsWith("png") ? "Copy image" : "Copy file" })).toBeTruthy();
-  });
+  it.each(["chart.png", "voice.mp3", "clip.mp4"])(
+    "shows loading errors for %s without removing file actions",
+    (name) => {
+      const { container } = renderFile(name);
+      fireEvent.error(container.querySelector("img, audio, video")!);
+      expect(screen.getByRole("alert").textContent).toContain("Preview could not be loaded");
+      expect(screen.getByRole("button", { name: "Save as…" })).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: name.endsWith("png") ? "Copy image" : "Copy file" }),
+      ).toBeTruthy();
+    },
+  );
 
   it("renders video controls and a canvas PDF viewer without a native iframe", () => {
     const video = renderFile("clip.mp4");
@@ -499,8 +509,13 @@ describe("AssistantMsg - presented files", () => {
   it("renders HTML as inert text and bounds the preview to 64 KiB", async () => {
     const cancel = vi.fn().mockResolvedValue(undefined);
     const content = `<script>alert('unsafe')</script>${"x".repeat(70000)}`;
-    const read = vi.fn().mockResolvedValueOnce({ done: false, value: new TextEncoder().encode(content) });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body: { getReader: () => ({ read, cancel }) } }));
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ done: false, value: new TextEncoder().encode(content) });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, body: { getReader: () => ({ read, cancel }) } }),
+    );
     const { container } = renderFile("example.html");
     await waitFor(() => expect(container.querySelector("pre")?.textContent?.length).toBe(65536));
     expect(container.querySelector("script")).toBeNull();
@@ -511,14 +526,18 @@ describe("AssistantMsg - presented files", () => {
   it("reports failed text requests", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
     renderFile("report.txt");
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Preview could not be loaded"));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("Preview could not be loaded"),
+    );
   });
 
   it("offers a native fallback for unsupported files", async () => {
     renderFile("archive.zip");
     expect(screen.getByText(/No inline preview/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open with…" }));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_with_dialog", { path: "C:/repo/archive.zip" }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("open_with_dialog", { path: "C:/repo/archive.zip" }),
+    );
   });
 
   it("renders arbitrary files and invokes copy-file and save-as actions", async () => {
@@ -574,7 +593,9 @@ describe("AssistantMsg - presented files", () => {
       />,
     );
     const player = container.querySelector("audio");
-    expect(player?.getAttribute("src")).toBe("http://asset.localhost/C%3A%2Frepo%2Fvoice%20sample.mp3");
+    expect(player?.getAttribute("src")).toBe(
+      "http://asset.localhost/C%3A%2Frepo%2Fvoice%20sample.mp3",
+    );
     expect(player?.getAttribute("controls")).toBeNull();
     expect(screen.getByRole("button", { name: "Play audio" })).toBeTruthy();
     Object.defineProperty(player, "duration", { configurable: true, value: 125 });

@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useRef } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoScroll } from "./useAutoScroll";
 
 let resizeCallback: (() => void) | null = null;
@@ -53,11 +53,7 @@ function TestHarness({
 
   return (
     <div>
-      <div
-        ref={containerRef}
-        data-testid="container"
-        style={{ height: 400, overflowY: "auto" }}
-      >
+      <div ref={containerRef} data-testid="container" style={{ height: 400, overflowY: "auto" }}>
         <div ref={contentRef} data-testid="content" style={{ height: 1000 }} />
       </div>
       {showJumpButton ? (

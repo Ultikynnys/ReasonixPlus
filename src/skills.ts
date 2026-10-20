@@ -24,14 +24,10 @@ export const SKILL_FILE = "SKILL.md";
 export const SKILLS_INDEX_MAX_CHARS = 4000;
 /** Skill identifier shape — alnum + `_` + `-` + interior `.`, 1-64 chars. */
 const VALID_SKILL_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
-const VALID_TOOL_NAME = /^[a-zA-Z_][a-zA-Z0-9_-]*$/;
 
 export type SkillScope = "project" | "custom" | "global" | "builtin";
 
 export type SkillPathStatus = "ok" | "missing" | "not-directory" | "unreadable";
-
-/** inline = body enters parent log; subagent = isolated child loop, only final answer returns. */
-export type SkillRunAs = "inline" | "subagent";
 
 export interface Skill {
   /** Canonical name — sanitized, matches the directory / filename stem. */
@@ -44,15 +40,6 @@ export interface Skill {
   scope: SkillScope;
   /** Absolute path to the SKILL.md (or {name}.md) file, or "(builtin)" for shipped defaults. */
   path: string;
-  /** Parsed `allowed-tools` frontmatter — when present, the spawned subagent's registry is scoped to these literal tool names. */
-  allowedTools?: readonly string[];
-  runAs: SkillRunAs;
-  /** Subagent model override; only meaningful when `runAs === "subagent"`. */
-  model?: string;
-  /** Enforced child-tool dispatch cap; omitted means no per-skill cap. */
-  maxToolIters?: number;
-  /** Enforced wall-clock cap in milliseconds; omitted means no per-skill cap. */
-  maxElapsedMs?: number;
 }
 
 export interface SkillRoot {
@@ -70,12 +57,6 @@ export interface SkillStoreOptions {
   customSkillPaths?: readonly string[];
   /** Suppress bundled built-ins — for tests asserting exact list contents. */
   disableBuiltins?: boolean;
-  /** Per-skill model override applied to `runAs: subagent` skills (overrides frontmatter `model:`). */
-  subagentModels?: Record<string, "flash" | "pro">;
-  /** Knowledge-level subagent gate (`enableSubagents` in Settings → Tools): when false,
-   *  `runAs: subagent` skills drop out of `list()` (index + availability surfaces) so the
-   *  model never attempts to spawn; `read()` stays unfiltered for the runner-gate backstop. */
-  subagentsEnabled?: boolean;
 }
 
 /** Reject skill files that would silently disappear from the prefix index — `description:` is what `applySkillsIndex` keys on. */
@@ -99,18 +80,12 @@ export interface SkillDraft {
   name: string;
   description: string;
   body: string;
-  runAs: SkillRunAs;
-  allowedTools?: readonly string[];
-  model?: string;
 }
 
 export interface RawSkillDraft {
   name?: unknown;
   description?: unknown;
   body?: unknown;
-  runAs?: unknown;
-  allowedTools?: unknown;
-  model?: unknown;
 }
 
 /** Validate and normalize the persisted contract shared by all skill-authoring tools. */
@@ -125,52 +100,12 @@ export function parseSkillDraft(raw: RawSkillDraft): SkillDraft | { error: strin
   if (!description) return { error: "skill requires a non-empty 'description'" };
   const body = typeof raw.body === "string" ? raw.body : "";
   if (!body.trim()) return { error: "skill requires a non-empty 'body'" };
-  const runAs: SkillRunAs = raw.runAs === "subagent" ? "subagent" : "inline";
-
-  let allowedTools: readonly string[] | undefined;
-  if (raw.allowedTools !== undefined && raw.allowedTools !== null) {
-    if (!Array.isArray(raw.allowedTools)) {
-      return { error: "'allowed_tools' must be an array of tool-name strings" };
-    }
-    const tools: string[] = [];
-    for (const value of raw.allowedTools) {
-      if (typeof value !== "string") {
-        return { error: "'allowed_tools' entries must be strings" };
-      }
-      const tool = value.trim();
-      if (!tool) continue;
-      if (!VALID_TOOL_NAME.test(tool)) {
-        return { error: `invalid tool name in allowed_tools: ${JSON.stringify(tool)}` };
-      }
-      tools.push(tool);
-    }
-    if (tools.length > 0) allowedTools = tools;
-  }
-
-  const model = typeof raw.model === "string" ? raw.model.trim() : "";
-  if (model && !model.startsWith("deepseek-")) {
-    return { error: "skill model must be a deepseek-* model id" };
-  }
-  return {
-    name,
-    description,
-    body,
-    runAs,
-    allowedTools: runAs === "subagent" ? allowedTools : undefined,
-    model: runAs === "subagent" && model ? model : undefined,
-  };
+  return { name, description, body };
 }
 
 /** Serialize canonical skill frontmatter and normalized body text. */
 export function serializeSkill(draft: SkillDraft): string {
   const lines = ["---", `name: ${draft.name}`, `description: ${draft.description}`];
-  if (draft.runAs === "subagent") {
-    lines.push("runAs: subagent");
-    if (draft.model) lines.push(`model: ${draft.model}`);
-    if (draft.allowedTools?.length) {
-      lines.push(`allowed-tools: ${draft.allowedTools.join(", ")}`);
-    }
-  }
   lines.push("---", "");
   return `${lines.join("\n")}\n${draft.body.trim()}\n`;
 }
@@ -181,7 +116,6 @@ export interface SkillToolArgs {
   description?: unknown;
   body?: unknown;
   scope?: unknown;
-  model?: unknown;
 }
 
 /** Persist a validated draft: serialize to SKILL.md, then write it, returning the
@@ -194,33 +128,11 @@ export function persistSkillDraft(
   return store.createWithContent(draft.name, scope, serializeSkill(draft));
 }
 
-function parseAllowedTools(raw: string | undefined): readonly string[] | undefined {
-  if (raw === undefined) return undefined;
-  const names = raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return names.length > 0 ? Object.freeze(names) : undefined;
-}
-
-function parsePositiveInteger(raw: string | undefined): number | undefined {
-  if (raw === undefined || !/^\d+$/.test(raw.trim())) return undefined;
-  const value = Number.parseInt(raw, 10);
-  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-
-/** flash/pro preset → concrete deepseek model id. Kept local so this file doesn't import the CLI preset bundle. */
-function subagentModelForPreset(preset: "flash" | "pro"): string {
-  return preset === "pro" ? "deepseek-v4-pro" : "deepseek-flash";
-}
-
 export class SkillStore {
   private readonly homeDir: string;
   private readonly projectRoot: string | undefined;
   private readonly customSkillPaths: readonly string[];
   private readonly disableBuiltins: boolean;
-  private readonly subagentModels: Record<string, "flash" | "pro">;
-  private readonly subagentsEnabled: boolean;
 
   constructor(opts: SkillStoreOptions = {}) {
     this.homeDir = opts.homeDir ?? homedir();
@@ -230,19 +142,11 @@ export class SkillStore {
       opts.customSkillPaths?.map((p) => resolveCustomSkillPath(p, baseDir, this.homeDir)) ?? [],
     );
     this.disableBuiltins = opts.disableBuiltins === true;
-    this.subagentModels = opts.subagentModels ?? {};
-    this.subagentsEnabled = opts.subagentsEnabled !== false;
   }
 
   /** True iff this store was configured with a project root. */
   hasProjectScope(): boolean {
     return this.projectRoot !== undefined;
-  }
-
-  /** Resolved knowledge-level subagent gate — the single `!== false` coercion site;
-   *  tool-registration sync reads this instead of re-deriving the default. */
-  allowsSubagents(): boolean {
-    return this.subagentsEnabled;
   }
 
   /** Project scope first so per-repo skill overrides custom/global entries with the same name. */
@@ -299,22 +203,7 @@ export class SkillStore {
         if (!byName.has(skill.name)) byName.set(skill.name, skill);
       }
     }
-    return (
-      [...byName.values()]
-        // Knowledge-level subagent gate: when disabled, `runAs: subagent` skills
-        // don't enter the index/availability surfaces at all (#knowledge-gate).
-        .filter((s) => this.subagentsEnabled || s.runAs !== "subagent")
-        .map((s) => this.applyModelOverride(s))
-        .sort((a, b) => a.name.localeCompare(b.name))
-    );
-  }
-
-  /** Apply `subagentModels` config override on top of frontmatter `model:`. Inline skills are unaffected. */
-  private applyModelOverride(skill: Skill): Skill {
-    if (skill.runAs !== "subagent") return skill;
-    const override = this.subagentModels[skill.name];
-    if (!override) return skill;
-    return { ...skill, model: subagentModelForPreset(override) };
+    return [...byName.values()].map((s) => s).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /** Scaffold a new skill stub at the chosen scope. Refuses to overwrite. */
@@ -415,14 +304,6 @@ export class SkillStore {
       body: loadBodyWithReferences(path, body.trim()),
       scope,
       path,
-      allowedTools: parseAllowedTools(data["allowed-tools"]),
-      runAs: parseRunAs(data.runAs, data.context, data.agent),
-      model: data.model?.startsWith("deepseek-") ? data.model : undefined,
-      maxToolIters: parsePositiveInteger(data["max-tool-iters"]),
-      maxElapsedMs: (() => {
-        const seconds = parsePositiveInteger(data["max-seconds"]);
-        return seconds === undefined ? undefined : seconds * 1000;
-      })(),
     };
   }
 }
@@ -490,19 +371,6 @@ export function skillPathStatus(dir: string): SkillPathStatus {
   }
 }
 
-/** Unknown values default to the safe (non-spawning) `inline` mode. Claude SKILL.md
- *  uses `context: fork` or a non-empty `agent:` field for the same intent. */
-function parseRunAs(
-  raw: string | undefined,
-  context: string | undefined,
-  agent: string | undefined,
-): SkillRunAs {
-  if (raw?.trim() === "subagent") return "subagent";
-  if (context?.trim().toLowerCase() === "fork") return "subagent";
-  if (agent?.trim()) return "subagent";
-  return "inline";
-}
-
 /** Stub markdown for a new skill — minimal frontmatter + scaffolding the user fills in. */
 function skillStubBody(name: string): string {
   return `---
@@ -516,8 +384,6 @@ Replace this body with the playbook the model should follow when this skill is i
 
 Tips:
 - Reference tools by name (run_command, edit_file, search_content, ...)
-- Add \`runAs: subagent\` to frontmatter to spawn an isolated subagent loop
-- Add \`allowed-tools: read_file, search_content\` to scope a subagent's tools
 `;
 }
 
@@ -527,18 +393,30 @@ function skillDescription(s: Pick<Skill, "name" | "description" | "scope">): str
   return t(`builtinSkills.${key}`);
 }
 
-/** Subagent tag goes AFTER the name in brackets — leading-marker tags get copied into `name` arg verbatim. */
-function skillIndexLine(s: Pick<Skill, "name" | "description" | "runAs" | "scope">): string {
-  const tag = s.runAs === "subagent" ? " [subagent]" : "";
-  const clipped = clipIndexDescription(skillDescription(s), s.name, { suffix: tag });
-  return clipped ? `- ${s.name}${tag}: ${clipped}` : `- ${s.name}${tag}`;
+/** Tag goes after the name so a model copying the line still passes a bare identifier. */
+function skillIndexLine(s: Pick<Skill, "name" | "description" | "scope">): string {
+  const clipped = clipIndexDescription(skillDescription(s), s.name);
+  return clipped ? `- ${s.name}: ${clipped}` : `- ${s.name}`;
 }
 
 const MISSING_DESCRIPTION_PLACEHOLDER =
   '(no description: frontmatter is missing a "description:" line; tell the user to add one)';
 
-/** Bodies stay out — prefix must stay short + cacheable; bodies load on demand. */
-export function applySkillsIndex(basePrompt: string, opts: SkillStoreOptions = {}): string {
+const SKILL_INDEX_RULE =
+  'One-liner index. Each entry is either a built-in or a user-authored playbook. Call `run_skill({ name: "<skill-name>", arguments: "<task>" })`: the `name` is JUST the skill identifier, exactly as listed. The body is a playbook: it becomes a tool result you read and follow in this loop.';
+
+/** Only appended for a session that actually owns the spawn tool. */
+const SPAWN_HINT =
+  "To run work in isolation, call `spawn_subagent({ task, tools })` with the whole instruction in `task`.";
+
+/** Bodies stay out — prefix must stay short + cacheable; bodies load on demand.
+ *  `subagents` decides whether the index may advertise `spawn_subagent`: a session
+ *  minted without that tool must not be told it exists. */
+export function applySkillsIndex(
+  basePrompt: string,
+  opts: SkillStoreOptions = {},
+  subagents = false,
+): string {
   const store = new SkillStore(opts);
   const skills = store.list();
   if (skills.length === 0) return basePrompt;
@@ -552,130 +430,13 @@ export function applySkillsIndex(basePrompt: string, opts: SkillStoreOptions = {
     "",
     "# Skills: playbooks you can invoke",
     "",
-    'One-liner index. Each entry is either a built-in or a user-authored playbook. Call `run_skill({ name: "<skill-name>", arguments: "<task>" })`: the `name` is JUST the skill identifier (e.g. `"explore"`), NOT the `[subagent]` tag that appears after it. Entries tagged `[subagent]` spawn an **isolated subagent**, whose tool calls and reasoning never enter your context, only its final answer does. Use subagent skills for tasks that would otherwise flood your context (deep exploration, multi-step research, anything where you only need the conclusion). Plain skills are inlined: their body becomes a tool result you read and act on directly. The user can also invoke a skill by name.',
+    `${SKILL_INDEX_RULE}${subagents ? ` ${SPAWN_HINT}` : ""} The user can also invoke a skill by name.`,
     "",
     "```",
     truncated,
     "```",
   ].join("\n");
 }
-
-const BUILTIN_EXPLORE_BODY = `You are running as an exploration subagent. Your job is to investigate the codebase the parent agent pointed you at, then return one focused, distilled answer.
-
-How to operate:
-- Use read_file, search_files, search_content, directory_tree, list_directory, get_file_info as your primary tools. Stay read-only.
-- For "find all places that call / reference / use X" questions, use \`search_content\` (content grep), NOT \`search_files\` (which only matches file names). This is the most common subagent mistake; using the wrong tool gives empty results and you waste your iter budget chasing a phantom.
-- Cast a wide net first (search_content for symbol references, directory_tree for structure) to map the territory; then read the 3-10 most relevant files in full.
-- Don't read every file: be selective. Aim for breadth on the first pass, depth only where the question demands it.
-- Stop exploring as soon as you can answer the question. The parent doesn't see your tool calls, so over-exploration is pure waste.
-
-Your final answer:
-- One paragraph (or a few short bullets). Lead with the conclusion.
-- Cite specific file paths + line ranges when they support the answer.
-- If the question can't be answered from what you found, say so plainly and suggest where to look next.
-- No follow-up offers, no "let me know if you need more." The parent will ask again if they need more.
-
-${NEGATIVE_CLAIM_RULE}
-
-${TUI_FORMATTING_RULES}
-
-The 'task' the parent gave you is the question you must answer. Treat any other reading of it as scope creep.`;
-
-const BUILTIN_RESEARCH_BODY = `You are running as a research subagent. Your job is to gather information from code AND the web, synthesize it, and return one focused conclusion.
-
-How to operate:
-- Combine code reading (read_file, search_files) with web tools (web_search, web_fetch) as appropriate to the question.
-- For "how does X work" / "is Y supported" questions: web first to find the canonical reference, then verify against the local code.
-- For "what's our policy on Z" / "where do we use Q": local code first, web only if you need to compare against external standards.
-- Cap yourself at ~10 tool calls. If you can't converge in 10, return what you have plus a note about what's missing.
-
-Your final answer:
-- One paragraph (or short bullets). Lead with the conclusion.
-- Cite both code (file:line) AND web sources (URL) when they back the answer.
-- Distinguish "I verified this in code" from "I read this on a docs page": the parent will trust the former more.
-- If the answer is uncertain, say so. Don't invent confidence.
-
-${NEGATIVE_CLAIM_RULE}
-
-${TUI_FORMATTING_RULES}
-
-The 'task' the parent gave you is the research question. Stay on it.`;
-
-const BUILTIN_REVIEW_BODY = `You are running as a code-review subagent. Your job is to inspect the changes the user is about to ship (usually the current git branch vs its upstream) and produce a focused review the parent can hand back to the user.
-
-How to operate:
-- Default scope: the current branch's diff vs the default branch. If the user's task names a specific commit range or files, honor that instead.
-- Discover scope first: \`run_command git status\`, \`git diff --stat\`, \`git log --oneline\` to see what changed. Then \`git diff\` (or \`git diff <base>...HEAD\`) for the actual hunks.
-- Read the touched files (\`read_file\`) when the diff alone doesn't carry enough context: function signatures, surrounding invariants, callers.
-- For "any callers depending on this?" questions: \`search_content\` against the symbol BEFORE asserting impact.
-- Stay read-only. Never \`run_command git commit\`, never write files, never propose SEARCH/REPLACE blocks. The parent decides whether to act on your findings.
-- You have a hard budget of 8 tool calls and 90 seconds. Prioritize the riskiest 2-3 files; when the budget warning appears, stop and return the findings you already verified.
-
-What to look for, in priority order:
-1. **Correctness bugs**: off-by-one, null/undefined handling, race conditions, wrong sign / wrong operator, edge cases the code doesn't handle.
-2. **Security**: injection (SQL, shell, path traversal), secrets in code, missing authz checks, unsafe deserialization.
-3. **Behavior changes the diff hides**: renames that miss callers, removed branches that were load-bearing, error-handling that now swallows what used to surface.
-4. **Tests**: does the change have tests for the new behavior? Are existing tests still meaningful, or did the change make them tautological?
-5. **Style + consistency**: only flag deviations that matter (unsafe \`any\`, missing types in TypeScript, inconsistent error shape). Don't pile on cosmetic nits if the substance is clean.
-
-Your final answer:
-- Lead with a one-sentence verdict: "ship as-is" / "minor nits, OK to ship after" / "blocking issues, do not ship".
-- Then a short bulleted list of issues, each with: file:line citation + the problem in one sentence + what to change.
-- Group by severity if you have more than 4 items: **Blocking**, **Should-fix**, **Nits**.
-- If everything looks clean, say so plainly. Don't manufacture concerns.
-
-${NEGATIVE_CLAIM_RULE}
-
-${TUI_FORMATTING_RULES}
-
-The 'task' the parent gave you describes WHAT to review (a branch, a file set, or "the pending changes"). Stay on it; don't redesign the feature.`;
-
-const BUILTIN_SECURITY_REVIEW_BODY = `You are running as a security-review subagent. Your job is to inspect the changes the user is about to ship (usually the current git branch vs its upstream) through a security lens specifically, and report exploitable issues.
-
-How to operate:
-- Default scope: the current branch's diff vs the default branch. If the user names a different range or a directory, honor that.
-- Discover scope first: \`git status\`, \`git diff --stat\`, \`git diff <base>...HEAD\`. Read touched files (\`read_file\`) when the diff alone doesn't carry security context: auth checks, input validation, the actual handler that calls into the changed function.
-- Use \`search_content\` to verify "is this user-controlled input ever sanitized later?" / "are there other call sites that depend on this validation?" before asserting impact.
-- Stay read-only. Never write, never run destructive commands, never propose SEARCH/REPLACE blocks. The parent decides what to act on.
-- You have a hard budget of 8 tool calls and 90 seconds. Focus on the riskiest 2-3 files; when the budget warning appears, stop and return the findings you already verified.
-
-Threat model (flag with severity):
-
-**CRITICAL** (do-not-ship):
-- SQL / NoSQL / shell / template injection: user input concatenated into a query, command, or template without parameterization.
-- Path traversal: user-controlled filenames touching the filesystem without canonicalization + sandbox check.
-- Authentication / authorization missing: endpoints / actions that should require a session check but don't.
-- Hardcoded secrets: API keys, passwords, signing tokens visible in the diff.
-- Deserialization of untrusted input: \`pickle.loads\`, \`yaml.load\` (non-safe), \`eval\`, \`Function()\`, \`unserialize()\`.
-- Cryptographic mistakes: homemade crypto, weak hashes (MD5/SHA-1) for passwords, missing IVs, ECB mode, predictable nonces.
-
-**HIGH**:
-- XSS: user input rendered into HTML without escaping (or wrong escaping context).
-- SSRF: fetching URLs from user input without an allowlist.
-- Race conditions in security-relevant code: TOCTOU on auth/file checks.
-- Open redirects: user-controlled URL passed to a redirect helper.
-- Insufficient logging on security events (login failure, permission denial): only flag if the codebase clearly DOES log elsewhere.
-
-**MEDIUM**:
-- Verbose error messages leaking internal paths / stack traces / SQL.
-- Missing rate limiting on a credential / token endpoint.
-- Cross-origin / cookie-flag issues (missing \`Secure\` / \`HttpOnly\` / \`SameSite\`).
-
-Things to NOT pile on (out of scope here: the separate review skill covers them):
-- Style, formatting, naming.
-- Performance, refactor opportunities, test coverage gaps that aren't security-relevant.
-- "Should be a constant" / "extract this helper": irrelevant to ship-blocking.
-
-Your final answer:
-- Lead with a one-sentence verdict: "no security issues found", "minor concerns", or "blocking issues".
-- Then a list grouped by severity. Each item: file:line + 1-sentence threat + 1-sentence fix direction (no full SEARCH/REPLACE: the user / parent agent will write that).
-- If clean, say so plainly. Don't manufacture findings.
-
-${NEGATIVE_CLAIM_RULE}
-
-${TUI_FORMATTING_RULES}
-
-The 'task' the parent gave you names what to review. Stay on it; don't redesign the feature.`;
 
 const BUILTIN_TEST_BODY = `You are running as the parent agent: this skill is INLINED, not a subagent. The user asked you to run the tests and fix failures. Your job: run the project's test suite, diagnose any failure, propose fixes as SEARCH/REPLACE edit blocks, then re-run. Repeat until green or you hit a wall you should escalate.
 
@@ -709,77 +470,18 @@ Don't:
 
 Lead each turn with a one-line status: "▸ running \`npm test\` ..." → "▸ 2 failures in tests/foo.test.ts: first is …" → so the user always knows where you are without scrolling tool output.`;
 
-/** Built-in tools the `review` and `security-review` subagents are scoped to.
- *  Bridged MCP tools ride along regardless: a skill narrows this build's tools,
- *  it does not strip the user's MCP servers from the child. */
-const BUILTIN_READ_ONLY_TOOLS = Object.freeze([
-  "run_command",
-  "read_file",
-  "search_files",
-  "search_content",
-  "directory_tree",
-  "list_directory",
-  "get_file_info",
-  "glob",
-  "get_symbols",
-  "find_in_code",
-]);
-
 /** Fields every built-in skill shares: builtin scope, no file path. */
 const BUILTIN_SKILL_BASE: Pick<Skill, "scope" | "path"> = {
   scope: "builtin",
   path: "(builtin)",
 };
 
-/** Read-only subagent defaults shared by `review` and `security-review`. */
-const BUILTIN_READONLY_SUBAGENT: Pick<
-  Skill,
-  "scope" | "path" | "allowedTools" | "maxToolIters" | "maxElapsedMs" | "runAs"
-> = {
-  ...BUILTIN_SKILL_BASE,
-  allowedTools: BUILTIN_READ_ONLY_TOOLS,
-  maxToolIters: 8,
-  maxElapsedMs: 90_000,
-  runAs: "subagent",
-};
-
 const BUILTIN_SKILLS: readonly Skill[] = Object.freeze([
-  Object.freeze<Skill>({
-    name: "explore",
-    description:
-      "Explore the codebase in an isolated subagent: wide-net read-only investigation that returns one distilled answer. Best for: 'find all places that...', 'how does X work across the project', 'survey the code for Y'.",
-    body: BUILTIN_EXPLORE_BODY,
-    ...BUILTIN_SKILL_BASE,
-    runAs: "subagent",
-  }),
-  Object.freeze<Skill>({
-    name: "research",
-    description:
-      "Research a question by combining web search + code reading in an isolated subagent. Best for: 'is X feature supported by lib Y', 'what's the canonical way to do Z', 'compare our impl against the spec'.",
-    body: BUILTIN_RESEARCH_BODY,
-    ...BUILTIN_SKILL_BASE,
-    runAs: "subagent",
-  }),
-  Object.freeze<Skill>({
-    name: "review",
-    description:
-      "Review the pending changes (current branch diff by default) in an isolated subagent: flags correctness, security, missing tests, hidden behavior changes; reports verdict + per-issue file:line. Read-only; the parent decides what to act on.",
-    body: BUILTIN_REVIEW_BODY,
-    ...BUILTIN_READONLY_SUBAGENT,
-  }),
-  Object.freeze<Skill>({
-    name: "security-review",
-    description:
-      "Security-focused review of the current branch diff in an isolated subagent: flags injection/authz/secrets/deserialization/path-traversal/crypto issues, severity-tagged. Read-only. Use when shipping changes that touch auth, input parsing, file IO, or external requests.",
-    body: BUILTIN_SECURITY_REVIEW_BODY,
-    ...BUILTIN_READONLY_SUBAGENT,
-  }),
   Object.freeze<Skill>({
     name: "test",
     description:
       "Run the project's test suite, diagnose failures, propose SEARCH/REPLACE fixes, re-run until green (or stop after 2 fix attempts on the same failure). Inlined: runs in the parent loop so you see the edit blocks and can apply them directly. Detects npm/pnpm/yarn/pytest/go/cargo.",
     body: BUILTIN_TEST_BODY,
     ...BUILTIN_SKILL_BASE,
-    runAs: "inline",
   }),
 ]);

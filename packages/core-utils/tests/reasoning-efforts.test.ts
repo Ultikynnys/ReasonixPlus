@@ -37,7 +37,13 @@ describe("PROVIDER_REASONING_EFFORTS", () => {
 describe("reasoningEffortsFor", () => {
   it("falls back to the static set when the model declares no options", () => {
     expect(reasoningEffortsFor("zai")).toEqual(["low", "high", "max"]);
-    expect(reasoningEffortsFor("openai", undefined)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(reasoningEffortsFor("openai", undefined)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
     expect(reasoningEffortsFor("deepseek", null)).toEqual(["low", "high", "max"]);
   });
 
@@ -45,7 +51,10 @@ describe("reasoningEffortsFor", () => {
     expect(reasoningEffortsFor("zai", ["low", "high", "max"])).toEqual(["low", "high", "max"]);
     expect(reasoningEffortsFor("zai", ["none", "minimal", "low", "high"])).toEqual(["low", "high"]);
     expect(reasoningEffortsFor("deepseek", ["low", "high", "max"])).toEqual(["low", "high", "max"]);
-    expect(reasoningEffortsFor("openai", ["none", "low", "minimal", "max"])).toEqual(["low", "max"]);
+    expect(reasoningEffortsFor("openai", ["none", "low", "minimal", "max"])).toEqual([
+      "low",
+      "max",
+    ]);
   });
 
   it("falls back to the opencode default when the model declares none", () => {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { McpExtensionStatus, McpSpecInfo } from "../protocol";
 import { MailProvider, PLAYWRIGHT_MANAGED_BROWSERS } from "../protocol";

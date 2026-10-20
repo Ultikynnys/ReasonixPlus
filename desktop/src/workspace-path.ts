@@ -9,7 +9,12 @@ function normalizeForComparison(path: string): string {
 
 /** Resolve a workspace-relative path while preserving the workspace platform's separator. */
 export function toWorkspaceAbsolute(path: string, workspaceDir?: string): string {
-  if (!workspaceDir || /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("/") || path.startsWith("\\")) {
+  if (
+    !workspaceDir ||
+    /^[a-zA-Z]:[\\/]/.test(path) ||
+    path.startsWith("/") ||
+    path.startsWith("\\")
+  ) {
     return path;
   }
   const windows = isWindowsPath(workspaceDir);

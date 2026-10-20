@@ -50,9 +50,6 @@ export interface ToolDefinition<A = any, R = any> {
   stormExempt?: boolean;
   /** When true, skip saving full result to disk on truncation. Use for tools that might leak secrets (get_env) or return trivial data. */
   skipTruncationSave?: boolean;
-  /** Bridged from an MCP server (`registerSingleMcpTool`). Subagents inherit these
-   *  even under a skill `allowed-tools` list: that list scopes this build's tools. */
-  bridged?: boolean;
   fn: (args: A, ctx?: ToolCallContext) => R | Promise<R>;
 }
 

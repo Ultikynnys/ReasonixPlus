@@ -129,11 +129,16 @@ describe("reasoning scroll lifecycle", () => {
     vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(700);
     const disconnect = vi.fn();
     let onResize = () => {};
-    vi.stubGlobal("ResizeObserver", class {
-      constructor(callback: () => void) { onResize = callback; }
-      observe = vi.fn();
-      disconnect = disconnect;
-    });
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: () => void) {
+          onResize = callback;
+        }
+        observe = vi.fn();
+        disconnect = disconnect;
+      },
+    );
     const { container, rerender } = render(wrap(<ReasoningCard text="first" streaming />));
     const stream = container.querySelector<HTMLElement>(".reason .stream")!;
     expect(stream.scrollTop).toBe(700);
@@ -356,8 +361,8 @@ describe("ToolCard — expanded body formatting", () => {
     // pre-wrap is on the element (class), not an inline style — shared with plan cards
     expect(argsValue!.className).toContain("pre-text");
     // pretty-printed: keys land on their own lines, not one blob
-    expect(argsValue!.textContent).toContain("\n  \"stepId\": \"step-1\"");
-    expect(argsValue!.textContent).toContain("\n  \"title\":");
+    expect(argsValue!.textContent).toContain('\n  "stepId": "step-1"');
+    expect(argsValue!.textContent).toContain('\n  "title":');
   });
 
   it("keeps line breaks in a multi-line result (multi_edit summary) via pre-wrap", () => {
@@ -451,9 +456,7 @@ describe("SubagentCard — model visibility", () => {
     const { container } = render(
       <SubagentCard
         name="explore"
-        runs={[
-          { ...run, contextMax: 300_000, outputChars: 1_204, toolReadChars: 45_678 },
-        ]}
+        runs={[{ ...run, contextMax: 300_000, outputChars: 1_204, toolReadChars: 45_678 }]}
       />,
     );
 
@@ -470,9 +473,9 @@ describe("SubagentCard — model visibility", () => {
 
   it("shows no row context meter when the daemon omits the cap (older versions)", () => {
     const { container } = render(<SubagentCard name="explore" runs={[run]} />);
-    const statsRole = [
-      ...container.querySelectorAll(".sub-row .role"),
-    ].find((el) => el.textContent?.includes("ctx "));
+    const statsRole = [...container.querySelectorAll(".sub-row .role")].find((el) =>
+      el.textContent?.includes("ctx "),
+    );
     expect(statsRole).toBeUndefined();
     expect(container.textContent).not.toContain("read chars");
   });
@@ -498,12 +501,7 @@ describe("SubagentCard — model visibility", () => {
   });
 
   it("shows no cost metric when the run has no measurable billing", () => {
-    render(
-      <SubagentCard
-        name="explore"
-        runs={[{ ...run, costUsd: 0, billingKind: "none" }]}
-      />,
-    );
+    render(<SubagentCard name="explore" runs={[{ ...run, costUsd: 0, billingKind: "none" }]} />);
     const header = screen.getByRole("button", { name: /explore/ });
     expect(header.textContent).not.toContain("$");
     expect(header.textContent).not.toContain("%");
@@ -618,14 +616,10 @@ describe("SubagentCard — model visibility", () => {
     expect(fullerSubagentTask(full, "rerun the suite")).toBe("rerun the suite");
   });
 
-  it("identifies subagent tool names correctly", () => {
-    expect(isSubagentTool("explore")).toBe(true);
-    expect(isSubagentTool("research")).toBe(true);
-    expect(isSubagentTool("review")).toBe(true);
-    expect(isSubagentTool("security_review")).toBe(true);
-    expect(isSubagentTool("security-review")).toBe(true);
+  it("identifies the one spawn tool and nothing else", () => {
     expect(isSubagentTool("spawn_subagent")).toBe(true);
-    expect(isSubagentTool("run_skill", JSON.stringify({ name: "explore" }))).toBe(true);
+    // Skills are playbooks: invoking one never spawns a child.
+    expect(isSubagentTool("run_skill")).toBe(false);
     expect(isSubagentTool("read_file")).toBe(false);
     expect(isSubagentTool("run_command")).toBe(false);
   });
@@ -1086,7 +1080,14 @@ describe("NoticeCard — compaction throbber states", () => {
 
   it("carries the jump anchor recorded with its event", () => {
     const { container } = render(
-      wrap(<NoticeCard text="Context compacted." severity="success" running={false} anchor="notice:n1" />),
+      wrap(
+        <NoticeCard
+          text="Context compacted."
+          severity="success"
+          running={false}
+          anchor="notice:n1"
+        />,
+      ),
     );
     expect(container.querySelector('[data-anchor="notice:n1"]')).toBeTruthy();
   });

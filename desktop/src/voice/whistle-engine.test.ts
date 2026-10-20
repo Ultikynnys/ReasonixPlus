@@ -3,8 +3,8 @@ import {
   CACTUS_MAX_SECONDS,
   CACTUS_SAMPLE_RATE,
   type CactusModule,
-  CactusSpeechEngine,
   type CactusModuleFactory,
+  CactusSpeechEngine,
 } from "./whistle-engine";
 
 interface TranscribeCall {
@@ -106,7 +106,9 @@ describe("CactusSpeechEngine", () => {
 
   it("throws when the archive holds no speech model", async () => {
     const { engine } = engineWith({ models: 1 }); // NEEDLE_TEXT only
-    await expect(engine.loadModel(new Uint8Array([1]))).rejects.toThrow(/does not contain a speech/);
+    await expect(engine.loadModel(new Uint8Array([1]))).rejects.toThrow(
+      /does not contain a speech/,
+    );
   });
 
   it("surfaces needle_last_error when load fails", async () => {

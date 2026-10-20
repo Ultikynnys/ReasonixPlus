@@ -59,7 +59,10 @@ describe("turnEvents", () => {
   it("skips a machine-written record so tool feedback is not a prompt row", () => {
     const rows = turnEvents([
       userTurn(1, "real question", 1_000),
-      { ...userTurn(2, "Screen capture (monitor 0 [0, 0] to [1920, 1080])", 2_000), injected: true },
+      {
+        ...userTurn(2, "Screen capture (monitor 0 [0, 0] to [1920, 1080])", 2_000),
+        injected: true,
+      },
       userTurn(3, "next question", 3_000),
     ]);
 
@@ -72,7 +75,14 @@ describe("sessionEvents", () => {
   it("orders turns and recorded verdicts by when they happened", () => {
     const rows = sessionEvents(messages, [
       planEvent(),
-      { id: "compaction-7", type: "compaction", ts: 1_600, turn: 1, outcome: "auto", label: "folded 12" },
+      {
+        id: "compaction-7",
+        type: "compaction",
+        ts: 1_600,
+        turn: 1,
+        outcome: "auto",
+        label: "folded 12",
+      },
     ]);
     expect(rows.map((row) => `${row.kind}:${row.ts}`)).toEqual([
       "turn:1000",
@@ -89,24 +99,28 @@ describe("sessionEvents", () => {
   });
 
   it("carries the options a choice was picked from", () => {
-    const [choice] = sessionEvents([], [
-      {
-        id: "choice-1",
-        type: "choice",
-        ts: 10,
-        turn: 1,
-        outcome: "pick",
-        label: "B",
-        options: ["A", "B"],
-      },
-    ]);
+    const [choice] = sessionEvents(
+      [],
+      [
+        {
+          id: "choice-1",
+          type: "choice",
+          ts: 10,
+          turn: 1,
+          outcome: "pick",
+          label: "B",
+          options: ["A", "B"],
+        },
+      ],
+    );
     expect(choice?.options).toEqual(["A", "B"]);
   });
 
   it("carries a plan's body and checklist", () => {
-    const [plan] = sessionEvents([], [
-      planEvent({ body: "## Plan\n\nDo the thing.", steps: ["First", "Second"] }),
-    ]);
+    const [plan] = sessionEvents(
+      [],
+      [planEvent({ body: "## Plan\n\nDo the thing.", steps: ["First", "Second"] })],
+    );
     expect(plan?.body).toBe("## Plan\n\nDo the thing.");
     expect(plan?.steps).toEqual(["First", "Second"]);
   });
@@ -116,18 +130,21 @@ describe("sessionEvents", () => {
   });
 
   it("carries a subagent spawn with the instruction it was given", () => {
-    const [spawn] = sessionEvents([], [
-      {
-        id: "subagent-tc-7",
-        type: "subagent",
-        ts: 10,
-        turn: 1,
-        outcome: "started",
-        label: "explore",
-        detail: "Survey the Events tab consumers.",
-        anchor: "call:tc-7",
-      },
-    ]);
+    const [spawn] = sessionEvents(
+      [],
+      [
+        {
+          id: "subagent-tc-7",
+          type: "subagent",
+          ts: 10,
+          turn: 1,
+          outcome: "started",
+          label: "explore",
+          detail: "Survey the Events tab consumers.",
+          anchor: "call:tc-7",
+        },
+      ],
+    );
     expect(spawn).toMatchObject({
       kind: "subagent",
       outcome: "started",
@@ -180,7 +197,9 @@ describe("EventsPanel", () => {
       />,
     );
     const planRow = document.querySelector('.ctx-evt[data-kind="plan"]');
-    fireEvent.click(within(planRow as HTMLElement).getByRole("button", { name: "Jump to this event" }));
+    fireEvent.click(
+      within(planRow as HTMLElement).getByRole("button", { name: "Jump to this event" }),
+    );
     expect(onJump).toHaveBeenCalledWith({ turn: 1, anchor: "call:p1" });
   });
 
@@ -342,8 +361,8 @@ describe("EventsPanel", () => {
 
   it("labels every row with its own event type", () => {
     renderPanel();
-    const labels = Array.from(document.querySelectorAll(".ctx-evt")).map((row) =>
-      row.querySelector(".ctx-evt-kind")?.textContent,
+    const labels = Array.from(document.querySelectorAll(".ctx-evt")).map(
+      (row) => row.querySelector(".ctx-evt-kind")?.textContent,
     );
     // No count/filter bar: the type is each row's own tag.
     expect(labels).toEqual(["User", "Plan", "Choice", "User"]);

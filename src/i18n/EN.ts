@@ -33,7 +33,6 @@ export const EN: TranslationSchema = {
     mcp: "Model Context Protocol helpers — discover servers, test your setup.",
     version: "Print Reasonix+ version.",
     update: "Check for a newer Reasonix+ and install it.",
-    index: "Build (or incrementally refresh) a local semantic search index.",
   },
   stats: {
     usageHint: "appended once per turn",
@@ -439,9 +438,6 @@ export const EN: TranslationSchema = {
     sessionTitleRenamed: '▸ session renamed to "{name}" — {title}',
     sessionTitleAutoRenamed: '▸ auto-named session "{name}" — {title}',
     workspaceSwitched: "▸ workspace switched to {root}",
-    semanticRepointed: "▸ semantic_search re-pointed at {root}",
-    semanticDisabledForRoot: "▸ semantic_search disabled (no compatible index in {root})",
-    semanticRebootstrapFailed: "▸ semantic_search re-bootstrap failed: {reason}",
     denied: "▸ denied: {cmd}{context}",
     alwaysAllowed: '▸ always allowed "{prefix}" for {dir}',
     runningCommand: "▸ running: {cmd}",
@@ -1374,9 +1370,8 @@ export const EN: TranslationSchema = {
   },
   startup: {
     codeRooted:
-      '\u25b8 Reasonix+ backend: rooted at {rootDir}, session "{session}" \u00b7 {tools} native tool(s){semantic}',
+      '\u25b8 Reasonix+ backend: rooted at {rootDir}, session "{session}" \u00b7 {tools} native tool(s)',
     ephemeral: "(ephemeral)",
-    semanticOn: " \u00b7 semantic_search on",
   },
   doctorErrors: {
     unreadable: "{path} unreadable \u2014 {message}",

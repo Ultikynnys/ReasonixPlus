@@ -4,25 +4,25 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import type { Settings as SettingsType } from "../App";
 import { feedbackSounds } from "../feedback-sounds";
 import { formatBytes } from "../format";
-import { t, type TKey } from "../i18n";
+import { type TKey, t } from "../i18n";
 import { I } from "../icons";
 import {
   MODEL_CATALOG_GROUP_LABELS,
-  deriveModelCatalog,
   type ModelCatalogGroupKey,
+  deriveModelCatalog,
 } from "../model-catalog";
 import type {
   FeedbackCueId,
   FeedbackCueSetting,
+  MailAuthPhase,
+  MailAuthState,
   McpExtensionCheck,
   McpExtensionStatus,
   McpSpecInfo,
-  MailAuthPhase,
-  MailAuthState,
   PlaywrightBrowserInstall,
+  PlaywrightExtensionBrowser,
   PlaywrightManagedBrowser,
   PlaywrightMcpConnectionMode,
-  PlaywrightExtensionBrowser,
   SettingsPatch,
 } from "../protocol";
 import {

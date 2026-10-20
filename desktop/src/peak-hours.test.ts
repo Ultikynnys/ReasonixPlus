@@ -90,9 +90,9 @@ describe("Ollama Cloud rate periods", () => {
   it("counts down through weekends to the next real transition", () => {
     expect(minutesUntilRateChange(weekday(11, 30), OLLAMA_RATE_SCHEDULE)).toBe(30);
     expect(minutesUntilRateChange(weekday(17, 30), OLLAMA_RATE_SCHEDULE)).toBe(30);
-    expect(
-      minutesUntilRateChange(new Date(Date.UTC(2026, 8, 4, 18)), OLLAMA_RATE_SCHEDULE),
-    ).toBe(3960);
+    expect(minutesUntilRateChange(new Date(Date.UTC(2026, 8, 4, 18)), OLLAMA_RATE_SCHEDULE)).toBe(
+      3960,
+    );
     expect(minutesUntilRateChange(sunday(12), OLLAMA_RATE_SCHEDULE)).toBe(1440);
   });
 

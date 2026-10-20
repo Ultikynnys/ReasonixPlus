@@ -2301,7 +2301,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 28px;
 }
 
-/* ---------- JUMP BAR (message markers on the transcript scrollbar) ---------- *//* ---------- TURN HEADERS ---------- */
+/* ---------- JUMP BAR (message markers on the transcript scrollbar) ---------- */ /* ---------- TURN HEADERS ---------- */
 
 .turn-divider {
   display: flex;
@@ -2527,8 +2527,13 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   background: transparent;
   cursor: zoom-in;
 }
-.image-preview-trigger img { display: block; }
-.image-preview-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.image-preview-trigger img {
+  display: block;
+}
+.image-preview-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 .image-viewer {
   width: calc(100vw - 48px);
   height: calc(100vh - 48px);
@@ -2541,9 +2546,20 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   background: var(--bg);
   overflow: hidden;
 }
-.image-viewer[open] { display: flex; flex-direction: column; }
-.image-viewer::backdrop { background: rgb(0 0 0 / 80%); }
-.image-viewer-name { margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 30%; }
+.image-viewer[open] {
+  display: flex;
+  flex-direction: column;
+}
+.image-viewer::backdrop {
+  background: rgb(0 0 0 / 80%);
+}
+.image-viewer-name {
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 30%;
+}
 .image-viewer-viewport {
   flex: 1;
   min-width: 0;
@@ -2553,7 +2569,9 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   overscroll-behavior: contain;
   cursor: grab;
 }
-.image-viewer-viewport:active { cursor: grabbing; }
+.image-viewer-viewport:active {
+  cursor: grabbing;
+}
 .image-viewer-image-stage {
   display: grid;
   place-items: center;
@@ -2561,7 +2579,14 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   height: max-content;
   margin: auto;
 }
-.image-viewer-image-stage img { display: block; max-width: none; max-height: none; margin: 0; user-select: none; pointer-events: none; }
+.image-viewer-image-stage img {
+  display: block;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  user-select: none;
+  pointer-events: none;
+}
 .presented-file-info {
   display: flex;
   min-width: 0;
@@ -2606,9 +2631,20 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   padding: 5px 8px;
   cursor: pointer;
 }
-.preview-toolbar button:disabled { opacity: 0.4; cursor: default; }
-.pdf-page-scroll { max-height: 480px; overflow: auto; background: #555; }
-.pdf-page-scroll canvas { display: block; margin: 0 auto; background: white; }
+.preview-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.pdf-page-scroll {
+  max-height: 480px;
+  overflow: auto;
+  background: #555;
+}
+.pdf-page-scroll canvas {
+  display: block;
+  margin: 0 auto;
+  background: white;
+}
 .presented-file-text {
   grid-column: 1 / -1;
   min-width: 0;
@@ -2620,7 +2656,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 12px/1.5 var(--font-mono);
+  font: 12px / 1.5 var(--font-mono);
 }
 .presented-file-actions {
   display: flex;
@@ -3406,7 +3442,9 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   background-position: right 10px center;
   background-size: 12px;
 }
-.ctx-plan-select:hover { border-color: var(--border-strong); }
+.ctx-plan-select:hover {
+  border-color: var(--border-strong);
+}
 .ctx-plan-select:focus {
   outline: none;
   border-color: var(--accent);
@@ -3471,7 +3509,9 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   padding: 9px 0;
   border-bottom: 1px dashed var(--border);
 }
-.ctx-plan-step:last-child { border-bottom: 0; }
+.ctx-plan-step:last-child {
+  border-bottom: 0;
+}
 .ctx-plan-check {
   width: 16px;
   height: 16px;
@@ -3491,9 +3531,22 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   color: var(--accent);
   border-color: var(--accent);
 }
-.ctx-plan-title { color: var(--fg); font-weight: 600; font-size: 13px; }
-.ctx-plan-action { color: var(--muted); font-size: 11px; margin-top: 2px; }
-.ctx-plan-result { color: var(--fg-2); font-size: 11px; margin-top: 4px; white-space: pre-wrap; }
+.ctx-plan-title {
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 13px;
+}
+.ctx-plan-action {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.ctx-plan-result {
+  color: var(--fg-2);
+  font-size: 11px;
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
 
 /* ---- Plan card ---- */
 
@@ -5249,11 +5302,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   top: 0;
   bottom: 0;
   border-left: 1px dashed var(--warning);
-  background-image: repeating-linear-gradient(
-    -45deg,
-    var(--warning) 0 1px,
-    transparent 1px 4px
-  );
+  background-image: repeating-linear-gradient(-45deg, var(--warning) 0 1px, transparent 1px 4px);
   opacity: 0.65;
   pointer-events: none;
 }
@@ -6467,11 +6516,18 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   }
 }
 
-.composer-busy-status {
-  display: inline-flex;
+/* Own row so the status text is never ellipsized by the key hints beside it. */
+.composer-busy-row {
+  display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  row-gap: 2px;
   min-width: 0;
+  padding: 0 6px 4px;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--muted-2);
 }
 .composer-busy-pip {
   width: 6px;

@@ -110,9 +110,7 @@ describe("VoiceModelSettings", () => {
   it("renders the Whistle card with its size and engine label but no param count", () => {
     render(<VoiceModelSettings />);
 
-    const card = screen
-      .getByText("Whistle (Multilingual)")
-      .closest(".voice-card") as HTMLElement;
+    const card = screen.getByText("Whistle (Multilingual)").closest(".voice-card") as HTMLElement;
     expect(within(card).getByText("~17 MB")).toBeTruthy();
     expect(within(card).getByText("Multilingual")).toBeTruthy();
     expect(within(card).getByText("Cactus engine")).toBeTruthy();

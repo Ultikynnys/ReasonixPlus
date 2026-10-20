@@ -149,33 +149,6 @@ describe("codeSystemPrompt", () => {
     });
   });
 
-  describe("semantic_search routing fragment", () => {
-    it("is absent by default (no index registered)", () => {
-      const out = codeSystemPrompt(root);
-      expect(out).not.toMatch(/# Search routing/);
-    });
-
-    it("is appended when hasSemanticSearch is true", () => {
-      const out = codeSystemPrompt(root, { hasSemanticSearch: true });
-      expect(out).toMatch(/# Search routing/);
-      expect(out).toMatch(/semantic_search/);
-      expect(out).toMatch(/search_content/);
-      expect(out).toMatch(/Descriptive queries/);
-    });
-
-    it("places the routing fragment BEFORE the .gitignore section", () => {
-      // .gitignore content can change between sessions; the routing
-      // fragment must sit before it so the cacheable portion of the
-      // prompt remains contiguous.
-      writeFileSync(join(root, ".gitignore"), "node_modules\n");
-      const out = codeSystemPrompt(root, { hasSemanticSearch: true });
-      const routingAt = out.indexOf("# Search routing");
-      const gitignoreAt = out.indexOf("# Project .gitignore");
-      expect(routingAt).toBeGreaterThan(0);
-      expect(gitignoreAt).toBeGreaterThan(routingAt);
-    });
-  });
-
   describe("modelId interpolation (#582)", () => {
     it("defaults to flash when modelId is omitted (back-compat)", () => {
       const out = codeSystemPrompt(root);
@@ -193,43 +166,52 @@ describe("codeSystemPrompt", () => {
     });
   });
 
-  describe("subagents disabled — knowledge-level gate", () => {
-    it("swaps the delegation section for a disabled note when enableSubagents=false", () => {
-      writeFileSync(cfgPath, JSON.stringify({ enableSubagents: false }), "utf8");
+  describe("subagents — a per-session choice, off by default", () => {
+    it("says nothing about subagents when the session was minted without them", () => {
       const out = codeSystemPrompt(root, { configPath: cfgPath });
-      expect(out).not.toContain("Delegating to subagents via Skills");
-      expect(out).toContain("# Subagents are disabled");
-      expect(out).toContain("Settings → Tools");
+      expect(out).not.toContain("spawn_subagent");
+      expect(out).not.toContain("# Subagents");
     });
 
-    it("keeps the delegation section when the setting is absent (default on)", () => {
+    it("does not read the config default: a live settings edit cannot shape this prompt", () => {
+      writeFileSync(cfgPath, JSON.stringify({ enableSubagents: true }), "utf8");
       const out = codeSystemPrompt(root, { configPath: cfgPath });
-      expect(out).toContain("Delegating to subagents via Skills");
-      expect(out).not.toContain("# Subagents are disabled");
+      expect(out).not.toContain("spawn_subagent");
     });
 
-    it("omits subagent skills from the skills index when disabled", () => {
+    it("renders the usage and task-authoring guidance only for an opted-in session", () => {
+      const out = codeSystemPrompt(root, { configPath: cfgPath, subagentsEnabled: true });
+      expect(out).toContain("# Subagents");
+      expect(out).toContain("spawn_subagent({ task, tools })");
+      // Usage rule + how to write the brief, both load-bearing.
+      expect(out).toContain("The task is the whole brief");
+      expect(out).toContain("**Where to look**");
+      expect(out).toContain("**Default: don't delegate.**");
+    });
+
+    it("keeps the disabled prompt free of the section's scar", () => {
+      const off = codeSystemPrompt(root, { configPath: cfgPath });
+      const on = codeSystemPrompt(root, { configPath: cfgPath, subagentsEnabled: true });
+      expect(on.length).toBeGreaterThan(off.length);
+      // The neighbours keep their single blank line; nothing is left collapsed or doubled.
+      expect(off).toMatch(/approval\.\n\n# When to edit vs\. when to explore/);
+      expect(off).not.toContain("__SUBAGENT_SECTION__");
+    });
+
+    it("lists a skill as a plain playbook identifier, subagent or not", () => {
       writeFileSync(cfgPath, JSON.stringify({ enableSubagents: false }), "utf8");
       const skillDir = join(root, ".reasonix", "skills", "my-audit");
       mkdirSync(skillDir, { recursive: true });
       writeFileSync(
         join(skillDir, "SKILL.md"),
-        "---\nname: my-audit\ndescription: Run a custom audit\nrunAs: subagent\n---\n\nAudit body.\n",
+        "---\nname: my-audit\ndescription: Run a custom audit\n---\n\nAudit body.\n",
         "utf8",
       );
       const out = codeSystemPrompt(root, { configPath: cfgPath });
-      expect(out).not.toContain("my-audit");
-      // Inline skills still surface.
-      const skillDir2 = join(root, ".reasonix", "skills", "fmt");
-      mkdirSync(skillDir2, { recursive: true });
-      writeFileSync(
-        join(skillDir2, "SKILL.md"),
-        "---\nname: fmt\ndescription: Format the codebase\n---\n\nFormat body.\n",
-        "utf8",
-      );
-      const out2 = codeSystemPrompt(root, { configPath: cfgPath });
-      expect(out2).toContain("- fmt: Format the codebase");
-      expect(out2).not.toContain("my-audit");
+      // A skill is instructions, not a spawner: the index stays the same either way,
+      // and the old `[subagent]` tag decoration is gone.
+      expect(out).toContain("- my-audit: Run a custom audit");
+      expect(out).not.toContain("[subagent]");
     });
   });
 

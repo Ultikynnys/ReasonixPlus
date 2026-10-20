@@ -111,8 +111,10 @@ describe("desktop Composer model catalog", () => {
   it("preserves an existing uncatalogued active model without a Custom entry control", () => {
     const { container } = renderComposer({ modelLabel: "legacy-gateway-model" });
     fireEvent.click(container.querySelector(".model-pill")!);
-    expect(container.querySelector('.popup-item[data-active="true"]')?.textContent).toContain("legacy-gateway-model");
-    expect(container.querySelector('.model-menu-list input')).toBeNull();
+    expect(container.querySelector('.popup-item[data-active="true"]')?.textContent).toContain(
+      "legacy-gateway-model",
+    );
+    expect(container.querySelector(".model-menu-list input")).toBeNull();
   });
 
   it("renders provider category headers without a Custom provider", () => {
@@ -221,11 +223,7 @@ describe("desktop Composer model catalog", () => {
         "claude-sonnet-4-6",
         "gemini-3.7-flash-tiered",
       ],
-      enabledModels: [
-        "claude-opus-4-6-thinking",
-        "claude-sonnet-4-6",
-        "gemini-3.7-flash-tiered",
-      ],
+      enabledModels: ["claude-opus-4-6-thinking", "claude-sonnet-4-6", "gemini-3.7-flash-tiered"],
     });
     fireEvent.click(container.querySelector(".model-pill")!);
 
@@ -236,10 +234,7 @@ describe("desktop Composer model catalog", () => {
       if (!groupEl) return [];
       const items: string[] = [];
       let next = groupEl.nextElementSibling;
-      while (
-        next &&
-        !next.classList.contains("model-menu-group")
-      ) {
+      while (next && !next.classList.contains("model-menu-group")) {
         if (next.classList.contains("popup-item")) {
           items.push(next.textContent ?? "");
         }

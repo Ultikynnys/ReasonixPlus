@@ -3,10 +3,10 @@
 import { act, cleanup, render } from "@testing-library/react";
 import { useCallback, useReducer } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { baseAppState } from "../../../tests/support/app-state.js";
 import { reduce } from "../App";
 import type { IncomingEvent } from "../protocol";
 import { useTurnWatchdog } from "./useTurnWatchdog";
-import { baseAppState } from "../../../tests/support/app-state.js";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -138,13 +138,7 @@ describe("useTurnWatchdog — stale optimistic send", () => {
   it("releases a send the daemon never acked after the stale window", () => {
     const onStaleAck = vi.fn();
     render(
-      <Harness
-        engaged
-        awaitingAckWithoutBusy
-        connected
-        probe={() => {}}
-        onStaleAck={onStaleAck}
-      />,
+      <Harness engaged awaitingAckWithoutBusy connected probe={() => {}} onStaleAck={onStaleAck} />,
     );
     act(() => {
       vi.advanceTimersByTime(9_999);
@@ -176,13 +170,7 @@ describe("useTurnWatchdog — stale optimistic send", () => {
   it("cancels the stale timer when the ack arrives before the window closes", () => {
     const onStaleAck = vi.fn();
     const { rerender } = render(
-      <Harness
-        engaged
-        awaitingAckWithoutBusy
-        connected
-        probe={() => {}}
-        onStaleAck={onStaleAck}
-      />,
+      <Harness engaged awaitingAckWithoutBusy connected probe={() => {}} onStaleAck={onStaleAck} />,
     );
     act(() => {
       vi.advanceTimersByTime(5_000);
@@ -208,10 +196,7 @@ describe("busy parity — lost $turn_complete recovery (end to end)", () => {
    *  reply lands as an incoming event, the reducer reconciles. The fake daemon
    *  here is IDLE — the UI's turn was wedged busy by a lost terminal event. */
   function ReconcileHarness({ initialBusy }: { initialBusy: boolean }) {
-    const [state, dispatch] = useReducer(
-      reduce,
-      baseAppState({ ready: true, busy: initialBusy }),
-    );
+    const [state, dispatch] = useReducer(reduce, baseAppState({ ready: true, busy: initialBusy }));
     const probe = useCallback(() => {
       dispatch({
         t: "incoming",

@@ -147,14 +147,7 @@ export function Card({
     <div className="card-wrap" data-anchor={anchor}>
       <div className={compact ? "card is-compact" : "card"} data-tone={tone} data-open={open}>
         <div className="card-head-row">
-          <CardHead
-            icon={icon}
-            kind={kind}
-            name={name}
-            meta={meta}
-            open={open}
-            onToggle={toggle}
-          />
+          <CardHead icon={icon} kind={kind} name={name} meta={meta} open={open} onToggle={toggle} />
           {headRight}
         </div>
         {open ? <div className="card-body">{children}</div> : null}
@@ -346,9 +339,7 @@ function FollowStream({
 function ReasoningStream({ text, streaming }: { text: string; streaming: boolean }) {
   // Streaming splits on single newlines so each line appears as it arrives;
   // completed reasoning groups into paragraphs. Neither path truncates.
-  const rows = streaming
-    ? text.split(/\r?\n/).filter((row) => row.trim())
-    : text.split(/\n\n+/);
+  const rows = streaming ? text.split(/\r?\n/).filter((row) => row.trim()) : text.split(/\n\n+/);
 
   return (
     <FollowStream text={text} streaming={streaming} label={t("cards.reasoningStreamLabel")}>
@@ -671,7 +662,13 @@ export function ToolCard({
   const fileRef = useMemo(() => extractToolFileRef(args), [args]);
   const formattedArgs = useMemo(() => (args ? formatArgs(args) : ""), [args]);
   const running = result === undefined;
-  const tone: Tone = running ? (waiting ? "warning" : "default") : ok === false ? "danger" : "success";
+  const tone: Tone = running
+    ? waiting
+      ? "warning"
+      : "default"
+    : ok === false
+      ? "danger"
+      : "success";
   // Web tool results (web_search, web_fetch, …) carry the engine that
   // served the call (resolved from config at call time) as an `engine:`
   // line — surface it in the header. No per-tool special-casing.
@@ -957,9 +954,7 @@ export function NoticeCard({
       tone={tone}
       icon={icon}
       kind={severity}
-      name={
-        name ?? (running !== undefined ? t("cards.compactionName") : noticeName(severity))
-      }
+      name={name ?? (running !== undefined ? t("cards.compactionName") : noticeName(severity))}
       meta={
         running !== undefined ? (
           <StatusIcon
@@ -997,26 +992,11 @@ export function WarningCard({
   );
 }
 
-export const SUBAGENT_TOOLS = new Set([
-  "explore",
-  "research",
-  "review",
-  "security_review",
-  "security-review",
-  "spawn_subagent",
-]);
+export const SUBAGENT_TOOLS = new Set(["spawn_subagent"]);
 
-export function isSubagentTool(name: string, args?: string): boolean {
-  if (SUBAGENT_TOOLS.has(name)) return true;
-  if (name === "run_skill" && args) {
-    try {
-      const parsed = JSON.parse(args);
-      if (typeof parsed.name === "string" && SUBAGENT_TOOLS.has(parsed.name)) return true;
-    } catch {
-      // ignore JSON parse error
-    }
-  }
-  return false;
+/** The one tool that spawns a child. Skills are playbooks now, so nothing else delegates. */
+export function isSubagentTool(name: string): boolean {
+  return SUBAGENT_TOOLS.has(name);
 }
 
 /** The instruction a subagent call was created with, verbatim. A progress event
@@ -1141,11 +1121,7 @@ function SubagentActivityRows({ run }: { run: import("../App").SubagentRunProgre
     <div className="sub-activity" aria-label="Subagent activity">
       {rowsToShow.map((row) => (
         <div className="sub-activity-row" key={row.id}>
-          <span
-            className={`sub-activity-dot ${row.kind}${
-              row.status ? ` ${row.status}` : ""
-            }`}
-          />
+          <span className={`sub-activity-dot ${row.kind}${row.status ? ` ${row.status}` : ""}`} />
           <span className="sub-activity-tag">{row.kind}</span>
           <span className="sub-activity-text" title={sanitizeTerminalText(row.text)}>
             {sanitizeTerminalText(row.text)}

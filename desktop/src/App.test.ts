@@ -276,9 +276,7 @@ describe("Desktop App reducer — usage", () => {
     });
     expect(state.busy).toBe(false);
     expect(state.awaitingAck).toBe(false);
-    const resync = state.messages.find(
-      (m) => m.kind === "notice" && m.text.includes("Resynced"),
-    );
+    const resync = state.messages.find((m) => m.kind === "notice" && m.text.includes("Resynced"));
     expect(resync).toBeDefined();
   });
 
@@ -309,9 +307,9 @@ describe("Desktop App reducer — usage", () => {
     });
     expect(state.busy).toBe(true);
     expect(state.awaitingAck).toBe(false);
-    expect(
-      state.messages.some((m) => m.kind === "notice" && m.text.includes("Resynced")),
-    ).toBe(false);
+    expect(state.messages.some((m) => m.kind === "notice" && m.text.includes("Resynced"))).toBe(
+      false,
+    );
   });
 
   it("compacting clears from the daemon even while a card still spins", () => {
@@ -351,9 +349,9 @@ describe("Desktop App reducer — usage", () => {
       event: { type: "$tab_status", busy: false, queued: 0, compacting: false, switching: false },
     });
     expect(state.compacting).toBe(false);
-    expect(
-      state.messages.some((m) => m.kind === "notice" && m.text.includes("Resynced")),
-    ).toBe(false);
+    expect(state.messages.some((m) => m.kind === "notice" && m.text.includes("Resynced"))).toBe(
+      false,
+    );
   });
 
   it("appends a late kernel error at the tail in creation order, not re-anchored to its turn", () => {
@@ -787,7 +785,6 @@ describe("Desktop App reducer — usage", () => {
     inc({ type: "model.delta", id: 5, ts: "t", turn: 2, channel: "content", text: "streaming" });
     expect(labels(s.messages)).toEqual(["user-1", "assistant-1", "user-2", "assistant-2(pending)"]);
 
-
     act({ t: "push_notice", text: "Model → deepseek-v4-flash", severity: "info" });
     // A mid-turn notice seals the in-flight card, so later output opens a NEW
     // card below it; the notice itself still lands in creation order (last).
@@ -798,7 +795,6 @@ describe("Desktop App reducer — usage", () => {
       "assistant-2",
       "info-2",
     ]);
-
 
     inc({ type: "error", id: 6, ts: "t", turn: 2, message: "429 rate limit", recoverable: false });
     expect(labels(s.messages)).toEqual([
@@ -939,7 +935,7 @@ describe("Desktop App reducer — usage", () => {
             {
               kind: "tool" as const,
               callId: "review-1",
-              name: "review",
+              name: "spawn_subagent",
               args: JSON.stringify({ task: "review changes" }),
               startedAt: 200,
             },
@@ -1650,7 +1646,11 @@ describe("Desktop App reducer — yolo interactive countdown", () => {
     expect(next.turnStatus).toBe("waiting_user");
     expect(hasPendingIntervention(next)).toBe(true);
 
-    const resolved = reduce(next, { t: "resolve_choice", id: 12, verdict: { type: "pick", optionId: "A" } });
+    const resolved = reduce(next, {
+      t: "resolve_choice",
+      id: 12,
+      verdict: { type: "pick", optionId: "A" },
+    });
     expect(hasPendingIntervention(resolved)).toBe(false);
     expect(resolved.turnStatus).toBe("calling_tool");
     // The Events tab keeps what was picked, not just that the gate closed.
@@ -1676,8 +1676,6 @@ describe("desktop thread layout", () => {
     );
   });
 });
-
-
 
 describe("Desktop App reducer — compaction card lifecycle", () => {
   const startedEvent = (id: number, trigger: "manual" | "auto" | "overflow" = "manual") =>
@@ -2087,9 +2085,7 @@ describe("Desktop App reducer — Events tab recordings", () => {
     const staged = reduce(
       {
         ...initialState(),
-        pendingChoices: [
-          { id: 3, question: "Which parser?", options: [], allowCustom: true },
-        ],
+        pendingChoices: [{ id: 3, question: "Which parser?", options: [], allowCustom: true }],
       },
       { t: "resolve_choice", id: 3, verdict: { type: "text", text: "neither" } },
     );
@@ -2134,7 +2130,7 @@ describe("Desktop App reducer — Events tab recordings", () => {
         ts: "2026-05-27T00:00:00.000Z",
         turn: 2,
         callId: "tc-7",
-        name: "explore",
+        name: "spawn_subagent",
         args: JSON.stringify({ task }),
       },
     });
@@ -2143,7 +2139,7 @@ describe("Desktop App reducer — Events tab recordings", () => {
         id: "subagent-tc-7",
         type: "subagent",
         outcome: "started",
-        label: "explore",
+        label: "spawn_subagent",
         // The instruction, whole: the row and the card are the only record of
         // what the child was asked to do.
         detail: task,
@@ -2160,7 +2156,7 @@ describe("Desktop App reducer — Events tab recordings", () => {
       ts: "2026-05-27T00:00:00.000Z",
       turn: 1,
       callId: "tc-1",
-      name: "review",
+      name: "spawn_subagent",
       args: JSON.stringify({ task: "review the diff" }),
     } as const;
     const once = reduce(initialState(), { t: "incoming", event: intent });
@@ -2177,7 +2173,7 @@ describe("Desktop App reducer — Events tab recordings", () => {
         ts: "2026-05-27T00:00:00.000Z",
         turn: 1,
         callId: "tc-3",
-        name: "explore",
+        name: "spawn_subagent",
         args: JSON.stringify({ task: "find the callers" }),
       },
     });
@@ -2279,7 +2275,10 @@ describe("Desktop App reducer — card ordering", () => {
 
   it("keeps a mid-turn compaction card above the post-compaction assistant output", () => {
     let state = reduce(initialState(), { t: "incoming", event: turnStarted(1) });
-    state = reduce(state, { t: "incoming", event: reasoningDelta(1, "thinking before compaction") });
+    state = reduce(state, {
+      t: "incoming",
+      event: reasoningDelta(1, "thinking before compaction"),
+    });
     state = reduce(state, { t: "incoming", event: compactionStarted(1) });
     state = reduce(state, { t: "incoming", event: compactionDone(1) });
     state = reduce(state, { t: "incoming", event: reasoningDelta(1, "thinking after compaction") });
@@ -2383,12 +2382,7 @@ describe("Desktop App reducer — card ordering", () => {
 
     // The compaction card stays where the boundary put it; the turn's later
     // output opens a NEW card below it.
-    expect(state.messages.map((m) => m.kind)).toEqual([
-      "user",
-      "assistant",
-      "notice",
-      "assistant",
-    ]);
+    expect(state.messages.map((m) => m.kind)).toEqual(["user", "assistant", "notice", "assistant"]);
     const noticeIdx = state.messages.findIndex((m) => m.kind === "notice");
     const after = state.messages[state.messages.length - 1];
     if (after?.kind !== "assistant") throw new Error("expected a post-boundary card");
@@ -2428,7 +2422,10 @@ describe("Desktop App reducer — card ordering", () => {
 
     expect(next.messages.map((m) => m.kind)).toEqual(["user", "assistant", "notice", "assistant"]);
     expect(next.messages[1]).toMatchObject({ pending: false, closed: true });
-    expect(next.messages.at(-1)).toMatchObject({ pending: true, segments: [{ kind: "reasoning" }] });
+    expect(next.messages.at(-1)).toMatchObject({
+      pending: true,
+      segments: [{ kind: "reasoning" }],
+    });
     expect(next.messages.at(-1)).not.toHaveProperty("closed", true);
   });
 
@@ -2758,17 +2755,13 @@ describe("Desktop App reducer — card ordering", () => {
     });
     const notices = next.messages.filter((m) => m.kind === "notice");
     expect(notices.map((m) => (m.kind === "notice" ? m.text : ""))).toEqual(["kept"]);
-    expect(next.messages.map((m) => (m.kind === "notice" ? `notice-${m.turn}` : `${m.kind}-${m.turn}`))).toEqual([
-      "user-1",
-      "assistant-1",
-      "notice-1",
-    ]);
+    expect(
+      next.messages.map((m) => (m.kind === "notice" ? `notice-${m.turn}` : `${m.kind}-${m.turn}`)),
+    ).toEqual(["user-1", "assistant-1", "notice-1"]);
   });
 });
 
 describe("Desktop App reducer — session.retracted file derivation", () => {
-
-
   it("session.retracted replaces the transcript and re-derives files", () => {
     const base = {
       ...initialState(),
@@ -4129,14 +4122,14 @@ describe("Desktop App reducer — subagent progress", () => {
             {
               kind: "tool" as const,
               callId: "parent-a",
-              name: "review",
+              name: "spawn_subagent",
               args: "{}",
               startedAt: 1,
             },
             {
               kind: "tool" as const,
               callId: "parent-b",
-              name: "review",
+              name: "spawn_subagent",
               args: "{}",
               startedAt: 1,
             },
@@ -4187,7 +4180,7 @@ describe("Desktop App reducer — subagent progress", () => {
         {
           kind: "tool" as const,
           callId,
-          name: "explore",
+          name: "spawn_subagent",
           args: '{"task":"look"}',
           startedAt: 1,
         },
@@ -4249,12 +4242,8 @@ describe("Desktop App reducer — subagent progress", () => {
           )
         : [],
     );
-    expect(cards[0]?.[0]).toEqual([
-      { runId: "sub-a", reasoningChars: 1_000, outputChars: 10 },
-    ]);
-    expect(cards[1]?.[0]).toEqual([
-      { runId: "sub-b", reasoningChars: 5_000, outputChars: 50 },
-    ]);
+    expect(cards[0]?.[0]).toEqual([{ runId: "sub-a", reasoningChars: 1_000, outputChars: 10 }]);
+    expect(cards[1]?.[0]).toEqual([{ runId: "sub-b", reasoningChars: 5_000, outputChars: 50 }]);
   });
 
   it("pairs child tool activity and settles a failed run", () => {
@@ -4269,7 +4258,7 @@ describe("Desktop App reducer — subagent progress", () => {
             {
               kind: "tool" as const,
               callId: "parent",
-              name: "explore",
+              name: "spawn_subagent",
               args: "{}",
               startedAt: 1,
             },
@@ -4331,7 +4320,7 @@ describe("Desktop App reducer — subagent progress", () => {
             {
               kind: "tool" as const,
               callId: "tc-1",
-              name: "explore",
+              name: "spawn_subagent",
               args: "{}",
               startedAt: 1,
             },
@@ -4375,7 +4364,7 @@ describe("Desktop App reducer — subagent progress", () => {
             {
               kind: "tool" as const,
               callId: "parent-sub",
-              name: "explore",
+              name: "spawn_subagent",
               args: "{}",
               startedAt: 1,
             },
@@ -4445,7 +4434,7 @@ describe("Desktop App reducer — subagent progress", () => {
             {
               kind: "tool" as const,
               callId: "parent-live",
-              name: "research",
+              name: "spawn_subagent",
               args: "{}",
               startedAt: 1,
             },
@@ -4515,7 +4504,7 @@ describe("Desktop App reducer — subagent progress", () => {
             {
               kind: "tool" as const,
               callId: "tc-1",
-              name: "explore",
+              name: "spawn_subagent",
               args: JSON.stringify({ task: instruction }),
               startedAt: 1,
             },

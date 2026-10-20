@@ -104,9 +104,7 @@ export async function downloadWhistleWeights(
 }
 
 /** Returns the cached `.cact` bytes, or null when not present. */
-export async function getCachedWhistleWeights(
-  model: CactusWeightsRef,
-): Promise<Uint8Array | null> {
+export async function getCachedWhistleWeights(model: CactusWeightsRef): Promise<Uint8Array | null> {
   if (typeof caches === "undefined") return null;
   try {
     const cache = await caches.open(WEIGHTS_CACHE);

@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Balance, Settings, UsageStats } from "../App";
 import { t } from "../i18n";
 import { I } from "../icons";
+import { formatMoney } from "../money";
 import { isOffPeak, minutesUntilRateChange, rateMultiplier } from "../peak-hours";
 import type {
   AntigravityQuota,
@@ -28,7 +29,6 @@ import type {
 } from "../protocol";
 import { THEME, THEME_STYLES, type Theme, type ThemeStyle, themeForStyle } from "../theme";
 import { hitPercent, tokenLabel } from "./format";
-import { formatMoney } from "../money";
 import { activationHandler } from "./keyboard";
 import { localizeShortcutText } from "./shortcut";
 
@@ -226,11 +226,10 @@ export function StatusBar({
   const opencodeQuotaBilling = provider === "opencode" && ep?.opencodePlan === "go";
   const opencodeFreeBilling = provider === "opencode" && ep?.opencodePlan === "free";
   const mimoQuotaBilling = provider === "mimo";
-  const sessionQuotaProvider =
-    openaiQuotaBilling
-      ? "openai"
-      : provider === "gemini"
-        ? provider
+  const sessionQuotaProvider = openaiQuotaBilling
+    ? "openai"
+    : provider === "gemini"
+      ? provider
       : ollamaQuotaBilling
         ? "ollama"
         : zaiQuotaBilling
@@ -311,8 +310,9 @@ export function StatusBar({
           left: Math.round(ollamaWeekly.remainingPct),
           weeklyResets: ollamaWeekly.resetsAt ? formatReset(new Date(ollamaWeekly.resetsAt)) : "-",
           session: ollamaSession ? Math.round(ollamaSession.remainingPct) : "-",
-          sessionResets:
-            ollamaSession?.resetsAt ? formatReset(new Date(ollamaSession.resetsAt)) : "-",
+          sessionResets: ollamaSession?.resetsAt
+            ? formatReset(new Date(ollamaSession.resetsAt))
+            : "-",
         })
       : ollamaQuotaData || (ollamaQuotaReason && !ollamaKeyMissing)
         ? t("statusbar.ollamaNoDataUnavailable")
@@ -347,9 +347,7 @@ export function StatusBar({
       ? t("statusbar.antigravityQuotaTitle", {
           left: agRemainingPct ?? 0,
           plan:
-            antigravityQuotaData.plan?.name ??
-            antigravityQuotaData.plan?.tierId ??
-            "Antigravity",
+            antigravityQuotaData.plan?.name ?? antigravityQuotaData.plan?.tierId ?? "Antigravity",
           resets: agActive.resetTime ? formatReset(new Date(agActive.resetTime)) : "-",
         })
       : t("statusbar.antigravityNoData");

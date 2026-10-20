@@ -55,11 +55,7 @@ describe("getTabsToClear", () => {
 });
 
 describe("TabMenu component", () => {
-  const tabs = [
-    { id: "tab-1" },
-    { id: "tab-2" },
-    { id: "tab-3" },
-  ];
+  const tabs = [{ id: "tab-1" }, { id: "tab-2" }, { id: "tab-3" }];
 
   it("renders the 3 options and handles clicking each option", () => {
     const onClear = vi.fn();

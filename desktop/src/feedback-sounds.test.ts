@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  type FeedbackSoundPlayer,
   FEEDBACK_SOUND_SOURCES,
+  type FeedbackSoundPlayer,
   createFeedbackSoundPlayer,
   feedbackSounds,
   primeFeedbackSounds,

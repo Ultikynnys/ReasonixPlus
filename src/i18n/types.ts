@@ -30,7 +30,6 @@ export interface TranslationSchema {
     mcp: string;
     version: string;
     update: string;
-    index: string;
   };
   stats: {
     usageHint: string;
@@ -201,9 +200,6 @@ export interface TranslationSchema {
     sessionTitleRenamed: string;
     sessionTitleAutoRenamed: string;
     workspaceSwitched: string;
-    semanticRepointed: string;
-    semanticDisabledForRoot: string;
-    semanticRebootstrapFailed: string;
     denied: string;
     alwaysAllowed: string;
     runningCommand: string;
@@ -740,7 +736,6 @@ export interface TranslationSchema {
   startup: {
     codeRooted: string;
     ephemeral: string;
-    semanticOn: string;
   };
   doctorErrors: {
     unreadable: string;

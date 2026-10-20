@@ -1,10 +1,6 @@
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import {
-  type SessionInfo,
-  type SessionMutation,
-  sortSessionsByCreationDescending,
-} from "../App";
+import { type SessionInfo, type SessionMutation, sortSessionsByCreationDescending } from "../App";
 import { t, useLang } from "../i18n";
 import { I } from "../icons";
 import type { SessionPlanLabel } from "../plan-labels";

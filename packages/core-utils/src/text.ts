@@ -9,11 +9,7 @@ export function flattenText(text: string): string {
 
 /** Last `n` lines of `text` (CRLF-aware). With `elisionMarker`, a longer input is
  *  prefixed by a `[… N earlier lines …]` note — shared by the job/command output tails. */
-export function tailLines(
-  text: string,
-  n: number,
-  opts: { elisionMarker?: boolean } = {},
-): string {
+export function tailLines(text: string, n: number, opts: { elisionMarker?: boolean } = {}): string {
   if (!text) return "";
   const lines = text.split(/\r?\n/);
   if (opts.elisionMarker && lines.length > n) {

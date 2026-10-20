@@ -1,4 +1,4 @@
-/** Nested .gitignore evaluation — shared by the at-mention picker walker and the semantic chunker. */
+/** Nested .gitignore evaluation — shared by the at-mention picker walker. */
 
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";

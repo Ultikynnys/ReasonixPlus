@@ -351,6 +351,7 @@ import {
   sessionExists,
   sessionNoticesPath,
   sessionPath,
+  sessionSubagentsEnabled,
   sessionUiEventsPath,
   stampSessionWorkspace,
   timestampSuffix,
@@ -4247,15 +4248,12 @@ function emitSkills(tab: Tab): void {
     const store = new SkillStore({
       projectRoot: tab.rootDir,
       customSkillPaths: loadResolvedSkillPaths(tab.rootDir),
-      subagentModels: loadSubagentModels(),
     });
     const items = store.list().map((s) => ({
       name: s.name,
       description: s.description,
       scope: s.scope,
       path: s.path,
-      runAs: s.runAs,
-      model: s.model,
     }));
     emit({ type: "$skills", items }, tab.id);
     emitTabDiagnostic(tab, "skills.list.completed", { count: items.length });
@@ -4304,6 +4302,10 @@ interface Tab {
    *  chat menu. `undefined` = subagents implicitly follow the main agent's
    *  model. Persisted in session meta like the main model. */
   currentSubagentModel?: string;
+  /** Whether the session this tab is bound to was minted with `spawn_subagent`.
+   *  Frozen per session: changing it rewrites the tool spec and a prompt section,
+   *  so only a session boundary (mint, restore, switch) may move it. */
+  subagents: boolean;
   /** Per-tab reasoning effort — restored from the session's meta on load so a config reset doesn't flip it back to the global default. */
   currentReasoningEffort: import("../../config.js").ReasoningEffort;
   /** User-configured context-window cap (tokens); undefined = per-model default (300K). */
@@ -4537,7 +4539,14 @@ export function adoptableRestoredSession(
 function mintSessionFor(
   rootDir: string,
   prefs?: ModelPrefs,
-  options: { materialize?: boolean; mcp?: SessionMcpState; mcpSetup?: boolean } = {},
+  options: {
+    materialize?: boolean;
+    mcp?: SessionMcpState;
+    mcpSetup?: boolean;
+    /** Session-creation flag, frozen into the meta: this chat either has the spawn
+     *  tool or it does not, for its whole life. */
+    subagents?: boolean;
+  } = {},
 ): string {
   const materialize = options.materialize !== false;
   // Virtual deletion replacements need unique names even though they do not
@@ -4568,6 +4577,7 @@ function mintSessionFor(
       ...(options.mcpSetup
         ? { mcpPending: true }
         : { mcp: options.mcp ?? sessionMcpFromConfig(rootDir) }),
+      subagents: options.subagents === true,
     });
   } catch (err) {
     // meta is for filtering only: failure shouldn't block chat, but LOG
@@ -4627,17 +4637,20 @@ function stampSessionModelPrefs(tab: Tab): void {
  *  `editMode` pins the trailing "Permissions (live)" block to a just-saved selection so
  *  the block cannot lag the user's flip behind a config re-read. */
 export function refreshTabSystemPrompt(
-  tab: Pick<Tab, "rootDir" | "currentModel" | "system"> & {
+  tab: Pick<Tab, "rootDir" | "currentModel" | "system" | "subagents"> & {
     currentSession?: string;
-    toolset: Pick<CodeToolset, "semantic"> | null;
+    /** Presence only: a tab whose toolset has not been built yet must not be rewritten. */
+    toolset: object | null;
   },
   opts?: { editMode?: EditMode },
 ): void {
   if (!tab.toolset) return;
   tab.system = codeSystemPrompt(tab.rootDir, {
-    hasSemanticSearch: tab.toolset.semantic.enabled,
     modelId: tab.currentModel,
     editMode: opts?.editMode,
+    // The session's frozen flag, never live config: a settings edit must not
+    // rewrite the prefix of a conversation already in flight.
+    subagentsEnabled: sessionSubagentsEnabled(tab),
   });
 }
 
@@ -4646,8 +4659,9 @@ export function refreshTabSystemPrompt(
  *  the running loop's prefix so even a mid-turn request sees the new selection. */
 export function refreshEditModeKnowledge(
   tab: Pick<Tab, "rootDir" | "currentModel" | "system"> & {
-    toolset: (Pick<CodeToolset, "semantic"> & { tools: CodeToolset["tools"] }) | null;
+    toolset: { tools: CodeToolset["tools"] } | null;
     runtime: { loop: { prefix: { replaceSystem: (system: string) => boolean } } } | null;
+    subagents: boolean;
   },
   editMode: EditMode,
 ): void {
@@ -4672,17 +4686,20 @@ function restoreSessionModelPrefs(tab: Tab, meta: SessionMeta): void {
   }
   tab.currentReasoningEffort = prefs.reasoningEffort;
   tab.currentSubagentModel = prefs.subagentModel;
+  bindSessionSubagents(tab, sessionSubagentsEnabled(meta));
 }
 
-/** Knowledge-level refresh after an enableSubagents toggle: sync the dedicated
- *  spawn tools on the live registry, recompute the system prompt (skills index +
- *  section), and rebuild the runtime like a model switch. */
-function refreshSubagentKnowledge(tab: Tab, enabled: boolean): void {
-  const toolset = tab.toolset;
-  if (!toolset) return;
-  toolset.syncSubagentTools(enabled);
+/** Bind the tab's subagent capability to the session it now runs, so the registry and
+ *  the prompt section can never disagree with the frozen meta value. Session boundary
+ *  only: flipping the flag inside one conversation would rewrite the cached prefix. */
+function bindSessionSubagents(tab: Tab, enabled: boolean): void {
+  // Re-registering rebuilds the tool's closure (and its spawn counters), so a bind
+  // that agrees with the tab's current value must not touch the registry.
+  const changed = tab.subagents !== enabled;
+  tab.subagents = enabled;
+  if (!changed || !tab.toolset) return;
+  tab.toolset.syncSubagentTools(enabled);
   refreshTabSystemPrompt(tab);
-  tab.runtime = tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
 }
 
 /** Add/remove JEV at the knowledge level, then rebuild the immutable tool-spec prefix. */
@@ -5174,6 +5191,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       subagentModel?: string;
       /** Fresh chat: hold the channel in MCP-setup state until servers are confirmed. */
       mcpSetup?: boolean;
+      /** Session-creation flag for the session this skeleton mints. */
+      subagents?: boolean;
     },
     pending = false,
   ): Tab {
@@ -5211,6 +5230,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       currentSubagentModel: restore?.subagentModel,
       currentReasoningEffort: restore?.reasoningEffort ?? loadReasoningEffort(),
       ctxMaxOverride: loadContextTokens(),
+      // A new session's capability is decided at creation: an explicit restore value
+      // (New chat / duplicate) wins, else the Settings default — off unless opted in.
+      subagents: restore?.subagents ?? loadEnableSubagents(),
       toolset: null,
       system: "",
       initialization: null,
@@ -5241,6 +5263,17 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // new tab materializes eagerly. A persisted pairing that names another
     // workspace's session is dropped here so it can't outlive the fix.
     const restoredSession = adoptableRestoredSession(restore?.session, dir);
+    // Seed the flag from the session we are about to bind, not from the creation
+    // default: the skeleton is announced (and its settings emitted) before startTabInit
+    // reads the meta, and a later meta failure must not leave a tab claiming a
+    // capability its session never had.
+    if (restoredSession) {
+      try {
+        tab.subagents = sessionSubagentsEnabled(loadSessionMeta(restoredSession));
+      } catch {
+        void 0; /* unreadable meta: keep the creation default; startTabInit logs the failure */
+      }
+    }
     tab.currentSession = pending
       ? ""
       : restoredSession
@@ -5255,6 +5288,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             {
               materialize: shouldMaterializeRestoredSession(restore),
               mcpSetup: restore?.mcpSetup === true,
+              subagents: tab.subagents,
             },
           );
     tabs.set(tab.id, tab);
@@ -5374,13 +5408,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // The registry exists only now, so re-emit: the first settings event carried an
     // empty read-only tool list (the mode-rules card rendered that as "none").
     emitSettings(tab);
-    void settleTabSemantic(tab, tab.rootDir, toolset);
     emitTabDiagnostic(
       tab,
       "tab.bootstrap.completed",
       {
         toolCount: toolset.tools.specs().length,
-        semanticEnabled: toolset.semantic.enabled,
         queueWaitMs: Number(queueWaitMs.toFixed(3)),
         durationMs: Number((performance.now() - bootstrapStartedAt).toFixed(3)),
       },
@@ -5400,53 +5432,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // it resolves.
     void sessionsInitialized.catch(() => undefined);
     // Only the tab the splash reveals has to be fully ready before the splash
-    // lifts. Waiting on every restored tab's toolset build, semantic bootstrap
-    // and runtime multiplied the splash by the number of open tabs; a
+    // lifts. Waiting on every restored tab's toolset build and runtime
+    // multiplied the splash by the number of open tabs; a
     // background tab clears as soon as its own settings and transcript are on
     // screen, and its build is queued behind the focused tab so it is done long
     // before the user can click it.
     if (tab === first) await tab.initialization;
     emit({ type: "$workspace_initialized", revision: ++tab.initializationRevision }, tab.id);
-  }
-
-  async function settleTabSemantic(tab: Tab, root: string, toolset: CodeToolset): Promise<void> {
-    const startedAt = performance.now();
-    emitTabDiagnostic(tab, "tab.semantic.started", undefined, "debug");
-    try {
-      const result = await toolset.reBootstrapSemantic(root);
-      if (tab.rootDir !== root || tab.toolset !== toolset) {
-        emitTabDiagnostic(tab, "tab.semantic.stale", {
-          durationMs: Number((performance.now() - startedAt).toFixed(3)),
-        });
-        return;
-      }
-      toolset.semantic.enabled = result.enabled;
-      refreshTabSystemPrompt(tab);
-      if (tab.runtime) {
-        const prefix = tab.runtime.loop.prefix;
-        if (result.enabled) {
-          const spec = toolset.tools
-            .specs()
-            .find((candidate) => candidate.function.name === "semantic_search");
-          if (spec) prefix.addTool(spec);
-        } else {
-          prefix.removeTool("semantic_search");
-        }
-        prefix.replaceSystem(tab.system);
-      }
-      emitTabDiagnostic(tab, "tab.semantic.completed", {
-        enabled: result.enabled,
-        durationMs: Number((performance.now() - startedAt).toFixed(3)),
-      });
-    } catch (error) {
-      emitDiagnosticError("tab.semantic.failed", error, {
-        tabId: tab.id,
-        details: {
-          ...tabDiagnosticState(tab),
-          durationMs: Number((performance.now() - startedAt).toFixed(3)),
-        },
-      });
-    }
   }
 
   // Bridges every configured MCP server into the tab's registry, coalesced per
@@ -6314,7 +6306,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (resume) {
       loadSessionIntoTab(tab, resume.name, { abortTurn, cancelPendingGates, persistOpenTabs });
     } else {
-      tab.currentSession = mintSessionFor(target);
+      // A workspace with no sessions yet: mint one at the current Settings default.
+      const enabled = loadEnableSubagents();
+      tab.currentSession = mintSessionFor(target, undefined, { subagents: enabled });
+      bindSessionSubagents(tab, enabled);
       tab.runtime = tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
       emit(
         {
@@ -6335,7 +6330,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (tab.runtime) {
       void bridgeTabMcp(tab);
     }
-    void settleTabSemantic(tab, target, toolset);
     emitSessionsForWorkspace(target);
     emitSettings(tab);
     emitSkills(tab);
@@ -6476,7 +6470,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           reasoningEffort: tab.currentReasoningEffort,
           subagentModel: tab.currentSubagentModel,
         },
-        { materialize: shouldMaterializeFreshSession(options.reason) },
+        {
+          materialize: shouldMaterializeFreshSession(options.reason),
+          // Clearing a conversation mints a new session that keeps the capability
+          // the user already chose here, so no tool/prompt resync is needed.
+          subagents: tab.subagents,
+        },
       );
       persistOpenTabs();
       tab.runtime = tab.toolset && tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
@@ -6716,6 +6715,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     return {
       rootDir,
       getMcpSpecs: () => effectiveMcpSpecs(tab),
+      subagentsEnabled: sessionSubagentsEnabled(tab),
       onSkillInstalled: () => emitSkills(tab),
       onJobsChanged: () => emitJobs(),
       onRulesChanged: () => emitSettingsToAllTabs(),
@@ -7076,8 +7076,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   });
 
   // Fast-path: emit disk-only events immediately so the UI shell renders
-  // before the toolset finishes building. Heavy work (semantic bootstrap,
-  // MCP probes, runtime construction) runs in initTabToolset which fires
+  // before the toolset finishes building. Heavy work (MCP probes, runtime
+  // construction) runs in initTabToolset which fires
   // `$ready` when it completes — until then `state.ready` keeps the
   // composer disabled, so users can't send a message before the runtime
   // exists. emitBalance was already fire-and-forget.
@@ -7097,6 +7097,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     creating?: boolean;
     /** Fresh chat: enter the MCP-setup state (picker + withheld $ready). */
     mcpSetup?: boolean;
+    /** Session-creation flag for the session this tab mints; absent = the Settings
+     *  default, which is off. */
+    subagents?: boolean;
   };
 
   /** Announcing is the cheap half of opening a tab: skeleton plus `$tab_opened`.
@@ -8413,6 +8416,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           model: tab.currentModel,
           reasoningEffort: tab.currentReasoningEffort,
           subagentModel: tab.currentSubagentModel,
+          // Fresh session, so the capability comes from the creation default, exactly
+          // like the MCP picker: off unless the user opted in.
+          subagents: loadEnableSubagents(),
           // Fresh session, so the new channel shows a create indicator until
           // its first $sessions snapshot lists the minted session.
           creating: true,
@@ -8461,7 +8467,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           },
           // Duplicate is the exception: inherit the SOURCE session's live MCP
           // state, not the current Settings default.
-          { mcp: sessionMcpState(tab.currentSession) ?? sessionMcpFromConfig(tab.rootDir) },
+          {
+            mcp: sessionMcpState(tab.currentSession) ?? sessionMcpFromConfig(tab.rootDir),
+            // Same rule for the subagent flag: the clone behaves like its source.
+            subagents: tab.subagents,
+          },
         );
         // Auto-proceed off (default): seed the blob as the opening user turn and
         // stop, so the user drives the next message. On: leave the log empty and
@@ -8927,11 +8937,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           for (const openTab of tabs.values()) emitSettings(openTab);
         }
         if (msg.enableSubagents !== undefined) {
+          // Default for NEW chats only. A live session's flag is frozen in its meta:
+          // rewriting the tool spec and prompt section mid-conversation would throw
+          // away the cached prefix, so existing tabs are left exactly as they are.
           saveEnableSubagents(msg.enableSubagents);
-          for (const openTab of tabs.values()) {
-            refreshSubagentKnowledge(openTab, msg.enableSubagents);
-            emitSettings(openTab);
-          }
+          for (const openTab of tabs.values()) emitSettings(openTab);
         }
         if (msg.elevationEnabled !== undefined) {
           // The shell tool reads this via a live getter, so no toolset rebuild

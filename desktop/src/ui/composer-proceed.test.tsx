@@ -10,8 +10,8 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 afterEach(cleanup);
 
 import { Composer, StoredComposer } from "./composer";
-import { makeComposerBaseProps } from "./composer-test-fixtures";
 import { createComposerDraft } from "./composer-draft";
+import { makeComposerBaseProps } from "./composer-test-fixtures";
 
 const baseProps = makeComposerBaseProps();
 
@@ -30,11 +30,17 @@ describe("Composer quick send dropdown", () => {
     function Conversation() {
       parentRender();
       const textareaRef = useRef<HTMLTextAreaElement>(null);
-      return <StoredComposer {...baseProps} draftStore={store} textareaRef={textareaRef}
-        onSend={() => {
-          sent(store.getSnapshot());
-          store.setDraft("");
-        }} />;
+      return (
+        <StoredComposer
+          {...baseProps}
+          draftStore={store}
+          textareaRef={textareaRef}
+          onSend={() => {
+            sent(store.getSnapshot());
+            store.setDraft("");
+          }}
+        />
+      );
     }
     render(<Conversation />);
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;

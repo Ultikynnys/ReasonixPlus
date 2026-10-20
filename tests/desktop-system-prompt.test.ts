@@ -27,14 +27,13 @@ describe("refreshTabSystemPrompt", () => {
       rootDir: root,
       currentModel: "deepseek-v4-pro",
       system: "stale",
-      toolset: { semantic: { enabled: true } },
+      toolset: {},
     };
 
     refreshTabSystemPrompt(tab);
 
     expect(tab.system).toBe(
       codeSystemPrompt(root, {
-        hasSemanticSearch: true,
         modelId: "deepseek-v4-pro",
         configPath,
       }),
@@ -52,22 +51,6 @@ describe("refreshTabSystemPrompt", () => {
     refreshTabSystemPrompt(tab);
 
     expect(tab.system).toBe("stale");
-  });
-
-  it("tracks semantic-search capability changes", () => {
-    const tab = {
-      rootDir: root,
-      currentModel: "deepseek-v4-flash",
-      system: "stale",
-      toolset: { semantic: { enabled: false } },
-    };
-
-    refreshTabSystemPrompt(tab);
-    expect(tab.system).not.toContain("# Search routing");
-
-    tab.toolset.semantic.enabled = true;
-    refreshTabSystemPrompt(tab);
-    expect(tab.system).toContain("# Search routing");
   });
 });
 
@@ -93,7 +76,7 @@ describe("refreshEditModeKnowledge", () => {
       rootDir: root,
       currentModel: "deepseek-v4-flash",
       system: "stale",
-      toolset: { semantic: { enabled: false }, tools },
+      toolset: { tools },
       runtime: { loop: { prefix: { replaceSystem } } },
     };
     return { tab, tools, replaceSystem };
@@ -124,7 +107,7 @@ describe("refreshEditModeKnowledge", () => {
       rootDir: root,
       currentModel: "deepseek-v4-flash",
       system: "stale",
-      toolset: { semantic: { enabled: false }, tools: new ToolRegistry() },
+      toolset: { tools: new ToolRegistry() },
       runtime: null,
     };
     refreshEditModeKnowledge(tab, "never-ask");
@@ -170,7 +153,7 @@ describe("refreshTabSystemPrompt — session MCP overlay", () => {
       currentModel: "deepseek-v4-pro",
       currentSession: "sess-mcp",
       system: "stale",
-      toolset: { semantic: { enabled: false } },
+      toolset: {},
     };
 
     refreshTabSystemPrompt(disabledTab);
@@ -188,5 +171,27 @@ describe("refreshTabSystemPrompt — session MCP overlay", () => {
     expect(enabledTab.system).toBe(disabledPrompt);
     expect(enabledTab.system).not.toContain("playwright");
     expect(enabledTab.system).not.toContain("[disabled]");
+  });
+
+  it("renders the subagent section from the session's flag, not from config", () => {
+    // Config says ON, but a session minted without the tool must stay silent.
+    writeFileSync(configPath, JSON.stringify({ enableSubagents: true }), "utf8");
+    const base = {
+      rootDir: root,
+      currentModel: "deepseek-v4-pro",
+      system: "stale",
+      toolset: { semantic: { enabled: false } },
+    };
+
+    const off = { ...base, subagents: false };
+    refreshTabSystemPrompt(off);
+    expect(off.system).not.toContain("spawn_subagent");
+    expect(off.system).not.toContain("# Subagents");
+
+    // Same workspace, same config file: only the session's frozen flag differs.
+    const on = { ...base, subagents: true };
+    refreshTabSystemPrompt(on);
+    expect(on.system).toContain("spawn_subagent({ task, tools })");
+    expect(on.system).toContain("The task is the whole brief");
   });
 });

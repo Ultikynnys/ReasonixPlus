@@ -36,13 +36,13 @@ import {
   subagentCallDetails,
 } from "./cards";
 import { ApprovalCard, TaskCard, type TaskStepView } from "./extra-cards";
-import { PdfPreview } from "./pdf-preview";
 import { ZoomableImage } from "./image-preview";
+import { PdfPreview } from "./pdf-preview";
 import {
-  countPlanStepDiff,
-  diffPlanSteps,
   type PlanStepChangeKind,
   type PlanStepFieldChange,
+  countPlanStepDiff,
+  diffPlanSteps,
 } from "./plan-diff";
 import { callAnchor } from "./transcript-jump";
 
@@ -115,12 +115,20 @@ function PresentedTextPreview({ src }: { src: string }) {
     })();
     return () => controller.abort();
   }, [src]);
-  if (failed) return <output className="presented-file-status" role="alert">{t("thread.previewFailed")}</output>;
-  if (text === null) return <output className="presented-file-status">{t("thread.previewLoading")}</output>;
+  if (failed)
+    return (
+      <output className="presented-file-status" role="alert">
+        {t("thread.previewFailed")}
+      </output>
+    );
+  if (text === null)
+    return <output className="presented-file-status">{t("thread.previewLoading")}</output>;
   return (
     <div className="presented-file-text">
       <pre>{text}</pre>
-      {truncated ? <output className="presented-file-status">{t("thread.previewTruncated")}</output> : null}
+      {truncated ? (
+        <output className="presented-file-status">{t("thread.previewTruncated")}</output>
+      ) : null}
     </div>
   );
 }
@@ -130,7 +138,11 @@ function audioTime(seconds: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
-function PresentedAudio({ src, name, onError }: { src: string; name: string; onError: () => void }) {
+function PresentedAudio({
+  src,
+  name,
+  onError,
+}: { src: string; name: string; onError: () => void }) {
   const audio = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -145,43 +157,80 @@ function PresentedAudio({ src, name, onError }: { src: string; name: string; onE
   return (
     <div className="presented-file-audio">
       {/* biome-ignore lint/a11y/useMediaCaption: Arbitrary audio files do not include captions. */}
-      <audio ref={audio} src={src} preload="metadata" aria-label={name}
-        onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
-        onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+      <audio
+        ref={audio}
+        src={src}
+        preload="metadata"
+        aria-label={name}
+        onLoadedMetadata={(event) =>
+          setDuration(
+            Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0,
+          )
+        }
+        onDurationChange={(event) =>
+          setDuration(
+            Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0,
+          )
+        }
         onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
-        onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
         onError={fail}
       />
-      <button type="button" className="presented-audio-toggle" disabled={failed}
+      <button
+        type="button"
+        className="presented-audio-toggle"
+        disabled={failed}
         aria-label={playing ? t("thread.audioPause") : t("thread.audioPlay")}
         onClick={() => {
           const element = audio.current;
           if (!element) return;
           if (element.paused) void element.play().catch(fail);
           else element.pause();
-        }}>
+        }}
+      >
         {playing ? <Pause size={16} /> : <Play size={16} />}
       </button>
       <div className="presented-audio-timeline">
-        <input type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration)}
-          disabled={!duration || failed} aria-label={t("thread.audioSeek")}
+        <input
+          type="range"
+          min="0"
+          max={duration || 1}
+          step="0.1"
+          value={Math.min(position, duration)}
+          disabled={!duration || failed}
+          aria-label={t("thread.audioSeek")}
           aria-valuetext={`${audioTime(position)} / ${audioTime(duration)}`}
-          style={{ background: `linear-gradient(to right, var(--accent) ${duration ? position / duration * 100 : 0}%, var(--border) 0%)` }}
+          style={{
+            background: `linear-gradient(to right, var(--accent) ${duration ? (position / duration) * 100 : 0}%, var(--border) 0%)`,
+          }}
           onChange={(event) => {
             const value = Number(event.currentTarget.value);
             if (audio.current) audio.current.currentTime = value;
             setPosition(value);
-          }} />
-        <div className="presented-audio-time"><span>{audioTime(position)}</span><span>{audioTime(duration)}</span></div>
+          }}
+        />
+        <div className="presented-audio-time">
+          <span>{audioTime(position)}</span>
+          <span>{audioTime(duration)}</span>
+        </div>
       </div>
       <label className="presented-audio-volume">
         <Volume2 size={14} aria-hidden="true" />
-        <input type="range" min="0" max="1" step="0.01" value={volume} aria-label={t("thread.audioVolume")}
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={volume}
+          aria-label={t("thread.audioVolume")}
           onChange={(event) => {
             const value = Number(event.currentTarget.value);
             setVolume(value);
             if (audio.current) audio.current.volume = value;
-          }} />
+          }}
+        />
       </label>
     </div>
   );
@@ -196,7 +245,10 @@ function PresentedFileCard({ file }: { file: PresentedFile }) {
   const isAudio = /\.(?:aac|flac|m4a|mp3|oga|ogg|opus|wav|weba)$/i.test(file.name);
   const isVideo = /\.(?:mp4|m4v|webm|ogv|mov)$/i.test(file.name);
   const isPdf = /\.pdf$/i.test(file.name);
-  const isText = /\.(?:txt|md|mdx|csv|tsv|json|jsonl|ya?ml|toml|xml|html?|css|[cm]?[jt]sx?|py|rs|go|java|c|h|cpp|hpp|sh|ps1|sql|log|ini|cfg)$/i.test(file.name);
+  const isText =
+    /\.(?:txt|md|mdx|csv|tsv|json|jsonl|ya?ml|toml|xml|html?|css|[cm]?[jt]sx?|py|rs|go|java|c|h|cpp|hpp|sh|ps1|sql|log|ini|cfg)$/i.test(
+      file.name,
+    );
   useEffect(() => setPreviewFailed(false), [src]);
   const copyImage = async () => {
     try {
@@ -233,20 +285,39 @@ function PresentedFileCard({ file }: { file: PresentedFile }) {
   return (
     <div className="presented-file">
       {isAudio ? (
-        <PresentedAudio key={src} src={src} name={file.name} onError={() => setPreviewFailed(true)} />
+        <PresentedAudio
+          key={src}
+          src={src}
+          name={file.name}
+          onError={() => setPreviewFailed(true)}
+        />
       ) : null}
       {isImage && !previewFailed ? (
-        <ZoomableImage className="presented-file-preview" src={src} alt={file.name} onError={() => setPreviewFailed(true)} />
+        <ZoomableImage
+          className="presented-file-preview"
+          src={src}
+          alt={file.name}
+          onError={() => setPreviewFailed(true)}
+        />
       ) : null}
       {isVideo ? (
         // biome-ignore lint/a11y/useMediaCaption: Agent-provided videos do not necessarily include caption tracks.
-        <video className="presented-file-preview" controls preload="metadata" src={src} aria-label={file.name} onError={() => setPreviewFailed(true)} />
+        <video
+          className="presented-file-preview"
+          controls
+          preload="metadata"
+          src={src}
+          aria-label={file.name}
+          onError={() => setPreviewFailed(true)}
+        />
       ) : null}
-      {isPdf ? (
-        <PdfPreview src={src} name={file.name} />
-      ) : null}
+      {isPdf ? <PdfPreview src={src} name={file.name} /> : null}
       {isText ? <PresentedTextPreview src={src} /> : null}
-      {previewFailed ? <output className="presented-file-status" role="alert">{t("thread.previewFailed")}</output> : null}
+      {previewFailed ? (
+        <output className="presented-file-status" role="alert">
+          {t("thread.previewFailed")}
+        </output>
+      ) : null}
       {!isImage && !isAudio && !isVideo && !isPdf && !isText ? (
         <output className="presented-file-status">{t("thread.previewUnsupported")}</output>
       ) : null}
@@ -257,9 +328,15 @@ function PresentedFileCard({ file }: { file: PresentedFile }) {
         <span className="presented-file-size">{formatBytes(file.size)}</span>
       </div>
       <div className="presented-file-actions">
-        <button type="button" className="mini-btn" onClick={() => {
-          void invoke("open_with_dialog", { path: file.path }).catch(() => setMessage(t("thread.fileOpenFailed")));
-        }}>
+        <button
+          type="button"
+          className="mini-btn"
+          onClick={() => {
+            void invoke("open_with_dialog", { path: file.path }).catch(() =>
+              setMessage(t("thread.fileOpenFailed")),
+            );
+          }}
+        >
           {t("thread.openFile")}
         </button>
         {isImage ? (
@@ -341,11 +418,8 @@ export const UserMsg = memo(function UserMsg({
         <div className="who">
           <span className="name">{t("thread.you")}</span>
           {skill ? (
-            <span className="skill-chip" title={`skill · ${skill.runAs}`}>
+            <span className="skill-chip" title={`skill · ${skill.name}`}>
               <I.zap size={10} /> /{skill.name}
-              {skill.runAs === "subagent" ? (
-                <span className="sub">{t("thread.subagent")}</span>
-              ) : null}
             </span>
           ) : null}
           {time ? <span className="time">{time}</span> : null}
@@ -473,8 +547,7 @@ export const AssistantMsg = memo(function AssistantMsg({
               ? pendingConfirms.find((c) => c.command === extractCommand(s.args))
               : undefined;
           const isSubagent =
-            (s.subagentRuns !== undefined && s.subagentRuns.length > 0) ||
-            isSubagentTool(s.name, s.args);
+            (s.subagentRuns !== undefined && s.subagentRuns.length > 0) || isSubagentTool(s.name);
           // A gate waiting on the user is owned by the approval strip; never
           // stack a second (record) card here for the same call. The gate pauses
           // the model on the last tool call with no result yet, so that call is
@@ -1027,7 +1100,8 @@ function PlanRewriteDiff({
                     >
                       <span style={{ color: "var(--tone-warn)" }}>{fieldLabel(f.field)}</span>
                       {": "}
-                      <span style={{ textDecoration: "line-through" }}>{f.from}</span>{" \u2192 "}
+                      <span style={{ textDecoration: "line-through" }}>{f.from}</span>
+                      {" \u2192 "}
                       <span>{f.to}</span>
                     </div>
                   ))

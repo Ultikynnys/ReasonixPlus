@@ -168,12 +168,20 @@ export interface SessionMeta {
    *  died with the picker open); the boot sweep deletes it. Never set on legacy
    *  sessions, so it distinguishes "pending" from "predates frozen-MCP". */
   mcpPending?: boolean;
+  /** Whether this session runs with `spawn_subagent`. Frozen at mint (a session
+   *  boundary is the only place it may change); absent = disabled. */
+  subagents?: boolean;
 }
 
 /** Session-owned MCP enablement. Absolute, not a delta — a server is disabled iff
- *  its name is listed. Frozen at mint from the Settings default. */
-export interface SessionMcpState {
+ *  its name is listed. Frozen at mint from the Settings default. */ export interface SessionMcpState {
   disabledServers?: string[];
+}
+
+/** Single reader for the frozen subagent capability. Legacy sessions have no key and
+ *  read as disabled, so nothing can be granted by an absent field. */
+export function sessionSubagentsEnabled(meta: Pick<SessionMeta, "subagents"> | undefined): boolean {
+  return meta?.subagents === true;
 }
 
 /** Sanitize a stored/loaded `SessionMeta.mcp` — drops non-strings and empties and

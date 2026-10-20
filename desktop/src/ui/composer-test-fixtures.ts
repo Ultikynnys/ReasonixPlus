@@ -2,7 +2,7 @@
  *  update when the Composer required-prop surface changes. */
 import type { ComponentProps } from "react";
 import { vi } from "vitest";
-import { Composer } from "./composer";
+import type { Composer } from "./composer";
 
 export function makeComposerBaseProps(
   overrides: Partial<ComponentProps<typeof Composer>> = {},

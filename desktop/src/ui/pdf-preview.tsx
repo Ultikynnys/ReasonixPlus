@@ -1,6 +1,6 @@
+import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useEffect, useRef, useState } from "react";
 import { t } from "../i18n";
-import type { PDFDocumentProxy } from "pdfjs-dist";
 
 export function PdfPreview({ src, name }: { src: string; name: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -23,20 +23,34 @@ export function PdfPreview({ src, name }: { src: string; name: string }) {
         const worker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
         if (disposed) return;
         pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
-        task = pdfjs.getDocument({ url: src, useSystemFonts: true,
-          cMapUrl: "/pdfjs/cmaps/", cMapPacked: true, standardFontDataUrl: "/pdfjs/standard_fonts/", wasmUrl: "/pdfjs/wasm/" });
+        task = pdfjs.getDocument({
+          url: src,
+          useSystemFonts: true,
+          cMapUrl: "/pdfjs/cmaps/",
+          cMapPacked: true,
+          standardFontDataUrl: "/pdfjs/standard_fonts/",
+          wasmUrl: "/pdfjs/wasm/",
+        });
         const pdf = await task.promise;
         if (!disposed) setDocument(pdf);
       } catch {
-        if (!disposed) { setFailed(true); setLoading(false); }
+        if (!disposed) {
+          setFailed(true);
+          setLoading(false);
+        }
       }
     })();
-    return () => { disposed = true; void task?.destroy(); };
+    return () => {
+      disposed = true;
+      void task?.destroy();
+    };
   }, [src]);
   useEffect(() => {
     if (!document) return;
     let disposed = false;
-    let renderTask: ReturnType<Awaited<ReturnType<PDFDocumentProxy["getPage"]>>["render"]> | undefined;
+    let renderTask:
+      | ReturnType<Awaited<ReturnType<PDFDocumentProxy["getPage"]>>["render"]>
+      | undefined;
     setLoading(true);
     setFailed(false);
     void (async () => {
@@ -50,26 +64,68 @@ export function PdfPreview({ src, name }: { src: string; name: string }) {
         element.height = Math.ceil(viewport.height * ratio);
         element.style.width = `${viewport.width}px`;
         element.style.height = `${viewport.height}px`;
-        renderTask = pdfPage.render({ canvas: element, viewport, transform: [ratio, 0, 0, ratio, 0, 0] });
+        renderTask = pdfPage.render({
+          canvas: element,
+          viewport,
+          transform: [ratio, 0, 0, ratio, 0, 0],
+        });
         await renderTask.promise;
         if (!disposed) setLoading(false);
       } catch {
-        if (!disposed) { setFailed(true); setLoading(false); }
+        if (!disposed) {
+          setFailed(true);
+          setLoading(false);
+        }
       }
     })();
-    return () => { disposed = true; renderTask?.cancel(); };
+    return () => {
+      disposed = true;
+      renderTask?.cancel();
+    };
   }, [document, page, zoom]);
-  return <section className="presented-file-document" aria-label={name}>
-    <div className="preview-toolbar">
-      <button type="button" disabled={!document || page <= 1} onClick={() => setPage(page - 1)}>{t("thread.previousPage")}</button>
-      <output>{page} / {document?.numPages ?? "?"}</output>
-      <button type="button" disabled={!document || page >= document.numPages} onClick={() => setPage(page + 1)}>{t("thread.nextPage")}</button>
-      <button type="button" disabled={zoom <= 0.25} onClick={() => setZoom(Math.max(0.25, zoom - 0.25))}>{t("thread.zoomOut")}</button>
-      <output>{Math.round(zoom * 100)}%</output>
-      <button type="button" disabled={zoom >= 3} onClick={() => setZoom(Math.min(3, zoom + 0.25))}>{t("thread.zoomIn")}</button>
-    </div>
-    {loading ? <output className="presented-file-status">{t("thread.previewLoading")}</output> : null}
-    {failed ? <output className="presented-file-status" role="alert">{t("thread.previewFailed")}</output> : null}
-    <div className="pdf-page-scroll"><canvas ref={canvas} aria-label={`${name}, ${page}`} hidden={failed} /></div>
-  </section>;
+  return (
+    <section className="presented-file-document" aria-label={name}>
+      <div className="preview-toolbar">
+        <button type="button" disabled={!document || page <= 1} onClick={() => setPage(page - 1)}>
+          {t("thread.previousPage")}
+        </button>
+        <output>
+          {page} / {document?.numPages ?? "?"}
+        </output>
+        <button
+          type="button"
+          disabled={!document || page >= document.numPages}
+          onClick={() => setPage(page + 1)}
+        >
+          {t("thread.nextPage")}
+        </button>
+        <button
+          type="button"
+          disabled={zoom <= 0.25}
+          onClick={() => setZoom(Math.max(0.25, zoom - 0.25))}
+        >
+          {t("thread.zoomOut")}
+        </button>
+        <output>{Math.round(zoom * 100)}%</output>
+        <button
+          type="button"
+          disabled={zoom >= 3}
+          onClick={() => setZoom(Math.min(3, zoom + 0.25))}
+        >
+          {t("thread.zoomIn")}
+        </button>
+      </div>
+      {loading ? (
+        <output className="presented-file-status">{t("thread.previewLoading")}</output>
+      ) : null}
+      {failed ? (
+        <output className="presented-file-status" role="alert">
+          {t("thread.previewFailed")}
+        </output>
+      ) : null}
+      <div className="pdf-page-scroll">
+        <canvas ref={canvas} aria-label={`${name}, ${page}`} hidden={failed} />
+      </div>
+    </section>
+  );
 }

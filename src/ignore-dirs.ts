@@ -1,5 +1,5 @@
 /** Directory names never worth traversing in any walk (VCS metadata, deps,
- *  build output, caches). Picker + index both extend this shared base. */
+ *  build output, caches). Every walker extends this shared base. */
 export const COMMON_IGNORE_DIRS = [
   "node_modules",
   ".git",
@@ -14,3 +14,67 @@ export const COMMON_IGNORE_DIRS = [
   "venv",
   "__pycache__",
 ] as const;
+
+/** Extra dirs the FS tools skip unless `include_deps:true`. `.reasonix` is
+ *  deliberately absent: user skills live under it (#1357). */
+export const WALK_SKIP_DIR_NAMES: ReadonlySet<string> = new Set([
+  ...COMMON_IGNORE_DIRS,
+  ".devenv",
+  ".direnv",
+  ".hg",
+  ".svn",
+  ".nuxt",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".turbo",
+  ".vercel",
+]);
+
+/** Extension-only binary guess; the NUL-byte sniff catches mislabeled `.txt`. */
+export const BINARY_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".bmp",
+  ".ico",
+  ".tiff",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".otf",
+  ".eot",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".bz2",
+  ".xz",
+  ".rar",
+  ".7z",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+  ".bin",
+  ".class",
+  ".jar",
+  ".war",
+  ".wasm",
+  ".o",
+  ".obj",
+  ".lib",
+  ".a",
+  ".pyc",
+  ".pyo",
+  ".mp3",
+  ".mp4",
+  ".wav",
+  ".ogg",
+  ".webm",
+  ".mov",
+  ".avi",
+  ".pdf",
+  ".sqlite",
+  ".db",
+]);

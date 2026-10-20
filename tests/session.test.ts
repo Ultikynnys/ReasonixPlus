@@ -49,6 +49,7 @@ import {
   sessionMessagesPath,
   sessionPath,
   sessionRecency,
+  sessionSubagentsEnabled,
   sessionsDir,
   sortSessionsByCreationDescending,
   sortSessionsDescending,
@@ -1094,6 +1095,17 @@ describe("session persistence", () => {
       disabledTools: { blender: ["a", "b"] },
     });
   });
+  it("keeps the subagent flag per session, not per workspace", () => {
+    patchSessionMeta("with-subagents", { workspace: "C:/proj", subagents: true });
+    patchSessionMeta("without-subagents", { workspace: "C:/proj", subagents: false });
+    // Same workspace, same config, opposite capabilities: each session owns its value.
+    expect(sessionSubagentsEnabled(loadSessionMeta("with-subagents"))).toBe(true);
+    expect(sessionSubagentsEnabled(loadSessionMeta("without-subagents"))).toBe(false);
+    // And an unrelated patch to one of them cannot leak into the other.
+    patchSessionMeta("without-subagents", { summary: "later" });
+    expect(sessionSubagentsEnabled(loadSessionMeta("with-subagents"))).toBe(true);
+    expect(sessionSubagentsEnabled(loadSessionMeta("without-subagents"))).toBe(false);
+  });
 });
 
 describe("normalizeSessionMcpState", () => {
@@ -1118,6 +1130,16 @@ describe("normalizeSessionMcpState", () => {
     expect(
       normalizeSessionMcpState({ disabledTools: { s: ["x", "x", 1], empty: [], bad: 5 } }),
     ).toBeUndefined();
+  });
+});
+
+describe("sessionSubagentsEnabled", () => {
+  it("is opt-in: only an explicit true enables the frozen flag", () => {
+    expect(sessionSubagentsEnabled({ subagents: true })).toBe(true);
+    expect(sessionSubagentsEnabled({ subagents: false })).toBe(false);
+    // A legacy session predates the field; it must not gain the tool by omission.
+    expect(sessionSubagentsEnabled({})).toBe(false);
+    expect(sessionSubagentsEnabled(undefined)).toBe(false);
   });
 });
 

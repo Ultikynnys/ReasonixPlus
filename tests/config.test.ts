@@ -46,8 +46,6 @@ import {
   loadFilesystemOutlineThresholdBytes,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
-  loadIndexConfig,
-  loadIndexUserConfig,
   loadMaxIterPerTurn,
   loadMimoApiKey,
   loadMimoKeyName,
@@ -66,7 +64,6 @@ import {
   loadReasoningEffort,
   loadRecentWorkspaces,
   loadResolvedModelEndpoint,
-  loadSemanticEmbeddingUserConfig,
   loadSubagentModels,
   loadTheme,
   loadToolRateLimit,
@@ -77,13 +74,11 @@ import {
   pushRecentWorkspace,
   readConfig,
   redactKey,
-  redactSemanticEmbeddingConfig,
   removeGlobalPathAllowed,
   removeGlobalShellAllowed,
   removeProjectPathAllowed,
   removeProjectShellAllowed,
   removeRecentWorkspace,
-  resolveSemanticEmbeddingConfig,
   resolveThemePreference,
   saveAntigravityOAuth,
   saveApiKey,
@@ -97,7 +92,6 @@ import {
   saveEditMode,
   saveEnableSubagents,
   saveFeedbackCues,
-  saveIndexConfig,
   saveMaxIterPerTurn,
   saveModel,
   saveOllamaGenerationPatch,
@@ -106,7 +100,6 @@ import {
   saveQuestionTimerEnabled,
   saveRawTabEnabled,
   saveReasoningEffort,
-  saveSemanticEmbeddingConfig,
   saveSubagentModels,
   saveTheme,
   searchEnabled,
@@ -1335,16 +1328,18 @@ describe("config", () => {
     expect(readConfig(path).maxIterPerTurn).toBeUndefined();
   });
 
-  it("enableSubagents defaults to true and persists either state", () => {
-    expect(loadEnableSubagents(path)).toBe(true);
-
-    saveEnableSubagents(false, path);
+  it("enableSubagents defaults to false and persists either state", () => {
+    // Opt-in: enabling subagents rewrites the prompt prefix, so a chat must not get
+    // it merely because the key was never written.
     expect(loadEnableSubagents(path)).toBe(false);
-    expect(readConfig(path).enableSubagents).toBe(false);
 
     saveEnableSubagents(true, path);
     expect(loadEnableSubagents(path)).toBe(true);
     expect(readConfig(path).enableSubagents).toBe(true);
+
+    saveEnableSubagents(false, path);
+    expect(loadEnableSubagents(path)).toBe(false);
+    expect(readConfig(path).enableSubagents).toBe(false);
   });
 
   it("autoCompact defaults to true and persists either state", () => {
@@ -1494,114 +1489,6 @@ describe("config", () => {
     markEditModeHintShown(path);
     expect(editModeHintShown(path)).toBe(true);
     expect(loadEditMode(path)).toBe("follow");
-  });
-
-  it("round-trips semantic embedding config", () => {
-    saveSemanticEmbeddingConfig(
-      {
-        provider: "openai-compat",
-        openaiCompat: {
-          baseUrl: "https://api.openai.com/v1",
-          apiKey: "sk-openai1234567890abcd",
-          model: "text-embedding-3-small",
-          extraBody: { user: "reasonix" },
-        },
-      },
-      path,
-    );
-    const loaded = loadSemanticEmbeddingUserConfig(path);
-    expect(loaded.provider).toBe("openai-compat");
-    expect(loaded.openaiCompat?.baseUrl).toBe("https://api.openai.com/v1");
-    expect(loaded.openaiCompat?.extraBody).toEqual({ user: "reasonix" });
-  });
-
-  it("resolves ollama by default when semantic config is absent", () => {
-    const resolved = resolveSemanticEmbeddingConfig(path);
-    expect(resolved.provider).toBe("ollama");
-    expect(resolved.baseUrl).toBe("http://localhost:11434");
-    expect(resolved.model).toBe("nomic-embed-text");
-  });
-
-  it("resolves ollama defaults from an existing empty config file", () => {
-    writeConfig({}, path);
-    const resolved = resolveSemanticEmbeddingConfig(path);
-    expect(resolved.provider).toBe("ollama");
-    expect(resolved.baseUrl).toBe("http://localhost:11434");
-    expect(resolved.model).toBe("nomic-embed-text");
-  });
-
-  it("resolves ollama defaults when semantic.provider is missing", () => {
-    writeConfig(
-      {
-        semantic: {
-          ollama: {
-            model: "",
-          },
-          openaiCompat: {
-            baseUrl: "https://api.example.com/v1/embeddings",
-            apiKey: "sk-openai1234567890abcd",
-            model: "bge-m3",
-          },
-        },
-      },
-      path,
-    );
-    const resolved = resolveSemanticEmbeddingConfig(path);
-    expect(resolved.provider).toBe("ollama");
-    expect(resolved.baseUrl).toBe("http://localhost:11434");
-    expect(resolved.model).toBe("nomic-embed-text");
-  });
-
-  it("accepts semantic API URLs that already include /embeddings", () => {
-    saveSemanticEmbeddingConfig(
-      {
-        provider: "openai-compat",
-        openaiCompat: {
-          baseUrl: "https://api.openai.com/v1/embeddings",
-          apiKey: "sk-openai1234567890abcd",
-          model: "text-embedding-3-small",
-        },
-      },
-      path,
-    );
-    const resolved = resolveSemanticEmbeddingConfig(path);
-    expect(resolved.provider).toBe("openai-compat");
-    expect(resolved.baseUrl).toBe("https://api.openai.com/v1/embeddings");
-  });
-
-  it("redacts openai-compatible api keys in semantic config views", () => {
-    saveSemanticEmbeddingConfig(
-      {
-        provider: "openai-compat",
-        openaiCompat: {
-          baseUrl: "https://api.openai.com/v1",
-          apiKey: "sk-openai1234567890abcd",
-          model: "text-embedding-3-small",
-        },
-      },
-      path,
-    );
-    const view = redactSemanticEmbeddingConfig(loadSemanticEmbeddingUserConfig(path));
-    expect(view.openaiCompat.apiKeySet).toBe(true);
-    expect(view.openaiCompat.apiKey).not.toBe("sk-openai1234567890abcd");
-    expect(view.openaiCompat.apiKey).toContain("…");
-  });
-
-  it("rejects non-object semantic extraBody", () => {
-    expect(() =>
-      saveSemanticEmbeddingConfig(
-        {
-          provider: "openai-compat",
-          openaiCompat: {
-            baseUrl: "https://api.openai.com/v1",
-            apiKey: "sk-openai1234567890abcd",
-            model: "text-embedding-3-small",
-            extraBody: [] as unknown as Record<string, unknown>,
-          },
-        },
-        path,
-      ),
-    ).toThrow(/JSON object/);
   });
 
   describe("desktopOpenTabs — issues #933, #1244", () => {

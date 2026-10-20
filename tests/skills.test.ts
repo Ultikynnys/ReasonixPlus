@@ -266,74 +266,6 @@ describe("SkillStore", () => {
     expect(store.customRoots().map((r) => r.status)).toEqual(["missing", "not-directory"]);
   });
 
-  describe("subagentModels override", () => {
-    it("applies flash/pro override onto builtin subagent skills", () => {
-      const store = new SkillStore({
-        homeDir: home,
-        projectRoot,
-        subagentModels: { explore: "pro", review: "flash" },
-      });
-      const byName = new Map(store.list().map((s) => [s.name, s]));
-      expect(byName.get("explore")?.model).toBe("deepseek-v4-pro");
-      expect(byName.get("review")?.model).toBe("deepseek-flash");
-    });
-
-    it("leaves inline skills (test) untouched even when their name appears in the override map", () => {
-      const store = new SkillStore({
-        homeDir: home,
-        projectRoot,
-        // `test` is shipped runAs=inline — overrides must not apply to inline skills.
-        subagentModels: { test: "pro" },
-      });
-      const test = store.list().find((s) => s.name === "test");
-      expect(test?.runAs).toBe("inline");
-      expect(test?.model).toBeUndefined();
-    });
-
-    it("no override → frontmatter model: still wins (no regression)", () => {
-      writeSkillDir(
-        projectRoot,
-        "project",
-        "custom-sub",
-        {
-          name: "custom-sub",
-          description: "custom subagent skill",
-          runAs: "subagent",
-          model: "deepseek-v4-pro",
-        },
-        "body",
-        home,
-      );
-      const store = new SkillStore({ homeDir: home, projectRoot, disableBuiltins: true });
-      const sub = store.list().find((s) => s.name === "custom-sub");
-      expect(sub?.model).toBe("deepseek-v4-pro");
-    });
-
-    it("override beats frontmatter model: when both are set", () => {
-      writeSkillDir(
-        projectRoot,
-        "project",
-        "custom-sub",
-        {
-          name: "custom-sub",
-          description: "custom subagent skill",
-          runAs: "subagent",
-          model: "deepseek-v4-pro",
-        },
-        "body",
-        home,
-      );
-      const store = new SkillStore({
-        homeDir: home,
-        projectRoot,
-        disableBuiltins: true,
-        subagentModels: { "custom-sub": "flash" },
-      });
-      const sub = store.list().find((s) => s.name === "custom-sub");
-      expect(sub?.model).toBe("deepseek-flash");
-    });
-  });
-
   describe("create() — new-skill scaffold (#366)", () => {
     it("writes a project-scope stub when projectRoot is set", () => {
       const store = new SkillStore({ homeDir: home, projectRoot, disableBuiltins: true });
@@ -443,154 +375,17 @@ describe("applySkillsIndex", () => {
     expect(first).toBe(second);
   });
 
-  it("tags subagent-runAs skills AFTER the name in the index (not before)", () => {
-    writeSkillDir(
-      projectRoot,
-      "global",
-      "lookup",
-      { description: "Look something up", runAs: "subagent" },
-      "body",
-      home,
-    );
+  it("lists a skill as a plain identifier with no runAs decoration", () => {
     writeSkillDir(
       projectRoot,
       "global",
       "fmt",
-      { description: "Format the codebase", runAs: "inline" },
+      { description: "Format the codebase" },
       "body",
       home,
     );
     const out = applySkillsIndex(BASE, { homeDir: home, projectRoot, disableBuiltins: true });
-    // Name-first, tag-after: prevents the model from copying the tag
-    // as the skill name into `run_skill({ name: ... })`.
-    expect(out).toContain("- lookup [subagent]: Look something up");
     expect(out).toContain("- fmt: Format the codebase");
-  });
-});
-
-describe("subagentsEnabled — knowledge-level disable (Settings → Tools)", () => {
-  let home: string;
-  let projectRoot: string;
-
-  beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), "reasonix-skills-subgate-"));
-    projectRoot = mkdtempSync(join(tmpdir(), "reasonix-skills-subgate-proj-"));
-  });
-
-  afterEach(() => {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  it("list() hides user subagent skills when disabled but keeps inline ones", () => {
-    writeSkillDir(
-      projectRoot,
-      "global",
-      "my-audit",
-      { description: "Run a custom audit", runAs: "subagent" },
-      "body",
-      home,
-    );
-    writeSkillDir(
-      projectRoot,
-      "global",
-      "fmt",
-      { description: "Format the codebase", runAs: "inline" },
-      "body",
-      home,
-    );
-    const store = new SkillStore({
-      homeDir: home,
-      projectRoot,
-      disableBuiltins: true,
-      subagentsEnabled: false,
-    });
-    const names = store.list().map((s) => s.name);
-    expect(names).toContain("fmt");
-    expect(names).not.toContain("my-audit");
-  });
-
-  it("list() hides builtin subagent skills when disabled, keeping the inline ones", () => {
-    const store = new SkillStore({ homeDir: home, projectRoot, subagentsEnabled: false });
-    const names = store.list().map((s) => s.name);
-    expect(names).not.toContain("explore");
-    expect(names).not.toContain("research");
-    expect(names).not.toContain("review");
-    expect(names).not.toContain("security-review");
-    // `test` is the inline builtin — unaffected by the gate.
-    expect(names).toContain("test");
-  });
-
-  it("defaults to enabled — option omitted keeps subagent skills listed (back-compat)", () => {
-    const store = new SkillStore({ homeDir: home, projectRoot });
-    const names = store.list().map((s) => s.name);
-    expect(names).toContain("explore");
-    expect(names).toContain("research");
-    expect(names).toContain("review");
-    expect(names).toContain("security-review");
-  });
-
-  it("read() still resolves subagent skills when disabled — the runner gate stays the backstop", () => {
-    writeSkillDir(
-      projectRoot,
-      "global",
-      "my-audit",
-      { description: "Run a custom audit", runAs: "subagent" },
-      "body",
-      home,
-    );
-    const store = new SkillStore({
-      homeDir: home,
-      projectRoot,
-      disableBuiltins: true,
-      subagentsEnabled: false,
-    });
-    expect(store.read("my-audit")).not.toBeNull();
-  });
-
-  it("applySkillsIndex omits subagent entries when subagentsEnabled is false", () => {
-    writeSkillDir(
-      projectRoot,
-      "global",
-      "lookup",
-      { description: "Look something up", runAs: "subagent" },
-      "body",
-      home,
-    );
-    writeSkillDir(
-      projectRoot,
-      "global",
-      "fmt",
-      { description: "Format the codebase", runAs: "inline" },
-      "body",
-      home,
-    );
-    const out = applySkillsIndex(BASE, {
-      homeDir: home,
-      projectRoot,
-      disableBuiltins: true,
-      subagentsEnabled: false,
-    });
-    expect(out).toContain("- fmt: Format the codebase");
-    expect(out).not.toContain("lookup");
-    expect(out).not.toContain("[subagent]: Look something up");
-  });
-
-  it("applySkillsIndex keeps subagent entries by default (option omitted)", () => {
-    writeSkillDir(
-      projectRoot,
-      "global",
-      "lookup",
-      { description: "Look something up", runAs: "subagent" },
-      "body",
-      home,
-    );
-    const out = applySkillsIndex(BASE, {
-      homeDir: home,
-      projectRoot,
-      disableBuiltins: true,
-    });
-    expect(out).toContain("- lookup [subagent]: Look something up");
   });
 });
 
@@ -616,228 +411,69 @@ describe("validateSkillFrontmatter (#583 install gate)", () => {
   });
 });
 
-describe("Skill frontmatter — runAs", () => {
+describe("Claude SKILL.md aliases", () => {
   let home: string;
 
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), "reasonix-skills-runas-"));
+    home = mkdtempSync(join(tmpdir(), "reasonix-skills-claude-"));
   });
 
   afterEach(() => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  it("defaults runAs to inline when frontmatter omits it", () => {
-    writeSkillDir(home, "global", "plain", { description: "plain skill" }, "body", home);
-    const skill = new SkillStore({ homeDir: home, disableBuiltins: true }).read("plain");
-    expect(skill?.runAs).toBe("inline");
-  });
+  function writeClaudeSkill(
+    base: string,
+    where: "global" | "project",
+    name: string,
+    frontmatter: Record<string, string>,
+    body: string,
+  ): void {
+    const parent =
+      where === "global" ? join(base, ".claude", "skills") : join(base, ".claude", "skills");
+    const dir = join(parent, name);
+    mkdirSync(dir, { recursive: true });
+    const fmLines = ["---"];
+    for (const [k, v] of Object.entries(frontmatter)) fmLines.push(`${k}: ${v}`);
+    fmLines.push("---", "");
+    writeFileSync(join(dir, "SKILL.md"), `${fmLines.join("\n")}${body}\n`, "utf8");
+  }
 
-  it("parses runAs: subagent from frontmatter", () => {
-    writeSkillDir(
-      home,
-      "global",
-      "deep",
-      { description: "deep dive", runAs: "subagent" },
-      "body",
-      home,
-    );
-    const skill = new SkillStore({ homeDir: home, disableBuiltins: true }).read("deep");
-    expect(skill?.runAs).toBe("subagent");
-  });
-
-  it("falls back to inline for any unknown runAs value", () => {
-    writeSkillDir(home, "global", "weird", { description: "?", runAs: "parallel" }, "body", home);
-    const skill = new SkillStore({ homeDir: home, disableBuiltins: true }).read("weird");
-    expect(skill?.runAs).toBe("inline");
-  });
-
-  it("captures a deepseek-* model override and ignores anything else", () => {
-    writeSkillDir(
-      home,
-      "global",
-      "rsr",
-      { description: "...", runAs: "subagent", model: "deepseek-reasoner" },
-      "body",
-      home,
-    );
-    writeSkillDir(
-      home,
-      "global",
-      "wrong",
-      { description: "...", runAs: "subagent", model: "gpt-4" },
-      "body",
-      home,
-    );
+  it("reads skills from ~/.claude/skills/", () => {
+    writeClaudeSkill(home, "global", "from-claude", { description: "lifted from Claude" }, "go");
     const store = new SkillStore({ homeDir: home, disableBuiltins: true });
-    expect(store.read("rsr")?.model).toBe("deepseek-reasoner");
-    expect(store.read("wrong")?.model).toBeUndefined();
+    const skill = store.read("from-claude");
+    expect(skill?.description).toBe("lifted from Claude");
+    expect(skill?.scope).toBe("global");
   });
 
-  it("parses comma-separated allowed-tools into a trimmed list", () => {
-    writeSkillDir(
-      home,
-      "global",
-      "scoped",
-      { description: "...", runAs: "subagent", "allowed-tools": "read, search_content,write" },
-      "body",
-      home,
-    );
-    const store = new SkillStore({ homeDir: home, disableBuiltins: true });
-    expect(store.read("scoped")?.allowedTools).toEqual(["read", "search_content", "write"]);
-  });
-
-  it("parses positive subagent work budgets", () => {
-    writeSkillDir(
-      home,
-      "global",
-      "bounded",
-      {
-        description: "...",
-        runAs: "subagent",
-        "max-tool-iters": "8",
-        "max-seconds": "90",
-      },
-      "body",
-      home,
-    );
-    const skill = new SkillStore({ homeDir: home, disableBuiltins: true }).read("bounded");
-    expect(skill?.maxToolIters).toBe(8);
-    expect(skill?.maxElapsedMs).toBe(90_000);
-  });
-
-  it("ignores invalid subagent work budgets", () => {
-    writeSkillDir(
-      home,
-      "global",
-      "unbounded",
-      {
-        description: "...",
-        runAs: "subagent",
-        "max-tool-iters": "0",
-        "max-seconds": "later",
-      },
-      "body",
-      home,
-    );
-    const skill = new SkillStore({ homeDir: home, disableBuiltins: true }).read("unbounded");
-    expect(skill?.maxToolIters).toBeUndefined();
-    expect(skill?.maxElapsedMs).toBeUndefined();
-  });
-
-  it("gives builtin reviews structural read-only scopes and tight budgets", () => {
-    const store = new SkillStore({ homeDir: home });
-    for (const name of ["review", "security-review"]) {
-      const skill = store.read(name);
-      expect(skill?.maxToolIters).toBe(8);
-      expect(skill?.maxElapsedMs).toBe(90_000);
-      expect(skill?.allowedTools).toContain("read_file");
-      expect(skill?.allowedTools).toContain("run_command");
-      expect(skill?.allowedTools).not.toContain("write_file");
-      expect(skill?.allowedTools).not.toContain("web_search");
-      expect(skill?.allowedTools).not.toContain("review");
+  it("reads skills from <project>/.claude/skills/", () => {
+    const project = mkdtempSync(join(tmpdir(), "reasonix-skills-proj-"));
+    try {
+      writeClaudeSkill(project, "project", "proj-skill", { description: "from project" }, "go");
+      const store = new SkillStore({
+        homeDir: home,
+        projectRoot: project,
+        disableBuiltins: true,
+      });
+      const skill = store.read("proj-skill");
+      expect(skill?.description).toBe("from project");
+      expect(skill?.scope).toBe("project");
+    } finally {
+      rmSync(project, { recursive: true, force: true });
     }
   });
 
-  it("treats missing allowed-tools as undefined (full inheritance)", () => {
-    writeSkillDir(home, "global", "open", { description: "...", runAs: "subagent" }, "body", home);
-    const store = new SkillStore({ homeDir: home, disableBuiltins: true });
-    expect(store.read("open")?.allowedTools).toBeUndefined();
-  });
-
-  it("treats an allowed-tools field with only whitespace/commas as undefined", () => {
-    writeSkillDir(
-      home,
-      "global",
-      "empty",
-      { description: "...", runAs: "subagent", "allowed-tools": " , , " },
-      "body",
-      home,
-    );
-    const store = new SkillStore({ homeDir: home, disableBuiltins: true });
-    expect(store.read("empty")?.allowedTools).toBeUndefined();
-  });
-
-  describe("Claude SKILL.md aliases", () => {
-    function writeClaudeSkill(
-      base: string,
-      where: "global" | "project",
-      name: string,
-      frontmatter: Record<string, string>,
-      body: string,
-    ): void {
-      const parent =
-        where === "global" ? join(base, ".claude", "skills") : join(base, ".claude", "skills");
-      const dir = join(parent, name);
-      mkdirSync(dir, { recursive: true });
-      const fmLines = ["---"];
-      for (const [k, v] of Object.entries(frontmatter)) fmLines.push(`${k}: ${v}`);
-      fmLines.push("---", "");
-      writeFileSync(join(dir, "SKILL.md"), `${fmLines.join("\n")}${body}\n`, "utf8");
+  it("warns to console when description is missing", () => {
+    writeSkillDir(home, "global", "no-desc", { name: "no-desc" }, "body", home);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      new SkillStore({ homeDir: home, disableBuiltins: true }).read("no-desc");
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]![0]).toMatch(/no description/);
+    } finally {
+      warn.mockRestore();
     }
-
-    it("reads skills from ~/.claude/skills/", () => {
-      writeClaudeSkill(home, "global", "from-claude", { description: "lifted from Claude" }, "go");
-      const store = new SkillStore({ homeDir: home, disableBuiltins: true });
-      const skill = store.read("from-claude");
-      expect(skill?.description).toBe("lifted from Claude");
-      expect(skill?.scope).toBe("global");
-    });
-
-    it("reads skills from <project>/.claude/skills/", () => {
-      const project = mkdtempSync(join(tmpdir(), "reasonix-skills-proj-"));
-      try {
-        writeClaudeSkill(project, "project", "proj-skill", { description: "from project" }, "go");
-        const store = new SkillStore({
-          homeDir: home,
-          projectRoot: project,
-          disableBuiltins: true,
-        });
-        const skill = store.read("proj-skill");
-        expect(skill?.description).toBe("from project");
-        expect(skill?.scope).toBe("project");
-      } finally {
-        rmSync(project, { recursive: true, force: true });
-      }
-    });
-
-    it("treats `context: fork` as runAs: subagent", () => {
-      writeSkillDir(
-        home,
-        "global",
-        "forked",
-        { description: "...", context: "fork" },
-        "body",
-        home,
-      );
-      const store = new SkillStore({ homeDir: home, disableBuiltins: true });
-      expect(store.read("forked")?.runAs).toBe("subagent");
-    });
-
-    it("treats non-empty `agent:` as runAs: subagent", () => {
-      writeSkillDir(
-        home,
-        "global",
-        "agented",
-        { description: "...", agent: "Explore" },
-        "body",
-        home,
-      );
-      const store = new SkillStore({ homeDir: home, disableBuiltins: true });
-      expect(store.read("agented")?.runAs).toBe("subagent");
-    });
-
-    it("warns to console when description is missing", () => {
-      writeSkillDir(home, "global", "no-desc", { name: "no-desc" }, "body", home);
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      try {
-        new SkillStore({ homeDir: home, disableBuiltins: true }).read("no-desc");
-        expect(warn).toHaveBeenCalledOnce();
-        expect(warn.mock.calls[0]![0]).toMatch(/no description/);
-      } finally {
-        warn.mockRestore();
-      }
-    });
   });
 });
 
@@ -852,32 +488,12 @@ describe("Built-in skills", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  it("ships explore/research/review/security-review/test as builtins", () => {
+  it("ships the test playbook as the only builtin", () => {
     const store = new SkillStore({ homeDir: home }); // builtins ON
     const names = store.list().map((s) => s.name);
-    expect(names).toContain("explore");
-    expect(names).toContain("research");
-    expect(names).toContain("review");
-    expect(names).toContain("security-review");
-    expect(names).toContain("test");
-    const explore = store.read("explore");
-    expect(explore?.runAs).toBe("subagent");
-    expect(explore?.scope).toBe("builtin");
-    const research = store.read("research");
-    expect(research?.runAs).toBe("subagent");
-    const review = store.read("review");
-    expect(review?.runAs).toBe("subagent");
-    expect(review?.scope).toBe("builtin");
-    // Review's body must mention the read-only contract — that's the
-    // load-bearing rule that distinguishes review from "do the change."
-    expect(review?.body).toMatch(/read-only/i);
-    const sec = store.read("security-review");
-    expect(sec?.runAs).toBe("subagent");
-    expect(sec?.body).toMatch(/injection/i);
-    expect(sec?.body).toMatch(/CRITICAL|critical/);
-    // The test skill is INLINE on purpose — parent must see the proposed edits.
+    expect(names).toEqual(["test"]);
     const test = store.read("test");
-    expect(test?.runAs).toBe("inline");
+    expect(test?.scope).toBe("builtin");
     expect(test?.body).toMatch(/run_command/);
     expect(test?.body).toMatch(/SEARCH\/REPLACE/);
   });
@@ -896,15 +512,11 @@ describe("Built-in skills", () => {
     expect(store.list()).toEqual([]);
   });
 
-  it("builtins surface with the subagent tag after the name in applySkillsIndex", () => {
+  it("builtins surface as plain identifiers in applySkillsIndex", () => {
     const out = applySkillsIndex(BASE, { homeDir: home }); // builtins ON
     expect(out).toContain("# Skills");
-    expect(out).toContain("explore [subagent]");
-    expect(out).toContain("research [subagent]");
-    expect(out).toContain("review [subagent]");
-    expect(out).toContain("security-review [subagent]");
-    // The test skill is inline → no subagent tag
     expect(out).toContain("test:");
-    expect(out).not.toContain("test [subagent]");
+    // Skills are playbooks, never subagents: no decoration to copy into a tool call.
+    expect(out).not.toContain("[subagent]");
   });
 });

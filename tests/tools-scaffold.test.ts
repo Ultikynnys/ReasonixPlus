@@ -59,20 +59,18 @@ describe("create_skill", () => {
     expect(content).toContain("# lint-before-commit");
   });
 
-  it("emits subagent + allowed-tools + model frontmatter when supplied", async () => {
+  it("emits only name/description frontmatter: a skill is a plain playbook", async () => {
     const r = await call(s.reg, "create_skill", {
       name: "deep-explore",
       description: "Wide-net read-only investigation.",
       body: "Use read_file + search_content.",
-      run_as: "subagent",
-      allowed_tools: ["read_file", "search_content"],
-      model: "deepseek-v4-pro",
     });
     expect(r.success).toBe(true);
     const content = readFileSync(r.path, "utf8");
-    expect(content).toContain("runAs: subagent");
-    expect(content).toContain("allowed-tools: read_file, search_content");
-    expect(content).toContain("model: deepseek-v4-pro");
+    expect(content).toContain("name: deep-explore");
+    expect(content).not.toContain("runAs:");
+    expect(content).not.toContain("allowed-tools:");
+    expect(content).not.toContain("model:");
   });
 
   it("rejects an invalid skill name", async () => {
@@ -98,14 +96,17 @@ describe("create_skill", () => {
     expect(r.error).toMatch(/already exists/);
   });
 
-  it("rejects bad allowed_tools entries", async () => {
+  it("ignores the retired subagent options instead of writing them", async () => {
     const r = await call(s.reg, "create_skill", {
-      name: "bad-tools",
+      name: "no-subagent-fields",
       description: "x",
       body: "y",
-      allowed_tools: ["valid_tool", "with space"],
+      run_as: "subagent",
+      allowed_tools: ["read_file"],
+      model: "deepseek-v4-pro",
     });
-    expect(r.error).toMatch(/invalid tool name/);
+    expect(r.success).toBe(true);
+    expect(readFileSync(r.path, "utf8")).not.toContain("allowed-tools:");
   });
 });
 

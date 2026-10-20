@@ -13,10 +13,7 @@ export const PLAN_INTERACTIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
  *  on-demand read path. Excluded from subagents too, because a child that can read the
  *  parent's plan will work a task nobody delegated to it. NOTE: not derivable from the
  *  registry's `readOnly` flag, which abandon/activate share while still mutating. */
-export const PLAN_UNGATED_TOOL_NAMES: ReadonlySet<string> = new Set([
-  "list_plans",
-  "open_plan",
-]);
+export const PLAN_UNGATED_TOOL_NAMES: ReadonlySet<string> = new Set(["list_plans", "open_plan"]);
 
 /** Every plan tool, gated or read-only: the set a subagent must never inherit. */
 export const PLAN_TOOL_NAMES: ReadonlySet<string> = new Set([

@@ -18,6 +18,8 @@ import {
   type SubagentEvent,
   type SubagentResult,
   type SubagentSink,
+  allowEntryCovers,
+  allowListCovers,
   childLoopOptions,
   forkRegistryExcluding,
   forkRegistryWithAllowList,
@@ -26,11 +28,24 @@ import {
   spawnSubagent,
   subagentBudgetHint,
 } from "../src/tools/subagent.js";
-import { type FakeResponseShape, makeFakeClient } from "./support/fake-client.js";
+import {
+  type FakeResponseShape,
+  makeFakeClient,
+  neverResolvingFetch,
+} from "./support/fake-client.js";
 import { MATERIAL_REASONING_LOOP } from "./support/repetition-fixtures.js";
 
 function makeClient(responses: FakeResponseShape[]): DeepSeekClient {
   return makeFakeClient(responses, { echoMessages: true }).client;
+}
+
+/** A provider that accepts the request and never answers: stalled, not refused. */
+function silentClient(): DeepSeekClient {
+  return new DeepSeekClient({
+    apiKey: "sk-test",
+    fetch: neverResolvingFetch(),
+    retry: { maxAttempts: 1 },
+  });
 }
 
 function makeToolCallResponses(n: number): FakeResponseShape[] {
@@ -242,11 +257,7 @@ describe("registerSubagentTool", () => {
   });
 
   it("enforces maxElapsedMs for a hanging child request", async () => {
-    const client = new DeepSeekClient({
-      apiKey: "sk-test",
-      fetch: (await import("./support/fake-client.js")).neverResolvingFetch(),
-      retry: { maxAttempts: 1 },
-    });
+    const client = silentClient();
     const started = Date.now();
     const result = await spawnSubagent({
       client,
@@ -259,6 +270,45 @@ describe("registerSubagentTool", () => {
     expect(result.success).toBe(false);
     expect(result.budgetExhausted).toBe("elapsed");
     expect(result.error).toMatch(/time budget exhausted/);
+  });
+
+  it("ticks elapsed progress while the child waits on a silent provider", async () => {
+    // A provider that accepts the request and then says nothing for minutes used to
+    // leave the spawn's card frozen at 0s: the wrapper reports on a delta, a tool or a
+    // stop, and a request in flight is none of those.
+    const client = silentClient();
+    const { sink, events } = makeSink();
+    const result = await spawnSubagent({
+      client,
+      parentRegistry: new ToolRegistry(),
+      system: "review",
+      task: "review",
+      sink,
+      maxElapsedMs: 1300,
+    });
+    const ticks = events.filter((event) => event.kind === "stream-progress");
+    expect(ticks.length).toBeGreaterThan(0);
+    expect(ticks.at(-1)?.elapsedMs ?? 0).toBeGreaterThanOrEqual(900);
+    expect(result.budgetExhausted).toBe("elapsed");
+  });
+
+  it("survives a progress sink that throws under the heartbeat", async () => {
+    // The tick fires from a timer, where nothing upstream can catch a transport that
+    // died under the card: an unguarded throw there reaches the process, not the run.
+    const sink: SubagentSink = {
+      current: (event) => {
+        if (event.kind === "stream-progress") throw new Error("transport closed");
+      },
+    };
+    const result = await spawnSubagent({
+      client: silentClient(),
+      parentRegistry: new ToolRegistry(),
+      system: "review",
+      task: "review",
+      sink,
+      maxElapsedMs: 1300,
+    });
+    expect(result.budgetExhausted).toBe("elapsed");
   });
 
   it("surfaces a child-loop error in the structured result + end event", async () => {
@@ -344,38 +394,6 @@ describe("registerSubagentTool", () => {
     expect(childTools).toContain("harmless");
     expect(childTools).not.toContain("spawn_subagent");
     expect(childTools).not.toContain("submit_plan");
-  });
-
-  it("respects a custom system prompt passed in the tool args", async () => {
-    const seenSystems: string[] = [];
-    const client = new DeepSeekClient({
-      apiKey: "sk-test",
-      fetch: vi.fn(async (_url: any, init: any) => {
-        const body = init?.body ? JSON.parse(init.body) : {};
-        const sys = (body.messages ?? []).find((m: any) => m.role === "system");
-        if (sys) seenSystems.push(sys.content);
-        return new Response(
-          JSON.stringify({
-            choices: [
-              {
-                index: 0,
-                message: { role: "assistant", content: "ok" },
-                finish_reason: "stop",
-              },
-            ],
-            usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }) as any,
-    });
-    const parent = new ToolRegistry();
-    registerSubagentTool(parent, { client });
-    await parent.dispatch(
-      "spawn_subagent",
-      JSON.stringify({ task: "go", system: "You are a custom subagent." }),
-    );
-    expect(seenSystems[0]).toContain("You are a custom subagent.");
   });
 
   it("falls back to the default model when the model arg is invalid", async () => {
@@ -522,62 +540,6 @@ describe("registerSubagentTool", () => {
     expect(fetchCalls).toBe(0);
   });
 
-  it("type=explore uses the explore persona", async () => {
-    const seenSystems: string[] = [];
-    const client = new DeepSeekClient({
-      apiKey: "sk-test",
-      fetch: vi.fn(async (_url: any, init: any) => {
-        const body = init?.body ? JSON.parse(init.body) : {};
-        const sys = (body.messages ?? []).find((m: any) => m.role === "system");
-        if (sys) seenSystems.push(sys.content);
-        return new Response(
-          JSON.stringify({
-            choices: [
-              { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
-            ],
-            usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }) as any,
-    });
-    const parent = new ToolRegistry();
-    registerSubagentTool(parent, { client });
-    await parent.dispatch(
-      "spawn_subagent",
-      JSON.stringify({ task: "find all callers of foo()", type: "explore" }),
-    );
-    expect(seenSystems[0]).toMatch(/exploration subagent/);
-  });
-
-  it("explicit system overrides the type's default prompt", async () => {
-    const seenSystems: string[] = [];
-    const client = new DeepSeekClient({
-      apiKey: "sk-test",
-      fetch: vi.fn(async (_url: any, init: any) => {
-        const body = init?.body ? JSON.parse(init.body) : {};
-        const sys = (body.messages ?? []).find((m: any) => m.role === "system");
-        if (sys) seenSystems.push(sys.content);
-        return new Response(
-          JSON.stringify({
-            choices: [
-              { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
-            ],
-            usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }) as any,
-    });
-    const parent = new ToolRegistry();
-    registerSubagentTool(parent, { client });
-    await parent.dispatch(
-      "spawn_subagent",
-      JSON.stringify({ task: "go", type: "explore", system: "I am a custom prompt." }),
-    );
-    expect(seenSystems[0]).toContain("I am a custom prompt.");
-  });
-
   it("fires onSpawnComplete once per dispatch with the full SubagentResult", async () => {
     const parent = new ToolRegistry();
     parent.register({ name: "noop", readOnly: true, fn: () => "noop-result" });
@@ -717,16 +679,10 @@ describe("formatSubagentResult — forcedSummary path", () => {
 describe("forkRegistryExcluding", () => {
   it("the production exclusion set blocks every nested delegation entry point", () => {
     expect([...NEVER_INHERITED_TOOLS]).toEqual(
-      expect.arrayContaining([
-        "spawn_subagent",
-        "run_skill",
-        "explore",
-        "research",
-        "review",
-        "security_review",
-        "submit_plan",
-      ]),
+      expect.arrayContaining(["spawn_subagent", "submit_plan", "mark_step_complete"]),
     );
+    // run_skill is a playbook reader, not a delegation path: a child may hold it.
+    expect(NEVER_INHERITED_TOOLS.has("run_skill")).toBe(false);
   });
 
   it("copies all tools except the excluded names", () => {
@@ -769,6 +725,31 @@ describe("forkRegistryExcluding", () => {
     const child = forkRegistryExcluding(parent, new Set());
     const out = await child.dispatch("counter", "{}");
     expect(out).toBe("n=1");
+  });
+});
+
+describe("allow-list matching", () => {
+  it("an entry is a whole name, or a prefix when it ends in *", () => {
+    expect(allowEntryCovers("read_file", "read_file")).toBe(true);
+    // Not a substring match: the prefix has to be the whole leading run.
+    expect(allowEntryCovers("read", "read_file")).toBe(false);
+    expect(allowEntryCovers("read_file", "read_file_extra")).toBe(false);
+    expect(allowEntryCovers("ghidra_*", "ghidra_decompile_function")).toBe(true);
+    expect(allowEntryCovers("ghidra_*", "ghidra_")).toBe(true);
+    expect(allowEntryCovers("ghidra_*", "unreal_mcp_spawn_actor")).toBe(false);
+    // A bare star grants everything, which is how a registry-wide child is spelled.
+    expect(allowEntryCovers("*", "anything_at_all")).toBe(true);
+    expect(allowEntryCovers("  ghidra_*  ", "ghidra_x")).toBe(true);
+    expect(allowEntryCovers("", "read_file")).toBe(false);
+  });
+
+  it("the list covers a tool when any entry does", () => {
+    const allow = ["read_file", "ghidra_*", "playwright_browser_click"];
+    expect(allowListCovers(allow, "read_file")).toBe(true);
+    expect(allowListCovers(allow, "ghidra_list_functions")).toBe(true);
+    expect(allowListCovers(allow, "playwright_browser_click")).toBe(true);
+    expect(allowListCovers(allow, "playwright_browser_press_key")).toBe(false);
+    expect(allowListCovers([], "read_file")).toBe(false);
   });
 });
 
@@ -815,31 +796,65 @@ describe("forkRegistryWithAllowList", () => {
     expect(child.size).toBe(1);
   });
 
-  it("keeps every bridged MCP tool the parent has, allow-listed or not", () => {
+  it("grants an MCP tool only when the allow-list names it", () => {
     const parent = new ToolRegistry();
     parent.register({ name: "read_file", readOnly: true, fn: () => "text" });
     parent.register({ name: "edit_file", fn: () => "edited" });
-    parent.register({ name: "unreal_mcp_spawn_actor", bridged: true, fn: () => "spawned" });
-    parent.register({ name: "playwright_browser_click", bridged: true, fn: () => "clicked" });
-    // A skill allow-list that names none of the MCP tools, like review/security-review.
-    const child = forkRegistryWithAllowList(parent, new Set(["read_file"]), new Set());
-    expect(child.has("read_file")).toBe(true);
-    // Not allow-listed and not bridged: still scoped out.
-    expect(child.has("edit_file")).toBe(false);
-    // MCP tools come along: the child sees the user's servers like the parent does.
-    expect(child.has("unreal_mcp_spawn_actor")).toBe(true);
-    expect(child.has("playwright_browser_click")).toBe(true);
-  });
-
-  it("still applies alsoExclude to a bridged tool", () => {
-    const parent = new ToolRegistry();
-    parent.register({ name: "playwright_browser_click", bridged: true, fn: () => "clicked" });
+    parent.register({ name: "unreal_mcp_spawn_actor", fn: () => "spawned" });
+    parent.register({ name: "playwright_browser_click", fn: () => "clicked" });
     const child = forkRegistryWithAllowList(
       parent,
-      new Set(["read_file"]),
+      new Set(["read_file", "playwright_browser_click"]),
+      new Set(),
+    );
+    expect(child.has("read_file")).toBe(true);
+    // Named from one of two bridged servers: granted. Its neighbour is not.
+    expect(child.has("playwright_browser_click")).toBe(true);
+    expect(child.has("unreal_mcp_spawn_actor")).toBe(false);
+    expect(child.has("edit_file")).toBe(false);
+  });
+
+  it("grants every tool of a server through a trailing-* entry, alongside named ones", () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "read_file", readOnly: true, fn: () => "text" });
+    parent.register({ name: "ghidra_decompile_function", fn: () => "decompiled" });
+    parent.register({ name: "ghidra_list_functions", fn: () => "listed" });
+    parent.register({ name: "unreal_mcp_spawn_actor", fn: () => "spawned" });
+    const child = forkRegistryWithAllowList(
+      parent,
+      // Three servers in one list: a built-in, one whole server, one unreferenced.
+      new Set(["read_file", "ghidra_*"]),
+      new Set(),
+    );
+    expect(child.has("read_file")).toBe(true);
+    expect(child.has("ghidra_decompile_function")).toBe(true);
+    expect(child.has("ghidra_list_functions")).toBe(true);
+    expect(child.has("unreal_mcp_spawn_actor")).toBe(false);
+  });
+
+  it("still applies alsoExclude to a whitelisted MCP tool", () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "playwright_browser_click", fn: () => "clicked" });
+    const child = forkRegistryWithAllowList(
+      parent,
+      new Set(["read_file", "playwright_browser_click"]),
       new Set(["playwright_browser_click"]),
     );
     expect(child.has("playwright_browser_click")).toBe(false);
+  });
+
+  it("a wildcard entry cannot resurrect a never-inherited tool", () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "read_file", readOnly: true, fn: () => "ok" });
+    parent.register({ name: "spawn_subagent", fn: () => "nested" });
+    parent.register({ name: "submit_plan", fn: () => "nested" });
+    parent.register({ name: "ghidra_list_functions", fn: () => "listed" });
+    const child = forkRegistryWithAllowList(parent, new Set(["*"]), NEVER_INHERITED_TOOLS);
+    expect(child.has("read_file")).toBe(true);
+    expect(child.has("ghidra_list_functions")).toBe(true);
+    // Depth stays 1: no nested spawn, no plan surface.
+    expect(child.has("spawn_subagent")).toBe(false);
+    expect(child.has("submit_plan")).toBe(false);
   });
 });
 
@@ -902,28 +917,30 @@ describe("spawnSubagent allowedTools", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("advertises the parent's bridged MCP tools to an allow-listed child", async () => {
+  it("advertises only the MCP tools the allow-list grants", async () => {
     // The wire tool list IS the child registry's specs, so capturing the request
     // proves what the subagent was actually offered.
     const parent = new ToolRegistry();
     parent.register({ name: "read_file", readOnly: true, fn: () => "text" });
     parent.register({ name: "write_file", fn: () => "written" });
-    await bridgeMcpTools(
-      {
-        listTools: async () => ({
-          tools: [
-            {
-              name: "spawn_actor",
-              description: "spawn an actor in the open level",
+    const bridged = async (prefix: string, tools: string[]) =>
+      bridgeMcpTools(
+        {
+          listTools: async () => ({
+            tools: tools.map((name) => ({
+              name,
+              description: `${name} on ${prefix}`,
               inputSchema: { type: "object", properties: {} },
-            },
-          ],
-        }),
-        callTool: async () => ({ content: [{ type: "text", text: "spawned" }] }),
-      } as never,
-      { registry: parent, namePrefix: "unreal_mcp_" },
-    );
-    expect(parent.get("unreal_mcp_spawn_actor")?.bridged).toBe(true);
+            })),
+          }),
+          callTool: async () => ({ content: [{ type: "text", text: "done" }] }),
+        } as never,
+        { registry: parent, namePrefix: prefix },
+      );
+    await bridged("unreal_mcp_", ["spawn_actor", "delete_actor"]);
+    await bridged("playwright_", ["browser_click"]);
+    expect(parent.has("unreal_mcp_spawn_actor")).toBe(true);
+    expect(parent.has("playwright_browser_click")).toBe(true);
 
     const seen: string[][] = [];
     const client = new DeepSeekClient({
@@ -948,13 +965,49 @@ describe("spawnSubagent allowedTools", () => {
       parentRegistry: parent,
       system: "test",
       task: "test",
-      // The read-only built-in scoping: MCP tools still come along.
-      allowedTools: ["read_file"],
+      // Two servers named in one list: one tool from each, the rest scoped out.
+      allowedTools: ["read_file", "playwright_browser_click", "unreal_mcp_spawn_actor"],
     });
 
     expect(seen[0]).toContain("read_file");
     expect(seen[0]).not.toContain("write_file");
+    expect(seen[0]).toContain("playwright_browser_click");
     expect(seen[0]).toContain("unreal_mcp_spawn_actor");
+    // Same server, not named by the skill: the child must not see it.
+    expect(seen[0]).not.toContain("unreal_mcp_delete_actor");
+  });
+
+  it("accepts a prefix entry for a server the parent registers", async () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "ghidra_decompile_function", fn: () => "decompiled" });
+    parent.register({ name: "ghidra_list_functions", fn: () => "listed" });
+    const client = makeClient([{ content: "done" }]);
+    const result = await spawnSubagent({
+      client,
+      parentRegistry: parent,
+      system: "test",
+      task: "test",
+      allowedTools: ["ghidra_*"],
+    });
+    // A prefix that matches nothing registered is the only failure; one that matches
+    // is a grant, not an unknown name.
+    expect(result.error).toBeUndefined();
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a prefix entry that matches no registered tool", async () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "read_file", readOnly: true, fn: () => "text" });
+    const client = makeClient([{ content: "should not run" }]);
+    const result = await spawnSubagent({
+      client,
+      parentRegistry: parent,
+      system: "test",
+      task: "test",
+      allowedTools: ["ghidra_*"],
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("ghidra_*");
   });
 
   it("cannot resurrect a plan tool through a skill allow-list", () => {

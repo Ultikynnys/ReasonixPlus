@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import type { PlanHistoryItem } from "@reasonix/core-utils";
+import { describe, expect, it } from "vitest";
 import { planLabelsBySession } from "./plan-labels";
 
 function plan(

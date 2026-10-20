@@ -1,3 +1,5 @@
+import { recordFrontendDiagnostic } from "./diagnostics";
+
 export interface LoadingTimingStep {
   step: string;
   tabId?: string;
@@ -34,32 +36,24 @@ export class StartupTimingTracker {
       ...(options.details ? { details: options.details } : {}),
     };
     this.steps.push(entry);
-
-    const tabPrefix = options.tabId ? ` [tab:${options.tabId}]` : "";
-    const detailText = options.details ? ` ${JSON.stringify(options.details)}` : "";
-    console.info(
-      `[reasonix loading] +${deltaMs}ms (total: ${cumulativeMs}ms)${tabPrefix} ${step}${detailText}`,
-    );
-
     return entry;
   }
 
   finish(reason: string, details: Record<string, unknown> = {}): void {
     if (this.completed) return;
     this.completed = true;
-    const finalStep = this.mark(`throbber_dismissed:${reason}`, { details });
-    console.info(
-      `[reasonix loading] complete in ${finalStep.cumulativeMs}ms (${this.steps.length} steps logged)`,
-      { steps: this.steps },
-    );
+    this.mark(`throbber_dismissed:${reason}`, { details });
   }
 
   fail(reason: string, details: Record<string, unknown> = {}): void {
     if (this.completed) return;
     this.completed = true;
     const finalStep = this.mark(`loading_failed:${reason}`, { details });
-    console.warn(`[reasonix loading] aborted after ${finalStep.cumulativeMs}ms: ${reason}`, {
-      steps: this.steps,
-    });
+    // Keep the failure visible in the in-app diagnostics log now that the console flood is gone.
+    recordFrontendDiagnostic(
+      "frontend.loading_failed",
+      { reason, abortedAfterMs: finalStep.cumulativeMs, ...details },
+      "error",
+    );
   }
 }
