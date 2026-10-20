@@ -95,8 +95,8 @@ export async function downloadWhistleWeights(
         url,
         new Response(bytes, { headers: { "Content-Type": "application/octet-stream" } }),
       );
-    } catch (err) {
-      console.warn("Failed to cache Whistle weights:", err);
+    } catch {
+      // Caching is best-effort; the fetched bytes are still returned.
     }
   }
 
@@ -133,7 +133,7 @@ export async function deleteWhistleWeights(model: CactusWeightsRef): Promise<voi
   try {
     const cache = await caches.open(WEIGHTS_CACHE);
     await cache.delete(whistleWeightsUrl(model));
-  } catch (err) {
-    console.warn("Failed to delete Whistle weights:", err);
+  } catch {
+    // Eviction is best-effort.
   }
 }

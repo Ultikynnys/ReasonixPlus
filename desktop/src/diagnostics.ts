@@ -1,4 +1,4 @@
-import { messageOf, redactDiagnosticValue } from "@reasonix/core-utils";
+import { redactDiagnosticValue } from "@reasonix/core-utils";
 import { invoke } from "@tauri-apps/api/core";
 
 export type FrontendDiagnosticLevel = "error" | "warn" | "info" | "debug" | "verbose";
@@ -59,11 +59,19 @@ export function recordFrontendDiagnostic(
         event,
         details: redactDiagnosticValue(safeValue(details)),
       });
-    } catch (error) {
-      const message = messageOf(error);
-      window.console.error(`[diagnostics] frontend write failed: ${message}`);
+    } catch {
+      // The diagnostics sink itself failed; never recurse into another write.
     }
   });
+}
+
+/** Report a caught failure — one line per call site, always at "error". */
+export function recordFrontendFailure(
+  event: string,
+  error: unknown,
+  extra: Record<string, unknown> = {},
+): void {
+  recordFrontendDiagnostic(event, { ...extra, error }, "error");
 }
 
 function flushPerformanceEntries(): void {

@@ -33,6 +33,17 @@ describe("planLabelsBySession", () => {
     expect(labels.get("session-c")?.index).toBe(3);
   });
 
+  it("counts finished plans in the index so the badge matches the history row", () => {
+    // Numbering comes from the whole history, finished entries included, because
+    // that is how the plan section numbers its rows. Whether the owning session is
+    // running is a render-time question the sidebar answers, never a filter here.
+    const labels = planLabelsBySession([
+      plan("done", "completed", "session-a"),
+      plan("live", "active", "session-b"),
+    ]);
+    expect(labels.get("session-b")).toMatchObject({ index: 2, status: "active" });
+  });
+
   it("ignores finished plans a session once claimed", () => {
     // Ownership is a live-work fact: a completed plan belongs to nobody, so the
     // session that claimed it must not be labelled with it.
@@ -65,5 +76,15 @@ describe("planLabelsBySession", () => {
   it("leaves sessions without a plan out of the map", () => {
     const labels = planLabelsBySession([plan("unowned", "active")]);
     expect(labels.size).toBe(0);
+  });
+
+  it("labels every owner at once, not just the session a tab is showing", () => {
+    // The store is workspace-scoped, so the sidebar of any tab must be able to read
+    // the plan state of a session it is not currently viewing.
+    const labels = planLabelsBySession([
+      plan("mine", "active", "session-a"),
+      plan("theirs", "proposed", "session-b"),
+    ]);
+    expect([...labels.keys()]).toEqual(["session-a", "session-b"]);
   });
 });

@@ -1022,11 +1022,7 @@ const stringArraySchema = z.array(z.string());
  *  Caveat: mtime resolution ~1 s; external edits may be missed within that window. */
 const _configCache = new Map<string, { mtimeMs: number; cfg: ReasonixConfig }>();
 
-function sanitizeStringArrayField(
-  cfg: Record<string, unknown>,
-  segments: readonly string[],
-  filePath: string,
-): void {
+function sanitizeStringArrayField(cfg: Record<string, unknown>, segments: readonly string[]): void {
   if (segments.length === 0) return;
   let parent: Record<string, unknown> = cfg;
   for (let i = 0; i < segments.length - 1; i++) {
@@ -1038,29 +1034,21 @@ function sanitizeStringArrayField(
   const leaf = segments[segments.length - 1] as string;
   const value = parent[leaf];
   if (value === undefined) return;
-  const fieldName = segments.join(".");
   if (!Array.isArray(value)) {
-    console.warn(`reasonix: config "${filePath}" field "${fieldName}" is not an array — ignoring`);
     delete parent[leaf];
     return;
   }
   const parsed = stringArraySchema.safeParse(value);
   if (parsed.success) return;
-  const filtered = value.filter((x): x is string => typeof x === "string");
-  console.warn(
-    `reasonix: config "${filePath}" field "${fieldName}" had ${value.length - filtered.length} non-string item(s) — dropped`,
-  );
-  parent[leaf] = filtered;
+  parent[leaf] = value.filter((x): x is string => typeof x === "string");
 }
 
-/** Validate the `models` provider map — drop entries without a valid provider
- *  (warn, never silently keep a malformed mapping: a wrong provider silently
- *  routes requests to the wrong endpoint family). */
-function sanitizeModelsField(cfg: Record<string, unknown>, filePath: string): void {
+/** Validate the `models` provider map — drop entries without a valid provider, since a
+ *  wrong provider would silently route requests to the wrong endpoint family. */
+function sanitizeModelsField(cfg: Record<string, unknown>): void {
   const raw = cfg.models;
   if (raw === undefined) return;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    console.warn(`reasonix: config "${filePath}" field "models" is not an object — ignoring`);
     cfg.models = undefined;
     return;
   }
@@ -1069,10 +1057,6 @@ function sanitizeModelsField(cfg: Record<string, unknown>, filePath: string): vo
     const provider = (entry as { provider?: unknown } | null | undefined)?.provider;
     if (isModelProvider(provider)) {
       cleaned[id] = { provider };
-    } else {
-      console.warn(
-        `reasonix: config "${filePath}" field "models.${id}" has no valid provider (${PROVIDER_IDS.join(", ")}) — dropped`,
-      );
     }
   }
   if (Object.keys(cleaned).length > 0) cfg.models = cleaned;
@@ -1117,9 +1101,9 @@ export function readConfig(path: string = defaultConfigPath()): ReasonixConfig {
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const cfg = parsed as Record<string, unknown>;
       for (const segments of STRING_ARRAY_FIELDS) {
-        sanitizeStringArrayField(cfg, segments, path);
+        sanitizeStringArrayField(cfg, segments);
       }
-      sanitizeModelsField(cfg, path);
+      sanitizeModelsField(cfg);
       sanitizeAntigravityOAuthField(cfg);
       if (cfg.mailProvider !== MailProvider.Outlook && cfg.mailProvider !== MailProvider.Gmail) {
         // undefined so JSON.stringify omits the persisted key entirely.

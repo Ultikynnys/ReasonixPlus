@@ -1,26 +1,23 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readConfig } from "../src/config.js";
 
 describe("readConfig — string[] field sanitization", () => {
   let dir: string;
   let path: string;
-  let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "reasonix-readconfig-"));
     path = join(dir, "config.json");
-    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(() => {
-    warnSpy.mockRestore();
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("drops object / null / number items from mcp[] and warns once", () => {
+  it("drops object / null / number items from mcp[]", () => {
     writeFileSync(
       path,
       JSON.stringify({
@@ -38,16 +35,12 @@ describe("readConfig — string[] field sanitization", () => {
       "fs=npx -y @modelcontextprotocol/server-filesystem /tmp",
       "local=https://127.0.0.1:9000/sse",
     ]);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0][0]).toMatch(/field "mcp" had 3 non-string item\(s\)/);
   });
 
   it("drops mcp field entirely when it's not an array", () => {
     writeFileSync(path, JSON.stringify({ mcp: "fs=npx -y pkg" }));
     const cfg = readConfig(path);
     expect(cfg.mcp).toBeUndefined();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0][0]).toMatch(/field "mcp" is not an array/);
   });
 
   it("sanitizes mcpDisabled[] the same way", () => {
@@ -68,7 +61,7 @@ describe("readConfig — string[] field sanitization", () => {
     expect(cfg.skills?.paths).toEqual(["/x", "/y"]);
   });
 
-  it("leaves all-string arrays untouched and does not warn", () => {
+  it("leaves all-string arrays untouched", () => {
     writeFileSync(
       path,
       JSON.stringify({
@@ -83,7 +76,6 @@ describe("readConfig — string[] field sanitization", () => {
     expect(cfg.mcpDisabled).toEqual(["a"]);
     expect(cfg.recentWorkspaces).toEqual(["/a"]);
     expect(cfg.skills?.paths).toEqual(["/x"]);
-    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it("returns empty config when top-level is not an object", () => {

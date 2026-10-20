@@ -2301,6 +2301,13 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 28px;
 }
 
+/* Rows are self-contained blocks, so ones scrolled out of view skip layout and
+   paint; the last three siblings (the streaming tail) always stay rendered. */
+.thread-row:nth-last-child(n + 4) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
+}
+
 /* ---------- JUMP BAR (message markers on the transcript scrollbar) ---------- */ /* ---------- TURN HEADERS ---------- */
 
 .turn-divider {
@@ -3263,6 +3270,13 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Headings that carry agent prose (the whole ask_choice question): wrap to as
+   many lines as it needs. Ellipsising there hid the question outright. */
+.card-head .name[data-wrap="true"] {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 .card-head .grow {
   flex: 1;

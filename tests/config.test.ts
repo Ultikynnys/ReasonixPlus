@@ -485,28 +485,19 @@ describe("config", () => {
       expect(providerForModel("chat_99999", path)).toBe("deepseek");
     });
 
-    it("readConfig drops models entries with an invalid provider and warns", () => {
-      const warns: string[] = [];
-      const orig = console.warn;
-      console.warn = (msg: string) => warns.push(msg);
-      try {
-        writeConfig(
-          {
-            models: {
-              "good-id": { provider: "openai" },
-              "bad-id": { provider: "not-a-provider" },
-              "worse-id": "openai",
-            },
+    it("readConfig drops models entries with an invalid provider", () => {
+      writeConfig(
+        {
+          models: {
+            "good-id": { provider: "openai" },
+            "bad-id": { provider: "not-a-provider" },
+            "worse-id": "openai",
           },
-          path,
-        );
-        const cfg = readConfig(path);
-        expect(cfg.models).toEqual({ "good-id": { provider: "openai" } });
-        expect(warns.some((w) => w.includes("models.bad-id"))).toBe(true);
-        expect(warns.some((w) => w.includes("models.worse-id"))).toBe(true);
-      } finally {
-        console.warn = orig;
-      }
+        },
+        path,
+      );
+      const cfg = readConfig(path);
+      expect(cfg.models).toEqual({ "good-id": { provider: "openai" } });
     });
 
     it("isKnownModelId requires positive evidence, never a name shape", () => {

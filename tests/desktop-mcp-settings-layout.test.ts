@@ -1,15 +1,5 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-
-const cssPath = fileURLToPath(new URL("../desktop/src/styles.css", import.meta.url));
-const css = readFileSync(cssPath, "utf8");
-
-function cssRule(selector: string): string {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`${escaped}\\s*\\{(?<body>[^}]*)\\}`).exec(css);
-  return match?.groups?.body ?? "";
-}
+import { cssRule } from "./support/css.js";
 
 describe("desktop MCP settings layout", () => {
   it("keeps long MCP specs inside the card instead of widening the modal", () => {

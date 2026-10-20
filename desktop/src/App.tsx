@@ -1,6 +1,7 @@
 import {
   type ChangelogRelease,
   DEFAULT_MODEL,
+  type MemoryWriteOptions,
   type RuleRecord,
   clipText,
   compactionCardText,
@@ -38,13 +39,14 @@ import {
   useState,
 } from "react";
 import { WorkspaceProvider } from "./Markdown";
-import { recordFrontendDiagnostic } from "./diagnostics";
+import { recordFrontendDiagnostic, recordFrontendFailure } from "./diagnostics";
 import { type AbortDraftSource, nextAbortDraftCandidate, restoreAbortedDraft } from "./abort-draft";
 import { type FeedbackSoundPlayer, feedbackSounds, primeFeedbackSounds } from "./feedback-sounds";
 import { formatBytes } from "./format";
 import { t, useLang } from "./i18n";
 import { I } from "./icons";
 import { downscaleImage, fileToDataUrl, isImagePath, typedMentionImages } from "./image-attach";
+import { ratesByWorkspace, runningTabSession } from "./live-rates";
 import { MODEL_CATALOG_GROUP_LABELS, deriveModelCatalog } from "./model-catalog";
 import {
   type ApprovalSnapshot,
@@ -100,6 +102,7 @@ import {
   resolveActiveQuickSend,
   rpcSend,
 } from "./protocol";
+import { keepStable, sameStringList, sameStringSet } from "./stable-identity";
 import { StartupTimingTracker } from "./startup-timing";
 import { StreamRateTracker } from "./stream-rate";
 import {
@@ -179,7 +182,7 @@ import { useTurnWatchdog } from "./ui/useTurnWatchdog";
 import { WorkdirPop } from "./ui/workdir-pop";
 import { anyVoiceModelDownloaded } from "./voice/models";
 import { areWorkspacesLoaded, isWorkspaceRevealReady } from "./workspace-loading";
-import { toWorkspaceRelative } from "./workspace-path";
+import { normalizeWorkspacePath, toWorkspaceRelative } from "./workspace-path";
 
 /** Thumbnail icons for queued audio/video attachments — real data-URL images so
  *  the existing pending/queue <img> renders need no per-kind branches. */
@@ -1078,6 +1081,31 @@ function turnStatusAfterResolve(
 ): State["turnStatus"] {
   if (hasPendingIntervention(nextState)) return "waiting_user";
   return currentBusy ? "calling_tool" : null;
+}
+
+/** True when two $sessions snapshots list the same rows with the same metadata,
+ *  so the reducer can keep the prior array reference. The sidebar memoizes on
+ *  this array and re-sorts it per workspace row, so a refresh that changed
+ *  nothing must not hand it a new one. */
+function sameSessionRows(a: readonly SessionInfo[], b: readonly SessionInfo[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.name !== y.name ||
+      x.messageCount !== y.messageCount ||
+      x.mtime !== y.mtime ||
+      x.updatedAt !== y.updatedAt ||
+      x.createdAt !== y.createdAt ||
+      x.summary !== y.summary ||
+      x.workspaceStatus !== y.workspaceStatus
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** True when two $jobs snapshots are identical, so the reducer can keep the
@@ -2390,7 +2418,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     }
     case "$plan_history": {
-      if (state.currentSession && ev.sessionName !== state.currentSession) return state;
+      // The plan store is workspace-scoped and the daemon fans this projection out to
+      // every tab of that workspace, so the event describes SESSIONS, not the one on
+      // screen. Applying it whatever session this tab happens to show is what keeps a
+      // background session's badge current. Only a workspace switch invalidates the map.
       const items = Array.isArray(ev.items) ? ev.items : [];
       return {
         ...state,
@@ -2402,10 +2433,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         ),
       };
     }
-    case "$plan_detail": {
-      if (state.currentSession && ev.sessionName !== state.currentSession) return state;
+    case "$plan_detail":
       return { ...state, planDetails: { ...state.planDetails, [ev.plan.id]: ev.plan } };
-    }
     case "$plan_restored": {
       const steps = Array.isArray(ev.steps) ? (ev.steps as PlanStep[]) : [];
       return {
@@ -2424,9 +2453,15 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       const sameEpoch = ev.epoch === state.sessionsEpoch;
       if (sameEpoch && ev.revision < state.sessionsRevision) return state;
       const settledNames = new Set(ev.settledDeletes?.map((result) => result.name) ?? []);
+      const filteredDeletes =
+        sameEpoch && settledNames.size > 0
+          ? state.pendingSessionDeletes.filter((name) => !settledNames.has(name))
+          : state.pendingSessionDeletes;
       const pendingSessionDeletes = sameEpoch
-        ? state.pendingSessionDeletes.filter((name) => !settledNames.has(name))
-        : [];
+        ? keepStable(state.pendingSessionDeletes, filteredDeletes, sameStringList)
+        : state.pendingSessionDeletes.length === 0
+          ? state.pendingSessionDeletes
+          : [];
       const hidden = new Set(pendingSessionDeletes);
       const unique = new Map<string, SessionInfo>();
       for (const session of ev.items) {
@@ -2446,15 +2481,27 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         mutation?.kind !== "create" ||
         mutation.awaitingName === undefined ||
         ev.items.some((item) => item.name === mutation.awaitingName);
+      const sorted = [...unique.values()].sort(sortSessionsByCreationDescending);
+      const sessions = sameSessionRows(state.sessions, sorted) ? state.sessions : sorted;
+      // Every hidden name was settled by this snapshot — drop the in-flight marker.
+      const sessionsMutation =
+        pendingSessionDeletes.length > 0 || !createSettled ? state.sessionsMutation : null;
+      if (
+        sessions === state.sessions &&
+        sessionsMutation === state.sessionsMutation &&
+        pendingSessionDeletes === state.pendingSessionDeletes &&
+        ev.epoch === state.sessionsEpoch &&
+        ev.revision === state.sessionsRevision
+      ) {
+        return state;
+      }
       return {
         ...state,
-        sessions: [...unique.values()].sort(sortSessionsByCreationDescending),
+        sessions,
         sessionsEpoch: ev.epoch,
         sessionsRevision: ev.revision,
         pendingSessionDeletes,
-        // Every hidden name was settled by this snapshot — drop the in-flight marker.
-        sessionsMutation:
-          pendingSessionDeletes.length > 0 || !createSettled ? state.sessionsMutation : null,
+        sessionsMutation,
       };
     }
     case "$mcp_setup":
@@ -2699,8 +2746,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         awaitingAck: false,
         currentSession: sessionName,
         compacting: false,
-        planHistory: [],
-        planDetails: {},
         messages: loaded,
         pendingConfirms: [],
         pendingPathAccess: [],
@@ -3368,7 +3413,18 @@ interface TabRuntimeProps {
   onRemoveWorkspace: (path: string) => void;
 }
 
-function TabRuntime({
+/** Memoized at their single call site: TabRuntime re-renders on every streamed
+ *  delta, and each shell child reads a small set of stable props. */
+const MemoTitleBar = memo(TitleBar);
+const MemoTabBar = memo(TabBar);
+const MemoSidebar = memo(Sidebar);
+const MemoContextPanel = memo(ContextPanel);
+const MemoStatusBar = memo(StatusBar);
+
+/** Memoized because App re-renders on every rate tick and tab-list change, and
+ *  each mounted tab carries a whole shell: without this boundary every one of
+ *  them reconciled its transcript and sidebar for a prop change it never saw. */
+const TabRuntime = memo(function TabRuntime({
   tabId,
   active,
   backendConnected,
@@ -3492,6 +3548,17 @@ function TabRuntime({
     turnLastEventMs: 0,
     turnElapsedMs: 0,
   });
+  // A tab that has rendered visible keeps its reducer live (busy reporting,
+  // gates, rates) while hidden, but renders the last visible snapshot so the
+  // memoized children bail out; a tab that never rendered visible stays live.
+  const lastVisibleState = useRef(state);
+  const seenVisible = useRef(active);
+  useEffect(() => {
+    if (!active) return;
+    seenVisible.current = true;
+    lastVisibleState.current = state;
+  }, [active, state]);
+  const view = active || !seenVisible.current ? state : lastVisibleState.current;
   useLang();
   useDisableTextAssist();
   const [draftStore] = useState(createComposerDraft);
@@ -3622,7 +3689,7 @@ function TabRuntime({
     (cmd: OutgoingCommand) => {
       const queued = rpcQueue.current.then(() => rpcSend({ tabId, ...cmd }));
       rpcQueue.current = queued.catch((err) =>
-        recordFrontendDiagnostic("frontend.rpc_failed", { cmd: cmd.cmd, error: err }, "error"),
+        recordFrontendFailure("frontend.rpc_failed", err, { cmd: cmd.cmd }),
       );
     },
     [tabId],
@@ -3770,7 +3837,7 @@ function TabRuntime({
     // clearing optimistically here orphans the UI on a blank screen when the
     // RPC fails while the backend still points at the old session.
     rpcSend({ tabId, cmd: "new_chat" }).catch((err) => {
-      recordFrontendDiagnostic("frontend.new_chat_failed", { error: err }, "error");
+      recordFrontendFailure("frontend.new_chat_failed", err);
       dispatch({
         t: "push_notice",
         text: `Couldn't start a new chat: ${messageOf(err)}. Your current conversation is untouched.`,
@@ -3792,7 +3859,7 @@ function TabRuntime({
         saveSettings({ workspaceDir: picked });
       }
     } catch (err) {
-      recordFrontendDiagnostic("frontend.pick_workspace_failed", { error: err }, "error");
+      recordFrontendFailure("frontend.pick_workspace_failed", err);
     }
   }, [clearAbortDraft, saveSettings, state.settings?.workspaceDir]);
 
@@ -3876,7 +3943,7 @@ function TabRuntime({
           },
         ]);
       } catch (err) {
-        recordFrontendDiagnostic("frontend.image_attach_failed", { error: err }, "error");
+        recordFrontendFailure("frontend.image_attach_failed", err);
         appendNotice(t("composer.imageAttachFailed"), "error");
       }
     },
@@ -3996,7 +4063,7 @@ function TabRuntime({
         if (cancelled) handle();
         else unlisten = handle;
       } catch (err) {
-        recordFrontendDiagnostic("frontend.dragdrop_listen_failed", { error: err }, "error");
+        recordFrontendFailure("frontend.dragdrop_listen_failed", err);
       }
     })();
     return () => {
@@ -4514,7 +4581,7 @@ function TabRuntime({
       await invoke("write_text_file", { path, content: md });
       appendNotice(t("app.toast.exportedMd"), "success");
     } catch (err) {
-      recordFrontendDiagnostic("frontend.export_failed", { error: err }, "error");
+      recordFrontendFailure("frontend.export_failed", err);
       appendNotice(t("app.toast.exportFailed", { error: String(err) }), "error");
     }
   }, [state.messages, session, appendNotice]);
@@ -4577,10 +4644,20 @@ function TabRuntime({
   // this tab's workspace — the sidebar dots one per running session. A merely
   // open channel must NOT dot: the tab bar reserves the dot for running agents
   // and the sidebar follows the same rule (issue: 3 dots for 1 working agent).
-  const runningSessions = useMemo(
+  const runningSessionsFresh = useMemo(
     () => runningSessionNames(tabsList, state.settings?.workspaceDir),
     [tabsList, state.settings?.workspaceDir],
   );
+  // A busy flip in a sibling channel rebuilds this set with the same members for
+  // every other workspace, and a fresh Set is a fresh sidebar prop — the one
+  // thing that kept memo() from skipping an unrelated tab's row list.
+  const runningSessionsRef = useRef(runningSessionsFresh);
+  const runningSessions = keepStable(
+    runningSessionsRef.current,
+    runningSessionsFresh,
+    sameStringSet,
+  );
+  runningSessionsRef.current = runningSessions;
 
   // Which plan each workspace session owns, so a sidebar row can label it. The
   // plan history is workspace-wide, so one map covers every listed session.
@@ -4591,11 +4668,191 @@ function TabRuntime({
     [state.planHistory],
   );
 
+  // The ribbon only needs to know whether more than one workspace tab exists,
+  // and a full grouping walk for that boolean ran on every render.
+  const singleTab = useMemo(() => groupTabsByWorkspace(tabsList).length <= 1, [tabsList]);
+
   // Report this channel's running-agent state up so the tab dot can count the
   // agents active in the tab (this channel plus its siblings).
   useEffect(() => {
     onBusyChange(tabId, state.busy);
   }, [onBusyChange, tabId, state.busy]);
+
+  // Rebuilding the transcript on every unrelated state change walked every
+  // message; the rows are memoized, so reuse the same elements until something
+  // a row actually reads changes.
+  const interventionPending = hasPendingIntervention(view);
+  const transcriptRows = useMemo(
+    () =>
+      view.messages.map((m, i) => {
+        if (m.kind === "user") {
+          const dividerLabel = `turn ${m.turn}`;
+          const prev = view.messages[i - 1];
+          const needsDivider = !prev || prev.kind === "user";
+          return (
+            <div key={`u-${m.turn}`} data-turn={m.turn} className="thread-row">
+              {needsDivider ? <TurnDivider label={dividerLabel} /> : null}
+              <UserMsg text={m.text} images={m.images} skill={m.skill} />
+            </div>
+          );
+        }
+        if (m.kind === "assistant") {
+          return (
+            <div key={`a-${m.turn}-${i}`} className="thread-row">
+              <AssistantRow
+                m={m}
+                model={view.model}
+                pendingConfirms={view.pendingConfirms}
+                activePlan={activePlanForMessage(m, view.activePlan)}
+                onApproveConfirm={onApproveConfirm}
+                onRejectConfirm={onRejectConfirm}
+                onRuleConfirm={onRuleConfirm}
+                onStopTool={onStopTool}
+                jobs={view.jobs}
+                tabId={tabId}
+                onStopJob={onStopJob}
+                isInterventionPending={interventionPending}
+              />
+            </div>
+          );
+        }
+        if (m.kind === "notice") {
+          return (
+            <NoticeCard
+              key={m.id}
+              text={m.text}
+              severity={m.severity}
+              running={m.running}
+              anchor={m.trigger ? noticeAnchor(m.id) : undefined}
+            />
+          );
+        }
+        return null;
+      }),
+    [
+      view.messages,
+      view.model,
+      view.pendingConfirms,
+      view.activePlan,
+      view.jobs,
+      tabId,
+      interventionPending,
+      onApproveConfirm,
+      onRejectConfirm,
+      onRuleConfirm,
+      onStopTool,
+      onStopJob,
+    ],
+  );
+
+  // Props handed to memoized children must keep their identity across renders,
+  // otherwise memo() can never bail out of their subtree.
+  const closeTab = useCallback((id: string) => {
+    rpcSend({ cmd: "tab_close", tabId: id }).catch((err) =>
+      recordFrontendFailure("frontend.tab_close_failed", err),
+    );
+  }, []);
+
+  const clearTabs = useCallback(
+    (scope: ClearTabsScope) => {
+      const workspaceTabs = workspaceTabRepresentatives(tabsList, activeTabId);
+      const activeWorkspace = workspaceTabs.find((representative) => {
+        const workspace = normalizeWorkspacePath(representative.workspaceDir);
+        return tabsList.some(
+          (tab) => tab.id === activeTabId && normalizeWorkspacePath(tab.workspaceDir) === workspace,
+        );
+      });
+      const targets = getTabsToClear(workspaceTabs, activeWorkspace?.id ?? activeTabId, scope);
+      for (const target of targets) closeTab(target.id);
+    },
+    [tabsList, activeTabId, closeTab],
+  );
+
+  const loadSession = useCallback(
+    (name: string) => {
+      clearAbortDraft();
+      // Open the session as its own channel (a new tab in this group), or focus
+      // it if already open — never replace/abort the current one.
+      sendRpc({ cmd: "session_open", name });
+    },
+    [clearAbortDraft, sendRpc],
+  );
+
+  const deleteSession = useCallback(
+    (name: string) => {
+      dispatch({ t: "session_delete_requested", name });
+      sendRpc({ cmd: "session_delete", name });
+    },
+    [sendRpc],
+  );
+
+  const clearSessions = useCallback(() => {
+    // Echo the exact names being hidden so the daemon can settle every one even
+    // if its own workspace listing misses some — otherwise the rows stay hidden
+    // forever and the app looks wedged.
+    const names = state.sessions.map((session) => session.name);
+    dispatch({ t: "session_clear_requested" });
+    sendRpc({ cmd: "session_clear", names });
+  }, [state.sessions, sendRpc]);
+
+  const reorderSession = useCallback(
+    (name: string) => {
+      const now = Date.now();
+      dispatch({ t: "session_bump_requested", name, createdAt: now });
+      sendRpc({ cmd: "session_reorder", name, createdAt: now });
+    },
+    [sendRpc],
+  );
+
+  const openWorkdir = useCallback((anchor: { top?: number; bottom?: number; left: number }) => {
+    setWdAnchor(anchor);
+    setWdOpen(true);
+  }, []);
+
+  const openSettings = useCallback(() => openSettingsAt("general"), [openSettingsAt]);
+  const openAbout = useCallback(() => setAboutOpen(true), []);
+  const toggleJobs = useCallback(() => setJobsOpen((v) => !v), []);
+
+  const readMemory = useCallback(
+    (path: string) => sendRpc({ cmd: "memory_read", path }),
+    [sendRpc],
+  );
+  const writeMemory = useCallback(
+    (
+      scope: "global" | "project",
+      name: string,
+      description: string,
+      body: string,
+      opts?: MemoryWriteOptions,
+    ) => sendRpc({ cmd: "memory_write", scope, name, description, body, ...opts }),
+    [sendRpc],
+  );
+  const deleteMemory = useCallback(
+    (path: string) => sendRpc({ cmd: "memory_delete", path }),
+    [sendRpc],
+  );
+  const dismissMemoryResult = useCallback(() => dispatch({ t: "dismiss_memory_result" }), []);
+  const compactContext = useCallback(() => sendRpc({ cmd: "context_compact" }), [sendRpc]);
+  const readContext = useCallback(() => sendRpc({ cmd: "context_raw_get" }), [sendRpc]);
+  const writeContext = useCallback(
+    (text: string) => sendRpc({ cmd: "context_raw_set", text }),
+    [sendRpc],
+  );
+  const readPlans = useCallback(() => {
+    void rpcSend({ cmd: "plan_history_get", tabId });
+  }, [tabId]);
+  const readPlan = useCallback(
+    (planId: string) => {
+      void rpcSend({ cmd: "plan_detail_get", planId, tabId });
+    },
+    [tabId],
+  );
+  const removePlan = useCallback(
+    (planId: string) => {
+      void rpcSend({ cmd: "plan_remove", planId, tabId });
+    },
+    [tabId],
+  );
 
   return (
     <WorkspaceProvider value={{ dir: state.settings?.workspaceDir }}>
@@ -4612,86 +4869,41 @@ function TabRuntime({
           ["--thread-max-width" as string]: `${threadMaxWidth}px`,
         }}
       >
-        <TitleBar
+        <MemoTitleBar
           session={session}
-          model={state.settings?.model}
+          model={view.settings?.model}
           sideOn={!sideCollapsed}
           ctxOn={!ctxCollapsed}
           onToggleSide={onToggleSide}
           onToggleCtx={onToggleCtx}
         />
 
-        <TabBar
+        <MemoTabBar
           tabs={tabsList}
           activeId={activeTabId}
           setActive={setActiveTabId}
-          onClose={(id) => {
-            rpcSend({ cmd: "tab_close", tabId: id }).catch((err) =>
-              recordFrontendDiagnostic("frontend.tab_close_failed", { error: err }, "error"),
-            );
-          }}
+          onClose={closeTab}
           onNew={onNewTab}
-          onClearTabs={(scope) => {
-            const workspaceTabs = workspaceTabRepresentatives(tabsList, activeTabId);
-            const activeWorkspace = workspaceTabs.find((representative) => {
-              const workspace = normalizeWorkspacePath(representative.workspaceDir);
-              return tabsList.some(
-                (tab) =>
-                  tab.id === activeTabId && normalizeWorkspacePath(tab.workspaceDir) === workspace,
-              );
-            });
-            const targets = getTabsToClear(
-              workspaceTabs,
-              activeWorkspace?.id ?? activeTabId,
-              scope,
-            );
-            for (const target of targets) {
-              rpcSend({ cmd: "tab_close", tabId: target.id }).catch((err) =>
-                recordFrontendDiagnostic("frontend.tab_close_failed", { error: err }, "error"),
-              );
-            }
-          }}
-          singleTab={groupTabsByWorkspace(tabsList).length <= 1}
+          onClearTabs={clearTabs}
+          singleTab={singleTab}
         />
 
-        <Sidebar
-          sessions={state.sessions}
-          activeName={state.currentSession}
-          workspaceDir={state.settings?.workspaceDir}
+        <MemoSidebar
+          sessions={view.sessions}
+          activeName={view.currentSession}
+          workspaceDir={view.settings?.workspaceDir}
           onNewChat={newChat}
           runningSessions={runningSessions}
           sessionRates={sessionRates}
           planLabels={sessionPlanLabels}
-          sessionMutation={state.sessionsMutation}
-          onLoadSession={(name) => {
-            clearAbortDraft();
-            // Open the session as its own channel (a new tab in this group), or
-            // focus it if already open — never replace/abort the current one.
-            sendRpc({ cmd: "session_open", name });
-          }}
-          onDeleteSession={(name) => {
-            dispatch({ t: "session_delete_requested", name });
-            sendRpc({ cmd: "session_delete", name });
-          }}
-          onClearSessions={() => {
-            // Echo the exact names being hidden so the daemon can settle every
-            // one even if its own workspace listing misses some — otherwise the
-            // rows stay hidden forever and the app looks wedged.
-            const names = state.sessions.map((session) => session.name);
-            dispatch({ t: "session_clear_requested" });
-            sendRpc({ cmd: "session_clear", names });
-          }}
-          onReorderSession={(name) => {
-            const now = Date.now();
-            dispatch({ t: "session_bump_requested", name, createdAt: now });
-            sendRpc({ cmd: "session_reorder", name, createdAt: now });
-          }}
-          onOpenWorkdir={(anchor) => {
-            setWdAnchor(anchor);
-            setWdOpen(true);
-          }}
-          onOpenSettings={() => openSettingsAt("general")}
-          onOpenAbout={() => setAboutOpen(true)}
+          sessionMutation={view.sessionsMutation}
+          onLoadSession={loadSession}
+          onDeleteSession={deleteSession}
+          onClearSessions={clearSessions}
+          onReorderSession={reorderSession}
+          onOpenWorkdir={openWorkdir}
+          onOpenSettings={openSettings}
+          onOpenAbout={openAbout}
         />
 
         {!sideCollapsed ? (
@@ -4775,59 +4987,14 @@ function TabRuntime({
                   <div className="thread-inner" ref={threadInnerRef}>
                     {active ? (
                       <>
-                        {state.messages.length === 0 ? (
+                        {view.messages.length === 0 ? (
                           <EmptyState
                             onPick={(text) => send(text)}
                             workspaceDir={state.settings?.workspaceDir}
                           />
                         ) : null}
 
-                        {state.messages.map((m, i) => {
-                          if (m.kind === "user") {
-                            const dividerLabel = `turn ${m.turn}`;
-                            const prev = state.messages[i - 1];
-                            const needsDivider = !prev || prev.kind === "user";
-                            return (
-                              <div key={`u-${m.turn}`} data-turn={m.turn}>
-                                {needsDivider ? <TurnDivider label={dividerLabel} /> : null}
-                                <UserMsg text={m.text} images={m.images} skill={m.skill} />
-                              </div>
-                            );
-                          }
-                          if (m.kind === "assistant") {
-                            return (
-                              // biome-ignore lint/suspicious/noArrayIndexKey: transcript order is append-only
-                              <div key={`a-${m.turn}-${i}`}>
-                                <AssistantRow
-                                  m={m}
-                                  model={state.model}
-                                  pendingConfirms={state.pendingConfirms}
-                                  activePlan={activePlanForMessage(m, state.activePlan)}
-                                  onApproveConfirm={onApproveConfirm}
-                                  onRejectConfirm={onRejectConfirm}
-                                  onRuleConfirm={onRuleConfirm}
-                                  onStopTool={onStopTool}
-                                  jobs={state.jobs}
-                                  tabId={tabId}
-                                  onStopJob={onStopJob}
-                                  isInterventionPending={hasPendingIntervention(state)}
-                                />
-                              </div>
-                            );
-                          }
-                          if (m.kind === "notice") {
-                            return (
-                              <NoticeCard
-                                key={m.id}
-                                text={m.text}
-                                severity={m.severity}
-                                running={m.running}
-                                anchor={m.trigger ? noticeAnchor(m.id) : undefined}
-                              />
-                            );
-                          }
-                          return null;
-                        })}
+                        {transcriptRows}
 
                         {/* Pending approvals */}
                         {state.pendingPlans.map((p) => (
@@ -5093,90 +5260,79 @@ function TabRuntime({
             onMouseDown={onCtxResizeDown}
           />
         ) : null}
-        <ContextPanel
-          settings={state.settings}
-          usage={state.usage}
-          mcpSpecs={state.mcpSpecs}
-          mcpBridged={state.mcpBridged}
-          sessionFiles={state.sessionFiles}
-          memory={state.memory}
-          memoryDetail={state.memoryDetail}
-          memoryResult={state.memoryResult}
-          onReadMemory={(path) => sendRpc({ cmd: "memory_read", path })}
-          onWriteMemory={(scope, name, description, body, opts) =>
-            sendRpc({ cmd: "memory_write", scope, name, description, body, ...opts })
-          }
-          onDeleteMemory={(path) => sendRpc({ cmd: "memory_delete", path })}
-          onDismissMemoryResult={() => dispatch({ t: "dismiss_memory_result" })}
-          rawContext={state.contextRaw}
-          onCompact={() => sendRpc({ cmd: "context_compact" })}
-          onReadContext={() => sendRpc({ cmd: "context_raw_get" })}
-          onWriteContext={(text) => sendRpc({ cmd: "context_raw_set", text })}
+        <MemoContextPanel
+          settings={view.settings}
+          usage={view.usage}
+          mcpSpecs={view.mcpSpecs}
+          mcpBridged={view.mcpBridged}
+          sessionFiles={view.sessionFiles}
+          memory={view.memory}
+          memoryDetail={view.memoryDetail}
+          memoryResult={view.memoryResult}
+          onReadMemory={readMemory}
+          onWriteMemory={writeMemory}
+          onDeleteMemory={deleteMemory}
+          onDismissMemoryResult={dismissMemoryResult}
+          rawContext={view.contextRaw}
+          onCompact={compactContext}
+          onReadContext={readContext}
+          onWriteContext={writeContext}
           onAddRule={addRule}
           onRemoveRule={removeRule}
           onUpdateRule={updateRule}
           onCopyWorkspaceRules={copyWorkspaceRules}
           onSaveSettings={saveSettings}
-          activePlan={state.activePlan}
-          planHistory={state.planHistory}
-          planDetails={state.planDetails}
-          planSession={state.currentSession}
-          sessions={state.sessions}
-          onReadPlans={() => {
-            void rpcSend({ cmd: "plan_history_get", tabId });
-          }}
-          onReadPlan={(planId) => {
-            void rpcSend({ cmd: "plan_detail_get", planId, tabId });
-          }}
-          onRemovePlan={(planId) => {
-            void rpcSend({ cmd: "plan_remove", planId, tabId });
-          }}
-          messages={state.messages}
-          sessionEvents={state.sessionEvents}
+          activePlan={view.activePlan}
+          planHistory={view.planHistory}
+          planDetails={view.planDetails}
+          planSession={view.currentSession}
+          sessions={view.sessions}
+          onReadPlans={readPlans}
+          onReadPlan={readPlan}
+          onRemovePlan={removePlan}
+          messages={view.messages}
+          sessionEvents={view.sessionEvents}
           onJumpToEvent={jumpToEvent}
           active={active}
         />
 
-        <StatusBar
-          settings={state.settings}
-          balance={state.balance}
-          codexQuota={state.codexQuota}
-          codexQuotaRefreshing={state.codexQuotaRefreshing}
-          codexQuotaReason={state.codexQuotaReason}
+        <MemoStatusBar
+          settings={view.settings}
+          balance={view.balance}
+          codexQuota={view.codexQuota}
+          codexQuotaRefreshing={view.codexQuotaRefreshing}
+          codexQuotaReason={view.codexQuotaReason}
           onRefreshCodexQuota={refreshCodexQuota}
-          ollamaQuota={state.ollamaQuota}
-          ollamaQuotaRefreshing={state.ollamaQuotaRefreshing}
-          ollamaQuotaReason={state.ollamaQuotaReason}
+          ollamaQuota={view.ollamaQuota}
+          ollamaQuotaRefreshing={view.ollamaQuotaRefreshing}
+          ollamaQuotaReason={view.ollamaQuotaReason}
           onRefreshOllamaQuota={refreshOllamaQuota}
           ollamaPlan={ollamaPlan}
-          antigravityQuota={state.antigravityQuota}
-          antigravityQuotaRefreshing={state.antigravityQuotaRefreshing}
-          antigravityQuotaReason={state.antigravityQuotaReason}
+          antigravityQuota={view.antigravityQuota}
+          antigravityQuotaRefreshing={view.antigravityQuotaRefreshing}
+          antigravityQuotaReason={view.antigravityQuotaReason}
           onRefreshAntigravityQuota={refreshAntigravityQuota}
-          zaiQuota={state.zaiQuota}
-          zaiQuotaRefreshing={state.zaiQuotaRefreshing}
-          zaiQuotaReason={state.zaiQuotaReason}
+          zaiQuota={view.zaiQuota}
+          zaiQuotaRefreshing={view.zaiQuotaRefreshing}
+          zaiQuotaReason={view.zaiQuotaReason}
           onRefreshZaiQuota={refreshZaiQuota}
-          opencodeQuota={state.opencodeQuota}
-          opencodeQuotaRefreshing={state.opencodeQuotaRefreshing}
-          opencodeQuotaReason={state.opencodeQuotaReason}
+          opencodeQuota={view.opencodeQuota}
+          opencodeQuotaRefreshing={view.opencodeQuotaRefreshing}
+          opencodeQuotaReason={view.opencodeQuotaReason}
           onRefreshOpencodeQuota={refreshOpencodeQuota}
-          usage={state.usage}
-          busy={state.busy}
-          ready={state.ready}
+          usage={view.usage}
+          busy={view.busy}
+          ready={view.ready}
           currency={currency}
           theme={theme}
           themeStyle={themeStyle}
-          jobs={state.jobs}
+          jobs={view.jobs}
           jobsOpen={jobsOpen}
-          onToggleJobs={() => setJobsOpen((v) => !v)}
+          onToggleJobs={toggleJobs}
           onSetThemeStyle={onSetThemeStyle}
           onToggleCurrency={onToggleCurrency}
-          onOpenSettings={() => openSettingsAt("general")}
-          onOpenWorkdir={(anchor) => {
-            setWdAnchor(anchor);
-            setWdOpen(true);
-          }}
+          onOpenSettings={openSettings}
+          onOpenWorkdir={openWorkdir}
         />
 
         <WorkdirPop
@@ -5301,7 +5457,7 @@ function TabRuntime({
       </div>
     </WorkspaceProvider>
   );
-}
+});
 
 function WinMinimize() {
   return (
@@ -5539,12 +5695,8 @@ function TitleBar({
  *  `workspaceDir`. The ONLY input to the sidebar dot: a merely open channel
  *  must not dot — the tab bar reserves the dot for running agents and the
  *  sidebar follows the same rule (issue: 3 orange dots for 1 working agent). */
-/** The session name of a tab whose agent is actively running, or undefined.
- *  The single source of the "is this tab running?" rule that both the sidebar
- *  dot and its live tokens/second readout derive from. */
-function runningTabSession(t: { session?: string; busy?: boolean }): string | undefined {
-  return t.busy && t.session ? t.session : undefined;
-}
+/** The session name of a tab whose agent is actively running, or undefined. */
+const EMPTY_SESSION_RATES: Map<string, number> = new Map();
 
 export function runningSessionNames<
   T extends { id: string; workspaceDir?: string; session?: string; busy?: boolean },
@@ -5623,7 +5775,7 @@ export function TabBar({
 
   // The ribbon is workspace-only. Session channels stay mounted and running,
   // but are selected from the sidebar instead of duplicated as S1/S2 pills.
-  const groups = groupTabsByWorkspace(tabs);
+  const groups = useMemo(() => groupTabsByWorkspace(tabs), [tabs]);
   const lastActiveByWorkspace = useRef(new Map<string, string>());
   const activeGroup = groups.find((group) => group.items.some((tab) => tab.id === activeId));
   if (activeGroup) lastActiveByWorkspace.current.set(activeGroup.key, activeId);
@@ -6244,16 +6396,6 @@ type TabMeta = {
   creating?: boolean;
 };
 
-/** Compare workspace dirs across separator flavor and trailing slashes.
- *  Windows drive/UNC paths are case-insensitive; POSIX paths are not. */
-function normalizeWorkspacePath(p?: string): string {
-  const raw = p ?? "";
-  const normalized = raw.replace(/\\/g, "/").replace(/\/+$/, "");
-  const windowsPath =
-    raw.includes("\\") || /^[a-z]:\//i.test(normalized) || normalized.startsWith("//");
-  return windowsPath ? normalized.toLowerCase() : normalized;
-}
-
 export function App() {
   // Arm the WebAudio cue player on the first gesture — one process-wide
   // listener, so autoplay policies don't silence the first cue.
@@ -6313,6 +6455,19 @@ export function App() {
   // sessions never blank out while the channel's own first $sessions snapshot
   // is in flight.
   const sessionsByWorkspaceRef = useRef<Map<string, SessionInfo[]>>(new Map());
+  // A $sessions broadcast replaces the ref's array, and the seed is read once at
+  // mount — but a fresh array is a fresh prop that would wake every tab of the
+  // workspace it belongs to. Same contents, same array.
+  const sessionSeedRef = useRef<Map<string, SessionInfo[]>>(new Map());
+  const sessionSeedFor = (workspaceDir?: string): SessionInfo[] | undefined => {
+    const workspace = normalizeWorkspacePath(workspaceDir);
+    const fresh = sessionsByWorkspaceRef.current.get(workspace);
+    if (!fresh) return undefined;
+    const prior = sessionSeedRef.current.get(workspace);
+    const seed = keepStable(prior, fresh, sameSessionRows);
+    if (seed !== prior) sessionSeedRef.current.set(workspace, seed);
+    return seed;
+  };
 
   // Mirror of activeTabId for listener closures — the startup effect must
   // NOT re-run on every tab switch (it tears down and re-fires desktop_resync,
@@ -6326,7 +6481,7 @@ export function App() {
 
   const requestOllamaModels = useCallback((force?: boolean) => {
     rpcSend({ tabId: activeTabIdRef.current, cmd: "ollama_models_list", force }).catch((err) =>
-      console.error("ollama_models_list failed", err),
+      recordFrontendFailure("frontend.ollama_models_failed", err),
     );
   }, []);
 
@@ -6334,7 +6489,9 @@ export function App() {
     rpcSend({
       tabId: activeTabIdRef.current,
       cmd: "antigravity_models_refresh",
-    }).catch((err) => console.error("antigravity_models_refresh failed", err));
+    }).catch((err) =>
+      recordFrontendFailure("frontend.antigravity_models_failed", err),
+    );
   }, []);
 
   const requestOpencodeModels = useCallback((force?: boolean) => {
@@ -6342,12 +6499,14 @@ export function App() {
       tabId: activeTabIdRef.current,
       cmd: "opencode_models_refresh",
       force,
-    }).catch((err) => console.error("opencode_models_refresh failed", err));
+    }).catch((err) =>
+      recordFrontendFailure("frontend.opencode_models_failed", err),
+    );
   }, []);
 
   const requestChangelog = useCallback((force?: boolean) => {
     rpcSend({ tabId: activeTabIdRef.current, cmd: "changelog_get", force }).catch((err) =>
-      console.error("changelog_get failed", err),
+      recordFrontendFailure("frontend.changelog_failed", err),
     );
   }, []);
 
@@ -6560,8 +6719,8 @@ export function App() {
       try {
         const update = await check();
         if (!cancelled && update) setPendingUpdate(update);
-      } catch (err) {
-        console.debug("[reasonix frontend] updater check unavailable", err);
+      } catch {
+        // Updater check is optional (dev builds, offline) — nothing to report.
       }
     })();
     return () => {
@@ -6587,7 +6746,7 @@ export function App() {
       });
       await relaunch();
     } catch (err) {
-      console.error("update failed", err);
+      recordFrontendFailure("frontend.update_failed", err);
       setUpdateStatus("error");
     }
   }, [pendingUpdate]);
@@ -6841,18 +7000,26 @@ export function App() {
             // event (and clears it on $error with an OAuth message / signed-in
             // $settings), so the event still falls through to deliverToTab.
             if (ev.type === "oauth_begin_result") {
-              void openUrl(ev.url).catch((err) => console.error("openUrl failed", err));
+              void openUrl(ev.url).catch((err) =>
+                recordFrontendFailure("frontend.open_url_failed", err),
+              );
             }
 
             if (ev.type === "gemini_oauth_begin_result") {
-              void openUrl(ev.url).catch((err) => console.error("openUrl failed", err));
+              void openUrl(ev.url).catch((err) =>
+                recordFrontendFailure("frontend.open_url_failed", err),
+              );
             }
 
             if (ev.type === "opencode_oauth_begin_result") {
-              void openUrl(ev.url).catch((err) => console.error("openUrl failed", err));
+              void openUrl(ev.url).catch((err) =>
+                recordFrontendFailure("frontend.open_url_failed", err),
+              );
             }
             if (ev.type === "mimo_oauth_begin_result") {
-              void openUrl(ev.url).catch((err) => console.error("openUrl failed", err));
+              void openUrl(ev.url).catch((err) =>
+                recordFrontendFailure("frontend.open_url_failed", err),
+              );
             }
 
             if (ev.type === "$jobs") {
@@ -6948,8 +7115,7 @@ export function App() {
               deliverToTab(target, { t: "incoming", event: ev });
             }
           } catch (err) {
-            console.error("[reasonix frontend] bad rpc:event line", {
-              error: err,
+            recordFrontendFailure("frontend.bad_wire_event", err, {
               payloadChars: e.payload.data.length,
             });
           }
@@ -6964,10 +7130,6 @@ export function App() {
                 )
               : prev,
           );
-          console.warn("[reasonix frontend] daemon stderr", {
-            line: e.payload.data,
-            lineChars: e.payload.data.length,
-          });
         }),
         listen<{ code: number | null }>("rpc:exit", (e) => {
           tracker.fail("rpc_exit", { code: e.payload.code });
@@ -6976,7 +7138,7 @@ export function App() {
           for (const tabId of dispatchersRef.current.keys()) flushTabDeltas(tabId);
           if (dispatchersRef.current.size === 0) {
             const exitError = new Error(`reasonix exited (code ${e.payload.code ?? "?"})`);
-            console.error("[reasonix frontend] daemon exited", {
+            recordFrontendFailure("frontend.daemon_exited", exitError, {
               code: e.payload.code,
               stderrLines: startupStderrRef.current.length,
             });
@@ -7013,7 +7175,6 @@ export function App() {
           tracker.fail("rpc_spawn_failed", { error: String(err) });
           setLoadingWorkspaces(false);
           setStartupFailure(coerceStartupFailure(err, startupStderrRef.current));
-          console.error("rpc_spawn failed", err);
         }
       }
     };
@@ -7028,10 +7189,7 @@ export function App() {
   useEffect(() => {
     if (!activeTabId) return;
     rpcSend({ cmd: "tab_activate", tabId: activeTabId }).catch((err) => {
-      console.error("[reasonix frontend] tab_activate failed", {
-        tabId: activeTabId,
-        error: err,
-      });
+      recordFrontendFailure("frontend.tab_activate_failed", err, { tabId: activeTabId });
     });
   }, [activeTabId]);
 
@@ -7079,6 +7237,16 @@ export function App() {
     const id = setInterval(tick, 400);
     return () => clearInterval(id);
   }, [anyBusy]);
+
+  // A sidebar row reads a rate only for the running sessions of its own
+  // workspace, so each tab is handed that slice instead of the whole map: a tick
+  // that moved another workspace's numbers then leaves this tab's memo() alone.
+  const tabRatesRef = useRef(new Map<string, Map<string, number>>());
+  const tabRates = useMemo(() => {
+    const next = ratesByWorkspace(tabs, sessionRates, tabRatesRef.current);
+    tabRatesRef.current = next;
+    return next;
+  }, [tabs, sessionRates]);
 
   const openTab = useCallback(() => {
     // New tab — defaults to the local Reasonix+ installation (a fresh group).
@@ -7174,7 +7342,7 @@ export function App() {
       d({ t: "workspace_recent_removed", path });
     }
     rpcSend({ cmd: "workspace_recent_remove", path }).catch((err) =>
-      console.error("[reasonix frontend] workspace_recent_remove failed", err),
+      recordFrontendFailure("frontend.workspace_forget_failed", err),
     );
   }, []);
 
@@ -7193,15 +7361,13 @@ export function App() {
           backendConnected={backendConnected}
           currency={currency}
           registerDispatch={registerDispatch}
-          initialSessionSeed={sessionsByWorkspaceRef.current.get(
-            normalizeWorkspacePath(t.workspaceDir),
-          )}
+          initialSessionSeed={sessionSeedFor(t.workspaceDir)}
           creatingSession={t.creating === true}
           expectedSessionName={t.session}
           onWorkspaceInitialized={markWorkspaceInitialized}
           onNewTab={openTab}
           onBusyChange={reportTabBusy}
-          sessionRates={sessionRates}
+          sessionRates={tabRates.get(normalizeWorkspacePath(t.workspaceDir)) ?? EMPTY_SESSION_RATES}
           theme={tabThemes[t.id]?.theme ?? DEFAULT_TAB_THEME.theme}
           themeStyle={tabThemes[t.id]?.themeStyle ?? DEFAULT_TAB_THEME.themeStyle}
           onSetThemeStyle={onSetThemeStyle}

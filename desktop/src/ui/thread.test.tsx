@@ -413,6 +413,22 @@ describe("user-input cards render agent markdown", () => {
     expect(name?.querySelector("p")).toBeNull();
   });
 
+  it("lets the choice question wrap instead of ellipsising it away", () => {
+    const { container } = render(
+      <ChoiceApprovalCard
+        question={"Keep the index, re-word it"}
+        options={[
+          { id: "a", title: "Keep the index" },
+          { id: "b", title: "Remove the index" },
+        ]}
+        onPick={noop}
+      />,
+    );
+    const name = container.querySelector(".card-head .name");
+    expect(name?.getAttribute("data-wrap")).toBe("true");
+    expect(name?.textContent).toBe("Keep the index, re-word it");
+  });
+
   it("formats a checkpoint result as markdown", () => {
     const { container } = render(
       <CheckpointApprovalCard

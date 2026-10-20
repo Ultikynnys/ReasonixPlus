@@ -1,10 +1,29 @@
+import { LruCache } from "./cache";
+
 function isWindowsPath(path: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(path) || path.includes("\\");
 }
 
+/** Grouping re-normalizes the same handful of workspace dirs many times per
+ *  render, so the regex work is cached (and bounded, in case dirs churn). */
+const normalizedPaths = new LruCache<string, string>(2000);
+
+/** Compare workspace dirs across separator flavor and trailing slashes.
+ *  Windows drive/UNC paths are case-insensitive; POSIX paths are not. */
+export function normalizeWorkspacePath(path?: string): string {
+  const raw = path ?? "";
+  const cached = normalizedPaths.get(raw);
+  if (cached !== undefined) return cached;
+  const normalized = raw.replace(/\\/g, "/").replace(/\/+$/, "");
+  const windowsPath =
+    raw.includes("\\") || /^[a-z]:\//i.test(normalized) || normalized.startsWith("//");
+  const value = windowsPath ? normalized.toLowerCase() : normalized;
+  normalizedPaths.set(raw, value);
+  return value;
+}
+
 function normalizeForComparison(path: string): string {
-  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  return isWindowsPath(path) ? normalized.toLowerCase() : normalized;
+  return normalizeWorkspacePath(path);
 }
 
 /** Resolve a workspace-relative path while preserving the workspace platform's separator. */

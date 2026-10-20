@@ -998,6 +998,11 @@ function emitRestoredPlan(tab: Tab, hasPriorMessages: boolean): void {
   }
 }
 
+/** Every tab serving one workspace, installed by the desktop command. Plan history is a
+ *  WORKSPACE projection, so a plan another session starts must label its sidebar row
+ *  whichever session this tab happens to be showing. */
+let workspaceTabs: ((workspaceDir: string) => Tab[]) | null = null;
+
 function emitPlanHistory(tab: Tab): void {
   if (!tab.rootDir) return;
   // A corrupt or unreadable history.json must not abort session load — degrade
@@ -1009,7 +1014,11 @@ function emitPlanHistory(tab: Tab): void {
     process.stderr.write(`reasonix: plan history read failed — ${messageOf(err)}\n`);
     items = [];
   }
-  emit({ type: "$plan_history", sessionName: tab.currentSession, items }, tab.id);
+  // One read, one projection, every tab of the workspace: the store is workspace-scoped,
+  // so the same items are each tab's truth about every session in it.
+  for (const target of workspaceTabs?.(tab.rootDir) ?? [tab]) {
+    emit({ type: "$plan_history", sessionName: target.currentSession, items }, target.id);
+  }
 }
 
 function emit(ev: EmittableEvent, tabId?: string): void {
@@ -5137,6 +5146,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     return false;
   });
+  // Plan history is workspace-scoped, so its projection fans out to every tab bound to
+  // that workspace rather than only the one that wrote the plan.
+  workspaceTabs = (workspaceDir) => tabsInWorkspace(workspaceDir);
   publishProviderCatalogs = () => {
     for (const tab of tabs.values()) emitSettings(tab);
   };
@@ -6716,7 +6728,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       rootDir,
       getMcpSpecs: () => effectiveMcpSpecs(tab),
       subagentsEnabled: sessionSubagentsEnabled(tab),
-      onSkillInstalled: () => emitSkills(tab),
       onJobsChanged: () => emitJobs(),
       onRulesChanged: () => emitSettingsToAllTabs(),
       onShellOutput: shellOutputFor(tab),

@@ -118,7 +118,6 @@ function report(el: HTMLElement, summary: Summary): void {
     ua: navigator.userAgent.slice(0, 120),
   };
   recordFrontendDiagnostic("frontend.scroll_jitter", details, "warn");
-  window.console.warn("[scroll-jitter] episode", details);
 }
 
 let installed = false;
@@ -177,7 +176,7 @@ export function installScrollJitterProbe(): () => void {
       sampleOnce(performance.now());
     } catch (error) {
       // Never let one bad frame silently kill the sampler.
-      window.console.warn("[scroll-jitter] sample failed", error);
+      recordFrontendDiagnostic("frontend.scroll_jitter_sample_failed", { error }, "warn");
     }
     if (!stopped) raf = requestAnimationFrame(frame);
   };

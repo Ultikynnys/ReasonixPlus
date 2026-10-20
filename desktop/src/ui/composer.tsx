@@ -18,6 +18,7 @@ import {
 } from "react";
 import type React from "react";
 import type { QueuedSend } from "../App";
+import { recordFrontendFailure } from "../diagnostics";
 import { type TKey, t } from "../i18n";
 import { I } from "../icons";
 import { isAudioVideoPath, isImagePath, resolveImagePath } from "../image-attach";
@@ -332,7 +333,7 @@ export function Composer({
       setDraft((current) => (current ? `${current.replace(/\s+$/, "")} ${rel} ` : `${rel} `));
       textareaRef.current?.focus();
     } catch (err) {
-      console.error("attach failed", err);
+      recordFrontendFailure("frontend.attach_failed", err);
     }
   };
 
@@ -347,7 +348,7 @@ export function Composer({
       try {
         await onPasteImage(file);
       } catch (err) {
-        console.error("clipboard image attach failed", err);
+        recordFrontendFailure("frontend.image_attach_failed", err);
       }
       return;
     }

@@ -1,22 +1,19 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadEnabledModels, readConfig, saveEnabledModels } from "../src/config.js";
 
 describe("enabledModels — global persistent model allow-list (all off by default)", () => {
   let dir: string;
   let path: string;
-  let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "reasonix-enabled-models-"));
     path = join(dir, "config.json");
-    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(() => {
-    warnSpy.mockRestore();
     rmSync(dir, { recursive: true, force: true });
   });
 

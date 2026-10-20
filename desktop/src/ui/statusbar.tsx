@@ -294,11 +294,9 @@ export function StatusBar({
   // Official app-server format: windows carry remainingPercent (100 - usedPercent)
   // and an ISO resetsAt — the chip shows "% left" + plan, no credit amounts.
   const quotaLeftPct = quotaWeekly ? Math.round(quotaWeekly.remainingPercent) : 0;
-  const quotaTurnPct = quota?.turnUsedPct ?? null;
   const ollamaQuotaData = ollamaQuota && ollamaQuotaBilling ? ollamaQuota : null;
   const ollamaWeekly = ollamaQuotaData?.weekly ?? null;
   const ollamaSession = ollamaQuotaData?.session ?? null;
-  const ollamaTurnPct = ollamaQuotaData?.turnUsedPct ?? null;
   // The "set an API key" hint is correct ONLY when the key is genuinely absent
   // (the daemon flags that with the `ollama-no-api-key` reason). A keyed account
   // whose balance endpoint is unreachable, or a proxied/local endpoint with no
@@ -508,36 +506,6 @@ export function StatusBar({
           : mimoQuotaBilling
             ? t("statusbar.mimoPlan")
             : "Go";
-  useEffect(() => {
-    const renderState = {
-      openaiTab,
-      ollamaQuotaBilling,
-      showQuota,
-      hasWeeklyWindow: quotaWeekly !== null,
-      hasFiveHourWindow: quotaFiveHour !== null,
-      turnUsedPct: quotaTurnPct,
-      ollamaTurnPct,
-      weeklyRemainingPct: quotaWeekly?.remainingPercent ?? null,
-      refreshing: codexQuotaRefreshing,
-      reason: codexQuotaReason,
-    };
-    const level =
-      (quotaTurnPct === null && openaiTab) || (ollamaTurnPct === null && ollamaQuotaBilling)
-        ? "warn"
-        : "debug";
-    if (level === "warn") console.warn("[reasonix frontend] statusbar quota render", renderState);
-    else console.debug("[reasonix frontend] statusbar quota render", renderState);
-  }, [
-    openaiTab,
-    ollamaQuotaBilling,
-    showQuota,
-    quotaWeekly,
-    quotaFiveHour,
-    quotaTurnPct,
-    ollamaTurnPct,
-    codexQuotaRefreshing,
-    codexQuotaReason,
-  ]);
   // Rate-period timing uses the same shared schedule engine as telemetry billing.
   const [rateNow, setRateNow] = useState(() => new Date());
   useEffect(() => {

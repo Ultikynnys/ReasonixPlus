@@ -198,8 +198,8 @@ export async function deleteVoiceModelCache(id: VoiceModelId): Promise<void> {
       for (const req of keys) {
         if (cacheRequestBelongsToModel(req, opt)) await cache.delete(req);
       }
-    } catch (e) {
-      console.warn("Failed to delete voice model cache:", e);
+    } catch {
+      // Cache eviction is best-effort.
     }
   }
 

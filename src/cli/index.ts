@@ -10,7 +10,9 @@ import "./heap-limit-launch.js";
 // Windows cmd, which would beep the system bell every render (#1786).
 import "./strip-bel.js";
 
+import { messageOf } from "@reasonix/core-utils";
 import { isReasoningEffort, loadProxyConfig, saveReasoningEffort } from "../config.js";
+import { recordDiagnostic } from "../diagnostics.js";
 import { installProxyIfConfigured } from "../net/proxy.js";
 import { resolveDefaults } from "./resolve.js";
 import { markPhase } from "./startup-profile.js";
@@ -76,6 +78,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  recordDiagnostic("cli.fatal", {
+    level: "error",
+    message: messageOf(err),
+    details: { stack: (err as Error | undefined)?.stack },
+  });
   process.exit(1);
 });

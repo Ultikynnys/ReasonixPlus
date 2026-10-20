@@ -463,18 +463,6 @@ describe("Claude SKILL.md aliases", () => {
       rmSync(project, { recursive: true, force: true });
     }
   });
-
-  it("warns to console when description is missing", () => {
-    writeSkillDir(home, "global", "no-desc", { name: "no-desc" }, "body", home);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      new SkillStore({ homeDir: home, disableBuiltins: true }).read("no-desc");
-      expect(warn).toHaveBeenCalledOnce();
-      expect(warn.mock.calls[0]![0]).toMatch(/no description/);
-    } finally {
-      warn.mockRestore();
-    }
-  });
 });
 
 describe("Built-in skills", () => {

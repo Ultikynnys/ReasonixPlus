@@ -184,8 +184,7 @@ export async function resolveOpenAIToken(
       const next = await refreshOAuthToken(creds.refreshToken, openAIClientId());
       saveOpenAIOAuth(next, path);
       return next.accessToken;
-    } catch (err) {
-      console.warn(`reasonix: OpenAI OAuth refresh failed — ${(err as Error).message}`);
+    } catch {
       return undefined;
     }
   });

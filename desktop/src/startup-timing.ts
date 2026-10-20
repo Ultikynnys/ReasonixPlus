@@ -11,7 +11,6 @@ export interface LoadingTimingStep {
 export class StartupTimingTracker {
   private readonly startedAt: number;
   private lastMark: number;
-  private readonly steps: LoadingTimingStep[] = [];
   private completed = false;
 
   constructor(startedAt: number = performance.now()) {
@@ -35,7 +34,6 @@ export class StartupTimingTracker {
       cumulativeMs,
       ...(options.details ? { details: options.details } : {}),
     };
-    this.steps.push(entry);
     return entry;
   }
 

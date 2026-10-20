@@ -1,27 +1,14 @@
-/** Project scope wins over global. Only names+descriptions enter the prefix; bodies load lazily into the append-only log. */
+/** Project scope wins over global. The store is a read path: the user runs a skill by
+ *  name, and the host feeds the body into the turn. */
 
-import {
-  constants,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { constants, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { accessSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { clipIndexDescription } from "@reasonix/core-utils";
 import { parseFrontmatter } from "./frontmatter.js";
-import { t } from "./i18n/index.js";
-import { truncateWithMarker } from "./memory/read-capped.js";
-import { NEGATIVE_CLAIM_RULE, TUI_FORMATTING_RULES } from "./prompt-fragments.js";
 
 export const SKILLS_DIRNAME = "skills";
 export const SKILL_FILE = "SKILL.md";
-/** Cap on the pinned skills-index block, mirrors memory-index cap. */
-export const SKILLS_INDEX_MAX_CHARS = 4000;
 /** Skill identifier shape — alnum + `_` + `-` + interior `.`, 1-64 chars. */
 const VALID_SKILL_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 
@@ -32,7 +19,7 @@ export type SkillPathStatus = "ok" | "missing" | "not-directory" | "unreadable";
 export interface Skill {
   /** Canonical name — sanitized, matches the directory / filename stem. */
   name: string;
-  /** One-line description shown in the pinned index. */
+  /** One-line description shown in the skills list. */
   description: string;
   /** Full markdown body (post-frontmatter). Loaded on demand. */
   body: string;
@@ -59,73 +46,8 @@ export interface SkillStoreOptions {
   disableBuiltins?: boolean;
 }
 
-/** Reject skill files that would silently disappear from the prefix index — `description:` is what `applySkillsIndex` keys on. */
-export function validateSkillFrontmatter(raw: string): { ok: true } | { error: string } {
-  const { data } = parseFrontmatter(raw);
-  const desc = (data.description ?? "").trim();
-  if (!desc) {
-    return {
-      error:
-        'skill frontmatter is missing a non-empty "description:" line, without which the skill will not appear in the model\'s skills index',
-    };
-  }
-  return { ok: true };
-}
-
 export function isValidSkillName(name: string): boolean {
   return VALID_SKILL_NAME.test(name);
-}
-
-export interface SkillDraft {
-  name: string;
-  description: string;
-  body: string;
-}
-
-export interface RawSkillDraft {
-  name?: unknown;
-  description?: unknown;
-  body?: unknown;
-}
-
-/** Validate and normalize the persisted contract shared by all skill-authoring tools. */
-export function parseSkillDraft(raw: RawSkillDraft): SkillDraft | { error: string } {
-  const name = typeof raw.name === "string" ? raw.name.trim() : "";
-  if (!name) return { error: "skill requires a non-empty 'name'" };
-  if (!isValidSkillName(name)) {
-    return { error: `invalid skill name: ${JSON.stringify(name)} (use letters, digits, _, -, .)` };
-  }
-  const description =
-    typeof raw.description === "string" ? raw.description.replace(/[\r\n]+/g, " ").trim() : "";
-  if (!description) return { error: "skill requires a non-empty 'description'" };
-  const body = typeof raw.body === "string" ? raw.body : "";
-  if (!body.trim()) return { error: "skill requires a non-empty 'body'" };
-  return { name, description, body };
-}
-
-/** Serialize canonical skill frontmatter and normalized body text. */
-export function serializeSkill(draft: SkillDraft): string {
-  const lines = ["---", `name: ${draft.name}`, `description: ${draft.description}`];
-  lines.push("---", "");
-  return `${lines.join("\n")}\n${draft.body.trim()}\n`;
-}
-
-/** Args shared by every skill-authoring tool handler (before per-tool arg-name mapping). */
-export interface SkillToolArgs {
-  name?: unknown;
-  description?: unknown;
-  body?: unknown;
-  scope?: unknown;
-}
-
-/** Persist a validated draft: serialize to SKILL.md, then write it, returning the
- *  created path or a human-readable error. Shared by install_skill / create_skill. */
-export function persistSkillDraft(
-  store: SkillStore,
-  draft: SkillDraft,
-  scope: "project" | "global",
-): { path: string } | { error: string } {
-  return store.createWithContent(draft.name, scope, serializeSkill(draft));
 }
 
 export class SkillStore {
@@ -206,44 +128,6 @@ export class SkillStore {
     return [...byName.values()].map((s) => s).sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  /** Scaffold a new skill stub at the chosen scope. Refuses to overwrite. */
-  create(name: string, scope: "project" | "global"): { path: string } | { error: string } {
-    return this.createWithContent(name, scope, skillStubBody(name));
-  }
-
-  /** Like `create` but writes caller-supplied file contents instead of the stub — used by the scaffold tool. */
-  createWithContent(
-    name: string,
-    scope: "project" | "global",
-    content: string,
-  ): { path: string } | { error: string } {
-    if (!isValidSkillName(name)) {
-      return { error: `invalid skill name: "${name}" (use letters, digits, _, -, .)` };
-    }
-    if (scope === "project" && !this.projectRoot) {
-      return { error: "project scope requires a workspace: open a project to use project scope" };
-    }
-    const root =
-      scope === "project"
-        ? join(this.projectRoot ?? "", ".reasonix", SKILLS_DIRNAME)
-        : join(this.homeDir, ".reasonix", SKILLS_DIRNAME);
-    const flat = join(root, `${name}.md`);
-    const folder = join(root, name, SKILL_FILE);
-    if (existsSync(folder)) {
-      return { error: `skill "${name}" already exists at ${folder}` };
-    }
-    mkdirSync(dirname(flat), { recursive: true });
-    try {
-      writeFileSync(flat, content, { encoding: "utf8", flag: "wx" });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-        return { error: `skill "${name}" already exists at ${flat}` };
-      }
-      throw err;
-    }
-    return { path: flat };
-  }
-
   /** Resolve one skill by name. Returns `null` if not found or malformed. */
   read(name: string): Skill | null {
     if (!isValidSkillName(name)) return null;
@@ -291,13 +175,6 @@ export class SkillStore {
     const { data, body } = parseFrontmatter(raw);
     const name = data.name && isValidSkillName(data.name) ? data.name : stem;
     const description = (data.description ?? "").trim();
-    // Surface the silent-pin failure mode at parse time. Builtins always have
-    // a description so user-authored files are the only ones that hit this.
-    if (!description) {
-      console.warn(
-        `[skills] "${name}" at ${path} has no description, so it will be loaded but won't appear in the skills index.`,
-      );
-    }
     return {
       name,
       description,
@@ -369,73 +246,6 @@ export function skillPathStatus(dir: string): SkillPathStatus {
     if (code === "ENOENT") return "missing";
     return "unreadable";
   }
-}
-
-/** Stub markdown for a new skill — minimal frontmatter + scaffolding the user fills in. */
-function skillStubBody(name: string): string {
-  return `---
-name: ${name}
-description: One-liner describing what this skill does.
----
-
-# ${name}
-
-Replace this body with the playbook the model should follow when this skill is invoked.
-
-Tips:
-- Reference tools by name (run_command, edit_file, search_content, ...)
-`;
-}
-
-function skillDescription(s: Pick<Skill, "name" | "description" | "scope">): string {
-  if (s.scope !== "builtin") return s.description;
-  const key = s.name === "security-review" ? "securityReview" : s.name;
-  return t(`builtinSkills.${key}`);
-}
-
-/** Tag goes after the name so a model copying the line still passes a bare identifier. */
-function skillIndexLine(s: Pick<Skill, "name" | "description" | "scope">): string {
-  const clipped = clipIndexDescription(skillDescription(s), s.name);
-  return clipped ? `- ${s.name}: ${clipped}` : `- ${s.name}`;
-}
-
-const MISSING_DESCRIPTION_PLACEHOLDER =
-  '(no description: frontmatter is missing a "description:" line; tell the user to add one)';
-
-const SKILL_INDEX_RULE =
-  'One-liner index. Each entry is either a built-in or a user-authored playbook. Call `run_skill({ name: "<skill-name>", arguments: "<task>" })`: the `name` is JUST the skill identifier, exactly as listed. The body is a playbook: it becomes a tool result you read and follow in this loop.';
-
-/** Only appended for a session that actually owns the spawn tool. */
-const SPAWN_HINT =
-  "To run work in isolation, call `spawn_subagent({ task, tools })` with the whole instruction in `task`.";
-
-/** Bodies stay out — prefix must stay short + cacheable; bodies load on demand.
- *  `subagents` decides whether the index may advertise `spawn_subagent`: a session
- *  minted without that tool must not be told it exists. */
-export function applySkillsIndex(
-  basePrompt: string,
-  opts: SkillStoreOptions = {},
-  subagents = false,
-): string {
-  const store = new SkillStore(opts);
-  const skills = store.list();
-  if (skills.length === 0) return basePrompt;
-  const lines = skills.map((s) =>
-    skillIndexLine(s.description ? s : { ...s, description: MISSING_DESCRIPTION_PLACEHOLDER }),
-  );
-  const joined = lines.join("\n");
-  const truncated = truncateWithMarker(joined, SKILLS_INDEX_MAX_CHARS).content;
-  return [
-    basePrompt,
-    "",
-    "# Skills: playbooks you can invoke",
-    "",
-    `${SKILL_INDEX_RULE}${subagents ? ` ${SPAWN_HINT}` : ""} The user can also invoke a skill by name.`,
-    "",
-    "```",
-    truncated,
-    "```",
-  ].join("\n");
 }
 
 const BUILTIN_TEST_BODY = `You are running as the parent agent: this skill is INLINED, not a subagent. The user asked you to run the tests and fix failures. Your job: run the project's test suite, diagnose any failure, propose fixes as SEARCH/REPLACE edit blocks, then re-run. Repeat until green or you hit a wall you should escalate.

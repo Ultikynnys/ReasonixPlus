@@ -218,8 +218,7 @@ export async function resolveOpencodeToken(
     try {
       const next = await refreshOpencodeToken(creds, path);
       return next.accessToken;
-    } catch (err) {
-      console.warn(`reasonix: OpenCode OAuth refresh failed — ${(err as Error).message}`);
+    } catch {
       return undefined;
     }
   });

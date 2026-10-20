@@ -1,7 +1,8 @@
 import { type PlanHistoryItem, isWorkingPlanStatus } from "@reasonix/core-utils";
 
 /** What a session's plan badge says about the plan it owns. Only a plan the
- *  session is still working has an owner, so every label here is in flight. */
+ *  session is still working has an owner, so every label here is in flight, and
+ *  the sidebar chips one only while that session is actually running. */
 export type SessionPlanLabel = {
   /** 1-based index in the plan-history list — the same number the plan section
    *  shows, so a badge and a history row can be matched by eye. */
@@ -13,7 +14,9 @@ export type SessionPlanLabel = {
 /** Maps a session name to the plan it is working, for the sidebar's badge. The
  *  history is workspace-wide and newest-first, so the first entry seen for a
  *  session is its newest in-flight plan. A finished plan is skipped: it belongs
- *  to nobody, and claiming otherwise would label a session that has no plan. */
+ *  to nobody, and claiming otherwise would label a session that has no plan.
+ *  The map covers every session of the workspace, so it stays valid whichever
+ *  session the tab is currently showing. */
 export function planLabelsBySession(
   history: readonly PlanHistoryItem[],
 ): Map<string, SessionPlanLabel> {

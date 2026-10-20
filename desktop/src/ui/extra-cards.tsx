@@ -57,6 +57,7 @@ export function ApprovalCard({
           meta={sub}
           open={open}
           onToggle={toggle}
+          wrapName
         />
       </div>
       {open ? (

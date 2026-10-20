@@ -368,14 +368,13 @@ export const Markdown = memo(function Markdown({ source }: { source: string }) {
 });
 
 /** Flatten any block element react-markdown emits so inline-only content can
- *  render inside a single-line heading without invalid nested block markup. */
+ *  render inside a heading without invalid nested block markup. */
 const Inline = ({ children }: { children?: ReactNode }) => <>{children}</>;
 
-/** Inline-only markdown for single-line card headings (the card name/title slot).
+/** Inline-only markdown for card headings (the card name/title slot).
  *  Renders inline markup (emphasis, strong, strikethrough, inline code) with every
  *  block wrapper flattened to a fragment, and no link/file-pill elements, since
- *  nested interactive elements are invalid inside the heading button. Use when a
- *  heading carries agent-authored markdown that must stay on one line. */
+ *  nested interactive elements are invalid inside the heading button. */
 export const InlineMarkdown = memo(function InlineMarkdown({ source }: { source: string }) {
   return (
     <ReactMarkdown

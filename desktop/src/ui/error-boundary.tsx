@@ -19,7 +19,6 @@ export class PanelErrorBoundary extends Component<Props, State> {
       { panel: this.props.label, error, componentStack: info.componentStack },
       "error",
     );
-    console.error(`[panel:${this.props.label}] render error`, error, info);
   }
 
   render(): ReactNode {

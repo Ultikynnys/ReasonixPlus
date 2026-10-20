@@ -43,7 +43,6 @@ function unregisterCallback(id: number): void {
 function runCallback(id: number, data: unknown): void {
   const entry = callbacks.get(id);
   if (!entry) {
-    console.warn(`[browser-tauri] callback ${id} not found (page reloaded?)`);
     return;
   }
   if (entry.once) callbacks.delete(id);
@@ -67,7 +66,6 @@ function connectBridge(): void {
     const ws = new WebSocket(BRIDGE_URL);
     socket = ws;
     ws.onopen = () => {
-      console.info("[browser-tauri] bridge connected");
       resolve();
       for (const w of wsCloseWaiters) w();
       wsCloseWaiters = [];
@@ -76,8 +74,8 @@ function connectBridge(): void {
       try {
         const msg = JSON.parse(String(ev.data)) as { event: string; payload: unknown };
         dispatch(msg.event, msg.payload);
-      } catch (err) {
-        console.error("[browser-tauri] bad bridge message", err);
+      } catch {
+        // Malformed bridge frame — drop it.
       }
     };
     ws.onclose = () => {
@@ -207,7 +205,6 @@ async function invoke(
     }
     case "plugin:opener|open_path": {
       // Browser can't open arbitrary local paths; fall back to a page anchor.
-      console.warn("[browser-tauri] open_path unavailable in browser:", args.path);
       return null;
     }
     case "plugin:opener|reveal_item_in_dir":
@@ -315,7 +312,6 @@ async function invoke(
       return null;
 
     default:
-      console.warn(`[browser-tauri] unhandled command "${cmd}" — resolved null`, args);
       return null;
   }
 }

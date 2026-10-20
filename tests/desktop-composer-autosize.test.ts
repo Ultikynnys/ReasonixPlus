@@ -1,10 +1,10 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_COMPOSER_ROWS,
   getComposerTextareaSizing,
 } from "../desktop/src/ui/composer-sizing";
+import { cssRule, sourceFile } from "./support/css.js";
 
 // The composer must hold a fixed height and never resize (#1594 regression):
 // it previously expanded past a five-row threshold, so the box jumped as the
@@ -13,9 +13,8 @@ describe("desktop composer textarea never resizes", () => {
   const height = DEFAULT_COMPOSER_ROWS * 20 + 18;
 
   it("uses CSS sizing and native overflow without per-render layout measurement", () => {
-    const css = readFileSync("desktop/src/styles.css", "utf8");
-    const composer = readFileSync("desktop/src/ui/composer.tsx", "utf8");
-    const textareaRule = css.match(/\.composer textarea \{([^}]+)\}/)?.[1];
+    const composer = sourceFile("desktop/src/ui/composer.tsx");
+    const textareaRule = cssRule(".composer textarea");
     expect(textareaRule).toContain("height: calc(2 * 1.55em + 18px)");
     expect(textareaRule).toContain("overflow-y: auto");
     expect(composer).not.toContain("applyComposerTextareaSize");

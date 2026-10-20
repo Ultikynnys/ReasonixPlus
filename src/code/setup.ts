@@ -10,7 +10,6 @@ import {
   loadFilesystemOutlineThresholdBytes,
   loadJavaSourceEnabled,
   loadProjectShellAllowed,
-  loadResolvedSkillPaths,
   loadSubagentModels,
   loadToolRateLimit,
   loadTypesafeApiKey,
@@ -40,7 +39,6 @@ import { registerScaffoldTools } from "../tools/scaffold.js";
 import { registerScreenCaptureTool } from "../tools/screen-capture.js";
 import { registerSeeImageTool } from "../tools/see-image.js";
 import { registerShellTools } from "../tools/shell.js";
-import { type SkillInstalledHook, registerSkillTools } from "../tools/skills.js";
 import {
   SHARED_SUBAGENT_SINK,
   type SubagentLoopOptions,
@@ -68,8 +66,6 @@ export interface CodeToolsetOpts {
   rootDir: string;
   /** Override the default `~/.reasonix/config.json` lookup — primarily for tests that pin a tmp config. */
   configPath?: string;
-  /** Fired after `install_skill` writes a new skill — desktop wires this to push a fresh `$skills` event so the sidebar updates without a tab reload. */
-  onSkillInstalled?: SkillInstalledHook;
   /** Fired after `run_background` / `stop_job` mutate the JobRegistry — desktop pushes a fresh `$jobs` event so the popover updates without waiting for poll. */
   onJobsChanged?: () => void;
   /** Fired after `remember_rule` / `forget_rule` mutate permission rules — desktop pushes a fresh `$settings` so the Rules tab updates in every tab. */
@@ -210,13 +206,6 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
     }
     return client;
   };
-  const skillOpts = {
-    projectRoot: opts.rootDir,
-    customSkillPaths: loadResolvedSkillPaths(opts.rootDir),
-    onSkillInstalled: opts.onSkillInstalled,
-  };
-  registerSkillTools(tools, skillOpts);
-
   // The one subagent tool. Everything the child runs with comes from this tab: model
   // (live getter), billing unit, loop policy, hooks and cwd, resolved at spawn time.
   const registerSpawnTool = (enabled: boolean): void => {

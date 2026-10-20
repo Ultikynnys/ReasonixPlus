@@ -1,26 +1,12 @@
-/** Agent-facing tools for scaffolding skills + MCP servers from chat. Persists via the same paths the wizard uses. */
+/** Agent-facing tools for scaffolding MCP servers from chat. Persists via the same paths the wizard uses. */
 
-import {
-  defaultConfigPath,
-  loadEffectiveMcpConfig,
-  loadResolvedSkillPaths,
-  readConfig,
-  writeConfig,
-} from "../config.js";
+import { defaultConfigPath, loadEffectiveMcpConfig, readConfig, writeConfig } from "../config.js";
 import { MCP_CATALOG, catalogStdioCommand } from "../mcp/catalog.js";
 import { preflightStdioSpec } from "../mcp/preflight.js";
 import { type McpServerSpec, type McpSpec, parseMcpSpec, specToRaw } from "../mcp/spec.js";
-import {
-  SkillStore,
-  type SkillToolArgs,
-  parseSkillDraft,
-  persistSkillDraft,
-  serializeSkill,
-} from "../skills.js";
 import type { ToolRegistry } from "../tools.js";
 
 export interface ScaffoldToolsOptions {
-  homeDir?: string;
   projectRoot?: string;
   /** Override config path — tests point this at a tmp file. */
   configPath?: string;
@@ -36,64 +22,6 @@ export function registerScaffoldTools(
   opts: ScaffoldToolsOptions = {},
 ): ToolRegistry {
   const configPath = opts.configPath ?? defaultConfigPath();
-
-  registry.register({
-    name: "create_skill",
-    description:
-      "Scaffold a SKILL.md the user can later invoke via `run_skill`. Frontmatter (name / description) is filled from structured args here; the body is the playbook the model reads and follows in its own loop. Refuses to overwrite existing skills.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: {
-          type: "string",
-          description:
-            "Identifier: letters/digits/`_`/`-`/`.`, 1-64 chars. Becomes filename + frontmatter `name`.",
-        },
-        description: {
-          type: "string",
-          description: 'One-liner for the skills index. Lead with the verb ("Run X and …").',
-        },
-        body: {
-          type: "string",
-          description: "Markdown playbook. Reference tools by name.",
-        },
-        scope: {
-          type: "string",
-          enum: ["project", "global"],
-          description:
-            "`project` (default) = workspace .reasonix/skills/; `global` = ~/.reasonix/skills/.",
-        },
-      },
-      required: ["name", "description", "body"],
-    },
-    fn: async (args: SkillToolArgs) => {
-      const draft = parseSkillDraft({
-        name: args.name,
-        description: args.description,
-        body: args.body,
-      });
-      if ("error" in draft) return JSON.stringify({ error: draft.error });
-      const scope: "project" | "global" =
-        args.scope === "global" ? "global" : opts.projectRoot ? "project" : "global";
-      const store = new SkillStore({
-        homeDir: opts.homeDir,
-        projectRoot: opts.projectRoot,
-        customSkillPaths: opts.projectRoot
-          ? loadResolvedSkillPaths(opts.projectRoot, configPath)
-          : [],
-      });
-      const result = persistSkillDraft(store, draft, scope);
-      if ("error" in result) {
-        return JSON.stringify({ error: result.error });
-      }
-      return JSON.stringify({
-        success: true,
-        path: result.path,
-        scope,
-        name: draft.name,
-      });
-    },
-  });
 
   registry.register({
     name: "add_mcp_server",
@@ -258,8 +186,6 @@ export function registerScaffoldTools(
 
   return registry;
 }
-
-export { serializeSkill };
 
 interface BuildSpecInput {
   name: string;

@@ -213,13 +213,6 @@ export async function isWebGPUSupported(): Promise<boolean> {
     if (!adapter) {
       return false;
     }
-    const info = adapter.info ?? (await adapter.requestAdapterInfo?.());
-    if (info) {
-      const parts = [info.vendor, info.architecture, info.description].filter(Boolean);
-      if (parts.length > 0) {
-        console.info(`[Voice] WebGPU hardware adapter: ${parts.join(" ")}`);
-      }
-    }
     return true;
   } catch {
     return false;

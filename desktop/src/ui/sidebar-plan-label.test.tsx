@@ -29,10 +29,14 @@ function rowsByTitle(container: HTMLElement) {
   return rows;
 }
 
-function renderSidebar(planLabels: Map<string, SessionPlanLabel> | undefined) {
+function renderSidebar(
+  planLabels: Map<string, SessionPlanLabel> | undefined,
+  running: string[] = [OWNER, OTHER],
+) {
   return render(
     <Sidebar
       sessions={[session(OWNER, "Working session"), session(OTHER, "Idle session")]}
+      runningSessions={new Set(running)}
       planLabels={planLabels}
       onNewChat={() => {}}
       onLoadSession={() => {}}
@@ -46,13 +50,44 @@ function renderSidebar(planLabels: Map<string, SessionPlanLabel> | undefined) {
 }
 
 describe("sidebar plan labels", () => {
-  it("names the plan index a session owns and marks the ones without a plan", () => {
+  it("names the plan index a running session owns and marks the ones without a plan", () => {
     const { container } = renderSidebar(
       new Map([[OWNER, { index: 3, status: "active", summary: "Ship it" }]]),
     );
     const rows = rowsByTitle(container);
     expect(rows.get("Working session")).toEqual({ plan: "Plan #3", state: "live" });
     expect(rows.get("Idle session")).toEqual({ plan: "No plan", state: "none" });
+  });
+
+  it("leaves an idle session unchipped whatever plan it owns", () => {
+    // A plan is in flight work, so a row for a session with no agent running must
+    // not claim one — and must not flash "No plan" either, which is what made the
+    // badge look unstable while switching sessions.
+    const { container } = renderSidebar(
+      new Map([[OWNER, { index: 3, status: "active", summary: "Ship it" }]]),
+      [OTHER],
+    );
+    const rows = rowsByTitle(container);
+    expect(rows.get("Working session")).toEqual({ plan: "", state: null });
+    expect(rows.get("Idle session")).toEqual({ plan: "No plan", state: "none" });
+  });
+
+  it("drops and restores the chip as the session's run starts and ends", () => {
+    // Liveness is the only thing the gate reads, so the same map must chip a
+    // running owner, fall silent the moment it goes idle, and come back when it
+    // runs again — no refetch of the plan history required.
+    const planLabels = new Map([[OWNER, { index: 3, status: "active", summary: "Ship it" }]]);
+    const title = "Working session";
+    const first = renderSidebar(planLabels, [OWNER, OTHER]);
+    expect(rowsByTitle(first.container).get(title)).toEqual({ plan: "Plan #3", state: "live" });
+    first.unmount();
+
+    const idle = renderSidebar(planLabels, [OTHER]);
+    expect(rowsByTitle(idle.container).get(title)).toEqual({ plan: "", state: null });
+    idle.unmount();
+
+    const again = renderSidebar(planLabels, [OWNER, OTHER]);
+    expect(rowsByTitle(again.container).get(title)).toEqual({ plan: "Plan #3", state: "live" });
   });
 
   it("stays silent while the plan history has not loaded yet", () => {

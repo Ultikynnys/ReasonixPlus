@@ -3355,6 +3355,71 @@ describe("Desktop App session sorting", () => {
     expect(next.sessionsRevision).toBe(1);
   });
 
+  it("keeps the session list's identity when a snapshot repeats itself", () => {
+    // The sidebar memoizes on this array and re-sorts it per workspace, and the
+    // backend rebroadcasts the same listing on unrelated mutations — so a snapshot
+    // that lists nothing new must be a no-op, not a rebuild of every row.
+    const listed = [
+      { name: "b", messageCount: 2, mtime: new Date(2000).toISOString(), summary: "second" },
+      { name: "a", messageCount: 1, mtime: new Date(1000).toISOString() },
+    ];
+    const first = reduce(initialState(), {
+      t: "incoming",
+      event: { type: "$sessions", epoch: "daemon-1", revision: 1, items: listed },
+    });
+    const repeated = reduce(first, {
+      t: "incoming",
+      event: { type: "$sessions", epoch: "daemon-1", revision: 1, items: listed },
+    });
+    expect(repeated).toBe(first);
+
+    // A newer revision with the same rows keeps the array: only the counters move.
+    const bumped = reduce(first, {
+      t: "incoming",
+      event: { type: "$sessions", epoch: "daemon-1", revision: 2, items: listed },
+    });
+    expect(bumped.sessions).toBe(first.sessions);
+    expect(bumped.sessionsRevision).toBe(2);
+
+    // A row that actually changed still gets a fresh list.
+    const changed = reduce(bumped, {
+      t: "incoming",
+      event: {
+        type: "$sessions",
+        epoch: "daemon-1",
+        revision: 3,
+        items: [listed[0]!, { ...listed[1]!, messageCount: 5 }],
+      },
+    });
+    expect(changed.sessions).not.toBe(bumped.sessions);
+    expect(changed.sessions.find((s) => s.name === "a")?.messageCount).toBe(5);
+  });
+
+  it("keeps the pending-delete list when a settle drops nothing", () => {
+    // A settle naming someone else leaves the list untouched; rebuilding it would
+    // hand the tab a new array for a fact that did not change.
+    const deleting = {
+      ...initialState(),
+      sessionsEpoch: "daemon-1",
+      sessionsRevision: 1,
+      pendingSessionDeletes: ["gone"],
+      sessionsMutation: { kind: "delete" } as const,
+    };
+    const next = reduce(deleting, {
+      t: "incoming",
+      event: {
+        type: "$sessions",
+        epoch: "daemon-1",
+        revision: 2,
+        settledDeletes: [{ name: "unrelated", removed: false }],
+        items: [],
+      },
+    });
+    expect(next.pendingSessionDeletes).toBe(deleting.pendingSessionDeletes);
+    expect(next.pendingSessionDeletes).toEqual(["gone"]);
+    expect(next.sessionsMutation).toEqual({ kind: "delete" });
+  });
+
   it("clears a create mutation once the channel's first snapshot lands", () => {
     const creating = { ...initialState(), sessionsMutation: { kind: "create" } as const };
     const listed = reduce(creating, {
@@ -4775,6 +4840,65 @@ describe("Desktop App reducer — plan restore", () => {
         },
       },
     });
+    expect(loaded.activePlan).toBeNull();
+  });
+});
+
+describe("Desktop App reducer — plan labels are workspace-scoped", () => {
+  const items = [
+    {
+      id: "plan-1",
+      status: "active",
+      createdAt: null,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: null,
+      totalSteps: 2,
+      completedSteps: 0,
+      ownerSession: "background",
+      summary: "Ship it",
+    },
+  ];
+
+  /** The tab is showing `foreground`; the plan belongs to another session. */
+  function viewingForeground() {
+    return { ...initialState(), currentSession: "foreground" };
+  }
+
+  it("applies a $plan_history stamped with a session this tab is not viewing", () => {
+    // The plan store is workspace-wide, so the projection describes every session in
+    // it. Dropping it because the name did not match left a background session's row
+    // labelled "No plan" until the user switched to it.
+    const next = reduce(viewingForeground(), {
+      t: "incoming",
+      event: { type: "$plan_history", sessionName: "background", items },
+    });
+    expect(next.planHistory).toHaveLength(1);
+    expect(next.planHistory?.[0]?.ownerSession).toBe("background");
+  });
+
+  it("keeps the plan map when $session_loaded switches the visible session", () => {
+    // A switch is not evidence that the workspace's plans changed.
+    const seeded = reduce(viewingForeground(), {
+      t: "incoming",
+      event: { type: "$plan_history", sessionName: "background", items },
+    });
+    const loaded = reduce(seeded, {
+      t: "incoming",
+      event: {
+        type: "$session_loaded",
+        name: "foreground",
+        messages: [],
+        carryover: {
+          totalCostUsd: 0,
+          cacheHitTokens: 0,
+          cacheMissTokens: 0,
+          totalCompletionTokens: 0,
+        },
+      },
+    });
+    expect(loaded.currentSession).toBe("foreground");
+    expect(loaded.planHistory).toHaveLength(1);
+    // The in-flight plan itself is per-session and still clears.
     expect(loaded.activePlan).toBeNull();
   });
 });

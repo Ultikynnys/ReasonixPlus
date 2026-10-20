@@ -3,7 +3,9 @@ import { I } from "../icons";
 
 /** The collapsible heading shared by every card family — the plain `Card` and the
  *  approval cards (`ApprovalCard`). Owns the icon + kind + name + meta + chevron
- *  layout so a new card can't drift from the rest of the transcript. */
+ *  layout so a new card can't drift from the rest of the transcript.
+ *  `wrapName` lets the name slot run onto several lines instead of ellipsising:
+ *  approval cards carry agent prose there (the whole ask_choice question). */
 export function CardHead({
   icon,
   kind,
@@ -11,6 +13,7 @@ export function CardHead({
   meta,
   open,
   onToggle,
+  wrapName = false,
 }: {
   icon: ReactNode;
   kind: string;
@@ -18,6 +21,7 @@ export function CardHead({
   meta?: ReactNode;
   open: boolean;
   onToggle: () => void;
+  wrapName?: boolean;
 }) {
   return (
     <button
@@ -38,7 +42,11 @@ export function CardHead({
     >
       <span className="ico">{icon}</span>
       <span className="kind">{kind}</span>
-      {name ? <span className="name">{name}</span> : null}
+      {name ? (
+        <span className="name" data-wrap={wrapName ? "true" : undefined}>
+          {name}
+        </span>
+      ) : null}
       <span className="grow" />
       {meta ? <span className="meta">{meta}</span> : null}
       <span className="chev">

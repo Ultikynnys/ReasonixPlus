@@ -1,6 +1,7 @@
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type SessionInfo, type SessionMutation, sortSessionsByCreationDescending } from "../App";
+import { recordFrontendFailure } from "../diagnostics";
 import { t, useLang } from "../i18n";
 import { I } from "../icons";
 import type { SessionPlanLabel } from "../plan-labels";
@@ -63,7 +64,9 @@ export function Sidebar({
   sessionRates?: Map<string, number>;
   /** Plan each session owns, keyed by session name. Undefined until the plan
    *  history loads, in which case no chip renders at all; with a map in hand, a
-   *  session missing from it owns no plan. */
+   *  running session missing from it owns no plan. Only running sessions are
+   *  chipped at all — a plan is in flight work, so an idle row claiming one would
+   *  be a stale label, not information. */
   planLabels?: Map<string, SessionPlanLabel>;
   onNewChat: () => void;
   onLoadSession: (name: string) => void;
@@ -159,7 +162,7 @@ export function Sidebar({
             aria-label={t("sidebarPanel.openWorkspace")}
             onClick={() => {
               void openPath(workspaceDir).catch((err) =>
-                console.error("open workspace failed", err),
+                recordFrontendFailure("frontend.open_workspace_failed", err),
               );
             }}
           >
@@ -254,7 +257,7 @@ export function Sidebar({
                 <div className="body">
                   <span className="title-row">
                     <span className="title">{sessionTitle(s)}</span>
-                    {planLabels ? (
+                    {planLabels && running ? (
                       <span
                         className="plan-tag"
                         data-plan={plan ? "live" : "none"}
