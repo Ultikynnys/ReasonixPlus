@@ -3,11 +3,26 @@
  * Scale budget for the transcript, pinned against the reported worst case:
  * 10 workspaces x 100 sessions x 2000 messages.
  *
- * Recorded before/after on this machine (Windows x64, Node 24):
+ * Recorded before/after on this machine (Windows x64, Node 24). Absolute ms drift
+ * between runs, so the row counts below are compared inside one probe run.
+ *
+ *   BEFORE (full history mounted and re-derived every frame)
  *   one 2000-message $session_loaded .... 4.69 MB on the wire, 6.3 ms parse
  *   10 restored at boot ................. 46.9 MB, ~63 ms of blocking parse
  *   markdown pipeline, one transcript ... 1577 ms (1500 prose blocks)
- *   one streaming flush over 2000 rows .. 22.7 ms median, p95 79.7 ms (jsdom)
+ *   mount, 2000 rows .................... 254 ms (jsdom)
+ *   one streaming flush over 2000 rows .. 31.9 ms median, p95 93.9 ms
+ *   DOM nodes, 2000 rows ................ 4001 = 191% of a 16.7 ms frame
+ *
+ *   AFTER (one page; SESSION_PAGE_SIZE in src/cli/commands/desktop.ts)
+ *   one 300-record page on the wire ..... 1.89 MB; the 4.69 MB session never ships
+ *   mount, 300 rows ..................... 55 ms
+ *   one streaming flush over 300 rows ... 4.97 ms median, p95 16.6 ms
+ *   DOM nodes, 300 rows ................. 601 = 30% of a 16.7 ms frame
+ *   per-flush work ...................... one row, not O(messages): the tail card is
+ *                                         split out and the row list keys on
+ *                                         messagesVersion, so a text delta re-renders
+ *                                         the tail and leaves the rows alone
  *
  * These tests guard the shape, not the clock: budgets are ceilings that only a
  * pathological regression can breach. The invariants that do not hold yet are

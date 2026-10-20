@@ -16,6 +16,12 @@ const JUMP_HOLD_MS = 1_000;
  *  a whole second otherwise cost sixty layouts on a long transcript. */
 const JUMP_ALIGN_INTERVAL_MS = 50;
 
+/** The window right after a jump where the hold measures EVERY frame. A card that
+ *  mounts, opens or decodes inside this window moves the target the most, and a
+ *  sub-pixel shift only becomes visible once several have accumulated, so this part
+ *  must not be sampled coarsely. */
+const JUMP_SETTLE_MS = 250;
+
 /** How far the target may sit from the top before the hold re-pins it: less than
  *  this is sub-pixel layout noise, more is the target having moved. */
 const ALIGN_EPSILON = 1;
@@ -154,6 +160,7 @@ function holdOnTarget(threadEl: HTMLElement, target: JumpTarget): void {
   let stopped = false;
   let frame = 0;
   let nextCheck = 0;
+  const settlingUntil = performance.now() + JUMP_SETTLE_MS;
 
   const stop = () => {
     if (stopped) return;
@@ -174,9 +181,10 @@ function holdOnTarget(threadEl: HTMLElement, target: JumpTarget): void {
       stop();
       return;
     }
-    // Re-measure on the throttle interval, not every frame: each measurement reads
-    // layout, and the target only moves when something mounts, opens or decodes.
-    if (now >= nextCheck) {
+    // Measure every frame while the layout settles, then on the throttle interval:
+    // each measurement can force layout, and past the settle window the target only
+    // moves when something mounts, opens or decodes.
+    if (now < settlingUntil || now >= nextCheck) {
       nextCheck = now + JUMP_ALIGN_INTERVAL_MS;
       const element = findTarget(threadEl, target);
       if (element) {
