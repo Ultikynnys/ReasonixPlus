@@ -9,7 +9,17 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../desktop/src/diagnostics", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../desktop/src/diagnostics")>();
+  return { ...actual, recordFrontendDiagnostic: vi.fn() };
+});
+
 import { App } from "../desktop/src/App";
+import { recordFrontendDiagnostic } from "../desktop/src/diagnostics";
+
+/** Diagnostics sink stand-in: boot progress is reported here, not to the console. */
+const record = vi.mocked(recordFrontendDiagnostic);
 
 const WS = "C:\\ws";
 const handlers = new Map<string, (e: { payload: unknown }) => void>();
@@ -162,22 +172,21 @@ describe("desktop boot — resync and splash gating", () => {
   }
 
   it("lifts the splash on the focused tab while background tabs keep loading", async () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    try {
-      await bootTwoTabs();
+    await bootTwoTabs();
 
-      // Only the focused tab has acked: t2 is still initializing behind it.
-      await feed({ type: "$workspace_initialized", revision: 1 }, "t1");
-      await settle();
+    // Only the focused tab has acked: t2 is still initializing behind it.
+    await feed({ type: "$workspace_initialized", revision: 1 }, "t1");
+    await settle();
 
-      expect(splash()).toBeNull();
-      const reasons = info.mock.calls
-        .map((call) => String(call[0]))
-        .filter((line) => line.includes("throbber_dismissed:"));
-      expect(reasons.join("\n")).toContain("throbber_dismissed:focused_workspace_initialized");
-    } finally {
-      info.mockRestore();
-    }
+    expect(splash()).toBeNull();
+    // The reason the splash lifted is recorded once, with the gate that opened it.
+    const dismissals = record.mock.calls.filter(
+      (call) => call[0] === "frontend.throbber_dismissed",
+    );
+    expect(dismissals).toHaveLength(1);
+    expect(dismissals[0]?.[1]).toMatchObject({
+      reason: "focused_workspace_initialized",
+    });
   });
 
   it("keeps the splash up when only a background tab has acked", async () => {

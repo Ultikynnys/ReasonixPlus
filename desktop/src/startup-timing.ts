@@ -42,7 +42,14 @@ export class StartupTimingTracker {
   finish(reason: string, details: Record<string, unknown> = {}): void {
     if (this.completed) return;
     this.completed = true;
-    this.mark(`throbber_dismissed:${reason}`, { details });
+    const finalStep = this.mark(`throbber_dismissed:${reason}`, { details });
+    // One event per boot: the reason the splash lifted is the only trace of which gate
+    // opened first, and the console line that used to carry it is gone.
+    recordFrontendDiagnostic(
+      "frontend.throbber_dismissed",
+      { reason, elapsedMs: finalStep.cumulativeMs, ...details },
+      "info",
+    );
   }
 
   fail(reason: string, details: Record<string, unknown> = {}): void {
