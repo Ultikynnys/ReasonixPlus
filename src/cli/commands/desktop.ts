@@ -6723,6 +6723,18 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       subagentSink: subagentSinkFor(tab),
       subagentBilling: (m) => subagentBillingFor(m),
       subagentModel: () => tab.currentSubagentModel ?? tab.currentModel,
+      // Everything a child inherits from this tab's loop, read at spawn time: the
+      // runtime is built after the toolset, and every value here can change
+      // mid-session. Hooks matter most — a user's PreToolUse gate must not be
+      // bypassed just because the tool call came from a subagent.
+      subagentLoopOptions: () => ({
+        ctxMaxOverride: tab.runtime?.loop.ctxMaxOverride,
+        autoCompactTriggerRatio: tab.runtime?.loop.autoCompactTriggerRatio,
+        maxIterPerTurn: tab.runtime?.loop.maxIterPerTurn,
+        maxOutputTokens: tab.runtime?.loop.maxOutputTokens,
+        hooks: tab.hooks,
+        hookCwd: tab.rootDir,
+      }),
     };
   }
 

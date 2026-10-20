@@ -4172,6 +4172,91 @@ describe("Desktop App reducer — subagent progress", () => {
     });
   });
 
+  it("keeps each run on its own card when the turn has one card per spawn", () => {
+    // A turn that spawns twice produces a separate assistant card per spawn. The
+    // host used to be resolved per message, so an event whose parentCallId
+    // matched nothing in a message fell through to "this message's only subagent
+    // segment" and attached the OTHER run there: both cards then rendered both
+    // runs, duplicating the reasoning/output counters across every card.
+    const card = (callId: string) => ({
+      kind: "assistant" as const,
+      turn: 3,
+      pending: false,
+      closed: true,
+      segments: [
+        {
+          kind: "tool" as const,
+          callId,
+          name: "explore",
+          args: '{"task":"look"}',
+          startedAt: 1,
+        },
+      ],
+    });
+    const start = {
+      type: "subagent.progress" as const,
+      ts: "2026-06-01T00:00:00.000Z",
+      turn: 3,
+      task: "look",
+      action: "start" as const,
+    };
+    const stream = { ...start, action: "stream" as const };
+
+    let state: Parameters<typeof reduce>[0] = {
+      ...initialState(),
+      messages: [card("tc-1"), card("tc-2")],
+    };
+    state = reduce(state, {
+      t: "incoming",
+      event: { ...start, id: 1, runId: "sub-a", parentCallId: "tc-1" },
+    });
+    state = reduce(state, {
+      t: "incoming",
+      event: { ...start, id: 2, runId: "sub-b", parentCallId: "tc-2" },
+    });
+    state = reduce(state, {
+      t: "incoming",
+      event: {
+        ...stream,
+        id: 3,
+        runId: "sub-a",
+        parentCallId: "tc-1",
+        reasoningChars: 1_000,
+        outputChars: 10,
+      },
+    });
+    state = reduce(state, {
+      t: "incoming",
+      event: {
+        ...stream,
+        id: 4,
+        runId: "sub-b",
+        parentCallId: "tc-2",
+        reasoningChars: 5_000,
+        outputChars: 50,
+      },
+    });
+
+    const cards = state.messages.map((m) =>
+      m.kind === "assistant"
+        ? m.segments.map(
+            (s) =>
+              (s as { subagentRuns?: Array<Record<string, unknown>> }).subagentRuns?.map((r) => ({
+                runId: r.runId,
+                reasoningChars: r.reasoningChars,
+                outputChars: r.outputChars,
+              })) ?? [],
+          )
+        : [],
+    );
+    expect(cards[0]?.[0]).toEqual([
+      { runId: "sub-a", reasoningChars: 1_000, outputChars: 10 },
+    ]);
+    expect(cards[1]?.[0]).toEqual([
+      { runId: "sub-b", reasoningChars: 5_000, outputChars: 50 },
+    ]);
+  });
+
   it("pairs child tool activity and settles a failed run", () => {
     const base = {
       ...initialState(),

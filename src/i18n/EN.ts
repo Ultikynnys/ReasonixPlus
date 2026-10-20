@@ -584,6 +584,16 @@ export const EN: TranslationSchema = {
       'Reached the {grace}-iteration hard cap. The turn paused; the conversation is intact. Say "continue" to keep going, or set `maxIterPerTurn` in config / REASONIX_MAX_ITER for a higher cap.',
     iterLimitNeverAsk:
       "Never Ask mode: reached the {max}-iteration cap, but the turn keeps running unattended, never-ask never pauses on the iteration cap. Stuck loops still stop the turn.",
+    unattendedWrapUp:
+      "Reached the {max}-iteration cap with no operator attached. Asking the subagent to stop gathering and return its findings now; {extra} more iterations before it is force-summarized.",
+    unattendedWrapUpNudge:
+      "Iteration budget exhausted ({max} tool-call iterations). Stop calling tools and return your verified findings now, complete and self-contained. Name exactly what you could not verify.",
+    unattendedBudgetStop:
+      "Stopped at the {max}-iteration budget without a returned answer. These are the findings gathered before the stop, not a complete result.",
+    unattendedAnswerNudge:
+      "You must return an answer now. Stop calling tools and state your findings, your conclusion, and exactly what you could not verify.",
+    unattendedAnswerNudgeWarning:
+      "The model returned an empty completion. Told the subagent it must return an answer, retrying once.",
   },
   errors: {
     contextOverflowTooMany: "too many tokens",

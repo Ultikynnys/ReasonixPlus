@@ -2,13 +2,17 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { DeepSeekClient, Usage } from "../src/client.js";
+import { CacheFirstLoop } from "../src/loop.js";
 import { bridgeMcpTools } from "../src/mcp/registry.js";
+import { ImmutablePrefix } from "../src/memory/runtime.js";
+import { estimateRequestTokens } from "../src/tokenizer.js";
 import { ToolRegistry } from "../src/tools.js";
 import {
   NEVER_INHERITED_TOOLS,
   type SubagentEvent,
   type SubagentResult,
   type SubagentSink,
+  childLoopOptions,
   forkRegistryExcluding,
   forkRegistryWithAllowList,
   formatSubagentResult,
@@ -202,7 +206,6 @@ describe("registerSubagentTool", () => {
       parentRegistry: new ToolRegistry(),
       system: "review",
       task: "review",
-      repetitionGuardEnabled: true,
       sink,
     });
 
@@ -940,4 +943,349 @@ describe("spawnSubagent allowedTools", () => {
     expect(seen[0]).not.toContain("write_file");
     expect(seen[0]).toContain("unreal_mcp_spawn_actor");
   });
+});
+
+describe("iteration-cap recovery", () => {
+  it("a child that exhausts the iteration cap returns an attributed partial, never silence", async () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "noop", readOnly: true, fn: () => "ok" });
+    // Distinct args per call: the storm breaker must not end this turn first —
+    // the submission is exercising the cap, not the repeat guard.
+    const { client } = makeFakeClient(
+      Array.from({ length: 200 }, (_, i) => ({
+        content: "",
+        tool_calls: [
+          {
+            id: `call_${i}`,
+            type: "function" as const,
+            function: { name: "noop", arguments: JSON.stringify({ i }) },
+          },
+        ],
+      })),
+    );
+
+    const result = await spawnSubagent({
+      client,
+      parentRegistry: parent,
+      system: "gather facts",
+      task: "keep scanning",
+    });
+
+    // Before the unattended ladder this was the unattributable
+    // "subagent ended without producing an answer" with empty output.
+    expect(result.success).toBe(false);
+    expect(result.forcedSummary).toBe(true);
+    expect(result.output).toMatch(/iteration budget/);
+    expect(result.error).toBeUndefined();
+    expect(result.stopReason ?? result.output).toMatch(/iteration budget/);
+    expect(result.toolIters).toBeGreaterThanOrEqual(CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN);
+
+    const envelope = JSON.parse(formatSubagentResult(result));
+    expect(envelope.partial).toBe(true);
+    expect(envelope.output).toMatch(/iteration budget/);
+    expect(envelope.note).toMatch(/force-summarized/i);
+  }, 120_000);
+});
+
+describe("repetition guard — always on for children", () => {
+  it("terminates a child that re-thinks the identical thought instead of returning nothing", async () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "noop", readOnly: true, fn: () => "ok" });
+    // Distinct args every iteration so the storm breaker cannot fire first: the
+    // reasoning-loop guard is what has to catch this one.
+    const repeatedReasoning = "I should re-read the file to be sure the same bytes are there.";
+    const { client, fetchMock } = makeFakeClient(
+      Array.from({ length: 10 }, (_, i) => ({
+        content: "",
+        reasoning_content: repeatedReasoning,
+        tool_calls: [
+          {
+            id: `call_${i}`,
+            type: "function" as const,
+            function: { name: "noop", arguments: JSON.stringify({ i }) },
+          },
+        ],
+      })),
+    );
+
+    // No repetitionGuardEnabled option exists any more: the guard runs even when
+    // the parent agent's config has it switched off.
+    const result = await spawnSubagent({
+      client,
+      parentRegistry: parent,
+      system: "gather facts",
+      task: "keep re-thinking",
+    });
+
+    // Caught on the third identical thought, not after burning the whole budget.
+    expect(fetchMock.mock.calls.length).toBe(CacheFirstLoop.REASONING_LOOP_LIMIT);
+    expect(result.success).toBe(false);
+    expect(result.stopCause).toBe("repetition-guard");
+    expect(result.error).toMatch(/terminated by the repetition guard/);
+
+    const envelope = JSON.parse(formatSubagentResult(result));
+    expect(envelope.terminated).toBe(true);
+    expect(envelope.stop_cause).toBe("repetition-guard");
+  }, 60_000);
+});
+
+describe("a child must return an answer", () => {
+  it("is told it must answer after an empty completion, and that answer is the result", async () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "noop", readOnly: true, fn: () => "ok" });
+    const { client } = makeFakeClient([{ content: "" }, { content: "the answer" }]);
+    const { sink, events } = makeSink();
+
+    const result = await spawnSubagent({
+      client,
+      parentRegistry: parent,
+      system: "gather facts",
+      task: "answer me",
+      sink,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("the answer");
+    expect(
+      events.some(
+        (e) =>
+          e.kind === "inner" &&
+          e.inner?.role === "warning" &&
+          /must return an answer/.test(e.inner.content),
+      ),
+    ).toBe(true);
+  }, 30_000);
+
+  it("ends with an attributed final instead of silence when it never answers", async () => {
+    const { client } = makeFakeClient([{ content: "" }]);
+    const result = await spawnSubagent({
+      client,
+      parentRegistry: new ToolRegistry(),
+      system: "gather facts",
+      task: "stay empty",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.forcedSummary).toBe(true);
+    expect(result.stopCause).toBe("empty-response");
+    expect(result.output).toMatch(/without an answer/);
+    expect(result.error).toBeUndefined();
+
+    const envelope = JSON.parse(formatSubagentResult(result));
+    expect(envelope.partial).toBe(true);
+    expect(envelope.stop_cause).toBe("empty-response");
+    expect(envelope.terminated).toBeUndefined();
+  }, 30_000);
+});
+
+describe("inherited loop options", () => {
+  it("enforces the parent's window cap and reports it as the meter denominator", async () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "noop", readOnly: true, fn: () => "ok" });
+    const { client } = makeFakeClient([{ content: "done" }]);
+    const { sink, events } = makeSink();
+
+    const result = await spawnSubagent({
+      client,
+      parentRegistry: parent,
+      system: "gather facts",
+      task: "answer me",
+      inherited: { ctxMaxOverride: 300_000 },
+      sink,
+    });
+
+    expect(result.success).toBe(true);
+    // The denominator is the INHERITED cap, not the child model's default window.
+    expect(events.at(-1)).toMatchObject({ kind: "end", contextMax: 300_000 });
+  }, 30_000);
+
+  it("inherits every loop setting and forces compaction on", () => {
+    // `defaults` is passed explicitly so this is a policy assertion, not a read of the
+    // developer machine's config: an inherited value wins, config/env fills the gap.
+    const defaults = { maxIterPerTurn: 50, maxOutputTokens: 8_192 };
+    // A child must not depend on the loop's DEFAULT for compaction: if that default
+    // ever flipped, an unattended run would have no compaction and nobody to press
+    // it. No caller can switch it off either — the policy has one implementation.
+    expect(childLoopOptions(undefined, defaults)).toEqual({
+      ctxMaxOverride: undefined,
+      autoCompactTriggerRatio: undefined,
+      maxIterPerTurn: 50,
+      maxOutputTokens: 8_192,
+      hooks: undefined,
+      hookCwd: undefined,
+      autoCompact: true,
+    });
+    expect(
+      childLoopOptions(
+        {
+          ctxMaxOverride: 300_000,
+          autoCompactTriggerRatio: 0.5,
+          maxIterPerTurn: 12,
+          maxOutputTokens: 1_024,
+          hooks: [],
+          hookCwd: "C:/ws",
+        },
+        defaults,
+      ),
+    ).toEqual({
+      ctxMaxOverride: 300_000,
+      autoCompactTriggerRatio: 0.5,
+      maxIterPerTurn: 12,
+      maxOutputTokens: 1_024,
+      hooks: [],
+      hookCwd: "C:/ws",
+      autoCompact: true,
+    });
+  });
+
+  it("runs the child's tools in the parent's workspace root", async () => {
+    const parent = new ToolRegistry();
+    let seenRoot: string | undefined;
+    parent.register({
+      name: "noop",
+      readOnly: true,
+      fn: (_args: string, ctx?: { rootDir?: string }) => {
+        seenRoot = ctx?.rootDir;
+        return "ok";
+      },
+    });
+    const { client } = makeFakeClient([
+      {
+        content: "",
+        tool_calls: [{ id: "c1", type: "function", function: { name: "noop", arguments: "{}" } }],
+      },
+      { content: "done" },
+    ]);
+
+    await spawnSubagent({
+      client,
+      parentRegistry: parent,
+      system: "gather facts",
+      task: "answer me",
+      inherited: { hookCwd: "C:/ws-root" },
+    });
+
+    // hookCwd is also the rootDir a tool resolves relative paths against, so inheriting
+    // it keeps a child's file tools pointed at the parent's workspace. Left alone, the
+    // child fell back to process.cwd() — a different tree entirely.
+    expect(seenRoot).toBe("C:/ws-root");
+  }, 30_000);
+
+  it("actually compacts the child once the inherited cap is crossed", async () => {
+    const parent = new ToolRegistry();
+    // A result small enough to survive the 8k-token heal threshold, repeated enough
+    // times to cross the trigger: the log growth a real child gets from reading.
+    parent.register({ name: "noop", readOnly: true, fn: () => "y".repeat(20_000) });
+    const system = "gather facts";
+    const task = "answer me";
+
+    // Size the run from the loop's OWN estimator instead of guessing: fill to 60% of
+    // a 128k cap, i.e. above the 0.5 trigger (64k) and under the cap itself.
+    const prefix = new ImmutablePrefix({ system, toolSpecs: parent.specs() });
+    const base = estimateRequestTokens(
+      [...prefix.toMessages(), { role: "user", content: task }],
+      prefix.tools(),
+    );
+    const oneRead = estimateRequestTokens(
+      [
+        ...prefix.toMessages(),
+        { role: "user", content: task },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "c0", type: "function", function: { name: "noop", arguments: "{}" } }],
+        },
+        { role: "tool", tool_call_id: "c0", name: "noop", content: "y".repeat(20_000) },
+      ],
+      prefix.tools(),
+    );
+    const perRead = Math.max(1, oneRead - base);
+    const readsNeeded = Math.max(1, Math.ceil((128_000 * 0.6 - base) / perRead));
+
+    // The summariser call is the ONLY non-streaming request in a child run, so the
+    // fake can route on `stream`: text for the fold, tool calls for the turns.
+    let turnsLeft = readsNeeded;
+    const summarised: string[] = [];
+    const fetchMock = vi.fn(async (_url: unknown, init?: { body?: string }) => {
+      const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+      if (body.stream === true) {
+        turnsLeft--;
+        const delta =
+          turnsLeft >= 0
+            ? {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: `call_${turnsLeft}`,
+                    type: "function",
+                    function: { name: "noop", arguments: JSON.stringify({ i: turnsLeft }) },
+                  },
+                ],
+              }
+            : { content: "done" };
+        const frames = [
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta }] })}\n\n`,
+          `data: ${JSON.stringify({
+            choices: [
+              { index: 0, delta: {}, finish_reason: turnsLeft >= 0 ? "tool_calls" : "stop" },
+            ],
+            usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 },
+          })}\n\n`,
+          "data: [DONE]\n\n",
+        ];
+        return new Response(frames.join(""), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      summarised.push(String(init?.body ?? "").slice(0, 60));
+      return new Response(
+        JSON.stringify({
+          choices: [{ index: 0, message: { role: "assistant", content: "CONSOLIDATED SUMMARY" } }],
+          usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    const { sink, events } = makeSink();
+
+    const result = await spawnSubagent({
+      client: new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock as never }),
+      parentRegistry: parent,
+      system,
+      task,
+      // 128k is the floor resolveContextTokens applies to a non-Ollama override, so
+      // the inherited cap and the 0.5 trigger are exactly these numbers.
+      inherited: { ctxMaxOverride: 128_000, autoCompactTriggerRatio: 0.5 },
+      sink,
+    });
+
+    const inner = events.flatMap((e) => (e.kind === "inner" && e.inner ? [e.inner] : []));
+    // The fold is announced...
+    expect(inner.some((e) => e.role === "compaction_start")).toBe(true);
+    // ...and completes, reporting the before/after token counts.
+    expect(
+      inner.some((e) => e.role === "warning" && /Context compacted/.test(e.content ?? "")),
+    ).toBe(true);
+    // A real summariser call happened, so this was a fold and not just an event.
+    expect(summarised.length).toBeGreaterThanOrEqual(1);
+    // And the child survives its own compaction to finish normally.
+    expect(result.success).toBe(true);
+    expect(events.at(-1)).toMatchObject({ kind: "end", contextMax: 128_000 });
+  }, 120_000);
+
+  it("forwards a library caller's inherited-loop getter into the spawn", async () => {
+    const parent = new ToolRegistry();
+    const { client } = makeFakeClient([{ content: "done" }]);
+    const { sink, events } = makeSink();
+    registerSubagentTool(parent, {
+      client,
+      sink,
+      inherited: () => ({ ctxMaxOverride: 400_000 }),
+    });
+
+    await parent.dispatch("spawn_subagent", JSON.stringify({ task: "answer me" }));
+
+    expect(events.at(-1)).toMatchObject({ kind: "end", contextMax: 400_000 });
+  }, 30_000);
 });

@@ -248,6 +248,10 @@ export interface CacheFirstLoopOptions {
   rebuildSystem?: () => string;
   /** When true, the stream repetition / "stuck re-thinking" guard may abort a degenerating stream. Defaults to false (opt-in). */
   repetitionGuardEnabled?: boolean;
+  /** Runs with no operator to answer the loop's prompts (a subagent): the iteration
+   *  cap's human-facing pause becomes a self-driven wrap-up, then a forced summary.
+   *  Attended turns keep the pause. */
+  unattended?: boolean;
   /** In-memory floor for the turn counter across runtime rebuilds. Combined
    *  with session-meta `lastTurn`, ordinals never regress. */
   turnFloor?: number;
@@ -373,6 +377,10 @@ export class CacheFirstLoop {
   /** Premature-stop nudges per turn — a model that always answers in
    *  fragments can't loop forever. */
   static readonly MAX_PREMATURE_STOP_NUDGES = 2;
+  /** Extra iterations granted to an unattended turn after the wrap-up nudge asks
+   *  it to stop gathering and answer. Bounds the nudge, so an unattended turn
+   *  cannot spin past its cap just because nobody can say "stop". */
+  static readonly UNATTENDED_WRAP_UP_ITERS = 5;
   /** Files the model has read this session; gates edit_file / multi_edit so SEARCH text matches on-disk bytes. Cleared on mechanical truncate (the model's byte-level view of the elided history is gone). In-memory only — naturally empty on resume. */
   readonly readTracker = new ReadTracker();
 
@@ -465,6 +473,12 @@ export class CacheFirstLoop {
   private _iterGraceApplied = false;
   /** True once a never-ask turn bypassed the cap, the cap block is skipped for the rest of the turn. */
   private _iterCapBypassed = false;
+  /** Extra iterations granted by the unattended wrap-up nudge (0 = not asked yet). */
+  private _wrapUpGrace = 0;
+  /** Latched once the unattended wrap-up nudge has been sent this turn. */
+  private _wrapUpAsked = false;
+  /** True when nobody can type "continue" to this loop — see CacheFirstLoopOptions.unattended. */
+  private readonly _unattended: boolean;
   /** Live edit-mode getter — hosts that don't pass it keep the default pause. */
   private readonly _getEditMode: (() => EditMode) | undefined;
   /** Latched once per turn — the empty-completion guard retries exactly once. */
@@ -540,6 +554,7 @@ export class CacheFirstLoop {
     this.maxOutputTokens = opts.maxOutputTokens;
     this.maxIterPerTurn = opts.maxIterPerTurn ?? CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN;
     this._getEditMode = opts.getEditMode;
+    this._unattended = opts.unattended === true;
     this._repetitionGuardEnabled = Boolean(opts.repetitionGuardEnabled);
     this.ctxMaxOverride = opts.ctxMaxOverride;
     this.autoCompact = opts.autoCompact ?? true;
@@ -1478,6 +1493,8 @@ export class CacheFirstLoop {
     this._iterGrace = 0;
     this._iterGraceApplied = false;
     this._iterCapBypassed = false;
+    this._wrapUpGrace = 0;
+    this._wrapUpAsked = false;
     this._emptyResponseRetried = false;
     this._thinkingOnlyRecoveries = 0;
     this._thinkingOnlyPartialAppended = false;
@@ -1631,9 +1648,14 @@ export class CacheFirstLoop {
       //    healthy long task mid-flow just forces the user to re-prompt. If the
       //    grace window also exhausts, the turn pauses NON-destructively: the log
       //    stays intact, so the next "continue" resumes with full state.
-      const hardCap = this.maxIterPerTurn + (this._iterGraceApplied ? this._iterGrace : 0);
+      //  - UNATTENDED turn (subagent): nobody can type "continue", so every stop
+      //    below instead asks the model for its answer and, failing that, hands
+      //    the consumer a forced summary carrying the reason. A warning-only exit
+      //    reaches a subagent as "no answer, no reason".
+      const hardCap =
+        this.maxIterPerTurn + (this._iterGraceApplied ? this._iterGrace : 0) + this._wrapUpGrace;
       if (iter >= hardCap && !this._iterCapBypassed) {
-        if (this._getEditMode?.() === "never-ask") {
+        if (!this._unattended && this._getEditMode?.() === "never-ask") {
           this._iterCapBypassed = true;
           yield {
             turn: this._turn,
@@ -1644,12 +1666,12 @@ export class CacheFirstLoop {
           continue;
         }
         if (this._turnSelfCorrected) {
-          yield {
-            turn: this._turn,
-            role: "warning",
-            severity: "high",
-            content: t("loop.iterLimitReached", { max: this.maxIterPerTurn }),
-          };
+          const stuckReason = t("loop.iterLimitReached", { max: this.maxIterPerTurn });
+          if (this._unattended) {
+            yield* this.stopUnattended(stuckReason, restoreModelIfNeeded);
+            return;
+          }
+          yield { turn: this._turn, role: "warning", severity: "high", content: stuckReason };
           restoreModelIfNeeded();
           this._steerQueue.length = 0;
           return;
@@ -1667,6 +1689,35 @@ export class CacheFirstLoop {
             }),
           };
           continue;
+        }
+        if (this._unattended) {
+          // Ask first: a child at its cap usually already holds the findings and
+          // is only still gathering. The nudge converts the human's "continue"
+          // into a "stop and answer" plus a bounded window to do it in.
+          if (!this._wrapUpAsked) {
+            this._wrapUpAsked = true;
+            this._wrapUpGrace = CacheFirstLoop.UNATTENDED_WRAP_UP_ITERS;
+            this.appendAndPersist({
+              role: "user",
+              content: t("loop.unattendedWrapUpNudge", { max: hardCap }),
+              synthetic: true,
+            });
+            yield {
+              turn: this._turn,
+              role: "warning",
+              severity: "low",
+              content: t("loop.unattendedWrapUp", {
+                max: hardCap,
+                extra: this._wrapUpGrace,
+              }),
+            };
+            continue;
+          }
+          yield* this.stopUnattended(
+            t("loop.unattendedBudgetStop", { max: hardCap }),
+            restoreModelIfNeeded,
+          );
+          return;
         }
         yield {
           turn: this._turn,
@@ -2232,23 +2283,39 @@ export class CacheFirstLoop {
         reasoningContent.trim().length === 0 &&
         toolCalls.length === 0
       ) {
+        const emptyReason = stopReason
+          ? t("loop.emptyResponseGiveUpReason", { reason: stopReason })
+          : t("loop.emptyResponseGiveUp");
         if (!this._emptyResponseRetried) {
           this._emptyResponseRetried = true;
+          // A bare replay changes nothing the model can act on, and an unattended
+          // run has nobody else to ask it to answer: make the retry an order.
+          if (this._unattended) {
+            this.appendAndPersist({
+              role: "user",
+              content: t("loop.unattendedAnswerNudge"),
+              synthetic: true,
+            });
+          }
           yield {
             turn: this._turn,
             role: "warning",
             severity: "high",
-            content: t("loop.emptyResponseRetry"),
+            content: this._unattended
+              ? t("loop.unattendedAnswerNudgeWarning")
+              : t("loop.emptyResponseRetry"),
           };
           continue;
+        }
+        if (this._unattended) {
+          yield* this.stopUnattended(emptyReason, restoreModelIfNeeded, "empty-response");
+          return;
         }
         yield {
           turn: this._turn,
           role: "warning",
           severity: "high",
-          content: stopReason
-            ? t("loop.emptyResponseGiveUpReason", { reason: stopReason })
-            : t("loop.emptyResponseGiveUp"),
+          content: emptyReason,
         };
         abandonThinkingOnlyTurn();
         return;
@@ -2289,11 +2356,29 @@ export class CacheFirstLoop {
         const isDegenerate = reasoningContent.trim().length <= 5;
         if (toolSpecs.length > 0 || isDegenerate) {
           if (repetitionStall || isDegenerate) {
+            const stallReason = t("loop.thinkingOnlyGiveUp");
+            // Repetition is the guard: the run is lost, so it dies here with no
+            // further prompting — the one stop allowed to end without an answer.
+            if (repetitionStall) {
+              yield {
+                turn: this._turn,
+                role: "warning",
+                severity: "high",
+                cause: "repetition-guard",
+                content: stallReason,
+              };
+              abandonThinkingOnlyTurn();
+              return;
+            }
+            if (this._unattended) {
+              yield* this.stopUnattended(stallReason, restoreModelIfNeeded, "thinking-only");
+              return;
+            }
             yield {
               turn: this._turn,
               role: "warning",
               severity: "high",
-              content: t("loop.thinkingOnlyGiveUp"),
+              content: stallReason,
             };
             abandonThinkingOnlyTurn();
             return;
@@ -2405,6 +2490,8 @@ export class CacheFirstLoop {
           turn: this._turn,
           role: "warning",
           severity: allSuppressed ? "high" : "low",
+          // Suppressing the whole batch ends the turn: that is the repeat guard.
+          ...(allSuppressed ? { cause: "repetition-guard" as const } : {}),
           content: `${phrase}${noteTail}`,
         };
       }
@@ -2414,6 +2501,7 @@ export class CacheFirstLoop {
           continue;
         }
         if (allSuppressed) {
+          yield* this.emitUnattendedFinal(assistantContent);
           yield {
             turn: this._turn,
             role: "done",
@@ -2498,6 +2586,32 @@ export class CacheFirstLoop {
     // error escapes the inner try blocks.
   }
 
+  /** Terminal shape for a turn nobody watches: reason, forced summary, `done` — the
+   *  abort path's shape with a different initiator. Unattended-only by construction:
+   *  an attended pause must never fabricate an answer. */
+  private *stopUnattended(
+    reason: string,
+    restore: () => void,
+    cause: WarningCause = "iteration-budget",
+  ): Generator<LoopEvent, void, void> {
+    this.appendAndPersist(buildSyntheticAssistantMessage(reason, this.model));
+    yield { turn: this._turn, role: "warning", severity: "high", cause, content: reason };
+    yield { turn: this._turn, role: "assistant_final", content: reason, forcedSummary: true };
+    restore();
+    this._steerQueue.length = 0;
+    yield { turn: this._turn, role: "done", content: reason };
+  }
+
+  /** Unattended runs have no view of `warning` events, so a stop that carries the
+   *  answer only in its `done` content reaches them as an empty finish. Promote
+   *  the turn's own text to a real final. */
+  private *emitUnattendedFinal(content: string): Generator<LoopEvent, void, void> {
+    const text = content.trim();
+    if (!this._unattended || !text) return;
+    this.appendAndPersist(buildSyntheticAssistantMessage(text, this.model));
+    yield { turn: this._turn, role: "assistant_final", content: text, forcedSummary: true };
+  }
+
   /** One recovery path for both within-stream periodic reasoning and identical
    *  reasoning across tool iterations. The warning explains the trigger; the
    *  turn then ends so the user can redirect from a fresh prompt. */
@@ -2513,6 +2627,7 @@ export class CacheFirstLoop {
       cause,
       content: `${warningContent}\n\n${t("loop.reasoningLoopStopping")}`,
     };
+    yield* this.emitUnattendedFinal(assistantContent);
     yield {
       turn: this._turn,
       role: "done",

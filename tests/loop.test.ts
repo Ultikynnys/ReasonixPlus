@@ -3922,4 +3922,135 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
     expect(events.find((e) => e.role === "done")).toBeDefined();
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
+
+  it("unattended: asks for the answer at the cap, then force-summarizes with the reason", async () => {
+    const cap = 3;
+    const grace = graceFor(cap);
+    const wrap = CacheFirstLoop.UNATTENDED_WRAP_UP_ITERS;
+    const fetchMock = fakeFetch(infiniteToolResponses(cap + grace + wrap + 10));
+    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock });
+    const tools = registerNoop();
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "be brief", toolSpecs: tools.specs() }),
+      tools,
+      stream: false,
+      maxIterPerTurn: cap,
+      unattended: true,
+    });
+
+    const events: any[] = [];
+    for await (const ev of loop.step("do stuff forever")) {
+      events.push(ev);
+    }
+
+    // The wrap-up nudge REPLACES the human's "continue" — no pause text, since
+    // nobody is there to read it and answer it.
+    const wrapEv = events.find(
+      (e) => e.role === "warning" && /no operator attached/.test(e.content ?? ""),
+    );
+    expect(wrapEv).toBeDefined();
+    expect(wrapEv!.content).toContain(String(cap + grace));
+    expect(
+      events.filter((e) => e.role === "warning" && /paused/.test(e.content ?? "")),
+    ).toHaveLength(0);
+
+    // The nudge is a real message in the log, so the model can act on it.
+    expect(
+      loop.log.entries.some(
+        (m) =>
+          m.role === "user" &&
+          typeof m.content === "string" &&
+          /Stop calling tools/.test(m.content),
+      ),
+    ).toBe(true);
+
+    // The stop hands the consumer an answer AND the reason — never silence.
+    const finalEv = events.find((e) => e.role === "assistant_final" && e.forcedSummary === true);
+    expect(finalEv).toBeDefined();
+    expect(finalEv!.content).toMatch(/iteration budget/);
+    const doneEv = events.find((e) => e.role === "done");
+    expect(doneEv).toBeDefined();
+    expect(doneEv!.content).toMatch(/iteration budget/);
+
+    // The wrap window is real work, not just a notice: the turn ran past the
+    // attended hard cap (cap + grace) before it was stopped.
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(cap + grace - 1);
+    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(cap + grace + wrap + 1);
+  });
+});
+
+describe("CacheFirstLoop — unattended recovery", () => {
+  const toolsWithNoop = (): ToolRegistry => {
+    const tools = new ToolRegistry();
+    tools.register({
+      name: "noop",
+      description: "does nothing",
+      parameters: { type: "object", properties: {} },
+      fn: async () => "ok",
+    });
+    return tools;
+  };
+
+  const unattendedLoop = (responses: FakeResponseShape[]) => {
+    const fetchMock = fakeFetch(responses);
+    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock });
+    const tools = toolsWithNoop();
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "be brief", toolSpecs: tools.specs() }),
+      tools,
+      stream: false,
+      unattended: true,
+    });
+    return { loop, fetchMock };
+  };
+
+  it("retries an empty completion with an explicit order to answer", async () => {
+    const { loop, fetchMock } = unattendedLoop([
+      { content: "" },
+      { content: "here is the answer" },
+    ]);
+
+    const events: any[] = [];
+    for await (const ev of loop.step("answer me")) {
+      events.push(ev);
+    }
+
+    // The order goes into the log as a real message, not a bare replay that gives
+    // a child nothing new to act on.
+    expect(
+      loop.log.entries.some(
+        (m) =>
+          m.role === "user" &&
+          typeof m.content === "string" &&
+          /must return an answer/.test(m.content),
+      ),
+    ).toBe(true);
+    expect(
+      events.filter((e) => e.role === "warning" && /must return an answer/.test(e.content ?? "")),
+    ).toHaveLength(1);
+
+    // It answered on the retry, so the turn ends with that answer.
+    expect(events.filter((e) => e.role === "assistant_final").at(-1)?.content).toBe(
+      "here is the answer",
+    );
+    expect(events.find((e) => e.role === "done")).toBeDefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("ends a never-answering unattended turn with a tagged forced final, not silence", async () => {
+    const { loop } = unattendedLoop([{ content: "" }]);
+
+    const events: any[] = [];
+    for await (const ev of loop.step("answer me")) {
+      events.push(ev);
+    }
+
+    const finalEv = events.find((e) => e.role === "assistant_final" && e.forcedSummary === true);
+    expect(finalEv).toBeDefined();
+    expect(finalEv!.content).toMatch(/without an answer/);
+    expect(events.find((e) => e.role === "warning" && e.cause === "empty-response")).toBeDefined();
+    expect(events.find((e) => e.role === "done")).toBeDefined();
+  });
 });

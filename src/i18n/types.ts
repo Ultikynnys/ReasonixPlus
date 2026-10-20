@@ -313,6 +313,11 @@ export interface TranslationSchema {
     iterLimitGrace: string;
     iterLimitPaused: string;
     iterLimitNeverAsk: string;
+    unattendedWrapUp: string;
+    unattendedWrapUpNudge: string;
+    unattendedBudgetStop: string;
+    unattendedAnswerNudge: string;
+    unattendedAnswerNudgeWarning: string;
   };
   errors: {
     contextOverflowTooMany: string;

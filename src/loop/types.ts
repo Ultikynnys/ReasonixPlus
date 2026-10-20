@@ -32,8 +32,13 @@ export type EventRole =
 export type EventSeverity = "low" | "high";
 
 /** Stable machine tag for why a high-severity warning fired. Desktops key
- *  feedback cues (sounds/notifications) on this instead of matching text. */
-export type WarningCause = "repetition-guard";
+ *  feedback cues (sounds/notifications) on this instead of matching text; the
+ *  subagent wrapper keys "terminated" vs "forced answer" on it. */
+export type WarningCause =
+  | "repetition-guard"
+  | "iteration-budget"
+  | "empty-response"
+  | "thinking-only";
 
 export interface LoopEvent {
   turn: number;

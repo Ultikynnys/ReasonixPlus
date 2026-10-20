@@ -50,6 +50,7 @@ import {
 } from "../tools/skills.js";
 import {
   SHARED_SUBAGENT_SINK,
+  type SubagentLoopOptions,
   type SubagentSink,
   formatSubagentResult,
   spawnSubagent,
@@ -94,6 +95,10 @@ export interface CodeToolsetOpts {
   /** Per-tab subagent model, resolved lazily at spawn time via a getter so a
    *  change applies to the next spawn without rebuilding the toolset. */
   subagentModel?: () => string;
+  /** Live inherited-loop options (window cap, compaction trigger, iteration/output
+   *  caps, tool hooks), read at spawn time for the same reason: a mid-session change
+   *  applies to the next child without a rebuild. */
+  subagentLoopOptions?: () => SubagentLoopOptions | undefined;
   /** Live effective MCP specs (config + session overlay) for list_mcp_bridges, so
    *  the tool reports the session's toggle state rather than the config default. */
   getMcpSpecs?: () => McpServerSpec[];
@@ -259,6 +264,9 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
       parentTurn,
       maxToolIters: skill.maxToolIters,
       maxElapsedMs: skill.maxElapsedMs,
+      // Read per spawn, not at registration: the tab's loop can be reconfigured
+      // mid-session without rebuilding this toolset.
+      inherited: opts.subagentLoopOptions?.(),
       // Late-bound: the TUI's `useSubagent` writes the live callback into
       // SHARED_SUBAGENT_SINK after mount. Until then `.current` is null
       // and the events are silently dropped — that's fine for non-TUI

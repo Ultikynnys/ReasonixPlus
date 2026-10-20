@@ -320,7 +320,7 @@ export interface KernelWarningEvent extends KernelWireEventBase {
   severity: "low" | "high";
   /** Machine-readable trigger tag (mirror of src/loop WarningCause) so clients
    *  can key feedback cues off the trigger instead of matching message text. */
-  cause?: "repetition-guard";
+  cause?: "repetition-guard" | "iteration-budget" | "empty-response" | "thinking-only";
   /** Compaction completion warning: the prefix-stripped summary body the fold
    *  installed, so the card can show the actual compacted context alongside the
    *  terse `text` header. Absent for non-compaction warnings. */

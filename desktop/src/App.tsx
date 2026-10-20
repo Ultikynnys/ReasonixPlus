@@ -2947,51 +2947,63 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         }),
       };
     }
-    case "subagent.progress":
+    case "subagent.progress": {
+      // An event belongs to EXACTLY ONE card. Resolve the host across the whole
+      // turn first: resolving per message let an event fall through to "this
+      // message's only subagent segment" and attach run B to run A's card, so
+      // every card in the turn rendered every run's counters.
+      // One pass builds every fact the three rules need, so each rule is a predicate
+      // over one record shape instead of its own walk of the message list.
+      type HostSegment = {
+        message: number;
+        segment: number;
+        callId: string;
+        spawn: boolean;
+        empty: boolean;
+        owns: boolean;
+      };
+      const hosts: HostSegment[] = [];
+      state.messages.forEach((m, mi) => {
+        if (m.kind !== "assistant" || m.turn !== ev.turn) return;
+        m.segments.forEach((segment, si) => {
+          if (segment.kind !== "tool") return;
+          hosts.push({
+            message: mi,
+            segment: si,
+            callId: segment.callId,
+            spawn: isSubagentTool(segment.name, segment.args),
+            empty: (segment.subagentRuns?.length ?? 0) === 0,
+            owns: segment.subagentRuns?.some((run) => run.runId === ev.runId) ?? false,
+          });
+        });
+      });
+      // 1. A segment already holding this run wins: identity by runId is exact.
+      // 2. Otherwise the spawn's own call id — never a neighbour's card.
+      // 3. With no identity at all (older producers), only an unambiguous spawn
+      //    segment that has not adopted a run yet may take it. Guessing among
+      //    several IS the bug this replaced.
+      const adoptable = hosts.filter((h) => h.spawn && h.empty);
+      const host =
+        hosts.find((h) => h.owns) ??
+        (ev.parentCallId ? hosts.find((h) => h.spawn && h.callId === ev.parentCallId) : undefined) ??
+        (adoptable.length === 1 ? adoptable[0] : undefined);
+      if (!host) return state;
+      const hostMessage = host.message;
+      const hostSegment = host.segment;
       return {
         ...state,
         turnLastEventMs: Date.now(),
-        messages: state.messages.map((m) => {
-          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
-          let host = ev.parentCallId
-            ? m.segments.findIndex(
-                (segment) => segment.kind === "tool" && segment.callId === ev.parentCallId,
-              )
-            : -1;
-          if (host < 0) {
-            const existingHost = m.segments.findIndex(
-              (segment) =>
-                segment.kind === "tool" &&
-                segment.subagentRuns?.some((run) => run.runId === ev.runId),
-            );
-            if (existingHost >= 0) {
-              host = existingHost;
-            } else {
-              const candidates = m.segments
-                .map((segment, index) => ({ segment, index }))
-                .filter(
-                  ({ segment }) =>
-                    segment.kind === "tool" && isSubagentTool(segment.name, segment.args),
-                );
-              if (candidates.length === 1) {
-                host = candidates[0]?.index ?? -1;
-              } else if (candidates.length > 1) {
-                const running = candidates.find(
-                  (c) => c.segment.kind === "tool" && c.segment.result === undefined,
-                );
-                host = running ? running.index : (candidates[candidates.length - 1]?.index ?? -1);
-              }
-            }
-          }
-          if (host < 0) return m;
+        messages: state.messages.map((m, mi) => {
+          if (mi !== hostMessage || m.kind !== "assistant") return m;
           const segments = [...m.segments];
-          const segment = segments[host];
+          const segment = segments[hostSegment];
           if (!segment || segment.kind !== "tool") return m;
           const runs = applySubagentProgress(segment.subagentRuns ?? [], ev);
-          segments[host] = { ...segment, subagentRuns: runs };
+          segments[hostSegment] = { ...segment, subagentRuns: runs };
           return { ...m, segments };
         }),
       };
+    }
     case "tool.result": {
       return {
         ...state,
