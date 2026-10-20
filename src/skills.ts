@@ -709,7 +709,9 @@ Don't:
 
 Lead each turn with a one-line status: "▸ running \`npm test\` ..." → "▸ 2 failures in tests/foo.test.ts: first is …" → so the user always knows where you are without scrolling tool output.`;
 
-/** Read-only toolset shared by the `review` and `security-review` subagents. */
+/** Built-in tools the `review` and `security-review` subagents are scoped to.
+ *  Bridged MCP tools ride along regardless: a skill narrows this build's tools,
+ *  it does not strip the user's MCP servers from the child. */
 const BUILTIN_READ_ONLY_TOOLS = Object.freeze([
   "run_command",
   "read_file",

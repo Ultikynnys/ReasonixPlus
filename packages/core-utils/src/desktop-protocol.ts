@@ -884,12 +884,18 @@ export interface PersistedNotice {
 /** What kind of thing happened in a session, as the Events tab groups it.
  *  User turns are NOT here: they are read from the transcript records, which
  *  are already stamped and already pruned by a rewind. Everything else is a
- *  gate verdict or a fold, which the transcript has no durable record of. */
-export type SessionEventType = "plan" | "choice" | "compaction";
+ *  gate verdict, a fold, or a subagent spawn, which the transcript has no
+ *  durable record of. */
+export const SESSION_EVENT_TYPES = ["plan", "choice", "compaction", "subagent"] as const;
 
-/** One recorded session event (a plan verdict, a choice verdict, a fold) kept in
- *  the session's UI-events sidecar. Every event carries the stamp of the moment
- *  it happened, so the tab can merge them with the turns into one timeline. */
+/** One of {@link SESSION_EVENT_TYPES}: the runtime list is the single source, so a
+ *  new kind cannot be typed without also being accepted by the sidecar guard. */
+export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number];
+
+/** One recorded session event (a plan verdict, a choice verdict, a fold, a
+ *  subagent spawn) kept in the session's UI-events sidecar. Every event carries
+ *  the stamp of the moment it happened, so the tab can merge them with the turns
+ *  into one timeline. */
 export interface SessionEventRecord {
   /** Stable id: the upsert key, so a settle can refine an event it already wrote. */
   id: string;

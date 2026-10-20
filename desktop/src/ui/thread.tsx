@@ -30,10 +30,10 @@ import {
   SubagentCard,
   ToolCard,
   WarningCard,
-  extractSubagentDetails,
   extractSubagentResultMeta,
   isSubagentTool,
   parseEditResult,
+  subagentCallDetails,
 } from "./cards";
 import { ApprovalCard, TaskCard, type TaskStepView } from "./extra-cards";
 import { PdfPreview } from "./pdf-preview";
@@ -487,7 +487,7 @@ export const AssistantMsg = memo(function AssistantMsg({
               (i === blockingToolIndex && !isSubagent && !isShell));
           if (awaitingGate) return null;
           if (isSubagent) {
-            const { task, skillName, model } = extractSubagentDetails(s.name, s.args);
+            const { instruction, skillName, model } = subagentCallDetails(s.name, s.args);
             const status: "running" | "done" | "failed" =
               s.result !== undefined ? (s.ok === false ? "failed" : "done") : "running";
             const resultMeta = extractSubagentResultMeta(s.result);
@@ -497,7 +497,9 @@ export const AssistantMsg = memo(function AssistantMsg({
                 : [
                     {
                       runId: s.callId,
-                      task,
+                      // The row headline needs SOMETHING: an argless spawn shows the
+                      // skill it ran instead of an empty task line.
+                      task: instruction || skillName,
                       skillName,
                       model: resultMeta.model ?? model,
                       status,
@@ -524,6 +526,7 @@ export const AssistantMsg = memo(function AssistantMsg({
                 name={skillName}
                 runs={effectiveRuns}
                 args={s.args}
+                anchor={callAnchor(s.callId).anchor}
                 result={s.result}
                 ok={s.ok}
                 durationMs={s.durationMs}

@@ -1019,21 +1019,36 @@ export function isSubagentTool(name: string, args?: string): boolean {
   return false;
 }
 
-export function extractSubagentDetails(
+/** The instruction a subagent call was created with, verbatim. A progress event
+ *  carries only a cut-down preview of it (30 chars from the child loop, 120 from
+ *  the desktop projection), so the card reads the real text back from the call's
+ *  own args: an instruction the model wrote is shown whole. */
+export function subagentInstruction(args?: string): string {
+  if (!args) return "";
+  try {
+    const parsed = JSON.parse(args) as Record<string, unknown>;
+    if (typeof parsed.task === "string") return parsed.task;
+    if (typeof parsed.arguments === "string") return parsed.arguments;
+    if (typeof parsed.query === "string") return parsed.query;
+  } catch {
+    // Not JSON: the args ARE the instruction, kept as written.
+  }
+  return args;
+}
+
+/** What a subagent call itself carried: the instruction verbatim (no preview, no
+ *  display fallback), the skill it named, and the model it pinned. Display code adds
+ *  its own fallback; recording code must not, or an argless call would log its skill
+ *  name as if it were the task. */
+export function subagentCallDetails(
   name: string,
   args?: string,
-): { task: string; skillName: string; model?: string } {
-  let task = "";
+): { instruction: string; skillName: string; model?: string } {
   let skillName = name;
   let model: string | undefined;
   if (args) {
     try {
       const parsed = JSON.parse(args);
-      if (typeof parsed.task === "string") task = parsed.task;
-      else if (typeof parsed.arguments === "string") task = parsed.arguments;
-      else if (typeof parsed.query === "string") task = parsed.query;
-      else task = args;
-
       if (name === "run_skill" && typeof parsed.name === "string") {
         skillName = parsed.name;
       }
@@ -1041,11 +1056,37 @@ export function extractSubagentDetails(
         model = parsed.model;
       }
     } catch {
-      task = args;
+      // Not JSON: the args ARE the instruction, resolved below.
     }
   }
-  const displayTask = task.length > 120 ? `${task.slice(0, 120)}…` : task;
-  return { task: displayTask || name, skillName, model };
+  return { instruction: subagentInstruction(args), skillName, model };
+}
+
+/** Whether `preview` is only the head of `full`. A spawn's start event carries the
+ *  whole task and every later progress event carries a cut-down prefix of it, so this
+ *  one predicate decides which of two candidate texts is the run's instruction: it
+ *  keeps a late preview from replacing the whole thing, and keeps a foreign
+ *  instruction (another call's args) from being shown as this run's task. */
+export function isSubagentTaskPreview(preview: string, full: string): boolean {
+  if (!preview || !full || preview.length >= full.length) return false;
+  // Both cut paths drop the tail without a marker or with a single "…"; either way
+  // the remainder is a literal prefix of the full text.
+  return full.startsWith(preview.endsWith("…") ? preview.slice(0, -1) : preview);
+}
+
+/** The fullest known task text for a run: a later event may arrive with only a
+ *  preview of what an earlier one already had whole. */
+export function fullerSubagentTask(previous: string | undefined, next: string): string {
+  if (previous === undefined) return next;
+  return isSubagentTaskPreview(next, previous) ? previous : next;
+}
+
+/** What a run row shows as its instruction: the call's own text when the row's
+ *  `task` is only the wire's cut-down head of it. */
+function runInstruction(preview: string, instruction: string): string {
+  if (!instruction) return preview;
+  if (!preview) return instruction;
+  return isSubagentTaskPreview(preview, instruction) ? instruction : preview;
 }
 
 export type SubagentResultMeta = {
@@ -1118,9 +1159,11 @@ function SubagentActivityRows({ run }: { run: import("../App").SubagentRunProgre
 export function SubagentCard({
   name,
   runs,
+  args,
   result,
   ok,
   durationMs,
+  anchor,
 }: {
   name: string;
   runs: import("../App").SubagentRunProgress[];
@@ -1128,8 +1171,14 @@ export function SubagentCard({
   result?: string;
   ok?: boolean;
   durationMs?: number;
+  /** `call:<id>` of the tool call that spawned this run, so the Events tab lands
+   *  on this card rather than on its turn's prompt bubble. */
+  anchor?: string;
 }) {
   useLang();
+  // The rows' own `task` is a wire-side preview; the instruction the child was
+  // actually given is still on the call's args, so it is shown whole.
+  const instruction = useMemo(() => subagentInstruction(args), [args]);
   const done = runs.filter((run) => run.status === "done").length;
   const models = [...new Set(runs.flatMap((run) => (run.model ? [run.model] : [])))];
   const contexts = runs.flatMap((run) =>
@@ -1168,6 +1217,7 @@ export function SubagentCard({
       kind="subagent"
       name={name}
       copyText={result ?? ""}
+      anchor={anchor}
       meta={
         <>
           {models.length > 0 ? <span className="meta-model">{models.join(" + ")}</span> : null}
@@ -1196,7 +1246,7 @@ export function SubagentCard({
           <div className="sub-row" key={run.runId}>
             <span className="av">AI</span>
             <div className="what">
-              <div>{sanitizeTerminalText(run.task)}</div>
+              <div>{sanitizeTerminalText(runInstruction(run.task, instruction))}</div>
               <div className="role">
                 {run.skillName ?? "subagent"}
                 {run.model ? ` · ${run.model}` : ""}

@@ -28,7 +28,13 @@ import {
   MODEL_CATALOG_GROUP_LABELS,
   deriveModelCatalog,
 } from "../model-catalog";
-import type { EditMode, ReasoningEffort, UserImageAttachment } from "../protocol";
+import {
+  BUILTIN_QUICK_SENDS,
+  type EditMode,
+  type QuickSend,
+  type ReasoningEffort,
+  type UserImageAttachment,
+} from "../protocol";
 import { AudioRecorder } from "../voice/audio-recorder";
 import { getSelectedAudioInputDeviceId } from "../voice/device";
 import { speechTranscriber } from "../voice/transcriber";
@@ -174,8 +180,9 @@ export function Composer({
   draft: string;
   setDraft: React.Dispatch<React.SetStateAction<string>>;
   onSend: (text?: string | QueuedSend) => void;
-  /** Every selectable quick send (built-ins + customs) — drives the quick-send dropdown. */
-  quickSends?: { id: string; message: string; shorthand: string }[];
+  /** Every selectable quick send (built-ins + customs) — drives the quick-send dropdown,
+   *  the only surface that renders `shorthand`; sends and chat carry `message`. */
+  quickSends?: QuickSend[];
   /** The row the dropdown marks as the composer's default. */
   activeQuickSendId?: string;
   /** Persist a newly picked default, called alongside the send itself. */
@@ -346,40 +353,39 @@ export function Composer({
     setDraft(e.target.value);
   };
 
-  const recordSendAndReset = () => {
-    const trimmed = draft.trim();
+  /** Recall history shared by typed sends and quick sends: trimmed, last 100 kept. */
+  const rememberInHistory = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
     historyRef.current.push(trimmed);
     if (historyRef.current.length > 100) historyRef.current.shift();
     setBrowseIdx(-1);
   };
 
-  const runQuickSend = (action: { message: string; shorthand: string }) => {
+  // Only the dropdown renders a quick send's shorthand; everything that leaves
+  // the composer (chat bubble, queued chip, recall history) carries `message`,
+  // because that is the text the model actually receives.
+  const runQuickSend = (action: { message: string }) => {
     if (disabled) return;
-    const trimmed = draft.trim();
-    if (trimmed) {
-      historyRef.current.push(trimmed);
-    }
-    historyRef.current.push(action.shorthand);
-    if (historyRef.current.length > 100) {
-      historyRef.current.splice(0, historyRef.current.length - 100);
-    }
-    setBrowseIdx(-1);
+    // The draft stays recallable; the send is remembered as the message (never
+    // the shorthand), so ↑ can't resurrect a truncated command.
+    rememberInHistory(draft);
+    rememberInHistory(action.message);
     setDraft("");
+    const send: QueuedSend = { text: action.message };
     if (busy) {
       if (onQueueWhileBusy) {
-        onQueueWhileBusy({ text: action.message, echo: action.shorthand });
+        onQueueWhileBusy(send);
       }
     } else {
-      onSend({ text: action.message, echo: action.shorthand });
+      onSend(send);
     }
   };
 
-  // Built-ins are always present, so the dropdown is never empty; the fallback
-  // only covers a daemon that predates the quick-sends list.
-  const quickSendOptions =
-    quickSends && quickSends.length > 0
-      ? quickSends
-      : [{ id: "proceed", message: "proceed", shorthand: "proceed" }];
+  // The daemon always sends the built-ins with the customs, so the fallback only
+  // covers a daemon that predates the quick-sends list.
+  const quickSendOptions: QuickSend[] =
+    quickSends && quickSends.length > 0 ? quickSends : [...BUILTIN_QUICK_SENDS];
 
   const navigateHistory = (dir: -1 | 1) => {
     const hist = historyRef.current;
@@ -547,7 +553,7 @@ export function Composer({
           onQueueWhileBusy(text, hasPendingImages ? [...pendingImages] : undefined);
         }
       } else if (!disabled && (draft.trim() || (pendingImages && pendingImages.length > 0))) {
-        recordSendAndReset();
+        rememberInHistory(draft);
         onSend();
       }
     }
@@ -580,11 +586,10 @@ export function Composer({
             </span>
             {queuedSends.map((raw, i) => {
               const item = typeof raw === "string" ? { text: raw } : raw;
-              const displayText = item.echo || item.text;
               const images = item.images;
               const hasImages = Boolean(images && images.length > 0);
               const tooltip = [
-                item.echo && item.echo !== item.text ? `${item.echo}: ${item.text}` : item.text,
+                item.text,
                 hasImages && images
                   ? `(${images.length} image${images.length > 1 ? "s" : ""})`
                   : null,
@@ -609,13 +614,13 @@ export function Composer({
                       ))}
                     </span>
                   ) : null}
-                  {displayText ? (
+                  {item.text ? (
                     <span
                       className={editQueued ? "text editable" : "text"}
                       onClick={editQueued}
                       onKeyDown={editQueued ? activationHandler(editQueued) : undefined}
                     >
-                      {displayText}
+                      {item.text}
                     </span>
                   ) : null}
                   {editQueued ? (
@@ -962,7 +967,7 @@ export function Composer({
                 disabled={disabled || !draft.trim()}
                 onClick={() => {
                   if (!disabled && draft.trim()) {
-                    recordSendAndReset();
+                    rememberInHistory(draft);
                     onSend();
                   }
                 }}

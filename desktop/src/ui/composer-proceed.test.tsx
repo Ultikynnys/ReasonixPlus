@@ -85,7 +85,7 @@ describe("Composer quick send dropdown", () => {
     fireEvent.click(screen.getByText("deploy"));
 
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend).toHaveBeenCalledWith({ text: "deploy to production", echo: "deploy" });
+    expect(onSend).toHaveBeenCalledWith({ text: "deploy to production" });
   });
 
   it("marks the persisted default row active in the dropdown", () => {
@@ -117,10 +117,10 @@ describe("Composer quick send dropdown", () => {
 
     expect(onPickQuickSend).toHaveBeenCalledWith("deploy");
     // Marking the default is a side effect; the pick still sends.
-    expect(onSend).toHaveBeenCalledWith({ text: "deploy to production", echo: "deploy" });
+    expect(onSend).toHaveBeenCalledWith({ text: "deploy to production" });
   });
 
-  it("clears the draft and echoes the shorthand when a quick send is picked", () => {
+  it("clears the draft and sends the full message when a quick send is picked", () => {
     const onSend = vi.fn();
     const setDraft = vi.fn();
     render(
@@ -137,23 +137,48 @@ describe("Composer quick send dropdown", () => {
     fireEvent.click(screen.getByText("commit and push"));
 
     expect(setDraft).toHaveBeenCalledWith("");
-    expect(onSend).toHaveBeenCalledWith({
-      text: "commit and push all changes",
-      echo: "commit and push",
-    });
+    expect(onSend).toHaveBeenCalledWith({ text: "commit and push all changes" });
   });
 
-  it("falls back to a proceed option when no quick sends are supplied", () => {
+  it("recalls the full message, not the shorthand, after a quick send", () => {
+    const store = createComposerDraft();
+    const sent = vi.fn();
+    function Conversation() {
+      const textareaRef = useRef<HTMLTextAreaElement>(null);
+      return (
+        <StoredComposer
+          {...baseProps}
+          draftStore={store}
+          textareaRef={textareaRef}
+          quickSends={QUICK_SENDS}
+          onSend={sent}
+        />
+      );
+    }
+    render(<Conversation />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Quick send" }));
+    fireEvent.click(screen.getByText("commit and push"));
+    expect(sent).toHaveBeenCalledWith({ text: "commit and push all changes" });
+
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("");
+    textarea.setSelectionRange(0, 0);
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("commit and push all changes");
+  });
+
+  it("falls back to the shared built-in list when no quick sends are supplied", () => {
     const onSend = vi.fn();
     render(<Composer {...baseProps} onSend={onSend} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Quick send" }));
-    // The fallback row renders "proceed" as both label and message.
-    const options = screen.getAllByText("proceed");
-    expect(options.length).toBeGreaterThanOrEqual(1);
+    // BUILTIN_QUICK_SENDS is the single source of truth here, so the fallback
+    // offers every built-in rather than a hand-copied row.
+    expect(screen.getByText("commit and push all changes")).toBeTruthy();
 
-    fireEvent.click(options[0]!);
-    expect(onSend).toHaveBeenCalledWith({ text: "proceed", echo: "proceed" });
+    fireEvent.click(screen.getAllByText("proceed")[0]!);
+    expect(onSend).toHaveBeenCalledWith({ text: "proceed" });
   });
 
   it("is enabled when draft is empty (unlike regular send button)", () => {
@@ -193,7 +218,7 @@ describe("Composer quick send dropdown", () => {
 
     expect(onSend).not.toHaveBeenCalled();
     expect(onQueueWhileBusy).toHaveBeenCalledTimes(1);
-    expect(onQueueWhileBusy).toHaveBeenCalledWith({ text: "deploy to production", echo: "deploy" });
+    expect(onQueueWhileBusy).toHaveBeenCalledWith({ text: "deploy to production" });
   });
 
   it("marks the configured quick send as the active row", () => {
@@ -226,7 +251,7 @@ describe("Composer quick send dropdown", () => {
     fireEvent.click(screen.getByText("deploy"));
 
     expect(onPickQuickSend).toHaveBeenCalledWith("deploy");
-    expect(onSend).toHaveBeenCalledWith({ text: "deploy to production", echo: "deploy" });
+    expect(onSend).toHaveBeenCalledWith({ text: "deploy to production" });
   });
 });
 

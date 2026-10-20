@@ -2124,6 +2124,98 @@ describe("Desktop App reducer — Events tab recordings", () => {
     expect(next.sessionEvents.map((event) => event.id)).toEqual(["plan-1"]);
   });
 
+  it("records a subagent spawn as an event of its own, with the task it was given", () => {
+    const task = "Survey every Events-tab consumer and report what each one renders.";
+    const state = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "tool.intent",
+        id: 1,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 2,
+        callId: "tc-7",
+        name: "explore",
+        args: JSON.stringify({ task }),
+      },
+    });
+    expect(state.sessionEvents).toEqual([
+      expect.objectContaining({
+        id: "subagent-tc-7",
+        type: "subagent",
+        outcome: "started",
+        label: "explore",
+        // The instruction, whole: the row and the card are the only record of
+        // what the child was asked to do.
+        detail: task,
+        anchor: "call:tc-7",
+        turn: 2,
+      }),
+    ]);
+  });
+
+  it("keeps one subagent row when the same spawn is re-announced", () => {
+    const intent = {
+      type: "tool.intent",
+      id: 1,
+      ts: "2026-05-27T00:00:00.000Z",
+      turn: 1,
+      callId: "tc-1",
+      name: "review",
+      args: JSON.stringify({ task: "review the diff" }),
+    } as const;
+    const once = reduce(initialState(), { t: "incoming", event: intent });
+    const twice = reduce(once, { t: "incoming", event: { ...intent, id: 2 } });
+    expect(twice.sessionEvents).toHaveLength(1);
+  });
+
+  it("settles the subagent row with the verdict its card carries", () => {
+    const spawned = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "tool.intent",
+        id: 1,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        callId: "tc-3",
+        name: "explore",
+        args: JSON.stringify({ task: "find the callers" }),
+      },
+    });
+    const started = spawned.sessionEvents[0]?.ts;
+    const settled = reduce(spawned, {
+      t: "incoming",
+      event: {
+        type: "tool.result",
+        id: 2,
+        ts: "2026-05-27T00:00:01.000Z",
+        turn: 1,
+        callId: "tc-3",
+        ok: false,
+        output: "ERROR: gave up",
+      },
+    });
+    expect(settled.sessionEvents).toHaveLength(1);
+    expect(settled.sessionEvents[0]).toMatchObject({ type: "subagent", outcome: "failed" });
+    // The row keeps the stamp of the spawn: it did not happen a second time.
+    expect(settled.sessionEvents[0]?.ts).toBe(started);
+  });
+
+  it("records no event for a tool call that is not a subagent", () => {
+    const state = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "tool.intent",
+        id: 1,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        callId: "tc-9",
+        name: "read_file",
+        args: '{"path":"src/App.tsx"}',
+      },
+    });
+    expect(state.sessionEvents).toEqual([]);
+  });
+
   it("adopts the loaded session's own events, and starts clean when cleared", () => {
     const loaded = reduce(initialState(), {
       t: "incoming",
@@ -4321,6 +4413,58 @@ describe("Desktop App reducer — subagent progress", () => {
       expect.objectContaining({ kind: "thinking", text: "Third line" }),
       expect.objectContaining({ kind: "thinking", text: "Fourth line updated" }),
     ]);
+  });
+  it("keeps the instruction a spawn started with when later events carry a preview", () => {
+    // The start event carries the child's whole instruction; every later
+    // progress event repeats only its head, which must not replace it.
+    const instruction =
+      "Diagnose a Unicorn emulation crash in this repo and prescribe the exact fix, working from the project root and running the differential harness first.";
+    const base = {
+      ...initialState(),
+      messages: [
+        {
+          kind: "assistant" as const,
+          turn: 1,
+          pending: true,
+          segments: [
+            {
+              kind: "tool" as const,
+              callId: "tc-1",
+              name: "explore",
+              args: JSON.stringify({ task: instruction }),
+              startedAt: 1,
+            },
+          ],
+        },
+      ],
+    };
+    const common = {
+      type: "subagent.progress" as const,
+      ts: "2026-06-01T00:00:00.000Z",
+      turn: 1,
+      runId: "run-task",
+      parentCallId: "tc-1",
+    };
+    let state = reduce(base, {
+      t: "incoming",
+      event: { ...common, id: 1, action: "start", task: instruction },
+    });
+    state = reduce(state, {
+      t: "incoming",
+      event: {
+        ...common,
+        id: 2,
+        action: "stream",
+        task: `${instruction.slice(0, 30)}…`,
+        outputChars: 10,
+      },
+    });
+
+    const assistant = state.messages[0];
+    if (assistant?.kind !== "assistant") throw new Error("expected assistant");
+    const run = (assistant.segments[0] as { subagentRuns?: Array<{ task: string }> })
+      .subagentRuns?.[0];
+    expect(run?.task).toBe(instruction);
   });
 });
 

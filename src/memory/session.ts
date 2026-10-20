@@ -19,6 +19,7 @@ import { dirname, join, posix as posixPath, win32 as win32Path } from "node:path
 import {
   DAY_MS,
   type PersistedNotice,
+  SESSION_EVENT_TYPES,
   type SessionEventRecord,
   messageOf,
   parseSessionTimestamp,
@@ -431,6 +432,10 @@ function isPersistedNotice(value: unknown): value is PersistedNotice {
   );
 }
 
+/** The recorded event kinds this build can read back, looked up over the wire list so
+ *  a new kind cannot be added to the union without also passing the guard. */
+const SESSION_EVENT_TYPE_SET: ReadonlySet<unknown> = new Set(SESSION_EVENT_TYPES);
+
 /** Shape guard for one recorded session event. The optional fields are checked
  *  too: the tab renders them as text, so a hand-edited number would crash it. */
 function isSessionEventRecord(value: unknown): value is SessionEventRecord {
@@ -440,7 +445,7 @@ function isSessionEventRecord(value: unknown): value is SessionEventRecord {
   const optionalTextList = (field: unknown) =>
     field === undefined || (Array.isArray(field) && field.every((row) => typeof row === "string"));
   return (
-    (v.type === "plan" || v.type === "choice" || v.type === "compaction") &&
+    SESSION_EVENT_TYPE_SET.has(v.type) &&
     typeof v.ts === "number" &&
     Number.isFinite(v.ts) &&
     typeof v.outcome === "string" &&

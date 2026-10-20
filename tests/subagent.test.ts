@@ -2,6 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { DeepSeekClient, Usage } from "../src/client.js";
+import { bridgeMcpTools } from "../src/mcp/registry.js";
 import { ToolRegistry } from "../src/tools.js";
 import {
   NEVER_INHERITED_TOOLS,
@@ -89,9 +90,9 @@ describe("registerSubagentTool", () => {
     );
     expect(events[0]?.kind).toBe("start");
     expect(events[events.length - 1]?.kind).toBe("end");
-    // task preview truncated to 30 chars + ellipsis
-    expect(events[0]?.task).toMatch(/…$/);
-    expect(events[0]?.task.length).toBeLessThanOrEqual(31);
+    // The start event carries the instruction WHOLE: the card that shows the
+    // run must show what the child was actually asked to do.
+    expect(events[0]?.task).toBe("this task is over thirty characters long");
     // end event carries the summary + turn count
     const end = events[events.length - 1]!;
     expect(end.summary).toBe("done");
@@ -797,6 +798,33 @@ describe("forkRegistryWithAllowList", () => {
     expect(child.has("ghost")).toBe(false);
     expect(child.size).toBe(1);
   });
+
+  it("keeps every bridged MCP tool the parent has, allow-listed or not", () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "read_file", readOnly: true, fn: () => "text" });
+    parent.register({ name: "edit_file", fn: () => "edited" });
+    parent.register({ name: "unreal_mcp_spawn_actor", bridged: true, fn: () => "spawned" });
+    parent.register({ name: "playwright_browser_click", bridged: true, fn: () => "clicked" });
+    // A skill allow-list that names none of the MCP tools, like review/security-review.
+    const child = forkRegistryWithAllowList(parent, new Set(["read_file"]), new Set());
+    expect(child.has("read_file")).toBe(true);
+    // Not allow-listed and not bridged: still scoped out.
+    expect(child.has("edit_file")).toBe(false);
+    // MCP tools come along: the child sees the user's servers like the parent does.
+    expect(child.has("unreal_mcp_spawn_actor")).toBe(true);
+    expect(child.has("playwright_browser_click")).toBe(true);
+  });
+
+  it("still applies alsoExclude to a bridged tool", () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "playwright_browser_click", bridged: true, fn: () => "clicked" });
+    const child = forkRegistryWithAllowList(
+      parent,
+      new Set(["read_file"]),
+      new Set(["playwright_browser_click"]),
+    );
+    expect(child.has("playwright_browser_click")).toBe(false);
+  });
 });
 
 describe("spawnSubagent allowedTools", () => {
@@ -856,5 +884,60 @@ describe("spawnSubagent allowedTools", () => {
     expect(events.map((e) => e.kind)).toEqual(["start", "end"]);
     expect(events[1]?.error).toContain("ghost");
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("advertises the parent's bridged MCP tools to an allow-listed child", async () => {
+    // The wire tool list IS the child registry's specs, so capturing the request
+    // proves what the subagent was actually offered.
+    const parent = new ToolRegistry();
+    parent.register({ name: "read_file", readOnly: true, fn: () => "text" });
+    parent.register({ name: "write_file", fn: () => "written" });
+    await bridgeMcpTools(
+      {
+        listTools: async () => ({
+          tools: [
+            {
+              name: "spawn_actor",
+              description: "spawn an actor in the open level",
+              inputSchema: { type: "object", properties: {} },
+            },
+          ],
+        }),
+        callTool: async () => ({ content: [{ type: "text", text: "spawned" }] }),
+      } as never,
+      { registry: parent, namePrefix: "unreal_mcp_" },
+    );
+    expect(parent.get("unreal_mcp_spawn_actor")?.bridged).toBe(true);
+
+    const seen: string[][] = [];
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      fetch: vi.fn(async (_url: never, init: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        const tools = (body.tools ?? []) as Array<{ function: { name: string } }>;
+        seen.push(tools.map((t) => t.function.name));
+        const frames = [
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "fine" } }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+          "data: [DONE]\n\n",
+        ];
+        return new Response(new TextEncoder().encode(frames.join("")), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }) as never,
+    });
+    await spawnSubagent({
+      client,
+      parentRegistry: parent,
+      system: "test",
+      task: "test",
+      // The read-only built-in scoping: MCP tools still come along.
+      allowedTools: ["read_file"],
+    });
+
+    expect(seen[0]).toContain("read_file");
+    expect(seen[0]).not.toContain("write_file");
+    expect(seen[0]).toContain("unreal_mcp_spawn_actor");
   });
 });

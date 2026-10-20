@@ -19,7 +19,7 @@ export interface TranscriptRecord {
  *  the session's recorded events. */
 export type EventKind = "turn" | SessionEventType;
 
-/** One row: a turn read from the transcript, or a recorded gate/fold verdict.
+/** One row: a turn read from the transcript, or a recorded gate/fold/spawn.
  *  It carries every recorded field, so a field added to the record surfaces here
  *  (and in the merge below) without a second list to keep in step. */
 export interface SessionEvent extends Omit<SessionEventRecord, "type" | "label" | "outcome"> {
@@ -38,6 +38,7 @@ const KIND_LABEL: Record<EventKind, TKey> = {
   plan: "contextPanel.eventsKindPlan",
   choice: "contextPanel.eventsKindChoice",
   compaction: "contextPanel.eventsKindCompaction",
+  subagent: "contextPanel.eventsKindSubagent",
 };
 
 /** Wording for each verdict/trigger the recorder can produce. */
@@ -50,6 +51,9 @@ const OUTCOME_LABEL: Record<string, TKey> = {
   manual: "contextPanel.eventsOutcomeManual",
   auto: "contextPanel.eventsOutcomeAuto",
   overflow: "contextPanel.eventsOutcomeOverflow",
+  started: "contextPanel.eventsOutcomeStarted",
+  done: "contextPanel.eventsOutcomeDone",
+  failed: "contextPanel.eventsOutcomeFailed",
 };
 
 /** A row's headline is one line of context, not the whole message. */
@@ -92,8 +96,9 @@ export function turnEvents(messages: readonly TranscriptRecord[]): SessionEvent[
 }
 
 /** The session's timeline: turns read from the transcript plus the recorded
- *  verdicts and folds, ordered by when each happened. `Array#sort` is stable, so
- *  two events in the same millisecond keep the order they were written in. */
+ *  verdicts, folds and subagent spawns, ordered by when each happened.
+ *  `Array#sort` is stable, so two events in the same millisecond keep the order
+ *  they were written in. */
 export function sessionEvents(
   messages: readonly TranscriptRecord[],
   recorded: readonly SessionEventRecord[],

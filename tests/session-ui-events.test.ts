@@ -145,6 +145,22 @@ describe("per-session Events sidecar", () => {
     expect(loadSessionEvents("events-anchor")).toEqual([anchored]);
   });
 
+  it("keeps a subagent spawn with the instruction it was given", () => {
+    const spawn: SessionEventRecord = {
+      id: "subagent-tc-7",
+      type: "subagent",
+      ts: 1_700_000_120_000,
+      turn: 2,
+      outcome: "started",
+      label: "explore",
+      detail: "Survey the Events tab consumers, then report what each renders.",
+      anchor: "call:tc-7",
+    };
+    ensureSessionDir("events-demo");
+    writeSessionEvents("events-demo", [spawn]);
+    expect(loadSessionEvents("events-demo")).toEqual([spawn]);
+  });
+
   it("drops a row whose anchor is not text", () => {
     const dir = ensureSessionDir("bad-anchor");
     writeFileSync(

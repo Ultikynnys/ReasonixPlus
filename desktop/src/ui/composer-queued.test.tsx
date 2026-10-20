@@ -129,19 +129,12 @@ describe("Composer queued-sends row", () => {
     expect(onQueueWhileBusy).toHaveBeenCalledWith("check this image", pendingImages);
   });
 
-  it("renders shorthand echo in the chip and full text in tooltip when item has echo", () => {
-    renderQueued({
-      queuedSends: [
-        {
-          text: "commit and push all changes",
-          echo: "commit and push",
-        },
-      ],
-    });
+  it("renders the full queued message, never a quick-send shorthand", () => {
+    renderQueued({ queuedSends: [{ text: "commit and push all changes" }] });
 
-    expect(screen.getByText("commit and push")).toBeTruthy();
+    expect(screen.getByText("commit and push all changes")).toBeTruthy();
     const chip = document.querySelector(".composer-queue-chip");
-    expect(chip?.getAttribute("title")).toBe("commit and push: commit and push all changes");
+    expect(chip?.getAttribute("title")).toBe("commit and push all changes");
   });
 });
 

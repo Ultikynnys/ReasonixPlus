@@ -874,6 +874,7 @@ export const en = {
     eventsKindPlan: "Plan",
     eventsKindChoice: "Choice",
     eventsKindCompaction: "Compaction",
+    eventsKindSubagent: "Subagent",
     eventsKindColumn: "Type",
     eventsOptions: "Options offered",
     eventsSteps: "Plan steps",
@@ -889,6 +890,9 @@ export const en = {
     eventsOutcomeManual: "manual",
     eventsOutcomeAuto: "automatic",
     eventsOutcomeOverflow: "overflow",
+    eventsOutcomeStarted: "started",
+    eventsOutcomeDone: "completed",
+    eventsOutcomeFailed: "failed",
     rawTab: "Raw",
     rawTitle: "Raw context",
     rawHelp:

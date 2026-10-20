@@ -22,7 +22,7 @@ vi.mock("./cards", () => ({
   WarningCard: () => null,
   PreText: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   isSubagentTool: () => false,
-  extractSubagentDetails: () => ({ task: "", skillName: "" }),
+  subagentCallDetails: () => ({ instruction: "", skillName: "" }),
   extractSubagentResultMeta: () => ({}),
   parseEditResult: () => [],
 }));

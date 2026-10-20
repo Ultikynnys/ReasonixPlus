@@ -19,6 +19,8 @@ import {
   SubagentCard,
   ToolCard,
   extractSubagentResultMeta,
+  fullerSubagentTask,
+  isSubagentTaskPreview,
   isSubagentTool,
   parseEditResult,
 } from "./cards";
@@ -558,6 +560,62 @@ describe("SubagentCard — model visibility", () => {
 
     const resultEl = container.querySelector(".subagent-result");
     expect(resultEl?.textContent).toContain("Found 3 references in src/index.ts.");
+  });
+
+  it("shows the whole instruction the subagent was given, not a cut-down head", () => {
+    const task =
+      "Survey every Events-tab consumer and report, per consumer, which fields it renders and which it drops, then flag any field that no consumer reads at all.";
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        args={JSON.stringify({ task })}
+        // The wire only forwards a preview of the task; the card has the args.
+        runs={[{ ...run, task: `${task.slice(0, 30)}…` }]}
+      />,
+    );
+    const row = container.querySelector(".sub-row");
+    // The whole instruction, verbatim: nothing trimmed, nothing elided.
+    expect(row?.textContent).toContain(task);
+    expect(row?.textContent).not.toContain("…");
+  });
+
+  it("falls back to the run's own task when the card has no args", () => {
+    const { container } = render(<SubagentCard name="explore" runs={[run]} />);
+    expect(container.querySelector(".sub-row")?.textContent).toContain("Inspect quota rendering");
+  });
+
+  it("carries the spawn's anchor so the Events tab can land on the card", () => {
+    const { container } = render(<SubagentCard name="explore" runs={[run]} anchor="call:tc-7" />);
+    expect(container.querySelector(".card-wrap")?.getAttribute("data-anchor")).toBe("call:tc-7");
+  });
+
+  it("keeps a foreign instruction out of a run row", () => {
+    // The card may carry args from a different call than the run (progress events
+    // fall back to a sibling segment). A non-matching text must not be substituted.
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        args={JSON.stringify({ task: "Investigate the parser" })}
+        runs={[{ ...run, task: "Inspect quota rendering" }]}
+      />,
+    );
+    const text = container.querySelector(".sub-row")?.textContent ?? "";
+    expect(text).toContain("Inspect quota rendering");
+    expect(text).not.toContain("Investigate the parser");
+  });
+
+  it("ranks task previews with one shared rule", () => {
+    const full = "Diagnose the crash in suite_measure_group and prescribe the fix.";
+    // A cut-down head (either cut path) is recognised as a preview of the whole.
+    expect(isSubagentTaskPreview(`${full.slice(0, 30)}…`, full)).toBe(true);
+    expect(isSubagentTaskPreview(full.slice(0, 12), full)).toBe(true);
+    // A whole instruction, a longer text, or an unrelated one is not a preview.
+    expect(isSubagentTaskPreview(full, full)).toBe(false);
+    expect(isSubagentTaskPreview("something else entirely", full)).toBe(false);
+    expect(fullerSubagentTask(full, `${full.slice(0, 30)}…`)).toBe(full);
+    expect(fullerSubagentTask(undefined, "first")).toBe("first");
+    // A genuinely different (shorter) task replaces what we had: it is not a preview.
+    expect(fullerSubagentTask(full, "rerun the suite")).toBe("rerun the suite");
   });
 
   it("identifies subagent tool names correctly", () => {

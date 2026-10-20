@@ -14,6 +14,38 @@ function innerEvent(inner: NonNullable<SubagentEvent["inner"]>): SubagentEvent {
 }
 
 describe("desktop subagent progress projection", () => {
+  it("sends the instruction a spawn started with whole, and previews after it", () => {
+    const instruction = `Diagnose a Unicorn emulation crash in this repo and prescribe the exact fix. ${"Detail ".repeat(40)}`;
+    const start = projectSubagentEvent({
+      kind: "start",
+      runId: "sub-1",
+      task: instruction,
+      skillName: "explore",
+    });
+    // The card shows the child's task in full: the wire must not cut it.
+    expect(start?.task).toBe(instruction);
+    expect(start?.task.length).toBeGreaterThan(120);
+
+    // Later events repeat the task at progress rate, so those stay previews.
+    const later = projectSubagentEvent({
+      kind: "stream-progress",
+      runId: "sub-1",
+      task: `${instruction.slice(0, 30)}…`,
+      outputChars: 10,
+    });
+    expect(later?.task).toBe(`${instruction.slice(0, 30)}…`);
+  });
+
+  it("still redacts credentials in the full task", () => {
+    const start = projectSubagentEvent({
+      kind: "start",
+      runId: "sub-1",
+      task: 'Fix it. curl -H "Authorization: Bearer sk-live-abc123" https://example.test',
+    });
+    expect(start?.task).toContain("Fix it.");
+    expect(start?.task).not.toContain("sk-live-abc123");
+  });
+
   it("projects lifecycle and monotonic counters", () => {
     expect(
       projectSubagentEvent({

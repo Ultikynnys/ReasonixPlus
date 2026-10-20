@@ -159,7 +159,7 @@ const SUBAGENT_BASE_SYSTEM = `You are a Reasonix+ subagent. The parent agent spa
 
 Rules:
 - Stay on the task you were given. Do not expand scope.
-- Use tools as needed. You share the parent's sandbox + safety rules.
+- Use tools as needed, including the parent's MCP tools (bridged names are prefixed with the server name). You share its sandbox and safety rules.
 - When you're done, your final assistant message is the only thing the parent will see: make it complete and self-contained. Always state your findings, conclusion, and reason for stopping. Never end silently. No follow-up offers, no questions, no "let me know if you need more."
 - Prefer one clear, distilled answer over a long log of what you tried.
 
@@ -228,6 +228,7 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   const sessionName = opts.resumeSession ?? `subagent-${runId}-${timestampSuffix()}`;
 
   const startedAt = Date.now();
+  /** Later events repeat it, so they carry a preview; START carries it whole. */
   const taskPreview = opts.task.length > 30 ? `${opts.task.slice(0, 30)}…` : opts.task;
   const emit = (event: Omit<SubagentEvent, "parentCallId" | "parentTurn">): void => {
     sink?.current?.({
@@ -239,7 +240,7 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   emit({
     kind: "start",
     runId,
-    task: taskPreview,
+    task: opts.task,
     skillName,
     model,
     iter: 0,
@@ -809,10 +810,14 @@ export function forkRegistryWithAllowList(
   const child = new ToolRegistry({ rateLimit: parent.rateLimitPolicy });
   for (const spec of parent.specs()) {
     const name = spec.function.name;
-    if (!allow.has(name)) continue;
     if (alsoExclude.has(name)) continue;
     const def = parent.get(name);
     if (!def) continue;
+    // A bridged MCP tool is the session's capability surface, not a tool this build
+    // defines: a skill's allow-list narrows the built-in set and must not take the
+    // user's MCP servers away from the child. Every subagent then sees the same MCP
+    // tools the main agent does.
+    if (!allow.has(name) && def.bridged !== true) continue;
     child.register(def);
   }
   if (parent.planMode) child.setPlanMode(true);

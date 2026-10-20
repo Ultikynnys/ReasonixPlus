@@ -665,6 +665,12 @@ export function redactDesktopDiagnosticMessage(raw: string, max = 2000): string 
   return redactDiagnosticText(raw, max);
 }
 
+/** Redacted but uncut: for the few payloads whose whole point is the full text (a
+ *  spawn's instruction), where the diagnostic default would silently shorten it. */
+function redactWholeMessage(raw: string): string {
+  return redactDiagnosticText(raw, Number.MAX_SAFE_INTEGER);
+}
+
 type SubagentProgressPayload = Omit<SubagentProgressEvent, "id" | "ts" | "turn" | "type">;
 
 /** Allowlisted projection for the desktop wire. Assistant text, reasoning deltas, and tool results are omitted. */
@@ -672,7 +678,13 @@ export function projectSubagentEvent(ev: SubagentEvent): SubagentProgressPayload
   const base = {
     runId: ev.runId,
     ...(ev.parentCallId ? { parentCallId: ev.parentCallId } : {}),
-    task: redactDesktopDiagnosticMessage(ev.task, 120),
+    // A spawn's start carries the instruction whole: the card shows the child's
+    // task in full, so redaction is the only thing that may rewrite it. Later
+    // events repeat it, and those stay previews.
+    task:
+      ev.kind === "start"
+        ? redactWholeMessage(ev.task)
+        : redactDesktopDiagnosticMessage(ev.task, 120),
     ...(ev.skillName ? { skillName: redactDesktopDiagnosticMessage(ev.skillName, 80) } : {}),
     ...(ev.model ? { model: redactDesktopDiagnosticMessage(ev.model, 80) } : {}),
     ...(ev.iter !== undefined ? { iter: ev.iter } : {}),

@@ -184,6 +184,9 @@ export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string 
       },
     },
     readOnly: env.readOnlyTool?.(stableTool.name) || undefined,
+    // Marks the tool as MCP-provided so subagent registry forks keep it even when a
+    // skill scopes the child to an explicit `allowed-tools` list.
+    bridged: true,
     fn: async (args: Record<string, unknown>, ctx) => {
       const timeoutSec = args[timeoutKey];
       if (

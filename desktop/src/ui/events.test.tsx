@@ -114,6 +114,28 @@ describe("sessionEvents", () => {
   it("skips a record with no usable stamp", () => {
     expect(sessionEvents([], [planEvent({ ts: Number.NaN })])).toEqual([]);
   });
+
+  it("carries a subagent spawn with the instruction it was given", () => {
+    const [spawn] = sessionEvents([], [
+      {
+        id: "subagent-tc-7",
+        type: "subagent",
+        ts: 10,
+        turn: 1,
+        outcome: "started",
+        label: "explore",
+        detail: "Survey the Events tab consumers.",
+        anchor: "call:tc-7",
+      },
+    ]);
+    expect(spawn).toMatchObject({
+      kind: "subagent",
+      outcome: "started",
+      label: "explore",
+      detail: "Survey the Events tab consumers.",
+      anchor: "call:tc-7",
+    });
+  });
 });
 
 describe("EventsPanel", () => {
@@ -326,6 +348,39 @@ describe("EventsPanel", () => {
     // No count/filter bar: the type is each row's own tag.
     expect(labels).toEqual(["User", "Plan", "Choice", "User"]);
     expect(document.querySelector(".ctx-evt-types")).toBeNull();
+  });
+
+  it("shows a subagent spawn as its own row, tagged and jumpable", () => {
+    const onJump = vi.fn();
+    render(
+      <EventsPanel
+        messages={[]}
+        events={[
+          {
+            id: "subagent-tc-7",
+            type: "subagent",
+            ts: 1_000,
+            turn: 1,
+            outcome: "started",
+            label: "explore",
+            detail: "Survey the Events tab consumers.",
+            anchor: "call:tc-7",
+          },
+        ]}
+        onJump={onJump}
+      />,
+    );
+    const row = document.querySelector('.ctx-evt[data-kind="subagent"]') as HTMLElement;
+    expect(row.querySelector(".ctx-evt-kind")?.textContent).toBe("Subagent");
+    expect(row.querySelector(".ctx-evt-label")?.textContent).toBe("started · explore");
+    fireEvent.click(within(row).getByRole("button", { name: "Jump to this event" }));
+    expect(onJump).toHaveBeenCalledWith({ turn: 1, anchor: "call:tc-7" });
+    // The instruction is the row's body: a spawn's task is the point of the row.
+    fireEvent.click(within(row).getByRole("button", { name: "Show event details" }));
+    const details = Array.from(document.querySelectorAll(".ctx-evt-detail")).map(
+      (el) => el.textContent,
+    );
+    expect(details).toContain("Survey the Events tab consumers.");
   });
 
   it("says so when a session has nothing recorded yet", () => {

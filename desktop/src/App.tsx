@@ -128,9 +128,11 @@ import { AboutModal } from "./ui/about";
 import {
   NoticeCard,
   type NoticeSeverity,
+  fullerSubagentTask,
   isSubagentTool,
   noticeName,
   parseEditResult,
+  subagentCallDetails,
 } from "./ui/cards";
 import { StoredComposer as Composer } from "./ui/composer";
 import { createComposerDraft } from "./ui/composer-draft";
@@ -514,8 +516,6 @@ type MentionPreviewState = {
 
 export type QueuedSend = {
   text: string;
-  /** Short form shown in the chat when `text` is long (quick sends). Defaults to text. */
-  echo?: string;
   images?: { id: string; thumbnail: string; wire?: UserImageAttachment }[];
 };
 
@@ -827,6 +827,55 @@ function recordSessionEvent(
  *  settle of one fold address the same row. */
 function compactionEventId(noticeId: string): string {
   return `compaction-${noticeId}`;
+}
+
+/** A subagent spawn's event id, derived from its tool call, so the row written
+ *  when the call is created and the verdict that settles it are ONE row. */
+function subagentEventId(callId: string): string {
+  return `subagent-${callId}`;
+}
+
+/** Record a subagent spawn: what it was asked to do, and the card it became.
+ *  A spawn outlives the turn that commissioned it (the child keeps working
+ *  after the parent's card scrolls away), so the timeline keeps it. */
+function recordSubagentSpawn(
+  state: Pick<State, "messages" | "sessionEvents">,
+  turn: number,
+  callId: string,
+  name: string,
+  args: string,
+): SessionEventRecord[] {
+  const { instruction, skillName } = subagentCallDetails(name, args);
+  // A re-announced spawn keeps the stamp and turn of the row it already wrote, so
+  // the timeline does not shuffle under the reader.
+  const existing = state.sessionEvents.find((event) => event.id === subagentEventId(callId));
+  return recordEvent(
+    state,
+    {
+      id: subagentEventId(callId),
+      type: "subagent",
+      outcome: "started",
+      label: skillName,
+      // Only a real instruction is worth keeping: an argless call must not record
+      // its skill name as if it were the task.
+      ...(instruction ? { detail: instruction } : {}),
+      // The subagent card itself, not the prompt that started the turn.
+      ...callAnchor(callId),
+    },
+    { ts: existing?.ts ?? writeStamp(), turn: existing?.turn ?? turn },
+  );
+}
+
+/** Settle a subagent's Events row with the verdict its card carries: same row,
+ *  same stamp, because the spawn did not happen twice. */
+function settleSubagentEvent(
+  state: Pick<State, "messages" | "sessionEvents">,
+  callId: string,
+  ok: boolean,
+): SessionEventRecord[] {
+  const event = state.sessionEvents.find((existing) => existing.id === subagentEventId(callId));
+  if (!event) return state.sessionEvents;
+  return recordSessionEvent(state.sessionEvents, { ...event, outcome: ok ? "done" : "failed" });
 }
 
 /** The tool call of the gate currently asking, read from the transcript: the
@@ -2025,7 +2074,7 @@ export function applySubagentProgress(
 
   const next: SubagentRunProgress = {
     runId: ev.runId,
-    task: ev.task,
+    task: fullerSubagentTask(previous?.task, ev.task),
     skillName: ev.skillName ?? previous?.skillName,
     model: ev.model ?? previous?.model,
     phase: ev.phase ?? previous?.phase,
@@ -2859,12 +2908,19 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     case "tool.intent": {
       const adds = extractToolFiles(ev.name, ev.args);
+      // A subagent spawn is a session event of its own: it is recorded HERE,
+      // where the instruction the child was given is on the wire, and settled
+      // when its card resolves.
+      const sessionEvents = isSubagentTool(ev.name, ev.args)
+        ? recordSubagentSpawn(state, ev.turn, ev.callId, ev.name, ev.args)
+        : state.sessionEvents;
       return {
         ...state,
         turnStatus: "calling_tool",
         turnStatusTool: ev.name,
         turnLastEventMs: Date.now(),
         sessionFiles: mergeSessionFiles(state.sessionFiles, adds),
+        sessionEvents,
         messages: mapActiveAssistant(state.messages, ev.turn, (m) => {
           const idx = m.segments.findIndex((s) => s.kind === "tool" && s.callId === ev.callId);
           if (idx >= 0) {
@@ -2936,11 +2992,14 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           return { ...m, segments };
         }),
       };
-    case "tool.result":
+    case "tool.result": {
       return {
         ...state,
         turnStatus: "waiting_tool",
         turnLastEventMs: Date.now(),
+        // Settles the spawn's Events row when the call has one; a no-op for every
+        // other tool, since the row id is derived from THIS call id.
+        sessionEvents: settleSubagentEvent(state, ev.callId, ev.ok),
         messages: state.messages.map((m) => {
           if (m.kind !== "assistant") return m;
           let mutated = false;
@@ -2959,6 +3018,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           return mutated ? { ...m, segments: segs } : m;
         }),
       };
+    }
     case "tool.output": {
       // Transient live stdout/stderr feed for a blocking shell tool. Only the
       // running segment (no result yet) consumes it; once tool.result lands the
@@ -3973,9 +4033,7 @@ function TabRuntime({
       // Without this the live chat shows the raw @path until session reload.
       let echoText = text;
       let echoImages = sendImageUrls;
-      if (override !== undefined && typeof override !== "string" && override.echo) {
-        echoText = override.echo;
-      } else if (imageCapable) {
+      if (imageCapable) {
         const typed = typedMentionImages(text, state.settings?.workspaceDir);
         echoText = typed.text;
         if (typed.images.length > 0) echoImages = [...sendImageUrls, ...typed.images];
