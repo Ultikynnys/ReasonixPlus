@@ -4419,6 +4419,19 @@ function sameWorkspaceDir(a: string, b: string): boolean {
   return process.platform === "win32" ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
 }
 
+/** A workspace is usable only while it still exists as a directory — a deleted
+ *  project must not become (or keep serving) a tab. */
+function isExistingWorkspaceDir(dir: string): boolean {
+  if (!existsSync(dir)) return false;
+  try {
+    return statSync(dir).isDirectory();
+  } catch (err) {
+    // The path can vanish or lose permissions between the two calls.
+    emitDiagnosticError("workspace.stat.failed", err, { details: { dirChars: dir.length } });
+    return false;
+  }
+}
+
 /** Collapse persisted session channels onto one visual group per canonical
  *  workspace. The first occurrence owns the group's identity and order; later
  *  channels keep their independent sessions but join that workspace tab. */
@@ -4463,6 +4476,48 @@ export function pickResumeSession(
 ): SessionInfo | null {
   if (!skip) return sessions[0] ?? null;
   return sessions.find((s) => !skip(s)) ?? null;
+}
+
+/** The workspace a session belongs to: its own stamp, written once and never
+ *  rewritten, or `fallback` for a session minted before stamps existed. */
+function sessionWorkspaceOf(name: string, fallback: string): string {
+  return stampedWorkspaceOf(name) ?? fallback;
+}
+
+/** The session's stamped workspace, or undefined when it predates stamps. */
+function stampedWorkspaceOf(name: string): string | undefined {
+  const stamped = loadSessionMeta(name).workspace;
+  return typeof stamped === "string" && stamped.length > 0 ? stamped : undefined;
+}
+
+/** The channel serving `name` inside `dir`. A channel holding the same session
+ *  from ANOTHER workspace is a stale binding, so focusing it would move the user
+ *  to that tab. Pure so the rule is testable. */
+export function channelServingSession<T extends { currentSession: string; rootDir: string }>(
+  channels: readonly T[],
+  name: string,
+  dir: string,
+  sameDir: (a: string, b: string) => boolean = sameWorkspaceDir,
+): T | undefined {
+  return channels.find(
+    (channel) => channel.currentSession === name && sameDir(channel.rootDir, dir),
+  );
+}
+
+/** A restored tab may only adopt a session its own workspace owns: adopting a
+ *  foreign one re-persists the crossed binding on every boot. */
+export function adoptableRestoredSession(
+  requested: string | undefined,
+  dir: string,
+  deps: {
+    exists: (name: string) => boolean;
+    /** The session's stamped workspace, or undefined when it predates stamps. */
+    workspaceOf: (name: string) => string | undefined;
+  } = { exists: sessionExists, workspaceOf: stampedWorkspaceOf },
+): string | undefined {
+  if (!requested || !deps.exists(requested)) return undefined;
+  const owner = deps.workspaceOf(requested);
+  return owner === undefined || sameWorkspaceDir(owner, dir) ? requested : undefined;
 }
 
 function mintSessionFor(
@@ -5086,10 +5141,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     workspaceDir: string,
     settledDeletes?: SessionsEvent["settledDeletes"],
   ): void {
-    for (const t of tabs.values()) {
-      if (sameWorkspaceDir(t.rootDir, workspaceDir)) {
-        void emitSessions(t, settledDeletes);
-      }
+    for (const t of tabsInWorkspace(workspaceDir)) {
+      void emitSessions(t, settledDeletes);
     }
   }
 
@@ -5168,11 +5221,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       planSummary: { completed: 0, total: 0 },
       hooks: pending ? [] : loadHooks({ projectRoot: dir }),
     };
-    // A restored session binds its real jsonl when it still exists. A restored
-    // tab whose session was DELETED must stay VIRTUAL (no folder) so it is not
-    // resurrected on restart; only a genuinely new tab materializes eagerly.
-    const restoredSession =
-      restore?.session && sessionExists(restore.session) ? restore.session : undefined;
+    // A restored session binds its real jsonl when it still exists AND this
+    // workspace owns it. A restored tab whose session was DELETED must stay
+    // VIRTUAL (no folder) so it is not resurrected on restart; only a genuinely
+    // new tab materializes eagerly. A persisted pairing that names another
+    // workspace's session is dropped here so it can't outlive the fix.
+    const restoredSession = adoptableRestoredSession(restore?.session, dir);
     tab.currentSession = pending
       ? ""
       : restoredSession
@@ -5648,6 +5702,23 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       if (t.currentSession === name) return t;
     }
     return undefined;
+  }
+
+  /** Every channel serving workspace `dir`. A pending (workspace-less) tab never
+   *  counts: its empty rootDir resolves to the process cwd, so it would otherwise
+   *  impersonate whatever directory the daemon was launched from. */
+  function tabsInWorkspace(dir: string): Tab[] {
+    const out: Tab[] = [];
+    for (const t of tabs.values()) {
+      if (!t.pending && t.rootDir && sameWorkspaceDir(t.rootDir, dir)) out.push(t);
+    }
+    return out;
+  }
+
+  /** The first channel already serving workspace `dir`, if any — the tab that
+   *  hosts a session belonging there. */
+  function workspaceTabFor(dir: string): Tab | undefined {
+    return tabsInWorkspace(dir)[0];
   }
 
   async function closeChannel(
@@ -6133,7 +6204,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       emitTabDiagnostic(tab, "workspace.switch.redirected", { reason: "same-workspace" });
       return;
     }
-    if (!existsSync(target) || !statSync(target).isDirectory()) {
+    if (!isExistingWorkspaceDir(target)) {
       emitTabDiagnostic(
         tab,
         "workspace.switch.rejected",
@@ -6157,12 +6228,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // The target may already have a workspace tab. In that case this source tab
     // is removed as a unit and the request becomes a new independent session in
     // the existing target tab—never a duplicate workspace ribbon entry.
-    const targetTab = Array.from(tabs.values()).find(
-      (candidate) =>
-        candidate.id !== tab.id &&
-        !candidate.pending &&
-        sameWorkspaceDir(candidate.rootDir, target),
-    );
+    const targetTab = tabsInWorkspace(target).find((candidate) => candidate.id !== tab.id);
     if (targetTab) {
       await closeChannel(tab, { ensureFallback: false, persist: false });
       const opened = bootstrapTab(target, {
@@ -6202,12 +6268,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     tab.symbolBuilding = null;
     tab.recentMentions.length = 0;
     tab.hooks = loadHooks({ projectRoot: target });
-    if (tab.currentSession) {
+    if (tab.currentSession && !sessionExists(tab.currentSession)) {
       // Virtual deletion replacements don't exist on disk — clean up if left dangling.
-      if (!sessionExists(tab.currentSession)) {
-        deleteSession(tab.currentSession);
-      }
+      deleteSession(tab.currentSession);
     }
+    // Drop the previous workspace's session binding before the awaits below: a
+    // persist interleaved with the switch (the frontend echoes `tab_activate` on
+    // every focus change) would otherwise record {dir: target, session: <old
+    // workspace's>}, a crossed pair that outlives this run.
+    tab.currentSession = "";
     // Switch the UI to the new workspace BEFORE loading its conversation: the
     // frontend clears transcript state on a workspaceDir change, so emitting
     // settings now keeps a later $session_loaded (with the resumed messages)
@@ -6508,21 +6577,59 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     emitSessionsForWorkspace(channel.rootDir);
   }
 
-  /** Open `name` as its own channel in the requesting tab's group, or focus the
-   *  channel already holding it (never a second agent on one session). `legacy`
-   *  (session_load) never re-focuses a channel already open in this same tab. */
+  /** Open `name` in the workspace its meta stamps, or focus the channel already
+   *  holding it there. A click never binds or focuses a foreign workspace's tab.
+   *  `legacy` (session_load) never re-focuses a channel open in this same tab. */
   function openOrFocusSession(tab: Tab, name: string, legacy: boolean): void {
-    const existing = channelForSession(name);
+    const op = legacy ? "session_load" : "session_open";
+    const home = sessionWorkspaceOf(name, tab.rootDir);
+    const existing = channelServingSession(Array.from(tabs.values()), name, home);
     if (existing) {
       if (legacy && existing.id === tab.id) emitSessionsForWorkspace(existing.rootDir);
       else focusSessionChannel(existing);
       return;
     }
+    // A channel in some OTHER workspace still claims this session: a stale
+    // binding. Focusing it is what dragged the user to that workspace's tab, so
+    // report it and bind the session where it actually lives instead.
+    const stale = channelForSession(name);
+    if (stale) {
+      emitTabDiagnostic(
+        tab,
+        "session.open.stale-binding",
+        {
+          session: name,
+          holderTab: stale.id,
+          holderWorkspaceChars: stale.rootDir.length,
+          homeWorkspaceChars: home.length,
+        },
+        "warn",
+      );
+    }
+    const hostTab = sameWorkspaceDir(home, tab.rootDir) ? tab : workspaceTabFor(home);
+    if (!hostTab && !isExistingWorkspaceDir(home)) {
+      // The session's workspace is gone. Opening it in THIS tab's workspace is
+      // the cross-workspace binding we forbid, so say why nothing happened.
+      emitTabDiagnostic(
+        tab,
+        "session.open.home-missing",
+        { session: name, homeWorkspaceChars: home.length },
+        "warn",
+      );
+      emit(
+        {
+          type: "$error",
+          message: `${op}: the workspace this session belongs to no longer exists (${home})`,
+        },
+        tab.id,
+      );
+      return;
+    }
     try {
-      const opened = bootstrapTab(tab.rootDir, {
+      const opened = bootstrapTab(hostTab ? hostTab.rootDir : home, {
         session: name,
         active: true,
-        groupId: tab.groupId,
+        groupId: hostTab?.groupId,
       });
       lastActiveTabId = opened.id;
       persistOpenTabs();
@@ -6534,7 +6641,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       if (legacy) {
         process.stderr.write(`session_load: "${name}" threw — ${(err as Error).message}\n`);
       }
-      const op = legacy ? "session_load" : "session_open";
       emit({ type: "$error", message: `${op} failed: ${(err as Error).message}` }, tab.id);
     }
   }
@@ -7358,11 +7464,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // instead prompts for a workspace (local / recent / browse) and
         // assigning one runs switchWorkspace.
         const target = msg.workspaceDir ? resolve(msg.workspaceDir) : undefined;
-        const existing = target
-          ? Array.from(tabs.values()).find((candidate) =>
-              sameWorkspaceDir(candidate.rootDir, target),
-            )
-          : undefined;
+        const existing = target ? workspaceTabFor(target) : undefined;
         const opened = target
           ? bootstrapTab(target, { active: true, groupId: existing?.groupId })
           : bootstrapTab(undefined, { active: true, pending: true });
@@ -8841,7 +8943,23 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         }
         if (msg.baseUrl !== undefined) saveBaseUrl(msg.baseUrl);
         if (msg.workspaceDir !== undefined) {
-          void switchWorkspace(tab, msg.workspaceDir);
+          // A switch can fail after it has already moved the tab (the toolset
+          // build is where a broken workspace surfaces): report it instead of
+          // leaving an unhandled rejection and a half-switched channel.
+          void switchWorkspace(tab, msg.workspaceDir).catch((err) => {
+            emitDiagnosticError("workspace.switch.failed", err, {
+              tabId: tab.id,
+              details: tabDiagnosticState(tab),
+            });
+            emit(
+              {
+                type: "$error",
+                message: `workspace switch failed: ${(err as Error).message}`,
+              },
+              tab.id,
+            );
+            emitSettings(tab);
+          });
           return;
         }
         if (msg.ollamaBaseUrl !== undefined) {

@@ -2522,7 +2522,12 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     case "$settings": {
       const prevWs = state.settings?.workspaceDir;
-      const wsChanged = prevWs !== undefined && prevWs !== ev.workspaceDir;
+      // Compare normalized paths: the daemon re-emits settings freely, and a
+      // separator/case-only difference would otherwise read as a workspace
+      // switch and wipe the transcript (the daemon compares them the same way).
+      const wsChanged =
+        prevWs !== undefined &&
+        normalizeWorkspacePath(prevWs) !== normalizeWorkspacePath(ev.workspaceDir);
       // A model switch aborts the running turn daemon-side (the in-flight turn
       // holds the previous loop/model) so it can't wedge the tab. Mirror that
       // release here: any model change clears a busy/stuck turn so the FE
@@ -2537,6 +2542,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turnStatus: releaseTurn ? null : state.turnStatus,
         turnStatusTool: releaseTurn ? null : state.turnStatusTool,
         messages: wsChanged ? [] : state.messages,
+        // A session list belongs to ONE workspace. Keeping the previous
+        // workspace's rows after a switch let a click open a foreign session in
+        // this tab, which then persisted a channel bound across workspaces.
+        sessions: wsChanged ? [] : state.sessions,
         pendingConfirms: wsChanged ? [] : state.pendingConfirms,
         pendingPathAccess: wsChanged ? [] : state.pendingPathAccess,
         pendingChoices: wsChanged ? [] : state.pendingChoices,
