@@ -1,9 +1,12 @@
 /** A workspace plan belongs to exactly ONE live session while it is worked; a
  *  refused takeover is recoverable, two sessions driving one plan is not. */
 
+import { sessionExists } from "../memory/session.js";
+
 /** Recorded on the plan itself so ownership survives a restart. */
 export interface PlanClaim {
-  /** Session that owns the plan for as long as it works it. */
+  /** Session that owns the plan for as long as it works it — or the `anonymous-<pid>`
+   *  identity of an unnamed caller, which has no session record to check. */
   session: string;
   /** Process that made the claim — the dead-owner takeover signal. */
   pid: number;
@@ -22,12 +25,27 @@ export function setLiveSessionProbe(probe: LiveSessionProbe | null): void {
   liveSessionProbe = probe;
 }
 
-/** Ownership identity for a tool call. An unnamed caller (library embed, direct
- *  dispatch) is still one distinct owner per process, never a shared bucket that
- *  would let two processes believe they hold the same plan. */
+/** Marker of the synthetic owner an unnamed caller gets: it has no session record on
+ *  disk, so its pid is the only liveness signal it can have. */
+const ANONYMOUS_OWNER_PREFIX = "anonymous-";
+const ANONYMOUS_OWNER = /^anonymous-\d+$/;
+
+/** Ownership identity for an unnamed caller (library embed, direct dispatch): still one
+ *  distinct owner per process, never a shared bucket that would let two processes
+ *  believe they hold the same plan. */
+function anonymousOwner(): string {
+  return `${ANONYMOUS_OWNER_PREFIX}${process.pid}`;
+}
+
+/** True for a synthetic pid owner rather than a real session name. */
+function isAnonymousOwner(session: string): boolean {
+  return ANONYMOUS_OWNER.test(session);
+}
+
+/** Ownership identity for a tool call. */
 export function claimingSession(sessionName: string | null | undefined): string {
   const name = sessionName?.trim();
-  return name ? name : `anonymous-${process.pid}`;
+  return name ? name : anonymousOwner();
 }
 
 export function isProcessAlive(pid: number): boolean {
@@ -42,10 +60,18 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** True when the claim's session is gone from the store — deleted, renamed or pruned — so
+ *  the claim is a leftover that cannot lock anything. Pid liveness cannot answer this (pids
+ *  get recycled); an `anonymous-<pid>` owner has no record by design, so it is never gone. */
+export function claimOwnerSessionGone(claim: PlanClaim): boolean {
+  return !isAnonymousOwner(claim.session) && !sessionExists(claim.session);
+}
+
 /** True while the claiming session can still act on its plan. A live-but-idle owner
  *  keeps its plan: taking it would let a session that may resume and one that just
- *  started work the same plan. */
+ *  started work the same plan. A session that no longer exists holds nothing. */
 export function claimOwnerIsLive(workspace: string, claim: PlanClaim): boolean {
+  if (claimOwnerSessionGone(claim)) return false;
   if (claim.pid !== process.pid) return isProcessAlive(claim.pid);
   if (!liveSessionProbe) return true;
   try {

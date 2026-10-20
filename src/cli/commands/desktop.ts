@@ -606,6 +606,98 @@ export function shouldReplaceDeletedSession(
   return deleted && currentSession === deletedSession;
 }
 
+/** Sessions whose channel has a turn in flight. Deleting one would abort work the
+ *  user is waiting on, so every delete path refuses them. */
+export function sessionsWithLiveTurn(
+  channels: Iterable<{ currentSession: string; aborter: unknown }>,
+): Set<string> {
+  const running = new Set<string>();
+  for (const channel of channels) {
+    if (channel.aborter !== null && channel.currentSession) running.add(channel.currentSession);
+  }
+  return running;
+}
+
+/** The names a delete may touch: never one with a live turn. */
+export function deletableSessionNames(
+  names: Iterable<string>,
+  running: ReadonlySet<string>,
+): string[] {
+  const deletable: string[] = [];
+  for (const name of names) if (!running.has(name)) deletable.push(name);
+  return deletable;
+}
+
+/** Why a delete was refused, in one wording every delete path shares. */
+export function sessionRunningRefusal(name: string): string {
+  return `Session "${name}" is running. Stop its agent first, then delete it.`;
+}
+
+/** Refusal for a second creation in a workspace that is already minting one. */
+export const SESSION_CREATION_IN_FLIGHT_MESSAGE =
+  "A session is already being created in this workspace. Wait for it to appear.";
+
+/** One in-flight session creation per workspace. `tryEnter` refusing is the whole
+ *  point: the second half of a double action must not mint a second session. */
+export function newSessionCreationGate(): {
+  tryEnter: (workspaceDir: string) => boolean;
+  leave: (workspaceDir: string) => void;
+  isBusy: (workspaceDir: string) => boolean;
+} {
+  const inFlight = new Set<string>();
+  return {
+    tryEnter(workspaceDir) {
+      const key = workspaceKey(workspaceDir);
+      if (inFlight.has(key)) return false;
+      inFlight.add(key);
+      return true;
+    },
+    leave(workspaceDir) {
+      inFlight.delete(workspaceKey(workspaceDir));
+    },
+    isBusy(workspaceDir) {
+      return inFlight.has(workspaceKey(workspaceDir));
+    },
+  };
+}
+
+/** Session deletes/clears in flight per workspace. `begin` hands back the release for
+ *  THAT booking, so a repeated release is a no-op and can never cancel another
+ *  channel's live booking. */
+export function newWorkspaceSessionWork(): {
+  begin: (workspaceDir: string) => () => void;
+  isBusy: (workspaceDir: string) => boolean;
+} {
+  const open = new Map<string, number>();
+  return {
+    begin(workspaceDir) {
+      const key = workspaceKey(workspaceDir);
+      open.set(key, (open.get(key) ?? 0) + 1);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        const count = open.get(key) ?? 0;
+        if (count <= 1) open.delete(key);
+        else open.set(key, count - 1);
+      };
+    },
+    isBusy(workspaceDir) {
+      return (open.get(workspaceKey(workspaceDir)) ?? 0) > 0;
+    },
+  };
+}
+
+/** Refusal for a workspace switch while that directory is minting or removing a
+ *  session: the tab waiting on the settle must not be re-targeted underneath it. */
+export const WORKSPACE_SWITCH_BLOCKED_MESSAGE =
+  "A session here is being created or deleted. Wait for it to finish, then switch workspaces.";
+
+/** Refusal for forgetting a workspace mid-mutation: removing it closes every tab
+ *  on that path, including the one waiting for the settle. */
+export const WORKSPACE_REMOVE_BLOCKED_MESSAGE =
+  "This workspace is creating or deleting a session. Wait for it to finish, then remove it.";
+
 /** Explicit New chat sessions list immediately; a blank replacement created
  * after deletion stays virtual until its first user-visible activity. */
 export function shouldMaterializeFreshSession(reason: "new-chat" | "session-delete"): boolean {
@@ -6325,13 +6417,30 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   async function switchWorkspace(tab: Tab, nextDir: string): Promise<void> {
     const target = resolve(nextDir);
     emitTabDiagnostic(tab, "workspace.switch.started", { targetChars: target.length }, "info");
+    // A pending tab has no workspace to leave, and its empty rootDir would resolve
+    // to the daemon's own cwd — never treat that as a busy workspace.
+    if (!tab.pending && workspaceSessionBusy(tab.rootDir)) {
+      // Refused, not deferred: the channels here are mid-mint or mid-settle, and
+      // moving rootDir now would re-target the snapshot they are waiting for.
+      emitTabDiagnostic(tab, "workspace.switch.refused_busy", { reason: "session-work" }, "info");
+      refuseSessionMutation(WORKSPACE_SWITCH_BLOCKED_MESSAGE, tab.id);
+      emitSettings(tab);
+      return;
+    }
     if (!tab.pending && sameWorkspaceDir(target, tab.rootDir)) {
       // Re-opening the current workspace means "new session", never a second
-      // workspace tab and never a destructive reload of this agent.
+      // workspace tab and never a destructive reload of this agent. It is a
+      // creation, so it takes the same one-at-a-time gate as New chat.
+      if (!sessionCreationGate.tryEnter(tab.rootDir)) {
+        refuseSessionMutation(SESSION_CREATION_IN_FLIGHT_MESSAGE, tab.id);
+        emitSettings(tab);
+        return;
+      }
       const opened = bootstrapTab(tab.rootDir, {
         active: true,
         groupId: tab.groupId,
       });
+      armCreationRelease(opened);
       lastActiveTabId = opened.id;
       persistOpenTabs();
       emitTabDiagnostic(tab, "workspace.switch.redirected", { reason: "same-workspace" });
@@ -6697,7 +6806,14 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // One snapshot per affected workspace, never one per channel: a clear-all
     // with many open channels otherwise re-listed the store once per replaced
     // channel and buried the frontend in hundreds of $sessions events.
-    for (const dir of refreshed) emitSessionsForWorkspace(dir, settledDeletes);
+    for (const dir of refreshed) {
+      emitSessionsForWorkspace(dir, settledDeletes);
+      // The removed sessions may have owned in-flight plans: re-project this
+      // workspace's plan history so no tab keeps labelling one with a session that
+      // no longer exists (its claim now reads as free, which is what takeover uses).
+      const [viewer] = workspaceTabs?.(dir) ?? [];
+      if (viewer) emitPlanHistory(viewer);
+    }
   }
 
   /** Bring an already-open session's channel to the front and refresh its list. */
@@ -7403,6 +7519,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // A freshly minted session must reach every channel on the workspace at once,
       // the way a delete already does; a restored tab broadcasts nothing.
       if (!restore) emitSessionsForWorkspace(tab.rootDir, undefined, { exceptTabId: tab.id });
+      if (restore?.creating) {
+        // The minted session is on the wire now, so every channel can see it and
+        // the workspace accepts another creation. Both outcomes release: a failed
+        // listing must not keep the gate shut until the toolset build ends.
+        const release = () => sessionCreationGate.leave(tab.rootDir);
+        void sessionsInitialized.then(release, release);
+      }
       emitMemory(tab);
       if (restoredMessages) {
         const meta = loadSessionMeta(tab.currentSession);
@@ -7450,6 +7573,33 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         details: tabDiagnosticState(tab),
       });
     });
+  }
+
+  /** One session creation at a time per workspace: a second one started before the
+   *  first is listed would stack a duplicate session on the same directory. */
+  const sessionCreationGate = newSessionCreationGate();
+
+  /** Session deletes/clears in flight, so a workspace switch or forget cannot
+   *  re-target the tab that is waiting for their settled snapshot. */
+  const sessionWork = newWorkspaceSessionWork();
+
+  /** True while this workspace is minting or removing a session: the window in
+   *  which switching away from it or forgetting it is undocumented behaviour. */
+  function workspaceSessionBusy(workspaceDir: string): boolean {
+    return sessionCreationGate.isBusy(workspaceDir) || sessionWork.isBusy(workspaceDir);
+  }
+
+  /** The one refusal shape for a locked session/workspace operator, so the wording
+   *  and the channel it lands on cannot drift between them. */
+  function refuseSessionMutation(message: string, tabId?: string): void {
+    emit({ type: "$notice", text: message, severity: "warning" }, tabId);
+  }
+
+  /** Arms the open gate's release for a just-bootstrapped channel. The gate reopens
+   *  when that channel publishes its session list (startTabInit), and unconditionally
+   *  when its bootstrap settles — a failed create must never lock a workspace. */
+  function armCreationRelease(tab: Tab): void {
+    void tab.initialization?.finally(() => sessionCreationGate.leave(tab.rootDir));
   }
 
   /** Announce a tab and start its deferred work — every caller but the restored-
@@ -7889,6 +8039,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "workspace_recent_remove") {
+      if (workspaceSessionBusy(msg.path)) {
+        // Forget closes every tab on the path, including the channel waiting for
+        // a create/delete settle. Refuse before any teardown starts.
+        refuseSessionMutation(WORKSPACE_REMOVE_BLOCKED_MESSAGE, msg.tabId);
+        return;
+      }
       try {
         removeRecentWorkspace(msg.path);
         const targetPath = resolve(msg.path.trim());
@@ -8381,6 +8537,14 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // snapshot carrying its name in settledDeletes. A throw anywhere in this
       // detach→delete→resync chain would skip that emit and strand the sidebar
       // mid-delete, so settle it no matter what.
+      if (sessionsWithLiveTurn(tabs.values()).has(msg.name)) {
+        // Refuse before detaching: a running session owns a turn the user did not
+        // ask to stop. Settle it as not-removed so the row unhides.
+        emitTabDiagnostic(tab, "session.delete.refused_running", { doomed: msg.name }, "info");
+        emit({ type: "$error", message: sessionRunningRefusal(msg.name) }, tab.id);
+        resyncAfterDeletes([{ name: msg.name, removed: false }], () => false);
+        return;
+      }
       let affectedTabs: Tab[] = [];
       let removed = false;
       try {
@@ -8413,6 +8577,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       const requested = Array.isArray(msg.names)
         ? msg.names.filter((n): n is string => typeof n === "string" && n.length > 0)
         : [];
+      // Book the workspace for the whole chunked pass: a switch or forget now
+      // would re-target or close the tab this settle belongs to.
+      const releaseClearBooking = sessionWork.begin(tab.rootDir);
       void (async () => {
         const candidateNames = new Set(requested);
         try {
@@ -8424,24 +8591,54 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         } catch (err) {
           emitDiagnosticError("session.clear.list.failed", err, { tabId: tab.id });
         }
+        // A session with a turn in flight is never cleared: the user is waiting
+        // on that work, so it stays on disk and keeps its row.
+        const running = sessionsWithLiveTurn(tabs.values());
+        const keptRunning = [...candidateNames].filter((name) => running.has(name));
+        const doomed = deletableSessionNames(candidateNames, running);
+        if (keptRunning.length > 0) {
+          emitTabDiagnostic(
+            tab,
+            "session.clear.kept_running",
+            { kept: keptRunning.length },
+            "info",
+          );
+          emit(
+            {
+              type: "$error",
+              message: `Kept ${keptRunning.length} running session(s): stop their agents, then delete them.`,
+            },
+            tab.id,
+          );
+        }
         let affectedTabs: Tab[] = [];
         let settledDeletes: { name: string; removed: boolean }[];
         try {
-          affectedTabs = detachDoomedSessionWriters(candidateNames);
+          affectedTabs = detachDoomedSessionWriters(new Set(doomed));
           // Chunked batch: each name settles independently, the directory index
           // persists once, and the event loop breathes between chunks.
-          settledDeletes = await deleteSessions([...candidateNames]);
+          settledDeletes = await deleteSessions(doomed);
+          // Settle the kept names too: their rows were never touched, and an
+          // unsettled hide would strand them.
+          settledDeletes.push(...keptRunning.map((name) => ({ name, removed: false })));
         } catch (err) {
           emitDiagnosticError("session.clear.failed", err, { tabId: tab.id });
           emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
           restoreUntouchedRuntimes(affectedTabs, new Set());
           // Still echo the requested names as settled so the frontend reconciles.
-          settledDeletes = requested.map((name) => ({ name, removed: false }));
+          settledDeletes = [...new Set([...requested, ...keptRunning])].map((name) => ({
+            name,
+            removed: false,
+          }));
         }
         const removed = new Set(
           settledDeletes.filter((result) => result.removed).map((result) => result.name),
         );
-        const failed = settledDeletes.filter((result) => !result.removed);
+        // A kept running session is a refusal, not a failure: reporting it as one
+        // would restore a runtime that was never torn down.
+        const failed = settledDeletes.filter(
+          (result) => !result.removed && !running.has(result.name),
+        );
         if (failed.length > 0) {
           emit(
             { type: "$error", message: `session_clear failed for ${failed.length} session(s)` },
@@ -8450,18 +8647,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           restoreUntouchedRuntimes(affectedTabs, removed);
         }
         resyncAfterDeletes(settledDeletes, (t) => removed.has(t.currentSession));
-      })().catch((err) => {
-        // Belt and braces: an unhandled rejection here would take the whole
-        // daemon down, which is the worst possible "no indication" outcome.
-        emitDiagnosticError("session.clear.crashed", err, { tabId: tab.id });
-        emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
-        // Settle every name the frontend optimistically hid, so no row stays
-        // hidden behind a clear that never finished.
-        void emitSessions(
-          tab,
-          requested.map((name) => ({ name, removed: false })),
-        );
-      });
+      })()
+        .catch((err) => {
+          // Belt and braces: an unhandled rejection here would take the whole
+          // daemon down, which is the worst possible "no indication" outcome.
+          emitDiagnosticError("session.clear.crashed", err, { tabId: tab.id });
+          emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
+          // Settle every name the frontend optimistically hid, so no row stays
+          // hidden behind a clear that never finished.
+          void emitSessions(
+            tab,
+            requested.map((name) => ({ name, removed: false })),
+          );
+        })
+        .finally(releaseClearBooking);
       return;
     }
     if (msg.cmd === "session_rename") {
@@ -8600,6 +8799,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         emit({ type: "$error", message: NO_WORKSPACE_MESSAGE }, tab.id);
         return;
       }
+      if (!sessionCreationGate.tryEnter(tab.rootDir)) {
+        refuseSessionMutation(SESSION_CREATION_IN_FLIGHT_MESSAGE, tab.id);
+        return;
+      }
       try {
         const opened = bootstrapTab(tab.rootDir, {
           active: true,
@@ -8614,9 +8817,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           // its first $sessions snapshot lists the minted session.
           creating: true,
         });
+        armCreationRelease(opened);
         lastActiveTabId = opened.id;
         persistOpenTabs();
       } catch (err) {
+        // A bootstrap that never started must not leave the workspace locked.
+        sessionCreationGate.leave(tab.rootDir);
         emitDiagnosticError("session.new-chat.failed", err, {
           tabId: tab.id,
           details: tabDiagnosticState(tab),
@@ -8637,6 +8843,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       const markdown = typeof msg.markdown === "string" ? msg.markdown : "";
       if (!markdown.trim()) {
         emit({ type: "$error", message: "Duplicate session: nothing to duplicate." }, tab.id);
+        return;
+      }
+      if (!sessionCreationGate.tryEnter(tab.rootDir)) {
+        refuseSessionMutation(SESSION_CREATION_IN_FLIGHT_MESSAGE, tab.id);
         return;
       }
       const model = msg.model || tab.currentModel;
@@ -8671,6 +8881,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           groupId: tab.groupId,
           creating: true,
         });
+        armCreationRelease(opened);
         lastActiveTabId = opened.id;
         persistOpenTabs();
         if (autoProceed) {
@@ -8688,6 +8899,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             });
         }
       } catch (err) {
+        // A failed mint or bootstrap must not leave the workspace locked.
+        sessionCreationGate.leave(tab.rootDir);
         emitDiagnosticError("session.duplicate.failed", err, {
           tabId: tab.id,
           details: tabDiagnosticState(tab),

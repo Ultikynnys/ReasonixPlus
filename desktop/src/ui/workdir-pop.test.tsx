@@ -151,4 +151,38 @@ describe("WorkdirPop component", () => {
     expect(screen.getAllByText("/install/reasonix").length).toBe(1);
     expect(screen.getByText("alpha")).toBeTruthy();
   });
+
+  it("turns inert while a session mutation is in flight", () => {
+    // A mutation can start in a sibling channel while the picker is already open,
+    // so the lock cannot rely on the popover merely not opening.
+    const onPick = vi.fn();
+    const onRemove = vi.fn();
+    const onBrowse = vi.fn();
+    const { container } = render(
+      <WorkdirPop
+        open
+        locked
+        onClose={vi.fn()}
+        recent={["/repo/alpha"]}
+        current="/repo/current"
+        onPick={onPick}
+        onRemove={onRemove}
+        onBrowse={onBrowse}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("alpha"));
+    expect(onPick).not.toHaveBeenCalled();
+
+    const remove = screen.getByRole("button", {
+      name: "Remove from recent",
+    }) as HTMLButtonElement;
+    expect(remove.disabled).toBe(true);
+
+    const browse = container.querySelector<HTMLButtonElement>(".wd-foot button");
+    expect(browse?.disabled).toBe(true);
+    fireEvent.click(browse as HTMLButtonElement);
+    expect(onBrowse).not.toHaveBeenCalled();
+    expect(container.querySelector('.wd-row[data-locked="true"]')).toBeTruthy();
+  });
 });

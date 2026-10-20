@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   NO_WORKSPACE_MESSAGE,
+  deletableSessionNames,
+  sessionRunningRefusal,
+  sessionsWithLiveTurn,
   shouldMaterializeFreshSession,
   shouldMaterializeRestoredSession,
   shouldReplaceDeletedSession,
@@ -37,6 +40,34 @@ describe("desktop session deletion synchronization", () => {
   it("materializes a genuinely new tab with no persisted session", () => {
     expect(shouldMaterializeRestoredSession(undefined)).toBe(true);
     expect(shouldMaterializeRestoredSession({})).toBe(true);
+  });
+});
+
+describe("desktop — a running session is never deleted", () => {
+  const channel = (currentSession: string, aborter: unknown) => ({ currentSession, aborter });
+
+  it("collects only the sessions whose channel has a turn in flight", () => {
+    const running = sessionsWithLiveTurn([
+      channel("working", new AbortController()),
+      channel("idle", null),
+    ]);
+    expect([...running]).toEqual(["working"]);
+  });
+
+  it("ignores a channel with no session bound yet", () => {
+    expect(sessionsWithLiveTurn([channel("", new AbortController())]).size).toBe(0);
+  });
+
+  it("leaves a running session out of a clear-all", () => {
+    const doomed = deletableSessionNames(["working", "idle", "older"], new Set(["working"]));
+    expect(doomed).toEqual(["idle", "older"]);
+  });
+
+  it("ships a refusal that names the session and the way out", () => {
+    const message = sessionRunningRefusal("working");
+    expect(message).toContain("working");
+    expect(message).toMatch(/running/i);
+    expect(message).toMatch(/stop/i);
   });
 });
 

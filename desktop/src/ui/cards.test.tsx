@@ -750,6 +750,34 @@ describe("SubagentCard — model visibility", () => {
     expect(rows[1]?.textContent).toContain("Reading local event bridge");
     expect(rows[2]?.textContent).toContain("↳ web_fetch Tauri docs");
   });
+
+  it("names the run's skill in its first row, never the spawn tool", () => {
+    const firstRow = (skillName?: string) => {
+      const { unmount } = render(
+        <SubagentCard
+          name="spawn_subagent"
+          runs={[
+            {
+              runId: "run-placeholder",
+              task: "Fan out two probes",
+              ...(skillName === undefined ? {} : { skillName }),
+              status: "running" as const,
+              tools: [],
+              recentRows: [],
+            },
+          ]}
+        />,
+      );
+      const text = screen.getByLabelText("Subagent activity").textContent ?? "";
+      unmount();
+      return text;
+    };
+    // An argless spawn carries no skill, and its own tool name reads as an event
+    // rather than work in progress — the placeholder must never print it.
+    expect(firstRow("spawn_subagent")).toContain("Starting subagent...");
+    expect(firstRow(undefined)).toContain("Starting subagent...");
+    expect(firstRow("research")).toContain("Starting research...");
+  });
 });
 
 describe("DiffCard — show-in-explorer button", () => {

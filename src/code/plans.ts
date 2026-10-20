@@ -30,6 +30,7 @@ import type { PlanStep, StepCompletion } from "../tools/plan-types.js";
 import {
   type PlanClaim,
   claimOwnerIsLive,
+  claimOwnerSessionGone,
   claimRefusalMessage,
   parsePlanClaim,
 } from "./plan-claim.js";
@@ -209,10 +210,27 @@ function sealCompletedPlans(history: History): void {
   }
 }
 
-/** Ownership bucket for the one-active-per-session invariant. Plans imported before
- *  claims existed share the "" bucket, so such a history stays single-active. */
+/** Ownership bucket for the one-active-per-session invariant. Plans imported before claims
+ *  share the "" bucket; a claim left by a deleted session keeps its own bucket until a
+ *  session takes the plan over, so two such leftovers never collide on the one-active rule. */
 function ownerKey(plan: PlanRecord): string {
   return plan.claim?.session ?? "";
+}
+
+/** A plan no session holds: never claimed, or left behind by a session that no longer
+ *  exists. Distinct from a live-but-idle owner, whose session still exists and may resume
+ *  the plan, so this is exactly the set `activeFor(..., { adoptUnclaimed })` may adopt. */
+function claimVacant(plan: Pick<PlanRecord, "claim">): boolean {
+  return !plan.claim || claimOwnerSessionGone(plan.claim);
+}
+
+/** The record as a read surface may show it: a claim left by a session that no longer
+ *  exists is a leftover, not an owner, so it projects away and the plan reads as
+ *  available everywhere. The bytes keep it until a session actually takes the plan. */
+function withoutLeftoverClaim(plan: PlanRecord): PlanRecord {
+  if (!claimVacant(plan) || !plan.claim) return plan;
+  const { claim: _leftover, ...rest } = plan;
+  return rest;
 }
 
 /** Stamp a claim for `session`, keeping the takeover time when the same session (in
@@ -225,7 +243,8 @@ function claimFor(session: string, existing?: PlanClaim): PlanClaim {
 }
 
 /** The claim that forbids `session` from touching this plan, or null when the plan is
- *  free: only a LIVE owner of a plan still being worked blocks a takeover. */
+ *  free: only a LIVE owner of a plan still being worked blocks a takeover, and a claim
+ *  its session left behind holds nothing at all. */
 function blockingClaim(workspace: string, plan: PlanRecord, session: string): PlanClaim | null {
   const claim = plan.claim;
   if (!claim || claim.session === session) return null;
@@ -363,18 +382,27 @@ export class PlanRepository {
 
   list(): PlanSummary[] {
     return this.load()
-      .plans.map(({ body: _body, steps, completions, revisions: _revisions, ...summary }) => ({
-        ...summary,
-        totalSteps: steps.length,
-        completedSteps: steps.filter((s) => Object.hasOwn(completions, s.id)).length,
-      }))
+      .plans.map((stored) => {
+        const {
+          body: _body,
+          steps,
+          completions,
+          revisions: _revisions,
+          ...summary
+        } = withoutLeftoverClaim(stored);
+        return {
+          ...summary,
+          totalSteps: steps.length,
+          completedSteps: steps.filter((s) => Object.hasOwn(completions, s.id)).length,
+        };
+      })
       .reverse();
   }
 
   open(id: string): PlanRecord {
     const plan = this.load().plans.find((p) => p.id === id);
     if (!plan) throw new Error(`Unknown plan ID: ${id}`);
-    return structuredClone(plan);
+    return structuredClone(withoutLeftoverClaim(plan));
   }
 
   /** The newest active plan in the workspace whatever its owner. Display and history
@@ -382,16 +410,16 @@ export class PlanRepository {
    *  way to decide what a session works. */
   newestActivePlan(): PlanRecord | null {
     const plan = this.load().plans.findLast((p) => p.status === "active");
-    return plan ? structuredClone(plan) : null;
+    return plan ? structuredClone(withoutLeftoverClaim(plan)) : null;
   }
 
-  /** The plan `session` is working, or null. `adoptUnclaimed` takes over an
-   *  in-flight plan carrying no claim (written before ownership existed); losing
-   *  that race shows nothing rather than a plan another session drives. */
+  /** The plan `session` is working, or null. `adoptUnclaimed` takes over an in-flight plan
+   *  with no holder — written before ownership existed, or left behind by a deleted session —
+   *  so deleting a session never strands its plan; losing the race shows nothing. */
   activeFor(session: string, opts: { adoptUnclaimed?: boolean } = {}): PlanRecord | null {
     const own = ownerActive(this.load(), session);
     if (own) return structuredClone(own);
-    return opts.adoptUnclaimed ? this.adoptUnownedActive(session) : null;
+    return opts.adoptUnclaimed ? this.adoptVacantActive(session) : null;
   }
 
   /** Read-only answer to "may this session work this plan?": the live holder when it
@@ -408,15 +436,21 @@ export class PlanRepository {
     };
   }
 
-  private adoptUnownedActive(session: string): PlanRecord | null {
-    const candidate = this.load().plans.findLast((p) => p.status === "active" && !p.claim);
+  /** Take the newest active plan nobody holds, re-checked under the store lock so two
+   *  sessions asking at once can never both adopt it. */
+  private adoptVacantActive(session: string): PlanRecord | null {
+    const candidate = this.load().plans.findLast((p) => p.status === "active" && claimVacant(p));
     if (!candidate) return null;
     try {
       return this.mutate((history) => {
         const plan = history.plans.find((p) => p.id === candidate.id);
-        if (!plan || plan.status !== "active" || plan.claim)
-          return ownerActive(history, session) ?? null;
-        plan.claim = claimFor(session);
+        const own = ownerActive(history, session);
+        // One plan per session: an owner that already drives an active plan (another
+        // process may have activated one since the read) gets that plan back, never a
+        // second active one — two would fail validation and take the store down.
+        if (!plan || plan.id === own?.id || plan.status !== "active" || !claimVacant(plan))
+          return own ?? null;
+        plan.claim = claimFor(session, plan.claim);
         return plan;
       });
     } catch (err) {
@@ -578,12 +612,14 @@ export class PlanRepository {
   }
 
   /** A session advances only the plan it owns. Ownership is never stolen here: taking
-   *  a plan over is an explicit `activate`, which the owner's liveness gates. */
+   *  a plan over is an explicit `activate`, which the owner's liveness gates. The one
+   *  write is a pid refresh, so a claim never names a process that is no longer driving. */
   private requireOwner(plan: PlanRecord, session: string): void {
     if (plan.claim && plan.claim.session !== session)
       throw new Error(
         `Plan is owned by session "${plan.claim.session}"; activate it from this session first`,
       );
+    if (plan.claim) plan.claim = claimFor(session, plan.claim);
   }
 
   /** Refuse to touch a plan a LIVE other session is working — the mutator-side twin of

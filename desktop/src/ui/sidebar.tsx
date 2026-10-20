@@ -107,6 +107,11 @@ export function Sidebar({
     );
   }, [sessions, query]);
 
+  // Sessions a delete may touch. A session with an agent running is protected —
+  // the daemon refuses it — so it is never counted or hidden by a clear-all.
+  const runningCount = sessions.filter((s) => runningSessions?.has(s.name)).length;
+  const deletableCount = sessions.length - runningCount;
+
   useEffect(() => {
     if (!pendingDelete && !pendingClear) return;
     const onMouseDown = (e: MouseEvent) => {
@@ -149,6 +154,9 @@ export function Sidebar({
               ? t("sidebarPanel.switchWorkspace", { workspace: workspaceDir })
               : t("sidebarPanel.pickWorkspace")
           }
+          // Switching mid-mutation would re-target the channel that is waiting
+          // for its settled session list, so the picker cannot even open.
+          disabled={busy}
           onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
             onOpenWorkdir({ top: rect.bottom + 6, left: rect.left });
@@ -203,7 +211,7 @@ export function Sidebar({
                 className="clear-all-btn"
                 title={t("sidebarPanel.clearAllSessions")}
                 aria-label={t("sidebarPanel.clearAllSessions")}
-                disabled={busy}
+                disabled={busy || deletableCount === 0}
                 onClick={(e) => {
                   e.stopPropagation();
                   const rect = e.currentTarget.getBoundingClientRect();
@@ -259,7 +267,9 @@ export function Sidebar({
                 }}
                 role="button"
                 tabIndex={0}
-                title={s.name}
+                title={
+                  running ? t("sidebarPanel.runningSessionRow", { name: s.name }) : s.name
+                }
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && s.name !== activeName) onLoadSession(s.name);
                 }}
@@ -322,9 +332,19 @@ export function Sidebar({
                 <button
                   type="button"
                   className="delete-btn"
-                  title={t("sidebarPanel.deleteSession")}
-                  aria-label={t("sidebarPanel.deleteSession")}
-                  disabled={busy}
+                  title={
+                    running
+                      ? t("sidebarPanel.deleteRunningBlocked")
+                      : t("sidebarPanel.deleteSession")
+                  }
+                  aria-label={
+                    running
+                      ? t("sidebarPanel.deleteRunningBlocked")
+                      : t("sidebarPanel.deleteSession")
+                  }
+                  // Locked while a delete is in flight (no double action) and for a
+                  // running session, which the daemon refuses to delete anyway.
+                  disabled={busy || running}
                   onClick={(e) => {
                     e.stopPropagation();
                     const rect = e.currentTarget.getBoundingClientRect();
@@ -382,8 +402,14 @@ export function Sidebar({
         <SessionConfirmPopover
           anchor={pendingClear}
           message={t("sidebarPanel.clearAllSessions")}
-          name={t("sidebarPanel.clearAllConfirm", { count: sessions.length })}
+          name={t("sidebarPanel.clearAllConfirm", { count: deletableCount })}
+          detail={
+            runningCount > 0
+              ? t("sidebarPanel.clearAllKeepsRunning", { count: runningCount })
+              : undefined
+          }
           confirmLabel={t("sidebarPanel.deleteAll")}
+          busy={busy}
           onCancel={() => setPendingClear(null)}
           onConfirm={() => {
             onClearSessions();
@@ -399,14 +425,20 @@ function SessionConfirmPopover({
   anchor,
   message,
   name,
+  detail,
   confirmLabel,
+  busy,
   onCancel,
   onConfirm,
 }: {
   anchor: { x: number; y: number };
   message: string;
   name: string;
+  /** Second line for what the action will NOT touch. */
+  detail?: string;
   confirmLabel: string;
+  /** A mutation already in flight: the confirm cannot fire a second one. */
+  busy?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -434,12 +466,13 @@ function SessionConfirmPopover({
       <div className="msg">
         {message}
         <span className="name">{name}</span>
+        {detail ? <span className="note">{detail}</span> : null}
       </div>
       <div className="actions">
         <button ref={cancelRef} type="button" className="cancel" onClick={onCancel}>
           {t("sidebarPanel.cancel")}
         </button>
-        <button type="button" className="confirm" onClick={onConfirm}>
+        <button type="button" className="confirm" disabled={busy} onClick={onConfirm}>
           <I.trash size={11} />
           {confirmLabel}
         </button>

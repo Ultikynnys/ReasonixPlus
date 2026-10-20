@@ -139,6 +139,24 @@ describe("registerSubagentTool", () => {
     expect(end.costUsd).toBeGreaterThan(0);
   });
 
+  it("stamps every event with the spawning call's turn and call id", async () => {
+    const parent = new ToolRegistry();
+    const client = makeClient([{ content: "done" }]);
+    const { sink, events } = makeSink();
+    registerSubagentTool(parent, { client, sink });
+    await parent.dispatch("spawn_subagent", JSON.stringify({ task: "two spawns, one turn" }), {
+      turn: 7,
+      callId: "inflight-call-a",
+    });
+    // Parent identity is what tells two parallel spawn cards apart: without it
+    // the UI cannot attach a run's live rows to the call that started it.
+    expect(events.length).toBeGreaterThan(0);
+    for (const ev of events) {
+      expect(ev.parentCallId).toBe("inflight-call-a");
+      expect(ev.parentTurn).toBe(7);
+    }
+  });
+
   it("emits a progress event for each tool result inside the child loop", async () => {
     const parent = new ToolRegistry();
     parent.register({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { StreamRateTracker, formatTokensPerSecond } from "./stream-rate";
+import { StreamRateTracker, SubagentRateFolder, formatTokensPerSecond } from "./stream-rate";
 
 describe("StreamRateTracker", () => {
   it("reports 0 with no samples", () => {
@@ -44,6 +44,60 @@ describe("StreamRateTracker", () => {
     t.record(0, 0);
     t.record(-5, 0);
     expect(t.tokensPerSecond(0)).toBe(0);
+  });
+});
+
+describe("SubagentRateFolder", () => {
+  /** A tracker that only records what it is handed — the fold's own arithmetic is
+   *  what these tests are about, not the sliding window it feeds. */
+  function recounter(): { tracker: StreamRateTracker; samples: number[] } {
+    const samples: number[] = [];
+    const tracker = {
+      record: (chars: number) => {
+        samples.push(chars);
+      },
+    } as unknown as StreamRateTracker;
+    return { tracker, samples };
+  }
+
+  it("counts a run's cumulative total as growth, never twice", () => {
+    const { tracker, samples } = recounter();
+    const folder = new SubagentRateFolder();
+    folder.record("sub-1", 800, tracker);
+    folder.record("sub-1", 1_000, tracker);
+    folder.record("sub-1", 1_000, tracker);
+    expect(samples).toEqual([800, 200]);
+  });
+
+  it("keeps parallel runs apart so both feed the same window", () => {
+    const { tracker, samples } = recounter();
+    const folder = new SubagentRateFolder();
+    folder.record("sub-1", 400, tracker);
+    folder.record("sub-2", 100, tracker);
+    folder.record("sub-1", 900, tracker);
+    folder.record("sub-2", 500, tracker);
+    expect(samples).toEqual([400, 100, 500, 400]);
+  });
+
+  it("ignores a total that stops advancing or goes backwards", () => {
+    const { tracker, samples } = recounter();
+    const folder = new SubagentRateFolder();
+    folder.record("sub-1", 900, tracker);
+    folder.record("sub-1", 300, tracker);
+    folder.record("sub-1", 0, tracker);
+    folder.record("sub-1", Number.NaN, tracker);
+    folder.record("sub-1", 950, tracker);
+    // The high-water mark survives a bad sample: only real growth counts.
+    expect(samples).toEqual([900, 50]);
+  });
+
+  it("forget() lets a reused run id count from zero again", () => {
+    const { tracker, samples } = recounter();
+    const folder = new SubagentRateFolder();
+    folder.record("sub-1", 1_000, tracker);
+    folder.forget("sub-1");
+    folder.record("sub-1", 300, tracker);
+    expect(samples).toEqual([1_000, 300]);
   });
 });
 

@@ -107,6 +107,7 @@ import {
   applySessionsSnapshot,
   beginIntent,
   emptySessionsStore,
+  hasOpenSessionIntent,
   hiddenNames,
   mutationFor,
   openIntentId,
@@ -116,7 +117,7 @@ import {
 } from "./sessions-store";
 import { keepStable, sameStringSet } from "./stable-identity";
 import { StartupTimingTracker } from "./startup-timing";
-import { StreamRateTracker } from "./stream-rate";
+import { StreamRateTracker, SubagentRateFolder } from "./stream-rate";
 import {
   DEFAULT_TAB_THEME,
   type TabTheme,
@@ -146,6 +147,7 @@ import {
   noticeName,
   parseEditResult,
   subagentCallDetails,
+  subagentStartLabel,
 } from "./ui/cards";
 import type { ChangelogState } from "./ui/changelog";
 import { StoredComposer as Composer } from "./ui/composer";
@@ -2137,7 +2139,7 @@ export function applySubagentProgress(
     recentRows.push({
       id: `${ev.runId}-start`,
       kind: "process",
-      text: `Starting ${ev.skillName ?? "subagent"}...`,
+      text: `Starting ${subagentStartLabel(ev.skillName)}...`,
       status: "running",
     });
   } else if (ev.action === "tool-start") {
@@ -3434,11 +3436,13 @@ interface TabRuntimeProps {
   /** This channel's workspace session list — owned by App and shared by every
    *  channel on the same directory, so no channel can disagree with another. */
   sessionView: SessionView;
-  /** Records a delete/clear/create the user asked for on this channel's workspace. */
+  /** Records a delete/clear/create the user asked for on this channel's workspace.
+   *  `keep` names a clear-all must leave visible (sessions that cannot be deleted). */
   onSessionIntent: (
     workspaceDir: string | undefined,
     kind: SessionMutation["kind"],
     name?: string,
+    keep?: readonly string[],
   ) => void;
   /** Applies an optimistic row edit (rename/reorder) until a snapshot confirms it. */
   onSessionPatch: (
@@ -3929,6 +3933,11 @@ const TabRuntime = memo(function TabRuntime({
     // half-typed draft can't leak into the fresh session.
     setDraft("");
     setPendingImages([]);
+    // Lock the workspace NOW, not when the daemon's `creating` echo arrives: that
+    // round-trip leaves every New chat control reading idle, and a double click in
+    // the gap mints a second session. A name-less intent hides no row.
+    const workspaceDir = state.settings?.workspaceDir;
+    if (workspaceDir) onSessionIntent(workspaceDir, "create");
     // The transcript clear comes from the daemon's $session_loaded reply —
     // clearing optimistically here orphans the UI on a blank screen when the
     // RPC fails while the backend still points at the old session.
@@ -3940,9 +3949,11 @@ const TabRuntime = memo(function TabRuntime({
         severity: "error",
       });
     });
-  }, [clearAbortDraft, sessionsMutation, tabId]);
+  }, [clearAbortDraft, onSessionIntent, sessionsMutation, state.settings?.workspaceDir, tabId]);
 
   const pickWorkspace = useCallback(async () => {
+    // Browsing ends in a workspace switch, so it is locked like the picker.
+    if (sessionsMutation !== null) return;
     try {
       const picked = await openDialog({
         directory: true,
@@ -3957,7 +3968,7 @@ const TabRuntime = memo(function TabRuntime({
     } catch (err) {
       recordFrontendFailure("frontend.pick_workspace_failed", err);
     }
-  }, [clearAbortDraft, saveSettings, state.settings?.workspaceDir]);
+  }, [clearAbortDraft, saveSettings, sessionsMutation, state.settings?.workspaceDir]);
 
   const openTabWorkspaces = useMemo(() => {
     return (tabsList ?? [])
@@ -4578,6 +4589,9 @@ const TabRuntime = memo(function TabRuntime({
         newChat();
       } else if (mod && (e.key === "o" || e.key === "O")) {
         e.preventDefault();
+        // The picker is a workspace-switch operator; refuse while a session
+        // mutation is waiting for its settle.
+        if (sessionsMutation !== null) return;
         setWdAnchor(undefined);
         setWdOpen((v) => !v);
       } else if (mod && e.key === ",") {
@@ -4610,7 +4624,6 @@ const TabRuntime = memo(function TabRuntime({
     wdOpen,
     openSettingsAt,
   ]);
-
   // Stuck-label seconds are rendered by <StuckLabel> with a self-contained 1s
   // poll; keeping them out of App state avoids a whole-transcript re-render
   // every second while a turn runs, which stuttered typing in the composer.
@@ -4706,6 +4719,8 @@ const TabRuntime = memo(function TabRuntime({
   // the new session (auto-continuing only when that setting is enabled).
   const duplicateSession = useCallback(
     (mainModel: string, subagentModel: string) => {
+      // A create already in flight would stack a second session on the workspace.
+      if (sessionsMutation !== null) return;
       const md = formatConversationMarkdown(state.messages, t("app.exportUserLabel"), {
         maxToolOutputLines: 3,
       });
@@ -4713,10 +4728,19 @@ const TabRuntime = memo(function TabRuntime({
         appendNotice(t("app.toast.emptySession"));
         return;
       }
+      const workspaceDir = state.settings?.workspaceDir;
+      if (workspaceDir) onSessionIntent(workspaceDir, "create");
       sendRpc({ cmd: "duplicate_session", markdown: md, model: mainModel, subagentModel });
       appendNotice(t("app.toast.duplicatedSession"), "success");
     },
-    [state.messages, sendRpc, appendNotice],
+    [
+      appendNotice,
+      onSessionIntent,
+      sessionsMutation,
+      state.messages,
+      state.settings?.workspaceDir,
+      sendRpc,
+    ],
   );
 
   // Sessions whose agent is ACTIVELY RUNNING (a turn in flight) in any tab on
@@ -4909,11 +4933,24 @@ const TabRuntime = memo(function TabRuntime({
 
   const deleteSession = useCallback(
     (name: string) => {
+      // A running session owns a turn the daemon refuses to delete, so the click
+      // stops here instead of starting a hide it would have to undo.
       if (sessionsMutation !== null) return;
+      if (runningSessions.has(name)) {
+        appendNotice(t("app.deleteRunningRefused"), "warning");
+        return;
+      }
       onSessionIntent(state.settings?.workspaceDir, "delete", name);
       sendRpc({ cmd: "session_delete", name });
     },
-    [onSessionIntent, sessionsMutation, state.settings?.workspaceDir, sendRpc],
+    [
+      appendNotice,
+      onSessionIntent,
+      runningSessions,
+      sessionsMutation,
+      state.settings?.workspaceDir,
+      sendRpc,
+    ],
   );
 
   const clearSessions = useCallback(() => {
@@ -4922,9 +4959,25 @@ const TabRuntime = memo(function TabRuntime({
     // if its own workspace listing misses some — otherwise the rows stay hidden
     // forever and the app looks wedged.
     const names = sessions.map((session) => session.name);
-    onSessionIntent(state.settings?.workspaceDir, "clear");
-    sendRpc({ cmd: "session_clear", names });
-  }, [onSessionIntent, sessions, sessionsMutation, state.settings?.workspaceDir, sendRpc]);
+    const kept = names.filter((name) => runningSessions.has(name));
+    const doomed = names.filter((name) => !runningSessions.has(name));
+    // Nothing deletable: say so rather than start a clear that can never settle.
+    if (doomed.length === 0) {
+      appendNotice(t("app.deleteRunningRefused"), "warning");
+      return;
+    }
+    // `kept` stays visible through the whole clear: those rows are not deleted.
+    onSessionIntent(state.settings?.workspaceDir, "clear", undefined, kept);
+    sendRpc({ cmd: "session_clear", names: doomed });
+  }, [
+    appendNotice,
+    onSessionIntent,
+    runningSessions,
+    sessions,
+    sessionsMutation,
+    state.settings?.workspaceDir,
+    sendRpc,
+  ]);
 
   const reorderSession = useCallback(
     (name: string) => {
@@ -4935,10 +4988,16 @@ const TabRuntime = memo(function TabRuntime({
     [onSessionPatch, state.settings?.workspaceDir, sendRpc],
   );
 
-  const openWorkdir = useCallback((anchor: { top?: number; bottom?: number; left: number }) => {
-    setWdAnchor(anchor);
-    setWdOpen(true);
-  }, []);
+  const openWorkdir = useCallback(
+    (anchor: { top?: number; bottom?: number; left: number }) => {
+      // One workspace operator at a time: switching mid-mutation re-targets the
+      // channel waiting for the settled snapshot, so the picker stays shut.
+      if (sessionsMutation !== null) return;
+      setWdAnchor(anchor);
+      setWdOpen(true);
+    },
+    [sessionsMutation],
+  );
 
   const openSettings = useCallback(() => openSettingsAt("general"), [openSettingsAt]);
   const openAbout = useCallback(() => setAboutOpen(true), []);
@@ -5489,6 +5548,7 @@ const TabRuntime = memo(function TabRuntime({
           local={state.settings?.reasonixLocalDir}
           current={state.settings?.workspaceDir}
           anchor={wdAnchor}
+          locked={sessionsMutation !== null}
           onPick={(path) => {
             clearAbortDraft();
             // Always apply the pick to THIS tab. A workspace is not unique
@@ -6608,6 +6668,10 @@ export function App() {
   // readout. Raw `model.delta` events feed these; a throttled tick snapshots
   // them into `sessionRates` (keyed by session name) for the running rows.
   const streamRatesRef = useRef<Map<string, StreamRateTracker>>(new Map());
+  // Subagent output is this session's output too, but a child reports a per-run
+  // RUNNING total, so one folder per tab turns each run's growth into the same
+  // window the tab's own stream feeds. Dropped with that tracker.
+  const subagentRatesRef = useRef<Map<string, SubagentRateFolder>>(new Map());
   const [sessionRates, setSessionRates] = useState<Map<string, number>>(new Map());
   const rafScheduledRef = useRef(false);
   const startupStderrRef = useRef<string[]>([]);
@@ -6627,9 +6691,14 @@ export function App() {
     if (changed) setSessionsStore(next);
   }, []);
   const beginSessionIntent = useCallback(
-    (workspaceDir: string | undefined, kind: SessionMutation["kind"], name?: string) => {
+    (
+      workspaceDir: string | undefined,
+      kind: SessionMutation["kind"],
+      name?: string,
+      keep?: readonly string[],
+    ) => {
       commitSessionsStore(
-        beginIntent(sessionsStoreRef.current, workspaceDir, { kind, name }),
+        beginIntent(sessionsStoreRef.current, workspaceDir, { kind, name, keep }),
         true,
       );
     },
@@ -6989,7 +7058,24 @@ export function App() {
       pendingEventsRef.current.delete(tabId);
       pendingDeltasRef.current.delete(tabId);
       streamRatesRef.current.delete(tabId);
+      subagentRatesRef.current.delete(tabId);
     };
+
+    /** One entry per tab, created on first use — the single rule for every per-tab
+     *  live-rate map, so neither side can forget to create its entry. */
+    function perTab<T>(map: Map<string, T>, tabId: string, create: () => T): T {
+      const existing = map.get(tabId);
+      if (existing) return existing;
+      const created = create();
+      map.set(tabId, created);
+      return created;
+    }
+    /** The tab's live rate window, which `model.final` resets so every
+     *  provider-output channel shares one window. */
+    const rateTrackerFor = (tabId: string): StreamRateTracker =>
+      perTab(streamRatesRef.current, tabId, () => new StreamRateTracker());
+    const subagentRateFolderFor = (tabId: string): SubagentRateFolder =>
+      perTab(subagentRatesRef.current, tabId, () => new SubagentRateFolder());
 
     const setup = async () => {
       const tracker = new StartupTimingTracker();
@@ -7151,15 +7237,27 @@ export function App() {
             if (ev.type === "model.delta" && tabId) {
               // Feed every provider-output channel into the live rate tracker
               // (content, reasoning, and tool-call arguments all consume tokens).
-              const rateTracker = streamRatesRef.current.get(tabId) ?? new StreamRateTracker();
-              rateTracker.record(ev.text.length);
-              streamRatesRef.current.set(tabId, rateTracker);
+              rateTrackerFor(tabId).record(ev.text.length);
               if (ev.channel === "content" || ev.channel === "reasoning") {
                 const bucket = pendingDeltasRef.current.get(tabId) ?? [];
                 bucket.push({ turn: ev.turn, channel: ev.channel, text: ev.text });
                 pendingDeltasRef.current.set(tabId, bucket);
                 scheduleFlush();
                 return;
+              }
+            }
+
+            // A subagent's output IS this session's output: folding it into the
+            // tab's window makes the sidebar read agent + subagents.
+            if (ev.type === "subagent.progress" && tabId) {
+              const folder = subagentRateFolderFor(tabId);
+              if (ev.action === "start") folder.forget(ev.runId);
+              else if (ev.action === "stream") {
+                folder.record(
+                  ev.runId,
+                  (ev.outputChars ?? 0) + (ev.reasoningChars ?? 0),
+                  rateTrackerFor(tabId),
+                );
               }
             }
 
@@ -7410,8 +7508,12 @@ export function App() {
   // agents are active in it. Every mounted TabRuntime reports its own busy.
   const reportTabBusy = useCallback((tabId: string, busy: boolean) => {
     // A tab that stopped running has no live stream — drop its tracker so the
-    // next turn can't read a stale window.
-    if (!busy) streamRatesRef.current.delete(tabId);
+    // next turn can't read a stale window, and with it the per-run subagent
+    // totals that fed that window.
+    if (!busy) {
+      streamRatesRef.current.delete(tabId);
+      subagentRatesRef.current.delete(tabId);
+    }
     setTabs((prev) => {
       let changed = false;
       const next = prev.map((t) => {
@@ -7551,13 +7653,26 @@ export function App() {
   }, []);
 
   const onRemoveWorkspace = useCallback((path: string) => {
+    // Forgetting a workspace closes every tab on it, so it cannot run while any
+    // channel is mid-mutation: read the shared store, not one channel's flag.
+    if (hasOpenSessionIntent(sessionsStoreRef.current)) {
+      const target = activeTabIdRef.current || tabsRef.current[0]?.id;
+      if (target) {
+        deliverToTab(target, {
+          t: "push_notice",
+          text: t("app.workspaceBusyNotice"),
+          severity: "warning",
+        });
+      }
+      return;
+    }
     for (const d of dispatchersRef.current.values()) {
       d({ t: "workspace_recent_removed", path });
     }
     rpcSend({ cmd: "workspace_recent_remove", path }).catch((err) =>
       recordFrontendFailure("frontend.workspace_forget_failed", err),
     );
-  }, []);
+  }, [deliverToTab]);
 
   if (startupFailure && tabs.length === 0) {
     return <StartupFailure details={startupFailure.details} onRetry={retryStartup} />;

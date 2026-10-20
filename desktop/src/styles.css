@@ -1646,6 +1646,8 @@ html[data-platform="macos"] .titlebar .tb-left {
 .side-section .label .clear-all-btn:disabled {
   opacity: 0.5;
   cursor: default;
+  background: transparent;
+  color: var(--muted);
 }
 .side-section .label .clear-all-btn {
   margin-left: auto;
@@ -1823,6 +1825,15 @@ html[data-platform="macos"] .titlebar .tb-left {
 .session-item .delete-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+/* Locked delete control: visible but plainly inert. Declared after the hover
+   rules because the row-hover opacity outranks the global button:disabled. */
+.session-item .delete-btn:disabled,
+.session-item .delete-btn:disabled:hover {
+  opacity: 0.35;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
 }
 .session-item .rename-btn:hover,
 .session-item .reorder-btn:hover {
@@ -2026,6 +2037,10 @@ html[data-platform="macos"] .titlebar .tb-left {
   font-weight: 500;
   font-size: 13px;
   word-break: break-all;
+}
+.session-delete-popover .msg .note {
+  color: var(--muted-2);
+  font-size: 12px;
 }
 .session-delete-popover .actions {
   display: flex;

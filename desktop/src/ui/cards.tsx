@@ -1020,6 +1020,13 @@ export function isSubagentTool(name: string): boolean {
   return SUBAGENT_TOOLS.has(name);
 }
 
+/** What a run's first activity row announces: the skill it runs, or "subagent"
+ *  when that name is only the spawn tool's — an argless spawn has no skill, and
+ *  naming the tool reads as an event rather than work in progress. */
+export function subagentStartLabel(skillName?: string): string {
+  return skillName && !isSubagentTool(skillName) ? skillName : "subagent";
+}
+
 /** The instruction a subagent call was created with, verbatim. A progress event
  *  carries only a cut-down preview of it (30 chars from the child loop, 120 from
  *  the desktop projection), so the card reads the real text back from the call's
@@ -1129,7 +1136,7 @@ function SubagentActivityRows({ run }: { run: import("../App").SubagentRunProgre
           {
             id: "init",
             kind: "process" as const,
-            text: `Starting ${run.skillName ?? "subagent"}...`,
+            text: `Starting ${subagentStartLabel(run.skillName)}...`,
           },
         ];
 

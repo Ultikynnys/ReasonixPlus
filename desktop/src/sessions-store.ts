@@ -180,23 +180,36 @@ export function openIntentId(store: SessionsStore, workspaceDir?: string): numbe
   return latestIntent(store, workspaceDir)?.id ?? null;
 }
 
+/** True while ANY workspace holds an open intent. App-global operators (forgetting a
+ *  recent workspace, which closes every tab on that path) have no single channel to
+ *  ask, so they read this instead of guessing per channel. */
+export function hasOpenSessionIntent(store: SessionsStore): boolean {
+  for (const entry of store.byWorkspace.values()) {
+    if (entry.intents.length > 0) return true;
+  }
+  return false;
+}
+
 /** Records a mutation the user asked for. `delete` hides one name, `clear` hides
- *  everything on screen, `create` hides nothing and waits for its session to list. */
+ *  everything on screen except the `keep` names (sessions a delete must preserve,
+ *  e.g. one with a running agent), `create` hides nothing and waits for its session
+ *  to list. */
 export function beginIntent(
   store: SessionsStore,
   workspaceDir: string | undefined,
-  request: { kind: SessionMutation["kind"]; name?: string },
+  request: { kind: SessionMutation["kind"]; name?: string; keep?: readonly string[] },
 ): SessionsStore {
   const key = normalizeWorkspacePath(workspaceDir);
   const entry = entryFor(store, key);
   const id = store.nextIntentId + 1;
+  const keep = new Set(request.keep ?? []);
   const hide =
     request.kind === "delete"
-      ? request.name === undefined
+      ? request.name === undefined || keep.has(request.name)
         ? []
         : [request.name]
       : request.kind === "clear"
-        ? entry.items.map((row) => row.name)
+        ? entry.items.map((row) => row.name).filter((row) => !keep.has(row))
         : [];
   const intent: SessionIntent = {
     id,

@@ -8,6 +8,7 @@ import {
   beginIntent,
   derivedItems,
   emptySessionsStore,
+  hasOpenSessionIntent,
   hiddenNames,
   mutationFor,
   openIntentId,
@@ -189,6 +190,18 @@ describe("create intents", () => {
     const landed = applySessionsSnapshot(unrelated.store, WORKSPACE, snap(3, [A, B]));
     expect(mutationFor(landed.store, WORKSPACE)).toBeNull();
   });
+
+  it("locks the workspace before the new session even has a name", () => {
+    // Recorded at click time: the daemon's `creating` echo lands a round-trip
+    // later, and that gap is exactly when a second New chat slips through.
+    const creating = beginIntent(confirmed([A]), WORKSPACE, { kind: "create" });
+    expect(mutationFor(creating, WORKSPACE)?.kind).toBe("create");
+    expect(names(visibleSessions(creating, WORKSPACE))).toEqual(["a"]);
+
+    // No name to wait for, so the next authoritative snapshot settles it.
+    const settled = applySessionsSnapshot(creating, WORKSPACE, snap(2, [A]));
+    expect(mutationFor(settled.store, WORKSPACE)).toBeNull();
+  });
 });
 
 describe("bounded escape", () => {
@@ -223,6 +236,45 @@ describe("clear intents", () => {
     const settled = applySessionsSnapshot(clearing, WORKSPACE, snap(2, []));
     expect(visibleSessions(settled.store, WORKSPACE)).toEqual([]);
     expect(mutationFor(settled.store, WORKSPACE)).toBeNull();
+  });
+
+  it("keeps a protected row visible through the whole clear", () => {
+    // A session with a running agent is refused by the daemon, so a row hidden
+    // here would blink out and come straight back.
+    const clearing = beginIntent(confirmed([A, B]), WORKSPACE, { kind: "clear", keep: ["a"] });
+    expect(hiddenNames(clearing, WORKSPACE)).toEqual(["b"]);
+    expect(names(visibleSessions(clearing, WORKSPACE))).toEqual(["a"]);
+    expect(mutationFor(clearing, WORKSPACE)).toEqual({ kind: "clear" });
+  });
+
+  it("never hides a kept name even for a single delete", () => {
+    const store = beginIntent(confirmed([A, B]), WORKSPACE, {
+      kind: "delete",
+      name: "a",
+      keep: ["a"],
+    });
+    expect(hiddenNames(store, WORKSPACE)).toEqual([]);
+    expect(names(visibleSessions(store, WORKSPACE))).toEqual(["b", "a"]);
+  });
+});
+
+describe("hasOpenSessionIntent", () => {
+  it("sees an open mutation on ANY workspace, and clears once it settles", () => {
+    // The app-global workspace-forget operator has no single channel to ask, so
+    // this is the one fact it reads.
+    expect(hasOpenSessionIntent(emptySessionsStore())).toBe(false);
+
+    const creating = beginIntent(confirmed([A]), WORKSPACE, { kind: "create" });
+    expect(hasOpenSessionIntent(creating)).toBe(true);
+
+    const settled = applySessionsSnapshot(creating, WORKSPACE, snap(2, [A]));
+    expect(hasOpenSessionIntent(settled.store)).toBe(false);
+  });
+
+  it("reports a mutation booked on another workspace too", () => {
+    const deleting = beginIntent(confirmed([A]), WORKSPACE, { kind: "delete", name: "a" });
+    const other = beginIntent(deleting, "/elsewhere", { kind: "create", name: "x" });
+    expect(hasOpenSessionIntent(other)).toBe(true);
   });
 });
 

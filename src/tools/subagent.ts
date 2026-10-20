@@ -907,6 +907,11 @@ export function registerSubagentTool(
         ...(billing?.measureQuota ? { measureQuota: billing.measureQuota } : {}),
         // The whitelist IS the child's tool set; absent means "inherit mine".
         ...(tools.length > 0 ? { allowedTools: tools } : {}),
+        // This call's own identity, so every progress event names the card that
+        // spawned it. Two parallel spawns in one turn are otherwise
+        // indistinguishable and the UI cannot attach either run's rows.
+        ...(ctx?.callId ? { parentCallId: ctx.callId } : {}),
+        ...(ctx?.turn !== undefined ? { parentTurn: ctx.turn } : {}),
         parentSignal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
         inherited: opts.inherited?.(),
       });

@@ -54,3 +54,28 @@ export function formatTokensPerSecond(rate: number): string {
   if (!Number.isFinite(rate) || rate <= 0) return "0";
   return rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1);
 }
+
+/** Folds subagent output into the session's own rate window. A child reports its
+ *  output as a per-run RUNNING total, so each sample is the growth since that
+ *  run's last one; a total that stops advancing records nothing. */
+export class SubagentRateFolder {
+  /** Highest total seen per run, so a stale or repeated sample can never count
+   *  the same characters twice. */
+  private totals = new Map<string, number>();
+
+  /** Forget a run's total: its id is starting fresh, so the next sample counts
+   *  whole instead of inheriting a finished run's high-water mark. */
+  forget(runId: string): void {
+    this.totals.delete(runId);
+  }
+
+  /** Record the growth of one run's cumulative output characters into `tracker`. */
+  record(runId: string, total: number, tracker: StreamRateTracker, now = Date.now()): void {
+    if (!Number.isFinite(total) || total <= 0) return;
+    const previous = this.totals.get(runId) ?? 0;
+    if (total > previous) {
+      this.totals.set(runId, total);
+      tracker.record(total - previous, now);
+    }
+  }
+}

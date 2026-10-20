@@ -15,6 +15,7 @@ function WorkdirRow({
   icon,
   isCurrent,
   canRemove,
+  locked,
   onPick,
   onRemove,
 }: {
@@ -23,12 +24,21 @@ function WorkdirRow({
   icon: React.ReactNode;
   isCurrent: boolean;
   canRemove: boolean;
+  /** A session mutation is in flight: the row switches nothing and removes nothing. */
+  locked: boolean;
   onPick: () => void;
   onRemove: () => void;
 }) {
   const name = label ?? path.split(/[\\/]/).filter(Boolean).pop() ?? path;
   return (
-    <div className="wd-row" onClick={onPick} onKeyDown={activationHandler(onPick)} title={path}>
+    <div
+      className="wd-row"
+      onClick={locked ? undefined : onPick}
+      onKeyDown={locked ? undefined : activationHandler(onPick)}
+      title={path}
+      aria-disabled={locked || undefined}
+      data-locked={locked ? "true" : undefined}
+    >
       <span className="ic">{icon}</span>
       <div className="b">
         <div className="p">{name}</div>
@@ -44,6 +54,7 @@ function WorkdirRow({
           className="wd-del"
           title={t("workdir.removeRecent")}
           aria-label={t("workdir.removeRecent")}
+          disabled={locked}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
@@ -73,6 +84,7 @@ export function WorkdirPop({
   onPick,
   onRemove,
   onBrowse,
+  locked = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -85,6 +97,9 @@ export function WorkdirPop({
   onPick: (path: string) => void;
   onRemove?: (path: string) => void;
   onBrowse: () => void;
+  /** A session is being created or deleted: both switching and forgetting would
+   *  interleave with the settle it is waiting for, so the popover turns inert. */
+  locked?: boolean;
 }) {
   useLang();
   const [query, setQuery] = useState("");
@@ -155,6 +170,7 @@ export function WorkdirPop({
               icon={<I.terminal size={12} />}
               isCurrent={local === current}
               canRemove={false}
+              locked={locked}
               onPick={() => {
                 if (local !== current) onPick(local);
                 onClose();
@@ -183,6 +199,7 @@ export function WorkdirPop({
                 icon={<I.folder size={12} />}
                 isCurrent={isCurrent}
                 canRemove={Boolean(onRemove)}
+                locked={locked}
                 onPick={() => {
                   if (!isCurrent) onPick(p);
                   onClose();
@@ -196,6 +213,7 @@ export function WorkdirPop({
           <button
             type="button"
             className="btn ghost"
+            disabled={locked}
             onClick={() => {
               onBrowse();
               onClose();

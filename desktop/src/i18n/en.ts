@@ -637,6 +637,10 @@ export const en = {
       one: "Deleting session…",
       bulk: "Deleting {count} sessions…",
     },
+    deleteRunningRefused:
+      "That session is running. Stop its agent first, then delete it.",
+    workspaceBusyNotice:
+      "A session here is being created or deleted. Wait for it to finish, then change the workspace.",
     creatingSession: "Creating session…",
     setup: {
       welcome: "Welcome to Reasonix+",
@@ -1094,8 +1098,11 @@ export const en = {
     tokensPerSecond: "{rate} tok/s",
     tokensPerSecondTitle: "Live output rate from the provider",
     deleteSession: "Delete session",
+    deleteRunningBlocked: "Stop this session's agent to delete it",
+    runningSessionRow: "{name} · running, delete disabled",
     clearAllSessions: "Clear all sessions",
     clearAllConfirm: "{count} session(s) for this workspace",
+    clearAllKeepsRunning: "{count} running session(s) will be kept",
     deleteAll: "Delete all",
     moveToTop: "Move to top",
     planTag: "Plan #{index}",

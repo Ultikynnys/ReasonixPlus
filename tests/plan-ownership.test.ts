@@ -1,5 +1,5 @@
 /** Plan ownership: one workspace plan belongs to exactly one live session, while two
- *  sessions may still run two different plans in the same workspace in parallel. */
+ *  sessions may run two plans in one workspace in parallel. A deleted session holds none. */
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { PlanRepository } from "../src/code/plans.js";
 import { PauseGate } from "../src/core/pause-gate.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { ImmutablePrefix } from "../src/memory/runtime.js";
+import { deleteSession, ensureSessionDir } from "../src/memory/session.js";
 import { ToolRegistry } from "../src/tools.js";
 import { registerPlanTool } from "../src/tools/plan.js";
 import type { ChatMessage } from "../src/types.js";
@@ -65,6 +66,7 @@ it("runs one plan per session in parallel in a single workspace", () => {
 
 it("refuses a plan a live session is working and keeps it out of the asking session", () => {
   const repo = new PlanRepository("exclusive");
+  ensureSessionDir("s1");
   const plan = repo.propose("Only one driver", steps, undefined, "s1");
   repo.verdict(plan.id, "active", "s1");
 
@@ -85,6 +87,7 @@ it("refuses a plan a live session is working and keeps it out of the asking sess
 
 it("hands a plan over once the claiming session is no longer live in this process", () => {
   const repo = new PlanRepository("handover");
+  ensureSessionDir("s1");
   const plan = repo.propose("Tab closes mid-plan", steps, undefined, "s1");
   repo.verdict(plan.id, "active", "s1");
 
@@ -104,6 +107,7 @@ it("hands a plan over once the claiming session is no longer live in this proces
 
 it("hands a plan over once the claiming process is dead", () => {
   const repo = new PlanRepository("dead-owner");
+  ensureSessionDir("s1");
   const plan = repo.propose("Owner crashed", steps, undefined, "s1");
   repo.verdict(plan.id, "active", "s1");
   // A pid that cannot be running: the claim is a leftover, not a live holder.
@@ -117,6 +121,7 @@ it("hands a plan over once the claiming process is dead", () => {
 
 it("keeps a plan locked against takeover while its claiming process is alive", () => {
   const repo = new PlanRepository("live-owner");
+  ensureSessionDir("s1");
   const plan = repo.propose("Other process", steps, undefined, "s1");
   repo.verdict(plan.id, "active", "s1");
   // The parent process is alive and is never this process, so the claim stands.
@@ -128,8 +133,117 @@ it("keeps a plan locked against takeover while its claiming process is alive", (
   expect(() => repo.activate(plan.id, "s2")).toThrow(/being worked on by session "s1"/);
 });
 
+it("makes a plan available again when the session that worked it is deleted", () => {
+  const repo = new PlanRepository("session-deleted");
+  ensureSessionDir("s1");
+  ensureSessionDir("s2");
+  const plan = repo.propose("Deleted mid-plan", steps, undefined, "s1");
+  repo.verdict(plan.id, "active", "s1");
+  expect(repo.claimable(plan.id, "s2")?.owner.session).toBe("s1");
+
+  deleteSession("s1");
+
+  // The claim is a leftover, so the plan belongs to nobody: no session is refused it,
+  // whatever pid the stale claim carries, and s2 takes it over.
+  expect(repo.claimable(plan.id, "s2")).toBeNull();
+  expect(repo.activate(plan.id, "s2").claim).toMatchObject({
+    session: "s2",
+    pid: process.pid,
+  });
+  expect(repo.open(plan.id).claim?.session).toBe("s2");
+  expect(repo.activeFor("s2")?.id).toBe(plan.id);
+});
+
+it("lets any session adopt the active plan a deleted session left behind", () => {
+  const repo = new PlanRepository("orphan-adopt");
+  ensureSessionDir("s1");
+  ensureSessionDir("s2");
+  const plan = repo.propose("Orphan", steps, undefined, "s1");
+  repo.verdict(plan.id, "active", "s1");
+  deleteSession("s1");
+
+  // No session is refused the plan any more, so the first one that asks picks it up...
+  expect(repo.claimable(plan.id, "s2")).toBeNull();
+  expect(repo.activeFor("s2", { adoptUnclaimed: true })?.id).toBe(plan.id);
+  expect(repo.open(plan.id).claim?.session).toBe("s2");
+  // ...and the adoption is exclusive: a third session neither adopts nor takes it.
+  expect(repo.activeFor("s3", { adoptUnclaimed: true })).toBeNull();
+  expect(repo.claimable(plan.id, "s3")?.owner.session).toBe("s2");
+  // One plan per session, and the store stays valid: asking again returns that plan.
+  expect(repo.activeFor("s2", { adoptUnclaimed: true })?.id).toBe(plan.id);
+  expect(new PlanRepository("orphan-adopt").list().map((p) => p.claim?.session)).toEqual(["s2"]);
+});
+
+it("stops attributing a plan to a session that was deleted", () => {
+  const repo = new PlanRepository("orphan-projection");
+  ensureSessionDir("s1");
+  const plan = repo.propose("Orphan", steps, undefined, "s1");
+  repo.verdict(plan.id, "active", "s1");
+  expect(repo.list()[0]).toMatchObject({ id: plan.id, claim: { session: "s1" } });
+
+  deleteSession("s1");
+
+  // Every read surface answers "no owner", so no sidebar can label the plan with a
+  // session that no longer exists — even before a session takes the plan over.
+  expect(repo.list()[0]?.claim).toBeUndefined();
+  expect(repo.open(plan.id).claim).toBeUndefined();
+  expect(repo.newestActivePlan()?.claim).toBeUndefined();
+});
+
+it("holds an unnamed owner's plan on its pid, having no session record to check", () => {
+  const repo = new PlanRepository("anonymous-owner");
+  const plan = repo.propose("Owned by an embed", steps, undefined, "s1");
+  repo.verdict(plan.id, "active", "s1");
+  // An unnamed caller (library embed) never has a session folder by design.
+  patchPlan(repo.path, plan.id, (record) => {
+    record.claim = {
+      session: `anonymous-${process.ppid}`,
+      pid: process.ppid,
+      since: new Date().toISOString(),
+    };
+  });
+
+  expect(repo.claimable(plan.id, "s2")?.owner.session).toBe(`anonymous-${process.ppid}`);
+  expect(() => repo.activate(plan.id, "s2")).toThrow(/being worked on by session/);
+});
+
+it("keeps a live-but-idle session's plan out of adoption until it is deleted", () => {
+  const repo = new PlanRepository("idle-owner");
+  ensureSessionDir("s1");
+  const plan = repo.propose("Idle owner", steps, undefined, "s1");
+  repo.verdict(plan.id, "active", "s1");
+
+  // The session still exists, so it may resume: nobody adopts the plan out from under it.
+  expect(repo.activeFor("s2", { adoptUnclaimed: true })).toBeNull();
+
+  deleteSession("s1");
+  expect(repo.activeFor("s2", { adoptUnclaimed: true })?.id).toBe(plan.id);
+});
+
+it("refreshes the claim's pid when the owning session advances its own plan", () => {
+  const repo = new PlanRepository("pid-refresh");
+  ensureSessionDir("s1");
+  const plan = repo.propose("Resumed", steps, undefined, "s1");
+  repo.verdict(plan.id, "active", "s1");
+  // A resumed session: same name, an EARLIER process's pid in the stored claim.
+  patchPlan(repo.path, plan.id, (record) => {
+    record.claim = { session: "s1", pid: process.ppid, since: "2026-01-01T00:00:00.000Z" };
+  });
+
+  repo.complete(plan.id, { kind: "step_completed", stepId: "one", result: "Done" }, "s1");
+
+  // The takeover signal now names the process that drove the step, and the takeover time
+  // is preserved, so a recycled pid can never stand in for a live holder of this plan.
+  expect(repo.open(plan.id).claim).toMatchObject({
+    session: "s1",
+    pid: process.pid,
+    since: "2026-01-01T00:00:00.000Z",
+  });
+});
+
 it("adopts an unclaimed pre-ownership plan exactly once", () => {
   const repo = new PlanRepository("adopt");
+  ensureSessionDir("s1");
   const plan = repo.propose("Imported plan", steps);
   repo.verdict(plan.id, "active");
 
@@ -159,6 +273,7 @@ it("keeps its own plan across a repository recreation and re-reads it", () => {
 
 it("treats a probe that cannot answer as a live owner", () => {
   const repo = new PlanRepository("probe-fault");
+  ensureSessionDir("s1");
   const plan = repo.propose("Guarded", steps, undefined, "s1");
   repo.verdict(plan.id, "active", "s1");
   setLiveSessionProbe(() => {
@@ -251,6 +366,7 @@ async function submitted(
 it("answers a session asking for another live session's plan with a reject", async () => {
   const tools = registerPlanTool(new ToolRegistry());
   const workspace = "tool-ownership";
+  ensureSessionDir("s1");
   const planId = await submitted(tools, workspace, "s1", "Owned by s1");
 
   const activated = String(
@@ -290,6 +406,7 @@ it("answers a session asking for another live session's plan with a reject", asy
 it("rejects a foreign planId even when the asking session has its own plan", async () => {
   const tools = registerPlanTool(new ToolRegistry());
   const workspace = "two-own-plans";
+  ensureSessionDir("s1");
   const theirs = await submitted(tools, workspace, "s1", "Owned by s1");
   await submitted(tools, workspace, "s2", "Owned by s2");
 
