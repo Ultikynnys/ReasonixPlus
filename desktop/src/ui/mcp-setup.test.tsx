@@ -11,33 +11,72 @@ const servers = [
   { name: "blender", enabled: false, builtin: false },
 ];
 
+function renderDialog({
+  list = servers,
+  subagents = false,
+}: { list?: typeof servers; subagents?: boolean } = {}) {
+  const onConfirm = vi.fn();
+  const onCancel = vi.fn();
+  render(
+    <McpSetupDialog
+      servers={list}
+      subagents={subagents}
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+    />,
+  );
+  return { onConfirm, onCancel };
+}
+
 describe("McpSetupDialog", () => {
   it("invokes onCancel from the top-right X", () => {
-    const onCancel = vi.fn();
-    render(<McpSetupDialog servers={servers} onConfirm={vi.fn()} onCancel={onCancel} />);
+    const { onCancel } = renderDialog();
     fireEvent.click(screen.getByLabelText("Cancel"));
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
   it("starts from the Settings defaults and reports the enabled set on confirm", () => {
-    const onConfirm = vi.fn();
-    render(<McpSetupDialog servers={servers} onConfirm={onConfirm} onCancel={vi.fn()} />);
+    const { onConfirm } = renderDialog();
     fireEvent.click(screen.getByText("Confirm and start"));
-    expect(onConfirm).toHaveBeenCalledWith(["playwright"]);
+    expect(onConfirm).toHaveBeenCalledWith(["playwright"], false);
   });
 
   it("adds a toggled server to the confirmed set", () => {
-    const onConfirm = vi.fn();
-    render(<McpSetupDialog servers={servers} onConfirm={onConfirm} onCancel={vi.fn()} />);
+    const { onConfirm } = renderDialog();
     fireEvent.click(screen.getByRole("switch", { name: "blender" }));
     fireEvent.click(screen.getByText("Confirm and start"));
-    const enabled = onConfirm.mock.calls[0]?.[0] as string[];
+    const [enabled, subagents] = onConfirm.mock.calls[0] as [string[], boolean];
     expect([...enabled].sort()).toEqual(["blender", "playwright"]);
+    expect(subagents).toBe(false);
+  });
+
+  it("pre-fills the subagent switch from the session default", () => {
+    const { onConfirm } = renderDialog({ subagents: true });
+    const toggle = screen.getByRole("switch", { name: "Subagents" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByText("Confirm and start"));
+    expect(onConfirm).toHaveBeenCalledWith(["playwright"], true);
+  });
+
+  it("reports the subagent choice independently of the server set", () => {
+    const { onConfirm } = renderDialog({ subagents: false });
+    fireEvent.click(screen.getByRole("switch", { name: "Subagents" }));
+    fireEvent.click(screen.getByText("Confirm and start"));
+    const [enabled, subagents] = onConfirm.mock.calls[0] as [string[], boolean];
+    expect(enabled).toEqual(["playwright"]);
+    expect(subagents).toBe(true);
+  });
+
+  it("still offers the subagent switch when no MCP server is configured", () => {
+    const { onConfirm } = renderDialog({ list: [], subagents: false });
+    expect(screen.getByText(/None configured/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Subagents" }));
+    fireEvent.click(screen.getByText("Confirm and start"));
+    expect(onConfirm).toHaveBeenCalledWith([], true);
   });
 
   it("greys out the confirm button and throbs while the session starts", () => {
-    const onConfirm = vi.fn();
-    render(<McpSetupDialog servers={servers} onConfirm={onConfirm} onCancel={vi.fn()} />);
+    const { onConfirm } = renderDialog();
     const confirm = screen.getByRole("button", { name: /Confirm and start/ });
     expect(confirm.hasAttribute("disabled")).toBe(false);
     expect(confirm.querySelector(".btn-throbber")).toBeNull();
@@ -52,8 +91,7 @@ describe("McpSetupDialog", () => {
   });
 
   it("ignores extra confirm clicks while the session is starting", () => {
-    const onConfirm = vi.fn();
-    render(<McpSetupDialog servers={servers} onConfirm={onConfirm} onCancel={vi.fn()} />);
+    const { onConfirm } = renderDialog();
     const confirm = screen.getByRole("button", { name: /Confirm and start/ });
     fireEvent.click(confirm);
     fireEvent.click(confirm);

@@ -65,6 +65,7 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     mcpSpecs: [],
     mcpBridged: false,
     mcpSetup: null,
+    mcpSetupRevision: 0,
     mcpExtensionStatus: null,
     mcpExtensionCheck: null,
     mailAuth: null,

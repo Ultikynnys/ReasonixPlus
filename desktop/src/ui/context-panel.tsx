@@ -1581,21 +1581,6 @@ function CtxParameters({
       />
 
       <CtxToggleRow
-        label={t("contextPanel.subagents")}
-        desc={
-          settings?.enableSubagents === true
-            ? t("contextPanel.subagentsEnabledDesc")
-            : t("contextPanel.subagentsDisabledDesc")
-        }
-        onLabel={t("contextPanel.subagentsEnabled")}
-        offLabel={t("contextPanel.subagentsDisabled")}
-        enabled={settings?.enableSubagents === true}
-        onToggle={(enabled) => onSaveSettings?.({ enableSubagents: enabled })}
-        onAriaLabel={t("contextPanel.enableSubagents")}
-        offAriaLabel={t("contextPanel.disableSubagents")}
-      />
-
-      <CtxToggleRow
         label={t("contextPanel.elevation")}
         desc={
           settings?.elevationEnabled === true

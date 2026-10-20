@@ -631,11 +631,13 @@ export interface McpSetupServer {
   builtin: boolean;
 }
 
-/** Fresh-chat MCP setup prompt: the configured servers the user must confirm
- *  before the session can run. */
+/** Session-start setup prompt: the capabilities a fresh chat must confirm before it
+ *  can run. Both the MCP set and the subagent flag are frozen by that one answer. */
 export interface McpSetupEvent {
   type: "$mcp_setup";
   servers: McpSetupServer[];
+  /** Pre-filled subagent flag (the Settings default for new chats). */
+  subagents: boolean;
 }
 
 /** Single source of truth for managed Playwright browser modes; the daemon, the UI
@@ -1710,8 +1712,9 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "mcp_specs_add"; spec: string }
   | { cmd: "mcp_specs_remove"; spec: string }
   | { cmd: "mcp_specs_toggle"; name: string; disabled: boolean }
-  /** Confirm a fresh chat's enabled MCP servers, freezing its set and unlocking it. */
-  | { cmd: "mcp_session_configure"; enabled: string[] }
+  /** Confirm a fresh chat's capabilities — enabled MCP servers and the subagent flag —
+   *  freezing both in its session meta and unlocking it. */
+  | { cmd: "mcp_session_configure"; enabled: string[]; subagents: boolean }
   /** Abandon a fresh chat before its MCP set is confirmed — deletes that session; its workspace tab stays. */
   | { cmd: "mcp_session_cancel" }
   | { cmd: "mcp_extension_status" }

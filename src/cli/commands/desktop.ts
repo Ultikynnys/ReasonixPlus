@@ -3188,6 +3188,21 @@ function sessionMcpFromConfig(rootDir: string): SessionMcpState {
   );
 }
 
+/** The capability set a session-start confirm freezes: every configured server the
+ *  user did not enable is recorded disabled, and the subagent flag is exactly what was
+ *  picked. One writer, so a session's two capabilities cannot disagree. */
+export function sessionSetupMeta(
+  configuredServers: readonly string[],
+  enabledServers: readonly string[],
+  subagents: boolean,
+): Pick<SessionMeta, "mcp" | "subagents"> {
+  const enabled = new Set(enabledServers);
+  return {
+    mcp: makeSessionMcpState(configuredServers.filter((name) => !enabled.has(name))),
+    subagents: subagents === true,
+  };
+}
+
 /** The active session's stored MCP state. `undefined` = a session created before
  *  the field existed — callers fall back to the config default. */
 function sessionMcpState(name: string): SessionMcpState | undefined {
@@ -3231,16 +3246,29 @@ function effectiveMcpSpecs(tab: Tab): McpServerSpec[] {
   );
 }
 
-/** Ask the frontend to pick this chat's enabled MCP servers before it can send.
- *  Emits the configured servers with their Settings default state; the composer
- *  stays disabled (no `$ready`) until `mcp_session_configure`. */
-function emitMcpSetup(tab: Tab): void {
+/** Arm a session's setup gate: it withholds `$ready` until the picker is confirmed, and
+ *  re-emits the pre-fill because a failed confirm re-arms instead of stranding the UI. */
+function armSessionGate(tab: Tab): void {
+  tab.mcpSetupPending = true;
   const servers = namedMcpSpecs(tab.rootDir).map((spec) => ({
     name: spec.name,
     enabled: spec.disabled !== true,
     builtin: isManagedMcpSpec(spec),
   }));
-  emit({ type: "$mcp_setup", servers }, tab.id);
+  emitTabDiagnostic(tab, "tab.setup.required", { reason: "mcp-setup" }, "info");
+  emit({ type: "$mcp_setup", servers, subagents: tab.subagents }, tab.id);
+}
+
+/** Report a failed confirm and re-arm the gate. The frontend dismisses the picker only
+ *  on `$ready` / `$needs_setup`, so a silent failure strands it forever; re-confirming is
+ *  safe because the capability patch is a full snapshot. */
+function failSessionSetup(tab: Tab, err: unknown): void {
+  emitDiagnosticError("mcp.session.configure.failed", err, {
+    tabId: tab.id,
+    details: tabDiagnosticState(tab),
+  });
+  emit({ type: "$error", message: `mcp_session_configure: ${messageOf(err)}` }, tab.id);
+  armSessionGate(tab);
 }
 
 function emitMcpSpecs(tab: Tab): void {
@@ -4344,9 +4372,9 @@ interface Tab {
   mcpRuntime: McpRuntime | null;
   mcpStatuses: Map<string, { kind: McpSpecStatus; reason?: string; toolCount?: number }>;
   mcpBridgePromise: Promise<void> | null;
-  /** Fresh chat: true until the user confirms this chat's enabled MCP servers.
-   *  Withholds `$ready` (composer disabled) and defers the runtime + bridge
-   *  until `mcp_session_configure`. */
+  /** Fresh chat: true until the user confirms this chat's capabilities — its enabled MCP
+   *  servers and its subagent flag. Withholds `$ready` (composer disabled) and defers the
+   *  runtime + bridge until `mcp_session_configure`. */
   mcpSetupPending: boolean;
   /** True while a session switch is in progress — prevents stale events from the old turn. */
   switching: boolean;
@@ -4854,6 +4882,9 @@ export function tabHasCredential(tab: Tab): boolean {
 /** Re-emit the setup/ready gate for a tab after a credential or model change —
  *  `$ready` when the tab is now usable, `$needs_setup` when it regressed. */
 function emitTabGate(tab: Tab): void {
+  // An unanswered session-start picker owns the gate: `$ready` would close it and
+  // leave the confirm unsent, so the chat could run without its frozen set.
+  if (tab.mcpSetupPending) return;
   if (tabHasCredential(tab)) emit({ type: "$ready" }, tab.id);
   else emit({ type: "$needs_setup", reason: "no_api_key" }, tab.id);
 }
@@ -5201,10 +5232,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       model?: string;
       reasoningEffort?: import("../../config.js").ReasoningEffort;
       subagentModel?: string;
-      /** Fresh chat: hold the channel in MCP-setup state until servers are confirmed. */
-      mcpSetup?: boolean;
-      /** Session-creation flag for the session this skeleton mints. */
-      subagents?: boolean;
     },
     pending = false,
   ): Tab {
@@ -5230,6 +5257,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     const groupId = restore?.groupId ?? nextGroupId();
     const groupMatch = /^g(\d+)$/.exec(groupId);
     if (groupMatch) groupCounter = Math.max(groupCounter, Number(groupMatch[1]));
+    // Every session this skeleton MINTS is gated: its capabilities are chosen at that
+    // session boundary and frozen by the answer, exactly when it materializes a new
+    // session. A restored conversation keeps the set frozen in its own meta.
+    const gateSession = !pending && shouldMaterializeRestoredSession(restore);
     const tab: Tab = {
       id,
       groupId,
@@ -5242,9 +5273,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       currentSubagentModel: restore?.subagentModel,
       currentReasoningEffort: restore?.reasoningEffort ?? loadReasoningEffort(),
       ctxMaxOverride: loadContextTokens(),
-      // A new session's capability is decided at creation: an explicit restore value
-      // (New chat / duplicate) wins, else the Settings default — off unless opted in.
-      subagents: restore?.subagents ?? loadEnableSubagents(),
+      // A new session's subagent flag starts at the Settings default and is overwritten
+      // by the picker's answer; a restored conversation re-reads its own meta below.
+      subagents: loadEnableSubagents(),
       toolset: null,
       system: "",
       initialization: null,
@@ -5262,7 +5293,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       mcpRuntime: null,
       mcpStatuses: new Map(),
       mcpBridgePromise: null,
-      mcpSetupPending: restore?.mcpSetup ?? false,
+      mcpSetupPending: gateSession,
       switching: false,
       sessionsEpoch: randomUUID(),
       sessionsRevision: 0,
@@ -5299,7 +5330,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             },
             {
               materialize: shouldMaterializeRestoredSession(restore),
-              mcpSetup: restore?.mcpSetup === true,
+              mcpSetup: gateSession,
               subagents: tab.subagents,
             },
           );
@@ -6318,11 +6349,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (resume) {
       loadSessionIntoTab(tab, resume.name, { abortTurn, cancelPendingGates, persistOpenTabs });
     } else {
-      // A workspace with no sessions yet: mint one at the current Settings default.
-      const enabled = loadEnableSubagents();
-      tab.currentSession = mintSessionFor(target, undefined, { subagents: enabled });
-      bindSessionSubagents(tab, enabled);
-      tab.runtime = tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
+      // A workspace with no sessions yet: mint one and gate it like any other session
+      // start. The confirm builds the runtime, so its prefix freezes the answered set.
+      const seed = loadEnableSubagents();
+      tab.currentSession = mintSessionFor(target, undefined, { mcpSetup: true, subagents: seed });
+      bindSessionSubagents(tab, seed);
       emit(
         {
           type: "$session_loaded",
@@ -6334,6 +6365,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         tab.id,
       );
       emitRestoredPlan(tab, false);
+      armSessionGate(tab);
     }
     if (tab.mcpRuntime) {
       await tab.mcpRuntime.closeAll().catch(() => undefined);
@@ -7106,11 +7138,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     /** Marks this channel as a just-minted session so the frontend shows a
      *  "Creating session…" indicator until the first `$sessions` lands. */
     creating?: boolean;
-    /** Fresh chat: enter the MCP-setup state (picker + withheld $ready). */
-    mcpSetup?: boolean;
-    /** Session-creation flag for the session this tab mints; absent = the Settings
-     *  default, which is off. */
-    subagents?: boolean;
   };
 
   /** Announcing is the cheap half of opening a tab: skeleton plus `$tab_opened`.
@@ -7215,8 +7242,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         .then(() => {
           if (tab.mcpSetupPending) {
             // Composer stays disabled until `mcp_session_configure`; surface the picker.
-            emitTabDiagnostic(tab, "tab.setup.required", { reason: "mcp-setup" }, "info");
-            emitMcpSetup(tab);
+            armSessionGate(tab);
           } else if (deferredBuild) {
             // The activation path builds the toolset and answers with `$ready`.
             emitTabDiagnostic(tab, "tab.ready.deferred", undefined, "info");
@@ -7938,18 +7964,22 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // confirm is a no-op because the first call already cleared the flag.
       if (!tab.currentSession || !tab.mcpSetupPending) return;
       try {
-        // Freeze this chat's server set: every configured server not confirmed
-        // enabled is recorded disabled. Immutable from here on.
-        const enabledNames = new Set(msg.enabled);
-        const disabledServers = namedMcpSpecs(tab.rootDir)
-          .map((spec) => spec.name)
-          .filter((name) => !enabledNames.has(name));
+        // Freeze this chat's capabilities — the MCP set and the subagent flag.
+        // Immutable from here on.
+        const subagents = msg.subagents === true;
         patchSessionMeta(tab.currentSession, {
-          mcp: makeSessionMcpState(disabledServers),
+          ...sessionSetupMeta(
+            namedMcpSpecs(tab.rootDir).map((spec) => spec.name),
+            msg.enabled,
+            subagents,
+          ),
           // An explicit `undefined` is dropped on write, clearing the pending marker.
           mcpPending: undefined,
         });
         tab.mcpSetupPending = false;
+        // Bind before the runtime exists: the spawn tool and its prompt section have
+        // to be in the prefix `unlock` builds.
+        bindSessionSubagents(tab, subagents);
         emitMcpSpecs(tab);
         const unlock = (): void => {
           if (tabCurrentModelUsable(tab) && tab.toolset && !tab.runtime) {
@@ -7960,25 +7990,33 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           if (tabHasCredential(tab)) {
             emitTabDiagnostic(tab, "tab.ready", undefined, "info");
             emit({ type: "$ready" }, tab.id);
+          } else {
+            // The picker is answered either way: without a credential the tab lands on
+            // the setup screen, and only `$needs_setup` tells the frontend to stop
+            // waiting for a `$ready` that is never coming.
+            emit({ type: "$needs_setup", reason: "no_api_key" }, tab.id);
           }
           emitCtxBreakdown(tab);
         };
-        if (tab.toolset) {
-          // Bridge the confirmed servers BEFORE building the prefix so the frozen
-          // tool set is present from the first turn (no addTool churn).
-          void bridgeTabMcp(tab).then(unlock);
-        } else {
+        if (!tab.toolset) {
           unlock();
+          return;
         }
+        // Bridge the confirmed servers BEFORE building the prefix so the frozen tool
+        // set is present from the first turn (no addTool churn). A server that fails to
+        // connect must not block the chat, so a bridge rejection still unlocks; only a
+        // failure to unlock re-arms the gate.
+        void bridgeTabMcp(tab)
+          .catch((err) => {
+            emitDiagnosticError("mcp.session.bridge.failed", err, {
+              tabId: tab.id,
+              details: tabDiagnosticState(tab),
+            });
+          })
+          .then(unlock)
+          .catch((err) => failSessionSetup(tab, err));
       } catch (err) {
-        emitDiagnosticError("mcp.session.configure.failed", err, {
-          tabId: tab.id,
-          details: tabDiagnosticState(tab),
-        });
-        emit(
-          { type: "$error", message: `mcp_session_configure: ${(err as Error).message}` },
-          tab.id,
-        );
+        failSessionSetup(tab, err);
       }
       return;
     }
@@ -8427,15 +8465,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           model: tab.currentModel,
           reasoningEffort: tab.currentReasoningEffort,
           subagentModel: tab.currentSubagentModel,
-          // Fresh session, so the capability comes from the creation default, exactly
-          // like the MCP picker: off unless the user opted in.
-          subagents: loadEnableSubagents(),
           // Fresh session, so the new channel shows a create indicator until
           // its first $sessions snapshot lists the minted session.
           creating: true,
-          // A fresh chat must pick its MCP servers before it can run; skip the
-          // gate when nothing is configured — there's nothing to choose.
-          mcpSetup: loadEffectiveMcpConfig(tab.rootDir).length > 0,
         });
         lastActiveTabId = opened.id;
         persistOpenTabs();

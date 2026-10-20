@@ -1090,7 +1090,7 @@ describe("Desktop App reducer — usage", () => {
     expect(next.usage.liveLogTokens).toBe(42);
   });
 
-  it("$mcp_setup records the fresh-chat server list and $ready clears it", () => {
+  it("$mcp_setup records the session-start picker and $ready clears it", () => {
     const withSetup = reduce(initialState(), {
       t: "incoming",
       event: {
@@ -1099,16 +1099,51 @@ describe("Desktop App reducer — usage", () => {
           { name: "playwright", enabled: true, builtin: true },
           { name: "github", enabled: false, builtin: false },
         ],
+        subagents: true,
       },
     });
-    expect(withSetup.mcpSetup).toEqual([
-      { name: "playwright", enabled: true, builtin: true },
-      { name: "github", enabled: false, builtin: false },
-    ]);
+    expect(withSetup.mcpSetup).toEqual({
+      servers: [
+        { name: "playwright", enabled: true, builtin: true },
+        { name: "github", enabled: false, builtin: false },
+      ],
+      subagents: true,
+    });
 
     const unlocked = reduce(withSetup, { t: "incoming", event: { type: "$ready" } });
     expect(unlocked.ready).toBe(true);
     expect(unlocked.mcpSetup).toBeNull();
+  });
+
+  it("$mcp_setup bumps the picker revision, so a re-armed gate remounts the dialog", () => {
+    const gated = reduce(initialState(), {
+      t: "incoming",
+      event: { type: "$mcp_setup", servers: [], subagents: false },
+    });
+    expect(gated.mcpSetupRevision).toBe(initialState().mcpSetupRevision + 1);
+
+    // A failed confirm re-emits the same payload; the bump is what lets the picker
+    // leave its own "starting" state and become answerable again.
+    const rearmed = reduce(gated, {
+      t: "incoming",
+      event: { type: "$mcp_setup", servers: [], subagents: false },
+    });
+    expect(rearmed.mcpSetupRevision).toBe(gated.mcpSetupRevision + 1);
+  });
+
+  it("$needs_setup also resolves the picker, so an uncredentialed chat is never stuck on it", () => {
+    const gated = reduce(initialState(), {
+      t: "incoming",
+      event: { type: "$mcp_setup", servers: [], subagents: false },
+    });
+    expect(gated.mcpSetup).toEqual({ servers: [], subagents: false });
+
+    const resolved = reduce(gated, {
+      t: "incoming",
+      event: { type: "$needs_setup", reason: "no_api_key" },
+    });
+    expect(resolved.mcpSetup).toBeNull();
+    expect(resolved.needsSetup).toBe(true);
   });
 
   it("stores shell-output filtering totals from the context breakdown event", () => {

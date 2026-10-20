@@ -592,8 +592,12 @@ type State = {
   mentionPreview: MentionPreviewState | null;
   mcpSpecs: McpSpecInfo[];
   mcpBridged: boolean;
-  /** Configured servers pending confirmation on a fresh chat ($mcp_setup); null when not gating. */
-  mcpSetup: McpSetupServer[] | null;
+  /** The session-start picker ($mcp_setup): the configured servers plus the subagent
+   *  pre-fill; null when this chat is not gating. */
+  mcpSetup: { servers: McpSetupServer[]; subagents: boolean } | null;
+  /** Bumped per `$mcp_setup` so the picker remounts on a re-issued gate (a failed
+   *  confirm re-arms it) instead of sitting on its own "starting" state. */
+  mcpSetupRevision: number;
   mcpExtensionStatus: McpExtensionStatus | null;
   mcpExtensionCheck: McpExtensionCheck | null;
   mailAuth: MailAuthState | null;
@@ -2198,7 +2202,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         ),
       };
     case "$needs_setup":
-      return { ...state, needsSetup: true, ready: false };
+      // Either side of the `$ready` fork resolves the session-start picker: a chat
+      // that still needs a credential must not keep the dialog waiting on `$ready`.
+      return { ...state, needsSetup: true, ready: false, mcpSetup: null };
     case "$turn_complete": {
       // Clear pause-gate-tied modals too. By the time the loop emits
       // $turn_complete, anything still in these arrays is orphaned — the
@@ -2505,7 +2511,14 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     }
     case "$mcp_setup":
-      return { ...state, mcpSetup: Array.isArray(ev.servers) ? ev.servers : [] };
+      return {
+        ...state,
+        mcpSetup: {
+          servers: Array.isArray(ev.servers) ? ev.servers : [],
+          subagents: ev.subagents === true,
+        },
+        mcpSetupRevision: state.mcpSetupRevision + 1,
+      };
     case "$mcp_specs":
       return {
         ...state,
@@ -3523,6 +3536,7 @@ const TabRuntime = memo(function TabRuntime({
     mcpSpecs: [],
     mcpBridged: false,
     mcpSetup: null,
+    mcpSetupRevision: 0,
     mcpExtensionStatus: null,
     mcpExtensionCheck: null,
     mailAuth: null,
@@ -5359,8 +5373,12 @@ const TabRuntime = memo(function TabRuntime({
 
         {state.mcpSetup ? (
           <McpSetupDialog
-            servers={state.mcpSetup}
-            onConfirm={(enabled) => sendRpc({ cmd: "mcp_session_configure", enabled })}
+            key={state.mcpSetupRevision}
+            servers={state.mcpSetup.servers}
+            subagents={state.mcpSetup.subagents}
+            onConfirm={(enabled, subagents) =>
+              sendRpc({ cmd: "mcp_session_configure", enabled, subagents })
+            }
             // Cancel discards the freshly minted session; its workspace tab stays.
             onCancel={() => sendRpc({ cmd: "mcp_session_cancel" })}
           />

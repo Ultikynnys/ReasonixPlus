@@ -1623,39 +1623,7 @@ describe("ContextPanel files", () => {
     ).toBe("1.1");
   });
 
-  it("renders the Subagents toggle and updates the setting", () => {
-    const onSaveSettings = vi.fn();
-    render(
-      <ContextPanel
-        // Default off: the creation default is opt-in, so the fixture states it.
-        settings={{ ...settings, enableSubagents: true }}
-        usage={usage}
-        mcpSpecs={[]}
-        mcpBridged={false}
-        sessionFiles={[]}
-        memory={[]}
-        memoryDetail={null}
-        memoryResult={null}
-        onReadMemory={() => {}}
-        onWriteMemory={() => {}}
-        onDeleteMemory={() => {}}
-        onDismissMemoryResult={() => {}}
-        onSaveSettings={onSaveSettings}
-      />,
-    );
-    fireEvent.click(screen.getByText("Parameters"));
-
-    const enableBtn = screen.getByRole("button", { name: "Enable subagents for new chats" });
-    const disableBtn = screen.getByRole("button", { name: "Disable subagents for new chats" });
-    expect(enableBtn.getAttribute("data-on")).toBe("true");
-    expect(enableBtn.getAttribute("aria-pressed")).toBe("true");
-    expect(disableBtn.getAttribute("data-on")).toBe("false");
-
-    fireEvent.click(disableBtn);
-    expect(onSaveSettings).toHaveBeenCalledWith({ enableSubagents: false });
-  });
-
-  it("renders the Elevation toggle below Subagents and updates the setting", () => {
+  it("renders the Elevation toggle and updates the setting", () => {
     const onSaveSettings = vi.fn();
     render(
       <ContextPanel
@@ -1676,11 +1644,9 @@ describe("ContextPanel files", () => {
     );
     fireEvent.click(screen.getByText("Parameters"));
 
-    const subagents = screen.getByText("Subagents");
-    const elevation = screen.getByText("Elevation (Windows UAC)");
-    expect(
-      subagents.compareDocumentPosition(elevation) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    // Subagents are decided by the session-start picker, so the parameters panel no
+    // longer offers them.
+    expect(screen.queryByText("Subagents")).toBeNull();
 
     const enableBtn = screen.getByRole("button", { name: "Enable elevation" });
     const disableBtn = screen.getByRole("button", { name: "Disable elevation" });

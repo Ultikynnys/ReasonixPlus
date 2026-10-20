@@ -954,15 +954,6 @@ export const en = {
     autoCompactTriggerValue: "{pct}% of window",
     autoCompactTriggerResetTooltip: "Reset to default (80%)",
     compactThresholdTooltip: "Auto-compaction fires at {pct}% of the window",
-    subagents: "Subagents",
-    subagentsEnabled: "Enabled",
-    subagentsDisabled: "Disabled",
-    enableSubagents: "Enable subagents for new chats",
-    disableSubagents: "Disable subagents for new chats",
-    subagentsEnabledDesc:
-      "New chats can spawn subtasks. Applies to chats you start from now on; an open chat keeps the choice it was created with.",
-    subagentsDisabledDesc:
-      "New chats cannot spawn subtasks. Applies to chats you start from now on; an open chat keeps the choice it was created with.",
     elevation: "Elevation (Windows UAC)",
     elevationEnabled: "Enabled",
     elevationDisabled: "Disabled",
