@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { messageOf } from "@reasonix/core-utils";
+import { isWorkingPlanStatus, messageOf } from "@reasonix/core-utils";
 import { atomicWriteSync, tmpSiblingPath } from "../core/atomic-write.js";
 import { readJsonFileSilently } from "../core/json-file.js";
 import {
@@ -71,10 +71,6 @@ export type PlanSummary = Omit<PlanRecord, "body" | "steps" | "completions" | "r
   totalSteps: number;
   completedSteps: number;
 };
-
-/** A plan a live owner is actively driving. Only these block another session's
- *  takeover: a finished, superseded, cancelled or sent-back plan belongs to nobody. */
-const WORKING_STATUSES: ReadonlySet<PlanStatus> = new Set<PlanStatus>(["proposed", "active"]);
 
 const statuses = new Set<PlanStatus>([
   "proposed",
@@ -233,7 +229,7 @@ function claimFor(session: string, existing?: PlanClaim): PlanClaim {
 function blockingClaim(workspace: string, plan: PlanRecord, session: string): PlanClaim | null {
   const claim = plan.claim;
   if (!claim || claim.session === session) return null;
-  if (!WORKING_STATUSES.has(plan.status)) return null;
+  if (!isWorkingPlanStatus(plan.status)) return null;
   return claimOwnerIsLive(workspace, claim) ? claim : null;
 }
 
@@ -519,7 +515,7 @@ export class PlanRepository {
     if (!reason.trim()) throw new Error("Abandonment reason is required");
     return this.mutate((history) => {
       const plan = this.findMutable(history, id);
-      if (plan.status !== "active" && plan.status !== "proposed")
+      if (!isWorkingPlanStatus(plan.status))
         throw new Error("Plan cannot be abandoned in its current state");
       if (session) this.requireUnclaimed(plan, session);
       plan.status = "abandoned";

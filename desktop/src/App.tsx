@@ -101,6 +101,7 @@ import {
   resolveActiveQuickSend,
   rpcSend,
 } from "./protocol";
+import { planLabelsBySession } from "./plan-labels";
 import { StartupTimingTracker } from "./startup-timing";
 import { StreamRateTracker } from "./stream-rate";
 import {
@@ -2553,6 +2554,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         pendingCheckpoints: wsChanged ? [] : state.pendingCheckpoints,
         pendingRevisions: wsChanged ? [] : state.pendingRevisions,
         activePlan: wsChanged ? null : state.activePlan,
+        // Plan history is workspace-scoped: keeping it across a switch would label
+        // this workspace's sessions with another workspace's plans.
+        planHistory: wsChanged ? [] : state.planHistory,
+        planDetails: wsChanged ? {} : state.planDetails,
         usage: wsChanged ? zeroUsage() : state.usage,
         sessionFiles: wsChanged ? [] : state.sessionFiles,
         retryNonce: wsChanged ? 0 : state.retryNonce,
@@ -4504,6 +4509,15 @@ function TabRuntime({
     [tabsList, state.settings?.workspaceDir],
   );
 
+  // Which plan each workspace session owns, so a sidebar row can label it. The
+  // plan history is workspace-wide, so one map covers every listed session.
+  // Undefined until the first $plan_history: an unloaded history must not claim
+  // "No plan" for a session that may well own one.
+  const sessionPlanLabels = useMemo(
+    () => (state.planHistory ? planLabelsBySession(state.planHistory) : undefined),
+    [state.planHistory],
+  );
+
   // Report this channel's running-agent state up so the tab dot can count the
   // agents active in the tab (this channel plus its siblings).
   useEffect(() => {
@@ -4574,6 +4588,7 @@ function TabRuntime({
           onNewChat={newChat}
           runningSessions={runningSessions}
           sessionRates={sessionRates}
+          planLabels={sessionPlanLabels}
           sessionMutation={state.sessionsMutation}
           onLoadSession={(name) => {
             clearAbortDraft();
@@ -5033,6 +5048,7 @@ function TabRuntime({
           planHistory={state.planHistory}
           planDetails={state.planDetails}
           planSession={state.currentSession}
+          sessions={state.sessions}
           onReadPlans={() => { void rpcSend({ cmd: "plan_history_get", tabId }); }}
           onReadPlan={(planId) => { void rpcSend({ cmd: "plan_detail_get", planId, tabId }); }}
           onRemovePlan={(planId) => { void rpcSend({ cmd: "plan_remove", planId, tabId }); }}

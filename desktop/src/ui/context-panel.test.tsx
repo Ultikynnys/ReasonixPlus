@@ -95,6 +95,74 @@ describe("Session plan history", () => {
     expect(screen.getByText("Verified work")).toBeTruthy();
     expect(screen.queryByText("Full plan")).toBeNull();
   });
+
+  it("names the session that owns the selected plan, and no owner once it is finished", () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const base = {
+      createdAt: now,
+      updatedAt: now,
+      finishedAt: null,
+      totalSteps: 1,
+      completedSteps: 0,
+    };
+    const { container } = render(
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onDismissMemoryResult={() => {}}
+        planSession="mine"
+        sessions={[
+          { name: "mine", summary: "My chat", messageCount: 1, mtime: now },
+          { name: "theirs", summary: "Their chat", messageCount: 1, mtime: now },
+        ]}
+        planHistory={[
+          { ...base, id: "theirs-plan", summary: "Their work", status: "active", ownerSession: "theirs" },
+          { ...base, id: "mine-plan", summary: "My work", status: "active", ownerSession: "mine" },
+          // Still claimed on disk, but finished: it owns nothing and shows no owner.
+          { ...base, id: "done-plan", summary: "Done work", status: "completed", ownerSession: "mine" },
+          { ...base, id: "orphan-plan", summary: "Orphan work", status: "active" },
+        ]}
+        planDetails={{}}
+      />,
+    );
+    fireEvent.click(screen.getByText("Plan"));
+    const select = screen.getByRole("combobox", { name: "Session plan history" });
+    // A working plan names its owner, including "nobody" for an unclaimed one.
+    expect(within(select).getByRole("option", { name: /Their chat/ })).toBeTruthy();
+    expect(within(select).getByRole("option", { name: /My chat · this session/ })).toBeTruthy();
+    expect(within(select).getByRole("option", { name: /No owning session/ })).toBeTruthy();
+    // A finished plan carries no owner text at all, not even a placeholder.
+    const finished = within(select).getByRole("option", { name: /Done work/ });
+    expect(finished.textContent).not.toContain("My chat");
+    expect(finished.textContent).not.toContain("owning");
+
+    const ownerName = () => container.querySelector(".ctx-plan-owner .name")?.textContent;
+    // Default selection is the active plan, which belongs to another session. The
+    // label uses that session's own title, matching its sidebar row.
+    expect(ownerName()).toBe("Their chat");
+    expect(container.querySelector(".ctx-plan-owner")?.getAttribute("data-owned")).toBe("other");
+
+    fireEvent.change(select, { target: { value: "mine-plan" } });
+    expect(ownerName()).toBe("My chat · this session");
+    expect(container.querySelector(".ctx-plan-owner")?.getAttribute("data-owned")).toBe("this");
+
+    fireEvent.change(select, { target: { value: "orphan-plan" } });
+    expect(ownerName()).toBe("No owning session");
+    expect(container.querySelector(".ctx-plan-owner")?.getAttribute("data-owned")).toBe("none");
+
+    // Finishing a plan ends its ownership: the owner line disappears entirely.
+    fireEvent.change(select, { target: { value: "done-plan" } });
+    expect(container.querySelector(".ctx-plan-owner")).toBeNull();
+  });
 });
 
 describe("ContextPanel git section", () => {

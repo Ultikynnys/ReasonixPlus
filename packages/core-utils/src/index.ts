@@ -298,3 +298,8 @@ export {
   isQuickSend,
   resolveActiveQuickSend,
 } from "./desktop-protocol.js";
+export {
+  PLAN_WORKING_STATUSES,
+  type PlanWorkingStatus,
+  isWorkingPlanStatus,
+} from "./plan-status.js";

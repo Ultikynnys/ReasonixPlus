@@ -464,6 +464,9 @@ export interface PlanHistoryItem {
   totalSteps: number;
   completedSteps: number;
   dispositionReason?: string;
+  /** The session that owns this plan. Absent for a plan no session has claimed,
+   *  so a surface can say "no owning session" instead of guessing one. */
+  ownerSession?: string;
 }
 export interface PlanDetail {
   id: string;

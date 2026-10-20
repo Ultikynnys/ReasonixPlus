@@ -67,6 +67,7 @@ import type {
   OpencodeQuotaEvent,
   PathAccessRequiredEvent,
   PlanClearedEvent,
+  PlanHistoryItem,
   PlanRequiredEvent,
   PlanRestoredEvent,
   PlanStep,
@@ -250,6 +251,7 @@ import {
   readMemoryEntryDetail,
   writeMemoryEntry,
 } from "../../desktop/memory-browser.js";
+import { toPlanHistoryItems } from "../../desktop/plan-listing.js";
 import { sameSessionListItems, toSessionListItems } from "../../desktop/session-listing.js";
 import { recordDiagnostic } from "../../diagnostics.js";
 import { buildDuplicateContext } from "../../duplicate-session.js";
@@ -987,9 +989,9 @@ function emitPlanHistory(tab: Tab): void {
   if (!tab.rootDir) return;
   // A corrupt or unreadable history.json must not abort session load — degrade
   // to an empty projection rather than failing the whole tab restore.
-  let items: import("@reasonix/core-utils").PlanHistoryItem[];
+  let items: PlanHistoryItem[];
   try {
-    items = planRepository(tab.rootDir).list();
+    items = toPlanHistoryItems(planRepository(tab.rootDir).list());
   } catch (err) {
     process.stderr.write(`reasonix: plan history read failed — ${messageOf(err)}\n`);
     items = [];

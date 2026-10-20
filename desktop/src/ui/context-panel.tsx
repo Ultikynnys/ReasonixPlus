@@ -1,9 +1,16 @@
-import { type MemoryWriteOptions, type RuleRecord, ruleRegexError } from "@reasonix/core-utils";
+import {
+  type MemoryWriteOptions,
+  type PlanDetail,
+  type PlanHistoryItem,
+  type RuleRecord,
+  isWorkingPlanStatus,
+  ruleRegexError,
+} from "@reasonix/core-utils";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { ActivePlan, SessionFile, Settings, UsageStats } from "../App";
+import type { ActivePlan, SessionFile, SessionInfo, Settings, UsageStats } from "../App";
 import { t, useLang } from "../i18n";
 import type { TKey } from "../i18n";
 import { I } from "../icons";
@@ -22,6 +29,7 @@ import { EventsPanel } from "./events";
 import type { JumpTarget } from "./transcript-jump";
 import { FileMenu } from "./file-menu";
 import { activationHandler } from "./keyboard";
+import { sessionTitle } from "./session-title";
 
 type Tab = "files" | "parameters" | "mcp" | "context" | "memory" | "rules" | "plan" | "events";
 
@@ -80,6 +88,7 @@ export function ContextPanel({
   planHistory,
   planDetails,
   planSession,
+  sessions,
   onReadPlans,
   onReadPlan,
   onRemovePlan,
@@ -118,9 +127,12 @@ export function ContextPanel({
   onReadContext?: () => void;
   onWriteContext?: (text: string) => void;
   activePlan?: ActivePlan | null;
-  planHistory?: import("@reasonix/core-utils").PlanHistoryItem[];
-  planDetails?: Record<string, import("@reasonix/core-utils").PlanDetail>;
+  planHistory?: PlanHistoryItem[];
+  planDetails?: Record<string, PlanDetail>;
   planSession?: string;
+  /** Workspace sessions, so an owner label reads exactly like its sidebar row
+   *  (a session's own title beats its timestamp-derived name). */
+  sessions?: readonly SessionInfo[];
   onReadPlans?: () => void;
   onReadPlan?: (id: string) => void;
   onRemovePlan?: (id: string) => void;
@@ -276,7 +288,7 @@ export function ContextPanel({
             />
           )}
           {tab === "plan" ? (
-            <CtxPlanHistory key={planSession} history={planHistory ?? []} details={planDetails ?? {}} onReadPlans={onReadPlans} onReadPlan={onReadPlan} onRemovePlan={onRemovePlan} fallback={activePlan} />
+            <CtxPlanHistory key={planSession} currentSession={planSession} sessions={sessions} history={planHistory ?? []} details={planDetails ?? {}} onReadPlans={onReadPlans} onReadPlan={onReadPlan} onRemovePlan={onRemovePlan} fallback={activePlan} />
           ) : null}
           {tab === "events" ? (
             <EventsPanel messages={messages} events={sessionEvents} onJump={onJumpToEvent} />
@@ -287,13 +299,17 @@ export function ContextPanel({
   );
 }
 
-function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, onRemovePlan, fallback }: {
-  history: import("@reasonix/core-utils").PlanHistoryItem[];
-  details: Record<string, import("@reasonix/core-utils").PlanDetail>;
+function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, onRemovePlan, fallback, currentSession, sessions }: {
+  history: PlanHistoryItem[];
+  details: Record<string, PlanDetail>;
   onReadPlans?: () => void;
   onReadPlan?: (id: string) => void;
   onRemovePlan?: (id: string) => void;
   fallback?: ActivePlan | null;
+  /** The session this panel belongs to — the plan list is workspace-wide, so the
+   *  owner label needs it to say "this session" instead of repeating the name. */
+  currentSession?: string;
+  sessions?: readonly SessionInfo[];
 }) {
   const [selection, setSelection] = useState("");
   const selectedPlan =
@@ -302,6 +318,29 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, onRemovePla
     history[0];
   const selected = selectedPlan?.id;
   const detail = selected ? details[selected] : undefined;
+  // One title per known session, so naming every option does not re-parse the
+  // same session name. An unknown owner still gets its name-derived title.
+  const sessionTitles = useMemo(
+    () => new Map((sessions ?? []).map(session => [session.name, sessionTitle(session)] as const)),
+    [sessions],
+  );
+  // The owner of a plan, or null when there is no owner to name: ownership only
+  // exists while a session works the plan, so a finished plan gets no line at all
+  // rather than the session that once claimed it.
+  const ownerOf = (
+    plan?: PlanHistoryItem,
+  ): { text: string; state: "this" | "other" | "none" } | null => {
+    if (!plan || !isWorkingPlanStatus(plan.status)) return null;
+    const sessionName = plan.ownerSession;
+    if (!sessionName) return { text: t("contextPanel.planOwnerNone"), state: "none" };
+    const title = sessionTitles.get(sessionName) ?? sessionTitle({ name: sessionName });
+    const isThisSession = sessionName === currentSession;
+    return {
+      text: isThisSession ? t("contextPanel.planOwnerThis", { session: title }) : title,
+      state: isThisSession ? "this" : "other",
+    };
+  };
+  const owner = ownerOf(selectedPlan);
   const readPlans = useRef(onReadPlans);
   const readPlan = useRef(onReadPlan);
   readPlans.current = onReadPlans;
@@ -327,12 +366,16 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, onRemovePla
           value={selected}
           onChange={(event) => setSelection(event.target.value)}
         >
-          {history.map((plan, index) => (
-            <option key={plan.id} value={plan.id}>
-              {index + 1}. {plan.summary ?? t("contextPanel.planUntitled")} · {plan.status} ·{" "}
-              {plan.completedSteps}/{plan.totalSteps}
-            </option>
-          ))}
+          {history.map((plan, index) => {
+            const planOwner = ownerOf(plan);
+            return (
+              <option key={plan.id} value={plan.id}>
+                {index + 1}. {plan.summary ?? t("contextPanel.planUntitled")} · {plan.status} ·{" "}
+                {plan.completedSteps}/{plan.totalSteps}
+                {planOwner ? ` · ${planOwner.text}` : ""}
+              </option>
+            );
+          })}
         </select>
         {onRemovePlan && selected ? (
           <button
@@ -348,6 +391,12 @@ function CtxPlanHistory({ history, details, onReadPlans, onReadPlan, onRemovePla
           </button>
         ) : null}
       </div>
+      {owner ? (
+        <div className="ctx-plan-owner" data-owned={owner.state}>
+          <span className="key">{t("contextPanel.planOwnerLabel")}</span>
+          <span className="name">{owner.text}</span>
+        </div>
+      ) : null}
       {detail ? (
         <CtxPlan plan={{ plan: detail.body, summary: detail.summary, steps: detail.steps, completedStepIds: Object.keys(detail.completions), stepResults: Object.fromEntries(Object.entries(detail.completions).map(([id, completion]) => [id, completion.result])), status: detail.status === "active" ? "active" : detail.status === "completed" ? "finished" : "cancelled" }} />
       ) : (

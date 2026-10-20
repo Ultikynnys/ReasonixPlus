@@ -7,9 +7,11 @@ import {
 } from "../App";
 import { t, useLang } from "../i18n";
 import { I } from "../icons";
+import type { SessionPlanLabel } from "../plan-labels";
 import { formatTokensPerSecond } from "../stream-rate";
 import { useClampedPopupPosition } from "./file-menu";
 import { activationHandler } from "./keyboard";
+import { sessionTitle } from "./session-title";
 import { Shortcut } from "./shortcut";
 
 type PendingDelete = {
@@ -23,24 +25,6 @@ type PendingClear = {
   x: number;
   y: number;
 };
-
-function prettyName(s: SessionInfo): string {
-  if (s.summary?.trim()) return s.summary.trim();
-  // Session names are `desktop-<14-digit timestamp>-<tabCounter>` with an
-  // optional `-N` dedupe suffix when two chats mint in the same second —
-  // match the timestamp first, then let the trailing counters fall through.
-  const m = s.name.match(/^desktop-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(?:\d{2})?-(\d+)(?:-\d+)?$/);
-  if (m) {
-    const [, , month, day, hh, mm, tab] = m;
-    return `${t("sidebarPanel.sessionTitle", {
-      month,
-      day,
-      hour: hh,
-      minute: mm,
-    })}${tab && tab !== "1" ? ` · #${tab}` : ""}`;
-  }
-  return s.name.replace(/^desktop-/, "").replace(/[-_]+/g, " ");
-}
 
 function relative(ms: number): string {
   const min = ms / 60_000;
@@ -59,6 +43,7 @@ export function Sidebar({
   workspaceDir,
   runningSessions,
   sessionRates,
+  planLabels,
   onNewChat,
   onLoadSession,
   onDeleteSession,
@@ -80,6 +65,10 @@ export function Sidebar({
    *  present while the session's stream is running; a paused/stalled stream
    *  reports 0. */
   sessionRates?: Map<string, number>;
+  /** Plan each session owns, keyed by session name. Undefined until the plan
+   *  history loads, in which case no chip renders at all; with a map in hand, a
+   *  session missing from it owns no plan. */
+  planLabels?: Map<string, SessionPlanLabel>;
   onNewChat: () => void;
   onLoadSession: (name: string) => void;
   onDeleteSession: (name: string) => void;
@@ -106,7 +95,7 @@ export function Sidebar({
   const filtered = query
     ? sortedSessions.filter((s) => {
         const q = query.toLowerCase();
-        return prettyName(s).toLowerCase().includes(q) || s.name.toLowerCase().includes(q);
+        return sessionTitle(s).toLowerCase().includes(q) || s.name.toLowerCase().includes(q);
       })
     : sortedSessions;
 
@@ -246,6 +235,7 @@ export function Sidebar({
             const updated = Number.isFinite(mtime) ? relative(Date.now() - mtime) : s.mtime;
             const running = runningSessions?.has(s.name) ?? false;
             const rate = running ? sessionRates?.get(s.name) : undefined;
+            const plan = planLabels?.get(s.name);
             return (
               <div
                 key={s.name}
@@ -266,7 +256,28 @@ export function Sidebar({
               >
                 {running ? <span className="state" /> : null}
                 <div className="body">
-                  <span className="title">{prettyName(s)}</span>
+                  <span className="title-row">
+                    <span className="title">{sessionTitle(s)}</span>
+                    {planLabels ? (
+                      <span
+                        className="plan-tag"
+                        data-plan={plan ? "live" : "none"}
+                        title={
+                          plan
+                            ? t("sidebarPanel.planTagTitle", {
+                                index: plan.index,
+                                status: plan.status,
+                                summary: plan.summary ?? t("contextPanel.planUntitled"),
+                              })
+                            : t("sidebarPanel.noPlanTitle")
+                        }
+                      >
+                        {plan
+                          ? t("sidebarPanel.planTag", { index: plan.index })
+                          : t("sidebarPanel.noPlan")}
+                      </span>
+                    ) : null}
+                  </span>
                   <span className="meta">
                     <span>{t("sidebarPanel.messageCount", { count: s.messageCount })}</span>
                     <span className="sep">·</span>
@@ -308,7 +319,7 @@ export function Sidebar({
                     const rect = e.currentTarget.getBoundingClientRect();
                     setPendingDelete({
                       name: s.name,
-                      pretty: prettyName(s),
+                      pretty: sessionTitle(s),
                       x: rect.right,
                       y: rect.bottom,
                     });
