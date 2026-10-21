@@ -13,17 +13,41 @@ import { StopButton, usePendingStop } from "./stop-button";
 
 type Tone = "default" | "success" | "warning" | "danger" | "accent" | "violet";
 
-/** Pull a file ref (path + optional line) out of a tool's JSON args, mirroring the TUI ToolCard ↗ link. */
-function extractToolFileRef(args?: string): { path: string; line?: number } | null {
-  if (!args) return null;
+/** A tool call's args, and how they parsed: `object` is a usable record, `json` was
+ *  JSON but not an object (an array or scalar, so there is no argument to name),
+ *  `text` was not JSON at all (a plain instruction). One parser for every args
+ *  reader, so none of them can disagree about what the args are. */
+type ParsedArgs =
+  | { kind: "object"; rec: Record<string, unknown> }
+  | { kind: "json" }
+  | { kind: "text" };
+
+function parseToolArgs(args?: string): ParsedArgs {
+  if (!args) return { kind: "text" };
   let parsed: unknown;
   try {
     parsed = JSON.parse(args);
   } catch {
-    return null;
+    return { kind: "text" };
   }
-  if (!parsed || typeof parsed !== "object") return null;
-  const rec = parsed as Record<string, unknown>;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? { kind: "object", rec: parsed as Record<string, unknown> }
+    : { kind: "json" };
+}
+
+type ToolFileRef = {
+  path: string;
+  /** First line of a `range`, for opening at the right spot. */
+  line?: number;
+  /** The range as the call wrote it ("120-180"), for display. */
+  range?: string;
+  /** Further `multi_edit` targets beyond `path`, counted for display. */
+  extra?: number;
+};
+
+/** Which file a call touches — `path`, the first `multi_edit` edit, or a `move_file`
+ *  / `copy_file` source. One rule behind both the ↗ button and the run row's text. */
+function toolFileRefOf(rec: Record<string, unknown>): ToolFileRef | null {
   if (typeof rec.path === "string") {
     let line: number | undefined;
     // read_file supports `range` like "50-100" — open at the first line.
@@ -33,16 +57,26 @@ function extractToolFileRef(args?: string): { path: string; line?: number } | nu
       if (Number.isFinite(n) && n > 0) line = n;
     }
     if (line === undefined && typeof rec.line === "number" && rec.line > 0) line = rec.line;
-    return { path: rec.path, line };
+    const range = typeof rec.range === "string" && rec.range !== "" ? rec.range : undefined;
+    return { path: rec.path, line, range };
   }
-  // multi_edit: use the first edit's path
+  // multi_edit: the first edit's path, and how many further files it touches.
   if (Array.isArray(rec.edits) && rec.edits.length > 0) {
     const first = rec.edits[0] as Record<string, unknown> | undefined;
-    if (first && typeof first.path === "string") return { path: first.path };
+    if (first && typeof first.path === "string") {
+      const extra = rec.edits.length - 1;
+      return { path: first.path, ...(extra > 0 ? { extra } : {}) };
+    }
   }
   // move_file / copy_file: open the source
   if (typeof rec.source === "string" && rec.source) return { path: rec.source };
   return null;
+}
+
+/** Pull a file ref (path + optional line) out of a tool's JSON args, mirroring the TUI ToolCard ↗ link. */
+function extractToolFileRef(args?: string): ToolFileRef | null {
+  const parsed = parseToolArgs(args);
+  return parsed.kind === "object" ? toolFileRefOf(parsed.rec) : null;
 }
 
 /** Always-visible "show in file explorer" action rendered in the card header, next to the collapse toggle. */
@@ -1109,6 +1143,89 @@ export function subagentTools(args?: string): string[] {
   }
 }
 
+/** Argument keys that say what a call was FOR, most specific first. A row is one line,
+ *  so a file body (`write_file.content`) never qualifies: rendering it would fill the
+ *  card with escaped text instead of a name. */
+const TOOL_ARG_KEYS = [
+  "command",
+  "url",
+  "query",
+  "pattern",
+  "name",
+  "task",
+  "instruction",
+  "goal",
+  "path",
+] as const;
+
+/** Collapse an argument to one bounded line: a card row is not a place to dump a
+ *  multi-line value. Only a bounded head is scanned — `content` can be megabytes. */
+function oneLineArg(value: string): string {
+  return truncate(value.slice(0, 240).replace(/\s+/g, " ").trim(), 72);
+}
+
+/** "src/a.ts:120-180 +2": the file a call touches, as one row's worth of text. */
+function fileLabel(file: ToolFileRef): string {
+  return `${file.path}${file.range ? `:${file.range}` : ""}${file.extra ? ` +${file.extra}` : ""}`;
+}
+
+/** What a child's tool call reads as on its row — the salient argument, never the raw
+ *  args JSON. Args that are not JSON (a plain instruction) fall back to their own
+ *  one-line head; a call with no scalar argument falls back to the file it touches,
+ *  and one with neither (`todo_write`) shows its name alone. */
+export function toolArgSummary(args?: string): string {
+  if (!args) return "";
+  const parsed = parseToolArgs(args);
+  if (parsed.kind === "text") return oneLineArg(args);
+  if (parsed.kind === "json") return "";
+  const { rec } = parsed;
+  const key = TOOL_ARG_KEYS.find((k) => {
+    const value = rec[k];
+    return typeof value === "string" && value.trim() !== "";
+  });
+  const file = toolFileRefOf(rec);
+  // A path is never bare: it says where in the file the child looked, and a
+  // multi_edit says how many further files it wrote.
+  if (key === "path" || key === undefined) {
+    return file ? oneLineArg(fileLabel(file)) : "";
+  }
+  return oneLineArg(rec[key] as string);
+}
+
+export type RunDid = {
+  /** Distinct files the run touched, in call order. */
+  files: string[];
+  /** Commands it ran, in call order. */
+  commands: string[];
+  calls: number;
+  failed: number;
+};
+
+/** What a run actually did, from the calls it recorded — never from its own prose, so a
+ *  vague or truncated answer still says which files it touched and what it ran. */
+export function runDid(tools: import("../App").SubagentToolActivity[]): RunDid {
+  // Sets keep first-seen order, so a repeated read collapses without a second scan.
+  const files = new Set<string>();
+  const commands = new Set<string>();
+  let failed = 0;
+  for (const tool of tools) {
+    if (tool.status === "failed") failed += 1;
+    const parsed = parseToolArgs(tool.args);
+    if (parsed.kind !== "object") continue;
+    const file = toolFileRefOf(parsed.rec);
+    if (file?.path) files.add(file.path);
+    const command = parsed.rec.command;
+    if (typeof command === "string" && command.trim() !== "") commands.add(command);
+  }
+  return { files: [...files], commands: [...commands], calls: tools.length, failed };
+}
+
+/** "src/a.c, src/b.h +2": the first `max` items, and how many were left out. */
+function cappedList(items: string[], max: number): string {
+  const head = items.slice(0, max).map(oneLineArg);
+  return items.length > max ? `${head.join(", ")} +${items.length - max}` : head.join(", ");
+}
+
 /** A subagent's tool result is a JSON envelope (`success`, `output`, `note`, stats),
  *  so a card that printed it raw read as a blob of keys instead of an answer. This
  *  splits it into what a reader needs. A non-envelope result — plain text, or an
@@ -1261,6 +1378,22 @@ export function SubagentCard({
     view.toolIters !== undefined ? `${view.toolIters} tools` : null,
     view.elapsedMs !== undefined ? formatDuration(view.elapsedMs) : null,
   ]);
+  // What the run did, stated from the calls it recorded. The answer says what came of
+  // it; this says what it touched, so a vague or truncated answer still stands.
+  const did = useMemo(() => runDid(runs.flatMap((run) => run.tools)), [runs]);
+  const didRows: { label: string; value: string }[] = [];
+  if (did.files.length > 0) {
+    didRows.push({ label: t("cards.subagentDidFiles"), value: cappedList(did.files, 3) });
+  }
+  if (did.commands.length > 0) {
+    didRows.push({ label: t("cards.subagentDidCommands"), value: cappedList(did.commands, 1) });
+  }
+  if (did.failed > 0) {
+    didRows.push({
+      label: t("cards.subagentDidFailedCalls"),
+      value: `${did.failed} of ${did.calls}`,
+    });
+  }
 
   return (
     <Card
@@ -1287,8 +1420,42 @@ export function SubagentCard({
         </>
       }
     >
+      {/* A settled card leads with the subagent's own summary: the answer is what the
+          reader came for, and the task/progress window below it is history. */}
+      {result !== undefined ? (
+        <section className="subagent-result" aria-label={t("cards.subagentSectionSummary")}>
+          <header className="sub-section-head">
+            <span className="sub-section-title">{t("cards.subagentSectionSummary")}</span>
+            <span className={`sub-result-state ${resultState}`}>
+              {subagentStateLabel(resultState)}
+            </span>
+            {resultStats ? <span className="sub-section-note">{resultStats}</span> : null}
+          </header>
+          {didRows.length > 0 ? (
+            <div className="sub-result-did">
+              {didRows.map((row) => (
+                <div className="sub-did-row" key={row.label}>
+                  <span className="sub-section-title">{row.label}</span>
+                  <span className="sub-did-value">{row.value}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {view.output ? (
+            <div className="sub-result-body">
+              <Markdown source={view.output} />
+            </div>
+          ) : view.error ? (
+            <div className="sub-result-error">{sanitizeTerminalText(view.error)}</div>
+          ) : (
+            <div className="sub-result-note">{t("cards.subagentNoAnswer")}</div>
+          )}
+          {view.note ? <div className="sub-result-note">{view.note}</div> : null}
+        </section>
+      ) : null}
+
       {/* Input and progress are the volatile parts, so they keep the shared row
-          window; the answer renders below it, where a settled card always shows it. */}
+          window under the summary. */}
       <RowScroll className="sub-card" follow={!settled} followKey={status}>
         <section className="sub-section" aria-label={t("cards.subagentSectionTask")}>
           <header className="sub-section-head">
@@ -1347,13 +1514,16 @@ export function SubagentCard({
               {run.status === "running" ? (
                 <SubagentActivityRows run={run} />
               ) : (
-                run.tools.map((tool) => (
-                  <div className="role" key={tool.callId} title={tool.args}>
-                    {tool.status === "running" ? "↳ …" : tool.status === "failed" ? "↳ ✕" : "↳ ✓"}{" "}
-                    {tool.name}
-                    {tool.args ? ` ${sanitizeTerminalText(tool.args)}` : ""}
-                  </div>
-                ))
+                run.tools.map((tool) => {
+                  const argLine = toolArgSummary(tool.args);
+                  return (
+                    <div className="role" key={tool.callId} title={tool.args}>
+                      {tool.status === "running" ? "↳ …" : tool.status === "failed" ? "↳ ✕" : "↳ ✓"}{" "}
+                      {tool.name}
+                      {argLine ? ` ${argLine}` : ""}
+                    </div>
+                  );
+                })
               )}
               <div className="role">
                 {dotJoin([
@@ -1380,28 +1550,6 @@ export function SubagentCard({
           ))}
         </section>
       </RowScroll>
-
-      {result !== undefined ? (
-        <section className="subagent-result" aria-label={t("cards.subagentSectionResult")}>
-          <header className="sub-section-head">
-            <span className="sub-section-title">{t("cards.subagentSectionResult")}</span>
-            <span className={`sub-result-state ${resultState}`}>
-              {subagentStateLabel(resultState)}
-            </span>
-            {resultStats ? <span className="sub-section-note">{resultStats}</span> : null}
-          </header>
-          {view.output ? (
-            <div className="sub-result-body">
-              <Markdown source={view.output} />
-            </div>
-          ) : view.error ? (
-            <div className="sub-result-error">{sanitizeTerminalText(view.error)}</div>
-          ) : (
-            <div className="sub-result-note">{t("cards.subagentNoAnswer")}</div>
-          )}
-          {view.note ? <div className="sub-result-note">{view.note}</div> : null}
-        </section>
-      ) : null}
     </Card>
   );
 }

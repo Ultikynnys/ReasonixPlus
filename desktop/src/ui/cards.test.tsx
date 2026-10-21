@@ -24,7 +24,9 @@ import {
   isSubagentTool,
   parseEditResult,
   parseSubagentResult,
+  runDid,
   subagentTools,
+  toolArgSummary,
 } from "./cards";
 import { formatDuration } from "./format";
 import { requestAnchorExpansion } from "./transcript-jump";
@@ -191,7 +193,7 @@ describe("reasoning scroll lifecycle", () => {
   });
 
   it("splits single-newline CRLF rows and drops blank trailing rows", () => {
-    const text = Array.from({ length: 12 }, (_, i) => `row ${i + 1}`).join("\r\n") + "\r\n\r\n";
+    const text = `${Array.from({ length: 12 }, (_, i) => `row ${i + 1}`).join("\r\n")}\r\n\r\n`;
     const { container } = render(wrap(<ReasoningCard text={text} streaming />));
     const rows = container.querySelectorAll(".reason .stream p");
     expect(rows).toHaveLength(12);
@@ -565,6 +567,230 @@ describe("SubagentCard — model visibility", () => {
 
     const resultEl = container.querySelector(".subagent-result");
     expect(resultEl?.textContent).toContain("Found 3 references in src/index.ts.");
+  });
+
+  it("leads a settled card with the subagent's own summary, above the run log", () => {
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        runs={[run]}
+        result={JSON.stringify({
+          success: true,
+          output: "The uv block is folded: c0-c1 and c2-c3 cross.",
+          turns: 11,
+          tool_iters: 16,
+          elapsed_ms: 127_900,
+        })}
+      />,
+    );
+
+    const body = container.querySelector(".card-body")!;
+    // The answer is the first block: a reader must not scroll past 16 tool rows
+    // to find out what the child actually concluded.
+    expect(body.firstElementChild?.className).toContain("subagent-result");
+    expect(body.firstElementChild?.textContent).toContain("Summary");
+    expect(body.firstElementChild?.textContent).toContain("The uv block is folded");
+    expect(body.firstElementChild?.textContent).toContain("11 turns");
+  });
+
+  it("shows no summary section while the run is still going", () => {
+    const { container } = render(
+      <SubagentCard name="explore" runs={[{ ...run, status: "running" }]} />,
+    );
+    expect(container.querySelector(".subagent-result")).toBeNull();
+  });
+
+  it("states what the run actually did, from its recorded calls", () => {
+    const tools = [
+      {
+        callId: "tc-1",
+        name: "read_file",
+        status: "done" as const,
+        args: JSON.stringify({ path: "src/mof.h", range: "120-180" }),
+      },
+      {
+        callId: "tc-2",
+        name: "write_file",
+        status: "done" as const,
+        args: JSON.stringify({
+          path: "src/dec_140057c00.c",
+          content: "int f(void) { return 0; }\n",
+        }),
+      },
+      {
+        callId: "tc-3",
+        name: "read_file",
+        status: "done" as const,
+        args: JSON.stringify({ path: "src/mof.h" }),
+      },
+      {
+        callId: "tc-4",
+        name: "run_command",
+        status: "failed" as const,
+        args: JSON.stringify({ command: "gcc -fsyntax-only src/dec_140057c00.c" }),
+      },
+    ];
+
+    // Recorded args decide this, never the answer's prose: one entry per file, in
+    // call order, and a repeated read does not repeat.
+    expect(runDid(tools)).toEqual({
+      files: ["src/mof.h", "src/dec_140057c00.c"],
+      commands: ["gcc -fsyntax-only src/dec_140057c00.c"],
+      calls: 4,
+      failed: 1,
+    });
+
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        runs={[{ ...run, tools }]}
+        result={JSON.stringify({ success: true, output: "Done." })}
+      />,
+    );
+    const did = container.querySelector(".sub-result-did")!;
+    const rows = [...did.querySelectorAll(".sub-did-row")].map((el) => el.textContent);
+    expect(rows).toEqual([
+      "Filessrc/mof.h, src/dec_140057c00.c",
+      "Commandsgcc -fsyntax-only src/dec_140057c00.c",
+      "Failed calls1 of 4",
+    ]);
+    // It sits under the answer's own summary head, above the answer's prose.
+    const section = container.querySelector(".subagent-result")!;
+    expect(section.querySelector(".sub-result-body")?.textContent).toBe("Done.");
+    expect(did.nextElementSibling?.className).toContain("sub-result-body");
+  });
+
+  it("bounds the did line and drops it when a run recorded no calls", () => {
+    const files = ["a.c", "b.c", "c.c", "d.c", "e.c"].map((path, i) => ({
+      callId: `tc-${i}`,
+      name: "read_file",
+      status: "done" as const,
+      args: JSON.stringify({ path }),
+    }));
+    expect(runDid(files).files).toHaveLength(5);
+
+    // An empty path is not a file the run touched.
+    expect(
+      runDid([
+        { callId: "tc-x", name: "read_file", status: "done", args: JSON.stringify({ path: "" }) },
+      ]),
+    ).toEqual({ files: [], commands: [], calls: 1, failed: 0 });
+
+    const { container, rerender } = render(
+      <SubagentCard
+        name="explore"
+        runs={[{ ...run, tools: files }]}
+        result={JSON.stringify({ success: true, output: "Done." })}
+      />,
+    );
+    expect(container.querySelector(".sub-did-value")?.textContent).toBe("a.c, b.c, c.c +2");
+    // Files only: no command row, and no failure row to explain.
+    expect(container.querySelectorAll(".sub-did-row")).toHaveLength(1);
+
+    // Commands show one and count the rest; a wrapped command collapses to one line.
+    rerender(
+      <SubagentCard
+        name="explore"
+        runs={[
+          {
+            ...run,
+            tools: [
+              {
+                callId: "c1",
+                name: "run_command",
+                status: "done" as const,
+                args: JSON.stringify({ command: "make -j8\nBUILD=1" }),
+              },
+              {
+                callId: "c2",
+                name: "run_command",
+                status: "done" as const,
+                args: JSON.stringify({ command: "npm test" }),
+              },
+            ],
+          },
+        ]}
+        result="Done."
+      />,
+    );
+    expect([...container.querySelectorAll(".sub-did-value")].map((el) => el.textContent)).toEqual([
+      "make -j8 BUILD=1 +1",
+    ]);
+
+    // A run with no recorded calls (a reloaded session) states nothing it cannot back.
+    rerender(<SubagentCard name="explore" runs={[{ ...run, tools: [] }]} result="Done." />);
+    expect(container.querySelector(".sub-result-did")).toBeNull();
+  });
+
+  it("summarises a tool call as one readable line, never its raw JSON body", () => {
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        runs={[
+          {
+            ...run,
+            tools: [
+              {
+                callId: "tc-1",
+                name: "write_file",
+                status: "done" as const,
+                args: JSON.stringify({
+                  path: "src/dec_140057c00.c",
+                  content: "/* header */\nint f(void) { return 0; }\n",
+                }),
+              },
+              {
+                callId: "tc-2",
+                name: "read_file",
+                status: "done" as const,
+                args: JSON.stringify({ path: "src/mof.h", range: "120-180" }),
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    const rows = [...container.querySelectorAll(".sub-row .role")].map(
+      (el) => el.textContent ?? "",
+    );
+    const writeRow = rows.find((text) => text.includes("write_file"));
+    const readRow = rows.find((text) => text.includes("read_file"));
+    expect(writeRow).toContain("src/dec_140057c00.c");
+    // The file body is an escaped blob on one row: it must never be rendered.
+    expect(writeRow).not.toContain("int f(void)");
+    expect(writeRow).not.toContain("\\n");
+    expect(readRow).toContain("src/mof.h:120-180");
+  });
+
+  it("labels a multi_edit by its files and count, never by its edit bodies", () => {
+    const summary = toolArgSummary(
+      JSON.stringify({
+        edits: [
+          { path: "src/a.ts", search: "one", replace: "two" },
+          { path: "src/b.ts", search: "three", replace: "four" },
+          { path: "src/c.ts", search: "five", replace: "six" },
+        ],
+      }),
+    );
+    expect(summary).toBe("src/a.ts +2");
+  });
+
+  it("keeps a row's text bounded whatever the args hold", () => {
+    // A write_file body can be megabytes: the row scans a bounded head, never the
+    // payload. JSON that is not an object names no argument, and a call with no
+    // scalar argument at all (todo_write) contributes nothing.
+    expect(
+      toolArgSummary(JSON.stringify({ path: "src/big.c", content: "x\n".repeat(200_000) })),
+    ).toBe("src/big.c");
+    expect(toolArgSummary("null")).toBe("");
+    expect(toolArgSummary("[]")).toBe("");
+    expect(toolArgSummary(undefined)).toBe("");
+    expect(toolArgSummary(JSON.stringify({ todos: [{ content: "a" }] }))).toBe("");
+    // Not JSON at all: the args ARE the text, collapsed to one bounded head.
+    expect(toolArgSummary("line one\nline two")).toBe("line one line two");
+    // A long plain-text arg is cut to the shared single-line cap: 72 chars + "…".
+    expect(toolArgSummary(`run ${"y".repeat(500)}`)).toHaveLength(73);
   });
 
   it("shows the whole instruction the subagent was given, not a cut-down head", () => {
@@ -1348,12 +1574,13 @@ describe("SubagentCard — task, progress and result sections", () => {
     expect(meter?.textContent).not.toMatch(/^\s*·/);
   });
 
-  it("labels the three sections it divides the card into", () => {
+  it("labels the sections it divides the card into, answer first", () => {
     const { container } = render(<SubagentCard name="explore" runs={[run]} result="done" />);
     const titles = Array.from(container.querySelectorAll(".sub-section-title")).map(
       (el) => el.textContent,
     );
-    expect(titles).toEqual(["Task", "Tools", "Progress", "Result"]);
+    // The subagent's own summary heads a settled card; the run's own detail follows.
+    expect(titles).toEqual(["Summary", "Task", "Tools", "Progress"]);
   });
 
   it("lists the tools the spawn was given, and says when it inherited them all", () => {

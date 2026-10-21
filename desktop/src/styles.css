@@ -4217,14 +4217,14 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   color: var(--muted);
 }
 
-/* The answer sits outside the row window: a settled card must show it without
-   scrolling past the activity log. Long answers scroll in their own box. */
+/* The answer leads a settled card, outside the row window: it must be readable
+   without scrolling past the activity log. Long answers scroll in their own box. */
 .subagent-result {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 12px 12px;
-  border-top: 1px solid var(--border);
+  padding: 0 12px 10px;
+  border-bottom: 1px solid var(--border);
 }
 .sub-result-state {
   font-size: 10px;
@@ -4240,6 +4240,25 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .sub-result-state.failed {
   color: var(--danger);
+}
+/* What the run touched, one labelled line per kind: the answer's evidence, so a
+   vague answer is still checkable. */
+.sub-result-did {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sub-did-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.sub-did-value {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
 }
 .sub-result-body {
   max-height: 320px;
