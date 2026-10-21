@@ -262,6 +262,8 @@ export interface TranslationSchema {
   loop: {
     proArmed: string;
     toolUploadStatus: string;
+    retryStatus: string;
+    rateLimitStatus: string;
     harvestStatus: string;
     repeatToolCallWarning: string;
     repeatedToolFailureWarning: string;

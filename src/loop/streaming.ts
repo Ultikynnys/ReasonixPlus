@@ -1,5 +1,6 @@
-import type { DeepSeekClient, Usage } from "../client.js";
+import type { ClientStatus, DeepSeekClient, Usage } from "../client.js";
 import type { ReasoningEffort } from "../config.js";
+import { t } from "../i18n/index.js";
 import type { ChatMessage, ToolCall, ToolSpec } from "../types.js";
 import { StreamRepetitionDetector } from "./repetition.js";
 import { looksLikeCompleteJson } from "./shrink.js";
@@ -49,6 +50,31 @@ export interface StreamModelResult {
 /** Cap on the raw excerpt carried with a repetition stall for the warning. */
 const STALL_SAMPLE_CHARS = 240;
 
+/** A wait the client performs before the request's first byte (retry backoff, RPM
+ *  throttle) rides the stream channel; surfacing it as a status keeps an alive
+ *  but silent request from reading as a stuck turn. */
+function waitStatusEvent(turn: number, status: ClientStatus): LoopEvent {
+  const sec = Math.max(1, Math.round(status.waitMs / 1000));
+  if (status.kind === "rate-limit") {
+    return {
+      turn,
+      role: "status",
+      content: t("loop.rateLimitStatus", { sec }),
+      statusCode: "rate-limit",
+      statusWaitMs: status.waitMs,
+    };
+  }
+  const attempt = status.attempt ?? 1;
+  return {
+    turn,
+    role: "status",
+    content: t("loop.retryStatus", { reason: status.reason ?? "request failed", attempt, sec }),
+    statusCode: "model-retry",
+    statusAttempt: attempt,
+    statusWaitMs: status.waitMs,
+  };
+}
+
 export async function* streamModelResponse(
   opts: StreamModelOptions,
 ): AsyncGenerator<LoopEvent, StreamModelResult, void> {
@@ -92,6 +118,10 @@ export async function* streamModelResponse(
       reasoningEffort,
       maxTokens,
     })) {
+      if (chunk.status) {
+        yield waitStatusEvent(turn, chunk.status);
+        continue;
+      }
       if (chunk.reasoningDelta) {
         // Reasoning is rendered transiently but is not persisted until the
         // stream completes. It is therefore safe to replay a stream that

@@ -486,7 +486,7 @@ describe("Desktop App reducer — usage", () => {
     const base: Parameters<typeof reduce>[0] = {
       ...initialState(),
       busy: true,
-      turnStatus: "waiting_tool",
+      turnStatus: "waiting_model",
       turnStatusTool: "read_file",
       settings: {
         reasoningEffort: "high",
@@ -526,7 +526,7 @@ describe("Desktop App reducer — usage", () => {
     const base: Parameters<typeof reduce>[0] = {
       ...initialState(),
       busy: true,
-      turnStatus: "waiting_tool",
+      turnStatus: "waiting_model",
       settings: {
         reasoningEffort: "high",
         editMode: "follow",
@@ -553,14 +553,14 @@ describe("Desktop App reducer — usage", () => {
     });
 
     expect(next.busy).toBe(true);
-    expect(next.turnStatus).toBe("waiting_tool");
+    expect(next.turnStatus).toBe("waiting_model");
   });
 
   it("releases busy when $settings arrives after optimistic settings_patch model switch", () => {
     let state: Parameters<typeof reduce>[0] = {
       ...initialState(),
       busy: true,
-      turnStatus: "waiting_tool",
+      turnStatus: "waiting_model",
       turnStatusTool: "read_file",
       settings: {
         reasoningEffort: "high",
@@ -4762,5 +4762,75 @@ describe("writeStamp", () => {
     vi.useRealTimers();
     expect(first).toBeGreaterThanOrEqual(1_700_000_000_000);
     expect(second).toBeGreaterThan(first);
+  });
+});
+
+describe("Desktop App reducer — turn phase vs daemon status", () => {
+  const statusEvent = (fields: {
+    code?: "tool-upload" | "model-retry" | "rate-limit";
+    attempt?: number;
+    waitMs?: number;
+  }): Parameters<typeof reduce>[1] =>
+    ({
+      t: "incoming",
+      event: {
+        type: "status",
+        id: 5,
+        ts: "2026-06-01T00:00:00.000Z",
+        turn: 1,
+        text: "daemon copy the row does not print",
+        ...fields,
+      },
+    }) as Parameters<typeof reduce>[1];
+
+  it("stops claiming the tool result is outstanding once the result lands", () => {
+    const next = reduce({ ...initialState(), busy: true, turnLastEventMs: 1 }, {
+      t: "incoming",
+      event: {
+        type: "tool.result",
+        id: 1,
+        ts: "t",
+        turn: 1,
+        callId: "tc-1",
+        ok: true,
+        output: "[exit 0]",
+      },
+    } as unknown as Parameters<typeof reduce>[1]);
+
+    expect(next.turnStatus).toBe("waiting_model");
+    expect(next.turnStatusWait).toBeNull();
+  });
+
+  it("takes the phase and the wait from a tagged status event", () => {
+    const next = reduce(
+      { ...initialState(), busy: true, turnStatus: "calling_tool", turnStatusWait: null },
+      statusEvent({ code: "model-retry", attempt: 2, waitMs: 3000 }),
+    );
+
+    expect(next.turnStatus).toBe("waiting_model");
+    expect(next.turnStatusWait).toEqual({ code: "model-retry", attempt: 2, waitMs: 3000 });
+    expect(next.turnLastEventMs).toBeGreaterThan(0);
+  });
+
+  it("clears a previous wait when the next request uploads the tool result", () => {
+    const retrying = reduce(
+      { ...initialState(), busy: true, turnStatus: "waiting_model" },
+      statusEvent({ code: "model-retry", attempt: 1, waitMs: 500 }),
+    );
+    const uploading = reduce(retrying, statusEvent({ code: "tool-upload" }));
+
+    expect(uploading.turnStatus).toBe("waiting_model");
+    expect(uploading.turnStatusWait).toBeNull();
+  });
+
+  it("treats an untagged status as liveness only, never as a phase change", () => {
+    const next = reduce(
+      { ...initialState(), busy: true, turnStatus: "responding", turnLastEventMs: 1 },
+      statusEvent({}),
+    );
+
+    expect(next.turnStatus).toBe("responding");
+    expect(next.turnStatusWait).toBeNull();
+    expect(next.turnLastEventMs).toBeGreaterThan(1);
   });
 });

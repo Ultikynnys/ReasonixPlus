@@ -495,6 +495,8 @@ export const EN: TranslationSchema = {
   loop: {
     proArmed: "⇧ pro armed — this turn runs on deepseek-v4-pro (one-shot · disarms after turn)",
     toolUploadStatus: "tool result uploaded · model thinking before next response…",
+    retryStatus: "{reason} · retrying (attempt {attempt}) in {sec}s — the request never started…",
+    rateLimitStatus: "client rate limit · holding {sec}s before sending the next request…",
     harvestStatus: "extracting plan state from reasoning…",
     repeatToolCallWarning:
       "Caught a repeated tool call — let the model see the issue and retry with a different approach.",

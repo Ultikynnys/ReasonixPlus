@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { messageOf, stripProviderQualifier } from "@reasonix/core-utils";
+import { messageOf, sleep, stripProviderQualifier } from "@reasonix/core-utils";
 import { type EventSourceMessage, createParser } from "eventsource-parser";
 import { ANTIGRAVITY_CLOUD_CODE_URL, antigravityHeaders } from "./antigravity-oauth.js";
 import {
@@ -23,7 +23,7 @@ import { messageText } from "./loop/messages.js";
 import { showPayloadContextLength } from "./ollama-model-map.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { buildResponsesPayload } from "./responses-api.js";
-import { type RetryOptions, fetchWithRetry } from "./retry.js";
+import { type RetryOptions, fetchWithRetryProgress } from "./retry.js";
 import { DEFAULT_CONTEXT_TOKENS } from "./telemetry/stats.js";
 import { estimateRequestTokens } from "./tokenizer.js";
 import type { ChatMessage, ChatRequestOptions, RawUsage, ToolCall, ToolSpec } from "./types.js";
@@ -372,6 +372,50 @@ export function normalizeStopReason(args: {
   }
 }
 
+export interface ClientStatus {
+  kind: "rate-limit" | "retry";
+  /** Planned wait before the next attempt. */
+  waitMs: number;
+  /** 1-based attempt number the next try will be (retry only). */
+  attempt?: number;
+  /** Why the previous attempt failed, e.g. "http 429" (retry only). */
+  reason?: string;
+}
+
+function statusChunk(status: ClientStatus): StreamChunk {
+  return { status, raw: null };
+}
+
+/** fetchWithRetryProgress yields a wait before sleeping on it; the stream channel
+ * can't carry a RetryInfo, so convert — that keeps the retry loop in one place. */
+async function* requestWithStatus(
+  fetchFn: typeof fetch,
+  url: string,
+  init: RequestInit,
+  opts: RetryOptions,
+): AsyncGenerator<StreamChunk, Response> {
+  const waits = fetchWithRetryProgress(fetchFn, url, init, opts);
+  for (;;) {
+    const step = await waits.next();
+    if (step.done) return step.value;
+    yield statusChunk({
+      kind: "retry",
+      waitMs: step.value.waitMs,
+      attempt: step.value.attempt,
+      reason: step.value.reason,
+    });
+  }
+}
+
+/** Non-streaming callers have no channel for a live wait, so they run the same
+ *  request path and drop its progress chunks. */
+async function drainStatusChunks<T>(gen: AsyncGenerator<StreamChunk, T>): Promise<T> {
+  for (;;) {
+    const step = await gen.next();
+    if (step.done) return step.value;
+  }
+}
+
 export interface StreamChunk {
   contentDelta?: string;
   reasoningDelta?: string;
@@ -392,6 +436,9 @@ export interface StreamChunk {
   /** Gemini 3.x thought signature seen in a part of its own, hoisted to chunk
    *  level so the assembler can attach it to a function call streamed earlier. */
   thoughtSignature?: string;
+  /** A wait the client runs before the request's first byte — the only signal a
+   *  caller gets while an alive request has nothing else to report. */
+  status?: ClientStatus;
   raw: any;
 }
 
@@ -708,18 +755,20 @@ export class DeepSeekClient {
     };
   }
 
-  /** Shared chat/stream plumbing: rate-limit wait, transport/header
-   *  resolution, POST. The client retries only the initial fetch; the loop
-   *  owns one guarded replay for a stream body failure with no visible output. */
-  private async prepareRequest(
+  /** Shared chat/stream plumbing. Yields a status chunk before each wait, so a caller
+   *  can report a pause the request has not surfaced yet. Retries cover only the initial
+   *  fetch; the loop owns the one guarded replay for a stream body failure. */
+  private async *prepareRequest(
     opts: ChatRequestOptions,
     stream: boolean,
     signal: AbortSignal,
-  ): Promise<{ transport: ResolvedTransport | null; resp: Response }> {
+  ): AsyncGenerator<StreamChunk, { transport: ResolvedTransport | null; resp: Response }> {
     const startedAt = performance.now();
-    const rateLimitStartedAt = startedAt;
-    await this.waitForChatRateLimit(signal);
-    const rateLimitWaitMs = performance.now() - rateLimitStartedAt;
+    const rateLimitWaitMs = this.reserveChatSlot();
+    if (rateLimitWaitMs > 0) {
+      yield statusChunk({ kind: "rate-limit", waitMs: rateLimitWaitMs });
+      await sleep(rateLimitWaitMs, signal);
+    }
     let transport = await this.resolveTransport();
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (stream) headers.Accept = "text/event-stream";
@@ -755,7 +804,7 @@ export class DeepSeekClient {
       signal,
     };
     try {
-      let resp = await fetchWithRetry(this._fetch, endpoint, init, { ...this.retry, signal });
+      let resp = yield* requestWithStatus(this._fetch, endpoint, init, { ...this.retry, signal });
       // Z.AI binds a key type to a host path: the Developer endpoint rejects a
       // GLM Coding Plan key (401, or 429 "no resource package" when it has no
       // Developer balance) and vice versa. On either signal against a recognized
@@ -766,10 +815,15 @@ export class DeepSeekClient {
         const altBase = this.zaiAlternateBaseUrl();
         if (altBase && (await this.zaiEndpointMismatch(resp))) {
           log.verbose(`zai ${resp.status} on ${endpoint} — trying the alternate Z.AI endpoint`);
-          const altResp = await fetchWithRetry(this._fetch, `${altBase}/chat/completions`, init, {
-            ...this.retry,
-            signal,
-          });
+          const altResp = yield* requestWithStatus(
+            this._fetch,
+            `${altBase}/chat/completions`,
+            init,
+            {
+              ...this.retry,
+              signal,
+            },
+          );
           if (altResp.ok || !(await this.zaiEndpointMismatch(altResp))) {
             this.zaiResolvedBase = altBase;
             resp = altResp;
@@ -781,7 +835,7 @@ export class DeepSeekClient {
       // the choice so later requests skip the Responses attempt.
       if (transport?.api === "responses" && providerForModel(opts.model) === "zai" && !resp.ok) {
         log.verbose(`zai ${resp.status} on ${transport.endpoint} — trying chat completions`);
-        const chatResp = await fetchWithRetry(
+        const chatResp = yield* requestWithStatus(
           this._fetch,
           `${this.baseUrl}/chat/completions`,
           {
@@ -810,7 +864,7 @@ export class DeepSeekClient {
           log.verbose(
             `opencode 400 on ${endpoint} — retrying with a fresh session id (attempt ${attempt + 1})`,
           );
-          resp = await fetchWithRetry(this._fetch, endpoint, init, { ...this.retry, signal });
+          resp = yield* requestWithStatus(this._fetch, endpoint, init, { ...this.retry, signal });
         }
       }
       if (!resp.ok) {
@@ -883,23 +937,14 @@ export class DeepSeekClient {
     }
   }
 
-  private async waitForChatRateLimit(signal?: AbortSignal): Promise<void> {
-    if (this.minChatIntervalMs <= 0) return;
+  /** Reserve this request's slot in the client-side RPM pacing; returns the wait
+   *  it still needs, so the caller can report the pause before taking it. */
+  private reserveChatSlot(): number {
+    if (this.minChatIntervalMs <= 0) return 0;
     const now = Date.now();
     const waitMs = Math.max(0, this.nextChatRequestAt - now);
     this.nextChatRequestAt = Math.max(now, this.nextChatRequestAt) + this.minChatIntervalMs;
-    if (waitMs <= 0) return;
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, waitMs);
-      signal?.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timer);
-          reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
-        },
-        { once: true },
-      );
-    });
+    return waitMs;
   }
 
   private buildPayload(
@@ -1135,7 +1180,7 @@ export class DeepSeekClient {
     }
     const { signal, timer } = this.withTimeout(opts.signal);
     try {
-      const { resp } = await this.prepareRequest(opts, false, signal);
+      const { resp } = await drainStatusChunks(this.prepareRequest(opts, false, signal));
       if (!resp.ok) {
         throw new Error(`${this._errorPrefix(opts.model)} ${resp.status}: ${await resp.text()}`);
       }
@@ -1172,7 +1217,7 @@ export class DeepSeekClient {
   private async chatOllama(opts: ChatRequestOptions): Promise<ChatResponse> {
     const { signal, timer } = this.withTimeout(opts.signal);
     try {
-      const { resp } = await this.prepareRequest(opts, false, signal);
+      const { resp } = await drainStatusChunks(this.prepareRequest(opts, false, signal));
       if (!resp.ok) {
         throw new Error(`${this._errorPrefix(opts.model)} ${resp.status}: ${await resp.text()}`);
       }
@@ -1774,7 +1819,7 @@ export class DeepSeekClient {
     const { signal, timer, timedOut } = this.withTimeout(opts.signal);
     let resp: Response;
     try {
-      ({ resp } = await this.prepareRequest(opts, true, signal));
+      ({ resp } = yield* this.prepareRequest(opts, true, signal));
     } catch (err) {
       clearTimeout(timer);
       throw err;
@@ -1969,7 +2014,7 @@ export class DeepSeekClient {
     let transport: ResolvedTransport | null = null;
     let resp: Response;
     try {
-      ({ transport, resp } = await this.prepareRequest(opts, true, signal));
+      ({ transport, resp } = yield* this.prepareRequest(opts, true, signal));
     } catch (err) {
       clearTimeout(timer);
       throw err;

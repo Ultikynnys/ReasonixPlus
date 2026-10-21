@@ -1,3 +1,4 @@
+import type { KernelStatusCode } from "@reasonix/core-utils";
 import type { RepairReport } from "../repair/index.js";
 import type { CacheDiagnosticEntry } from "../telemetry/cache-diagnostics.js";
 import type { TurnStats } from "../telemetry/stats.js";
@@ -49,6 +50,13 @@ export interface LoopEvent {
   severity?: EventSeverity;
   /** Machine-readable trigger tag on warnings, when the trigger is one of WarningCause. */
   cause?: WarningCause;
+  /** Machine-readable tag for `role === "status"`: what the turn is waiting on, so
+   *  clients localize instead of showing `content`. Untagged statuses are bare pings. */
+  statusCode?: KernelStatusCode;
+  /** 1-based attempt the next request will be, for statusCode "model-retry". */
+  statusAttempt?: number;
+  /** How long the loop waits before that attempt, for "model-retry" / "rate-limit". */
+  statusWaitMs?: number;
   reasoningDelta?: string;
   /** Complete reasoning snapshot, present on finals that replace streamed output. */
   reasoningContent?: string;

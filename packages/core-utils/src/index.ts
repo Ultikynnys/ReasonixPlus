@@ -170,6 +170,7 @@ export type {
   KernelToolOutputEvent,
   KernelSubagentProgressEvent,
   KernelStatusEvent,
+  KernelStatusCode,
   KernelWarningEvent,
   KernelErrorEvent,
   KernelCompactionStartedEvent,

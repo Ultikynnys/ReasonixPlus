@@ -22,6 +22,39 @@ describe("Eventizer.consume", () => {
     expect(out.find((ev) => ev.type === "model.turn.started")).toBeUndefined();
   });
 
+  it("carries a status event's machine tag and wait numbers onto the wire", () => {
+    const e = new Eventizer();
+    const out = e.consume(
+      lev({
+        turn: 1,
+        role: "status",
+        content: "http 429 · retrying (attempt 2) in 3s",
+        statusCode: "model-retry",
+        statusAttempt: 2,
+        statusWaitMs: 3000,
+      }),
+      ctx,
+    );
+    expect(out.find((ev) => ev.type === "status")).toMatchObject({
+      type: "status",
+      turn: 1,
+      code: "model-retry",
+      attempt: 2,
+      waitMs: 3000,
+      text: "http 429 · retrying (attempt 2) in 3s",
+    });
+  });
+
+  it("leaves the tag fields off a status event that has none", () => {
+    const e = new Eventizer();
+    const out = e.consume(lev({ turn: 1, role: "status", content: "ping" }), ctx);
+    const status = out.find((ev) => ev.type === "status") as Record<string, unknown> | undefined;
+    expect(status).toBeDefined();
+    expect(Object.hasOwn(status!, "code")).toBe(false);
+    expect(Object.hasOwn(status!, "attempt")).toBe(false);
+    expect(Object.hasOwn(status!, "waitMs")).toBe(false);
+  });
+
   it("emits a fresh turn.started when the turn number advances", () => {
     const e = new Eventizer();
     e.consume(lev({ turn: 1 }), ctx);

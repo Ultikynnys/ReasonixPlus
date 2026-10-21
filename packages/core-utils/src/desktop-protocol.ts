@@ -309,9 +309,20 @@ export interface KernelSubagentProgressEvent extends KernelWireEventBase {
   budgetExhausted?: "tool-iters" | "elapsed";
 }
 
+/** Machine-readable phase tag on a `status` event (mirror of src/loop StatusCode).
+ *  Clients render their own copy for a tag they know and fall back to `text`
+ *  otherwise, so a daemon wording change never leaks into a localized client. */
+export type KernelStatusCode = "tool-upload" | "model-retry" | "rate-limit";
+
 export interface KernelStatusEvent extends KernelWireEventBase {
   type: "status";
   text: string;
+  /** Absent on untagged statuses — treat those as "something moved", nothing more. */
+  code?: KernelStatusCode;
+  /** 1-based attempt the next request will be, for `model-retry`. */
+  attempt?: number;
+  /** How long the daemon waits before that attempt, for `model-retry` / `rate-limit`. */
+  waitMs?: number;
 }
 
 export interface KernelWarningEvent extends KernelWireEventBase {

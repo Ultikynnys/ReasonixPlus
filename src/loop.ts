@@ -1754,6 +1754,7 @@ export class CacheFirstLoop {
           turn: this._turn,
           role: "status",
           content: t("loop.toolUploadStatus"),
+          statusCode: "tool-upload",
         };
       }
       let messages = this.buildMessages();

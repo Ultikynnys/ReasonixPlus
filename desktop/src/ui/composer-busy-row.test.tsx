@@ -18,10 +18,10 @@ function renderStatus(overrides: Parameters<typeof makeComposerBaseProps>[0] = {
 
 describe("Composer status row", () => {
   it("renders the busy label on its own row, outside the ellipsizing hint row", () => {
-    const container = renderStatus({ busy: true, busyLabel: "Waiting for tool result…" });
+    const container = renderStatus({ busy: true, busyLabel: "Waiting for model…" });
 
     const statusRow = container.querySelector(".composer-busy-row");
-    expect(statusRow?.textContent).toContain("Waiting for tool result…");
+    expect(statusRow?.textContent).toContain("Waiting for model…");
     // Own row: a direct child of the composer column, never nested in .hint-row.
     expect(statusRow?.parentElement?.className).toBe("composer-inner");
     expect(container.querySelector(".hint-row .composer-busy-label")).toBeNull();

@@ -85,6 +85,7 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     mimoOAuthWaiting: false,
     turnStatus: null,
     turnStatusTool: null,
+    turnStatusWait: null,
     turnLastEventMs: 0,
     turnElapsedMs: 0,
     ...overrides,

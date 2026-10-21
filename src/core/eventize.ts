@@ -131,7 +131,7 @@ export class Eventizer {
         );
         break;
       case "status":
-        out.push(this.statusEvent(ev.turn, ev.content));
+        out.push(this.statusEvent(ev));
         break;
       case "compaction_start":
         out.push(this.compactionStartedEvent(ev.turn, ev.compactionTrigger ?? "auto"));
@@ -467,13 +467,16 @@ export class Eventizer {
     };
   }
 
-  private statusEvent(turn: number, text: string): StatusEvent {
+  private statusEvent(ev: LoopEvent): StatusEvent {
     return {
       id: ++this.nextId,
       ts: new Date().toISOString(),
-      turn,
+      turn: ev.turn,
       type: EventType.status,
-      text,
+      text: ev.content,
+      ...(ev.statusCode ? { code: ev.statusCode } : {}),
+      ...(ev.statusAttempt !== undefined ? { attempt: ev.statusAttempt } : {}),
+      ...(ev.statusWaitMs !== undefined ? { waitMs: ev.statusWaitMs } : {}),
     };
   }
 

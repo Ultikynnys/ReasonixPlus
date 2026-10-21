@@ -14,7 +14,8 @@ export interface RetryOptions {
   retryableStatuses?: readonly number[];
   /** Abort signal; we do NOT retry once aborted. */
   signal?: AbortSignal;
-  /** Telemetry hook — called before each wait. */
+  /** Telemetry hook — called before each wait. `fetchWithRetryProgress` yields the
+   *  same information instead, so a streaming caller can report the wait live. */
   onRetry?: (info: RetryInfo) => void;
 }
 
@@ -26,12 +27,15 @@ export interface RetryInfo {
 
 const DEFAULT_RETRYABLE_STATUSES = RETRYABLE_HTTP_STATUSES;
 
-export async function fetchWithRetry(
+/** The retry loop, with each backoff wait yielded BEFORE it starts. A generator is
+ *  the only shape that lets a caller forward a pending wait over its own channel;
+ *  `fetchWithRetry` drains the same loop for callers that have none. */
+export async function* fetchWithRetryProgress(
   fetchFn: typeof fetch,
   url: string,
   init: RequestInit,
   opts: RetryOptions = {},
-): Promise<Response> {
+): AsyncGenerator<RetryInfo, Response> {
   const maxAttempts = opts.maxAttempts ?? 4;
   const initial = opts.initialBackoffMs ?? 500;
   const cap = opts.maxBackoffMs ?? 10_000;
@@ -56,7 +60,7 @@ export async function fetchWithRetry(
       await resp.text().catch(() => undefined);
 
       const waitMs = retryDelayMs(attempt, { baseMs: initial, maxMs: cap, headers: resp.headers });
-      opts.onRetry?.({ attempt: attempt + 1, reason: `http ${resp.status}`, waitMs });
+      yield { attempt: attempt + 1, reason: `http ${resp.status}`, waitMs };
       await sleep(waitMs, opts.signal);
     } catch (err) {
       lastError = err;
@@ -65,14 +69,24 @@ export async function fetchWithRetry(
       if (attempt === maxAttempts - 1) throw err;
 
       const waitMs = retryDelayMs(attempt, { baseMs: initial, maxMs: cap });
-      opts.onRetry?.({
-        attempt: attempt + 1,
-        reason: `network: ${messageOf(err)}`,
-        waitMs,
-      });
+      yield { attempt: attempt + 1, reason: `network: ${messageOf(err)}`, waitMs };
       await sleep(waitMs, opts.signal);
     }
   }
 
   throw lastError ?? new Error("fetchWithRetry: loop exited unexpectedly");
+}
+
+export async function fetchWithRetry(
+  fetchFn: typeof fetch,
+  url: string,
+  init: RequestInit,
+  opts: RetryOptions = {},
+): Promise<Response> {
+  const waits = fetchWithRetryProgress(fetchFn, url, init, opts);
+  for (;;) {
+    const step = await waits.next();
+    if (step.done) return step.value;
+    opts.onRetry?.(step.value);
+  }
 }

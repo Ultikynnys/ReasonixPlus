@@ -139,6 +139,14 @@ import {
 } from "./theme";
 import { AboutModal } from "./ui/about";
 import {
+  type StatusWait,
+  type TurnStatus,
+  busyStatusLabel,
+  statusPhase,
+  statusWait,
+  stuckStatusLabel,
+} from "./ui/busy-status";
+import {
   NoticeCard,
   type NoticeSeverity,
   fullerSubagentTask,
@@ -636,16 +644,12 @@ type State = {
   /** True between mimo_oauth_begin_result and the flow's terminal state — settings card spinner. */
   mimoOAuthWaiting: boolean;
   /** Current turn's activity status — shown as a live indicator below the streaming assistant message. */
-  turnStatus:
-    | "thinking"
-    | "reasoning"
-    | "calling_tool"
-    | "waiting_tool"
-    | "responding"
-    | "waiting_user"
-    | null;
+  turnStatus: TurnStatus | null;
   /** Tool name currently being prepared/called — displayed in the turn status line. */
   turnStatusTool: string | null;
+  /** Pre-first-byte wait reported by a `status` event. Read only while turnStatus is
+   *  "waiting_model", so a stale note can never relabel another phase. */
+  turnStatusWait: StatusWait | null;
   /** Timestamp (ms) of the last model/tool event — used to detect "stuck" state. */
   turnLastEventMs: number;
   /** Elapsed ms since the turn started (computed from turnLastEventMs in the component). */
@@ -3116,7 +3120,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     case "tool.result": {
       return {
         ...state,
-        turnStatus: "waiting_tool",
+        // The result is IN: the next thing anyone waits on is the model, and a note
+        // from an earlier wait would otherwise surface on the incoming request.
+        turnStatus: "waiting_model",
+        turnStatusWait: null,
         turnLastEventMs: Date.now(),
         // Settles the spawn's Events row when the call has one; a no-op for every
         // other tool, since the row id is derived from THIS call id.
@@ -3238,8 +3245,17 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         ...state,
         messages: insertNotice(state.messages, `≫ btw\n${ev.answer}`, "info"),
       };
-    case "status":
-      return state;
+    case "status": {
+      // Always a liveness ping — the daemon is waiting on something and says so.
+      const phase = statusPhase(ev.code);
+      if (!phase) return { ...state, turnLastEventMs: Date.now() };
+      return {
+        ...state,
+        turnStatus: phase,
+        turnStatusWait: statusWait(ev),
+        turnLastEventMs: Date.now(),
+      };
+    }
     case "compaction.started": {
       if (state.messages.some((m) => m.kind === "notice" && m.running === true)) return state;
       // Seal the in-flight card as the boundary is created: it must render as
@@ -3626,6 +3642,7 @@ const TabRuntime = memo(function TabRuntime({
     mimoOAuthWaiting: false,
     turnStatus: null,
     turnStatusTool: null,
+    turnStatusWait: null,
     turnLastEventMs: 0,
     turnElapsedMs: 0,
   });
@@ -5312,32 +5329,7 @@ const TabRuntime = memo(function TabRuntime({
                 busy={engaged}
                 busyLabel={
                   state.busy || state.awaitingAck
-                    ? state.activeSkill
-                      ? `Skill · ${state.activeSkill.name}`
-                      : state.pendingChoices.length > 0
-                        ? t("app.status.waitingChoice")
-                        : state.pendingPlans.length > 0
-                          ? t("app.status.waitingPlan")
-                          : state.pendingCheckpoints.length > 0
-                            ? t("app.status.waitingCheckpoint")
-                            : state.pendingRevisions.length > 0
-                              ? t("app.status.waitingRevision")
-                              : state.pendingConfirms.length > 0 ||
-                                  state.pendingPathAccess.length > 0
-                                ? t("app.status.waitingConfirm")
-                                : state.turnStatus === "waiting_user"
-                                  ? t("app.status.waitingUser")
-                                  : state.turnStatus === "thinking"
-                                    ? t("app.status.thinking")
-                                    : state.turnStatus === "reasoning"
-                                      ? t("app.status.reasoning")
-                                      : state.turnStatus === "calling_tool" && state.turnStatusTool
-                                        ? `${t("app.status.callingTool")} ${state.turnStatusTool}`
-                                        : state.turnStatus === "waiting_tool"
-                                          ? t("app.status.waitingTool")
-                                          : state.turnStatus === "responding"
-                                            ? t("app.status.responding")
-                                            : t("app.status.thinking")
+                    ? busyStatusLabel(state)
                     : state.compacting
                       ? t("app.status.compacting")
                       : undefined
@@ -5346,7 +5338,7 @@ const TabRuntime = memo(function TabRuntime({
                   state.busy && state.turnLastEventMs && !state.activeSkill
                     ? {
                         sinceMs: state.turnLastEventMs,
-                        render: (sec: number) => t("app.status.stuck", { sec }),
+                        render: (sec: number) => stuckStatusLabel(state, sec),
                       }
                     : undefined
                 }

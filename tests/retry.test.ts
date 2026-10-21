@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { isRetryableProviderFailure } from "../src/core/retry-shared.js";
-import { fetchWithRetry } from "../src/retry.js";
+import { fetchWithRetry, fetchWithRetryProgress } from "../src/retry.js";
 
 function makeFetch(responses: Array<Response | Error | (() => Response | Error)>): {
   fn: typeof fetch;
@@ -123,6 +123,30 @@ describe("fetchWithRetry", () => {
     const r = await fetchWithRetry(f.fn, "https://x", {}, { ...BASE, maxAttempts: 1 });
     expect(r.status).toBe(503);
     expect(f.calls).toBe(1);
+  });
+
+  it("fetchWithRetryProgress reports each wait BEFORE taking it", async () => {
+    const f = makeFetch([new Response("", { status: 429 }), new Response("ok", { status: 200 })]);
+    const waits = fetchWithRetryProgress(f.fn, "https://x", {}, BASE);
+
+    const first = await waits.next();
+    expect(first.done).toBe(false);
+    expect(first.value).toMatchObject({ attempt: 1, reason: "http 429" });
+    // Announced while the request is still unanswered: one attempt so far, not two.
+    expect(f.calls).toBe(1);
+
+    const settled = await waits.next();
+    expect(settled.done).toBe(true);
+    expect((settled.value as Response).status).toBe(200);
+  });
+
+  it("fetchWithRetryProgress yields nothing when the first attempt succeeds", async () => {
+    const f = makeFetch([new Response("ok", { status: 200 })]);
+    const waits = fetchWithRetryProgress(f.fn, "https://x", {}, BASE);
+    const only = await waits.next();
+
+    expect(only.done).toBe(true);
+    expect((only.value as Response).status).toBe(200);
   });
 });
 
