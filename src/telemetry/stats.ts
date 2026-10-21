@@ -1,9 +1,7 @@
 import {
-  DEEPSEEK_RATE_SCHEDULE,
-  OLLAMA_RATE_SCHEDULE,
-  isOllamaPeakPricedModel,
   isPeakRate,
   normalizeOllamaModelId,
+  providerSpec,
   stripProviderQualifier,
 } from "@reasonix/core-utils";
 import type { Usage } from "../client.js";
@@ -11,7 +9,6 @@ import {
   type ModelProvider,
   loadEndpointForModel,
   loadPricingOverride,
-  loadZaiApiKey,
   providerForModel,
   readConfig,
 } from "../config.js";
@@ -23,39 +20,7 @@ export interface ModelPricing {
   output: number;
 }
 
-/** USD per 1M tokens at each provider's off-peak base rate. */
-export const DEEPSEEK_PRICING: Record<string, ModelPricing> = {
-  // Official DeepSeek API pricing (api-docs.deepseek.com/quick_start/pricing).
-  // `deepseek-flash` = V4.1 Flash (2026-09-10). The retired `deepseek-v4-flash`
-  // and `deepseek-v4-flash-vision-exp` ids are routed to it and billed at the
-  // same price.
-  "deepseek-flash": { inputCacheHit: 0.003, inputCacheMiss: 0.15, output: 0.6 },
-  "deepseek-v4-flash": { inputCacheHit: 0.003, inputCacheMiss: 0.15, output: 0.6 },
-  "deepseek-v4-flash-vision-exp": { inputCacheHit: 0.003, inputCacheMiss: 0.15, output: 0.6 },
-  // V4 Pro keeps its own price until it retires 2026-09-14 04:00 UTC; after
-  // that the API routes it to V4.1 Flash at the Flash price above.
-  "deepseek-v4-pro": { inputCacheHit: 0.022, inputCacheMiss: 0.66, output: 1.98 },
-  // Legacy aliases discontinued 2026-07-24; kept for stale configs, priced as the Flash line.
-  "deepseek-chat": { inputCacheHit: 0.003, inputCacheMiss: 0.15, output: 0.6 },
-  "deepseek-reasoner": { inputCacheHit: 0.003, inputCacheMiss: 0.15, output: 0.6 },
-  // GPT-6 & GPT-5.6 families — official pricing. Cache
-  // reads bill at 10% of input (90% discount). Override via `pricingOverride`.
-  "gpt-6-astra": { inputCacheHit: 1.0, inputCacheMiss: 10, output: 50 },
-  "gpt-6-sol": { inputCacheHit: 0.2, inputCacheMiss: 2, output: 10 },
-  "gpt-6-luna": { inputCacheHit: 0.01, inputCacheMiss: 0.1, output: 0.5 },
-  // GPT-6.1 Sol — cached reads bill at 5% of input (not the family's 10%).
-  "gpt-6.1-sol": { inputCacheHit: 0.1, inputCacheMiss: 2, output: 10 },
-  "gpt-5.6": { inputCacheHit: 0.5, inputCacheMiss: 5, output: 30 },
-  "gpt-5.6-sol": { inputCacheHit: 0.5, inputCacheMiss: 5, output: 30 },
-  "gpt-5.6-terra": { inputCacheHit: 0.2, inputCacheMiss: 2, output: 12 },
-  "gpt-5.6-luna": { inputCacheHit: 0.02, inputCacheMiss: 0.2, output: 1.2 },
-};
-
-/** Ollama Cloud's published off-peak rates. Peak billing is exactly 2x. */
-export const OLLAMA_PRICING: Record<string, ModelPricing> = {
-  "deepseek-v4-flash": { inputCacheHit: 0.007, inputCacheMiss: 0.22, output: 0.66 },
-  "deepseek-v4-pro": { inputCacheHit: 0.022, inputCacheMiss: 0.66, output: 1.98 },
-};
+/** Rate tables live in each provider's declaration; read them through the registry. */
 
 export interface PricingContext {
   /** Resolved provider identity — the rate-table selector. Never inferred from
@@ -66,49 +31,16 @@ export interface PricingContext {
   at?: Date | number;
 }
 
-const DEEPSEEK_PRICED_MODELS = new Set([
-  "deepseek-flash",
-  "deepseek-v4-flash",
-  "deepseek-v4-pro",
-  "deepseek-v4-flash-vision-exp",
-  "deepseek-chat",
-  "deepseek-reasoner",
-]);
-const OPENAI_PRICED_MODELS = new Set([
-  "gpt-6.1-sol",
-  "gpt-6-astra",
-  "gpt-6-sol",
-  "gpt-6-luna",
-  "gpt-5.6",
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-]);
-
-function ollamaPricingModel(model: string): string {
-  return normalizeOllamaModelId(model);
-}
-
-/** The off-peak USD rate table for a model, selected by the RESOLVED provider —
- *  never keyed on the model name alone, so the same id on two providers prices
- *  by its own table. The provider arrives from positive evidence. */
+/** The declared base rate for a model, selected by the RESOLVED provider — never
+ *  keyed on the model name alone, so the same id on two providers prices by its
+ *  own declared table. Presence in the table IS the "is it priced" answer. */
 function defaultPricingFor(model: string, provider: ModelProvider): ModelPricing | undefined {
+  const rates = providerSpec(provider)?.billing.pricing;
+  if (!rates) return undefined;
   // Rate tables are keyed on the wire id, so a qualified ref prices like the
-  // native id. Ollama keeps the raw id: its scheme (ollama/<id>:tag) predates
-  // qualifiers and normalizeOllamaModelId expects it.
+  // native id; Ollama's scheme (ollama/<id>:tag) normalizes to the same key.
   const id = stripProviderQualifier(model);
-  switch (provider) {
-    case "deepseek":
-      return DEEPSEEK_PRICED_MODELS.has(id) ? DEEPSEEK_PRICING[id] : undefined;
-    case "openai":
-      return OPENAI_PRICED_MODELS.has(id) ? DEEPSEEK_PRICING[id] : undefined;
-    case "ollama":
-      return isOllamaPeakPricedModel(model) ? OLLAMA_PRICING[ollamaPricingModel(model)] : undefined;
-    default:
-      // mimo bills a subscription plan; gemini/zai/opencode bill plan windows —
-      // none exposes a per-token USD rate. Set `pricingOverride` for an estimate.
-      return undefined;
-  }
+  return rates[id] ?? rates[normalizeOllamaModelId(model)];
 }
 
 function pricingFor(
@@ -136,14 +68,10 @@ function pricingFor(
 
 function priceMultiplier(context?: PricingContext): number {
   if (context?.at === undefined) return 1;
+  const schedule = providerSpec(context.provider)?.billing.schedule;
+  if (!schedule) return 1;
   const at = context.at instanceof Date ? context.at : new Date(context.at);
-  if (context.provider === "deepseek") {
-    return isPeakRate(at, DEEPSEEK_RATE_SCHEDULE) ? 2 : 1;
-  }
-  if (context.provider === "ollama") {
-    return isPeakRate(at, OLLAMA_RATE_SCHEDULE) ? 2 : 1;
-  }
-  return 1;
+  return isPeakRate(at, schedule) ? 2 : 1;
 }
 
 /** Reference Claude Sonnet 4.6 pricing (USD per 1M tokens). */
@@ -349,55 +277,37 @@ export interface SessionProviderCost {
   quotaUsedPct?: number;
 }
 
-/** Resolve a model's native billing unit and provider from endpoint/config evidence. */
+/** True when the OAuth field a provider declares holds an access token. */
+function hasOAuthToken(path: string | undefined, field: string | null): boolean {
+  if (!field) return false;
+  const tokens = readConfig(path) as unknown as Record<
+    string,
+    { accessToken?: string } | undefined
+  >;
+  return Boolean(tokens[field]?.accessToken);
+}
+
+/** Resolve a model's native billing unit from the provider's declaration. */
 export function billingContextForModel(model: string, path?: string): BillingContext {
   const provider = providerForModel(model, path);
-  // Exhaustive switch (no `default`): a newly added provider must declare its
-  // native unit here instead of silently inheriting "usd".
-  switch (provider) {
-    case "deepseek":
-      // The only provider whose default native unit is per-token USD.
+  const spec = providerSpec(provider);
+  // Declared kind, not an id switch: a newly added provider states its native
+  // unit instead of silently inheriting one.
+  switch (spec?.billing.kind ?? "quota") {
+    case "usd":
       return { kind: "usd", provider };
-    case "openai":
-      return {
-        kind: readConfig(path).openaiOAuth?.accessToken ? "quota" : "usd",
-        provider,
-      };
-    case "gemini":
-      return { kind: "quota", provider };
-    case "ollama": {
-      const endpoint = loadEndpointForModel(model, path);
-      // Ollama accounts expose plan-window usage as percentages. Keep keyless
-      // local deployments unbilled; an API key is endpoint evidence that the
-      // quota-backed account usage endpoint is available.
-      return {
-        kind: endpoint.apiKey ? "quota" : "none",
-        provider,
-      };
-    }
-    case "zai":
-      // A Z.AI GLM key is evidence of a Coding Plan account, whose real unit is
-      // plan-window % (fetched from the monitor endpoint), never dollars. Keyless
-      // tabs stay unbilled ("none") rather than inventing a USD figure.
-      return { kind: loadZaiApiKey(path) ? "quota" : "none", provider };
-    case "mimo":
-      // MiMo bills an OpenAI-compatible *subscription* plan; its native unit is
-      // plan-window % (the console usage endpoint), never per-token USD — no
-      // dollar figure is ever derived from its token counts.
-      return { kind: "quota", provider };
-    case "opencode":
-      // Go-subscription usage is plan-window %, accumulated from the usage
-      // endpoint; free/anon Zen and paid Zen expose no per-token dollar amount.
+    case "none":
       return { kind: "none", provider };
-    case "experiential":
-      // The gateway bills routed tokens as per-token USD (no plan-window %);
-      // the harness prices from token tables, so set `pricingOverride` for a
-      // model with no built-in rate row.
-      return { kind: "usd", provider };
-    case "synthetic":
-      // Per-token USD: the gateway publishes a price per model, so token
-      // accounting is the native unit (its plan quota is a limit, not the unit).
-      return { kind: "usd", provider };
+    case "quota":
+      return { kind: "quota", provider };
+    case "usd-unless-oauth":
+      return {
+        kind: hasOAuthToken(path, spec?.credentials.oauthConfig ?? null) ? "quota" : "usd",
+        provider,
+      };
+    case "quota-if-key":
+      // A stored key is endpoint evidence that the quota-backed usage endpoint exists.
+      return { kind: loadEndpointForModel(model, path).apiKey ? "quota" : "none", provider };
   }
 }
 

@@ -21,6 +21,7 @@ import {
   ROUTABLE_PROVIDER_SPECS,
   parseProviderRegistry,
   providerCountsAsConfigured,
+  providerReasoningEfforts,
   providerSettingSpec,
   providerSpec,
   providerUsable,
@@ -33,11 +34,11 @@ import { REASONING_EFFORT_ORDER } from "../src/reasoning-efforts.js";
 
 function ctxFor(
   env: Record<string, string> = {},
-  config: Record<string, string> = {},
+  store: Record<string, string> = {},
 ): ProviderCredentialContext {
   return {
     env: (name) => env[name],
-    configField: (field) => config[field],
+    setting: (path) => store[path],
   };
 }
 
@@ -56,7 +57,7 @@ const ACME = {
   id: "acme",
   providerId: null,
   label: "Acme",
-  groupLabelKey: "settings.typesafeSection",
+  groupLabelKey: "settings.opencodeSection",
   order: 20,
   setupGate: ["apiKey"],
   precedence: null,
@@ -75,14 +76,14 @@ const ACME = {
       kind: "secret",
       env: ["ACME_API_KEY"],
       configKey: "acmeApiKey",
-      labelKey: "settings.providerApiKey",
+      label: "Acme API key",
     },
     {
       key: "baseUrl",
       kind: "url",
       env: ["ACME_BASE_URL"],
       configKey: "acmeBaseUrl",
-      labelKey: "settings.providerBaseUrl",
+      label: "Acme base URL",
     },
   ],
   credentials: {
@@ -115,17 +116,12 @@ describe("providers.json", () => {
   });
 
   it("orders bare-id precedence exactly as declared", () => {
-    expect(PROVIDER_MODEL_PRECEDENCE).toEqual([
-      "gemini",
-      "deepseek",
-      "openai",
-      "zai",
-      "mimo",
-      "opencode",
-      "experiential",
-      "synthetic",
-    ]);
-    expect(requireProviderSpec("ollama").precedence).toBeNull();
+    // Derived, so deleting a provider file shrinks the order instead of failing.
+    const declared = PROVIDER_SPECS.filter((spec) => spec.precedence !== null)
+      .sort((a, b) => (a.precedence ?? 0) - (b.precedence ?? 0))
+      .map((spec) => spec.id);
+    expect(PROVIDER_MODEL_PRECEDENCE).toEqual(declared);
+    expect(PROVIDER_SPECS.find((spec) => spec.id === "ollama")?.precedence ?? null).toBeNull();
   });
 
   it("declares canonical effort ladders once per routable provider", () => {
@@ -133,8 +129,8 @@ describe("providers.json", () => {
     for (const levels of Object.values(PROVIDER_REASONING_EFFORTS)) {
       for (const level of levels) expect(REASONING_EFFORT_ORDER).toContain(level);
     }
-    expect(PROVIDER_REASONING_EFFORTS.mimo).toEqual([]);
-    expect(PROVIDER_REASONING_EFFORTS.experiential).toEqual([]);
+    expect(providerReasoningEfforts("mimo")).toEqual([]);
+    expect(providerReasoningEfforts("experiential")).toEqual([]);
   });
 
   it("feeds every exported catalog", () => {
@@ -153,7 +149,8 @@ describe("providers.json", () => {
       (spec) => spec.models,
     );
     expect(KNOWN_MODELS).toEqual(expected);
-    expect(KNOWN_MODELS).not.toContain(requireProviderSpec("experiential").models[0]);
+    const experiential = PROVIDER_SPECS.find((spec) => spec.id === "experiential");
+    if (experiential) expect(KNOWN_MODELS).not.toContain(experiential.models[0]);
   });
 
   it("pins the install default model to DeepSeek's declared default", () => {
@@ -167,7 +164,7 @@ describe("resolveProviderEndpoint", () => {
       endpointFor(
         "zai",
         { ZAI_API_KEY: "env-key" },
-        { zaiBaseUrl: "https://proxy/v1", zaiApiKey: "cfg" },
+        { "zai.baseUrl": "https://proxy/v1", "zai.apiKey": "cfg" },
       ),
     ).toEqual({ baseUrl: "https://proxy/v1", apiKey: "cfg" });
   });
@@ -177,13 +174,13 @@ describe("resolveProviderEndpoint", () => {
       endpointFor(
         "zai",
         { ZAI_BASE_URL: "https://env/v1", ZAI_API_KEY: "env-key" },
-        { zaiBaseUrl: "https://proxy/v1", zaiApiKey: "cfg" },
+        { "zai.baseUrl": "https://proxy/v1", "zai.apiKey": "cfg" },
       ),
     ).toEqual({ baseUrl: "https://env/v1", apiKey: "env-key" });
   });
 
   it("falls back to the declared default endpoint and the resolved key", () => {
-    expect(endpointFor("mimo", {}, { mimoApiKey: "cfg" })).toEqual({
+    expect(endpointFor("mimo", {}, { "mimo.apiKey": "cfg" })).toEqual({
       baseUrl: "https://api.xiaomimimo.com/v1",
       apiKey: "cfg",
     });
@@ -198,7 +195,7 @@ describe("resolveProviderEndpoint", () => {
       endpointFor(
         "ollama",
         { OLLAMA_BASE_URL: "http://localhost:11434/v1" },
-        { ollamaApiKey: "cfg" },
+        { "ollama.apiKey": "cfg" },
       ),
     ).toEqual({ baseUrl: "http://localhost:11434/v1", apiKey: "cfg" });
   });
@@ -292,13 +289,13 @@ describe("providerCountsAsConfigured", () => {
     expect(
       providerCountsAsConfigured(
         requireProviderSpec("mimo"),
-        ctxFor({}, { mimoBaseUrl: "https://x" }),
+        ctxFor({}, { "mimo.baseUrl": "https://x" }),
       ),
     ).toBe(true);
     expect(
       providerCountsAsConfigured(
         requireProviderSpec("zai"),
-        ctxFor({}, { zaiBaseUrl: "https://x" }),
+        ctxFor({}, { "zai.baseUrl": "https://x" }),
       ),
     ).toBe(false);
     expect(
@@ -342,8 +339,8 @@ describe("adding a provider", () => {
     expect(spec.credentials).toEqual({
       baseUrlEnv: ["ACME_BASE_URL"],
       apiKeyEnv: ["ACME_API_KEY"],
-      baseUrlConfig: "acmeBaseUrl",
-      apiKeyConfig: "acmeApiKey",
+      baseUrlSetting: "acme.baseUrl",
+      apiKeySetting: "acme.apiKey",
       publicKey: null,
       oauthConfig: null,
     });
@@ -358,7 +355,7 @@ describe("adding a provider", () => {
         ctxFor({ ACME_BASE_URL: "https://acme-proxy/v1", ACME_API_KEY: "k" }),
       ),
     ).toEqual({ baseUrl: "https://acme-proxy/v1", apiKey: "k" });
-    expect(providerCountsAsConfigured(spec, ctxFor({}, { acmeApiKey: "k" }))).toBe(true);
+    expect(providerCountsAsConfigured(spec, ctxFor({}, { "acme.apiKey": "k" }))).toBe(true);
     expect(providerCountsAsConfigured(spec, ctxFor())).toBe(false);
   });
 

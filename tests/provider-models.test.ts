@@ -64,21 +64,6 @@ describe("provider model discovery", () => {
       error: "Model discovery returned HTTP 401",
     });
   });
-  it("reads the TypeSafe model contract", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(new Response(JSON.stringify({ models: [{ name: "jev-next" }] })));
-    expect(
-      await fetchProviderModels({
-        provider: "typesafe",
-        baseUrl: "https://test/v1",
-        apiKey: "key",
-        fallback: ["jev-latest"],
-        homeDir: home(),
-        fetchImpl,
-      }),
-    ).toMatchObject({ models: ["jev-next"], source: "live" });
-  });
   it("drops excluded ids (MiMo speech models) and bakes it into the cache", async () => {
     const homeDir = home();
     const fetchImpl = vi.fn().mockResolvedValue(

@@ -1,12 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { providerDeclared, providerPricing } from "@reasonix/core-utils";
 import { describe, expect, it } from "vitest";
 import { Usage } from "../src/client.js";
 import { writeConfig } from "../src/config.js";
 import {
-  DEEPSEEK_PRICING,
-  OLLAMA_PRICING,
   SessionStats,
   billingContextForModel,
   cacheSavingsUsd,
@@ -14,6 +13,10 @@ import {
   inputCostUsd,
   outputCostUsd,
 } from "../src/telemetry/stats.js";
+
+// Derived from the declarations, so the numbers stay pinned to what ships.
+const DEEPSEEK_PRICING = providerPricing("deepseek");
+const OLLAMA_PRICING = providerPricing("ollama");
 
 // Derive expected figures from the pricing table so the tests don't
 // re-bake stale constants every time DeepSeek updates the price sheet.
@@ -515,35 +518,38 @@ describe("billingContextForModel", () => {
     }
   });
 
-  it("resolves the native unit from the provider, never the model name", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reasonix-billing-unit-"));
-    const path = join(dir, "config.json");
-    try {
-      writeConfig({}, path);
-      // Xiaomi MiMo bills a subscription plan → plan-window %, never USD.
-      expect(billingContextForModel("mimo-v2.6-pro", path)).toEqual({
-        kind: "quota",
-        provider: "mimo",
-      });
-      // DeepSeek is the only provider whose default native unit is per-token USD.
-      expect(billingContextForModel("deepseek-v4-flash", path)).toEqual({
-        kind: "usd",
-        provider: "deepseek",
-      });
-      // OpenCode never exposes a per-token dollar amount.
-      expect(billingContextForModel("big-pickle", path)).toEqual({
-        kind: "none",
-        provider: "opencode",
-      });
-      // Experiential Labs bills routed tokens per-token USD.
-      expect(billingContextForModel("experiential/qwen3.8-27b", path)).toEqual({
-        kind: "usd",
-        provider: "experiential",
-      });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  it.skipIf(!providerDeclared("experiential"))(
+    "resolves the native unit from the provider, never the model name",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "reasonix-billing-unit-"));
+      const path = join(dir, "config.json");
+      try {
+        writeConfig({}, path);
+        // Xiaomi MiMo bills a subscription plan → plan-window %, never USD.
+        expect(billingContextForModel("mimo-v2.6-pro", path)).toEqual({
+          kind: "quota",
+          provider: "mimo",
+        });
+        // DeepSeek is the only provider whose default native unit is per-token USD.
+        expect(billingContextForModel("deepseek-v4-flash", path)).toEqual({
+          kind: "usd",
+          provider: "deepseek",
+        });
+        // OpenCode never exposes a per-token dollar amount.
+        expect(billingContextForModel("big-pickle", path)).toEqual({
+          kind: "none",
+          provider: "opencode",
+        });
+        // Experiential Labs bills routed tokens per-token USD.
+        expect(billingContextForModel("experiential/qwen3.8-27b", path)).toEqual({
+          kind: "usd",
+          provider: "experiential",
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("SessionStats explicit billing context", () => {

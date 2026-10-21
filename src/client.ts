@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { messageOf, sleep, stripProviderQualifier } from "@reasonix/core-utils";
+import {
+  DEFAULT_PROVIDER_WIRE,
+  messageOf,
+  providerSpec,
+  sleep,
+  stripProviderQualifier,
+} from "@reasonix/core-utils";
 import { type EventSourceMessage, createParser } from "eventsource-parser";
 import { ANTIGRAVITY_CLOUD_CODE_URL, antigravityHeaders } from "./antigravity-oauth.js";
 import {
@@ -967,27 +973,29 @@ export class DeepSeekClient {
         providerForModel(opts.model),
       );
     }
+    const provider = providerForModel(opts.model);
+    // Request quirks are declared per provider (`wire`), so adding or deleting a
+    // provider file never needs a branch here.
+    const wire = providerSpec(provider)?.wire ?? DEFAULT_PROVIDER_WIRE;
     // Ollama speaks its native `/api/chat` wire format — `options.num_ctx`,
     // `keep_alive` and `think` are all silently dropped by the OpenAI-compat
     // endpoint, so this branch never reaches the chat-completions payload below.
-    if (providerForModel(opts.model) === "ollama") {
+    if (wire.format === "ollama-native") {
       return this.buildOllamaPayload(opts, stream, ollamaNumCtx);
     }
-    const provider = providerForModel(opts.model);
-    const isOllama = provider === "ollama";
     const payload: Record<string, unknown> = {
       // `ollama/<id>` and `<provider>/<id>` namespacing is client-side routing —
       // the server expects the bare id (`ollama/llama3.1:latest` → `llama3.1:latest`).
       model: stripProviderQualifier(opts.model),
       messages: stripTranscriptMarkers(
-        provider === "deepseek" ? stampWireMessageIds(opts.messages) : opts.messages,
+        wire.stampMessageIds ? stampWireMessageIds(opts.messages) : opts.messages,
       ),
       stream,
     };
-    if (stream && provider !== "zai") payload.stream_options = { include_usage: true };
+    if (stream && wire.streamOptions) payload.stream_options = { include_usage: true };
     // OpenAI now requires explicit `store: false` — omitting it returns
     // 400 {"detail":"Store must be set to false"}.  DeepSeek ignores it.
-    if (providerForModel(opts.model) === "openai") {
+    if (wire.storeFlag) {
       payload.store = false;
       // ChatGPT models default to parallel tool-call bursts in one response.
       // Pin them to one call per response: the loop feeds each result back
@@ -999,38 +1007,31 @@ export class DeepSeekClient {
     if (opts.temperature !== undefined) payload.temperature = opts.temperature;
     if (opts.maxTokens !== undefined) payload.max_tokens = opts.maxTokens;
     if (opts.responseFormat) payload.response_format = opts.responseFormat;
-    // V4 thinking-mode toggle: lives under `extra_body.thinking.type` per
-    // DeepSeek's docs. Docs also note that in thinking mode `temperature`,
-    // `top_p`, `presence_penalty`, `frequency_penalty` are silently
-    // ignored — we don't strip them here because the server's explicit
-    // "setting won't report an error" contract means leaving them in is
-    // safe and keeps the request payload diffable against OpenAI tooling.
-    // The toggle is DeepSeek's proprietary extension, so it is allowlisted to
-    // the deepseek provider alone: every other backend either takes the toggle
-    // as a top-level `thinking` (zai/mimo, above) or refuses the unknown field —
-    // OpenAI, OpenCode, and the Experiential Labs gateway answer 400 (the
-    // gateway with code `unsupported_parameter`). Azure serves DeepSeek but
-    // 400s the field, so its endpoint is checked too. An allowlist keeps a new
-    // provider safe by default: it never inherits the proprietary field.
-    if (provider === "zai") {
-      if (opts.thinking) {
-        payload.thinking = { type: "enabled", clear_thinking: false };
+    // Thinking-toggle placement is declared per provider (`wire.thinking`); a
+    // provider that declares no style never receives the field.
+    switch (wire.thinking) {
+      case "zai-top-level":
+        if (opts.thinking) payload.thinking = { type: "enabled", clear_thinking: false };
+        if (wire.toolStream && stream && opts.tools?.length) payload.tool_stream = true;
+        break;
+      case "mimo-top-level": {
+        // Xiaomi documents reasoning text interfering with tool-call extraction,
+        // so the stored preference can force it off on tool requests.
+        const thinking =
+          opts.tools?.length && loadMimoDisableThinkingWithTools() ? "disabled" : opts.thinking;
+        if (thinking) payload.thinking = { type: thinking };
+        break;
       }
-      if (stream && opts.tools?.length) payload.tool_stream = true;
-    } else if (provider === "mimo") {
-      // MiMo's Chat Completions takes the thinking toggle as a top-level field
-      // (`thinking: { type }`); it has no effort ladder, so `reasoning_effort`
-      // is never sent for it (see PROVIDER_REASONING_EFFORTS.mimo). Xiaomi
-      // documents reasoning text occasionally interfering with tool-call
-      // extraction, so MIMO_DISABLE_THINKING_WITH_TOOLS forces it off on tool
-      // requests.
-      const thinking =
-        opts.tools?.length && loadMimoDisableThinkingWithTools() ? "disabled" : opts.thinking;
-      if (thinking) payload.thinking = { type: thinking };
-    } else if (provider === "deepseek" && opts.thinking && !this._isAzureEndpoint()) {
-      payload.extra_body = { thinking: { type: opts.thinking } };
+      case "extra-body":
+        // Azure serves DeepSeek but 400s `extra_body`, so this style also checks it.
+        if (opts.thinking && !this._isAzureEndpoint()) {
+          payload.extra_body = { thinking: { type: opts.thinking } };
+        }
+        break;
+      case null:
+        break;
     }
-    if (reasoningEffort && !isOllama && provider !== "mimo") {
+    if (reasoningEffort && wire.reasoningEffort) {
       payload.reasoning_effort = reasoningEffort;
     }
     return payload;
@@ -1109,26 +1110,7 @@ export class DeepSeekClient {
   /** Provider brand persisted in thrown HTTP errors and consumed by formatLoopError. */
   private _errorPrefix(model: string): string {
     if (this.geminiMode) return "Antigravity";
-    switch (providerForModel(model)) {
-      case "deepseek":
-        return "DeepSeek";
-      case "openai":
-        return "OpenAI";
-      case "ollama":
-        return "Ollama";
-      case "gemini":
-        return "Antigravity";
-      case "zai":
-        return "Z.AI";
-      case "opencode":
-        return "OpenCode";
-      case "mimo":
-        return "MiMo";
-      case "experiential":
-        return "Experiential";
-      case "synthetic":
-        return "Synthetic";
-    }
+    return providerSpec(providerForModel(model))?.errors.brands[0] ?? "Upstream";
   }
 
   /** Returns null on failure so callers can degrade — session must keep working without balance UI. */

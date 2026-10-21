@@ -1,0 +1,19 @@
+{
+  "id": "perplexity",
+  "label": "Perplexity",
+  "description": "AI-native search with citations.",
+  "order": 6,
+  "kind": "api-key",
+  "strategy": "perplexity",
+  "fallback": false,
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["PERPLEXITY_API_KEY"],
+      "configKey": "perplexityApiKey",
+      "label": "Perplexity API key",
+      "signupUrl": "https://www.perplexity.ai/settings/api"
+    }
+  ]
+}

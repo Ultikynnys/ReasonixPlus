@@ -1,0 +1,19 @@
+{
+  "id": "tavily",
+  "label": "Tavily",
+  "description": "AI-native search, 1000 searches/month free.",
+  "order": 5,
+  "kind": "api-key",
+  "strategy": "tavily",
+  "fallback": false,
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["TAVILY_API_KEY"],
+      "configKey": "tavilyApiKey",
+      "label": "Tavily API key",
+      "signupUrl": "https://app.tavily.com"
+    }
+  ]
+}

@@ -9,7 +9,6 @@ import ollama from "./providers/ollama.json";
 import openai from "./providers/openai.json";
 import opencode from "./providers/opencode.json";
 import synthetic from "./providers/synthetic.json";
-import typesafe from "./providers/typesafe.json";
 import zai from "./providers/zai.json";
 
 /** A provider document and the file it came from. */
@@ -29,7 +28,6 @@ export const PROVIDER_DOCUMENTS: readonly ProviderDocumentSource[] = [
   { file: "openai.json", document: openai },
   { file: "opencode.json", document: opencode },
   { file: "synthetic.json", document: synthetic },
-  { file: "typesafe.json", document: typesafe },
   { file: "zai.json", document: zai },
 ];
 
@@ -46,4 +44,7 @@ export const PROVIDER_IDS = [
   "synthetic",
 ] as const;
 
-export type ProviderID = (typeof PROVIDER_IDS)[number];
+/** Falls back to string when no provider is declared, so an empty set still builds. */
+export type ProviderID = [(typeof PROVIDER_IDS)[number]] extends [never]
+  ? string
+  : (typeof PROVIDER_IDS)[number];

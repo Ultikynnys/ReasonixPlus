@@ -1,5 +1,7 @@
 /** Shared retryable-HTTP-status knowledge for the client and loop retry guards. */
 
+import { errorBrandPattern } from "@reasonix/core-utils";
+
 /** HTTP statuses that are safe to retry after a transient provider/network
  *  failure. 425 (Too Early) is included: a server that is still settling
  *  after a restart is legitimately retryable. */
@@ -11,10 +13,9 @@ export function isRetryableHttpStatus(status: number): boolean {
 }
 
 /** Provider brands persisted in thrown HTTP errors ("<Brand> <status>: <body>").
- *  Canonical list — src/loop/errors.ts builds its error classifiers from this,
- *  so a brand added here is retry-classified everywhere at once. */
-export const PROVIDER_ERROR_BRANDS =
-  "DeepSeek|OpenAI|Ollama|Antigravity|Z\\.AI|OpenCode|MiMo|Experiential|Upstream";
+ *  Derived from each provider's declared `errors.brands`, so adding a provider
+ *  needs no edit here; "Upstream" catches failures relayed without a brand. */
+export const PROVIDER_ERROR_BRANDS = `${errorBrandPattern()}|Upstream`;
 
 /** Status line "<Brand> <status>: ..." shared by every provider's thrown errors. */
 const PROVIDER_STATUS_LINE = new RegExp(`^(?:${PROVIDER_ERROR_BRANDS}) (\\d{3}):`);

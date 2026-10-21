@@ -8,8 +8,6 @@ import { registerCodeQueryTools } from "../../src/tools/code-query.js";
 import { registerComputerUseTool } from "../../src/tools/computer-use.js";
 import { registerFilesystemTools } from "../../src/tools/filesystem.js";
 import { registerImageGenTool } from "../../src/tools/image-gen.js";
-import { registerJavaSourceTool } from "../../src/tools/java-source.js";
-import { registerJevTool } from "../../src/tools/jev.js";
 import { JobRegistry } from "../../src/tools/jobs.js";
 import { registerMemoryTools } from "../../src/tools/memory.js";
 import { registerPlanTool } from "../../src/tools/plan.js";
@@ -47,8 +45,6 @@ export function registerAllBuiltins(root: string): FullToolset {
   registerComputerUseTool(tools);
   registerScaffoldTools(tools, { projectRoot: root });
   registerImageGenTool(tools, { rootDir: root, configPath });
-  registerJavaSourceTool(tools, { projectRoot: root });
-  registerJevTool(tools, { configPath });
   registerWebTools(tools);
   registerSubagentTool(tools, {
     client: (() => ({})) as never,

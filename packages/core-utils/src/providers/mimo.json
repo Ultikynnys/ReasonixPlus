@@ -45,16 +45,23 @@
       "kind": "secret",
       "env": ["MIMO_API_KEY"],
       "configKey": "mimoApiKey",
-      "labelKey": "settings.mimoApiKey",
-      "hintKey": "settings.mimoApiKeyHint"
+      "label": "MiMo API key",
+      "hint": "Paste a Xiaomi MiMo API key. MiMo models bill through your subscription plan, not per token."
     },
     {
       "key": "baseUrl",
       "kind": "url",
       "env": ["MIMO_BASE_URL"],
       "configKey": "mimoBaseUrl",
-      "labelKey": "settings.mimoBaseUrl",
-      "hintKey": "settings.mimoBaseUrlHint"
+      "label": "MiMo base URL",
+      "hint": "OpenAI-compatible endpoint override for all MiMo models. Defaults to https://api.xiaomimimo.com/v1."
+    },
+    {
+      "key": "keyName",
+      "kind": "internal",
+      "env": [],
+      "configKey": "mimoKeyName",
+      "label": null
     }
   ],
   "credentials": {
@@ -67,6 +74,15 @@
     "listField": "data",
     "idField": "id",
     "excludeSpeech": true
+  },
+  "wire": { "thinking": "mimo-top-level", "reasoningEffort": false },
+  "billing": { "kind": "quota" },
+  "usage": { "probe": "mimo-console" },
+  "errors": {
+    "i18nPrefix": "mimo",
+    "brands": ["MiMo"],
+    "hosts": ["xiaomimimo.com"],
+    "serverReport": "standard"
   },
   "client": {
     "auth": "api-key",

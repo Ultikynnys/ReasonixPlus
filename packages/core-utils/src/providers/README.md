@@ -18,7 +18,7 @@ That is the whole flow. `providers:sync` rewrites
 `../providers.generated.ts`, which imports every file in this directory and
 derives the `ProviderID` union from each document's `providerId`. A provider with
 `"providerId": null` is catalog-only (it appears in pickers but never routes a
-model id), so it needs no union membership at all, exactly like `typesafe.json`.
+model id), so it needs no union membership at all.
 
 If you skip step 2, `tests/provider-files.test.ts` fails and tells you to run it.
 
@@ -76,7 +76,7 @@ or a provider never means editing TypeScript.
 | Field | Meaning |
 | --- | --- |
 | `key` | Setting key inside the provider's own store entry |
-| `kind` | `secret` (masked in the UI) or `url` |
+| `kind` | `secret` renders a key field; `url` is an environment-only override and is never a form field |
 | `env` | Environment variables that override the value, highest priority first |
 | `configKey` | Config field the value persists to; null means environment only |
 | `labelKey`, `hintKey` | i18n keys for the field label and hint |
@@ -84,8 +84,8 @@ or a provider never means editing TypeScript.
 | `signupUrl` | Where to obtain a key, rendered as a link |
 
 `settingsPanel` selects a bespoke behavior panel by name (`openai-auth`,
-`antigravity-auth`, `mimo-auth`, `opencode-auth`, `ollama-generation`,
-`typesafe-validation`); a provider id never selects it.
+`antigravity-auth`, `mimo-auth`, `opencode-auth`, `ollama-generation`); a
+provider id never selects it.
 
 ## Fields
 

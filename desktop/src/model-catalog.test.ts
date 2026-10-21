@@ -1,19 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { MODEL_CATALOG_GROUP_LABELS, deriveModelCatalog } from "./model-catalog";
+import {
+  MODEL_CATALOG_GROUP_KEYS,
+  MODEL_CATALOG_GROUP_LABELS,
+  type ModelCatalogGroupKey,
+  deriveModelCatalog,
+  modelCatalogGroupLabel,
+} from "./model-catalog";
+import { providerDeclared, providerSpecsInOrder } from "@reasonix/core-utils";
 
 describe("deriveModelCatalog", () => {
-  it("keeps every group label in the shared catalog definition", () => {
-    expect(Object.keys(MODEL_CATALOG_GROUP_LABELS).sort()).toEqual([
-      "antigravity",
-      "deepseek",
-      "experiential",
-      "mimo",
-      "openai",
-      "opencode",
-      "synthetic",
-      "typesafe",
-      "zai",
-    ]);
+  it("labels exactly the groups a declared provider fills", () => {
+    // Derived, not pinned: deleting a provider file drops its group instead of failing.
+    const declared = providerSpecsInOrder()
+      .filter((spec) => spec.picker)
+      .map((spec) => spec.pickerGroup ?? spec.id)
+      .sort();
+    expect(Object.keys(MODEL_CATALOG_GROUP_LABELS).sort()).toEqual(declared);
+  });
+
+  it("labels every declared group and hides a group no provider fills", () => {
+    expect(MODEL_CATALOG_GROUP_KEYS.length).toBeGreaterThan(0);
+    for (const key of MODEL_CATALOG_GROUP_KEYS) {
+      expect(modelCatalogGroupLabel(key)).toBeTruthy();
+    }
+    // The gate that removes a provider card when its JSON is deleted.
+    expect(modelCatalogGroupLabel("custom" as unknown as ModelCatalogGroupKey)).toBeUndefined();
   });
 
   it("centralizes discovered provider catalogs", () => {
@@ -92,7 +103,9 @@ describe("deriveModelCatalog", () => {
     expect(catalog.acceptsImages("opencode/mimo-v2.6-pro")).toBe(true);
   });
 
-  it("qualifies a later group's row when a later group also serves the id", () => {
+  it.skipIf(!providerDeclared("experiential"))(
+    "qualifies a later group's row when a later group also serves the id",
+    () => {
     const catalog = deriveModelCatalog({
       opencodeModels: ["deepseek-v4.1-flash", "space-bunny-free"],
       providerCatalogs: {
@@ -156,7 +169,9 @@ describe("deriveModelCatalog", () => {
     expect(opencode).toContain("big-pickle");
   });
 
-  it("keeps every value unique when resellers and native catalogs overlap", () => {
+  it.skipIf(!providerDeclared("experiential"))(
+    "keeps every value unique when resellers and native catalogs overlap",
+    () => {
     const catalog = deriveModelCatalog({
       opencodeModels: [
         "gpt-5.6-luna",
@@ -176,7 +191,6 @@ describe("deriveModelCatalog", () => {
           models: ["gpt-5.6-luna", "glm-5.3", "mimo-v2.6-pro", "deepseek-v4.1-flash"],
           source: "live",
         },
-        typesafe: { models: ["jev-latest"], source: "live" },
       },
     });
 

@@ -168,7 +168,7 @@ export class ToolRegistry {
   }
 
   /** Registers the tool and reports the outcome. Same-name replacement is allowed only within one origin:
-   *  JEV re-enable, subagent re-sync, MCP reconnect and rooted-set rebuild all re-register by design. */
+   *  subagent re-sync, MCP reconnect and rooted-set rebuild all re-register by design. */
   tryRegister<A, R>(def: ToolDefinition<A, R>, opts: { origin?: string } = {}): boolean {
     if (!def.name) throw new Error("tool requires a name");
     const origin = opts.origin ?? def.origin ?? "builtin";

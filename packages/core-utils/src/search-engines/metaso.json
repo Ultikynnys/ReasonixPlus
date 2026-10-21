@@ -1,0 +1,19 @@
+{
+  "id": "metaso",
+  "label": "Metaso",
+  "description": "100 searches/day free, CN-friendly.",
+  "order": 3,
+  "kind": "api-key",
+  "strategy": "metaso",
+  "fallback": false,
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["METASO_API_KEY"],
+      "configKey": "metasoApiKey",
+      "label": "Metaso API key",
+      "signupUrl": "https://metaso.cn/settings/api"
+    }
+  ]
+}

@@ -1,15 +1,34 @@
-import { messageOf, modelDisplayName } from "@reasonix/core-utils";
+import {
+  type ProviderSettingSpec,
+  type ProviderSettingsMap,
+  SEARCH_ENGINE_SPECS,
+  type SearchEngineSpec,
+  type SearchSettingSpec,
+  messageOf,
+  modelDisplayName,
+  providerSpec,
+  searchSharedCredential,
+} from "@reasonix/core-utils";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ComponentProps,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { Settings as SettingsType } from "../App";
 import { feedbackSounds } from "../feedback-sounds";
 import { formatBytes } from "../format";
 import { type TKey, t } from "../i18n";
 import { I } from "../icons";
 import {
+  HAS_DECLARED_PROVIDERS,
   MODEL_CATALOG_GROUP_LABELS,
   type ModelCatalogGroupKey,
   deriveModelCatalog,
+  providerForModelGroup,
 } from "../model-catalog";
 import type {
   FeedbackCueId,
@@ -101,11 +120,19 @@ function moveInList<T>(list: readonly T[], from: number, to: number): T[] {
   return next;
 }
 
-export type PageId = "general" | "models" | "fallbacks" | "mcp" | "changelog" | "shortcuts";
+export type PageId =
+  | "general"
+  | "models"
+  | "search"
+  | "fallbacks"
+  | "mcp"
+  | "changelog"
+  | "shortcuts";
 
-const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
+export const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
   { id: "general", icon: "cog" },
   { id: "models", icon: "brain" },
+  { id: "search", icon: "search" },
   { id: "fallbacks", icon: "layers" },
   { id: "mcp", icon: "wrench" },
   { id: "changelog", icon: "history" },
@@ -125,12 +152,10 @@ export function SettingsModal({
   mcpBridged,
   onClose,
   onSave,
-  onSaveApiKey,
   oauthWaiting,
   onOAuthBegin,
   onOAuthCancel,
   onOAuthSignOut,
-  onSaveOpenAIApiKey,
   antigravityOAuthWaiting,
   onAntigravityOAuthBegin,
   onAntigravityOAuthCancel,
@@ -143,7 +168,6 @@ export function SettingsModal({
   onMiMoOAuthBegin,
   onMiMoOAuthCancel,
   onMiMoOAuthSignOut,
-  ollamaBaseUrl,
   ollamaModels,
   ollamaModelsError,
   ollamaPlan,
@@ -188,9 +212,7 @@ export function SettingsModal({
   mcpBridged: boolean;
   onClose: () => void;
   onSave: (patch: SettingsPatch) => void;
-  onSaveApiKey: (key: string) => void;
   /** Ollama chat endpoint (OpenAI-compatible) shown on the Models page. */
-  ollamaBaseUrl?: string;
   /** Dynamically fetched Ollama models (raw ids) — rendered as a scrollable grid. */
   ollamaModels?: string[];
   /** Why the last fetch failed — replaces the grid so the failure isn't silent. */
@@ -211,7 +233,6 @@ export function SettingsModal({
   onOAuthBegin: () => void;
   onOAuthCancel: () => void;
   onOAuthSignOut: () => void;
-  onSaveOpenAIApiKey: (key: string) => void;
   antigravityOAuthWaiting: boolean;
   onAntigravityOAuthBegin: () => void;
   onAntigravityOAuthCancel: () => void;
@@ -324,14 +345,11 @@ export function SettingsModal({
                 onSave={onSave}
               />
             )}
+            {page === "search" && <PageSearch settings={settings} onSave={onSave} />}
             {page === "models" && (
               <PageModels
                 settings={settings}
                 onSave={onSave}
-                baseUrl={settings.baseUrl}
-                apiKeyPrefix={settings.apiKeyPrefix}
-                onSaveApiKey={onSaveApiKey}
-                ollamaBaseUrl={ollamaBaseUrl}
                 ollamaModels={ollamaModels}
                 ollamaModelsError={ollamaModelsError}
                 ollamaPlan={ollamaPlan}
@@ -349,7 +367,6 @@ export function SettingsModal({
                 onOAuthBegin={onOAuthBegin}
                 onOAuthCancel={onOAuthCancel}
                 onOAuthSignOut={onOAuthSignOut}
-                onSaveOpenAIApiKey={onSaveOpenAIApiKey}
                 antigravitySignedIn={settings.antigravityOAuth?.signedIn ?? false}
                 antigravityAccount={settings.antigravityOAuth?.account}
                 antigravityFlowError={settings.antigravityOAuth?.flowError}
@@ -414,6 +431,178 @@ export function SettingsModal({
         </div>
       </div>
     </div>
+  );
+}
+
+/** One declared engine setting, rendered from its declaration. Writes stay inside the
+ *  engine's own entry, so a shared credential can never be copied through this surface. */
+function SearchEngineSettingRow({
+  engineId,
+  setting,
+  value,
+  onSave,
+}: {
+  engineId: string;
+  setting: SearchSettingSpec;
+  value?: string;
+  onSave: (patch: SettingsPatch) => void;
+}) {
+  const [draft, setDraft] = useState(value ?? "");
+  const label = setting.label;
+  const hint = setting.hint ?? undefined;
+  const save = (next: string): void => {
+    onSave({ searchSettings: { [engineId]: { [setting.key]: next.trim() } } });
+  };
+  if (setting.kind === "secret") {
+    const signupUrl = setting.signupUrl;
+    return (
+      <ApiKeyRow
+        label={label}
+        prefix={value}
+        placeholder={setting.placeholder ?? undefined}
+        onSave={save}
+        hint={
+          signupUrl ? (
+            <a
+              href={signupUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => {
+                e.preventDefault();
+                void openUrl(signupUrl).catch(() => undefined);
+              }}
+            >
+              {t("settings.webSearchApiKeySignup")}
+            </a>
+          ) : (
+            hint
+          )
+        }
+      />
+    );
+  }
+  return (
+    <div className="setting-row setting-row-entry setting-row-base-url">
+      <div className="l">
+        <div className="n">{label}</div>
+        <div className="h">{hint}</div>
+      </div>
+      <SettingsEntry
+        value={draft}
+        onChange={setDraft}
+        placeholder={setting.placeholder ?? undefined}
+        onSave={() => save(draft)}
+      />
+    </div>
+  );
+}
+
+/** One engine card on the Search page: the engine's own declared fields live inside,
+ *  and its header carries the Active marker or the button that makes it the engine
+ *  `web_search` uses. A shared engine names the Models-tab field that owns the key
+ *  instead of rendering a second input for the same value. */
+function SearchEngineCard({
+  spec,
+  active,
+  onSelect,
+  settings,
+  onSave,
+}: {
+  spec: SearchEngineSpec;
+  active: boolean;
+  onSelect: () => void;
+  settings: SettingsType;
+  onSave: (patch: SettingsPatch) => void;
+}) {
+  const shared = searchSharedCredential(spec);
+  const ready = engineReady(spec, settings);
+  const owner = shared ? (providerSpec(shared.provider)?.label ?? shared.provider) : null;
+  return (
+    <HeadActionCard
+      title={spec.label}
+      defaultOpen={active}
+      headActions={
+        active ? (
+          <span className="card-active-pill">✓ {t("settings.searchEngineActive")}</span>
+        ) : (
+          <button
+            type="button"
+            className="btn small"
+            disabled={!ready}
+            title={ready ? undefined : t("settings.searchEngineNeedsKey")}
+            onClick={onSelect}
+          >
+            {t("settings.searchEngineUse")}
+          </button>
+        )
+      }
+    >
+      {spec.description ? <div className="card-hint">{spec.description}</div> : null}
+      {shared ? (
+        <div className="setting-row">
+          <div className="l">
+            <div className="h">{t("settings.searchSharedKeyNote", { provider: owner ?? "" })}</div>
+          </div>
+        </div>
+      ) : spec.settings.length === 0 ? (
+        <div className="card-hint">{t("settings.searchEngineNoSetup")}</div>
+      ) : (
+        spec.settings.map((setting) => (
+          <SearchEngineSettingRow
+            key={setting.key}
+            engineId={spec.id}
+            setting={setting}
+            value={settings.searchSettings?.[spec.id]?.[setting.key]}
+            onSave={onSave}
+          />
+        ))
+      )}
+    </HeadActionCard>
+  );
+}
+
+/** An engine can be chosen once its own key (or the provider key it shares) is set; an
+ *  engine that declares no secret needs nothing, since endpoints carry a default. */
+function engineReady(spec: SearchEngineSpec, settings: SettingsType): boolean {
+  const shared = searchSharedCredential(spec);
+  if (shared) return Boolean(settings.providerSettings?.[shared.provider]?.[shared.key]);
+  return spec.settings.every(
+    (setting) =>
+      setting.kind !== "secret" || Boolean(settings.searchSettings?.[spec.id]?.[setting.key]),
+  );
+}
+
+/** Search configuration, generated from search-engines/*.json: one collapsible card per
+ *  declared engine, mirroring the Models page's provider cards. */
+function PageSearch({
+  settings,
+  onSave,
+}: {
+  settings: SettingsType;
+  onSave: (patch: SettingsPatch) => void;
+}) {
+  const activeId = settings.webSearchEngine ?? "bing";
+  return (
+    <section className="section">
+      <div className="stitle">{t("settings.searchSection")}</div>
+      {SEARCH_ENGINE_SPECS.length === 0 ? (
+        <div className="section-hint">{t("settings.noSearchEnginesDeclared")}</div>
+      ) : (
+        <div className="section-hint">{t("settings.searchEnginesHint")}</div>
+      )}
+      {SEARCH_ENGINE_SPECS.map((spec) => (
+        <SearchEngineCard
+          key={spec.id}
+          spec={spec}
+          active={spec.id === activeId}
+          onSelect={() =>
+            onSave({ webSearchEngine: spec.id as NonNullable<SettingsPatch["webSearchEngine"]> })
+          }
+          settings={settings}
+          onSave={onSave}
+        />
+      ))}
+    </section>
   );
 }
 
@@ -544,49 +733,6 @@ function PageGeneral({
       <section className="section">
         <div className="stitle">{t("settings.behaviorSection")}</div>
         <FeedbackCuesSection settings={settings} onSave={onSave} />
-        <div className="setting-row">
-          <div className="l">
-            <div className="n">{t("settings.webSearchEngine")}</div>
-            <div className="h">{t("settings.webSearchEngineNote")}</div>
-          </div>
-          <select
-            className="field"
-            value={settings.webSearchEngine ?? "bing"}
-            onChange={(e) =>
-              onSave({
-                webSearchEngine: e.target.value as
-                  | "bing"
-                  | "bing-intl"
-                  | "searxng"
-                  | "metaso"
-                  | "baidu"
-                  | "tavily"
-                  | "perplexity"
-                  | "exa"
-                  | "brave"
-                  | "ollama"
-                  | "zai",
-              })
-            }
-          >
-            <option value="bing">{t("settings.webSearchEngineBing")}</option>
-            <option value="bing-intl">{t("settings.webSearchEngineBingIntl")}</option>
-            <option value="searxng">{t("settings.webSearchEngineSearxng")}</option>
-            <option value="metaso">{t("settings.webSearchEngineMetaso")}</option>
-            <option value="baidu">{t("settings.webSearchEngineBaidu")}</option>
-            <option value="tavily">{t("settings.webSearchEngineTavily")}</option>
-            <option value="perplexity">{t("settings.webSearchEnginePerplexity")}</option>
-            <option value="exa">{t("settings.webSearchEngineExa")}</option>
-            <option value="brave">{t("settings.webSearchEngineBrave")}</option>
-            <option value="ollama" disabled={!settings.webSearchApiKeys?.ollama}>
-              {t("settings.webSearchEngineOllama")}
-            </option>
-            <option value="zai" disabled={!settings.webSearchApiKeys?.zai}>
-              {t("settings.webSearchEngineZai")}
-            </option>
-          </select>
-        </div>
-        <WebSearchEngineCredentials settings={settings} onSave={onSave} />
       </section>
 
       <section className="section">
@@ -704,8 +850,7 @@ function PageGeneral({
         </form>
       </section>
 
-      <AudioInputDeviceSettings />
-      <VoiceModelSettings />
+      <VoiceInputSettings />
     </div>
   );
 }
@@ -713,7 +858,27 @@ function PageGeneral({
 const AUDIO_TEST_DURATION_MS = 4000;
 
 /**
- * Audio input device picker for voice input. Persists the choice in localStorage.
+ * Voice input card: the speech-to-text model picker on the left column, the
+ * microphone picker and its record/playback test on the right.
+ */
+export function VoiceInputSettings() {
+  return (
+    <ProviderCard
+      title={t("settings.voiceInputSection")}
+      models={<VoiceModelList />}
+      settings={
+        <div className="voice-settings">
+          <div className="voice-col-title">{t("settings.voiceInputDevice")}</div>
+          <AudioInputDevicePicker />
+        </div>
+      }
+    />
+  );
+}
+
+/**
+ * Microphone picker for voice input, the right column of the voice input card.
+ * Persists the choice in localStorage.
  *
  * Microphone access is gated behind an explicit consent button: browsers only
  * reveal real device labels once permission is granted, and we never touch media
@@ -721,7 +886,7 @@ const AUDIO_TEST_DURATION_MS = 4000;
  * WebView2) until the user opts in. After consent the real device list and a live
  * record/playback test are shown.
  */
-export function AudioInputDeviceSettings() {
+function AudioInputDevicePicker() {
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [selected, setSelected] = useState<string>(() => getSelectedAudioInputDeviceId());
   const [error, setError] = useState<string | null>(null);
@@ -795,47 +960,42 @@ export function AudioInputDeviceSettings() {
   };
 
   return (
-    <ProviderCard
-      title={t("settings.voiceInputDevice")}
-      settings={
-        <div className="voice-device-settings">
-          <div className="voice-section-hint">{t("settings.voiceInputDeviceHint")}</div>
+    <div className="voice-device-settings">
+      <div className="voice-section-hint">{t("settings.voiceInputDeviceHint")}</div>
 
-          {error && (
-            <div className="voice-error-banner" role="alert">
-              <span>{error}</span>
-            </div>
-          )}
-
-          {phase === "consent" ? (
-            <div className="voice-consent">
-              <button type="button" className="btn" onClick={handleAllow} disabled={granting}>
-                <I.mic size={13} />
-                <span>{t("settings.voiceInputDeviceAllow")}</span>
-              </button>
-              <div className="voice-section-hint">{t("settings.voiceInputDeviceAllowHint")}</div>
-            </div>
-          ) : (
-            <>
-              <select
-                className="voice-device-select"
-                value={selected}
-                onChange={(e) => handleChange(e.target.value)}
-                aria-label={t("settings.voiceInputDevice")}
-              >
-                <option value="">{t("settings.voiceInputDeviceDefault")}</option>
-                {devices.map((d) => (
-                  <option key={d.deviceId} value={d.deviceId}>
-                    {d.label}
-                  </option>
-                ))}
-              </select>
-              <AudioInputDeviceTest deviceId={selected} />
-            </>
-          )}
+      {error && (
+        <div className="voice-error-banner" role="alert">
+          <span>{error}</span>
         </div>
-      }
-    />
+      )}
+
+      {phase === "consent" ? (
+        <div className="voice-consent">
+          <button type="button" className="btn" onClick={handleAllow} disabled={granting}>
+            <I.mic size={13} />
+            <span>{t("settings.voiceInputDeviceAllow")}</span>
+          </button>
+          <div className="voice-section-hint">{t("settings.voiceInputDeviceAllowHint")}</div>
+        </div>
+      ) : (
+        <>
+          <select
+            className="voice-device-select"
+            value={selected}
+            onChange={(e) => handleChange(e.target.value)}
+            aria-label={t("settings.voiceInputDevice")}
+          >
+            <option value="">{t("settings.voiceInputDeviceDefault")}</option>
+            {devices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+          <AudioInputDeviceTest deviceId={selected} />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1015,7 +1175,11 @@ export function AudioInputDeviceTest({ deviceId }: { deviceId: string }) {
   );
 }
 
-export function VoiceModelSettings() {
+/**
+ * Speech-to-text model picker, the left column of the voice input card: each
+ * model downloads on demand into the local cache and is then selectable.
+ */
+function VoiceModelList() {
   const [activeModel, setActiveModel] = useState<VoiceModelId>(() => getActiveVoiceModelId());
   const [downloadedMap, setDownloadedMap] = useState<Record<string, boolean>>({});
   const [downloadingModel, setDownloadingModel] = useState<VoiceModelId | null>(null);
@@ -1080,236 +1244,113 @@ export function VoiceModelSettings() {
   };
 
   return (
-    <ProviderCard
-      title={t("settings.voiceSection")}
-      models={
-        <div className="provider-models-scroll">
-          <div className="voice-card-grid">
-            {VOICE_MODELS.map((model) => {
-              const isActive = activeModel === model.id;
-              const isDownloaded = Boolean(downloadedMap[model.id]);
-              const isDownloading = downloadingModel === model.id;
+    <div className="voice-model-col">
+      <div className="voice-col-title">{t("settings.voiceSection")}</div>
+      <div className="voice-section-hint">{t("settings.voiceSectionHint")}</div>
+      {downloadError && (
+        <div className="voice-error-banner" role="alert">
+          <span>{downloadError}</span>
+          <button type="button" className="btn btn-subtle" onClick={() => setDownloadError(null)}>
+            ✕
+          </button>
+        </div>
+      )}
+      <div className="provider-models-scroll">
+        <div className="voice-card-grid">
+          {VOICE_MODELS.map((model) => {
+            const isActive = activeModel === model.id;
+            const isDownloaded = Boolean(downloadedMap[model.id]);
+            const isDownloading = downloadingModel === model.id;
 
-              return (
-                <div
-                  key={model.id}
-                  className={`voice-card ${isActive ? "active" : ""}`}
-                  data-active={isActive}
-                >
-                  <div className="voice-card-header">
-                    <div className="voice-card-title">{model.name}</div>
-                    <span className="voice-badge">{model.badge ?? "Balanced"}</span>
-                  </div>
+            return (
+              <div
+                key={model.id}
+                className={`voice-card ${isActive ? "active" : ""}`}
+                data-active={isActive}
+              >
+                <div className="voice-card-header">
+                  <div className="voice-card-title">{model.name}</div>
+                  <span className="voice-badge">{model.badge ?? "Balanced"}</span>
+                </div>
 
-                  <div className="voice-card-meta">
-                    {model.parameters && (
-                      <>
-                        <span>{model.parameters} params</span>
-                        <span>•</span>
-                      </>
-                    )}
-                    <span>{model.size}</span>
-                    {model.engine === "cactus" && (
-                      <>
-                        <span>•</span>
-                        <span>Cactus engine</span>
-                      </>
-                    )}
-                  </div>
-
-                  <div className="voice-card-desc">{model.description}</div>
-
-                  {isDownloading && (
-                    <div className="voice-download-box">
-                      <div className="voice-progress-meta">
-                        <span className="voice-file-name">
-                          {downloadFile || t("settings.voiceDownloading")}
-                        </span>
-                        <span className="voice-pct">{downloadProgress}%</span>
-                      </div>
-                      <div className="voice-progress-track">
-                        <div
-                          className="voice-progress-bar"
-                          style={{ width: `${downloadProgress}%` }}
-                        />
-                      </div>
-                    </div>
+                <div className="voice-card-meta">
+                  {model.parameters && (
+                    <>
+                      <span>{model.parameters} params</span>
+                      <span>•</span>
+                    </>
                   )}
+                  <span>{model.size}</span>
+                  {model.engine === "cactus" && (
+                    <>
+                      <span>•</span>
+                      <span>Cactus engine</span>
+                    </>
+                  )}
+                </div>
 
-                  <div className="voice-card-actions">
-                    {isDownloading ? (
-                      <button type="button" className="btn" disabled>
-                        {t("settings.voiceDownloading")}
-                      </button>
-                    ) : isDownloaded ? (
-                      <>
-                        {isActive ? (
-                          <span className="voice-active-label">✓ {t("settings.voiceActive")}</span>
-                        ) : (
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={() => handleSelect(model.id)}
-                          >
-                            {t("settings.voiceSelect")}
-                          </button>
-                        )}
+                <div className="voice-card-desc">{model.description}</div>
+
+                {isDownloading && (
+                  <div className="voice-download-box">
+                    <div className="voice-progress-meta">
+                      <span className="voice-file-name">
+                        {downloadFile || t("settings.voiceDownloading")}
+                      </span>
+                      <span className="voice-pct">{downloadProgress}%</span>
+                    </div>
+                    <div className="voice-progress-track">
+                      <div
+                        className="voice-progress-bar"
+                        style={{ width: `${downloadProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="voice-card-actions">
+                  {isDownloading ? (
+                    <button type="button" className="btn" disabled>
+                      {t("settings.voiceDownloading")}
+                    </button>
+                  ) : isDownloaded ? (
+                    <>
+                      {isActive ? (
+                        <span className="voice-active-label">✓ {t("settings.voiceActive")}</span>
+                      ) : (
                         <button
                           type="button"
-                          className="btn btn-subtle"
-                          title="Delete downloaded files to free space"
-                          onClick={() => handleDelete(model.id)}
+                          className="btn"
+                          onClick={() => handleSelect(model.id)}
                         >
-                          {t("settings.voiceDelete")}
+                          {t("settings.voiceSelect")}
                         </button>
-                      </>
-                    ) : (
+                      )}
                       <button
                         type="button"
-                        className="btn btn-download"
-                        disabled={downloadingModel !== null}
-                        onClick={() => handleDownload(model.id)}
+                        className="btn btn-subtle"
+                        title="Delete downloaded files to free space"
+                        onClick={() => handleDelete(model.id)}
                       >
-                        {t("settings.voiceDownload")}
+                        {t("settings.voiceDelete")}
                       </button>
-                    )}
-                  </div>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-download"
+                      disabled={downloadingModel !== null}
+                      onClick={() => handleDownload(model.id)}
+                    >
+                      {t("settings.voiceDownload")}
+                    </button>
+                  )}
                 </div>
-              );
-            })}
-          </div>
-        </div>
-      }
-      settings={
-        <div className="voice-settings">
-          <div className="voice-section-hint">{t("settings.voiceSectionHint")}</div>
-          {downloadError && (
-            <div className="voice-error-banner" role="alert">
-              <span>{downloadError}</span>
-              <button
-                type="button"
-                className="btn btn-subtle"
-                onClick={() => setDownloadError(null)}
-              >
-                ✕
-              </button>
-            </div>
-          )}
-        </div>
-      }
-    />
-  );
-}
-
-/** Search engines that are also model providers (mixed): their API key is owned
- *  by the Models tab and reused here, so General shows its status but no second
- *  input. Maps each to the i18n key naming its provider card on the Models tab;
- *  every other picker entry is search-only. */
-const MIXED_SEARCH_ENGINE_PROVIDER = {
-  ollama: "settings.ollamaSection",
-  zai: "composer.modelZaiGroup",
-} as const satisfies Record<string, TKey>;
-type MixedSearchEngine = keyof typeof MIXED_SEARCH_ENGINE_PROVIDER;
-const isMixedSearchEngine = (engine: string): engine is MixedSearchEngine =>
-  engine in MIXED_SEARCH_ENGINE_PROVIDER;
-
-const SEARCH_ENGINE_API_KEY_FIELDS: ReadonlyArray<{
-  engine: "metaso" | "baidu" | "tavily" | "perplexity" | "exa" | "brave";
-  patchKey:
-    | "metasoApiKey"
-    | "baiduApiKey"
-    | "tavilyApiKey"
-    | "perplexityApiKey"
-    | "exaApiKey"
-    | "braveApiKey";
-  signupUrl: string;
-}> = [
-  { engine: "metaso", patchKey: "metasoApiKey", signupUrl: "https://metaso.cn/settings/api" },
-  {
-    engine: "baidu",
-    patchKey: "baiduApiKey",
-    signupUrl: "https://console.bce.baidu.com/qianfan/ais/console/onlineService",
-  },
-  { engine: "tavily", patchKey: "tavilyApiKey", signupUrl: "https://app.tavily.com" },
-  {
-    engine: "perplexity",
-    patchKey: "perplexityApiKey",
-    signupUrl: "https://www.perplexity.ai/settings/api",
-  },
-  { engine: "exa", patchKey: "exaApiKey", signupUrl: "https://dashboard.exa.ai/api-keys" },
-  { engine: "brave", patchKey: "braveApiKey", signupUrl: "https://brave.com/search/api/" },
-];
-
-function WebSearchEngineCredentials({
-  settings,
-  onSave,
-}: {
-  settings: SettingsType;
-  onSave: (patch: SettingsPatch) => void;
-}) {
-  const engine = settings.webSearchEngine ?? "bing";
-  if (engine === "bing") return null;
-  if (engine === "searxng") {
-    return <SearxngEndpointRow settings={settings} onSave={onSave} />;
-  }
-  // Mixed search + model providers: the Models tab owns the key, so reuse it —
-  // show its status here but no duplicate input.
-  if (isMixedSearchEngine(engine)) {
-    const prefix = settings.webSearchApiKeys?.[engine];
-    const provider = t(MIXED_SEARCH_ENGINE_PROVIDER[engine]);
-    return (
-      <div className="setting-row">
-        <div className="l">
-          <div className="n">{t(`settings.webSearchApiKey.${engine}` as const)}</div>
-          <div className="h">
-            {keyStatusText(prefix)} {t("settings.webSearchApiKeyModelsHint", { provider })}
-          </div>
+              </div>
+            );
+          })}
         </div>
       </div>
-    );
-  }
-  const field = SEARCH_ENGINE_API_KEY_FIELDS.find((f) => f.engine === engine);
-  if (!field) return null;
-  const prefix = settings.webSearchApiKeys?.[field.engine];
-  return (
-    <ProviderApiKeyRow
-      engine={field.engine}
-      patchKey={field.patchKey}
-      signupUrl={field.signupUrl}
-      prefix={prefix}
-      onSave={onSave}
-    />
-  );
-}
-
-function SearxngEndpointRow({
-  settings,
-  onSave,
-}: {
-  settings: SettingsType;
-  onSave: (patch: SettingsPatch) => void;
-}) {
-  const [draft, setDraft] = useState(settings.webSearchEndpoint ?? "");
-  useEffect(() => {
-    setDraft(settings.webSearchEndpoint ?? "");
-  }, [settings.webSearchEndpoint]);
-  return (
-    <div className="setting-row">
-      <div className="l">
-        <div className="n">{t("settings.webSearchEndpoint")}</div>
-        <div className="h">{t("settings.webSearchEndpointHint")}</div>
-      </div>
-      <input
-        className="field mono"
-        value={draft}
-        placeholder="http://localhost:8080"
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => {
-          const next = draft.trim();
-          if (next === (settings.webSearchEndpoint ?? "")) return;
-          onSave({ webSearchEndpoint: next || null });
-        }}
-      />
     </div>
   );
 }
@@ -1379,97 +1420,6 @@ function ApiKeyRow({
   );
 }
 
-export function ProviderApiKeyRow({
-  engine,
-  patchKey,
-  signupUrl,
-  prefix,
-  onSave,
-}: {
-  engine:
-    | "metaso"
-    | "baidu"
-    | "tavily"
-    | "perplexity"
-    | "exa"
-    | "brave"
-    | "ollama"
-    | "zai"
-    | "opencode"
-    | "typesafe"
-    | "experiential"
-    | "synthetic";
-  patchKey:
-    | "metasoApiKey"
-    | "baiduApiKey"
-    | "tavilyApiKey"
-    | "perplexityApiKey"
-    | "exaApiKey"
-    | "braveApiKey"
-    | "ollamaApiKey"
-    | "zaiApiKey"
-    | "opencodeApiKey"
-    | "typesafeApiKey"
-    | "experientialApiKey"
-    | "syntheticApiKey";
-  signupUrl: string;
-  prefix?: string;
-  onSave: (patch: SettingsPatch) => void;
-}) {
-  const label = t(`settings.webSearchApiKey.${engine}` as const);
-  return (
-    <ApiKeyRow
-      label={label}
-      prefix={prefix}
-      onSave={(key) => onSave({ [patchKey]: key || null } as SettingsPatch)}
-      hint={
-        <a
-          href={signupUrl}
-          target="_blank"
-          rel="noreferrer"
-          onClick={(e) => {
-            e.preventDefault();
-            void openUrl(signupUrl).catch(() => undefined);
-          }}
-        >
-          {t("settings.webSearchApiKeySignup")}
-        </a>
-      }
-    />
-  );
-}
-
-function DeepSeekSettings({
-  baseUrl,
-  apiKeyPrefix,
-  onSave,
-  onSaveApiKey,
-}: {
-  baseUrl?: string;
-  apiKeyPrefix?: string;
-  onSave: (patch: SettingsPatch) => void;
-  onSaveApiKey: (key: string) => void;
-}) {
-  return (
-    <>
-      <ApiKeyRow
-        label={t("settings.apiKey")}
-        prefix={apiKeyPrefix}
-        placeholder="sk-…"
-        onSave={onSaveApiKey}
-      />
-      <ProviderBaseUrlRow
-        label={t("settings.baseUrl")}
-        hint={t("settings.baseUrlHint")}
-        placeholder="https://api.deepseek.com"
-        value={baseUrl}
-        patchKey="baseUrl"
-        onSave={onSave}
-      />
-    </>
-  );
-}
-
 export function OpenAISection({
   signedIn,
   account,
@@ -1478,8 +1428,6 @@ export function OpenAISection({
   onBegin,
   onCancel,
   onSignOut,
-  apiKeyPrefix,
-  onSaveApiKey,
 }: {
   signedIn: boolean;
   account?: string;
@@ -1489,8 +1437,6 @@ export function OpenAISection({
   onBegin: () => void;
   onCancel: () => void;
   onSignOut: () => void;
-  apiKeyPrefix?: string;
-  onSaveApiKey: (key: string) => void;
 }) {
   return (
     <>
@@ -1536,13 +1482,6 @@ export function OpenAISection({
           </div>
         </div>
       ) : null}
-      <ApiKeyRow
-        label={t("settings.openaiApiKey")}
-        prefix={apiKeyPrefix}
-        hint={t("settings.openaiApiKeyHint")}
-        placeholder="sk-…"
-        onSave={onSaveApiKey}
-      />
     </>
   );
 }
@@ -1685,8 +1624,6 @@ export function OpencodeSection({
   onBegin,
   onCancel,
   onSignOut,
-  apiKeyPrefix,
-  onSave,
 }: {
   signedIn: boolean;
   account?: string;
@@ -1698,8 +1635,6 @@ export function OpencodeSection({
   onBegin: () => void;
   onCancel: () => void;
   onSignOut: () => void;
-  apiKeyPrefix?: string;
-  onSave: (patch: SettingsPatch) => void;
 }) {
   return (
     <>
@@ -1749,13 +1684,6 @@ export function OpencodeSection({
           </div>
         </div>
       ) : null}
-      <ProviderApiKeyRow
-        engine="opencode"
-        patchKey="opencodeApiKey"
-        signupUrl="https://opencode.ai/auth"
-        prefix={apiKeyPrefix}
-        onSave={onSave}
-      />
     </>
   );
 }
@@ -1799,12 +1727,22 @@ function ProviderCard({
   );
 }
 
-/** Collapsible card for a single MCP server. Mirrors the Models page's provider
- *  card (same `.provider-card` chrome) so each server's settings sit under its
- *  own header, dropdown-style. `headActions` (Enable/Disable, Remove) renders
- *  in the header row as a sibling of the title button, so activating it never
- *  expands or collapses the card. */
-function McpServerCard({
+/** A provider card gated on its declaration: deleting a provider file removes the card
+ *  instead of rendering one with a blank title. Keyed on the declaration rather than the
+ *  picker, so a `picker: false` provider (Ollama) still owns its card. */
+function DeclaredProviderCard({
+  group,
+  ...card
+}: { group: ModelCatalogGroupKey } & Omit<ComponentProps<typeof ProviderCard>, "title">) {
+  const spec = providerForModelGroup(group);
+  if (!spec) return null;
+  return <ProviderCard title={t(spec.groupLabelKey as TKey)} {...card} />;
+}
+
+/** Collapsible card whose header carries its own actions: the MCP server cards and the
+ *  search engine cards share it, so activating a header control never expands or
+ *  collapses the card. */
+function HeadActionCard({
   title,
   headActions,
   defaultOpen = true,
@@ -1816,6 +1754,12 @@ function McpServerCard({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  // A card that becomes the selected one opens itself, so switching engines reveals
+  // that engine's own fields. Collapsing it afterwards sticks: `defaultOpen` only
+  // changes when the selection does.
+  useEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
   return (
     <section className="provider-card">
       <div className="provider-head">
@@ -1844,7 +1788,7 @@ function McpServerCard({
 /** The left column of a provider card: a scrollable list of that provider's
  *  models, each toggleable in/out of `enabledModels` via the corner button.
  *  `onSelect` (chat models only) makes a card clickable to set the default
- *  model; omit the handlers for a read-only list (e.g. the JEV model). */
+ *  model; omit the handlers for a read-only list. */
 function ModelList({
   models,
   enabledSet,
@@ -1958,44 +1902,76 @@ function ModelList({
   );
 }
 
-function ProviderBaseUrlRow({
-  label,
-  hint,
-  placeholder,
+/** A provider's API key field, rendered from its JSON declaration. A base URL is not a
+ *  UI setting: a provider's endpoint comes from `endpoint` in its own file. */
+function ProviderSettingRow({
+  providerId,
+  setting,
   value,
-  patchKey,
   onSave,
 }: {
-  label: string;
-  hint: string;
-  placeholder: string;
+  providerId: string;
+  setting: ProviderSettingSpec;
   value?: string;
-  patchKey:
-    | "baseUrl"
-    | "opencodeBaseUrl"
-    | "ollamaBaseUrl"
-    | "mimoBaseUrl"
-    | "experientialBaseUrl"
-    | "syntheticBaseUrl";
   onSave: (patch: SettingsPatch) => void;
 }) {
-  const [draft, setDraft] = useState(value ?? "");
+  const label = setting.label ?? setting.key;
+  const signupUrl = setting.signupUrl;
+  const save = (next: string): void => {
+    onSave({ providerSettings: { [providerId]: { [setting.key]: next.trim() } } });
+  };
   return (
-    <div className="setting-row setting-row-entry setting-row-base-url">
-      <div className="l">
-        <div className="n">{label}</div>
-        <div className="h">{hint}</div>
-      </div>
-      <SettingsEntry
-        value={draft}
-        onChange={setDraft}
-        placeholder={placeholder}
-        onSave={() => {
-          const next = draft.trim();
-          onSave({ [patchKey]: next || (patchKey === "baseUrl" ? "" : null) } as SettingsPatch);
-        }}
-      />
-    </div>
+    <ApiKeyRow
+      label={label}
+      prefix={value}
+      placeholder={setting.placeholder ?? undefined}
+      onSave={save}
+      hint={
+        signupUrl ? (
+          <a
+            href={signupUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => {
+              e.preventDefault();
+              void openUrl(signupUrl).catch(() => undefined);
+            }}
+          >
+            {t("settings.webSearchApiKeySignup")}
+          </a>
+        ) : undefined
+      }
+    />
+  );
+}
+
+/** Every user-editable setting of one provider: API keys only. Adding a provider or
+ *  changing its endpoint is a JSON edit, never a form field. */
+export function ProviderSettingFields({
+  providerId,
+  settings,
+  onSave,
+}: {
+  providerId: string;
+  settings?: ProviderSettingsMap;
+  onSave: (patch: SettingsPatch) => void;
+}) {
+  const spec = providerSpec(providerId);
+  if (!spec) return null;
+  return (
+    <>
+      {spec.settings
+        .filter((setting) => setting.kind === "secret")
+        .map((setting) => (
+          <ProviderSettingRow
+            key={setting.key}
+            providerId={providerId}
+            setting={setting}
+            value={settings?.[providerId]?.[setting.key]}
+            onSave={onSave}
+          />
+        ))}
+    </>
   );
 }
 
@@ -2024,10 +2000,6 @@ function ProviderRefreshRow({
 function PageModels({
   settings,
   onSave,
-  baseUrl,
-  apiKeyPrefix,
-  onSaveApiKey,
-  ollamaBaseUrl,
   ollamaModels,
   ollamaModelsError,
   ollamaPlan,
@@ -2045,7 +2017,6 @@ function PageModels({
   onOAuthBegin,
   onOAuthCancel,
   onOAuthSignOut,
-  onSaveOpenAIApiKey,
   antigravitySignedIn,
   antigravityAccount,
   antigravityFlowError,
@@ -2068,11 +2039,6 @@ function PageModels({
 }: {
   settings: SettingsType;
   onSave: (patch: SettingsPatch) => void;
-  baseUrl?: string;
-  apiKeyPrefix?: string;
-  onSaveApiKey: (key: string) => void;
-  /** Ollama chat endpoint (OpenAI-compatible) shown in the Ollama card. */
-  ollamaBaseUrl?: string;
   /** Dynamically fetched Ollama models (raw ids) — rendered in the Ollama card. */
   ollamaModels?: string[];
   /** Why the last fetch failed — shown instead of the list so the failure isn't silent. */
@@ -2096,7 +2062,6 @@ function PageModels({
   onOAuthBegin: () => void;
   onOAuthCancel: () => void;
   onOAuthSignOut: () => void;
-  onSaveOpenAIApiKey: (key: string) => void;
   antigravitySignedIn: boolean;
   antigravityAccount?: string;
   antigravityFlowError?: string;
@@ -2196,73 +2161,67 @@ function PageModels({
         <div className="h">{t("settings.modelVisibilityHint")}</div>
       </div>
 
-      <ProviderCard
-        title={t(MODEL_CATALOG_GROUP_LABELS.deepseek)}
+      {HAS_DECLARED_PROVIDERS ? null : <div className="h">{t("settings.noProvidersDeclared")}</div>}
+
+      <DeclaredProviderCard
+        group="deepseek"
         defaultOpen={false}
         models={modelColumn(groupModels("deepseek"))}
         settings={
-          <DeepSeekSettings
-            baseUrl={baseUrl}
-            apiKeyPrefix={apiKeyPrefix}
+          <ProviderSettingFields
+            providerId="deepseek"
+            settings={settings.providerSettings}
             onSave={onSave}
-            onSaveApiKey={onSaveApiKey}
           />
         }
       />
 
-      <ProviderCard
-        title={t("settings.openaiSection")}
+      <DeclaredProviderCard
+        group="openai"
         defaultOpen={false}
         models={modelColumn(groupModels("openai"))}
         settings={
-          <OpenAISection
-            signedIn={oauthSignedIn}
-            account={oauthAccount}
-            flowError={oauthFlowError}
-            waiting={oauthWaiting}
-            onBegin={onOAuthBegin}
-            onCancel={onOAuthCancel}
-            onSignOut={onOAuthSignOut}
-            apiKeyPrefix={settings.webSearchApiKeys?.openai}
-            onSaveApiKey={onSaveOpenAIApiKey}
-          />
+          <>
+            <ProviderSettingFields
+              providerId="openai"
+              settings={settings.providerSettings}
+              onSave={onSave}
+            />
+            <OpenAISection
+              signedIn={oauthSignedIn}
+              account={oauthAccount}
+              flowError={oauthFlowError}
+              waiting={oauthWaiting}
+              onBegin={onOAuthBegin}
+              onCancel={onOAuthCancel}
+              onSignOut={onOAuthSignOut}
+            />
+          </>
         }
       />
 
-      <ProviderCard
-        title={t(MODEL_CATALOG_GROUP_LABELS.zai)}
+      <DeclaredProviderCard
+        group="zai"
         defaultOpen={false}
         models={modelColumn(groupModels("zai"))}
         settings={
-          <ProviderApiKeyRow
-            engine="zai"
-            patchKey="zaiApiKey"
-            signupUrl="https://z.ai/manage-apikey/apikey-list"
-            prefix={settings.webSearchApiKeys?.zai}
+          <ProviderSettingFields
+            providerId="zai"
+            settings={settings.providerSettings}
             onSave={onSave}
           />
         }
       />
 
-      <ProviderCard
-        title={t(MODEL_CATALOG_GROUP_LABELS.mimo)}
+      <DeclaredProviderCard
+        group="mimo"
         defaultOpen={false}
         models={modelColumn(groupModels("mimo"))}
         settings={
           <>
-            <ApiKeyRow
-              label={t("settings.mimoApiKey")}
-              prefix={settings.webSearchApiKeys?.mimo}
-              hint={t("settings.mimoApiKeyHint")}
-              placeholder="MiMo API key"
-              onSave={(key) => onSave({ mimoApiKey: key || null })}
-            />
-            <ProviderBaseUrlRow
-              label={t("settings.mimoBaseUrl")}
-              hint={t("settings.mimoBaseUrlHint")}
-              placeholder="https://api.xiaomimimo.com/v1"
-              value={settings.mimoBaseUrl}
-              patchKey="mimoBaseUrl"
+            <ProviderSettingFields
+              providerId="mimo"
+              settings={settings.providerSettings}
               onSave={onSave}
             />
             <MiMoSection
@@ -2277,68 +2236,41 @@ function PageModels({
         }
       />
 
-      <ProviderCard
-        title={t(MODEL_CATALOG_GROUP_LABELS.experiential)}
+      <DeclaredProviderCard
+        group="experiential"
         defaultOpen={false}
         models={modelColumn(groupModels("experiential"))}
         settings={
-          <>
-            <ProviderApiKeyRow
-              engine="experiential"
-              patchKey="experientialApiKey"
-              signupUrl="https://platform.experientiallabs.ai/settings/keys"
-              prefix={settings.webSearchApiKeys?.experiential}
-              onSave={onSave}
-            />
-            <ProviderBaseUrlRow
-              label={t("settings.experientialBaseUrl")}
-              hint={t("settings.experientialBaseUrlHint")}
-              placeholder="https://api.experientiallabs.ai/v1"
-              value={settings.experientialBaseUrl}
-              patchKey="experientialBaseUrl"
-              onSave={onSave}
-            />
-          </>
+          <ProviderSettingFields
+            providerId="experiential"
+            settings={settings.providerSettings}
+            onSave={onSave}
+          />
         }
       />
 
-      <ProviderCard
-        title={t(MODEL_CATALOG_GROUP_LABELS.synthetic)}
+      <DeclaredProviderCard
+        group="synthetic"
         defaultOpen={false}
         models={modelColumn(groupModels("synthetic"))}
         settings={
-          <>
-            <ProviderApiKeyRow
-              engine="synthetic"
-              patchKey="syntheticApiKey"
-              signupUrl="https://synthetic.new/billing/"
-              prefix={settings.webSearchApiKeys?.synthetic}
-              onSave={onSave}
-            />
-            <ProviderBaseUrlRow
-              label={t("settings.syntheticBaseUrl")}
-              hint={t("settings.syntheticBaseUrlHint")}
-              placeholder="https://api.synthetic.new/openai/v1"
-              value={settings.syntheticBaseUrl}
-              patchKey="syntheticBaseUrl"
-              onSave={onSave}
-            />
-          </>
+          <ProviderSettingFields
+            providerId="synthetic"
+            settings={settings.providerSettings}
+            onSave={onSave}
+          />
         }
       />
 
-      <ProviderCard
-        title={t("settings.opencodeSection")}
+      <DeclaredProviderCard
+        group="opencode"
         defaultOpen={false}
         models={modelColumn(groupModels("opencode"))}
         settings={
           <>
-            <ProviderBaseUrlRow
-              label={t("settings.opencodeBaseUrl")}
-              hint={t("settings.opencodeBaseUrlHint")}
-              placeholder="https://opencode.ai/zen/v1"
-              value={settings.opencodeBaseUrl}
-              patchKey="opencodeBaseUrl"
+            <ProviderSettingFields
+              providerId="opencode"
+              settings={settings.providerSettings}
               onSave={onSave}
             />
             <OpencodeSection
@@ -2350,8 +2282,6 @@ function PageModels({
               onBegin={onOpencodeBegin}
               onCancel={onOpencodeCancel}
               onSignOut={onOpencodeSignOut}
-              apiKeyPrefix={settings.webSearchApiKeys?.opencode}
-              onSave={onSave}
             />
             <ProviderRefreshRow
               label={t("settings.opencodeModels")}
@@ -2366,25 +2296,15 @@ function PageModels({
         }
       />
 
-      <ProviderCard
-        title={t("settings.ollamaSection")}
+      <DeclaredProviderCard
+        group="ollama"
         defaultOpen={false}
         models={modelColumn(ollamaList)}
         settings={
           <>
-            <ProviderBaseUrlRow
-              label={t("settings.ollamaBaseUrl")}
-              hint={t("settings.ollamaBaseUrlHint")}
-              placeholder={t("settings.ollamaBaseUrlPlaceholder")}
-              value={ollamaBaseUrl}
-              patchKey="ollamaBaseUrl"
-              onSave={onSave}
-            />
-            <ProviderApiKeyRow
-              engine="ollama"
-              patchKey="ollamaApiKey"
-              signupUrl="https://ollama.com/settings/keys"
-              prefix={settings.webSearchApiKeys?.ollama}
+            <ProviderSettingFields
+              providerId="ollama"
+              settings={settings.providerSettings}
               onSave={onSave}
             />
             <ProviderRefreshRow
@@ -2412,8 +2332,8 @@ function PageModels({
         }
       />
 
-      <ProviderCard
-        title={t("settings.antigravitySection")}
+      <DeclaredProviderCard
+        group="antigravity"
         defaultOpen={false}
         models={modelColumn(groupModels("antigravity"))}
         settings={
@@ -2426,26 +2346,6 @@ function PageModels({
             onCancel={onAntigravityCancel}
             onSignOut={onAntigravitySignOut}
           />
-        }
-      />
-
-      <ProviderCard
-        title={t("settings.typesafeSection")}
-        defaultOpen={false}
-        models={modelColumn(groupModels("typesafe"))}
-        settings={
-          <>
-            <div className="h" style={{ marginBottom: 8 }}>
-              {t("settings.typesafeHint")}
-            </div>
-            <ProviderApiKeyRow
-              engine="typesafe"
-              patchKey="typesafeApiKey"
-              signupUrl="https://console.typesafe.ai"
-              prefix={settings.webSearchApiKeys?.typesafe}
-              onSave={onSave}
-            />
-          </>
         }
       />
     </>
@@ -3239,6 +3139,13 @@ export function PageMCP({
           const headActions =
             canToggle || !s.builtin ? (
               <>
+                {s.builtin ? null : (
+                  <div className="seg-ctrl">
+                    <button type="button" className="mcp-remove" onClick={() => onRemove(s.raw)}>
+                      {t("settings.mcpRemove")}
+                    </button>
+                  </div>
+                )}
                 {canToggle ? (
                   <div className="seg-ctrl">
                     <button
@@ -3257,17 +3164,10 @@ export function PageMCP({
                     </button>
                   </div>
                 ) : null}
-                {s.builtin ? null : (
-                  <div className="seg-ctrl">
-                    <button type="button" className="mcp-remove" onClick={() => onRemove(s.raw)}>
-                      {t("settings.mcpRemove")}
-                    </button>
-                  </div>
-                )}
               </>
             ) : null;
           return (
-            <McpServerCard
+            <HeadActionCard
               key={s.raw}
               headActions={headActions}
               title={
@@ -3293,14 +3193,16 @@ export function PageMCP({
               {s.name !== null && /mail/i.test(s.name) ? (
                 <div style={{ marginTop: 12 }}>{mailSettings}</div>
               ) : null}
-            </McpServerCard>
+            </HeadActionCard>
           );
         })}
         {!specs.some((s) => s.name === "playwright") ? (
-          <McpServerCard title={t("settings.mcpBrowserTitle")}>{playwrightSettings}</McpServerCard>
+          <HeadActionCard title={t("settings.mcpBrowserTitle")}>
+            {playwrightSettings}
+          </HeadActionCard>
         ) : null}
         {!specs.some((s) => s.name !== null && /mail/i.test(s.name)) ? (
-          <McpServerCard title={t("settings.mailTitle")}>{mailSettings}</McpServerCard>
+          <HeadActionCard title={t("settings.mailTitle")}>{mailSettings}</HeadActionCard>
         ) : null}
       </section>
       <section className="section">

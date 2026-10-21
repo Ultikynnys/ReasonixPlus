@@ -1,0 +1,11 @@
+{
+  "id": "zai",
+  "label": "Z.AI",
+  "description": "Z.AI search-prime.",
+  "order": 10,
+  "kind": "shared",
+  "strategy": "zai",
+  "fallback": false,
+  "sharedCredential": { "provider": "zai", "key": "apiKey" },
+  "settings": []
+}

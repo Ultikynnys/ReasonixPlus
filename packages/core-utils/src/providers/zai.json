@@ -59,7 +59,7 @@
       "kind": "secret",
       "env": ["ZAI_API_KEY"],
       "configKey": "zaiApiKey",
-      "labelKey": "settings.webSearchApiKey.zai",
+      "label": "Z.AI API key (also enables GLM models)",
       "signupUrl": "https://z.ai/manage-apikey/apikey-list"
     },
     {
@@ -67,8 +67,8 @@
       "kind": "url",
       "env": ["ZAI_BASE_URL"],
       "configKey": "zaiBaseUrl",
-      "labelKey": "settings.providerBaseUrl",
-      "hintKey": "settings.providerBaseUrlHint"
+      "label": "Z.AI base URL",
+      "hint": "OpenAI-compatible endpoint override for Z.AI. Empty uses the provider's default endpoint."
     }
   ],
   "credentials": {
@@ -81,6 +81,15 @@
     "listField": "data",
     "idField": "id",
     "excludeSpeech": false
+  },
+  "wire": { "streamOptions": false, "toolStream": true, "thinking": "zai-top-level" },
+  "billing": { "kind": "quota-if-key" },
+  "usage": { "probe": "zai-monitor" },
+  "errors": {
+    "i18nPrefix": "zai",
+    "brands": ["Z.AI"],
+    "hosts": ["z.ai"],
+    "serverReport": "standard"
   },
   "client": {
     "auth": "api-key",

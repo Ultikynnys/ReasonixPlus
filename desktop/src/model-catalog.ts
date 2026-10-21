@@ -19,10 +19,12 @@ export type ModelCatalogGroupKey =
   | "zai"
   | "mimo"
   | "opencode"
-  | "typesafe"
   | "antigravity"
   | "experiential"
-  | "synthetic";
+  | "synthetic"
+  // Ollama owns a settings card without being a picker group: its models come
+  // from the runtime probe, so the picker never lists them.
+  | "ollama";
 
 /** Catalog keys the daemon publishes live discovery snapshots under. */
 export type ProviderCatalogKey =
@@ -30,7 +32,6 @@ export type ProviderCatalogKey =
   | "openai"
   | "zai"
   | "mimo"
-  | "typesafe"
   | "experiential"
   | "synthetic";
 
@@ -67,7 +68,6 @@ const GROUP_KEYS: ReadonlySet<string> = new Set<ModelCatalogGroupKey>([
   "zai",
   "mimo",
   "opencode",
-  "typesafe",
   "antigravity",
   "experiential",
   "synthetic",
@@ -99,6 +99,27 @@ export const MODEL_CATALOG_GROUP_LABELS = Object.fromEntries(
   GROUP_ENTRIES.map((entry) => [entry.key, entry.spec.groupLabelKey]),
 ) as Record<ModelCatalogGroupKey, TKey>;
 
+/** Groups a declared provider actually fills, in display order. Empty when no provider
+ *  file exists, which is how the settings pages know to show their empty state. */
+export const MODEL_CATALOG_GROUP_KEYS: readonly ModelCatalogGroupKey[] = GROUP_ENTRIES.map(
+  (entry) => entry.key,
+);
+
+/** True when at least one provider file is declared, which is what the settings pages test
+ *  before showing their "no providers" empty state. */
+export const HAS_DECLARED_PROVIDERS = providerSpecsInOrder().length > 0;
+
+/** The provider that fills a group, whether or not the picker lists it: Ollama is
+ *  disabled in the picker but still owns a settings card. */
+export function providerForModelGroup(key: ModelCatalogGroupKey): ProviderSpec | undefined {
+  return providerSpecsInOrder().find((spec) => (spec.pickerGroup ?? spec.id) === key);
+}
+export function modelCatalogGroupLabel(key: ModelCatalogGroupKey): TKey | undefined {
+  // A JSON declaration widens this to string; the bundle is the authority on which
+  // keys exist, so the two are bridged here rather than at every call site.
+  const label = GROUP_ENTRIES.find((entry) => entry.key === key)?.spec.groupLabelKey;
+  return label as TKey | undefined;
+}
 /** Derive model membership and capabilities once for every desktop picker.
  * Provider identity is never inferred from an id: Antigravity membership comes
  * only from the built-in catalog or daemon-discovered model ids. */

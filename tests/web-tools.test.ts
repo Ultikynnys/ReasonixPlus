@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import { searchEngineDeclared } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadBaiduApiKey, loadMetasoApiKey, writeConfig } from "../src/config.js";
 import { ToolRegistry } from "../src/tools.js";
@@ -1144,7 +1145,7 @@ describe("searchExa", () => {
   });
 });
 
-describe("searchBrave", () => {
+describe.skipIf(!searchEngineDeclared("brave"))("searchBrave", () => {
   const sampleResponse = {
     web: {
       results: [

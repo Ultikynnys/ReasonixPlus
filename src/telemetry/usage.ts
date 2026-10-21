@@ -19,7 +19,6 @@ import { appendJsonlLine, countJsonlLines, parseJsonl, readJsonlLines } from "..
 import { reasonixHome } from "../reasonix-home.js";
 import {
   CLAUDE_SONNET_PRICING,
-  DEEPSEEK_PRICING,
   billingContextForModel,
   cacheSavingsUsd,
   claudeEquivalentCost,
@@ -371,4 +370,4 @@ export function formatLogSize(path: string = defaultUsageLogPath()): string {
 }
 
 /** Re-exports for downstream consumers that also want the pricing constants. */
-export { CLAUDE_SONNET_PRICING, DEEPSEEK_PRICING };
+export { CLAUDE_SONNET_PRICING };

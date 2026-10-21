@@ -16,7 +16,6 @@ describe("OpenAISection", () => {
     const onBegin = vi.fn();
     const onCancel = vi.fn();
     const onSignOut = vi.fn();
-    const onSaveApiKey = vi.fn();
     render(
       <OpenAISection
         signedIn={false}
@@ -25,11 +24,10 @@ describe("OpenAISection", () => {
         onBegin={onBegin}
         onCancel={onCancel}
         onSignOut={onSignOut}
-        onSaveApiKey={onSaveApiKey}
         {...props}
       />,
     );
-    return { onBegin, onCancel, onSignOut, onSaveApiKey };
+    return { onBegin, onCancel, onSignOut };
   }
 
   it("shows the sign-in button when signed out", () => {
@@ -59,12 +57,11 @@ describe("OpenAISection", () => {
     expect(screen.queryByText("Sign in with OpenAI")).toBeNull();
   });
 
-  it("saves a pasted OpenAI API key and clears the input", () => {
-    const { onSaveApiKey } = renderCard();
-    const input = screen.getByPlaceholderText("sk-…");
-    fireEvent.change(input, { target: { value: "sk-abc123" } });
-    fireEvent.click(screen.getByText("Save"));
-    expect(onSaveApiKey).toHaveBeenCalledWith("sk-abc123");
-    expect((input as HTMLInputElement).value).toBe("");
+  it("leaves the API key field to the provider declaration", () => {
+    renderCard();
+    // The key input is rendered from providers/openai.json by the Models page, so the
+    // panel itself owns only the sign-in affordances.
+    expect(screen.queryByPlaceholderText("sk-…")).toBeNull();
+    expect(screen.queryByText("Save")).toBeNull();
   });
 });

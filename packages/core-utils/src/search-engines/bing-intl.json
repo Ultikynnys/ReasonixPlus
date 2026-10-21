@@ -1,0 +1,10 @@
+{
+  "id": "bing-intl",
+  "label": "Bing (international)",
+  "description": "www.bing.com, indexes international sites.",
+  "order": 1,
+  "kind": "keyless",
+  "strategy": "bing-intl",
+  "fallback": true,
+  "settings": []
+}

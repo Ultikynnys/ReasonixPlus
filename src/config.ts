@@ -21,7 +21,9 @@ import {
   type ProviderModelFilter,
   type ProviderSpec,
   ROUTABLE_PROVIDER_SPECS,
+  SEARCH_ENGINE_SPECS,
   SUPPORTED_OFFICIAL_MODELS,
+  type SearchSettingSpec,
   WEB_SEARCH_ENGINE_NAMES,
   type WebSearchEngineName,
   ZAI_MODELS,
@@ -37,6 +39,9 @@ import {
   requireProviderSpec,
   resolveProviderEndpoint,
   ruleRegexError,
+  searchEngineSpec,
+  searchSettingSpec,
+  searchSharedCredential,
   specForProvider,
   stripProviderQualifier,
 } from "@reasonix/core-utils";
@@ -139,9 +144,12 @@ const ADMITTED = (provider: ModelProvider): ModelAdmission => ({
   provider,
   discoveredAntigravity: false,
 });
+/** The routable label used when nothing admits a model: the first declared provider, or an
+ *  empty string when no provider file exists — nothing can resolve it until one does. */
+const FALLBACK_PROVIDER = (ROUTABLE_PROVIDER_SPECS[0]?.providerId ?? "") as ModelProvider;
 const NOT_ADMITTED: ModelAdmission = {
   accepted: false,
-  provider: "deepseek",
+  provider: FALLBACK_PROVIDER,
   discoveredAntigravity: false,
 };
 
@@ -227,14 +235,253 @@ function resolveModelAdmission(model: string, path: string, cfg: ReasonixConfig)
   return NOT_ADMITTED;
 }
 
+/** One declared provider setting from an in-memory config — the store's only
+ *  read path, so every consumer reads the same shape. */
+export function providerSettingFromStore(
+  cfg: ReasonixConfig,
+  providerId: string,
+  key: string,
+): string | undefined {
+  const value = cfg.providerSettings?.[providerId]?.[key]?.trim();
+  return value || undefined;
+}
+
+/** Read a `<catalogId>.<settingKey>` store path. */
+function settingAtPath(cfg: ReasonixConfig, path: string): string | undefined {
+  const dot = path.indexOf(".");
+  if (dot <= 0 || dot === path.length - 1) return undefined;
+  return providerSettingFromStore(cfg, path.slice(0, dot), path.slice(dot + 1));
+}
+
+/** Set a declared provider setting on an in-memory config; an empty value clears it.
+ *  The caller writes the config once, so a multi-field patch stays a single write. */
+export function setProviderSetting(
+  cfg: ReasonixConfig,
+  providerId: string,
+  key: string,
+  value: string | null,
+): void {
+  const spec = providerSpec(providerId);
+  if (!spec) throw new Error(`setProviderSetting: unknown provider "${providerId}"`);
+  if (!spec.settings.some((setting) => setting.key === key)) {
+    const declared = spec.settings.map((setting) => setting.key).join(", ") || "none";
+    throw new Error(
+      `setProviderSetting: provider "${providerId}" declares no setting "${key}" (declared: ${declared})`,
+    );
+  }
+  const store = cfg.providerSettings ?? {};
+  const entry = store[providerId] ?? {};
+  cfg.providerSettings = store;
+  store[providerId] = entry;
+  const trimmed = value?.trim() ?? "";
+  if (trimmed) entry[key] = trimmed;
+  else delete entry[key];
+  if (Object.keys(entry).length === 0) {
+    delete store[providerId];
+    if (Object.keys(store).length === 0) cfg.providerSettings = undefined;
+  }
+}
+
+/** Read one declared provider setting. */
+export function loadProviderSetting(
+  providerId: string,
+  key: string,
+  path: string = defaultConfigPath(),
+): string | undefined {
+  return providerSettingFromStore(readConfig(path), providerId, key);
+}
+
+/** Persist one declared provider setting; an empty value removes it. */
+export function saveProviderSetting(
+  providerId: string,
+  key: string,
+  value: string | null,
+  path: string = defaultConfigPath(),
+): void {
+  const cfg = readConfig(path);
+  setProviderSetting(cfg, providerId, key, value);
+  writeConfig(cfg, path);
+}
+
+/** Legacy per-engine fields older versions persisted, and the setting each one
+ *  becomes. Derived from the engine files, so the mapping cannot drift. */
+const LEGACY_SEARCH_SETTINGS: ReadonlyArray<{ engine: string; key: string; field: string }> =
+  SEARCH_ENGINE_SPECS.flatMap((spec) =>
+    spec.settings.flatMap((setting) =>
+      setting.configKey === null
+        ? []
+        : [{ engine: spec.id, key: setting.key, field: setting.configKey }],
+    ),
+  );
+
+/** Fold legacy per-engine fields into the search store. A value already in the store
+ *  wins, mirroring the provider migration. */
+function migrateSearchSettings(cfg: Record<string, unknown>): void {
+  for (const { engine, key, field } of LEGACY_SEARCH_SETTINGS) {
+    const legacy = cfg[field];
+    if (typeof legacy !== "string" || !legacy.trim()) continue;
+    const store = (cfg.searchSettings ?? {}) as Record<string, Record<string, string>>;
+    const entry = store[engine] ?? {};
+    store[engine] = entry;
+    cfg.searchSettings = store;
+    if (!entry[key]) entry[key] = legacy.trim();
+    delete cfg[field];
+  }
+}
+
+/** One declared search setting from an in-memory config. A shared engine resolves
+ *  through its model provider's entry, which is what keeps one variable serving both. */
+export function searchSettingFromConfig(
+  cfg: ReasonixConfig,
+  engineId: string,
+  key: string,
+): string | undefined {
+  const spec = searchEngineSpec(engineId);
+  if (!spec) return undefined;
+  const shared = searchSharedCredential(spec);
+  const value = shared
+    ? cfg.providerSettings?.[shared.provider]?.[shared.key]
+    : cfg.searchSettings?.[engineId]?.[key];
+  return value?.trim() || undefined;
+}
+
+/** Set a declared search setting in memory; an empty value clears it. Writing a shared
+ *  engine routes to the model provider's setting, never a second variable. */
+export function setSearchSetting(
+  cfg: ReasonixConfig,
+  engineId: string,
+  key: string,
+  value: string | null,
+): void {
+  const spec = searchEngineSpec(engineId);
+  if (!spec) throw new Error(`setSearchSetting: unknown engine "${engineId}"`);
+  const shared = searchSharedCredential(spec);
+  if (shared) {
+    setProviderSetting(cfg, shared.provider, shared.key, value);
+    return;
+  }
+  if (!searchSettingSpec(spec, key)) {
+    throw new Error(`setSearchSetting: engine "${engineId}" declares no setting "${key}"`);
+  }
+  const store = cfg.searchSettings ?? {};
+  const entry = store[engineId] ?? {};
+  cfg.searchSettings = store;
+  store[engineId] = entry;
+  const trimmed = value?.trim() ?? "";
+  if (trimmed) entry[key] = trimmed;
+  else delete entry[key];
+  if (Object.keys(entry).length === 0) {
+    delete store[engineId];
+    if (Object.keys(store).length === 0) cfg.searchSettings = undefined;
+  }
+}
+
+/** Read one declared search setting. */
+export function loadSearchSetting(
+  engineId: string,
+  key: string,
+  path: string = defaultConfigPath(),
+): string | undefined {
+  return searchSettingFromConfig(readConfig(path), engineId, key);
+}
+
+/** Persist one declared search setting; an empty value removes it. */
+export function saveSearchSetting(
+  engineId: string,
+  key: string,
+  value: string | null,
+  path: string = defaultConfigPath(),
+): void {
+  const cfg = readConfig(path);
+  setSearchSetting(cfg, engineId, key, value);
+  writeConfig(cfg, path);
+}
+
+/** First non-empty env override a setting declares. */
+function searchEnvValue(setting: SearchSettingSpec, env = process.env): string | undefined {
+  for (const name of setting.env) {
+    const value = env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+/** Effective API key per engine: env first, then the store (its own entry, or the model
+ *  provider entry it shares). Engines without a key are absent. */
+export function loadSearchApiKeys(
+  path: string = defaultConfigPath(),
+): Record<string, string | undefined> {
+  const cfg = readConfig(path);
+  const providerKeys = loadProviderApiKeys(path);
+  const out: Record<string, string | undefined> = {};
+  for (const spec of SEARCH_ENGINE_SPECS) {
+    const shared = searchSharedCredential(spec);
+    if (shared) {
+      out[spec.id] = providerKeys[shared.provider];
+      continue;
+    }
+    const setting = searchSettingSpec(spec, "apiKey");
+    if (!setting) continue;
+    out[spec.id] = searchEnvValue(setting) ?? searchSettingFromConfig(cfg, spec.id, "apiKey");
+  }
+  return out;
+}
+
+/** Effective API key for one engine. */
+export function loadSearchApiKey(
+  engineId: string,
+  path: string = defaultConfigPath(),
+): string | undefined {
+  return loadSearchApiKeys(path)[engineId];
+}
+
+/** Legacy per-provider fields older versions persisted, and the setting each one
+ *  becomes. Derived from the provider files, so the mapping cannot drift. */
+const LEGACY_PROVIDER_SETTINGS: ReadonlyArray<{ provider: string; key: string; field: string }> =
+  PROVIDER_SPECS.flatMap((spec) =>
+    spec.settings.flatMap((setting) =>
+      setting.configKey === null
+        ? []
+        : [{ provider: spec.id, key: setting.key, field: setting.configKey }],
+    ),
+  );
+
+/** Fold legacy per-provider fields into the store so a config written by an older
+ *  version keeps every value. A value already in the store wins. */
+function migrateProviderSettings(cfg: Record<string, unknown>): void {
+  if (
+    cfg.providerSettings !== undefined &&
+    (typeof cfg.providerSettings !== "object" ||
+      cfg.providerSettings === null ||
+      Array.isArray(cfg.providerSettings))
+  ) {
+    cfg.providerSettings = undefined;
+  }
+  const folded = LEGACY_PROVIDER_SETTINGS.flatMap(({ provider, key, field }) => {
+    // Read every legacy field before deleting any: several providers declare the
+    // same source (the old top-level baseUrl fed both DeepSeek and OpenAI).
+    const legacy = cfg[field];
+    return typeof legacy === "string" && legacy.trim()
+      ? [{ provider, key, value: legacy.trim() }]
+      : [];
+  });
+  for (const { provider, key, value } of folded) {
+    const store = (cfg.providerSettings ?? {}) as Record<string, Record<string, string>>;
+    const entry = store[provider] ?? {};
+    cfg.providerSettings = store;
+    store[provider] = entry;
+    if (!entry[key]) entry[key] = value;
+  }
+  for (const { field } of LEGACY_PROVIDER_SETTINGS) {
+    if (typeof cfg[field] === "string") delete cfg[field];
+  }
+}
+
 /** Registry context over the persisted config — provider field names come from
  *  providers.json, so adding one needs no new accessor. */
 function providerContext(cfg: ReasonixConfig): ProviderCredentialContext {
   return {
-    configField: (field) => {
-      const value = cfg[field as keyof ReasonixConfig];
-      return typeof value === "string" ? value : undefined;
-    },
+    setting: (path) => settingAtPath(cfg, path),
     oauthToken: (field) => {
       const value = cfg[field as keyof ReasonixConfig] as { accessToken?: string } | undefined;
       return value?.accessToken;
@@ -262,7 +509,9 @@ function endpointFor(
   model: string,
   cfg: ReasonixConfig,
 ): ResolvedEndpoint {
-  const spec = specForProvider(provider);
+  const spec = providerSpec(provider);
+  // A provider with no file declares no endpoint; the send path reports that instead.
+  if (!spec) return { baseUrl: undefined, apiKey: undefined };
   return resolveProviderEndpoint(spec, {
     ...providerContext(cfg),
     tier: endpointTierFor(spec, model),
@@ -279,7 +528,7 @@ export function providerForModel(
   model: string | undefined | null,
   path: string = defaultConfigPath(),
 ): ModelProvider {
-  if (typeof model !== "string") return "deepseek";
+  if (typeof model !== "string") return FALLBACK_PROVIDER;
   return resolveModelAdmission(model, path, readConfig(path)).provider;
 }
 
@@ -496,38 +745,10 @@ export interface ModelProviderConfig {
 }
 
 export interface ReasonixConfig {
-  apiKey?: string;
-  baseUrl?: string;
-  /** Manual OpenAI API key for gpt-* models (falls back to OPENAI_API_KEY env). */
-  openaiApiKey?: string;
-  /** Z.AI API key for glm-* models and Z.AI search. Falls back to ZAI_API_KEY. */
-  zaiApiKey?: string;
-  /** TypeSafe API key for Jev System One evaluations. Falls back to TYPESAFE_API_KEY. */
-  typesafeApiKey?: string;
-  /** Z.AI OpenAI-compatible endpoint override. Falls back to ZAI_BASE_URL. */
-  zaiBaseUrl?: string;
-  /** OpenCode API key for free/paid OpenCode models. Falls back to OPENCODE_API_KEY env or defaults to "public". */
-  opencodeApiKey?: string;
-  /** OpenCode OpenAI-compatible endpoint override. Falls back to OPENCODE_BASE_URL. */
-  opencodeBaseUrl?: string;
-  /** Xiaomi MiMo API key for mimo-* models. Falls back to MIMO_API_KEY. */
-  mimoApiKey?: string;
-  /** MiMo OpenAI-compatible endpoint override. Falls back to MIMO_BASE_URL. */
-  mimoBaseUrl?: string;
-  /** Experiential Labs gateway API key (starts `xpl_`). Falls back to
-   *  EXPERIENTIAL_API_KEY, then the vendor's EXPLABS_API_KEY env var. */
-  experientialApiKey?: string;
-  /** Experiential Labs OpenAI-compatible endpoint override. Falls back to
-   *  EXPERIENTIAL_BASE_URL, then https://api.experientiallabs.ai/v1. */
-  experientialBaseUrl?: string;
-  /** Synthetic API key (OpenAI-compatible gateway). Falls back to SYNTHETIC_API_KEY. */
-  syntheticApiKey?: string;
-  /** Synthetic OpenAI-compatible endpoint override. Falls back to
-   *  SYNTHETIC_BASE_URL, then https://api.synthetic.new/openai/v1. */
-  syntheticBaseUrl?: string;
-  /** Stable MiMo sign-in key label — generated once so re-authorizing reuses
-   *  the account's existing key instead of provisioning a new one each time. */
-  mimoKeyName?: string;
+  /** Per-provider persisted settings — catalog id → the setting keys that provider
+   *  declares in packages/core-utils/src/providers/*.json. Adding a provider or a
+   *  field never edits this interface. */
+  providerSettings?: Record<string, Record<string, string>>;
   /** Set by the browser OAuth sign-in; auto-refreshed from refreshToken on expiry. */
   openaiOAuth?: OpenAIOAuthCreds;
   /** Google Antigravity OAuth tokens — set by the "Sign in with Google" flow;
@@ -615,18 +836,10 @@ export interface ReasonixConfig {
   search?: boolean;
   /** Web search engine backend: "bing" (default, scrapes cn.bing.com), "bing-intl" (www.bing.com, indexes international sites), "searxng" (self-hosted SearXNG), "metaso" (Metaso API), "baidu" (Baidu AI Search API), "tavily" (LLM-friendly API, free tier), "perplexity" (Perplexity AI), "exa" (Exa API), "brave" (Brave Search API), or "ollama" (Ollama cloud web search). */
   webSearchEngine?: WebSearchEngineName;
-  /** Base URL for SearXNG instance (default http://localhost:8080). */
-  webSearchEndpoint?: string;
-  /** Metaso API key. Falls back to METASO_API_KEY env var. */
-  metasoApiKey?: string;
-  /** Baidu AI Search API key. Falls back to BAIDU_API_KEY or QIANFAN_API_KEY env var. */
-  baiduApiKey?: string;
-  /** Tavily API key. Falls back to TAVILY_API_KEY env var. No baked-in default — free tier is 1000/mo per account, sharing would burn out. */
-  tavilyApiKey?: string;
-  /** Perplexity API key. Falls back to PERPLEXITY_API_KEY env var. Get one at https://perplexity.ai/settings/api */
-  perplexityApiKey?: string;
-  /** Exa API key. Falls back to EXA_API_KEY env var. Free 1000/mo signup at https://exa.ai */
-  exaApiKey?: string;
+  /** Per-engine persisted settings — engine id → the keys that engine declares in
+   *  packages/core-utils/src/search-engines/*.json. A shared engine reads its model
+   *  provider's entry instead, so one value serves both surfaces. */
+  searchSettings?: Record<string, Record<string, string>>;
   /** Ollama cloud API key. Falls back to OLLAMA_API_KEY env var. Used for Ollama web_search/web_fetch and chat when the Ollama provider is a cloud endpoint. */
   ollamaApiKey?: string;
   /** Ollama chat endpoint (OpenAI-compatible). Falls back to OLLAMA_BASE_URL env, then https://ollama.com/v1 (Ollama cloud). Local daemon is keyless; cloud requires ollamaApiKey. */
@@ -667,8 +880,6 @@ export interface ReasonixConfig {
    *  back to consider for the repeat penalty. Unset lets the model's Modelfile or
    *  server default apply. Env OLLAMA_REPEAT_LAST_N overrides. */
   ollamaRepeatLastN?: number;
-  /** Brave Search API key. Falls back to BRAVE_SEARCH_API_KEY env var. Free 2000/mo signup at https://brave.com/search/api/ */
-  braveApiKey?: string;
 
   /** TUI mouse-wheel scrolling via SGR mouse tracking. Default true. Set false to fall back to native terminal drag-select for copy (then wheel is terminal-dependent — most terminals translate wheel→arrow in alt-screen, some don't). */
   mouseTracking?: boolean;
@@ -720,8 +931,6 @@ export interface ReasonixConfig {
   };
   /** Per-skill model override for `runAs: subagent` skills, keyed by skill name. Empty / missing entry → spawn site's default. */
   subagentModels?: Record<string, "flash" | "pro">;
-  /** Enable the `java_source` tool for finding and decompiling Java class source. Default off. */
-  javaSource?: boolean;
   /** User-declared extensions to the built-in memory types (#709). Unknown types round-trip even without a declaration; declaring one lets you attach a default priority + lifecycle. */
   memory?: {
     customTypes?: CustomMemoryTypeConfig[];
@@ -825,42 +1034,37 @@ function resolveApiKey(
 }
 
 export function loadMetasoApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["METASO_API_KEY"], "metasoApiKey", path);
+  return loadSearchApiKey("metaso", path);
 }
 
 export function loadBaiduApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["BAIDU_API_KEY", "QIANFAN_API_KEY"], "baiduApiKey", path);
+  return loadSearchApiKey("baidu", path);
 }
 
 /** Tavily API key — env > config > undefined. Returning undefined means the caller must error out with a clear "go get one at tavily.com" message; we deliberately ship no default because the free 1000/mo quota wouldn't survive being shared. */
 export function loadTavilyApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["TAVILY_API_KEY"], "tavilyApiKey", path);
+  return loadSearchApiKey("tavily", path);
 }
 
 /** Perplexity API key — env > config > undefined. Get one at https://perplexity.ai/settings/api */
 export function loadPerplexityApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["PERPLEXITY_API_KEY"], "perplexityApiKey", path);
+  return loadSearchApiKey("perplexity", path);
 }
 
 /** Exa API key — env > config > undefined. Free 1000/mo signup at https://exa.ai */
 export function loadExaApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["EXA_API_KEY"], "exaApiKey", path);
+  return loadSearchApiKey("exa", path);
 }
 
 /** The API key a provider declares in providers.json: env > config > undefined. */
 function providerApiKey(provider: ModelProvider, path: string): string | undefined {
-  return providerApiKeyValue(specForProvider(provider), providerContext(readConfig(path)));
+  const spec = providerSpec(provider);
+  return spec ? providerApiKeyValue(spec, providerContext(readConfig(path))) : undefined;
 }
 
 /** Z.AI API key shared by glm-* chat and Z.AI web search: env > config > undefined. */
 export function loadZaiApiKey(path: string = defaultConfigPath()): string | undefined {
   return providerApiKey("zai", path);
-}
-
-/** TypeSafe API key for Jev System One evaluations: env > config > undefined. */
-export function loadTypesafeApiKey(path: string = defaultConfigPath()): string | undefined {
-  const spec = providerSpec("typesafe");
-  return spec ? providerApiKeyValue(spec, providerContext(readConfig(path))) : undefined;
 }
 
 /** OpenCode API key: env > config > undefined; the client falls back to `public`
@@ -890,12 +1094,10 @@ export function loadExperientialEndpoint(path: string = defaultConfigPath()): Re
  *  authorizations reuse the account's existing key rather than provisioning a
  *  new one on every sign-in. */
 export function loadMimoKeyName(path: string = defaultConfigPath()): string {
-  const cfg = readConfig(path);
-  const existing = cfg.mimoKeyName?.trim();
+  const existing = loadProviderSetting("mimo", "keyName", path);
   if (existing) return existing;
   const name = `reasonix-${randomBytes(8).toString("hex")}`;
-  cfg.mimoKeyName = name;
-  writeConfig(cfg, path);
+  saveProviderSetting("mimo", "keyName", name, path);
   return name;
 }
 
@@ -1089,7 +1291,7 @@ export function loadOllamaRepeatLastN(path: string = defaultConfigPath()): numbe
 
 /** Brave Search API key — env > config > undefined. Free 2000/mo signup at https://brave.com/search/api/ */
 export function loadBraveApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"], "braveApiKey", path);
+  return loadSearchApiKey("brave", path);
 }
 
 export function defaultConfigPath(): string {
@@ -1196,6 +1398,8 @@ export function readConfig(path: string = defaultConfigPath()): ReasonixConfig {
       }
       sanitizeModelsField(cfg);
       sanitizeAntigravityOAuthField(cfg);
+      migrateProviderSettings(cfg);
+      migrateSearchSettings(cfg);
       if (cfg.mailProvider !== MailProvider.Outlook && cfg.mailProvider !== MailProvider.Gmail) {
         // undefined so JSON.stringify omits the persisted key entirely.
         cfg.mailProvider = undefined;
@@ -1485,7 +1689,7 @@ export function loadResolvedModelEndpoint(
   const provider = providerForModel(model, path);
   const endpoint = loadEndpointForModel(model, path);
   // Only a provider with a keyless local mode distinguishes cloud/local/custom.
-  const deployment = specForProvider(provider).usable.keylessLocal
+  const deployment = providerSpec(provider)?.usable.keylessLocal
     ? isOllamaCloudEndpoint(endpoint.baseUrl)
       ? "cloud"
       : endpoint.apiKey
@@ -1518,7 +1722,9 @@ export function loadCatalogEndpoint(
   catalogId: string,
   path: string = defaultConfigPath(),
 ): ResolvedEndpoint {
-  const spec = requireProviderSpec(catalogId);
+  const spec = providerSpec(catalogId);
+  // An undeclared catalog entry resolves to nothing instead of throwing.
+  if (!spec) return { baseUrl: undefined, apiKey: undefined };
   return resolveProviderEndpoint(spec, providerContext(readConfig(path)));
 }
 
@@ -1530,7 +1736,7 @@ export function loadProviderApiKeys(
   const context = providerContext(readConfig(path));
   const out: Record<string, string | undefined> = {};
   for (const spec of PROVIDER_SPECS) {
-    if (!spec.credentials.apiKeyConfig) continue;
+    if (!spec.credentials.apiKeySetting) continue;
     out[spec.id] = providerApiKeyValue(spec, context) ?? undefined;
   }
   return out;
@@ -1554,7 +1760,9 @@ export function anyProviderConfigured(path: string = defaultConfigPath()): boole
 export function modelUsableFor(model: string, path: string = defaultConfigPath()): boolean {
   const provider = providerForModel(model, path);
   const cfg = readConfig(path);
-  return providerUsable(specForProvider(provider), {
+  const spec = providerSpec(provider);
+  if (!spec) return false;
+  return providerUsable(spec, {
     ...providerContext(cfg),
     endpoint: endpointFor(provider, model, cfg),
   });
@@ -1630,14 +1838,7 @@ export function loadToolRateLimit(
 }
 
 export function saveBaseUrl(url: string, path: string = defaultConfigPath()): void {
-  const cfg = readConfig(path);
-  const trimmed = url.trim();
-  if (trimmed) {
-    cfg.baseUrl = trimmed;
-  } else {
-    cfg.baseUrl = undefined;
-  }
-  writeConfig(cfg, path);
+  saveProviderSetting("deepseek", "baseUrl", url, path);
 }
 
 export interface SkillPathEntry {
@@ -1797,33 +1998,27 @@ export function searchEnabled(path: string = defaultConfigPath()): boolean {
   return true;
 }
 
-export function loadJavaSourceEnabled(path: string = defaultConfigPath()): boolean {
-  const env = process.env.REASONIX_JAVA_SOURCE;
-  if (env === "1" || env === "true") return true;
-  const cfg = readConfig(path).javaSource;
-  return cfg === true;
-}
-
-export function webSearchEngine(path: string = defaultConfigPath()): WebSearchEngineName {
+export function webSearchEngine(
+  path: string = defaultConfigPath(),
+): WebSearchEngineName | undefined {
   const cfg = readConfig(path).webSearchEngine;
-  if (cfg && WEB_SEARCH_ENGINE_NAMES.includes(cfg)) return cfg;
-  // Any other value (including legacy "mojeek" from configs predating the
-  // engine swap) falls through to bing. Read-only — we never rewrite the
-  // user's config, so a later engine switch still rejects loudly.
-  return "bing";
+  // Widened on purpose: with no engine files the generated tuple has no members, and
+  // calling `includes`/index on an empty tuple narrows the argument to `never`.
+  const known: readonly string[] = WEB_SEARCH_ENGINE_NAMES;
+  if (cfg && known.includes(cfg)) return cfg as WebSearchEngineName;
+  // Any other value (including legacy "mojeek" from configs predating the engine
+  // swap) falls through. With no engine files there is no default: callers show their
+  // empty state rather than searching a phantom backend. Read-only, never rewritten.
+  return known[0] as WebSearchEngineName | undefined;
 }
 
 export function webSearchEndpoint(path: string = defaultConfigPath()): string {
-  const cfg = readConfig(path).webSearchEndpoint;
-  if (cfg && typeof cfg === "string") return cfg;
-  return "http://localhost:8080";
+  return loadSearchSetting("searxng", "endpoint", path) ?? "http://localhost:8080";
 }
 
 export function saveApiKey(key: string, path: string = defaultConfigPath()): void {
-  const cfg = readConfig(path);
   const trimmed = key.trim();
-  cfg.apiKey = trimmed || undefined;
-  writeConfig(cfg, path);
+  saveProviderSetting("deepseek", "apiKey", trimmed, path);
   // A stale process env (User-level Windows env, `.env`, shell rc) shadows config in
   // loadEndpoint's fallback branch — an explicit UI save must win for the current run.
   if (trimmed) process.env.DEEPSEEK_API_KEY = trimmed;
@@ -1832,10 +2027,8 @@ export function saveApiKey(key: string, path: string = defaultConfigPath()): voi
 }
 
 export function saveOpenAIApiKey(key: string, path: string = defaultConfigPath()): void {
-  const cfg = readConfig(path);
   const trimmed = key.trim();
-  cfg.openaiApiKey = trimmed || undefined;
-  writeConfig(cfg, path);
+  saveProviderSetting("openai", "apiKey", trimmed, path);
   // biome-ignore lint/performance/noDelete: undefined-assign leaks the string "undefined" into process.env
   if (!trimmed) delete process.env.OPENAI_API_KEY;
 }
@@ -1895,18 +2088,13 @@ export function saveMimoCredential(
   cred: { apiKey: string; baseUrl?: string },
   path: string = defaultConfigPath(),
 ): void {
-  const cfg = readConfig(path);
-  cfg.mimoApiKey = cred.apiKey;
-  if (cred.baseUrl) cfg.mimoBaseUrl = cred.baseUrl;
-  writeConfig(cfg, path);
+  saveProviderSetting("mimo", "apiKey", cred.apiKey, path);
+  if (cred.baseUrl) saveProviderSetting("mimo", "baseUrl", cred.baseUrl, path);
 }
 
 /** Sign-out drops the stored MiMo inference key (does not revoke it upstream). */
 export function clearMimoApiKey(path: string = defaultConfigPath()): void {
-  const cfg = readConfig(path);
-  if (!cfg.mimoApiKey) return;
-  const { mimoApiKey: _drop, ...rest } = cfg;
-  writeConfig(rest, path);
+  saveProviderSetting("mimo", "apiKey", null, path);
 }
 
 export function saveMailProvider(provider: MailProvider, path: string = defaultConfigPath()): void {
@@ -2984,7 +3172,8 @@ export function loadModel(path: string = defaultConfigPath()): string {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   if (!trimmed) return DEFAULT_MODEL;
   // Custom-endpoint owners pick their own model namespace; trust them.
-  const customEndpoint = cfg.baseUrl?.trim() || resolveBaseUrlEnv();
+  const customEndpoint =
+    providerSettingFromStore(cfg, "deepseek", "baseUrl") ?? resolveBaseUrlEnv();
   if (customEndpoint) return trimmed;
   return resolveModelAdmission(trimmed, path, cfg).accepted ? trimmed : DEFAULT_MODEL;
 }
@@ -2995,7 +3184,8 @@ export function saveModel(model: string, path: string = defaultConfigPath()): vo
   // On the official endpoints, refuse to persist a model the API won't accept.
   // Custom-endpoint owners set their own namespace — validation is on them.
   const cfg = readConfig(path);
-  const customEndpoint = cfg.baseUrl?.trim() || resolveBaseUrlEnv();
+  const customEndpoint =
+    providerSettingFromStore(cfg, "deepseek", "baseUrl") ?? resolveBaseUrlEnv();
   const admission = resolveModelAdmission(trimmed, path, cfg);
   if (!customEndpoint && !admission.accepted) {
     throw new Error(

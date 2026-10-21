@@ -23,8 +23,6 @@ const PROMPT_SILENT_TOOLS = [
   "generate_image",
   "get_file_info",
   "get_symbols",
-  "java_source",
-  "jev_evaluate",
   "list_rules",
   "move_file",
   "present_file",
@@ -54,7 +52,7 @@ describe("tool to prompt parity", () => {
 
   it("the silent allowlist stays a minority of the toolset", () => {
     expect(PROMPT_SILENT_TOOLS.length * 2).toBeLessThan(names.length);
-    expect(names.length).toBeGreaterThanOrEqual(53);
+    expect(names.length).toBeGreaterThanOrEqual(51);
   });
 
   it("names the core workflow tools explicitly", () => {

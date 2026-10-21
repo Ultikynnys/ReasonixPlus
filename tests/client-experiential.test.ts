@@ -1,6 +1,7 @@
 /** Experiential Labs gateway chat: it refuses unknown fields (400,
  *  unsupported_parameter), so never send extra_body or a reasoning_effort. */
 
+import { providerDeclared } from "@reasonix/core-utils";
 import { describe, expect, it, vi } from "vitest";
 import { DeepSeekClient } from "../src/client.js";
 
@@ -11,7 +12,7 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
-describe("Experiential Labs gateway chat", () => {
+describe.skipIf(!providerDeclared("experiential"))("Experiential Labs gateway chat", () => {
   it("never sends extra_body or a thinking toggle, and strips the qualifier", async () => {
     let url = "";
     let init: RequestInit | undefined;

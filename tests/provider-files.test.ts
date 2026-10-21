@@ -4,11 +4,24 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseProviderRegistry } from "../packages/core-utils/src/provider-registry.js";
 import { PROVIDER_IDS } from "../packages/core-utils/src/providers.generated.js";
-import { readProviderDocuments, renderRegistry } from "../scripts/generate-provider-registry.mjs";
+import { SEARCH_ENGINE_NAMES } from "../packages/core-utils/src/search-engines.generated.js";
+import { parseSearchRegistry } from "../packages/core-utils/src/search-registry.js";
+import {
+  readProviderDocuments,
+  readSearchEngineDocuments,
+  renderRegistry,
+  renderSearchRegistry,
+} from "../scripts/generate-provider-registry.mjs";
 
 const PROVIDERS_DIR = join(process.cwd(), "packages/core-utils/src/providers");
 const GENERATED_PATH = join(process.cwd(), "packages/core-utils/src/providers.generated.ts");
 const SYNC_HINT = "run `npm run providers:sync` to regenerate providers.generated.ts";
+const SEARCH_DIR = join(process.cwd(), "packages/core-utils/src/search-engines");
+const SEARCH_GENERATED_PATH = join(
+  process.cwd(),
+  "packages/core-utils/src/search-engines.generated.ts",
+);
+const SEARCH_SYNC_HINT = "run `npm run providers:sync` to regenerate search-engines.generated.ts";
 
 const normalize = (text: string): string => text.replace(/\r\n/g, "\n");
 
@@ -88,5 +101,87 @@ describe("adding and removing a provider", () => {
     expect(before).toContain('  "ollama",');
     rmSync(join(dir, "ollama.json"));
     expect(renderRegistry(dir)).not.toContain('  "ollama",');
+  });
+});
+
+describe("search-engines/ files", () => {
+  it("commits a barrel that matches search-engines/*.json", () => {
+    const committed = normalize(readFileSync(SEARCH_GENERATED_PATH, "utf8"));
+    expect(normalize(renderSearchRegistry(SEARCH_DIR)), SEARCH_SYNC_HINT).toBe(committed);
+  });
+
+  it("names every file after the engine id it declares", () => {
+    for (const { file, id, document } of readSearchEngineDocuments(SEARCH_DIR)) {
+      expect(file).toBe(`${id}.json`);
+      expect((document as { id?: string }).id).toBe(id);
+    }
+  });
+
+  it("derives the id union in picker order", () => {
+    const ids = readSearchEngineDocuments(SEARCH_DIR)
+      .map((entry) => ({
+        id: entry.id,
+        order: Number((entry.document as { order?: number }).order ?? 0),
+      }))
+      .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+      .map((entry) => entry.id);
+    expect([...SEARCH_ENGINE_NAMES]).toEqual(ids);
+  });
+
+  it("validates each file against the registry schema", () => {
+    for (const { file, document } of readSearchEngineDocuments(SEARCH_DIR)) {
+      const [spec] = parseSearchRegistry({ engines: [document] });
+      expect(spec?.id, file).toBe((document as { id?: string }).id);
+    }
+  });
+
+  it("reports the offending file when a document is not valid JSON", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "reasonix-search-bad-"));
+    try {
+      writeFileSync(join(scratch, "broken.json"), "{ not json");
+      expect(() => renderSearchRegistry(scratch)).toThrow(/search-engines\/broken\.json/);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("adding and removing a search engine", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "reasonix-search-"));
+    cpSync(SEARCH_DIR, dir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("changes the barrel from one JSON file alone", () => {
+    const before = renderSearchRegistry(dir);
+    expect(before).not.toContain("search-engines/acme-search.json");
+    writeFileSync(
+      join(dir, "acme-search.json"),
+      JSON.stringify({
+        id: "acme-search",
+        labelKey: "settings.webSearchEngineAcme",
+        order: 99,
+        kind: "keyless",
+        strategy: "bing-html",
+      }),
+    );
+    const added = renderSearchRegistry(dir);
+    expect(added).toContain('import acme_search from "./search-engines/acme-search.json";');
+    expect(added).toContain('  "acme-search",');
+    rmSync(join(dir, "acme-search.json"));
+    expect(renderSearchRegistry(dir)).toBe(before);
+  });
+
+  it("drops the id from the union when the file is deleted", () => {
+    const before = renderSearchRegistry(dir);
+    expect(before).toContain('  "tavily",');
+    rmSync(join(dir, "tavily.json"));
+    expect(renderSearchRegistry(dir)).not.toContain('  "tavily",');
   });
 });

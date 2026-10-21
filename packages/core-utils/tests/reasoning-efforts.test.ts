@@ -4,6 +4,7 @@ import {
   PROVIDER_REASONING_EFFORTS,
   REASONING_EFFORT_ORDER,
   clampReasoningEffort,
+  providerReasoningEfforts,
   reasoningEffortsFor,
 } from "../src/reasoning-efforts.js";
 
@@ -22,15 +23,15 @@ describe("PROVIDER_REASONING_EFFORTS", () => {
   });
 
   it("matches each endpoint's contract", () => {
-    expect(PROVIDER_REASONING_EFFORTS.deepseek).toEqual(["low", "high", "max"]);
-    expect(PROVIDER_REASONING_EFFORTS.zai).toEqual(["low", "high", "max"]);
-    expect(PROVIDER_REASONING_EFFORTS.opencode).toEqual(["low", "medium", "high"]);
-    expect(PROVIDER_REASONING_EFFORTS.openai).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(providerReasoningEfforts("deepseek")).toEqual(["low", "high", "max"]);
+    expect(providerReasoningEfforts("zai")).toEqual(["low", "high", "max"]);
+    expect(providerReasoningEfforts("opencode")).toEqual(["low", "medium", "high"]);
+    expect(providerReasoningEfforts("openai")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     // MiMo differentiates reasoning only on/off (its `thinking` toggle) → no ladder.
-    expect(PROVIDER_REASONING_EFFORTS.mimo).toEqual([]);
+    expect(providerReasoningEfforts("mimo")).toEqual([]);
 
     // The gateway 400s an unsupported reasoning_effort, so nothing is ever sent.
-    expect(PROVIDER_REASONING_EFFORTS.experiential).toEqual([]);
+    expect(providerReasoningEfforts("experiential")).toEqual([]);
   });
 });
 

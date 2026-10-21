@@ -24,6 +24,7 @@ import { I } from "../icons";
 import { isAudioVideoPath, isImagePath, resolveImagePath } from "../image-attach";
 import {
   MODEL_CATALOG_GROUP_LABELS,
+  HAS_DECLARED_PROVIDERS,
   type ProviderCatalogKey,
   type ProviderCatalogView,
   deriveModelCatalog,
@@ -1008,7 +1009,7 @@ export function Composer({
 /** Shared model picker column. Rendered once per selector (main agent and
  *  subagent) so both expose the exact same model options — KNOWN_MODELS, the
  *  signed-in Antigravity group, the Ollama catalog, and a custom-model input. */
-function ModelList({
+export function ModelList({
   activeModel,
   onPick,
   ollamaModels,
@@ -1147,8 +1148,13 @@ function ModelList({
 
   return (
     <div className="popup-list model-menu-list">
-      {enabledModels && enabledModels.length > 0 ? null : (
-        <div className="model-menu-error">{t("composer.modelNoneEnabled")}</div>
+      {HAS_DECLARED_PROVIDERS ? (
+        enabledModels && enabledModels.length > 0 ? null : (
+          <div className="model-menu-error">{t("composer.modelNoneEnabled")}</div>
+        )
+      ) : (
+        // Nothing is declared at all: say so instead of rendering an empty menu.
+        <div className="model-menu-error">{t("settings.modelListEmpty")}</div>
       )}
       {visibleGroups.map((group) => {
         if (group.models.length === 0 && !group.error) return null;

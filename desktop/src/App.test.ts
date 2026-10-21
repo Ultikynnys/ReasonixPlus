@@ -4587,21 +4587,17 @@ describe("Desktop App reducer — Ollama usage quota", () => {
 });
 
 describe("sanitizeSettingsPatch — secrets never enter the settings view state", () => {
-  it("drops every API-key field but keeps non-secret fields", () => {
+  it("drops the provider settings map and engine keys but keeps non-secret fields", () => {
+    // Map keys come from declarations, so this typechecks with none declared as
+    // well as with the shipped set — the sanitizer drops each map wholesale.
     const sanitized = sanitizeSettingsPatch({
-      typesafeApiKey: "ts-secret",
-      braveApiKey: "brave-secret",
-      zaiApiKey: "zai-secret",
-      opencodeApiKey: "opencode-secret",
-      ollamaApiKey: "ollama-secret",
+      providerSettings: {},
+      searchSettings: {},
       model: "deepseek-v4-flash",
       reasoningEffort: "high",
     });
-    expect(sanitized).not.toHaveProperty("typesafeApiKey");
-    expect(sanitized).not.toHaveProperty("braveApiKey");
-    expect(sanitized).not.toHaveProperty("zaiApiKey");
-    expect(sanitized).not.toHaveProperty("opencodeApiKey");
-    expect(sanitized).not.toHaveProperty("ollamaApiKey");
+    expect(sanitized).not.toHaveProperty("providerSettings");
+    expect(sanitized).not.toHaveProperty("searchSettings");
     expect(sanitized.model).toBe("deepseek-v4-flash");
     expect(sanitized.reasoningEffort).toBe("high");
   });

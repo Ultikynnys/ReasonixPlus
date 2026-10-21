@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { LruCache } from "../cache";
-import { en } from "./en";
+import en from "./en.json";
 
 /** The project is English-only. The language never changes. */
 export type Lang = "en";

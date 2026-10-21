@@ -1,8 +1,12 @@
 import type { ReasoningEffort } from "./permission-types.js";
-import { PROVIDER_IDS, PROVIDER_REASONING_EFFORTS } from "./provider-registry.js";
+import {
+  PROVIDER_IDS,
+  PROVIDER_REASONING_EFFORTS,
+  providerReasoningEfforts,
+} from "./provider-registry.js";
 
 /** Provider ids and their effort ladders come from providers.json via the registry. */
-export { PROVIDER_IDS, PROVIDER_REASONING_EFFORTS };
+export { PROVIDER_IDS, PROVIDER_REASONING_EFFORTS, providerReasoningEfforts };
 export type { ProviderID } from "./provider-registry.js";
 
 /** Canonical low→max ordering. Used for nearest-value clamping so a persisted
@@ -27,10 +31,10 @@ const EFFORT_SET: ReadonlySet<string> = new Set(REASONING_EFFORT_ORDER);
  *  - non-empty → exactly those values (filtered to levels we can express).
  */
 export function reasoningEffortsFor(
-  provider: import("./provider-registry.js").ProviderID,
+  provider: string,
   modelEfforts?: readonly string[] | null,
 ): readonly ReasoningEffort[] {
-  if (modelEfforts == null) return PROVIDER_REASONING_EFFORTS[provider];
+  if (modelEfforts == null) return providerReasoningEfforts(provider);
   return modelEfforts.filter((v): v is ReasoningEffort => EFFORT_SET.has(v));
 }
 

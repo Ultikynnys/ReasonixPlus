@@ -32,7 +32,7 @@
       "kind": "secret",
       "env": ["EXPERIENTIAL_API_KEY", "EXPLABS_API_KEY"],
       "configKey": "experientialApiKey",
-      "labelKey": "settings.webSearchApiKey.experiential",
+      "label": "Experiential Labs API key",
       "signupUrl": "https://platform.experientiallabs.ai/settings/keys"
     },
     {
@@ -40,8 +40,8 @@
       "kind": "url",
       "env": ["EXPERIENTIAL_BASE_URL"],
       "configKey": "experientialBaseUrl",
-      "labelKey": "settings.experientialBaseUrl",
-      "hintKey": "settings.experientialBaseUrlHint"
+      "label": "Experiential Labs base URL",
+      "hint": "OpenAI-compatible endpoint override for all gateway models. Defaults to https://api.experientiallabs.ai/v1."
     }
   ],
   "credentials": {
@@ -54,6 +54,13 @@
     "listField": "data",
     "idField": "id",
     "excludeSpeech": false
+  },
+  "billing": { "kind": "usd" },
+  "errors": {
+    "i18nPrefix": "experiential",
+    "brands": ["Experiential"],
+    "hosts": ["experientiallabs.ai"],
+    "serverReport": "standard"
   },
   "client": {
     "auth": "api-key",

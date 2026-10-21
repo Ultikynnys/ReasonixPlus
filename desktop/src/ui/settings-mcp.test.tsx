@@ -384,6 +384,13 @@ describe("PageMCP — playwright connection status", () => {
     expect(screen.queryByText(/built-in/)).toBeNull();
   });
 
+  it("puts Remove left of the Enable/Disable toggle", () => {
+    renderCard([spec()]);
+    const remove = screen.getByRole("button", { name: "Remove" });
+    const enable = screen.getByRole("button", { name: "Enable" });
+    expect(remove.compareDocumentPosition(enable)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it("shows live connection state with the tool count when bridged", () => {
     renderCard([spec()]);
     expect(screen.getByText(/server connected · 24 tools live/)).toBeTruthy();

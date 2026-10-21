@@ -1,0 +1,19 @@
+{
+  "id": "brave",
+  "label": "Brave Search",
+  "description": "Independent index, 2000 searches/month free.",
+  "order": 8,
+  "kind": "api-key",
+  "strategy": "brave",
+  "fallback": false,
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+      "configKey": "braveApiKey",
+      "label": "Brave API key",
+      "signupUrl": "https://brave.com/search/api/"
+    }
+  ]
+}

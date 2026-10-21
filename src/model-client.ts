@@ -1,7 +1,7 @@
 import {
   type ProviderAuthStrategy,
   type ProviderTransportStrategy,
-  specForProvider,
+  providerSpec,
   stripProviderQualifier,
 } from "@reasonix/core-utils";
 import { resolveGeminiAuth } from "./antigravity-oauth.js";
@@ -101,7 +101,7 @@ const TRANSPORT_RESOLVERS: Readonly<
 /** Build endpoint-aware client options shared by primary and subagent runtimes. */
 export function modelClientOptions(opts: ResolvedModelClientOptions): DeepSeekClientOptions {
   const provider = providerForModel(opts.model, opts.configPath);
-  const spec = specForProvider(provider);
+  const spec = providerSpec(provider);
   const endpoint = loadEndpointForModel(opts.model, opts.configPath);
   const ctx: TransportContext = {
     configPath: opts.configPath,
@@ -114,18 +114,18 @@ export function modelClientOptions(opts: ResolvedModelClientOptions): DeepSeekCl
     apiKey: endpoint.apiKey,
     baseUrl: endpoint.baseUrl,
     sessionId: opts.sessionId,
-    allowMissingKey: spec.client.allowMissingKey,
-    apiKeyResolver: AUTH_RESOLVERS[spec.client.auth](ctx),
+    allowMissingKey: spec?.client.allowMissingKey ?? true,
+    apiKeyResolver: spec ? AUTH_RESOLVERS[spec.client.auth](ctx) : undefined,
     // Only a Console session needs its organization id on the request.
     opencodeOrgResolver:
-      spec.client.auth === "opencode"
+      spec?.client.auth === "opencode"
         ? () => readConfig(opts.configPath).opencodeOAuth?.orgId
         : undefined,
-    transportResolver: spec.client.transport
+    transportResolver: spec?.client.transport
       ? TRANSPORT_RESOLVERS[spec.client.transport](ctx)
       : undefined,
     geminiAuthResolver:
-      spec.client.auth === "gemini-oauth" ? () => resolveGeminiAuth(opts.configPath) : undefined,
+      spec?.client.auth === "gemini-oauth" ? () => resolveGeminiAuth(opts.configPath) : undefined,
   };
 }
 

@@ -1,0 +1,19 @@
+{
+  "id": "exa",
+  "label": "Exa",
+  "description": "AI-native search, 1000 searches/month free.",
+  "order": 7,
+  "kind": "api-key",
+  "strategy": "exa",
+  "fallback": false,
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["EXA_API_KEY"],
+      "configKey": "exaApiKey",
+      "label": "Exa API key",
+      "signupUrl": "https://dashboard.exa.ai/api-keys"
+    }
+  ]
+}

@@ -7,6 +7,7 @@ import type { ApprovalPrompt } from "./approval-prompt.js";
 import type { ChangelogRelease } from "./changelog.js";
 import type { ChoiceOption, PlanStep, ReasoningEffort } from "./permission-types.js";
 import type { ProviderID } from "./provider-registry.js";
+import type { SearchEngineID } from "./search-engines.generated.js";
 
 /** Trust dial: 3 settings, not 4.
  *  - `read-only`  : no writes, no shell (registry plan-mode blocks mutating tools).
@@ -100,23 +101,12 @@ export function resolveActiveQuickSend(
   };
 }
 
-/** Every supported web-search backend. `WebSearchEngineName` derives from this,
- *  so the runtime validation list and the union type can never drift. */
-export const WEB_SEARCH_ENGINE_NAMES = [
-  "bing",
-  "bing-intl",
-  "searxng",
-  "metaso",
-  "baidu",
-  "tavily",
-  "perplexity",
-  "exa",
-  "brave",
-  "ollama",
-  "zai",
-] as const;
+/** Every supported web-search backend, generated from search-engines/*.json, so the
+ *  runtime list and the union type can never drift. Re-exported under the protocol's
+ *  historical name. */
+export { SEARCH_ENGINE_NAMES as WEB_SEARCH_ENGINE_NAMES } from "./search-engines.generated.js";
 
-export type WebSearchEngineName = (typeof WEB_SEARCH_ENGINE_NAMES)[number];
+export type WebSearchEngineName = SearchEngineID;
 
 export interface OllamaGenerationSettings {
   temperature?: number;
@@ -980,7 +970,7 @@ export interface SessionLoadedEvent {
     totalCostUsd: number;
     /** Per-provider cumulative costs in each provider's native unit (USD for
      *  token-priced APIs, plan-window % for quota APIs). Never converted between
-     *  providers. Keyed by provider id ("deepseek" | "openai" | "ollama" | "gemini"). */
+     *  providers. Keyed by catalog id. */
     costByProvider?: Record<string, SessionProviderCost>;
     cacheHitTokens: number;
     cacheMissTokens: number;
@@ -1118,7 +1108,7 @@ export interface SettingsEvent {
   model: string;
   providerCatalogs?: Partial<
     Record<
-      "deepseek" | "openai" | "zai" | "typesafe" | "experiential",
+      ProviderID,
       {
         models: string[];
         source: "live" | "cache" | "fallback";
@@ -1134,33 +1124,16 @@ export interface SettingsEvent {
    *  Settings → Backup models. When the active provider reports an exhausted
    *  quota the chat falls over to the first usable entry and continues. */
   fallbackModels?: string[];
-  /** Ollama chat endpoint (OpenAI-compatible) — shown in the Models settings page. */
-  ollamaBaseUrl?: string;
+  /** Persisted settings for every provider, keyed by the catalog id and then by the
+   *  setting keys that provider declares in packages/core-utils/src/providers/*.json.
+   *  A secret value is a masked preview, never the stored key. */
+  providerSettings?: ProviderSettingsMap;
   webSearchEngine?: WebSearchEngineName;
-  webSearchEndpoint?: string;
-  webSearchApiKeys?: {
-    metaso?: string;
-    baidu?: string;
-    tavily?: string;
-    perplexity?: string;
-    exa?: string;
-    ollama?: string;
-    brave?: string;
-    zai?: string;
-    opencode?: string;
-    typesafe?: string;
-    experiential?: string;
-    mimo?: string;
-    openai?: string;
-    synthetic?: string;
-  };
-  opencodeBaseUrl?: string;
-  /** Xiaomi MiMo OpenAI-compatible endpoint override. */
-  mimoBaseUrl?: string;
-  /** Experiential Labs OpenAI-compatible endpoint override. */
-  experientialBaseUrl?: string;
-  /** Synthetic OpenAI-compatible endpoint override. */
-  syntheticBaseUrl?: string;
+  /** Every declared engine setting, keyed by engine id and then by the keys that engine
+   *  declares in packages/core-utils/src/search-engines/*.json. A secret value is a
+   *  masked preview, and an engine that reuses a model provider's key is absent here
+   *  because the Models tab owns that field. */
+  searchSettings?: SearchSettingsMap;
   /** Per-tab subagent model — the default model used when a subagent skill has no explicit `model:` frontmatter override. Absent = deepseek-v4-flash. */
   subagentModel?: string;
   /** Per-field visibility toggles for the bottom status row. Absent = all default to true. */
@@ -1549,6 +1522,14 @@ export interface ChangelogEvent {
 
 // ---- commands ----
 
+/** Per-provider persisted settings: catalog id → the setting keys that provider
+ *  declares. Adding a provider or a field never changes this type. */
+export type ProviderSettingsMap = Record<string, Record<string, string>>;
+
+/** Per-engine persisted settings: engine id → the keys that engine declares for itself.
+ *  Engines sharing a model provider's key are absent, so their value is never duplicated. */
+export type SearchSettingsMap = Record<string, Record<string, string>>;
+
 export interface SettingsPatch {
   reasoningEffort?: ReasoningEffort;
   editMode?: EditMode;
@@ -1585,29 +1566,16 @@ export interface SettingsPatch {
   fallbackModels?: string[];
   /** Per-tab subagent model — default for subagent skills without an explicit `model:` frontmatter. */
   subagentModel?: string;
-  /** Ollama chat endpoint override (OpenAI-compatible). null = back to the local default. */
-  ollamaBaseUrl?: string | null;
+  /** Persisted provider settings to write, keyed like
+   *  `SettingsPayload.providerSettings`. Only keys a provider declares are applied;
+   *  an empty value clears the setting. */
+  providerSettings?: ProviderSettingsMap;
   /** Native Ollama generation options. Null fields clear their persisted override. */
   ollamaGeneration?: OllamaGenerationPatch;
   webSearchEngine?: WebSearchEngineName;
-  webSearchEndpoint?: string | null;
-  metasoApiKey?: string | null;
-  baiduApiKey?: string | null;
-  tavilyApiKey?: string | null;
-  perplexityApiKey?: string | null;
-  exaApiKey?: string | null;
-  ollamaApiKey?: string | null;
-  braveApiKey?: string | null;
-  zaiApiKey?: string | null;
-  opencodeApiKey?: string | null;
-  typesafeApiKey?: string | null;
-  opencodeBaseUrl?: string | null;
-  mimoApiKey?: string | null;
-  mimoBaseUrl?: string | null;
-  experientialApiKey?: string | null;
-  experientialBaseUrl?: string | null;
-  syntheticApiKey?: string | null;
-  syntheticBaseUrl?: string | null;
+  /** Persisted engine settings to write, keyed like `SettingsPayload.searchSettings`.
+   *  Only keys an engine declares are applied; an empty value clears the setting. */
+  searchSettings?: SearchSettingsMap;
 }
 
 /** An image to attach to a user message. Clipboard paste flows ship the
@@ -1712,7 +1680,7 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "opencode_models_refresh"; force?: boolean }
   | {
       cmd: "provider_models_refresh";
-      provider?: "deepseek" | "openai" | "zai" | "typesafe" | "experiential";
+      provider?: ProviderID;
       force?: boolean;
     }
   | { cmd: "settings_get" }

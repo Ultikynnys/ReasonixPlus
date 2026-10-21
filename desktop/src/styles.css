@@ -7652,7 +7652,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .provider-head:hover {
   background: var(--panel);
 }
-/* MCP server cards: Enable/Disable + Remove live in the header row, right of
+/* MCP server cards: Remove + Enable/Disable live in the header row, right of
  * the title. The title area stays its own button so clicking it toggles the
  * card without touching the row actions. */
 .provider-head-toggle {
@@ -7683,6 +7683,25 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .provider-head-actions .seg-ctrl button {
   padding: 3px 8px;
 }
+/* Header marker for the card that is already the selected one (search engines). */
+.card-active-pill {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.card-hint,
+.section-hint {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.card-hint {
+  margin-bottom: 4px;
+}
+.section-hint {
+  margin-bottom: 10px;
+}
+
 .seg-ctrl .mcp-remove {
   color: var(--danger);
 }
@@ -10639,6 +10658,20 @@ html[data-platform="macos"] .splash {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* Voice input card: model picker (left column) beside the mic picker (right). */
+.voice-model-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.voice-col-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg);
 }
 
 .voice-section-hint {

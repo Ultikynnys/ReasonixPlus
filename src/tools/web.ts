@@ -2,7 +2,15 @@
 
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { type WebSearchEngineName, flattenText } from "@reasonix/core-utils";
+import {
+  SEARCH_ENGINE_SPECS,
+  SEARCH_FALLBACK_ENGINES,
+  type SearchEngineStrategy,
+  WEB_SEARCH_ENGINE_NAMES,
+  type WebSearchEngineName,
+  flattenText,
+  searchEngineSpec,
+} from "@reasonix/core-utils";
 import { parse as parseHtml } from "node-html-parser";
 import {
   loadBaiduApiKey,
@@ -323,34 +331,35 @@ function redirectLocation(resp: Response, currentUrl: string): string | null {
 /** Engines that need neither an API key nor a local server — the last-resort
  *  fallbacks when the configured engine's backend is unreachable. Order matters:
  *  the international index first, then the CN-friendly default. */
-const KEYLESS_FALLBACK_ENGINES: readonly WebSearchEngineName[] = ["bing-intl", "bing"];
+const KEYLESS_FALLBACK_ENGINES: readonly WebSearchEngineName[] =
+  SEARCH_FALLBACK_ENGINES as readonly WebSearchEngineName[];
 
-/** Route to the engine named in `opts` (default bing). Throws on backend failure. */
+/** Transport per declared strategy, so a new engine needs no dispatch branch here. */
+const SEARCH_TRANSPORTS: Readonly<
+  Record<SearchEngineStrategy, (query: string, opts: WebSearchOptions) => Promise<SearchResult[]>>
+> = {
+  "bing-html": (query, opts) => searchBing(query, opts),
+  "bing-intl": (query, opts) => searchBing(query, opts, BING_INTL_ENDPOINT),
+  searxng: searchSearxng,
+  metaso: searchMetaso,
+  baidu: searchBaidu,
+  tavily: searchTavily,
+  perplexity: searchPerplexity,
+  exa: searchExa,
+  brave: searchBrave,
+  ollama: searchOllama,
+  zai: searchZai,
+};
+
+/** Shown when no engine file exists, so the failure names its own fix. */
+const NO_ENGINE_MESSAGE = "no web-search engine is declared — add a search-engines/<id>.json file";
+
+/** Route to the engine named in `opts`, else the first declared engine. The configured
+ *  engine is resolved by the caller, so this never reads config. Throws on backend failure. */
 async function dispatchSearch(query: string, opts: WebSearchOptions): Promise<SearchResult[]> {
-  switch (opts.engine) {
-    case "metaso":
-      return searchMetaso(query, opts);
-    case "baidu":
-      return searchBaidu(query, opts);
-    case "searxng":
-      return searchSearxng(query, opts);
-    case "tavily":
-      return searchTavily(query, opts);
-    case "perplexity":
-      return searchPerplexity(query, opts);
-    case "exa":
-      return searchExa(query, opts);
-    case "ollama":
-      return searchOllama(query, opts);
-    case "brave":
-      return searchBrave(query, opts);
-    case "zai":
-      return searchZai(query, opts);
-    case "bing-intl":
-      return searchBing(query, opts, BING_INTL_ENDPOINT);
-    default:
-      return searchBing(query, opts);
-  }
+  const spec = (opts.engine ? searchEngineSpec(opts.engine) : undefined) ?? SEARCH_ENGINE_SPECS[0];
+  if (!spec) throw new Error(NO_ENGINE_MESSAGE);
+  return SEARCH_TRANSPORTS[spec.strategy](query, opts);
 }
 
 /** Distinguishes "truly 0 results" from "layout changed / blocked" so callers can tell.
@@ -360,7 +369,8 @@ export async function webSearch(
   query: string,
   opts: WebSearchOptions = {},
 ): Promise<SearchResult[]> {
-  const primary = opts.engine ?? "bing";
+  const primary = opts.engine ?? WEB_SEARCH_ENGINE_NAMES.at(0);
+  if (!primary) throw new Error(NO_ENGINE_MESSAGE);
   try {
     return await dispatchSearch(query, { ...opts, engine: primary });
   } catch (primaryError) {

@@ -704,48 +704,15 @@ type Action =
   | { t: "push_notice"; text: string; severity?: NoticeSeverity };
 
 export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
+  // Engine and provider settings carry secrets: they stay out of the optimistic
+  // merge and echo back from the daemon masked instead.
   const {
-    metasoApiKey: _metaso,
-    baiduApiKey: _baidu,
-    tavilyApiKey: _tavily,
-    perplexityApiKey: _perplexity,
-    exaApiKey: _exa,
-    braveApiKey: _brave,
-    ollamaApiKey: _ollama,
-    zaiApiKey: _zai,
-    opencodeApiKey: _opencode,
-    typesafeApiKey: _typesafe,
-    mimoApiKey: _mimo,
-    experientialApiKey: _experientialApiKey,
-    ollamaBaseUrl: _ollamaBaseUrl,
     ollamaGeneration: _ollamaGeneration,
-    webSearchEndpoint,
-    opencodeBaseUrl,
-    mimoBaseUrl,
-    experientialBaseUrl,
-    syntheticBaseUrl,
+    providerSettings: _providerSettings,
+    searchSettings: _searchSettings,
     ...rest
   } = patch;
-  const sanitized: Partial<Settings> = { ...rest };
-  if (webSearchEndpoint !== undefined) {
-    sanitized.webSearchEndpoint = webSearchEndpoint ?? undefined;
-  }
-  if (_ollamaBaseUrl !== undefined) {
-    sanitized.ollamaBaseUrl = _ollamaBaseUrl ?? undefined;
-  }
-  if (opencodeBaseUrl !== undefined) {
-    sanitized.opencodeBaseUrl = opencodeBaseUrl ?? undefined;
-  }
-  if (mimoBaseUrl !== undefined) {
-    sanitized.mimoBaseUrl = mimoBaseUrl ?? undefined;
-  }
-  if (experientialBaseUrl !== undefined) {
-    sanitized.experientialBaseUrl = experientialBaseUrl ?? undefined;
-  }
-  if (syntheticBaseUrl !== undefined) {
-    sanitized.syntheticBaseUrl = syntheticBaseUrl ?? undefined;
-  }
-  return sanitized;
+  return { ...rest };
 }
 
 function nextMessageTurn(messages: ChatMessage[]): number {
@@ -2742,12 +2709,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           enabledModels: ev.enabledModels,
           fallbackModels: ev.fallbackModels,
           webSearchEngine: ev.webSearchEngine,
-          webSearchEndpoint: ev.webSearchEndpoint,
-          webSearchApiKeys: ev.webSearchApiKeys,
-          opencodeBaseUrl: ev.opencodeBaseUrl,
-          mimoBaseUrl: ev.mimoBaseUrl,
-          experientialBaseUrl: ev.experientialBaseUrl,
-          syntheticBaseUrl: ev.syntheticBaseUrl,
+          searchSettings: ev.searchSettings,
+          providerSettings: ev.providerSettings,
           subagentModel: ev.subagentModel,
           ollamaGeneration: ev.ollamaGeneration,
           ollamaGenerationOverrides: ev.ollamaGenerationOverrides,
@@ -3856,10 +3819,6 @@ const TabRuntime = memo(function TabRuntime({
       onRefreshOllamaModels();
     }
   }, [activeModel, onRefreshOllamaModels]);
-  const saveApiKey = useCallback(
-    (key: string) => sendRpc({ cmd: "setup_save_key", key }),
-    [sendRpc],
-  );
   const addMcpSpec = useCallback(
     (spec: string) => sendRpc({ cmd: "mcp_specs_add", spec }),
     [sendRpc],
@@ -5568,8 +5527,6 @@ const TabRuntime = memo(function TabRuntime({
             mcpBridged={state.mcpBridged}
             onClose={() => setSettingsOpen(false)}
             onSave={saveSettings}
-            onSaveApiKey={saveApiKey}
-            ollamaBaseUrl={state.settings?.ollamaBaseUrl}
             ollamaModels={ollamaModels}
             ollamaModelsError={ollamaModelsError ?? undefined}
             ollamaPlan={ollamaPlan ?? undefined}
@@ -5589,7 +5546,6 @@ const TabRuntime = memo(function TabRuntime({
               sendRpc({ cmd: "oauth_cancel" });
             }}
             onOAuthSignOut={() => sendRpc({ cmd: "oauth_signout" })}
-            onSaveOpenAIApiKey={(key) => sendRpc({ cmd: "setup_save_openai_key", key })}
             antigravityOAuthWaiting={state.antigravityOAuthWaiting}
             onAntigravityOAuthBegin={() => sendRpc({ cmd: "gemini_oauth_begin" })}
             onAntigravityOAuthCancel={() => {

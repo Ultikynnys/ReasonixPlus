@@ -9,6 +9,7 @@ import {
   modelDisplayName,
   ollamaUsageView,
   opencodeUsageView,
+  providerSpec,
   quotaWindowsSummary,
   zaiUsageView,
 } from "@reasonix/core-utils";
@@ -212,31 +213,33 @@ export function StatusBar({
   // ids can carry any shape). Absent endpoint info (pre-protocol daemons)
   // falls back to the resolver's DeepSeek default family.
   const ep = settings?.modelEndpoint;
-  const provider = ep?.provider ?? "deepseek";
-  const openaiTab = provider === "openai";
+  // Chip selection reads the provider's declaration, never its id: every chip
+  // encodes something the declaration already states.
+  const spec = ep?.provider ? providerSpec(ep.provider) : undefined;
+  const auth = spec?.client.auth ?? null;
+  const openaiTab = auth === "openai-oauth";
+  const geminiTab = auth === "gemini-oauth";
+  const ollamaTab = spec?.wire.format === "ollama-native";
+  const zaiTab = spec?.wire.thinking === "zai-top-level";
+  const mimoTab = spec?.wire.thinking === "mimo-top-level";
+  const opencodeTab = auth === "opencode";
+  const deepseekTab = spec?.errors.serverReport === "balance-probe";
+  const experientialTab = spec?.routing.checkedLast === true;
   const openaiTokenBilling = openaiTab && ep?.billingKind === "usd";
   const openaiQuotaBilling = openaiTab && !openaiTokenBilling;
-  const ollamaTokenBilling = provider === "ollama" && ep?.billingKind === "usd";
-  const ollamaQuotaBilling = provider === "ollama" && !ollamaTokenBilling;
-  // Z.AI GLM Coding Plan tabs bill plan-window % (fetched from the monitor
-  // endpoint), never dollars — the chip replaces the DeepSeek balance.
-  const zaiQuotaBilling = provider === "zai";
-  // Only Go-subscription OpenCode models bill plan-window % (fetched from the
-  // Go usage endpoint); free/anon Zen has no usage API, so it gets a tier chip.
-  const opencodeQuotaBilling = provider === "opencode" && ep?.opencodePlan === "go";
-  const opencodeFreeBilling = provider === "opencode" && ep?.opencodePlan === "free";
-  const mimoQuotaBilling = provider === "mimo";
-  const sessionQuotaProvider = openaiQuotaBilling
-    ? "openai"
-    : provider === "gemini"
-      ? provider
-      : ollamaQuotaBilling
-        ? "ollama"
-        : zaiQuotaBilling
-          ? "zai"
-          : opencodeQuotaBilling
-            ? "opencode"
-            : null;
+  const ollamaTokenBilling = ollamaTab && ep?.billingKind === "usd";
+  const ollamaQuotaBilling = ollamaTab && !ollamaTokenBilling;
+  // A plan-window provider bills percentages, never dollars.
+  const zaiQuotaBilling = zaiTab;
+  // Only a Go-subscription tab bills plan-window %; the free tier exposes no
+  // usage endpoint, so it gets a tier chip instead.
+  const opencodeQuotaBilling = opencodeTab && ep?.opencodePlan === "go";
+  const opencodeFreeBilling = opencodeTab && ep?.opencodePlan === "free";
+  const mimoQuotaBilling = mimoTab;
+  const sessionQuotaProvider =
+    openaiQuotaBilling || geminiTab || ollamaQuotaBilling || zaiQuotaBilling || opencodeQuotaBilling
+      ? (ep?.provider ?? null)
+      : null;
   const sessionQuotaCost =
     sessionQuotaProvider !== null ? usage.costByProvider?.[sessionQuotaProvider] : undefined;
   const sessionQuotaPct = sessionQuotaCost?.quotaUsedPct ?? null;
@@ -250,7 +253,7 @@ export function StatusBar({
     "api.deepseek.com";
   // Per-tab provider state: DeepSeek tabs show the DeepSeek endpoint, gpt-*
   // tabs show the OpenAI endpoint and its auth source (OAuth > static key > none).
-  const openaiAuth = ep?.provider === "openai" ? (ep.openaiAuth ?? "none") : null;
+  const openaiAuth = openaiTab ? (ep?.openaiAuth ?? "none") : null;
   const oauthFlowError = openaiAuth !== null ? settings?.openaiOAuth?.flowError : undefined;
   const authFailed = openaiAuth !== null && !!oauthFlowError;
   const authLabel =
@@ -271,12 +274,12 @@ export function StatusBar({
         ? t("statusbar.apiOpenaiKey", { baseUrl: ep?.baseUrl ?? "" })
         : openaiAuth === "none"
           ? t("statusbar.apiOpenaiNone", { baseUrl: ep?.baseUrl ?? "" })
-          : ep?.provider === "ollama"
-            ? t("statusbar.apiOllama", { baseUrl: ep.baseUrl })
-            : ep?.provider === "opencode"
-              ? `OpenCode · ${ep.baseUrl}`
-              : ep?.provider === "experiential"
-                ? `Experiential · ${ep.baseUrl}`
+          : ollamaTab
+            ? t("statusbar.apiOllama", { baseUrl: ep?.baseUrl ?? "" })
+            : opencodeTab
+              ? `OpenCode · ${ep?.baseUrl ?? ""}`
+              : experientialTab
+                ? `Experiential · ${ep?.baseUrl ?? ""}`
                 : `API · ${settings?.baseUrl ?? "api.deepseek.com"}`;
   if (authFailed) apiTitle += `\n${t("statusbar.oauthFailed", { message: oauthFlowError })}`;
   const dotDanger = connState === "off" || authFailed;
@@ -316,15 +319,12 @@ export function StatusBar({
         ? t("statusbar.ollamaNoDataUnavailable")
         : t("statusbar.ollamaNoData");
   // Antigravity (Gemini Code Assist): plan + the active model's used fraction.
-  const geminiTab = provider === "gemini";
-  const deepseekTab = ep ? ep.provider === "deepseek" : provider === "deepseek";
-  const zaiTab = ep?.provider === "zai";
   // Rate-period visibility follows daemon-resolved provider/deployment metadata.
   // Model matching only selects a price row after Ollama has already been resolved.
   const ollamaPeakPricing =
-    ep?.provider === "ollama" &&
-    ep.deployment === "cloud" &&
-    ep.billingKind === "usd" &&
+    ollamaTab &&
+    ep?.deployment === "cloud" &&
+    ep?.billingKind === "usd" &&
     isOllamaPeakPricedModel(settings?.model ?? "");
   const rateSchedule = ollamaPeakPricing
     ? OLLAMA_RATE_SCHEDULE

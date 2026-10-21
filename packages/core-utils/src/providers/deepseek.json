@@ -45,7 +45,7 @@
       "kind": "secret",
       "env": ["DEEPSEEK_API_KEY"],
       "configKey": "apiKey",
-      "labelKey": "settings.apiKey",
+      "label": "DeepSeek API key",
       "signupUrl": "https://platform.deepseek.com/api_keys"
     },
     {
@@ -53,8 +53,8 @@
       "kind": "url",
       "env": ["DEEPSEEK_BASE_URL", "DEEPSEEK_API_BASE_URL"],
       "configKey": "baseUrl",
-      "labelKey": "settings.baseUrl",
-      "hintKey": "settings.baseUrlHint",
+      "label": "DeepSeek base URL",
+      "hint": "Override only if using a proxy. Empty = official endpoint. Restart required.",
       "placeholder": "https://api.deepseek.com"
     }
   ],
@@ -68,6 +68,31 @@
     "listField": "data",
     "idField": "id",
     "excludeSpeech": false
+  },
+  "wire": { "stampMessageIds": true, "thinking": "extra-body" },
+  "billing": {
+    "kind": "usd",
+    "schedule": {
+      "peakWindowsUtc": [
+        { "startMinute": 60, "endMinute": 240 },
+        { "startMinute": 360, "endMinute": 600 }
+      ],
+      "weekendOffsetMinutes": 480
+    },
+    "pricing": {
+      "deepseek-flash": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 },
+      "deepseek-v4-flash": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 },
+      "deepseek-v4-flash-vision-exp": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 },
+      "deepseek-v4-pro": { "inputCacheHit": 0.022, "inputCacheMiss": 0.66, "output": 1.98 },
+      "deepseek-chat": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 },
+      "deepseek-reasoner": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 }
+    }
+  },
+  "errors": {
+    "i18nPrefix": "deepseek",
+    "brands": ["DeepSeek"],
+    "hosts": ["deepseek.com"],
+    "serverReport": "balance-probe"
   },
   "client": {
     "auth": "api-key",

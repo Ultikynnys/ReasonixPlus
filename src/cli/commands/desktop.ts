@@ -179,6 +179,8 @@ import {
   loadResolvedModelEndpoint,
   loadResolvedSkillPaths,
   loadRules,
+  loadSearchApiKeys,
+  loadSearchSetting,
   loadSubagentModels,
   loadTavilyApiKey,
   loadWorkspaceDir,
@@ -188,6 +190,7 @@ import {
   modelUsableFor,
   pickFallbackModel,
   providerForModel,
+  providerSettingFromStore,
   pushRecentWorkspace,
   readConfig,
   webSearchEngine as readWebSearchEngine,
@@ -226,7 +229,10 @@ import {
   saveReasoningEffort,
   saveRepetitionGuardEnabled,
   saveWorkspaceDir,
+  searchSettingFromConfig,
   setMcpServerDisabled,
+  setProviderSetting,
+  setSearchSetting,
   supportedReasoningEfforts,
   updateRule,
   writeConfig,
@@ -271,11 +277,22 @@ import {
 } from "../../mcp/extension.js";
 import { ensureNpxAvailable } from "../../mcp/node-runtime.js";
 import { quoteArg } from "../../mcp/stdio.js";
-import { validateTypesafeApiKeyCached } from "../../tools/jev.js";
 import { BUILTIN_ALLOWLIST } from "../../tools/shell/parse.js";
 import { coveredRuleScopes } from "../../tools/shell/rule-scope.js";
 
-import { PROVIDER_SPECS, providerDefaultEndpoint } from "@reasonix/core-utils";
+import {
+  PROVIDER_SPECS,
+  type ProviderSettingsMap,
+  SEARCH_ENGINE_SPECS,
+  type SearchSettingsMap,
+  parseProviderSettingsPatch,
+  parseSearchSettingsPatch,
+  providerDefaultEndpoint,
+  providerSpec,
+  searchEngineSpec,
+  searchSettingSpec,
+  searchSharedCredential,
+} from "@reasonix/core-utils";
 import {
   ANTIGRAVITY_OAUTH_CLIENT_ID,
   antigravityAccount,
@@ -1588,37 +1605,48 @@ function maskApiKey(key: string | undefined): string | undefined {
   return `${key.slice(0, 6)}…${key.slice(-3)}`;
 }
 
-function collectWebSearchApiKeyPrefixes(): {
-  metaso?: string;
-  tavily?: string;
-  perplexity?: string;
-  exa?: string;
-  ollama?: string;
-  brave?: string;
-  zai?: string;
-  opencode?: string;
-  typesafe?: string;
-  mimo?: string;
-  experiential?: string;
-  openai?: string;
-  synthetic?: string;
-} {
-  const providerKeys = loadProviderApiKeys();
-  return {
-    metaso: maskApiKey(loadMetasoApiKey()),
-    tavily: maskApiKey(loadTavilyApiKey()),
-    perplexity: maskApiKey(loadPerplexityApiKey()),
-    exa: maskApiKey(loadExaApiKey()),
-    ollama: maskApiKey(providerKeys.ollama),
-    brave: maskApiKey(loadBraveApiKey()),
-    zai: maskApiKey(providerKeys.zai),
-    opencode: maskApiKey(providerKeys.opencode),
-    typesafe: maskApiKey(providerKeys.typesafe),
-    mimo: maskApiKey(providerKeys.mimo),
-    experiential: maskApiKey(providerKeys.experiential),
-    openai: maskApiKey(providerKeys.openai),
-    synthetic: maskApiKey(providerKeys.synthetic),
-  };
+/** Every declared engine setting: url values as stored, secret values as a masked
+ *  preview. An engine that reuses a model provider's key is skipped, because the Models
+ *  tab owns that field and the value must never appear in two places. */
+function collectSearchSettings(cfg: ReasonixConfig): SearchSettingsMap {
+  const apiKeys = loadSearchApiKeys();
+  const out: SearchSettingsMap = {};
+  for (const spec of SEARCH_ENGINE_SPECS) {
+    if (searchSharedCredential(spec)) continue;
+    for (const setting of spec.settings) {
+      const value =
+        setting.kind === "secret"
+          ? maskApiKey(apiKeys[spec.id])
+          : searchSettingFromConfig(cfg, spec.id, setting.key);
+      if (!value) continue;
+      const entry = out[spec.id] ?? {};
+      entry[setting.key] = value;
+      out[spec.id] = entry;
+    }
+  }
+  return out;
+}
+
+/** Every declared provider setting: url values as stored, secret values as a masked
+ *  preview of the effective key. The loop reads the declarations, so adding a
+ *  provider or a field changes nothing here. */
+function collectProviderSettings(cfg: ReasonixConfig): ProviderSettingsMap {
+  const apiKeys = loadProviderApiKeys();
+  const out: ProviderSettingsMap = {};
+  for (const spec of PROVIDER_SPECS) {
+    for (const setting of spec.settings) {
+      if (setting.kind === "internal") continue;
+      const value =
+        setting.kind === "secret"
+          ? maskApiKey(apiKeys[spec.id])
+          : providerSettingFromStore(cfg, spec.id, setting.key);
+      if (!value) continue;
+      const entry = out[spec.id] ?? {};
+      entry[setting.key] = value;
+      out[spec.id] = entry;
+    }
+  }
+  return out;
 }
 
 let oauthGen = 0;
@@ -1680,57 +1708,58 @@ const UNCONFIGURED_BASE_URL: Partial<Record<ModelProvider, string>> = {
 export function modelEndpointFor(model: string, path?: string): ModelEndpointInfo {
   const resolved = loadResolvedModelEndpoint(model, path);
   const provider = resolved.provider;
+  const spec = providerSpec(provider);
   const reasoningEfforts = supportedReasoningEfforts(model, path);
   // One fallback rule for every provider: what it resolved, else the endpoint
   // its JSON declares, else the host the client itself would fall back to.
   const baseUrl =
     resolved.baseUrl ?? providerDefaultEndpoint(provider) ?? UNCONFIGURED_BASE_URL[provider] ?? "";
-  if (provider === "ollama") {
-    return {
-      provider,
-      baseUrl,
-      reasoningEfforts,
-      billingKind: billingContextForModel(model, path).kind,
-      deployment: resolved.deployment,
-    };
+  const base = { provider, baseUrl, reasoningEfforts };
+  // The credential panel a provider reports is the auth strategy its JSON declares,
+  // so a new declaration picks up its own panel without an edit here.
+  switch (spec?.client.auth) {
+    case "gemini-oauth": {
+      const oauth = readConfig(path).antigravityOAuth;
+      return {
+        ...base,
+        antigravityAuth: oauth?.accessToken ? "oauth" : "none",
+        antigravityAccount: oauth?.account,
+      };
+    }
+    case "opencode": {
+      const oauth = readConfig(path).opencodeOAuth;
+      const key = loadOpencodeApiKey(path);
+      return {
+        ...base,
+        opencodeAuth: oauth?.accessToken ? "oauth" : key && key !== "public" ? "apiKey" : "none",
+        opencodeAccount: oauth?.account,
+        // Go models bill the Go plan windows; free/anon Zen models have no usage
+        // API and paid Zen has no price table here — both fall back to no chip.
+        // Resolved on the wire id, so a shared `opencode/<id>` still reads as Go.
+        opencodePlan: opencodeUsagePlan(model, path),
+      };
+    }
+    case "openai-oauth": {
+      const oauth = readConfig(path).openaiOAuth;
+      return {
+        ...base,
+        billingKind: billingContextForModel(model, path).kind,
+        openaiAuth: oauth?.accessToken ? "oauth" : resolved.apiKey ? "apiKey" : "none",
+        oauthAccount: oauth?.account,
+      };
+    }
+    default:
+      // Only the provider whose declared probe measures a plan window reports a
+      // billing kind and its deployment; read from the resolved provider, since an
+      // explicit provider mapping can name one the model id never spells.
+      return spec?.usage.probe === "ollama-balance"
+        ? {
+            ...base,
+            billingKind: billingContextForModel(model, path).kind,
+            deployment: resolved.deployment,
+          }
+        : base;
   }
-  if (provider === "gemini") {
-    const oauth = readConfig(path).antigravityOAuth;
-    return {
-      provider,
-      baseUrl,
-      reasoningEfforts,
-      antigravityAuth: oauth?.accessToken ? "oauth" : "none",
-      antigravityAccount: oauth?.account,
-    };
-  }
-  if (provider === "opencode") {
-    const oauth = readConfig(path).opencodeOAuth;
-    const key = loadOpencodeApiKey(path);
-    return {
-      provider,
-      baseUrl,
-      reasoningEfforts,
-      opencodeAuth: oauth?.accessToken ? "oauth" : key && key !== "public" ? "apiKey" : "none",
-      opencodeAccount: oauth?.account,
-      // Go models bill the Go plan windows; free/anon Zen models have no usage
-      // API and paid Zen has no price table here — both fall back to no chip.
-      // Resolved on the wire id, so a shared `opencode/<id>` still reads as Go.
-      opencodePlan: opencodeUsagePlan(model, path),
-    };
-  }
-  if (provider === "openai") {
-    const oauth = readConfig(path).openaiOAuth;
-    return {
-      provider,
-      baseUrl,
-      reasoningEfforts,
-      billingKind: billingContextForModel(model, path).kind,
-      openaiAuth: oauth?.accessToken ? "oauth" : resolved.apiKey ? "apiKey" : "none",
-      oauthAccount: oauth?.account,
-    };
-  }
-  return { provider, baseUrl, reasoningEfforts };
 }
 
 function emitSettings(tab: Tab): void {
@@ -1785,14 +1814,9 @@ function emitSettings(tab: Tab): void {
       reasonixLocalDir: reasonixDefaultWorkspaceDir(),
       model: tab.currentModel,
       providerCatalogs,
-      ollamaBaseUrl: config.ollamaBaseUrl,
-      opencodeBaseUrl: config.opencodeBaseUrl,
-      mimoBaseUrl: config.mimoBaseUrl,
-      experientialBaseUrl: config.experientialBaseUrl,
-      syntheticBaseUrl: config.syntheticBaseUrl,
+      providerSettings: collectProviderSettings(config),
       webSearchEngine: readWebSearchEngine(),
-      webSearchEndpoint: readConfig().webSearchEndpoint,
-      webSearchApiKeys: collectWebSearchApiKeyPrefixes(),
+      searchSettings: collectSearchSettings(config),
       subagentModel: tab.currentSubagentModel,
       mailProvider: config.mailProvider ?? MailProvider.Outlook,
       ollamaGeneration: loadOllamaGenerationSettings(),
@@ -1844,7 +1868,7 @@ function emitSettings(tab: Tab): void {
         flowError: lastOpencodeOAuthError ?? undefined,
       },
       mimoOAuth: {
-        signedIn: !!config.mimoApiKey,
+        signedIn: !!config.providerSettings?.mimo?.apiKey,
         flowError: lastMiMoOAuthError ?? undefined,
       },
       mimoQuota: mimoQuotaCache,
@@ -2136,7 +2160,7 @@ function emitOpencodeCatalog(snap: {
 }
 
 const providerCatalogs: Partial<Record<CatalogProvider, ProviderCatalog>> = {};
-async function refreshProviderCatalogs(force = false, provider?: CatalogProvider): Promise<void> {
+async function refreshProviderCatalogs(force = false, provider?: string): Promise<void> {
   // Every provider that publishes a discovery endpoint is declared in
   // providers.json; its fallback catalog and exclusions come from the same entry.
   const definitions = PROVIDER_SPECS.filter(
@@ -2534,7 +2558,7 @@ function accumulateQuotaIntoSession(tab: Tab, provider: string, usedPct: number 
 /** Weekly Codex quota for the signed-in ChatGPT plan — OpenAI-model tabs only.
  *  OAuth HTTP fetch only (no codex CLI dependency). */
 async function emitCodexQuota(tab: Tab, options: { force?: boolean } = {}): Promise<void> {
-  if (providerForModel(tab.currentModel) !== "openai") {
+  if (probeForModel(tab.currentModel) !== "codex-oauth") {
     emitTabDiagnostic(tab, "quota.skipped", { reason: "non-openai-provider" });
     return;
   }
@@ -2560,7 +2584,7 @@ async function emitCodexQuota(tab: Tab, options: { force?: boolean } = {}): Prom
     // Native unit: the measured plan-window delta accumulates as quota % in the
     // session's per-provider cost — OpenAI plans expose no dollar amounts, so
     // no USD is ever derived from this.
-    accumulateQuotaIntoSession(tab, "openai", quota.turnUsedPct ?? null);
+    accumulateQuotaIntoSession(tab, providerForModel(tab.currentModel), quota.turnUsedPct ?? null);
     emit({ type: "$codex_quota", quota }, tab.id);
     return;
   }
@@ -2710,7 +2734,7 @@ let lastAntigravityUsedFraction: number | null = null;
 async function emitOllamaQuota(tab: Tab, force = false): Promise<void> {
   const ep = loadOllamaEndpoint();
   const apiKey = ep.apiKey;
-  if (providerForModel(tab.currentModel) !== "ollama") {
+  if (probeForModel(tab.currentModel) !== "ollama-balance") {
     emitTabDiagnostic(tab, "quota.skipped", { reason: "non-ollama-provider" });
     return;
   }
@@ -2748,7 +2772,8 @@ async function emitOllamaQuota(tab: Tab, force = false): Promise<void> {
   });
   // The delta is account-scoped: fold it into the session once, on the fetch
   // that measured it, so cache followers don't double-count.
-  if (snap.fetched) accumulateQuotaIntoSession(tab, "ollama", snap.turnUsedPct);
+  if (snap.fetched)
+    accumulateQuotaIntoSession(tab, providerForModel(tab.currentModel), snap.turnUsedPct);
   emit(
     {
       type: "$ollama_quota",
@@ -2768,7 +2793,7 @@ async function emitOllamaQuota(tab: Tab, force = false): Promise<void> {
  *  Gemini-provider tabs only. Uses the undocumented Code Assist `v1internal`
  *  API: loadCodeAssist for the plan, retrieveUserQuota for per-model windows. */
 async function emitAntigravityQuota(tab: Tab): Promise<void> {
-  if (providerForModel(tab.currentModel) !== "gemini") {
+  if (probeForModel(tab.currentModel) !== "antigravity-quota") {
     emitTabDiagnostic(tab, "quota.skipped", { reason: "non-gemini-provider" });
     return;
   }
@@ -2807,7 +2832,7 @@ async function emitAntigravityQuota(tab: Tab): Promise<void> {
     turnUsedPct,
   });
   // Native unit: Antigravity bills plan-window %, not dollars.
-  accumulateQuotaIntoSession(tab, "gemini", turnUsedPct);
+  accumulateQuotaIntoSession(tab, providerForModel(tab.currentModel), turnUsedPct);
   emit({ type: "$antigravity_quota", quota: { ...quota, turnUsedPct } }, tab.id);
 }
 
@@ -2883,7 +2908,7 @@ let lastZaiWeeklyUsedPct: number | null = null;
  *  Fetches the monitor endpoint, scales the API's `percentage` to "% left", and
  *  accumulates the measured delta as the session's native-unit quota %. */
 async function emitZaiQuota(tab: Tab): Promise<void> {
-  if (providerForModel(tab.currentModel) !== "zai") {
+  if (probeForModel(tab.currentModel) !== "zai-monitor") {
     emitTabDiagnostic(tab, "quota.skipped", { reason: "non-zai-provider" });
     return;
   }
@@ -2921,7 +2946,7 @@ async function emitZaiQuota(tab: Tab): Promise<void> {
     turnUsedPct,
   });
   // Native unit: the GLM Coding Plan bills plan-window %, not dollars.
-  accumulateQuotaIntoSession(tab, "zai", turnUsedPct);
+  accumulateQuotaIntoSession(tab, providerForModel(tab.currentModel), turnUsedPct);
   emit({ type: "$zai_quota", quota: { ...quota, turnUsedPct, fetchedAt: Date.now() } }, tab.id);
 }
 
@@ -2937,7 +2962,7 @@ let lastOpencodeRollingUsedPct: number | null = null;
  *  (not the inference key), so this is a no-op without a configured session —
  *  the statusbar then shows a static plan chip with no percentage. */
 async function emitMiMoQuota(tab: Tab): Promise<void> {
-  if (providerForModel(tab.currentModel) !== "mimo") return;
+  if (probeForModel(tab.currentModel) !== "mimo-console") return;
   const session = readMiMoConsoleSession();
   if (!session) {
     if (mimoQuotaCache === null) return;
@@ -2950,7 +2975,7 @@ async function emitMiMoQuota(tab: Tab): Promise<void> {
 }
 
 async function emitOpencodeQuota(tab: Tab): Promise<void> {
-  if (providerForModel(tab.currentModel) !== "opencode") {
+  if (probeForModel(tab.currentModel) !== "opencode-usage") {
     emitTabDiagnostic(tab, "quota.skipped", { reason: "non-opencode-provider" });
     return;
   }
@@ -3000,7 +3025,7 @@ async function emitOpencodeQuota(tab: Tab): Promise<void> {
     turnUsedPct,
   });
   // Native unit: the Go plan bills plan-window %, not dollars.
-  accumulateQuotaIntoSession(tab, "opencode", turnUsedPct);
+  accumulateQuotaIntoSession(tab, providerForModel(tab.currentModel), turnUsedPct);
   emit(
     { type: "$opencode_quota", quota: { ...quota, turnUsedPct, fetchedAt: Date.now() } },
     tab.id,
@@ -3008,59 +3033,55 @@ async function emitOpencodeQuota(tab: Tab): Promise<void> {
 }
 
 /** Provider-aware billing for subagent and main-loop model calls. */
+/** The probe a model's provider declares, or null when it publishes no plan window. */
+function probeForModel(model: string): string | null {
+  return providerSpec(providerForModel(model))?.usage.probe ?? null;
+}
+
+/** Measurers for the declared probes that report a percentage; the others publish
+ *  a plan window the statusbar shows without a "used" figure. */
+const QUOTA_MEASURERS: Partial<Record<string, (model: string) => () => Promise<number | null>>> = {
+  "codex-oauth": () => async (): Promise<number | null> => {
+    const r = await fetchCodexQuotaViaOAuth(8000).catch(() => ({
+      quota: null,
+      reason: "quota fetch failed",
+    }));
+    const used = r.quota?.fiveHour?.usedPercent ?? r.quota?.weekly?.usedPercent;
+    return typeof used === "number" ? used : null;
+  },
+  "ollama-balance": () => {
+    const ep = loadOllamaEndpoint();
+    const baseUrl = ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL;
+    const apiKey = ep.apiKey;
+    return async (): Promise<number | null> => {
+      if (!apiKey) return null;
+      const balance = await fetchOllamaBalance(baseUrl, apiKey, 8000);
+      return balance?.session ? 100 - balance.session.remainingPct : null;
+    };
+  },
+  "antigravity-quota": (model: string) => async (): Promise<number | null> => {
+    const auth = await resolveGeminiAuth().catch(() => null);
+    if (!auth) return null;
+    const quota = await fetchAntigravityQuota(auth.accessToken, auth.projectId).catch(() => null);
+    if (!quota) return null;
+    const active =
+      quota.windows.find((w) => w.modelId === model) ??
+      [...quota.windows].sort((a, b) => b.usedFraction - a.usedFraction)[0] ??
+      null;
+    return active ? active.usedFraction * 100 : null;
+  },
+};
+
 function subagentBillingFor(model: string): import("../../code/setup.js").SubagentBilling {
   const context = billingContextForModel(model);
-  switch (context.provider) {
-    case "openai":
-      if (context.kind !== "quota") return { kind: context.kind, provider: "openai" };
-      return {
-        kind: "quota",
-        provider: "openai",
-        measureQuota: async () => {
-          const r = await fetchCodexQuotaViaOAuth(8000).catch(() => ({
-            quota: null,
-            reason: "quota fetch failed",
-          }));
-          const used = r.quota?.fiveHour?.usedPercent ?? r.quota?.weekly?.usedPercent;
-          return typeof used === "number" ? used : null;
-        },
-      };
-    case "ollama": {
-      if (context.kind !== "quota") return { kind: context.kind, provider: "ollama" };
-      const ep = loadOllamaEndpoint();
-      const baseUrl = ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL;
-      const apiKey = ep.apiKey;
-      return {
-        kind: "quota",
-        provider: "ollama",
-        measureQuota: async () => {
-          if (!apiKey) return null;
-          const balance = await fetchOllamaBalance(baseUrl, apiKey, 8000);
-          return balance?.session ? 100 - balance.session.remainingPct : null;
-        },
-      };
-    }
-    case "gemini":
-      return {
-        kind: "quota",
-        provider: "gemini",
-        measureQuota: async () => {
-          const auth = await resolveGeminiAuth().catch(() => null);
-          if (!auth) return null;
-          const quota = await fetchAntigravityQuota(auth.accessToken, auth.projectId).catch(
-            () => null,
-          );
-          if (!quota) return null;
-          const active =
-            quota.windows.find((w) => w.modelId === model) ??
-            [...quota.windows].sort((a, b) => b.usedFraction - a.usedFraction)[0] ??
-            null;
-          return active ? active.usedFraction * 100 : null;
-        },
-      };
-    default:
-      return { kind: context.kind, provider: context.provider };
-  }
+  // Only a quota-kind context carries a plan window; anything else keeps the
+  // plain context so an unconfigured provider still reports its real kind.
+  if (context.kind !== "quota") return { kind: context.kind, provider: context.provider };
+  const probe = providerSpec(context.provider)?.usage.probe ?? null;
+  if (probe === null) return { kind: context.kind, provider: context.provider };
+  const measure = QUOTA_MEASURERS[probe];
+  if (!measure) return { kind: context.kind, provider: context.provider };
+  return { kind: "quota", provider: context.provider, measureQuota: measure(model) };
 }
 
 async function emitSessions(
@@ -4845,14 +4866,6 @@ function bindSessionSubagents(tab: Tab, enabled: boolean): void {
   refreshTabSystemPrompt(tab);
 }
 
-/** Add/remove JEV at the knowledge level, then rebuild the immutable tool-spec prefix. */
-function refreshJevKnowledge(tab: Tab, enabled: boolean): void {
-  const toolset = tab.toolset;
-  if (!toolset) return;
-  toolset.syncJevTool(enabled);
-  tab.runtime = tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
-}
-
 /** Provider-specific "not configured yet" message for a model id — keeps a
  *  gemini tab from being told to paste a DeepSeek key. Shared by the
  *  user_input and skill_run setup gates (deepseek is the fallback provider). */
@@ -4872,8 +4885,12 @@ function notConfiguredMessage(model: string): string {
       return "Not configured yet — OpenCode endpoint is unavailable.";
     case "experiential":
       return "Not configured yet — add an Experiential Labs gateway key in Settings → Models to use gateway models.";
-    default:
-      return "Not configured yet — paste your DeepSeek API key first.";
+    default: {
+      // Name whichever provider the model resolves to, so a new declaration gets
+      // its own wording without an edit here.
+      const label = providerSpec(providerForModel(model))?.label ?? "provider";
+      return `Not configured yet — paste your ${label} API key first.`;
+    }
   }
 }
 
@@ -4902,6 +4919,15 @@ export function turnStartRejection(
   }
   if (!env.modelUsable) {
     const provider = providerForModel(model);
+    // With no provider file there is no settings field to point at, so name the fix.
+    if (!providerSpec(provider)) {
+      return {
+        kind: "credential-unavailable",
+        outcome: "stopped",
+        reason:
+          "No model provider is declared — add a providers/<id>.json file in packages/core-utils/src/providers/ and run npm run providers:sync.",
+      };
+    }
     const reason =
       provider === "openai"
         ? `No OpenAI credential for ${model} — add an OpenAI key or sign in with ChatGPT (Settings → OpenAI).`
@@ -4915,7 +4941,7 @@ export function turnStartRejection(
                 ? `No Xiaomi MiMo credential for ${model} — add a MiMo key in Settings → Models.`
                 : provider === "opencode"
                   ? `No OpenCode configuration for ${model}.`
-                  : "No API key configured — paste your DeepSeek API key first.";
+                  : `No API key configured — paste your ${providerSpec(provider)?.label ?? "provider"} API key first.`;
     return { kind: "credential-unavailable", outcome: "stopped", reason };
   }
   // Only vision-capable models accept image content parts — DeepSeek 400s
@@ -4959,11 +4985,15 @@ function emitTabGate(tab: Tab): void {
  *  window (verdict store) when fresh, else the user `contextTokens` setting — every ctxMax
  *  consumer (loop, meter, settings changes) must resolve the same value. */
 function tabCtxMaxOverride(tab: Tab): number | undefined {
-  if (providerForModel(tab.currentModel) !== "ollama") return tab.ctxMaxOverride;
+  // A provider that declares a model-id scheme reports its own window per model
+  // (learned from the runtime probe); every other provider uses the user override.
+  const spec = providerSpec(providerForModel(tab.currentModel));
+  const scheme = spec?.routing.modelScheme ?? null;
+  if (scheme === null) return tab.ctxMaxOverride;
   return (
     contextTokensForModel(
       loadOllamaVerdicts(ollamaVerdictsPath()),
-      tab.currentModel.replace(/^ollama\//, ""),
+      tab.currentModel.replace(`${scheme}/`, ""),
       Date.now(),
     ) ?? tab.ctxMaxOverride
   );
@@ -8024,7 +8054,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       try {
         saveApiKey(key);
         bridgeEndpointEnv();
-        void refreshProviderCatalogs(true, "deepseek");
+        void refreshProviderCatalogs(true);
         for (const tab of tabs.values()) {
           // Skeleton tabs still mid-bootstrap pick up the new key inside
           // initTabToolset's tail when buildCodeToolset settles — don't
@@ -9299,7 +9329,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       }
       try {
         saveOpenAIApiKey(key);
-        void refreshProviderCatalogs(true, "openai"); // A fresh OpenAI key also unblocks ChatGPT-only installs whose tab still
+        void refreshProviderCatalogs(true); // A fresh OpenAI key also unblocks ChatGPT-only installs whose tab still
         // defaults to a DeepSeek model — build (or rebuild) every now-credentialed
         // tab ready. A tab that booted un-credentialed has a null runtime — it
         // must be built here, not just rebuilt.
@@ -9361,39 +9391,55 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       void refreshChangelog(!!msg.force, tab);
       return;
     }
+    /** Panels whose persisted key flips other runtime state, keyed by the declared
+     *  settingsPanel name — never by provider id. */
+    const PANEL_AFTER_PERSIST: Record<string, () => void> = {
+      "opencode-auth": () => {
+        // The key flips the catalog between the keyless free tier and the paid
+        // Zen + Go catalog.
+        void refreshOpencodeModels(true);
+      },
+    };
+
+    /** Apply a provider settings patch: echoed secret previews are ignored, and the
+     *  store is written once before the runtime that a credential gates is refreshed. */
+    function applyProviderSettingsPatch(patch: ProviderSettingsMap, tab: Tab): void {
+      const { writes } = parseProviderSettingsPatch(patch);
+      const previews = loadProviderApiKeys();
+      const kindOf = (write: { providerId: string; key: string }) =>
+        providerSpec(write.providerId)?.settings.find((setting) => setting.key === write.key)?.kind;
+      const accepted = writes.filter(
+        // The payload carries a masked preview; echoing it means "unchanged".
+        (write) =>
+          !(kindOf(write) === "secret" && write.value === maskApiKey(previews[write.providerId])),
+      );
+      if (accepted.length === 0) return;
+      void (async () => {
+        const cfg = readConfig();
+        for (const write of accepted) {
+          setProviderSetting(cfg, write.providerId, write.key, write.value);
+        }
+        writeConfig(cfg);
+        // The endpoint + credential are snapshotted at build time, so a tab that
+        // just became usable must be rebuilt or the saved value looks inert.
+        if (accepted.some((write) => kindOf(write) === "secret")) rebuildCredentialedTabs();
+        for (const providerId of new Set(accepted.map((write) => write.providerId))) {
+          const spec = providerSpec(providerId);
+          if (spec?.routing.discoveredCatalog) {
+            void refreshProviderCatalogs(false, spec.id);
+          }
+          if (spec?.settingsPanel) PANEL_AFTER_PERSIST[spec.settingsPanel]?.();
+        }
+        emitSettings(tab);
+      })();
+    }
+
     if (msg.cmd === "settings_save") {
       try {
-        // JEV/TypeSafe key is validated asynchronously (network) but must never be
-        // dropped when co-sent with other fields — so handle it first, before the
-        // early-return branches below (e.g. workspaceDir) can swallow the message.
-        if (msg.typesafeApiKey !== undefined) {
-          const nextKey = msg.typesafeApiKey?.trim() || "";
-          void (async () => {
-            try {
-              if (nextKey) await validateTypesafeApiKeyCached(nextKey, { force: true });
-              const envKey = process.env.TYPESAFE_API_KEY?.trim() || "";
-              if (envKey && envKey !== nextKey) {
-                await validateTypesafeApiKeyCached(envKey, { force: true });
-              }
-              const cfg = readConfig();
-              cfg.typesafeApiKey = nextKey || undefined;
-              writeConfig(cfg);
-              const effectiveKey = envKey || nextKey;
-              for (const openTab of tabs.values()) {
-                refreshJevKnowledge(openTab, Boolean(effectiveKey));
-                emitSettings(openTab);
-              }
-            } catch (err) {
-              emit(
-                {
-                  type: "$error",
-                  message: `TypeSafe API key validation failed: ${(err as Error).message}`,
-                },
-                tab.id,
-              );
-              emitSettings(tab);
-            }
-          })();
+        // Provider credentials persist before the early-return branches below
+        // (workspaceDir, model, …) can swallow the message.
+        if (msg.providerSettings !== undefined) {
+          void applyProviderSettingsPatch(msg.providerSettings, tab);
         }
         if (msg.reasoningEffort !== undefined && isReasoningEffort(msg.reasoningEffort)) {
           saveReasoningEffort(msg.reasoningEffort);
@@ -9517,106 +9563,26 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           });
           return;
         }
-        if (msg.ollamaBaseUrl !== undefined) {
+        if (msg.webSearchEngine !== undefined) {
           const cfg = readConfig();
-          cfg.ollamaBaseUrl = msg.ollamaBaseUrl?.trim() || undefined;
+          cfg.webSearchEngine = msg.webSearchEngine;
           writeConfig(cfg);
         }
-        if (
-          msg.webSearchEngine !== undefined ||
-          msg.webSearchEndpoint !== undefined ||
-          msg.metasoApiKey !== undefined ||
-          msg.baiduApiKey !== undefined ||
-          msg.tavilyApiKey !== undefined ||
-          msg.perplexityApiKey !== undefined ||
-          msg.exaApiKey !== undefined ||
-          msg.ollamaApiKey !== undefined ||
-          msg.braveApiKey !== undefined ||
-          msg.zaiApiKey !== undefined ||
-          msg.opencodeApiKey !== undefined ||
-          msg.opencodeBaseUrl !== undefined ||
-          msg.mimoApiKey !== undefined ||
-          msg.mimoBaseUrl !== undefined ||
-          msg.experientialApiKey !== undefined ||
-          msg.experientialBaseUrl !== undefined ||
-          msg.syntheticApiKey !== undefined ||
-          msg.syntheticBaseUrl !== undefined
-        ) {
-          const cfg = readConfig();
-          if (msg.webSearchEngine !== undefined) cfg.webSearchEngine = msg.webSearchEngine;
-          if (msg.webSearchEndpoint !== undefined) {
-            cfg.webSearchEndpoint = msg.webSearchEndpoint?.trim() || undefined;
-          }
-          if (msg.metasoApiKey !== undefined) {
-            cfg.metasoApiKey = msg.metasoApiKey?.trim() || undefined;
-          }
-          if (msg.baiduApiKey !== undefined) {
-            cfg.baiduApiKey = msg.baiduApiKey?.trim() || undefined;
-          }
-          if (msg.tavilyApiKey !== undefined) {
-            cfg.tavilyApiKey = msg.tavilyApiKey?.trim() || undefined;
-          }
-          if (msg.perplexityApiKey !== undefined) {
-            cfg.perplexityApiKey = msg.perplexityApiKey?.trim() || undefined;
-          }
-          if (msg.exaApiKey !== undefined) {
-            cfg.exaApiKey = msg.exaApiKey?.trim() || undefined;
-          }
-          if (msg.ollamaApiKey !== undefined) {
-            cfg.ollamaApiKey = msg.ollamaApiKey?.trim() || undefined;
-          }
-          if (msg.braveApiKey !== undefined) {
-            cfg.braveApiKey = msg.braveApiKey?.trim() || undefined;
-          }
-          if (msg.zaiApiKey !== undefined) {
-            cfg.zaiApiKey = msg.zaiApiKey?.trim() || undefined;
-          }
-          if (msg.opencodeApiKey !== undefined) {
-            cfg.opencodeApiKey = msg.opencodeApiKey?.trim() || undefined;
-          }
-          if (msg.opencodeBaseUrl !== undefined) {
-            cfg.opencodeBaseUrl = msg.opencodeBaseUrl?.trim() || undefined;
-          }
-          if (msg.mimoApiKey !== undefined) {
-            cfg.mimoApiKey = msg.mimoApiKey?.trim() || undefined;
-          }
-          if (msg.mimoBaseUrl !== undefined) {
-            cfg.mimoBaseUrl = msg.mimoBaseUrl?.trim() || undefined;
-          }
-          if (msg.experientialApiKey !== undefined) {
-            cfg.experientialApiKey = msg.experientialApiKey?.trim() || undefined;
-          }
-          if (msg.experientialBaseUrl !== undefined) {
-            cfg.experientialBaseUrl = msg.experientialBaseUrl?.trim() || undefined;
-          }
-          if (msg.syntheticApiKey !== undefined) {
-            cfg.syntheticApiKey = msg.syntheticApiKey?.trim() || undefined;
-          }
-          if (msg.syntheticBaseUrl !== undefined) {
-            cfg.syntheticBaseUrl = msg.syntheticBaseUrl?.trim() || undefined;
-          }
-          writeConfig(cfg);
-          // The endpoint + credential are snapshotted into the runtime at build
-          // time, and a send is refused while it is null, so rebuild now-usable
-          // tabs here (mirrors the sign-in flows) or a saved key/URL looks inert.
-          if (
-            msg.mimoApiKey !== undefined ||
-            msg.mimoBaseUrl !== undefined ||
-            msg.opencodeApiKey !== undefined ||
-            msg.opencodeBaseUrl !== undefined ||
-            msg.ollamaApiKey !== undefined ||
-            msg.zaiApiKey !== undefined ||
-            msg.experientialApiKey !== undefined ||
-            msg.experientialBaseUrl !== undefined ||
-            msg.syntheticApiKey !== undefined ||
-            msg.syntheticBaseUrl !== undefined
-          ) {
-            rebuildCredentialedTabs();
-          }
-          if (msg.opencodeApiKey !== undefined) {
-            // Adding/removing a key flips the catalog between the keyless free
-            // tier and the paid Zen + Go catalog.
-            void refreshOpencodeModels(true, tab);
+        if (msg.searchSettings !== undefined) {
+          const { writes } = parseSearchSettingsPatch(msg.searchSettings);
+          if (writes.length > 0) {
+            const cfg = readConfig();
+            const previews = loadSearchApiKeys();
+            for (const write of writes) {
+              const spec = searchEngineSpec(write.engineId);
+              const kind = spec ? searchSettingSpec(spec, write.key)?.kind : undefined;
+              // The payload masks secrets; an echoed preview means "unchanged".
+              if (kind === "secret" && write.value === maskApiKey(previews[write.engineId])) {
+                continue;
+              }
+              setSearchSetting(cfg, write.engineId, write.key, write.value);
+            }
+            writeConfig(cfg);
           }
         }
         if (msg.subagentModel !== undefined) {

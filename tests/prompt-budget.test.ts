@@ -26,7 +26,7 @@ const COMPOSED_PROMPT_BUDGET_FULL = 73_500;
 /** Full code-mode tool spec list — the same ceiling the runtime bridge enforces. */
 const TOOL_LIST_BUDGET = MAX_TOOL_SPEC_BYTES;
 /** Every built-in tools module registers in the shared helper. A new tool must land there. */
-const EXPECTED_MIN_TOOLS = 53;
+const EXPECTED_MIN_TOOLS = 51;
 
 /** Per-tool bytes via the shared accounting, so this net cannot drift from the runtime ceiling. */
 function toolBytes(tools: ToolRegistry): {

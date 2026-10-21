@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { providerDeclared, searchEngineDeclared } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_AUTO_COMPACT_TRIGGER,
@@ -65,7 +66,6 @@ import {
   loadSubagentModels,
   loadTheme,
   loadToolRateLimit,
-  loadTypesafeApiKey,
   loadZaiApiKey,
   markEditModeHintShown,
   providerForModel,
@@ -100,8 +100,86 @@ import {
   saveTheme,
   searchEnabled,
   webSearchEngine,
-  writeConfig,
+  writeConfig as writeConfigStore,
 } from "../src/config.js";
+
+/** These suites were written against the legacy per-provider field names. The store is
+ *  what persists them now, so route those names into `providerSettings` here instead of
+ *  rewriting every case. */
+const LEGACY_FIELD_TO_STORE: Readonly<Record<string, readonly (readonly [string, string])[]>> = {
+  apiKey: [["deepseek", "apiKey"]],
+  // The old top-level baseUrl fed both DeepSeek and OpenAI, which each declare it.
+  baseUrl: [
+    ["deepseek", "baseUrl"],
+    ["openai", "baseUrl"],
+  ],
+  openaiApiKey: [["openai", "apiKey"]],
+  zaiApiKey: [["zai", "apiKey"]],
+  zaiBaseUrl: [["zai", "baseUrl"]],
+  opencodeApiKey: [["opencode", "apiKey"]],
+  opencodeBaseUrl: [["opencode", "baseUrl"]],
+  mimoApiKey: [["mimo", "apiKey"]],
+  mimoBaseUrl: [["mimo", "baseUrl"]],
+  mimoKeyName: [["mimo", "keyName"]],
+  experientialApiKey: [["experiential", "apiKey"]],
+  experientialBaseUrl: [["experiential", "baseUrl"]],
+  syntheticApiKey: [["synthetic", "apiKey"]],
+  syntheticBaseUrl: [["synthetic", "baseUrl"]],
+  ollamaApiKey: [["ollama", "apiKey"]],
+  ollamaBaseUrl: [["ollama", "baseUrl"]],
+};
+
+const LEGACY_ENGINE_FIELD_TO_SEARCH: Readonly<Record<string, readonly [string, string]>> = {
+  metasoApiKey: ["metaso", "apiKey"],
+  baiduApiKey: ["baidu", "apiKey"],
+  tavilyApiKey: ["tavily", "apiKey"],
+  perplexityApiKey: ["perplexity", "apiKey"],
+  exaApiKey: ["exa", "apiKey"],
+  braveApiKey: ["brave", "apiKey"],
+  webSearchEndpoint: ["searxng", "endpoint"],
+};
+
+function writeConfig(fields: Record<string, unknown>, path: string): void {
+  const store: Record<string, Record<string, string>> = {};
+  const search: Record<string, Record<string, string>> = {};
+  const rest: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(fields)) {
+    const targets = LEGACY_FIELD_TO_STORE[field];
+    if (targets) {
+      if (typeof value !== "string") {
+        rest[field] = value;
+        continue;
+      }
+      for (const [provider, key] of targets) {
+        const entry = store[provider] ?? {};
+        store[provider] = entry;
+        entry[key] = value;
+      }
+      continue;
+    }
+    const engine = LEGACY_ENGINE_FIELD_TO_SEARCH[field];
+    if (engine) {
+      if (typeof value !== "string") {
+        rest[field] = value;
+        continue;
+      }
+      const [engineId, key] = engine;
+      const entry = search[engineId] ?? {};
+      search[engineId] = entry;
+      entry[key] = value;
+      continue;
+    }
+    rest[field] = value;
+  }
+  writeConfigStore(
+    {
+      ...(rest as import("../src/config.js").ReasonixConfig),
+      ...(Object.keys(store).length > 0 ? { providerSettings: store } : {}),
+      ...(Object.keys(search).length > 0 ? { searchSettings: search } : {}),
+    },
+    path,
+  );
+}
 
 describe("config", () => {
   let dir: string;
@@ -158,7 +236,7 @@ describe("config", () => {
 
   it("writeConfig + readConfig round-trip", () => {
     writeConfig({ apiKey: "sk-test123abcdefghijkl" }, path);
-    expect(readConfig(path).apiKey).toBe("sk-test123abcdefghijkl");
+    expect(readConfig(path).providerSettings?.deepseek?.apiKey).toBe("sk-test123abcdefghijkl");
   });
 
   it("writeConfig leaves no `.tmp` sibling behind on success", () => {
@@ -176,8 +254,8 @@ describe("config", () => {
       process.env.OPENAI_API_KEY = "sk-stale-env-token";
       saveApiKey("  ", path);
       saveOpenAIApiKey("  ", path);
-      expect(readConfig(path).apiKey).toBeUndefined();
-      expect(readConfig(path).openaiApiKey).toBeUndefined();
+      expect(readConfig(path).providerSettings?.deepseek?.apiKey).toBeUndefined();
+      expect(readConfig(path).providerSettings?.openai?.apiKey).toBeUndefined();
       expect(process.env.DEEPSEEK_API_KEY).toBeUndefined();
       expect(process.env.OPENAI_API_KEY).toBeUndefined();
     } finally {
@@ -189,7 +267,7 @@ describe("config", () => {
 
   it("saveApiKey trims whitespace", () => {
     saveApiKey("  sk-test123abcdefghijkl  ", path);
-    expect(readConfig(path).apiKey).toBe("sk-test123abcdefghijkl");
+    expect(readConfig(path).providerSettings?.deepseek?.apiKey).toBe("sk-test123abcdefghijkl");
   });
 
   it("loadApiKey prefers env var over config file", () => {
@@ -675,7 +753,7 @@ describe("config", () => {
 
     it("saveOpenAIApiKey / saveOpenAIOAuth / clearOpenAIOAuth round-trip", () => {
       saveOpenAIApiKey(" sk-openai-manual ", path);
-      expect(readConfig(path).openaiApiKey).toBe("sk-openai-manual");
+      expect(readConfig(path).providerSettings?.openai?.apiKey).toBe("sk-openai-manual");
       saveOpenAIOAuth(
         { accessToken: "at", refreshToken: "rt", expiresAt: 123, account: "u@example.com" },
         path,
@@ -689,7 +767,7 @@ describe("config", () => {
       clearOpenAIOAuth(path);
       expect(readConfig(path).openaiOAuth).toBeUndefined();
       // Clearing leaves unrelated fields intact.
-      expect(readConfig(path).openaiApiKey).toBe("sk-openai-manual");
+      expect(readConfig(path).providerSettings?.openai?.apiKey).toBe("sk-openai-manual");
     });
 
     it("saveAntigravityOAuth / clearAntigravityOAuth round-trip", () => {
@@ -1517,7 +1595,8 @@ describe("config", () => {
 
   describe("webSearchEngine", () => {
     it("preserves each known engine end-to-end (no silent tavily→default fall-through, #1309)", () => {
-      for (const engine of [
+      // Only declared engines: deleting an engine JSON must not fail this list.
+      const engineIds = [
         "bing",
         "bing-intl",
         "searxng",
@@ -1529,7 +1608,8 @@ describe("config", () => {
         "brave",
         "ollama",
         "zai",
-      ] as const) {
+      ] as const;
+      for (const engine of engineIds.filter((id) => searchEngineDeclared(id))) {
         writeConfig({ webSearchEngine: engine }, path);
         expect(webSearchEngine(path)).toBe(engine);
       }
@@ -1612,7 +1692,7 @@ describe("config", () => {
     });
   });
 
-  describe("loadBraveApiKey", () => {
+  describe.skipIf(!searchEngineDeclared("brave"))("loadBraveApiKey", () => {
     it("returns BRAVE_SEARCH_API_KEY env var when set", () => {
       const orig = process.env.BRAVE_SEARCH_API_KEY;
       process.env.BRAVE_SEARCH_API_KEY = "bsk-123";
@@ -1674,23 +1754,7 @@ describe("config", () => {
     });
   });
 
-  describe("TypeSafe credentials", () => {
-    it("loads the saved API key and lets TYPESAFE_API_KEY take precedence", () => {
-      const original = process.env.TYPESAFE_API_KEY;
-      writeConfig({ typesafeApiKey: "typesafe-config-key" }, path);
-      try {
-        expect(loadTypesafeApiKey(path)).toBe("typesafe-config-key");
-        process.env.TYPESAFE_API_KEY = "typesafe-env-key";
-        expect(loadTypesafeApiKey(path)).toBe("typesafe-env-key");
-      } finally {
-        // biome-ignore lint/performance/noDelete: restore exact env state
-        if (original === undefined) delete process.env.TYPESAFE_API_KEY;
-        else process.env.TYPESAFE_API_KEY = original;
-      }
-    });
-  });
-
-  describe("Experiential Labs provider routing", () => {
+  describe.skipIf(!providerDeclared("experiential"))("Experiential Labs provider routing", () => {
     it("routes fallback slugs to the default gateway with the config key", () => {
       writeConfig({ experientialApiKey: "xpl-config-key" }, path);
       expect(providerForModel("qwen3.8-27b")).toBe("experiential");

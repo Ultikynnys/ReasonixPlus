@@ -1,6 +1,7 @@
 /** Declarative model-provider registry: providers/<id>.json is the single source of truth. */
 
 import type { ReasoningEffort } from "./permission-types.js";
+import type { RateSchedule } from "./rate-periods.js";
 import { PROVIDER_DOCUMENTS, PROVIDER_IDS, type ProviderID } from "./providers.generated.js";
 
 /** Routable provider ids, generated from providers/*.json by `npm run providers:sync`. */
@@ -57,15 +58,19 @@ export interface ProviderEndpointSpec {
 export interface ProviderCredentialsSpec {
   baseUrlEnv: readonly string[];
   apiKeyEnv: readonly string[];
-  baseUrlConfig: string | null;
-  apiKeyConfig: string | null;
+  /** Store path (`<catalogId>.<settingKey>`) the base URL persists to, or null. */
+  baseUrlSetting: string | null;
+  /** Store path (`<catalogId>.<settingKey>`) the API key persists to, or null. */
+  apiKeySetting: string | null;
   /** Key assumed when nothing is configured and the endpoint is open (OpenCode's `public`). */
   publicKey: string | null;
   /** Config field holding the OAuth credentials for this provider, when it has a sign-in. */
   oauthConfig: string | null;
 }
 
-export type ProviderSettingKind = "secret" | "url";
+/** `secret` is masked in the UI, `url` is an endpoint override, and `internal` is
+ *  app-managed state that no field renders. */
+export type ProviderSettingKind = "secret" | "url" | "internal";
 
 /** A persisted setting a provider declares. The config surface, the settings card
  *  and the masked-status payload are all derived from these entries. */
@@ -75,12 +80,12 @@ export interface ProviderSettingSpec {
   kind: ProviderSettingKind;
   /** Environment variables that override the persisted value, highest priority first. */
   env: readonly string[];
-  /** Config field name this setting maps to. Replaced by the store path in a later step. */
+  /** Legacy config field this setting migrated from; null when it never had one. */
   configKey: string | null;
-  /** i18n key for the field label. */
-  labelKey: string;
-  /** i18n key for the field hint, when the field needs one. */
-  hintKey: string | null;
+  /** Field label text; null for an `internal` setting, which never renders. */
+  label: string | null;
+  /** Field hint text, when the field needs one. */
+  hint: string | null;
   /** Placeholder text; null means the provider's declared endpoint. */
   placeholder: string | null;
   /** Where to obtain a key, rendered as a link. */
@@ -95,8 +100,7 @@ export type ProviderSettingsPanel =
   | "antigravity-auth"
   | "mimo-auth"
   | "opencode-auth"
-  | "ollama-generation"
-  | "typesafe-validation";
+  | "ollama-generation";
 
 export interface ProviderUsableSpec {
   /** A resolved endpoint API key alone makes the model runnable. */
@@ -131,6 +135,118 @@ export interface ProviderRoutingSpec {
   modelScheme: string | null;
 }
 
+/** How a provider's 5xx failures are reported. */
+export type ProviderServerReport = "standard" | "balance-probe";
+
+/** i18n prefixes that own `errors.<prefix><Kind>` message keys. */
+export type ProviderErrorI18nPrefix =
+  | "deepseek"
+  | "openai"
+  | "ollama"
+  | "antigravity"
+  | "zai"
+  | "opencode"
+  | "mimo"
+  | "experiential"
+  | "synthetic"
+  | "custom";
+
+/** How a provider names itself in thrown errors. */
+export interface ProviderErrorsSpec {
+  /** Prefix for `errors.<prefix><Kind>`; `custom` is the generic bucket. */
+  i18nPrefix: ProviderErrorI18nPrefix;
+  /** Wire brands that prefix "<Brand> <status>: ..." errors. */
+  brands: readonly string[];
+  /** Hostname suffixes that identify this provider from an upstream URL. */
+  hosts: readonly string[];
+  serverReport: ProviderServerReport;
+}
+
+export const PROVIDER_ERROR_I18N_PREFIXES: ReadonlySet<string> = new Set([
+  "deepseek",
+  "openai",
+  "ollama",
+  "antigravity",
+  "zai",
+  "opencode",
+  "mimo",
+  "experiential",
+  "synthetic",
+  "custom",
+]);
+
+export const PROVIDER_SERVER_REPORTS: ReadonlySet<string> = new Set([
+  "standard",
+  "balance-probe",
+]);
+
+/** How a provider bills a token: dollars, a plan window, or nothing it can measure. */
+export type ProviderBillingKind = "usd" | "quota" | "none" | "usd-unless-oauth" | "quota-if-key";
+
+export const PROVIDER_BILLING_KINDS: ReadonlySet<string> = new Set([
+  "usd",
+  "quota",
+  "none",
+  "usd-unless-oauth",
+  "quota-if-key",
+]);
+
+/** One model's published rate, in USD per 1M tokens. */
+export interface ProviderModelRate {
+  inputCacheHit: number;
+  inputCacheMiss: number;
+  output: number;
+}
+
+/** How a provider prices and reports usage, all declared rather than inferred. */
+export interface ProviderBillingSpec {
+  kind: ProviderBillingKind;
+  /** Published peak/off-peak windows; null when the rate never changes. */
+  schedule: RateSchedule | null;
+  /** USD per 1M tokens at the base rate, keyed by wire model id. */
+  pricing: Readonly<Record<string, ProviderModelRate>>;
+}
+
+/** Wire format the transport speaks for this provider. */
+export type ProviderWireFormat = "chat-completions" | "ollama-native";
+
+/** Where a provider expects its thinking toggle; null when it refuses the field. */
+export type ProviderThinkingStyle = "extra-body" | "zai-top-level" | "mimo-top-level";
+
+/** Per-provider request quirks, so the client never branches on a provider id. */
+export interface ProviderWireSpec {
+  format: ProviderWireFormat;
+  /** Stamp wire message ids before sending (the cache contract). */
+  stampMessageIds: boolean;
+  /** Send `stream_options.include_usage` on a streaming request. */
+  streamOptions: boolean;
+  /** Send `store: false` and pin one tool call per response. */
+  storeFlag: boolean;
+  /** Send `tool_stream` when streaming with tools. */
+  toolStream: boolean;
+  thinking: ProviderThinkingStyle | null;
+  /** Whether a `reasoning_effort` field is accepted. */
+  reasoningEffort: boolean;
+}
+
+/** Safe defaults: a provider that declares nothing never inherits a quirk. */
+export const DEFAULT_PROVIDER_WIRE: ProviderWireSpec = {
+  format: "chat-completions",
+  stampMessageIds: false,
+  streamOptions: true,
+  storeFlag: false,
+  toolStream: false,
+  thinking: null,
+  reasoningEffort: true,
+};
+
+const WIRE_FORMATS: ReadonlySet<string> = new Set(["chat-completions", "ollama-native"]);
+const THINKING_STYLES: ReadonlySet<string> = new Set([
+  "extra-body",
+  "zai-top-level",
+  "mimo-top-level",
+]);
+
 export interface ProviderClientSpec {
   auth: ProviderAuthStrategy;
   transport: ProviderTransportStrategy | null;
@@ -140,7 +256,7 @@ export interface ProviderClientSpec {
 
 export interface ProviderSpec {
   id: string;
-  /** Routing id, or null for a catalog-only entry (e.g. TypeSafe evaluations). */
+  /** Routing id, or null for a catalog-only entry that never routes a model id. */
   providerId: ProviderID | null;
   label: string;
   /** i18n key naming the provider's card/group in the desktop UI. */
@@ -178,13 +294,40 @@ export interface ProviderSpec {
   modelsDev: string | null;
   discovery: ProviderDiscoverySpec;
   client: ProviderClientSpec;
+  errors: ProviderErrorsSpec;
+  billing: ProviderBillingSpec;
+  wire: ProviderWireSpec;
+  usage: ProviderUsageSpec;
+}
+
+/** How a provider reports a plan-window percentage, if it reports one at all. */
+export type ProviderProbeStrategy =
+  | "codex-oauth"
+  | "ollama-balance"
+  | "antigravity-quota"
+  | "zai-monitor"
+  | "mimo-console"
+  | "opencode-usage";
+
+export const PROVIDER_PROBE_STRATEGIES: ReadonlySet<string> = new Set<ProviderProbeStrategy>([
+  "codex-oauth",
+  "ollama-balance",
+  "antigravity-quota",
+  "zai-monitor",
+  "mimo-console",
+  "opencode-usage",
+]);
+
+export interface ProviderUsageSpec {
+  /** Quota probe this provider exposes, or null when it publishes no plan window. */
+  probe: ProviderProbeStrategy | null;
 }
 
 /** Environment and persisted-config accessors the endpoint/credential resolvers need. */
 export interface ProviderCredentialContext {
   env?: (name: string) => string | undefined;
-  /** Reads a provider string field from the config by name (e.g. `zaiApiKey`). */
-  configField: (field: string) => string | undefined;
+  /** Reads a `<catalogId>.<settingKey>` path from the provider settings store. */
+  setting: (path: string) => string | undefined;
   /** Reads the access token stored under a provider's `oauthConfig` field. */
   oauthToken?: (field: string) => string | undefined;
 }
@@ -217,14 +360,13 @@ const SETUP_SOURCES: ReadonlySet<string> = new Set(["apiKey", "baseUrl", "oauth"
 const MODEL_FILTERS: ReadonlySet<string> = new Set(["antigravity"]);
 const PICKER_GATES: ReadonlySet<string> = new Set(["catalog", "signin"]);
 const VISION_PREDICATES: ReadonlySet<string> = new Set(["antigravity"]);
-const SETTING_KINDS: ReadonlySet<string> = new Set(["secret", "url"]);
+const SETTING_KINDS: ReadonlySet<string> = new Set(["secret", "url", "internal"]);
 const SETTINGS_PANELS: ReadonlySet<string> = new Set([
   "openai-auth",
   "antigravity-auth",
   "mimo-auth",
   "opencode-auth",
   "ollama-generation",
-  "typesafe-validation",
 ]);
 
 function fail(where: string, detail: string): never {
@@ -357,21 +499,29 @@ function parseEndpoint(value: unknown, where: string): ProviderEndpointSpec {
   };
 }
 
+/** Store path a provider setting persists to: `<catalogId>.<settingKey>`. */
+export function providerSettingPath(providerId: string, key: string): string {
+  return `${providerId}.${key}`;
+}
+
 function parseCredentials(
   value: unknown,
   where: string,
   settings: readonly ProviderSettingSpec[],
+  id: string,
 ): ProviderCredentialsSpec {
   const raw = record(value ?? {}, where);
-  // Env names and config paths come from the declared settings, so a provider
+  // Env names and store paths come from the declared settings, so a provider
   // never repeats its credentials in two places.
   const declared = (key: string): ProviderSettingSpec | undefined =>
     settings.find((setting) => setting.key === key);
+  const stored = (key: string): string | null =>
+    declared(key) ? providerSettingPath(id, key) : null;
   return {
     baseUrlEnv: declared("baseUrl")?.env ?? [],
     apiKeyEnv: declared("apiKey")?.env ?? [],
-    baseUrlConfig: declared("baseUrl")?.configKey ?? null,
-    apiKeyConfig: declared("apiKey")?.configKey ?? null,
+    baseUrlSetting: stored("baseUrl"),
+    apiKeySetting: stored("apiKey"),
     publicKey: nullableText(raw.publicKey, `${where}.publicKey`),
     oauthConfig: nullableText(raw.oauthConfig, `${where}.oauthConfig`),
   };
@@ -381,13 +531,18 @@ function parseSetting(value: unknown, where: string): ProviderSettingSpec {
   const raw = record(value, where);
   const key = text(raw.key, `${where}.key`);
   if (!/^[a-z][A-Za-z0-9]*$/.test(key)) fail(`${where}.key`, `invalid setting key "${key}"`);
+  const kind = choice<ProviderSettingKind>(raw.kind, SETTING_KINDS, `${where}.kind`);
+  const label = nullableText(raw.label, `${where}.label`);
+  if (kind !== "internal" && !label) {
+    fail(`${where}.label`, "required for a rendered setting");
+  }
   return {
     key,
-    kind: choice<ProviderSettingKind>(raw.kind, SETTING_KINDS, `${where}.kind`),
+    kind,
     env: texts(raw.env ?? [], `${where}.env`),
     configKey: nullableText(raw.configKey, `${where}.configKey`),
-    labelKey: text(raw.labelKey, `${where}.labelKey`),
-    hintKey: nullableText(raw.hintKey, `${where}.hintKey`),
+    label,
+    hint: nullableText(raw.hint, `${where}.hint`),
     placeholder: nullableText(raw.placeholder, `${where}.placeholder`),
     signupUrl: nullableText(raw.signupUrl, `${where}.signupUrl`),
   };
@@ -427,6 +582,83 @@ function parseDiscovery(value: unknown, where: string): ProviderDiscoverySpec {
   };
 }
 
+function parseUsage(value: unknown, where: string): ProviderUsageSpec {
+  const raw = record(value ?? {}, where);
+  return {
+    probe: nullableChoice<ProviderProbeStrategy>(
+      raw.probe,
+      PROVIDER_PROBE_STRATEGIES,
+      `${where}.probe`,
+    ),
+  };
+}
+
+function parseWire(value: unknown, where: string): ProviderWireSpec {
+  const raw = record(value ?? {}, where);
+  return {
+    format: choice<ProviderWireFormat>(
+      raw.format ?? "chat-completions",
+      WIRE_FORMATS,
+      `${where}.format`,
+    ),
+    stampMessageIds: flag(raw.stampMessageIds ?? false, `${where}.stampMessageIds`),
+    streamOptions: flag(raw.streamOptions ?? true, `${where}.streamOptions`),
+    storeFlag: flag(raw.storeFlag ?? false, `${where}.storeFlag`),
+    toolStream: flag(raw.toolStream ?? false, `${where}.toolStream`),
+    thinking: nullableChoice<ProviderThinkingStyle>(
+      raw.thinking,
+      THINKING_STYLES,
+      `${where}.thinking`,
+    ),
+    reasoningEffort: flag(raw.reasoningEffort ?? true, `${where}.reasoningEffort`),
+  };
+}
+
+function parseRateSchedule(value: unknown, where: string): RateSchedule | null {
+  if (value === undefined || value === null) return null;
+  const raw = record(value, where);
+  if (!Array.isArray(raw.peakWindowsUtc)) fail(`${where}.peakWindowsUtc`, "expected an array");
+  return {
+    peakWindowsUtc: raw.peakWindowsUtc.map((entry, index) => {
+      const win = record(entry, `${where}.peakWindowsUtc[${index}]`);
+      return {
+        startMinute: number(win.startMinute, `${where}.peakWindowsUtc[${index}].startMinute`),
+        endMinute: number(win.endMinute, `${where}.peakWindowsUtc[${index}].endMinute`),
+      };
+    }),
+    weekendOffsetMinutes: number(raw.weekendOffsetMinutes ?? 0, `${where}.weekendOffsetMinutes`),
+    ...(raw.peakMultiplier === undefined
+      ? {}
+      : { peakMultiplier: number(raw.peakMultiplier, `${where}.peakMultiplier`) }),
+    ...(raw.offPeakMultiplier === undefined
+      ? {}
+      : { offPeakMultiplier: number(raw.offPeakMultiplier, `${where}.offPeakMultiplier`) }),
+  };
+}
+
+function parsePricing(value: unknown, where: string): Record<string, ProviderModelRate> {
+  if (value === undefined) return {};
+  const rates: Record<string, ProviderModelRate> = {};
+  for (const [model, entry] of Object.entries(record(value, where))) {
+    const rate = record(entry, `${where}.${model}`);
+    rates[model] = {
+      inputCacheHit: number(rate.inputCacheHit, `${where}.${model}.inputCacheHit`),
+      inputCacheMiss: number(rate.inputCacheMiss, `${where}.${model}.inputCacheMiss`),
+      output: number(rate.output, `${where}.${model}.output`),
+    };
+  }
+  return rates;
+}
+
+function parseBilling(value: unknown, where: string): ProviderBillingSpec {
+  const raw = record(value ?? {}, where);
+  return {
+    kind: choice<ProviderBillingKind>(raw.kind ?? "quota", PROVIDER_BILLING_KINDS, `${where}.kind`),
+    schedule: parseRateSchedule(raw.schedule, `${where}.schedule`),
+    pricing: parsePricing(raw.pricing, `${where}.pricing`),
+  };
+}
+
 function parseClient(value: unknown, where: string): ProviderClientSpec {
   const raw = record(value, where);
   return {
@@ -437,6 +669,29 @@ function parseClient(value: unknown, where: string): ProviderClientSpec {
       `${where}.transport`,
     ),
     allowMissingKey: flag(raw.allowMissingKey, `${where}.allowMissingKey`),
+  };
+}
+
+function parseErrors(value: unknown, where: string, label: string): ProviderErrorsSpec {
+  // Optional block: a minimal declaration gets the generic wording instead of
+  // being rejected for omitting copy.
+  const raw = record(value ?? {}, where);
+  return {
+    i18nPrefix:
+      raw.i18nPrefix === undefined
+        ? "custom"
+        : choice<ProviderErrorI18nPrefix>(
+            raw.i18nPrefix,
+            PROVIDER_ERROR_I18N_PREFIXES,
+            `${where}.i18nPrefix`,
+          ),
+    brands: raw.brands === undefined ? [label] : texts(raw.brands, `${where}.brands`),
+    hosts: texts(raw.hosts ?? [], `${where}.hosts`),
+    serverReport: choice<ProviderServerReport>(
+      raw.serverReport ?? "standard",
+      PROVIDER_SERVER_REPORTS,
+      `${where}.serverReport`,
+    ),
   };
 }
 
@@ -456,10 +711,11 @@ function parseProvider(value: unknown, source: string): ProviderSpec {
   const id = text(raw.id, `${source}: id`);
   const scope = `${source}: provider "${id}"`;
   const settings = parseSettings(raw.settings ?? [], `${scope}: settings`);
+  const label = text(raw.label, `${scope}: label`);
   return {
     id,
     providerId: nullableChoice<ProviderID>(raw.providerId, PROVIDER_ID_SET, `${scope}: providerId`),
-    label: text(raw.label, `${scope}: label`),
+    label,
     groupLabelKey: text(raw.groupLabelKey, `${scope}: groupLabelKey`),
     pickerGroup: nullableText(raw.pickerGroup, `${scope}: pickerGroup`),
     order: number(raw.order, `${scope}: order`),
@@ -480,7 +736,7 @@ function parseProvider(value: unknown, source: string): ProviderSpec {
       `${scope}: reasoningEfforts`,
     ) as ReasoningEffort[],
     endpoint: parseEndpoint(raw.endpoint, `${scope}: endpoint`),
-    credentials: parseCredentials(raw.credentials, `${scope}: credentials`, settings),
+    credentials: parseCredentials(raw.credentials, `${scope}: credentials`, settings, id),
     settings,
     settingsPanel: nullableChoice<ProviderSettingsPanel>(
       raw.settingsPanel,
@@ -503,6 +759,10 @@ function parseProvider(value: unknown, source: string): ProviderSpec {
     modelsDev: nullableText(raw.modelsDev, `${scope}: modelsDev`),
     discovery: parseDiscovery(raw.discovery, `${scope}: discovery`),
     client: parseClient(raw.client, `${scope}: client`),
+    errors: parseErrors(raw.errors, `${scope}: errors`, label),
+    billing: parseBilling(raw.billing, `${scope}: billing`),
+    wire: parseWire(raw.wire, `${scope}: wire`),
+    usage: parseUsage(raw.usage, `${scope}: usage`),
   };
 }
 
@@ -519,11 +779,11 @@ function assertUnique(specs: readonly ProviderSpec[]): void {
   }
 }
 
-/** Validates a `{ providers: [...] }` document — an embedder's own registry. */
+/** Validates a `{ providers: [...] }` document — an embedder's own registry. An empty
+ *  set is valid: data is optional, so a build with no provider files must still parse. */
 function parseRegistry(value: unknown): ProviderSpec[] {
   const root = record(value, "root");
   if (!Array.isArray(root.providers)) fail("root.providers", "expected an array");
-  if (root.providers.length === 0) fail("root.providers", "expected at least one provider");
   const specs = root.providers.map((entry, index) => parseProvider(entry, `providers[${index}]`));
   assertUnique(specs);
   return specs;
@@ -590,9 +850,61 @@ export const MODELS_DEV_SPECS: readonly ProviderSpec[] = PROVIDER_SPECS.filter(
   (spec) => spec.providerId !== null && spec.modelsDev !== null,
 );
 
-/** Catalog entry by its catalog id (e.g. `typesafe`), or undefined when unknown. */
+/** Catalog entry by its catalog id (e.g. `opencode`), or undefined when unknown. */
 export function providerSpec(id: string): ProviderSpec | undefined {
   return SPEC_BY_ID.get(id);
+}
+
+/** True when a provider declares this id: the tolerant membership check, without
+ *  building or destructuring a spec. */
+export function providerDeclared(id: string): boolean {
+  return SPEC_BY_ID.has(id);
+}
+
+/** A provider's declared per-model rates, or {} when it declares none. */
+export function providerPricing(id: string): Readonly<Record<string, ProviderModelRate>> {
+  return providerSpec(id)?.billing.pricing ?? {};
+}
+
+/** A provider's effort ladder, or an empty ladder when the id is undeclared. */
+export function providerReasoningEfforts(id: string): readonly ReasoningEffort[] {
+  return (
+    (PROVIDER_REASONING_EFFORTS as Record<string, readonly ReasoningEffort[] | undefined>)[id] ?? []
+  );
+}
+
+const ERROR_BRANDS: ReadonlyMap<string, string> = new Map(
+  PROVIDER_SPECS.flatMap((spec) => spec.errors.brands.map((brand) => [brand, spec.id] as const)),
+);
+
+const ERROR_HOSTS: readonly { suffix: string; id: string }[] = PROVIDER_SPECS.flatMap((spec) =>
+  spec.errors.hosts.map((suffix) => ({ suffix: suffix.toLowerCase(), id: spec.id })),
+);
+
+/** Provider that declares `brand` as its wire error prefix, or undefined. */
+export function providerForErrorBrand(brand: string): string | undefined {
+  return ERROR_BRANDS.get(brand);
+}
+
+/** Provider that declares `url`'s host, or undefined. A host must equal the
+ *  declared suffix or end with `.` + suffix, so a lookalike domain cannot match. */
+export function providerForErrorHost(url: string | undefined | null): string | undefined {
+  if (!url) return undefined;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+  return ERROR_HOSTS.find(({ suffix }) => host === suffix || host.endsWith(`.${suffix}`))?.id;
+}
+
+/** Regex alternation of every declared error brand, longest first. */
+export function errorBrandPattern(): string {
+  return PROVIDER_SPECS.flatMap((spec) => spec.errors.brands)
+    .sort((a, b) => b.length - a.length)
+    .map((brand) => brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
 }
 
 /** Catalog entry by catalog id; throws when providers.json has no such entry. */
@@ -607,6 +919,43 @@ export function specForProvider(id: ProviderID): ProviderSpec {
   const spec = SPEC_BY_PROVIDER.get(id);
   if (!spec) throw new Error(`providers.json has no routable entry for "${id}"`);
   return spec;
+}
+
+/** One validated write from a settings patch. */
+export interface ProviderSettingWrite {
+  providerId: string;
+  key: string;
+  /** Empty string clears the stored value. */
+  value: string;
+}
+
+/** Validate a client-supplied settings map against the declarations: only a
+ *  declared catalog id and a declared setting key are accepted, so a patch can
+ *  never invent a persisted field. */
+export function parseProviderSettingsPatch(value: unknown): {
+  writes: ProviderSettingWrite[];
+  rejected: string[];
+} {
+  const writes: ProviderSettingWrite[] = [];
+  const rejected: string[] = [];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { writes, rejected };
+  }
+  for (const [providerId, raw] of Object.entries(value)) {
+    const spec = providerSpec(providerId);
+    if (!spec || !raw || typeof raw !== "object" || Array.isArray(raw)) {
+      rejected.push(providerId);
+      continue;
+    }
+    for (const [key, entryValue] of Object.entries(raw)) {
+      if (typeof entryValue !== "string" || !spec.settings.some((s) => s.key === key)) {
+        rejected.push(`${providerId}.${key}`);
+        continue;
+      }
+      writes.push({ providerId, key, value: entryValue });
+    }
+  }
+  return { writes, rejected };
 }
 
 /** A provider's default endpoint, optionally a named tier (e.g. OpenCode `go`). */
@@ -653,7 +1002,7 @@ export function resolveProviderEndpoint(
   options: ProviderCredentialContext & { tier?: string | null },
 ): ProviderEndpoint {
   const env = options.env ?? ((name: string) => process.env[name]);
-  const readConfig = (field: string | null): string | undefined => readConfigField(options, field);
+  const readSetting = (path: string | null): string | undefined => readSettingValue(options, path);
   const publicKey = spec.credentials.publicKey ?? undefined;
   const { endpoint, credentials } = spec;
 
@@ -662,25 +1011,25 @@ export function resolveProviderEndpoint(
   }
 
   const envKey = firstEnv(credentials.apiKeyEnv, env);
-  const configKey = readConfig(credentials.apiKeyConfig);
+  const storedKey = readSetting(credentials.apiKeySetting);
   // Whichever source supplies the base URL owns the key, unless the provider
   // opts into `resolve` (Ollama), which falls back to the other source anyway.
   const tupleKey = (own: string | undefined, other: string | undefined): string | undefined =>
     own ?? (endpoint.keyTuple === "resolve" ? other : undefined);
 
   const envBaseUrl = firstEnv(credentials.baseUrlEnv, env);
-  if (envBaseUrl) return { baseUrl: envBaseUrl, apiKey: tupleKey(envKey, configKey) ?? publicKey };
+  if (envBaseUrl) return { baseUrl: envBaseUrl, apiKey: tupleKey(envKey, storedKey) ?? publicKey };
 
-  const configBaseUrl = readConfig(credentials.baseUrlConfig);
-  if (configBaseUrl) {
-    return { baseUrl: configBaseUrl, apiKey: tupleKey(configKey, envKey) ?? publicKey };
+  const storedBaseUrl = readSetting(credentials.baseUrlSetting);
+  if (storedBaseUrl) {
+    return { baseUrl: storedBaseUrl, apiKey: tupleKey(storedKey, envKey) ?? publicKey };
   }
 
   const tierUrl =
     endpoint.strategy === "tiered" && options.tier ? endpoint.tiers[options.tier] : undefined;
   return {
     baseUrl: tierUrl ?? endpoint.default ?? undefined,
-    apiKey: envKey ?? configKey ?? publicKey,
+    apiKey: envKey ?? storedKey ?? publicKey,
   };
 }
 
@@ -709,12 +1058,12 @@ export function providerUsable(
   return spec.usable.keylessLocal && isLocalBaseUrl(context.endpoint.baseUrl);
 }
 
-function readConfigField(
+function readSettingValue(
   context: ProviderCredentialContext,
-  field: string | null,
+  path: string | null,
 ): string | undefined {
-  if (!field) return undefined;
-  const value = context.configField(field)?.trim();
+  if (!path) return undefined;
+  const value = context.setting(path)?.trim();
   return value || undefined;
 }
 
@@ -725,9 +1074,9 @@ function credentialValue(
 ): string | undefined {
   const env = context.env ?? ((name: string) => process.env[name]);
   const envNames = kind === "apiKey" ? spec.credentials.apiKeyEnv : spec.credentials.baseUrlEnv;
-  const configField =
-    kind === "apiKey" ? spec.credentials.apiKeyConfig : spec.credentials.baseUrlConfig;
-  return firstEnv(envNames, env) ?? readConfigField(context, configField);
+  const settingPath =
+    kind === "apiKey" ? spec.credentials.apiKeySetting : spec.credentials.baseUrlSetting;
+  return firstEnv(envNames, env) ?? readSettingValue(context, settingPath);
 }
 
 /** The API key a provider resolves from env-then-config, independent of any
@@ -764,7 +1113,7 @@ export function providerCountsAsConfigured(
 /** The vision rules a provider declares, resolved through any `fromProvider` link.
  *  A provider absent from providers/ contributes no rules, so removing one can
  *  never break module load. */
-export function providerVisionSpec(id: ProviderID): ProviderVisionSpec {
+export function providerVisionSpec(id: string): ProviderVisionSpec {
   const spec = providerSpec(id);
   if (!spec) return {};
   const inherited = spec.vision.fromProvider

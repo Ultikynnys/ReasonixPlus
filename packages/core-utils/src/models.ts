@@ -14,11 +14,11 @@ export { PROVIDER_MODEL_PRECEDENCE };
 /** The install's default model; a registry test pins it to DeepSeek's default. */
 export const DEFAULT_MODEL = "deepseek-flash";
 
-function catalogOf(id: ProviderID): readonly string[] {
+function catalogOf(id: string): readonly string[] {
   return providerSpec(id)?.models ?? [];
 }
 
-function tierCatalogOf(id: ProviderID): readonly string[] {
+function tierCatalogOf(id: string): readonly string[] {
   return providerSpec(id)?.goModels ?? [];
 }
 
@@ -174,7 +174,7 @@ export function parseModelRef(model: string): ParsedModelRef {
 /** Prefixes a wire id with its provider:
  *  `qualifyModelRef("opencode", "mimo-v2.6-pro")` → `opencode/mimo-v2.6-pro`.
  *  An already-qualified id is rewritten, never stacked. */
-export function qualifyModelRef(provider: ProviderID, model: string): string {
+export function qualifyModelRef(provider: string, model: string): string {
   return `${provider}/${parseModelRef(model).id}`;
 }
 

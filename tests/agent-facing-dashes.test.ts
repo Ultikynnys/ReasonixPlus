@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildCodeToolset } from "../src/code/setup.js";
 import { MCP_CATALOG } from "../src/mcp/catalog.js";
 import { SkillStore } from "../src/skills.js";
-import { resetTypesafeValidationCache } from "../src/tools/jev.js";
 
 const EM_DASH = "\u2014";
 const EN_DASH = "\u2013";
@@ -40,7 +39,6 @@ describe("agent-facing text is free of em/en dashes", () => {
   let projectRoot: string;
 
   beforeEach(() => {
-    resetTypesafeValidationCache();
     tmpRoot = mkdtempSync(join(tmpdir(), "reasonix-dash-"));
     home = join(tmpRoot, "home");
     projectRoot = join(tmpRoot, "proj");

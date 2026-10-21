@@ -1,0 +1,11 @@
+{
+  "id": "ollama",
+  "label": "Ollama",
+  "description": "Ollama cloud web search.",
+  "order": 9,
+  "kind": "shared",
+  "strategy": "ollama",
+  "fallback": false,
+  "sharedCredential": { "provider": "ollama", "key": "apiKey" },
+  "settings": []
+}

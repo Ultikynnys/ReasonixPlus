@@ -1,0 +1,19 @@
+{
+  "id": "baidu",
+  "label": "Baidu AI Search",
+  "description": "Free 1500 searches/month per Baidu's docs.",
+  "order": 4,
+  "kind": "api-key",
+  "strategy": "baidu",
+  "fallback": false,
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["BAIDU_API_KEY", "QIANFAN_API_KEY"],
+      "configKey": "baiduApiKey",
+      "label": "Baidu AI Search API key",
+      "signupUrl": "https://console.bce.baidu.com/qianfan/ais/console/onlineService"
+    }
+  ]
+}

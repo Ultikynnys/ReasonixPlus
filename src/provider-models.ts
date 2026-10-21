@@ -4,14 +4,7 @@ import { providerSpec, providerSpecsInOrder } from "@reasonix/core-utils";
 import { readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
 import { reasonixHome } from "./reasonix-home.js";
 
-export type CatalogProvider =
-  | "deepseek"
-  | "openai"
-  | "zai"
-  | "mimo"
-  | "typesafe"
-  | "experiential"
-  | "synthetic";
+export type CatalogProvider = "deepseek" | "openai" | "zai" | "mimo" | "experiential" | "synthetic";
 
 /** Providers that publish a discovery catalog, read from their declared
  *  `discovery.strategy` so a new provider needs no second list. */

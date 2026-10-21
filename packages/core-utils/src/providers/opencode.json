@@ -108,7 +108,7 @@
       "kind": "secret",
       "env": ["OPENCODE_API_KEY"],
       "configKey": "opencodeApiKey",
-      "labelKey": "settings.webSearchApiKey.opencode",
+      "label": "OpenCode API key (OpenCode Zen)",
       "signupUrl": "https://opencode.ai/auth"
     },
     {
@@ -116,8 +116,8 @@
       "kind": "url",
       "env": ["OPENCODE_BASE_URL"],
       "configKey": "opencodeBaseUrl",
-      "labelKey": "settings.opencodeBaseUrl",
-      "hintKey": "settings.opencodeBaseUrlHint"
+      "label": "OpenCode base URL",
+      "hint": "OpenAI-compatible endpoint override for all OpenCode models. Defaults to Zen (https://opencode.ai/zen/v1); Go models use https://opencode.ai/zen/go/v1 unless overridden here."
     }
   ],
   "credentials": {
@@ -130,6 +130,14 @@
     "listField": null,
     "idField": "id",
     "excludeSpeech": false
+  },
+  "billing": { "kind": "none" },
+  "usage": { "probe": "opencode-usage" },
+  "errors": {
+    "i18nPrefix": "opencode",
+    "brands": ["OpenCode"],
+    "hosts": ["opencode.ai"],
+    "serverReport": "standard"
   },
   "client": {
     "auth": "opencode",

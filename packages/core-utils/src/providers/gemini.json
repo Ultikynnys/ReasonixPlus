@@ -51,6 +51,14 @@
     "idField": "id",
     "excludeSpeech": false
   },
+  "billing": { "kind": "quota" },
+  "usage": { "probe": "antigravity-quota" },
+  "errors": {
+    "i18nPrefix": "antigravity",
+    "brands": ["Antigravity"],
+    "hosts": ["googleapis.com"],
+    "serverReport": "standard"
+  },
   "client": {
     "auth": "gemini-oauth",
     "transport": null,

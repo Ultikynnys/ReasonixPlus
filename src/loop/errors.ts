@@ -1,9 +1,14 @@
-import { sleep } from "@reasonix/core-utils";
+import {
+  type ProviderErrorI18nPrefix,
+  providerForErrorBrand,
+  providerForErrorHost,
+  providerSpec,
+  sleep,
+} from "@reasonix/core-utils";
 import type { DeepSeekClient } from "../client.js";
 import type { ModelProvider } from "../config.js";
 import { PROVIDER_ERROR_BRANDS, isAbortError } from "../core/retry-shared.js";
 import { t } from "../i18n/index.js";
-import type { TranslationSchema } from "../i18n/types.js";
 
 export interface DeepSeekProbeResult {
   reachable: boolean;
@@ -74,14 +79,13 @@ export function formatLoopError(
   if (status === "404") return providerMessage(provider, "notFound", { inner });
   if (status === "408") return providerMessage(provider, "timeout", { inner });
   if (status === "429") {
-    const exhausted =
-      provider === "deepseek"
-        ? /insufficient (?:credits?|balance)|out of credits/i.test(inner)
-        : isOutOfCredits429(inner);
-    return providerMessage(provider, exhausted ? "credits" : "rate", { inner });
+    return providerMessage(provider, isOutOfCredits429(inner) ? "credits" : "rate", { inner });
   }
   if (is5xxStatus(status)) {
-    if (provider === "deepseek") return formatDeepSeek5xx(status, probe);
+    const spec = providerSpec(provider);
+    if (spec?.errors.serverReport === "balance-probe") {
+      return formatBalanceProbe5xx(spec.errors.i18nPrefix, status, probe);
+    }
     return providerMessage(provider, "server", { inner, status });
   }
   return msg;
@@ -294,18 +298,12 @@ export async function probeDeepSeekReachable(
   return { reachable: balance !== null };
 }
 
-/** Allow-list — only api.deepseek.com gets DS-specific 5xx wording + balance probe. */
+/** Only a provider that declares a bespoke 5xx report gets the balance-probe wording. */
 export function isDeepSeekHost(baseUrl: string | undefined | null): boolean {
-  if (!baseUrl) return false;
-  try {
-    const host = new URL(baseUrl).hostname.toLowerCase();
-    return host === "api.deepseek.com";
-  } catch {
-    return false;
-  }
+  const owner = providerForErrorHost(baseUrl);
+  return owner !== undefined && providerSpec(owner)?.errors.serverReport === "balance-probe";
 }
 
-type ErrorProvider = ModelProvider | "upstream";
 type ErrorKind =
   | "auth"
   | "credits"
@@ -317,161 +315,36 @@ type ErrorKind =
   | "rate"
   | "server";
 
-const ERROR_KEYS: Record<ErrorProvider, Record<ErrorKind, keyof TranslationSchema["errors"]>> = {
-  deepseek: {
-    auth: "deepseekAuth",
-    credits: "deepseekCredits",
-    permission: "deepseekPermission",
-    notFound: "deepseekNotFound",
-    request: "deepseekRequest",
-    context: "deepseekContext",
-    timeout: "deepseekTimeout",
-    rate: "deepseekRate",
-    server: "deepseekServer",
-  },
-  openai: {
-    auth: "openaiAuth",
-    credits: "openaiCredits",
-    permission: "openaiPermission",
-    notFound: "openaiNotFound",
-    request: "openaiRequest",
-    context: "openaiContext",
-    timeout: "openaiTimeout",
-    rate: "openaiRate",
-    server: "openaiServer",
-  },
-  ollama: {
-    auth: "ollamaAuth",
-    credits: "ollamaCredits",
-    permission: "ollamaPermission",
-    notFound: "ollamaNotFound",
-    request: "ollamaRequest",
-    context: "ollamaContext",
-    timeout: "ollamaTimeout",
-    rate: "ollamaRate",
-    server: "ollamaServer",
-  },
-  gemini: {
-    auth: "antigravityAuth",
-    credits: "antigravityCredits",
-    permission: "antigravityPermission",
-    notFound: "antigravityNotFound",
-    request: "antigravityRequest",
-    context: "antigravityContext",
-    timeout: "antigravityTimeout",
-    rate: "antigravityRate",
-    server: "antigravityServer",
-  },
-  zai: {
-    auth: "zaiAuth",
-    credits: "zaiCredits",
-    permission: "zaiPermission",
-    notFound: "zaiNotFound",
-    request: "zaiRequest",
-    context: "zaiContext",
-    timeout: "zaiTimeout",
-    rate: "zaiRate",
-    server: "zaiServer",
-  },
-  opencode: {
-    auth: "opencodeAuth",
-    credits: "opencodeCredits",
-    permission: "opencodePermission",
-    notFound: "opencodeNotFound",
-    request: "opencodeRequest",
-    context: "opencodeContext",
-    timeout: "opencodeTimeout",
-    rate: "opencodeRate",
-    server: "opencodeServer",
-  },
-  mimo: {
-    auth: "mimoAuth",
-    credits: "mimoCredits",
-    permission: "mimoPermission",
-    notFound: "mimoNotFound",
-    request: "mimoRequest",
-    context: "mimoContext",
-    timeout: "mimoTimeout",
-    rate: "mimoRate",
-    server: "mimoServer",
-  },
-  experiential: {
-    auth: "experientialAuth",
-    credits: "experientialCredits",
-    permission: "experientialPermission",
-    notFound: "experientialNotFound",
-    request: "experientialRequest",
-    context: "experientialContext",
-    timeout: "experientialTimeout",
-    rate: "experientialRate",
-    server: "experientialServer",
-  },
-  synthetic: {
-    auth: "syntheticAuth",
-    credits: "syntheticCredits",
-    permission: "syntheticPermission",
-    notFound: "syntheticNotFound",
-    request: "syntheticRequest",
-    context: "syntheticContext",
-    timeout: "syntheticTimeout",
-    rate: "syntheticRate",
-    server: "syntheticServer",
-  },
-  upstream: {
-    auth: "customAuth",
-    credits: "customCredits",
-    permission: "customPermission",
-    notFound: "customNotFound",
-    request: "customRequest",
-    context: "customContext",
-    timeout: "customTimeout",
-    rate: "customRate",
-    server: "customServer",
-  },
-};
+const ERROR_KIND_SUFFIX = {
+  auth: "Auth",
+  credits: "Credits",
+  permission: "Permission",
+  notFound: "NotFound",
+  request: "Request",
+  context: "Context",
+  timeout: "Timeout",
+  rate: "Rate",
+  server: "Server",
+} as const satisfies Record<ErrorKind, string>;
 
-function providerMessage(
-  provider: ErrorProvider,
-  kind: ErrorKind,
-  vars: Record<string, string>,
-): string {
-  return t(`errors.${ERROR_KEYS[provider][kind]}`, vars);
+/** The i18n prefix a provider declares for its messages; `custom` when it declares none. */
+function errorI18nPrefix(provider: string): ProviderErrorI18nPrefix {
+  return providerSpec(provider)?.errors.i18nPrefix ?? "custom";
+}
+
+function providerMessage(provider: string, kind: ErrorKind, vars: Record<string, string>): string {
+  return t(`errors.${errorI18nPrefix(provider)}${ERROR_KIND_SUFFIX[kind]}`, vars);
 }
 
 function resolveErrorProvider(
   configured: ModelProvider | undefined,
   prefix: string | undefined,
   upstreamHost: string | undefined,
-): ErrorProvider {
+): string {
   if (configured) return configured;
-  if (prefix === "DeepSeek") return "deepseek";
-  if (prefix === "OpenAI") return "openai";
-  if (prefix === "Ollama") return "ollama";
-  if (prefix === "Antigravity") return "gemini";
-  if (prefix === "Z.AI") return "zai";
-  if (prefix === "OpenCode") return "opencode";
-  if (prefix === "MiMo") return "mimo";
-  if (prefix === "Experiential") return "experiential";
-  if (prefix === "Synthetic") return "synthetic";
-  if (upstreamHost) {
-    try {
-      const host = new URL(upstreamHost).hostname.toLowerCase();
-      if (host.endsWith("deepseek.com")) return "deepseek";
-      if (host.endsWith("openai.com") || host.endsWith("chatgpt.com")) return "openai";
-      if (host.endsWith("ollama.com") || host === "localhost" || host === "127.0.0.1") {
-        return "ollama";
-      }
-      if (host.endsWith("googleapis.com")) return "gemini";
-      if (host.endsWith("z.ai")) return "zai";
-      if (host.endsWith("opencode.ai")) return "opencode";
-      if (host.endsWith("xiaomimimo.com")) return "mimo";
-      if (host.endsWith("experientiallabs.ai")) return "experiential";
-      if (host.endsWith("synthetic.new")) return "synthetic";
-    } catch {
-      return "upstream";
-    }
-  }
-  return "upstream";
+  const byBrand = prefix === undefined ? undefined : providerForErrorBrand(prefix);
+  if (byBrand) return byBrand;
+  return providerForErrorHost(upstreamHost) ?? "upstream";
 }
 
 function is5xxStatus(status: string): boolean {
@@ -485,18 +358,16 @@ function isOutOfCredits429(inner: string): boolean {
   return OUT_OF_CREDITS_429.test(inner);
 }
 
-function formatDeepSeek5xx(status: string, probe?: DeepSeekProbeResult): string {
-  const head = t("errors.deepseek5xxHead", { status });
+function formatBalanceProbe5xx(
+  prefix: ProviderErrorI18nPrefix,
+  status: string,
+  probe?: DeepSeekProbeResult,
+): string {
+  const key = (suffix: string) => `errors.${prefix}5xx${suffix}` as Parameters<typeof t>[0];
+  const head = t(key("Head"), { status });
   const probeNote =
-    probe === undefined
-      ? ""
-      : probe.reachable
-        ? t("errors.deepseek5xxReachable")
-        : t("errors.deepseek5xxUnreachable");
-  const action =
-    probe?.reachable === false
-      ? t("errors.deepseek5xxActionNetwork")
-      : t("errors.deepseek5xxActionRetry");
+    probe === undefined ? "" : probe.reachable ? t(key("Reachable")) : t(key("Unreachable"));
+  const action = probe?.reachable === false ? t(key("ActionNetwork")) : t(key("ActionRetry"));
   return `${head}${probeNote}${action}`;
 }
 

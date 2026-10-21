@@ -1,0 +1,20 @@
+{
+  "id": "searxng",
+  "label": "SearXNG",
+  "description": "Self-hosted metasearch, pointed at your own endpoint.",
+  "order": 2,
+  "kind": "endpoint",
+  "strategy": "searxng",
+  "fallback": false,
+  "settings": [
+    {
+      "key": "endpoint",
+      "kind": "url",
+      "env": [],
+      "configKey": "webSearchEndpoint",
+      "label": "SearXNG endpoint",
+      "hint": "Base URL of your SearXNG instance. Defaults to http://localhost:8080.",
+      "placeholder": "http://localhost:8080"
+    }
+  ]
+}

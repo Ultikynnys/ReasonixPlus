@@ -1,12 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  PROVIDER_SPECS,
-  ROUTABLE_PROVIDER_SPECS,
-  requireProviderSpec,
-  specForProvider,
-} from "@reasonix/core-utils";
+import { PROVIDER_SPECS, ROUTABLE_PROVIDER_SPECS, specForProvider } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_EXPERIENTIAL_CHAT_URL,
@@ -17,7 +12,6 @@ import {
   DEFAULT_OPENCODE_GO_CHAT_URL,
   DEFAULT_ZAI_CHAT_URL,
   anyProviderConfigured,
-  loadCatalogEndpoint,
   loadEndpointForModel,
   loadProviderApiKeys,
   modelUsableFor,
@@ -44,8 +38,6 @@ const PROVIDER_ENV_KEYS = [
   "EXPERIENTIAL_API_KEY",
   "EXPLABS_API_KEY",
   "EXPERIENTIAL_BASE_URL",
-  "TYPESAFE_API_KEY",
-  "TYPESAFE_BASE_URL",
   "SYNTHETIC_API_KEY",
   "SYNTHETIC_BASE_URL",
   "SYN_API_KEY",
@@ -96,7 +88,8 @@ describe("provider configuration", () => {
         specForProvider("opencode").endpoint.default,
     );
     expect(DEFAULT_OPENCODE_GO_CHAT_URL).toBe(specForProvider("opencode").endpoint.tiers.go);
-    expect(DEFAULT_EXPERIENTIAL_CHAT_URL).toBe(specForProvider("experiential").endpoint.default);
+    const experiential = PROVIDER_SPECS.find((spec) => spec.id === "experiential");
+    if (experiential) expect(DEFAULT_EXPERIENTIAL_CHAT_URL).toBe(experiential.endpoint.default);
 
     expect(loadEndpointForModel("glm-5.3", path)).toEqual({
       baseUrl: DEFAULT_ZAI_CHAT_URL,
@@ -165,21 +158,11 @@ describe("provider configuration", () => {
   it("masks exactly the providers that declare an API key field", () => {
     writeConfig({ zaiApiKey: "zk-1234567890" }, path);
     const keys = loadProviderApiKeys(path);
-    const declared = PROVIDER_SPECS.filter((spec) => spec.credentials.apiKeyConfig)
+    const declared = PROVIDER_SPECS.filter((spec) => spec.credentials.apiKeySetting)
       .map((spec) => spec.id)
       .sort();
     expect(Object.keys(keys).sort()).toEqual(declared);
     expect(keys.zai).toBe("zk-1234567890");
-  });
-
-  it("resolves a catalog-only provider without a routing id", () => {
-    writeConfig({}, path);
-    expect(loadCatalogEndpoint("typesafe", path)).toEqual({
-      baseUrl: requireProviderSpec("typesafe").endpoint.default,
-      apiKey: undefined,
-    });
-    process.env.TYPESAFE_API_KEY = "tk";
-    expect(loadCatalogEndpoint("typesafe", path).apiKey).toBe("tk");
   });
 
   it("routes Synthetic aliases and hf: ids to its OpenAI-compatible endpoint", () => {

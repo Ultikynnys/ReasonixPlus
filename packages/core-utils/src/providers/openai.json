@@ -42,15 +42,15 @@
       "kind": "secret",
       "env": ["OPENAI_API_KEY"],
       "configKey": "openaiApiKey",
-      "labelKey": "settings.openaiApiKey"
+      "label": "OpenAI API key"
     },
     {
       "key": "baseUrl",
       "kind": "url",
       "env": ["OPENAI_BASE_URL"],
       "configKey": "baseUrl",
-      "labelKey": "settings.providerBaseUrl",
-      "hintKey": "settings.providerBaseUrlHint"
+      "label": "OpenAI base URL",
+      "hint": "OpenAI-compatible endpoint override for OpenAI. Empty uses the provider's default endpoint."
     }
   ],
   "credentials": {
@@ -63,6 +63,28 @@
     "listField": "data",
     "idField": "id",
     "excludeSpeech": false
+  },
+  "wire": { "storeFlag": true },
+  "billing": {
+    "kind": "usd-unless-oauth",
+    "schedule": null,
+    "pricing": {
+      "gpt-6-astra": { "inputCacheHit": 1.0, "inputCacheMiss": 10, "output": 50 },
+      "gpt-6-sol": { "inputCacheHit": 0.2, "inputCacheMiss": 2, "output": 10 },
+      "gpt-6-luna": { "inputCacheHit": 0.01, "inputCacheMiss": 0.1, "output": 0.5 },
+      "gpt-6.1-sol": { "inputCacheHit": 0.1, "inputCacheMiss": 2, "output": 10 },
+      "gpt-5.6": { "inputCacheHit": 0.5, "inputCacheMiss": 5, "output": 30 },
+      "gpt-5.6-sol": { "inputCacheHit": 0.5, "inputCacheMiss": 5, "output": 30 },
+      "gpt-5.6-terra": { "inputCacheHit": 0.2, "inputCacheMiss": 2, "output": 12 },
+      "gpt-5.6-luna": { "inputCacheHit": 0.02, "inputCacheMiss": 0.2, "output": 1.2 }
+    }
+  },
+  "usage": { "probe": "codex-oauth" },
+  "errors": {
+    "i18nPrefix": "openai",
+    "brands": ["OpenAI"],
+    "hosts": ["openai.com", "chatgpt.com"],
+    "serverReport": "standard"
   },
   "client": {
     "auth": "openai-oauth",

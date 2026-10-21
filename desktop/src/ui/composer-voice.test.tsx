@@ -84,12 +84,12 @@ describe("Composer Voice Input Button", () => {
   it("reports microphone startup failures through the durable chat callback", async () => {
     const onVoiceError = vi.fn();
     vi.mocked(AudioRecorder).mockImplementationOnce(
-      () => {
+      () => ({
           recording: false,
           start: vi.fn().mockRejectedValue(new Error("name=NotAllowedError, message=Blocked")),
           stop: vi.fn(),
           cancel: vi.fn(),
-        } as unknown as AudioRecorder,
+        }) as unknown as AudioRecorder,
     );
     render(<Composer {...baseProps} onVoiceError={onVoiceError} />);
 

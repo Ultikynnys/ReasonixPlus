@@ -9,7 +9,6 @@ import { saveOpenAIOAuth } from "../src/config.js";
 import { hasOpenAIOAuthSession } from "../src/oauth.js";
 import { ToolRegistry } from "../src/tools.js";
 import { registerImageGenTool } from "../src/tools/image-gen.js";
-import { resetTypesafeValidationCache } from "../src/tools/jev.js";
 
 /** Minimal JWT (header.payload.signature) with the given claims payload. */
 function jwt(payload: object): string {
@@ -258,22 +257,16 @@ describe("buildCodeToolset — conditional generate_image", () => {
   let tmpRoot: string;
   let cfgPath: string;
   let savedKey: string | undefined;
-  let savedTypesafe: string | undefined;
 
   beforeEach(() => {
-    resetTypesafeValidationCache();
     savedKey = process.env.DEEPSEEK_API_KEY;
-    savedTypesafe = process.env.TYPESAFE_API_KEY;
     // biome-ignore lint/performance/noDelete: must be truly unset, not the string "undefined"
     delete process.env.DEEPSEEK_API_KEY;
-    // biome-ignore lint/performance/noDelete: must be truly unset, not the string "undefined"
-    delete process.env.TYPESAFE_API_KEY;
     tmpRoot = mkdtempSync(join(tmpdir(), "reasonix-image-setup-"));
     cfgPath = join(tmpRoot, "config.json");
   });
   afterEach(() => {
     if (savedKey !== undefined) process.env.DEEPSEEK_API_KEY = savedKey;
-    if (savedTypesafe !== undefined) process.env.TYPESAFE_API_KEY = savedTypesafe;
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 

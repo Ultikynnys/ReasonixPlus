@@ -9,11 +9,9 @@ import {
   loadEditMode,
   loadElevationEnabled,
   loadFilesystemOutlineThresholdBytes,
-  loadJavaSourceEnabled,
   loadProjectShellAllowed,
   loadSubagentModels,
   loadToolRateLimit,
-  loadTypesafeApiKey,
   providerForModel,
   readConfig,
   regexRulePatterns,
@@ -30,8 +28,6 @@ import { registerCodeQueryTools } from "../tools/code-query.js";
 import { registerComputerUseTool } from "../tools/computer-use.js";
 import { registerFilesystemTools } from "../tools/filesystem.js";
 import { registerImageGenTool } from "../tools/image-gen.js";
-import { registerJavaSourceTool } from "../tools/java-source.js";
-import { registerJevTool, validateTypesafeApiKeyCached } from "../tools/jev.js";
 import { JobRegistry } from "../tools/jobs.js";
 import { registerMemoryTools } from "../tools/memory.js";
 import { registerPlanTool } from "../tools/plan.js";
@@ -110,8 +106,6 @@ export interface CodeToolset {
    *  DIFFERENT session (whose frozen flag differs), never for a live settings flip:
    *  changing the tool set mid-conversation invalidates the cached prompt prefix. */
   syncSubagentTools: (enabled: boolean) => void;
-  /** Knowledge-level JEV sync. Validation must complete before enabled=true. */
-  syncJevTool: (enabled: boolean) => void;
 }
 
 /** Mirror `editMode === "read-only"` into the registry's dispatch gate - keeps a single source of truth (the persisted EditMode) for the read-only mode. */
@@ -184,24 +178,8 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
   if (hasOpenAIOAuthSession(opts.configPath)) {
     registerImageGenTool(tools, { rootDir: opts.rootDir, configPath: opts.configPath });
   }
-  const typesafeApiKey = loadTypesafeApiKey(opts.configPath);
-  if (typesafeApiKey) {
-    try {
-      // Cached: a successful validation is trusted briefly so per-tab toolset builds
-      // and workspace switches don't re-hit the network. Failures are never cached.
-      await validateTypesafeApiKeyCached(typesafeApiKey);
-      registerJevTool(tools, { configPath: opts.configPath });
-    } catch (error) {
-      process.stderr.write(
-        `reasonix: JEV tool unavailable because TypeSafe key validation failed — ${(error as Error).message}\n`,
-      );
-    }
-  }
   if (searchEnabled()) {
     registerWebTools(tools);
-  }
-  if (loadJavaSourceEnabled()) {
-    registerJavaSourceTool(tools, { projectRoot: opts.rootDir });
   }
   // Lazy per-model: constructing DeepSeekClient throws when the provider's API
   // key is unset, which would kill `reasonix code` before the setup wizard can
@@ -245,9 +223,5 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
     jobs,
     registerRooted,
     syncSubagentTools: registerSpawnTool,
-    syncJevTool: (enabled) => {
-      if (enabled) registerJevTool(tools, { configPath: opts.configPath });
-      else tools.unregister("jev_evaluate");
-    },
   };
 }

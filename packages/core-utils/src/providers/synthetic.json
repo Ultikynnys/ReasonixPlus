@@ -49,7 +49,7 @@
       "kind": "secret",
       "env": ["SYNTHETIC_API_KEY", "SYN_API_KEY"],
       "configKey": "syntheticApiKey",
-      "labelKey": "settings.webSearchApiKey.synthetic",
+      "label": "Synthetic API key",
       "signupUrl": "https://synthetic.new/billing/"
     },
     {
@@ -57,8 +57,8 @@
       "kind": "url",
       "env": ["SYNTHETIC_BASE_URL"],
       "configKey": "syntheticBaseUrl",
-      "labelKey": "settings.syntheticBaseUrl",
-      "hintKey": "settings.syntheticBaseUrlHint"
+      "label": "Synthetic base URL",
+      "hint": "OpenAI-compatible endpoint override for every Synthetic model. Defaults to https://api.synthetic.new/openai/v1."
     }
   ],
   "credentials": {
@@ -77,6 +77,13 @@
     "discoveredCatalog": true,
     "checkedLast": false,
     "modelScheme": null
+  },
+  "billing": { "kind": "usd" },
+  "errors": {
+    "i18nPrefix": "synthetic",
+    "brands": ["Synthetic"],
+    "hosts": ["synthetic.new"],
+    "serverReport": "standard"
   },
   "client": {
     "auth": "api-key",

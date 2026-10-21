@@ -7,16 +7,11 @@ import { MailProvider } from "../protocol";
 import { AudioRecorder } from "../voice/audio-recorder";
 import { markVoiceModelDownloaded, setActiveVoiceModelId } from "../voice/models";
 import { speechTranscriber } from "../voice/transcriber";
-import {
-  AudioInputDeviceSettings,
-  AudioInputDeviceTest,
-  SettingsModal,
-  VoiceModelSettings,
-} from "./settings";
+import { AudioInputDeviceTest, SettingsModal, VoiceInputSettings } from "./settings";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
-describe("VoiceModelSettings", () => {
+describe("VoiceInputSettings: models", () => {
   beforeEach(() => {
     localStorage.clear();
     setActiveVoiceModelId("whisper-tiny.en");
@@ -91,7 +86,7 @@ describe("VoiceModelSettings", () => {
   };
 
   it("renders the model options with correct initial state", async () => {
-    render(<VoiceModelSettings />);
+    render(<VoiceInputSettings />);
 
     expect(screen.getByText("Voice processing model")).toBeTruthy();
     expect(screen.getByText("Whisper Tiny (English)")).toBeTruthy();
@@ -108,7 +103,7 @@ describe("VoiceModelSettings", () => {
   });
 
   it("renders the Whistle card with its size and engine label but no param count", () => {
-    render(<VoiceModelSettings />);
+    render(<VoiceInputSettings />);
 
     const card = screen.getByText("Whistle (Multilingual)").closest(".voice-card") as HTMLElement;
     expect(within(card).getByText("~17 MB")).toBeTruthy();
@@ -128,7 +123,7 @@ describe("VoiceModelSettings", () => {
       markVoiceModelDownloaded("Xenova/whisper-base.en", true);
     });
 
-    render(<VoiceModelSettings />);
+    render(<VoiceInputSettings />);
 
     const baseCard = screen
       .getByText("Whisper Base (English)")
@@ -151,7 +146,7 @@ describe("VoiceModelSettings", () => {
       new Error("Network connection lost during download"),
     );
 
-    render(<VoiceModelSettings />);
+    render(<VoiceInputSettings />);
 
     const baseCard = screen
       .getByText("Whisper Base (English)")
@@ -173,7 +168,7 @@ describe("VoiceModelSettings", () => {
   it("allows deleting a downloaded model to free space", async () => {
     markVoiceModelDownloaded("Xenova/whisper-small.en", true);
 
-    render(<VoiceModelSettings />);
+    render(<VoiceInputSettings />);
 
     const deleteBtn = await screen.findByTitle("Delete downloaded files to free space");
     expect(deleteBtn).toBeTruthy();
@@ -286,7 +281,7 @@ describe("VoiceModelSettings", () => {
   });
 });
 
-describe("AudioInputDeviceSettings", () => {
+describe("VoiceInputSettings: microphone", () => {
   const grantConsent = async () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /allow microphone recording/i }));
@@ -316,7 +311,7 @@ describe("AudioInputDeviceSettings", () => {
   });
 
   it("gates the device list behind an explicit consent button", () => {
-    render(<AudioInputDeviceSettings />);
+    render(<VoiceInputSettings />);
 
     expect(screen.getByText("Audio input device")).toBeTruthy();
     expect(screen.getByRole("button", { name: /allow microphone recording/i })).toBeTruthy();
@@ -325,8 +320,26 @@ describe("AudioInputDeviceSettings", () => {
     expect(screen.queryByText("Test microphone")).toBeNull();
   });
 
+  it("merges models and microphone into one card, models left and mic right", () => {
+    render(<VoiceInputSettings />);
+
+    expect(screen.getByText("Voice input")).toBeTruthy();
+    const cards = document.querySelectorAll(".provider-card");
+    expect(cards).toHaveLength(1);
+    const cols = Array.from(
+      cards[0]!.querySelectorAll(".provider-body > .provider-col"),
+    ) as HTMLElement[];
+    expect(cols).toHaveLength(2);
+    expect(within(cols[0]!).getByText("Voice processing model")).toBeTruthy();
+    expect(within(cols[0]!).getByText("Whisper Tiny (English)")).toBeTruthy();
+    expect(within(cols[1]!).getByText("Audio input device")).toBeTruthy();
+    expect(
+      within(cols[1]!).getByRole("button", { name: /allow microphone recording/i }),
+    ).toBeTruthy();
+  });
+
   it("reveals the real device list and audio test after granting access", async () => {
-    render(<AudioInputDeviceSettings />);
+    render(<VoiceInputSettings />);
     await grantConsent();
 
     const select = (await screen.findByRole("combobox")) as HTMLSelectElement;
@@ -340,7 +353,7 @@ describe("AudioInputDeviceSettings", () => {
   });
 
   it("selects a device and persists the choice", async () => {
-    render(<AudioInputDeviceSettings />);
+    render(<VoiceInputSettings />);
     await grantConsent();
 
     const select = (await screen.findByRole("combobox")) as HTMLSelectElement;
@@ -359,7 +372,7 @@ describe("AudioInputDeviceSettings", () => {
       configurable: true,
     });
     localStorage.setItem("reasonix.voiceInputDevice", "mic-1");
-    render(<AudioInputDeviceSettings />);
+    render(<VoiceInputSettings />);
 
     const select = (await screen.findByRole("combobox")) as HTMLSelectElement;
     await waitFor(() => {
@@ -371,7 +384,7 @@ describe("AudioInputDeviceSettings", () => {
 
   it("re-matches the selection by label when the device id rotates", async () => {
     // First visit: pick the USB headset while the browser hands out one set of ids.
-    render(<AudioInputDeviceSettings />);
+    render(<VoiceInputSettings />);
     await grantConsent();
     let select = (await screen.findByRole("combobox")) as HTMLSelectElement;
     await waitFor(() => {
@@ -399,7 +412,7 @@ describe("AudioInputDeviceSettings", () => {
       },
       configurable: true,
     });
-    render(<AudioInputDeviceSettings />);
+    render(<VoiceInputSettings />);
     select = (await screen.findByRole("combobox")) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("rotated-2"));
     // The healed id is persisted so the composer records from the right device.
@@ -418,7 +431,7 @@ describe("AudioInputDeviceSettings", () => {
       },
       configurable: true,
     });
-    render(<AudioInputDeviceSettings />);
+    render(<VoiceInputSettings />);
     await grantConsent();
 
     const alert = await screen.findByRole("alert");

@@ -1,0 +1,10 @@
+{
+  "id": "bing",
+  "label": "Bing",
+  "description": "Default engine, works from CN without a proxy.",
+  "order": 0,
+  "kind": "keyless",
+  "strategy": "bing-html",
+  "fallback": true,
+  "settings": []
+}
