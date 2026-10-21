@@ -607,8 +607,12 @@ type State = {
   activeSkill: SkillOrigin | null;
   /** Terminal outcome of the most recent turn — gates success feedback and stop cards. */
   lastTurnOutcome: TurnOutcome | null;
-  /** Messages typed while busy=true — auto-sent FIFO once the current turn completes. Cleared on `clear`, `rpc_exit`, `session_loaded`. */
+  /** Messages typed while busy=true — auto-sent FIFO once the current turn completes. Cleared on `clear`, `rpc_exit`, `session_loaded`, and on Stop (discarded, never drained). */
   queuedSends: QueuedSend[];
+  /** Sends a user Stop dropped while a turn was in flight, announced by the settle that
+   *  ends it. An idle or fold-only stop has no streaming card to protect: that one
+   *  announces at once. */
+  queueDiscardCount: number;
   /** Populated by $retry_result — component useEffect reads and sets composer draft. */
   retryText?: string;
   retryNonce: number;
@@ -665,6 +669,7 @@ type Action =
   | { t: "dequeue_send"; index: number }
   | { t: "promote_queued_send"; index: number }
   | { t: "shift_queued_send" }
+  | { t: "clear_queued_sends" }
   | { t: "settings_patch"; patch: SettingsPatch }
   | { t: "workspace_recent_removed"; path: string }
   | { t: "oauth_waiting"; waiting: boolean }
@@ -1175,7 +1180,7 @@ export function reduceAction(state: State, action: Action): State {
         awaitingAck: false,
         compacting: false,
         activeSkill: null,
-        queuedSends: [],
+        ...clearedQueue(),
         messages: insertNotice(
           state.messages,
           `reasonix exited (code ${action.code ?? "?"})`,
@@ -1292,7 +1297,7 @@ export function reduceAction(state: State, action: Action): State {
         sessionFiles: [],
         sessionEvents: [],
         activeSkill: null,
-        queuedSends: [],
+        ...clearedQueue(),
         retryNonce: 0,
       };
     case "resolve_confirm": {
@@ -1458,17 +1463,29 @@ export function reduceAction(state: State, action: Action): State {
     }
     case "shift_queued_send":
       return { ...state, queuedSends: state.queuedSends.slice(1) };
+    case "clear_queued_sends": {
+      // Stop ends the conversation the queue was typed into, so its sends are dropped
+      // rather than drained. With a turn in flight the notice waits for its settle:
+      // inserting it now would seal the streaming card and split the answer in two.
+      const dropped = state.queuedSends.length;
+      if (dropped === 0) return state;
+      if (!state.busy && !state.awaitingAck) {
+        return {
+          ...state,
+          ...clearedQueue(),
+          messages: announceQueueDiscard(state.messages, dropped),
+        };
+      }
+      return { ...state, queuedSends: [], queueDiscardCount: dropped };
+    }
     case "release_stale_send": {
       if (!state.awaitingAck) return state;
-      return {
-        ...state,
-        awaitingAck: false,
-        messages: insertNotice(
-          state.messages,
-          "The send was never acknowledged by the agent — released. Check the connection and resend.",
-          "warning",
-        ),
-      };
+      const released = insertNotice(
+        state.messages,
+        "The send was never acknowledged by the agent — released. Check the connection and resend.",
+        "warning",
+      );
+      return { ...state, awaitingAck: false, ...queueDiscardPatch(state, released) };
     }
     case "push_notice": {
       return {
@@ -2023,6 +2040,35 @@ function insertNotice(
   });
 }
 
+/** The queue emptied out: no pending sends, and no Stop announcement still owed. */
+function clearedQueue(): Pick<State, "queuedSends" | "queueDiscardCount"> {
+  return { queuedSends: [], queueDiscardCount: 0 };
+}
+
+/** A Stop dropped `count` queued sends — say so, on the turn it ended. */
+function announceQueueDiscard(messages: ChatMessage[], count: number): ChatMessage[] {
+  if (count === 0) return messages;
+  return insertNotice(
+    messages,
+    count === 1
+      ? "Stopped: 1 queued message was discarded."
+      : `Stopped: ${count} queued messages were discarded.`,
+    "warning",
+  );
+}
+
+/** The notice a settle owes a discarded queue, paired with its reset so no settle
+ *  path can announce one and leave the count owed to a later turn. */
+function queueDiscardPatch(
+  state: State,
+  messages: ChatMessage[],
+): { messages: ChatMessage[]; queueDiscardCount: number } {
+  return {
+    messages: announceQueueDiscard(messages, state.queueDiscardCount),
+    queueDiscardCount: 0,
+  };
+}
+
 /** True when the given turn already carries a user-visible explanation (a warning
  *  segment or a notice). Prevents $turn_complete from adding a duplicate stop card
  *  when the loop already surfaced the reason. */
@@ -2277,7 +2323,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       const outcome = ev.outcome ?? "success";
       // Never end a turn silently: when the model stopped without an answer and
       // the loop did not already surface an explanation, add a terminal card.
-      const messages =
+      const explain =
         outcome === "stopped" && ev.reason && !turnHasTerminalExplanation(settled, ev.turn)
           ? insertNotice(settled, ev.reason, "warning", ev.turn)
           : settled;
@@ -2286,7 +2332,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         busy: false,
         awaitingAck: false,
         lastTurnOutcome: outcome,
-        messages,
+        ...queueDiscardPatch(state, explain),
         activeSkill: null,
         turnStatus: null,
         turnStatusTool: null,
@@ -2318,11 +2364,17 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // Release exactly like $turn_complete would, plus a warning notice so
       // the correction is visible.
       const settled = settleTurnMessages(state.messages);
+      const released = insertNotice(
+        settled,
+        "Resynced with the agent: it was idle, so stuck turn state was released.",
+        "warning",
+      );
       return {
         ...state,
         busy: false,
         awaitingAck: false,
         compacting: false,
+        ...queueDiscardPatch(state, released),
         activeSkill: null,
         turnStatus: null,
         turnStatusTool: null,
@@ -2332,11 +2384,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         pendingPlans: [],
         pendingCheckpoints: [],
         pendingRevisions: [],
-        messages: insertNotice(
-          settled,
-          "Resynced with the agent: it was idle, so stuck turn state was released.",
-          "warning",
-        ),
       };
     }
     case "$confirm_required":
@@ -2748,7 +2795,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         sessionFiles,
         sessionEvents: ev.events ?? [],
         activeSkill: null,
-        queuedSends: [],
+        ...clearedQueue(),
         retryNonce: 0,
       };
     }
@@ -3541,7 +3588,7 @@ const TabRuntime = memo(function TabRuntime({
     jobs: [],
     activeSkill: null,
     lastTurnOutcome: null,
-    queuedSends: [],
+    ...clearedQueue(),
     retryNonce: 0,
     oauthWaiting: false,
     antigravityOAuthWaiting: false,
@@ -4149,6 +4196,10 @@ const TabRuntime = memo(function TabRuntime({
   );
 
   const abort = useCallback(() => {
+    // Drop the queue before the abort's $turn_complete lands: the drain effect
+    // fires the moment `engaged` clears, so a kept queue would auto-send into
+    // the turn the user just stopped.
+    dispatch({ t: "clear_queued_sends" });
     const restored = restoreAbortedDraft(draftStore.getSnapshot(), abortDraftRef.current);
     clearAbortDraft();
     if (restored !== null) {

@@ -5015,4 +5015,95 @@ describe("Desktop App reducer — queued sends", () => {
 
     expect(dequeued.queuedSends.map((item) => item.text)).toEqual(["first", "second"]);
   });
+
+  it("drops the whole queue on stop instead of draining it into a new turn", () => {
+    const stopped = reduce(
+      { ...queued("first", "second"), busy: true },
+      {
+        t: "clear_queued_sends",
+      },
+    );
+
+    expect(stopped.queuedSends).toEqual([]);
+    // Nothing is announced yet: the turn still holds the card the notice belongs below.
+    expect(stopped.messages).toEqual([]);
+  });
+
+  it("announces the drop at once when no turn card is streaming", () => {
+    // A fold is engaged without a turn: there is no card to seal, so nothing to defer.
+    const stopped = reduce(
+      { ...queued("typed mid-fold"), compacting: true },
+      {
+        t: "clear_queued_sends",
+      },
+    );
+
+    expect(stopped.queuedSends).toEqual([]);
+    expect(stopped.queueDiscardCount).toBe(0);
+    expect(stopped.messages.at(-1)).toMatchObject({
+      kind: "notice",
+      severity: "warning",
+      text: "Stopped: 1 queued message was discarded.",
+    });
+  });
+
+  it("announces the discarded queue once the stopped turn settles, below its card", () => {
+    const stopped = reduce(
+      { ...queued("first", "second"), busy: true },
+      {
+        t: "clear_queued_sends",
+      },
+    );
+    const settled = reduce(stopped, {
+      t: "incoming",
+      event: { type: "$turn_complete", outcome: "aborted" },
+    });
+
+    expect(settled.messages.at(-1)).toMatchObject({
+      kind: "notice",
+      severity: "warning",
+      text: "Stopped: 2 queued messages were discarded.",
+    });
+    // Announced once: the next settle has nothing left to report.
+    const next = reduce(
+      { ...settled, busy: true },
+      { t: "incoming", event: { type: "$turn_complete", outcome: "success" } },
+    );
+    expect(next.messages.filter((m) => m.kind === "notice")).toHaveLength(1);
+  });
+
+  it("announces a parked discard when the lost terminal is resynced from $tab_status", () => {
+    const stopped = reduce({ ...queued("first"), busy: true }, { t: "clear_queued_sends" });
+    const resynced = reduce(stopped, {
+      t: "incoming",
+      event: { type: "$tab_status", busy: false, queued: 0, compacting: false, switching: false },
+    });
+
+    expect(resynced.queueDiscardCount).toBe(0);
+    expect(resynced.messages.filter((m) => m.kind === "notice")).toHaveLength(2);
+    expect(resynced.messages.at(-1)).toMatchObject({
+      text: "Stopped: 1 queued message was discarded.",
+    });
+  });
+
+  it("announces a parked discard when the unacknowledged send is released", () => {
+    const stopped = reduce(
+      { ...queued("first"), busy: true, awaitingAck: true },
+      {
+        t: "clear_queued_sends",
+      },
+    );
+    const released = reduce(stopped, { t: "release_stale_send" });
+
+    expect(released.queueDiscardCount).toBe(0);
+    expect(released.messages.at(-1)).toMatchObject({
+      text: "Stopped: 1 queued message was discarded.",
+    });
+  });
+
+  it("adds no discard notice when nothing was queued", () => {
+    const state = queued();
+
+    expect(reduce(state, { t: "clear_queued_sends" })).toBe(state);
+  });
 });

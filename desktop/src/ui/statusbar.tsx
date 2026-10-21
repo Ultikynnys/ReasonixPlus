@@ -34,6 +34,7 @@ const WINDOW_TITLE_KEYS: Record<ProviderUsageWindow["label"], string> = {
   "5h": "quotaFiveHourTitle",
   wk: "quotaWeeklyTitle",
   mo: "quotaMonthlyTitle",
+  day: "quotaDailyTitle",
   plan: "quotaPlanTitle",
 };
 

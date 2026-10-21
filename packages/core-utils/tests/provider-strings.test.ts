@@ -18,6 +18,7 @@ const KEYS = new Set([
   "quotaFiveHourTitle",
   "quotaWeeklyTitle",
   "quotaMonthlyTitle",
+  "quotaDailyTitle",
   "quotaPlanTitle",
   "creditTitle",
   "quotaNoData",
@@ -85,7 +86,8 @@ describe("declared provider copy", () => {
     const unknown: string[] = [];
     for (const entry of declared) {
       for (const match of entry.raw.matchAll(/\{(\w+)\}/g)) {
-        if (!PLACEHOLDERS.has(match[1]!)) unknown.push(`${entry.provider}.${entry.key}: {${match[1]}}`);
+        if (!PLACEHOLDERS.has(match[1]!))
+          unknown.push(`${entry.provider}.${entry.key}: {${match[1]}}`);
       }
     }
     expect(unknown, "add the placeholder to the Provider copy section first").toEqual([]);
@@ -111,9 +113,7 @@ describe("declared provider copy", () => {
     ];
     const panels = PROVIDER_SPECS.filter((spec) => spec.settingsPanel?.endsWith("-auth"));
     const missing = panels.flatMap((spec) =>
-      required
-        .filter((key) => !spec.strings[key])
-        .map((key) => `${spec.id}.${key}`),
+      required.filter((key) => !spec.strings[key]).map((key) => `${spec.id}.${key}`),
     );
     expect(missing).toEqual([]);
     expect(panels.length, "no provider selects a sign-in panel").toBeGreaterThan(0);

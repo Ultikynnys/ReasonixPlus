@@ -1,7 +1,12 @@
 // Consolidated from 17 per-module test files; each source keeps its own
 // describe() wrapper so its helpers stay file-scoped. Test bodies are unchanged.
 
-import { derivePrefix as fromCoreUtils, parseProviderRegistry } from "@reasonix/core-utils";
+import {
+  experientialUsageView,
+  derivePrefix as fromCoreUtils,
+  parseProviderRegistry,
+  syntheticUsageView,
+} from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nextAbortDraftCandidate, restoreAbortedDraft } from "../desktop/src/abort-draft";
 import {
@@ -14,8 +19,10 @@ import {
   buildLoadedMessages,
   compactTabContext,
   detectOllamaVision,
+  fetchExperientialSpend,
   fetchOllamaBalance,
   fetchOllamaPlan,
+  fetchSyntheticQuota,
   fetchZaiQuota,
   installDesktopCrashGuards,
   isSubscriptionGatedResponse,
@@ -24,6 +31,7 @@ import {
   pickJobOwner,
   probeOllamaModel,
   probeOllamaVision,
+  probeStep,
   projectSubagentEvent,
   redactDesktopDiagnosticMessage,
   refreshOllamaModels,
@@ -2186,6 +2194,254 @@ describe("desktop-zai-quota", () => {
     it("returns undefined on network errors", async () => {
       fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
       await expect(fetchZaiQuota("https://api.z.ai/api/v1", "key-1")).resolves.toBeUndefined();
+    });
+  });
+});
+
+// Each provider's usage probe in one place: Synthetic, then Experiential Labs.
+describe("desktop-provider-usage", () => {
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Synthetic: `GET https://api.synthetic.new/v2/quotas`.
+  describe("fetchSyntheticQuota", () => {
+    const BASE = "https://api.synthetic.new/v1";
+
+    it("GETs the declared quotas route with the Bearer key", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          subscription: { limit: 1350, requests: 200, renewsAt: "2026-10-22T01:04:53Z" },
+          search: { hourly: { limit: 100, requests: 3, renewsAt: "2026-10-21T22:04:53Z" } },
+          freeToolCalls: { limit: 500, requests: 12, renewsAt: "2026-10-22T00:00:00Z" },
+        }),
+      );
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toEqual({
+        subscription: { limit: 1350, requests: 200, renewsAt: "2026-10-22T01:04:53Z" },
+      });
+      const [rawUrl, init] = fetchMock.mock.calls[0]!;
+      const url = new URL(String(rawUrl));
+      expect(url.origin).toBe("https://api.synthetic.new");
+      expect(url.pathname).toBe("/v2/quotas");
+      expect(init).toMatchObject({ method: "GET", headers: { Authorization: "Bearer syn-key" } });
+    });
+
+    it("keeps the declared absolute route even when a custom base URL is set", async () => {
+      // The quotas route is not under the chat prefix, so a proxy base must not retarget it.
+      fetchMock.mockResolvedValueOnce(jsonResponse({ subscription: { limit: 1, requests: 0 } }));
+      await fetchSyntheticQuota("syn-key", "https://proxy.example/v1");
+      expect(String(fetchMock.mock.calls[0]![0])).toBe("https://api.synthetic.new/v2/quotas");
+    });
+
+    it("computes the remaining share, since the reply carries counts only", () => {
+      const view = syntheticUsageView({
+        subscription: { limit: 1350, requests: 200, renewsAt: "2026-10-22T01:04:53Z" },
+      });
+      expect(view.windows).toHaveLength(1);
+      expect(view.windows[0]?.label).toBe("5h");
+      expect(view.windows[0]?.remainingPct).toBeCloseTo((1 - 200 / 1350) * 100, 6);
+      expect(view.windows[0]?.resetsAt).toBe(Date.parse("2026-10-22T01:04:53Z"));
+    });
+
+    it("reports every request spent as 0% left, not a negative", () => {
+      const view = syntheticUsageView({
+        subscription: { limit: 100, requests: 100, renewsAt: null },
+      });
+      expect(view.windows[0]?.remainingPct).toBe(0);
+      expect(view.windows[0]?.resetsAt).toBeNull();
+    });
+
+    it("reports no window when the plan states no limit", () => {
+      // Usage-based tiers answer with limit 0; a share of nothing is not 0%.
+      expect(
+        syntheticUsageView({ subscription: { limit: 0, requests: 5, renewsAt: null } }).windows,
+      ).toEqual([]);
+    });
+
+    it("returns undefined when the reply has no subscription category", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ search: { hourly: { limit: 100, requests: 3, renewsAt: null } } }),
+      );
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
+    });
+
+    it("returns undefined on a non-ok status and on network errors", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ error: "Authorization header required." }, 401),
+      );
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
+      fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
+    });
+  });
+
+  // Experiential Labs: a dollar wallet on /api/v1/credits plus a per-key daily spend cap.
+  // The payloads below are verbatim from the live gateway.
+  describe("fetchExperientialSpend", () => {
+    const ORG = "e2aca94b-cb96-4789-b34c-884cabeb2d19";
+    const KEY_ID = "1ca028db-db9c-45ce-93eb-27310ebf684f";
+    const BASE = "https://api.experientiallabs.ai/v1";
+
+    /** The four declared routes, answering the shapes the gateway really returned. */
+    function gateway(overrides: { events?: unknown; daily?: unknown; limits?: unknown } = {}) {
+      return (input: unknown) => {
+        const url = String(input);
+        if (url.endsWith("/api/whoami")) {
+          return Promise.resolve(jsonResponse({ org_id: ORG, org_name: "r60d20" }));
+        }
+        if (url.includes("/api/gateway/usage/events")) {
+          return Promise.resolve(
+            jsonResponse({
+              org_id: ORG,
+              events: overrides.events ?? [
+                { api_key_id: KEY_ID, cost_nano_usd: 508_115_424 },
+                { api_key_id: KEY_ID, cost_nano_usd: 0 },
+              ],
+            }),
+          );
+        }
+        if (url.includes("/limits")) {
+          return Promise.resolve(
+            jsonResponse(
+              overrides.limits ?? {
+                api_key_id: KEY_ID,
+                daily_spend_cap_nano_usd: 1_000_000_000,
+                requests_per_minute: null,
+                tokens_per_minute: null,
+                tier: "free",
+                source: "explicit",
+              },
+            ),
+          );
+        }
+        if (url.includes("/api/gateway/usage/daily")) {
+          return Promise.resolve(
+            jsonResponse({
+              org_id: ORG,
+              rows: overrides.daily ?? [
+                { day: "2026-10-21", spend_nano_usd: 508_115_424 },
+                { day: "2026-10-20", spend_nano_usd: 52_729_050 },
+              ],
+            }),
+          );
+        }
+        return Promise.resolve(jsonResponse({ error: "unexpected" }, 404));
+      };
+    }
+
+    it("composes the four declared routes, substituting the ids each one produced", async () => {
+      fetchMock.mockImplementation(gateway());
+      await expect(fetchExperientialSpend("xpl-key", BASE)).resolves.toEqual({
+        dailyCapNanoUsd: 1_000_000_000,
+        spentNanoUsd: 508_115_424,
+        tier: "free",
+      });
+
+      const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+      expect(urls[0]).toBe("https://api.experientiallabs.ai/api/whoami");
+      // The org id from whoami fills the events route.
+      expect(urls[1]).toContain(`/api/gateway/usage/events?org_id=${ORG}&limit=1000`);
+      // The key id mined from the events stream fills the limits route.
+      expect(urls).toContain(`https://api.experientiallabs.ai/api/gateway/keys/${KEY_ID}/limits`);
+      for (const call of fetchMock.mock.calls) {
+        expect((call[1] as RequestInit).headers).toMatchObject({
+          Authorization: "Bearer xpl-key",
+        });
+      }
+    });
+
+    it("falls back to the event stream when the daily rollup has no row", async () => {
+      fetchMock.mockImplementation(gateway({ daily: [] }));
+      const spend = await fetchExperientialSpend("xpl-key", BASE);
+      // The two events summed, not the (absent) settled row.
+      expect(spend?.spentNanoUsd).toBe(508_115_424);
+    });
+
+    it("refuses to attribute a cap when the org has several keys", async () => {
+      fetchMock.mockImplementation(
+        gateway({
+          events: [
+            { api_key_id: KEY_ID, cost_nano_usd: 1 },
+            { api_key_id: "another-key", cost_nano_usd: 1 },
+          ],
+        }),
+      );
+      // A per-key cap cannot be read from an org-wide stream, so there is no window.
+      await expect(fetchExperientialSpend("xpl-key", BASE)).resolves.toBeUndefined();
+    });
+
+    it("returns undefined when the identity route refuses", async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ error: "Unauthorized" }, 401));
+      await expect(fetchExperientialSpend("xpl-key", BASE)).resolves.toBeUndefined();
+    });
+
+    it("refuses a template it cannot fill instead of sending it", async () => {
+      // A missing id must not become `?org_id=` on the wire.
+      await expect(probeStep("/x?org_id={org_id}", {}, "xpl-key", 100)).resolves.toEqual({
+        ok: false,
+        reason: "missing-org-id",
+      });
+      // A placeholder this reader does not know must not be sent literally.
+      await expect(
+        probeStep("/x?org_id={org_id}&y={unknown}", { org: "o" }, "xpl-key", 100),
+      ).resolves.toEqual({ ok: false, reason: "unfilled-placeholder" });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      // A filled template is sent, with the id encoded.
+      fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+      await probeStep(
+        "https://api.experientiallabs.ai/api/usage?org_id={org_id}",
+        { org: "a b" },
+        "xpl-key",
+        100,
+      );
+      expect(String(fetchMock.mock.calls[0]![0])).toBe(
+        "https://api.experientiallabs.ai/api/usage?org_id=a%20b",
+      );
+    });
+
+    it("renders the day window and the wallet together", () => {
+      const view = experientialUsageView(
+        {
+          dailyCapNanoUsd: 1_000_000_000,
+          spentNanoUsd: 508_115_424,
+          tier: "free",
+          creditUsd: 4.978728066,
+        },
+        Date.parse("2026-10-21T18:02:04Z"),
+      );
+      expect(view.plan).toBe("free");
+      expect(view.windows).toHaveLength(1);
+      expect(view.windows[0]?.label).toBe("day");
+      // $0.508 spent against a $1.00 cap leaves 49.19%.
+      expect(view.windows[0]?.remainingPct).toBeCloseTo(49.1884576, 5);
+      // The daily cap rolls over on the UTC day boundary, not 24h from the read.
+      expect(view.windows[0]?.resetsAt).toBe(Date.parse("2026-10-22T00:00:00Z"));
+      expect(view.credit).toEqual({ currency: "USD", amount: 4.978728066 });
+    });
+
+    it("shows the wallet with no window when the key is uncapped", () => {
+      const view = experientialUsageView({
+        dailyCapNanoUsd: null,
+        spentNanoUsd: 508_115_424,
+        tier: "pro",
+        creditUsd: 12,
+      });
+      expect(view.windows).toEqual([]);
+      expect(view.plan).toBe("pro");
+      expect(view.credit).toEqual({ currency: "USD", amount: 12 });
     });
   });
 });

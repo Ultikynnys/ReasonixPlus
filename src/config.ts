@@ -1053,6 +1053,11 @@ function providerApiKey(provider: ModelProvider, path: string): string | undefin
   return spec ? providerApiKeyValue(spec, providerContext(readConfig(path))) : undefined;
 }
 
+/** Synthetic API key, for the plan-quota read: env > config > undefined. */
+export function loadSyntheticApiKey(path: string = defaultConfigPath()): string | undefined {
+  return providerApiKey("synthetic", path);
+}
+
 /** Z.AI API key shared by glm-* chat and Z.AI web search: env > config > undefined. */
 export function loadZaiApiKey(path: string = defaultConfigPath()): string | undefined {
   return providerApiKey("zai", path);

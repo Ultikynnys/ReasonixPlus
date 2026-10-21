@@ -176,11 +176,13 @@ describe("providers.json", () => {
     // vendor's path) keeps a new provider honest without freezing its routes.
     const probing = PROVIDER_SPECS.filter((spec) => spec.usage.probe !== null);
     expect(probing.map((spec) => spec.id).sort()).toEqual([
+      "experiential",
       "gemini",
       "mimo",
       "ollama",
       "openai",
       "opencode",
+      "synthetic",
       "zai",
     ]);
     for (const spec of probing) {
@@ -205,6 +207,23 @@ describe("providers.json", () => {
     expect(requireProviderSpec("opencode").usage.urlGate).toBe("declared-hosts");
     // Antigravity's reader composes its addresses from the declared endpoint RPCs.
     expect(requireProviderSpec("gemini").usage.urls).toEqual([]);
+    // Experiential's reader walks these four in order, each step filling the next
+    // one's placeholder, so a reordering here breaks the probe and must fail loudly.
+    expect(requireProviderSpec("experiential").usage).toMatchObject({
+      probe: "experiential-spend",
+      primaryWindow: "day",
+      urls: [
+        "/api/whoami",
+        "/api/gateway/usage/events?org_id={org_id}&limit=1000",
+        "/api/gateway/keys/{api_key_id}/limits",
+        "/api/gateway/usage/daily?org_id={org_id}&scope=org&group_by=day",
+      ],
+    });
+    // Its wallet and its quota are separate routes, both declared.
+    expect(requireProviderSpec("experiential").billing.balance).toEqual({
+      url: "https://api.experientiallabs.ai/api/v1/credits",
+      shape: "credits-usage",
+    });
   });
 
   it("exposes each provider's declared refresh floor in ms, with one default", () => {

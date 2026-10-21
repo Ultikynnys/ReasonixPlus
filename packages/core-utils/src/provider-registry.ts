@@ -1,8 +1,8 @@
 /** Declarative model-provider registry: providers/<id>.json is the single source of truth. */
 
 import type { ReasoningEffort } from "./permission-types.js";
-import type { RateSchedule } from "./rate-periods.js";
 import { PROVIDER_DOCUMENTS, PROVIDER_IDS, type ProviderID } from "./providers.generated.js";
+import type { RateSchedule } from "./rate-periods.js";
 
 /** Routable provider ids, generated from providers/*.json by `npm run providers:sync`. */
 export { PROVIDER_IDS };
@@ -175,10 +175,7 @@ export const PROVIDER_ERROR_I18N_PREFIXES: ReadonlySet<string> = new Set([
   "custom",
 ]);
 
-export const PROVIDER_SERVER_REPORTS: ReadonlySet<string> = new Set([
-  "standard",
-  "balance-probe",
-]);
+export const PROVIDER_SERVER_REPORTS: ReadonlySet<string> = new Set(["standard", "balance-probe"]);
 
 /** How a provider bills a token: dollars, a plan window, or nothing it can measure. */
 export type ProviderBillingKind = "usd" | "quota" | "none" | "usd-unless-oauth" | "quota-if-key";
@@ -345,6 +342,8 @@ export type ProviderProbeStrategy =
   | "antigravity-quota"
   | "zai-monitor"
   | "mimo-console"
+  | "experiential-spend"
+  | "synthetic-quotas"
   | "opencode-usage";
 
 export const PROVIDER_PROBE_STRATEGIES: ReadonlySet<string> = new Set<ProviderProbeStrategy>([
@@ -353,12 +352,14 @@ export const PROVIDER_PROBE_STRATEGIES: ReadonlySet<string> = new Set<ProviderPr
   "antigravity-quota",
   "zai-monitor",
   "mimo-console",
+  "experiential-spend",
+  "synthetic-quotas",
   "opencode-usage",
 ]);
 
 /** Window labels a normalized usage view carries: "5h" (rolling/session), "wk",
- *  "mo", or "plan" for a per-model bucket. */
-export type ProviderUsageWindowLabel = "5h" | "wk" | "mo" | "plan";
+ *  "mo", "day" (a daily spend cap), or "plan" for a per-model bucket. */
+export type ProviderUsageWindowLabel = "5h" | "wk" | "mo" | "day" | "plan";
 
 /** What a probe's relative URL resolves against: the endpoint's origin (a usage
  *  route rarely shares the chat path prefix) or the configured base URL. */
@@ -453,7 +454,7 @@ const SETTINGS_PANELS: ReadonlySet<string> = new Set([
 const USAGE_URL_BASES: ReadonlySet<string> = new Set(["origin", "endpoint"]);
 const USAGE_URL_GATES: ReadonlySet<string> = new Set(["any", "declared-hosts"]);
 const USAGE_RESETS_STYLES: ReadonlySet<string> = new Set(["relative", "absolute"]);
-const USAGE_WINDOW_LABELS: ReadonlySet<string> = new Set(["5h", "wk", "mo", "plan"]);
+const USAGE_WINDOW_LABELS: ReadonlySet<string> = new Set(["5h", "wk", "mo", "day", "plan"]);
 const USAGE_MEASURES: ReadonlySet<string> = new Set(["windows", "plan"]);
 /** One read per minute unless a provider's API allows fewer. */
 const DEFAULT_USAGE_MIN_INTERVAL_SECONDS = 60;
@@ -797,8 +798,7 @@ function parseBilling(value: unknown, where: string): ProviderBillingSpec {
   return {
     kind: choice<ProviderBillingKind>(raw.kind ?? "quota", PROVIDER_BILLING_KINDS, `${where}.kind`),
     schedule: parseRateSchedule(raw.schedule, `${where}.schedule`),
-    peakModels:
-      raw.peakModels === undefined ? [] : texts(raw.peakModels, `${where}.peakModels`),
+    peakModels: raw.peakModels === undefined ? [] : texts(raw.peakModels, `${where}.peakModels`),
     balance: parseBalance(raw.balance, `${where}.balance`),
   };
 }

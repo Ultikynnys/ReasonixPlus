@@ -70,9 +70,16 @@ export {
   ollamaUsageView,
   opencodeUsageView,
   quotaWindowsSummary,
+  experientialUsageView,
+  syntheticUsageView,
   zaiUsageView,
 } from "./provider-usage.js";
-export type { ProviderUsageView } from "./provider-usage.js";
+export type {
+  ExperientialSpend,
+  ProviderUsageView,
+  SyntheticQuota,
+  SyntheticQuotaWindow,
+} from "./provider-usage.js";
 export {
   ANTIGRAVITY_MODELS,
   DEFAULT_MODEL,

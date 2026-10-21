@@ -79,7 +79,7 @@ can adopt one sentence at a time.
 | --- | --- |
 | `notConfigured`, `noCredential` | Setup gate and turn-start rejection |
 | `apiOauth`, `apiKey`, `apiNone`, `apiBare`, `oauthFailed` | Status-bar API chip |
-| `quotaLabel`, `quotaTitle`, `quotaDualTitle`, `quotaFiveHourTitle`, `quotaNoData`, `quotaNoDataUnavailable`, `quotaTurnTitle`, `quotaPlanName`, `quotaPlanFallback` | Status-bar quota chip |
+| `quotaLabel`, `quotaTitle`, `quotaDualTitle`, `quotaFiveHourTitle`, `quotaWeeklyTitle`, `quotaMonthlyTitle`, `quotaDailyTitle`, `quotaNoData`, `quotaNoDataUnavailable`, `quotaTurnTitle`, `quotaPlanName`, `quotaPlanFallback` | Status-bar quota chip |
 | `offPeakTitle`, `peakTitle` | Rate-period chip tooltip |
 | `freeLabel`, `freeTier`, `freeTitle` | OpenCode free-tier chip |
 | `panelSignInTitle`, `panelSignIn`, `panelSignInHint`, `panelWaiting`, `panelSignedIn`, `panelAccount`, `panelAccountOrg`, `panelTokenSet`, `panelKeyStored`, `panelSignOut`, `panelCancel`, `panelFlowFailed` | OAuth sign-in panel |
@@ -210,7 +210,7 @@ the address is data, so a provider moving its usage API is a JSON edit.
 
 | Field | Meaning |
 | --- | --- |
-| `probe` | Payload reader: `codex-oauth`, `ollama-balance`, `antigravity-quota`, `zai-monitor`, `mimo-console`, `opencode-usage`; `null` declares no plan window, so no chip renders |
+| `probe` | Payload reader: `codex-oauth`, `ollama-balance`, `antigravity-quota`, `zai-monitor`, `mimo-console`, `synthetic-quotas`, `opencode-usage`; `null` declares no plan window, so no chip renders |
 | `urls` | Addresses the probe reads, tried in order: a `/path`, or an absolute https URL (OpenAI's Codex backend lists its current route, then the legacy one). Empty means the reader composes its own address from the declared endpoint, as the Antigravity `v1internal` RPC pair does |
 | `urlBase` | What a `/path` rides: `origin` (the usual case, since a usage route rarely shares the chat path prefix) or `endpoint` (the configured base URL as-is) |
 | `urlGate` | `any`, or `declared-hosts` to refuse the probe unless the endpoint host is one this provider lists in `errors.hosts`. OpenCode depends on it: a custom proxy must never receive the account's token just to be asked for usage |
@@ -226,7 +226,7 @@ a single chip, and `primaryWindow` / `resetsStyle` are what keep each provider's
 declared tooltip copy readable without a branch in the UI: `quotaTitle` fills from
 the primary window, `quotaDualTitle` (when declared) names several windows in one
 sentence, and a window the main sentence leaves out gets its own line from
-`quotaFiveHourTitle` / `quotaWeeklyTitle` / `quotaMonthlyTitle` / `quotaPlanTitle`.
+`quotaFiveHourTitle` / `quotaWeeklyTitle` / `quotaMonthlyTitle` / `quotaDailyTitle` / `quotaPlanTitle`.
 `creditTitle` appends the spendable credit a payload reported alongside usage.
 
 A provider that publishes an account *wallet* instead of plan windows declares

@@ -64,9 +64,24 @@
       "shape": "credits-usage"
     }
   },
+  "usage": {
+    "probe": "experiential-spend",
+    "urls": [
+      "/api/whoami",
+      "/api/gateway/usage/events?org_id={org_id}&limit=1000",
+      "/api/gateway/keys/{api_key_id}/limits",
+      "/api/gateway/usage/daily?org_id={org_id}&scope=org&group_by=day"
+    ],
+    "primaryWindow": "day"
+  },
   "strings": {
     "notConfigured": "Not configured yet — add an Experiential Labs gateway key in Settings → Models to use gateway models.",
-    "apiBare": "Experiential · {baseUrl}"
+    "apiBare": "Experiential · {baseUrl}",
+    "quotaLabel": "Experiential spend",
+    "quotaTitle": "Experiential {plan} · {left}% of today's spend cap left (resets in {resets}) · click to refresh",
+    "quotaDailyTitle": "Today's spend {left}% below the daily cap (resets in {resets})",
+    "creditTitle": "Credit balance ${credit}",
+    "quotaNoData": "Experiential spend · no data: add an API key in Settings → Models, or this key has no usage yet · click to retry"
   },
   "errors": {
     "i18nPrefix": "experiential",

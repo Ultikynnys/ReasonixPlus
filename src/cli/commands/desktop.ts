@@ -40,6 +40,7 @@ import type {
   DesktopDiagnosticEvent,
   DirectKernelWireEvent,
   EditRequiredEvent,
+  ExperientialSpend,
   JobInfo,
   JobsEvent,
   LoadedMessage,
@@ -81,6 +82,7 @@ import type {
   SettingsEvent,
   SkillsEvent,
   StepCompletedEvent,
+  SyntheticQuota,
   TabClosedEvent,
   TabOpenedEvent,
   TabStatusEvent,
@@ -101,7 +103,7 @@ import {
   rankPickerCandidates,
 } from "../../at-mentions.js";
 import { fetchChangelog } from "../../changelog.js";
-import { pickPrimaryBalance } from "../../client.js";
+import { normalizeBalance, pickPrimaryBalance } from "../../client.js";
 import { claimingSession, setLiveSessionProbe } from "../../code/plan-claim.js";
 import { type PlanRecord, planRepository } from "../../code/plans.js";
 import { codeSystemPrompt } from "../../code/prompt.js";
@@ -181,6 +183,7 @@ import {
   loadSearchApiKeys,
   loadSearchSetting,
   loadSubagentModels,
+  loadSyntheticApiKey,
   loadTavilyApiKey,
   loadWorkspaceDir,
   loadZaiApiKey,
@@ -255,6 +258,7 @@ import { toPlanHistoryItems } from "../../desktop/plan-listing.js";
 import {
   type QuotaCoordinator,
   type QuotaOutcome,
+  type QuotaReply,
   fetchQuotaJson,
   quotaCacheKey,
   quotaCoordinator,
@@ -300,6 +304,7 @@ import {
   type SearchSettingsMap,
   antigravityUsageView,
   codexUsageView,
+  experientialUsageView,
   mimoUsageView,
   ollamaUsageView,
   opencodeUsageView,
@@ -311,6 +316,7 @@ import {
   searchEngineSpec,
   searchSettingSpec,
   searchSharedCredential,
+  syntheticUsageView,
   usageMinIntervalMs,
   zaiUsageView,
 } from "@reasonix/core-utils";
@@ -2929,7 +2935,202 @@ async function readOpencodeUsage(_tab: Tab, options: { force?: boolean }): Promi
   };
 }
 
-/** Reader per declared probe. Exhaustive by type: a new `usage.probe` in a provider
+/** One row of the gateway's per-request usage stream — only the fields read here. */
+interface ExperientialUsageEvent {
+  api_key_id?: string;
+  cost_nano_usd?: number;
+}
+
+/** One settled row of the daily usage rollup. */
+interface ExperientialUsageDay {
+  spend_nano_usd?: number;
+}
+
+/** A successful reply's body as a record, or undefined when the read was refused. */
+function bodyOf(reply: QuotaReply): Record<string, unknown> | undefined {
+  return reply.ok ? (reply.body as Record<string, unknown> | undefined) : undefined;
+}
+
+/** Fills one declared usage template. A required id that is missing, or a placeholder
+ *  this reader does not know, is refused rather than sent blank or literal. */
+export function probeStep(
+  template: string,
+  ids: { org?: string; apiKey?: string },
+  apiKey: string,
+  timeoutMs: number,
+): Promise<QuotaReply> {
+  if (template.includes("{org_id}") && !ids.org) {
+    return Promise.resolve({ ok: false, reason: "missing-org-id" });
+  }
+  if (template.includes("{api_key_id}") && !ids.apiKey) {
+    return Promise.resolve({ ok: false, reason: "missing-api-key-id" });
+  }
+  const url = template
+    .replace("{org_id}", encodeURIComponent(ids.org ?? ""))
+    .replace("{api_key_id}", encodeURIComponent(ids.apiKey ?? ""));
+  if (url.includes("{")) return Promise.resolve({ ok: false, reason: "unfilled-placeholder" });
+  return fetchQuotaJson({ urls: [url], headers: { Authorization: `Bearer ${apiKey}` }, timeoutMs });
+}
+
+/** Experiential Labs splits its two readings across four routes: `/api/whoami` → org,
+ *  `usage/events` → the key id and today's spend, `keys/{id}/limits` → the daily cap,
+ *  `usage/daily` → the settled day total. Undefined when either id cannot be resolved. */
+export async function fetchExperientialSpend(
+  apiKey: string,
+  baseUrl: string,
+  timeoutMs = 10_000,
+): Promise<Omit<ExperientialSpend, "creditUsd"> | undefined> {
+  const declared = usageUrls(providerSpec("experiential"), baseUrl);
+  const [identityUrl, eventsUrl, limitsUrl, dailyUrl] = declared;
+  if (!identityUrl || !eventsUrl || !limitsUrl || !dailyUrl) return undefined;
+
+  const identity = await probeStep(identityUrl, {}, apiKey, timeoutMs);
+  const orgId = bodyOf(identity)?.org_id;
+  if (typeof orgId !== "string") return undefined;
+
+  const events = await probeStep(eventsUrl, { org: orgId }, apiKey, timeoutMs);
+  const rows = bodyOf(events)?.events;
+  const keyIds = new Set<string>();
+  let spentNano = 0;
+  let counted = false;
+  for (const row of Array.isArray(rows) ? (rows as ExperientialUsageEvent[]) : []) {
+    if (typeof row.api_key_id === "string") keyIds.add(row.api_key_id);
+    if (typeof row.cost_nano_usd === "number") {
+      spentNano += row.cost_nano_usd;
+      counted = true;
+    }
+  }
+  // The cap is per key, so an org with several keys cannot be attributed to one.
+  const apiKeyId = keyIds.size === 1 ? [...keyIds][0] : undefined;
+  if (!apiKeyId) return undefined;
+
+  const [limits, daily] = await Promise.all([
+    probeStep(limitsUrl, { org: orgId, apiKey: apiKeyId }, apiKey, timeoutMs),
+    probeStep(dailyUrl, { org: orgId }, apiKey, timeoutMs),
+  ]);
+  const limitsBody = bodyOf(limits);
+  const cap = limitsBody?.daily_spend_cap_nano_usd;
+  const tier = limitsBody?.tier;
+  // The settled day total is authoritative when present; the event stream is the fallback.
+  const dayRows = bodyOf(daily)?.rows as ExperientialUsageDay[] | undefined;
+  const settled = dayRows?.at(0)?.spend_nano_usd;
+  return {
+    dailyCapNanoUsd: typeof cap === "number" ? cap : null,
+    spentNanoUsd: typeof settled === "number" ? settled : counted ? spentNano : null,
+    tier: typeof tier === "string" ? tier : null,
+  };
+}
+
+/** Experiential Labs' wallet, read from the credits route its balance declares. */
+async function fetchExperientialCredit(apiKey: string, timeoutMs = 10_000): Promise<number | null> {
+  const spec = providerSpec("experiential");
+  const balance = spec?.billing.balance;
+  if (!balance) return null;
+  const reply = await fetchQuotaJson({
+    urls: [balance.url],
+    headers: { Authorization: `Bearer ${apiKey}` },
+    timeoutMs,
+  });
+  if (!reply.ok) return null;
+  const total = normalizeBalance(reply.body, balance.shape)?.balance_infos[0]?.total_balance;
+  return total === undefined ? null : Number(total);
+}
+
+/** Experiential Labs spend + wallet for a tab with a configured key. */
+async function readExperientialUsage(tab: Tab, options: { force?: boolean }): Promise<UsageProbe> {
+  return readDeclaredUsage(
+    tab,
+    "experiential",
+    async (apiKey, baseUrl) => {
+      const [spend, creditUsd] = await Promise.all([
+        fetchExperientialSpend(apiKey, baseUrl),
+        fetchExperientialCredit(apiKey),
+      ]);
+      return spend ? { ...spend, creditUsd } : undefined;
+    },
+    experientialUsageView,
+    (spend, viewed) => ({
+      capNanoUsd: spend.dailyCapNanoUsd,
+      spentNanoUsd: spend.spentNanoUsd,
+      creditUsd: spend.creditUsd,
+      windows: viewed.windows.length,
+    }),
+    options,
+  );
+}
+
+/** Synthetic subscription usage: `/v2/quotas` reports the plan's limit and requests
+ *  spent per category. The subscription category is the plan balance; its hourly
+ *  `search` and daily `freeToolCalls` buckets have no window label to render. */
+export async function fetchSyntheticQuota(
+  apiKey: string,
+  baseUrl: string,
+  timeoutMs = 10_000,
+): Promise<Omit<SyntheticQuota, "fetchedAt"> | undefined> {
+  const reply = await fetchQuotaJson({
+    urls: usageUrls(providerSpec("synthetic"), baseUrl),
+    headers: { Authorization: `Bearer ${apiKey}` },
+    timeoutMs,
+  });
+  if (!reply.ok) return undefined;
+  const raw = (reply.body as { subscription?: unknown } | undefined)?.subscription;
+  if (!raw || typeof raw !== "object") return undefined;
+  const row = raw as { limit?: unknown; requests?: unknown; renewsAt?: unknown };
+  if (typeof row.limit !== "number" || typeof row.requests !== "number") return undefined;
+  return {
+    subscription: {
+      limit: row.limit,
+      requests: row.requests,
+      renewsAt: typeof row.renewsAt === "string" ? row.renewsAt : null,
+    },
+  };
+}
+
+/** Both quota readers share this shape: resolve the declared key, coalesce on the
+ *  declared refresh floor, normalize through the provider's view, and report what the
+ *  read produced. Only the fetch and the field mapping differ per provider. */
+async function readDeclaredUsage<T>(
+  tab: Tab,
+  provider: string,
+  read: (apiKey: string, baseUrl: string) => Promise<T | undefined>,
+  view: (value: T) => ProviderUsageView,
+  details: (value: T, viewed: ProviderUsageView) => Record<string, unknown>,
+  options: { force?: boolean },
+): Promise<UsageProbe> {
+  const apiKey = loadProviderApiKeys()[provider];
+  if (!apiKey) return { usage: null, status: "skipped", reason: `${provider}-no-api-key` };
+  const baseUrl =
+    loadEndpointForModel(tab.currentModel).baseUrl ?? providerDefaultEndpoint(provider) ?? "";
+  const coordinator = usageCoordinatorFor<T | undefined>(
+    provider,
+    baseUrl,
+    apiKey,
+    () => read(apiKey, baseUrl),
+    { hasData: (value) => value !== undefined },
+  );
+  const value = (await coordinator.fetch({ force: options.force })).value;
+  if (value === undefined) return noUsage("usage-unavailable");
+  const viewed = view(value);
+  return { usage: viewed, status: "ok", details: details(value, viewed) };
+}
+
+/** Synthetic plan usage for a tab with a configured key. */
+async function readSyntheticUsage(tab: Tab, options: { force?: boolean }): Promise<UsageProbe> {
+  return readDeclaredUsage(
+    tab,
+    "synthetic",
+    fetchSyntheticQuota,
+    syntheticUsageView,
+    (quota, viewed) => ({
+      limit: quota.subscription?.limit ?? null,
+      requests: quota.subscription?.requests ?? null,
+      windows: viewed.windows.length,
+    }),
+    options,
+  );
+}
+
+/** Synthetic plan usage for a tab with a configured key, coalesced on the declared floor. */ /** Reader per declared probe. Exhaustive by type: a new `usage.probe` in a provider
  *  file fails to compile until it has a reader here, and no caller names a provider. */
 const USAGE_READERS: Record<ProviderProbeStrategy, UsageReader> = {
   "codex-oauth": readCodexUsage,
@@ -2937,6 +3138,8 @@ const USAGE_READERS: Record<ProviderProbeStrategy, UsageReader> = {
   "antigravity-quota": readAntigravityUsage,
   "zai-monitor": readZaiUsage,
   "mimo-console": readMiMoUsage,
+  "experiential-spend": readExperientialUsage,
+  "synthetic-quotas": readSyntheticUsage,
   "opencode-usage": readOpencodeUsage,
 };
 

@@ -89,7 +89,17 @@
     "checkedLast": false,
     "modelScheme": null
   },
-  "billing": { "kind": "usd", "schedule": null },
+  "billing": { "kind": "quota-if-key", "schedule": null },
+  "usage": {
+    "probe": "synthetic-quotas",
+    "urls": ["https://api.synthetic.new/v2/quotas"],
+    "primaryWindow": "5h"
+  },
+  "strings": {
+    "quotaLabel": "Synthetic usage",
+    "quotaTitle": "Synthetic subscription {left}% left (resets in {resets}) · click to refresh",
+    "quotaNoData": "Synthetic usage · no data: add an API key in Settings → Models to see plan usage · click to retry"
+  },
   "errors": {
     "i18nPrefix": "synthetic",
     "brands": ["Synthetic"],

@@ -65,6 +65,7 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     activeSkill: null,
     lastTurnOutcome: null,
     queuedSends: [],
+    queueDiscardCount: 0,
     retryNonce: 0,
     oauthWaiting: false,
     antigravityOAuthWaiting: false,

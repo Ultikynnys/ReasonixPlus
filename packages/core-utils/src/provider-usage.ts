@@ -12,7 +12,7 @@ import type { ProviderUsageWindowLabel } from "./provider-registry.js";
 
 /** A provider's plan label + normalized windows: the part of the `$usage` payload the
  *  chip renders, so the wire type stays the single definition. */
-export type ProviderUsageView = Pick<ProviderUsage, "plan" | "windows">;
+export type ProviderUsageView = Pick<ProviderUsage, "plan" | "windows" | "credit">;
 
 function parseIso(iso: string | null | undefined): number | null {
   if (!iso) return null;
@@ -66,6 +66,82 @@ export function zaiUsageView(quota: Omit<ZaiQuota, "fetchedAt">): ProviderUsageV
   return {
     plan: quota.plan ?? null,
     windows: [...windowOf("5h", plain(quota.fiveHour)), ...windowOf("wk", plain(quota.weekly))],
+  };
+}
+
+/** Midnight UTC after `now`: the daily spend cap resets on the UTC day boundary. */
+function nextUtcMidnight(now: number): number {
+  const day = new Date(now);
+  return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1);
+}
+
+/** What Experiential Labs reports across its balance and quota reads: a spendable
+ *  credit, plus the day's spend against the key's daily cap (both in nano-USD). */
+export interface ExperientialSpend {
+  /** Daily spend cap for the key, in nano-USD; null when uncapped. */
+  dailyCapNanoUsd: number | null;
+  /** Spend so far in the current UTC day, in nano-USD; null when unreadable. */
+  spentNanoUsd: number | null;
+  /** Account tier the limits route reports ("free", "pro", …). */
+  tier: string | null;
+  /** Spendable credit from the balance route, in USD. */
+  creditUsd: number | null;
+}
+
+/** The gateway's two readings in one view: a "day" window (spend against the cap)
+ *  and the wallet alongside it, which the chip tooltip prints via `creditTitle`. */
+export function experientialUsageView(
+  spend: ExperientialSpend,
+  now = Date.now(),
+): ProviderUsageView {
+  const cap = spend.dailyCapNanoUsd;
+  const spent = spend.spentNanoUsd;
+  const bounded = typeof cap === "number" && cap > 0 && typeof spent === "number";
+  return {
+    plan: spend.tier,
+    windows: bounded
+      ? windowOf("day", { remainingPct: 100 - (spent / cap) * 100, resetsAt: nextUtcMidnight(now) })
+      : [],
+    credit:
+      typeof spend.creditUsd === "number" ? { currency: "USD", amount: spend.creditUsd } : null,
+  };
+}
+
+/** One window of Synthetic's `/v2/quotas` reply: what the plan allows, what it spent,
+ *  and when it renews. Every category speaks these three fields. */
+export interface SyntheticQuotaWindow {
+  limit: number;
+  requests: number;
+  renewsAt: string | null;
+}
+
+/** Only the subscription category is a plan balance. The reply also carries an hourly
+ *  `search` bucket and a daily `freeToolCalls` bucket, which the chip's window labels
+ *  (5h/wk/mo/plan) cannot describe without inventing one. */
+export interface SyntheticQuota {
+  subscription: SyntheticQuotaWindow | null;
+  fetchedAt: number;
+}
+
+/** Synthetic subscription window: the reply carries counts, not percentages, so the
+ *  remaining share is computed here (`requests/limit`). */
+export function syntheticUsageView(quota: Omit<SyntheticQuota, "fetchedAt">): ProviderUsageView {
+  const window = quota.subscription;
+  const pct =
+    window && Number.isFinite(window.limit) && window.limit > 0
+      ? (window.requests / window.limit) * 100
+      : null;
+  return {
+    plan: null,
+    windows: windowOf(
+      "5h",
+      pct === null
+        ? null
+        : {
+            remainingPct: 100 - pct,
+            resetsAt: parseIso(window?.renewsAt),
+          },
+    ),
   };
 }
 
