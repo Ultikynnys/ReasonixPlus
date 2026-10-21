@@ -2062,6 +2062,138 @@ describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
       expect(elapsed).toBeLessThan(220);
     });
 
+    it("fans a five-call parallel-safe burst out in one wave", async () => {
+      const client = makeClient([
+        makeMultiToolResponse(
+          Array.from({ length: 5 }, (_, i) => ({ name: "slow_read", args: `{"k":${i + 1}}` })),
+        ),
+        { content: "ok" },
+      ]);
+      const tools = new ToolRegistry();
+      let active = 0;
+      let peak = 0;
+      tools.register({
+        name: "slow_read",
+        parallelSafe: true,
+        fn: async () => {
+          active++;
+          peak = Math.max(peak, active);
+          await new Promise((r) => setTimeout(r, 40));
+          active--;
+          return "r";
+        },
+      });
+      const loop = new CacheFirstLoop({
+        client,
+        prefix: new ImmutablePrefix({ system: "s", toolSpecs: tools.specs() }),
+        tools,
+        stream: false,
+      });
+
+      for await (const _ of loop.step("go")) {
+        // drain
+      }
+
+      // Counted, not timed: a cap of 3 ran this burst as 3 + 2, and a subagent fan-out
+      // pays a whole child run at that barrier.
+      expect(peak).toBe(5);
+    });
+
+    it("still fences an unsafe call: a read issued after it starts only once it settled", async () => {
+      const client = makeClient([
+        makeMultiToolResponse([
+          { name: "slow_read", args: '{"k":1}' },
+          { name: "slow_write", args: '{"k":2}' },
+          { name: "slow_read", args: '{"k":3}' },
+        ]),
+        { content: "ok" },
+      ]);
+      const tools = new ToolRegistry();
+      const order: string[] = [];
+      const tracked = async (label: string): Promise<void> => {
+        order.push(`start:${label}`);
+        await new Promise((r) => setTimeout(r, 20));
+        order.push(`end:${label}`);
+      };
+      tools.register({
+        name: "slow_read",
+        parallelSafe: true,
+        fn: async (args: { k: number }) => {
+          await tracked(String(args.k));
+          return "r";
+        },
+      });
+      tools.register({
+        name: "slow_write",
+        fn: async (args: { k: number }) => {
+          await tracked(String(args.k));
+          return "w";
+        },
+      });
+      const loop = new CacheFirstLoop({
+        client,
+        prefix: new ImmutablePrefix({ system: "s", toolSpecs: tools.specs() }),
+        tools,
+        stream: false,
+      });
+
+      for await (const _ of loop.step("go")) {
+        // drain
+      }
+
+      // A bigger wave must not weaken the fence: call 3 is a read too, but it was issued
+      // after a mutation, so it may only observe the post-write workspace.
+      expect(order).toEqual(["start:1", "end:1", "start:2", "end:2", "start:3", "end:3"]);
+    });
+
+    it("tells each tool how many calls shared its dispatch wave", async () => {
+      const client = makeClient([
+        makeMultiToolResponse([
+          { name: "slow_read", args: '{"k":1}' },
+          { name: "slow_read", args: '{"k":2}' },
+          { name: "slow_read", args: '{"k":3}' },
+          { name: "slow_write", args: '{"k":4}' },
+        ]),
+        { content: "ok" },
+      ]);
+      const tools = new ToolRegistry();
+      const seen: Array<{ k: number; waveSize: number | undefined }> = [];
+      tools.register({
+        name: "slow_read",
+        parallelSafe: true,
+        fn: async (args: { k: number }, ctx) => {
+          seen.push({ k: args.k, waveSize: ctx?.waveSize });
+          return "r";
+        },
+      });
+      tools.register({
+        name: "slow_write",
+        fn: async (args: { k: number }, ctx) => {
+          seen.push({ k: args.k, waveSize: ctx?.waveSize });
+          return "w";
+        },
+      });
+      const loop = new CacheFirstLoop({
+        client,
+        prefix: new ImmutablePrefix({ system: "s", toolSpecs: tools.specs() }),
+        tools,
+        stream: false,
+      });
+
+      for await (const _ of loop.step("go")) {
+        // drain
+      }
+
+      // The reads shared one wave, the fenced write ran alone: that number is what a
+      // subagent card turns into "parallel ×3" or "sequential".
+      expect(seen.sort((a, b) => a.k - b.k)).toEqual([
+        { k: 1, waveSize: 3 },
+        { k: 2, waveSize: 3 },
+        { k: 3, waveSize: 3 },
+        { k: 4, waveSize: 1 },
+      ]);
+    });
+
     it("unsafe call splits the chunk into serial barriers", async () => {
       const client = makeClient([
         makeMultiToolResponse([

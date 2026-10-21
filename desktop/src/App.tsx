@@ -284,6 +284,8 @@ export type SubagentRunProgress = {
   task: string;
   skillName?: string;
   model?: string;
+  /** Dispatch wave this spawn ran in: >1 = parallel, 1 = sequential, absent = unknown. */
+  waveSize?: number;
   phase?: "exploring" | "summarising";
   status: "running" | "done" | "failed";
   iter?: number;
@@ -2209,6 +2211,7 @@ export function applySubagentProgress(
     task: fullerSubagentTask(previous?.task, ev.task),
     skillName: ev.skillName ?? previous?.skillName,
     model: ev.model ?? previous?.model,
+    waveSize: ev.waveSize ?? previous?.waveSize,
     phase: ev.phase ?? previous?.phase,
     status: ev.action === "end" ? (ev.error ? "failed" : "done") : (previous?.status ?? "running"),
     iter: ev.iter ?? previous?.iter,

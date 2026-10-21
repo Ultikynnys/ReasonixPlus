@@ -27,7 +27,9 @@ Bad: \`"look into the auth code"\`. Good: \`"List every caller of validateToken 
 
 **Tools.** \`tools\` optionally narrows the child's toolset: exact names, or \`server_*\` for a whole MCP server. Omit it to hand over everything you have, minus delegation and plan tools (a child never spawns grandchildren).
 
-**Default: don't delegate.** Direct tools are cheaper and keep evidence in your context. Spawn ONLY for (a) true parallelism (2+ independent tasks in one batch) or (b) context blow-up (>10 file reads where you only need the conclusion). Skip for a single grep, 1-3 file cross-references, "to keep context clean for one question", anything needing user interaction, or work where you must track intermediate results yourself.`;
+**Default: don't delegate.** Direct tools are cheaper and keep evidence in your context. Spawn ONLY for (a) true parallelism (2+ independent tasks in one batch) or (b) context blow-up (>10 file reads where you only need the conclusion). Skip for a single grep, 1-3 file cross-references, "to keep context clean for one question", anything needing user interaction, or work where you must track intermediate results yourself.
+
+**Fan-out is one batch of consecutive calls.** Issue the independent spawns together, with no write, shell or MCP call between them: an interleaved unsafe call splits the burst into separate waves, so the spawns after it only start once the ones before it finish.`;
 
 /** Built per-session against the resolved model id so the contract names the actual tier (#582). */
 function codeSystemBase(modelId: string, subagentsEnabled = false): string {

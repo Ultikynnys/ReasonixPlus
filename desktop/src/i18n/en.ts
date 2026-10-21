@@ -733,6 +733,8 @@ export const en = {
     subagentFailed: "Failed",
     subagentRunning: "Running",
     subagentDoneProgress: COMMON_STRINGS.doneLower,
+    subagentParallel: "parallel ×{count}",
+    subagentSequential: "sequential",
     subagentSectionTask: "Task",
     subagentSectionProgress: "Progress",
     subagentSectionSummary: "Summary",
@@ -743,6 +745,9 @@ export const en = {
     subagentDidFiles: "Files",
     subagentDidCommands: "Commands",
     subagentDidFailedCalls: "Failed calls",
+    subagentParallelTitle:
+      "Ran at the same time as {others} other call(s) in one dispatch wave.",
+    subagentSequentialTitle: "Ran in its own dispatch wave, so nothing overlapped it.",
     memoryName: "Memory",
     memoryCountSuffix: "items",
     checkpointRewind: "Rewind here",

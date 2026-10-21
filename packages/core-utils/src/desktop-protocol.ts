@@ -281,6 +281,9 @@ export interface KernelSubagentProgressEvent extends KernelWireEventBase {
   type: "subagent.progress";
   runId: string;
   parentCallId?: string;
+  /** Size of the dispatch wave the spawn ran in: >1 means it shared the wave with other
+   *  calls (parallel), 1 means nothing overlapped it (sequential). Absent when unknown. */
+  waveSize?: number;
   action: "start" | "phase" | "stream" | "tool-start" | "tool-end" | "end";
   task: string;
   skillName?: string;

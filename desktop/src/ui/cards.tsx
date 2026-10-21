@@ -1009,6 +1009,27 @@ export function subagentStartLabel(skillName?: string): string {
   return skillName && !isSubagentTool(skillName) ? skillName : "subagent";
 }
 
+/** How a card was dispatched, from the wave sizes its runs recorded. Null when no run
+ *  recorded a usable one: a reloaded session has no wave, and the card must not claim a
+ *  mode for it. A card holding several runs reports the widest wave any of them landed in. */
+export function subagentDispatchMode(
+  waveSizes: ReadonlyArray<number | undefined>,
+): { mode: "parallel" | "sequential"; waveSize: number } | null {
+  let waveSize = 0;
+  for (const size of waveSizes) {
+    if (typeof size === "number" && Number.isFinite(size) && size > waveSize) waveSize = size;
+  }
+  if (waveSize > 1) return { mode: "parallel", waveSize };
+  if (waveSize === 1) return { mode: "sequential", waveSize };
+  return null;
+}
+
+/** Chip copy per mode, so a new mode is one entry instead of a third ternary in the card. */
+const DISPATCH_TEXT = {
+  parallel: { label: "cards.subagentParallel", title: "cards.subagentParallelTitle" },
+  sequential: { label: "cards.subagentSequential", title: "cards.subagentSequentialTitle" },
+} as const;
+
 /** The instruction a subagent call was created with, verbatim. A progress event
  *  carries only a cut-down preview of it (30 chars from the child loop, 120 from
  *  the desktop projection), so the card reads the real text back from the call's
@@ -1394,6 +1415,7 @@ export function SubagentCard({
       value: `${did.failed} of ${did.calls}`,
     });
   }
+  const dispatch = subagentDispatchMode(runs.map((run) => run.waveSize));
 
   return (
     <Card
@@ -1405,6 +1427,14 @@ export function SubagentCard({
       anchor={anchor}
       meta={
         <>
+          {dispatch ? (
+            <span
+              className={`meta-dispatch ${dispatch.mode}`}
+              title={t(DISPATCH_TEXT[dispatch.mode].title, { others: dispatch.waveSize - 1 })}
+            >
+              {t(DISPATCH_TEXT[dispatch.mode].label, { count: dispatch.waveSize })}
+            </span>
+          ) : null}
           {models.length > 0 ? <span className="meta-model">{models.join(" + ")}</span> : null}
           {contexts.length > 0 ? (
             <span className="meta-context">ctx {contexts.join(" / ")}</span>

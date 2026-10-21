@@ -6386,6 +6386,22 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   font-variant-numeric: tabular-nums;
 }
 
+/* how a card was dispatched — one shared wave of work, or a call that ran on its own */
+.meta-dispatch {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--muted-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.meta-dispatch.parallel {
+  color: var(--violet);
+  border-color: var(--violet-soft);
+}
+
 /* Floating "deleting N sessions…" pill, centered at the top of the main area.
    Always visible while a session delete/clear is in flight; pointer-events:none
    so it never blocks the UI underneath. */

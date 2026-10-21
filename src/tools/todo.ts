@@ -79,6 +79,9 @@ export function registerTodoTool(registry: ToolRegistry, opts: TodoToolOptions =
     name: "todo_write",
     description: DESCRIPTION,
     readOnly: true,
+    // Instant and turn-local: keeping it out of the parallel set would put a full wave
+    // barrier in the middle of an agent's fan-out burst, where every write lands.
+    parallelSafe: true,
     parameters: {
       type: "object",
       properties: {

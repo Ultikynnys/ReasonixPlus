@@ -820,6 +820,7 @@ export class CacheFirstLoop {
   private async runOneToolCall(
     call: ToolCall,
     signal: AbortSignal,
+    waveSize?: number,
   ): Promise<{
     preWarnings: LoopEvent[];
     postWarnings: LoopEvent[];
@@ -870,6 +871,7 @@ export class CacheFirstLoop {
         signal,
         turn: this._turn,
         callId: inflightId,
+        waveSize,
         cancelSignal: cancelController.signal,
         maxResultTokens: DEFAULT_MAX_RESULT_TOKENS,
         confirmationGate: this.confirmationGate,
@@ -2579,7 +2581,7 @@ export class CacheFirstLoop {
         hasPendingGate: () => this.confirmationGate.hasPending(),
         inflightIdFor: (call) => this.inflightIdFor(call),
         inflightAdd: (id) => this._inflight.add(id),
-        runOne: (call, sig) => this.runOneToolCall(call, sig),
+        runOne: (call, sig, waveSize) => this.runOneToolCall(call, sig, waveSize),
         appendAndPersist: (m) => this.appendAndPersist(m),
         noteToolResult: (name, failed, args, result) =>
           this.repair.noteResult(name, failed, args, result),

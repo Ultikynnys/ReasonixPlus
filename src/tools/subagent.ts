@@ -37,6 +37,9 @@ export interface SubagentEvent {
   /** Parent loop tool-call identity that owns this spawn. */
   parentCallId?: string;
   parentTurn?: number;
+  /** Size of the dispatch wave this spawn ran in: >1 means it shared the wave with other
+   *  calls, 1 means nothing overlapped it. The card renders it as parallel vs sequential. */
+  waveSize?: number;
   task: string;
   skillName?: string;
   model?: string;
@@ -152,6 +155,8 @@ export interface SpawnSubagentOptions {
   skillName?: string;
   parentCallId?: string;
   parentTurn?: number;
+  /** See SubagentEvent.waveSize — supplied by the dispatcher, absent when unknown. */
+  waveSize?: number;
   /** Scopes the child registry to these names, MCP tools included; an entry ending in
    *  `*` grants a name prefix (`ghidra_*`), so one list can span several servers.
    *  NEVER_INHERITED still wins. Driven by the skill's `allowed-tools` frontmatter. */
@@ -364,6 +369,7 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     elapsedMs: 0,
     maxToolIters,
     maxElapsedMs,
+    waveSize: opts.waveSize,
     // The meter denominator is known at spawn time, before the first model call.
     contextMax,
   });
@@ -885,7 +891,7 @@ export function registerSubagentTool(
     name: SUBAGENT_TOOL_NAME,
     parallelSafe: true,
     description:
-      "Run one subtask in an isolated subagent and get back only its final answer. It shares your sandbox, safety rules, model and limits, but has none of your conversation: put everything it needs in 'task', including what to check and what the answer must contain. **Prefer direct tools**; spawn for parallel fan-out (2+ independent tasks issued in one batch) or when the work needs more than 10 reads whose trail you do not want to keep.",
+      "Run one subtask in an isolated subagent and get back only its final answer. It shares your sandbox, safety rules, model and limits, but has none of your conversation: put everything it needs in 'task', including what to check and what the answer must contain. **Prefer direct tools**; spawn for parallel fan-out (2+ independent tasks issued in one batch) or when the work needs more than 10 reads whose trail you do not want to keep. Issue a fan-out as consecutive calls: a write, shell or MCP call between two spawns splits them into separate waves, and the later ones then start only after the earlier ones finish.",
     parameters: {
       type: "object",
       properties: {
@@ -943,6 +949,7 @@ export function registerSubagentTool(
           // indistinguishable and the UI cannot attach either run's rows.
           ...(ctx?.callId ? { parentCallId: ctx.callId } : {}),
           ...(ctx?.turn !== undefined ? { parentTurn: ctx.turn } : {}),
+          ...(ctx?.waveSize !== undefined ? { waveSize: ctx.waveSize } : {}),
           parentSignal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
           inherited: opts.inherited?.(),
         });

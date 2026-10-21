@@ -36,6 +36,24 @@ describe("desktop subagent progress projection", () => {
     expect(later?.task).toBe(`${instruction.slice(0, 30)}…`);
   });
 
+  it("carries the dispatch wave size on the start event, so a card can call it parallel or sequential", () => {
+    const start = projectSubagentEvent({
+      kind: "start",
+      runId: "sub-1",
+      task: "review changes",
+      waveSize: 3,
+    });
+    expect(start?.waveSize).toBe(3);
+    // Only the start carries it: later ticks must not invent a mode for a run.
+    const later = projectSubagentEvent({
+      kind: "stream-progress",
+      runId: "sub-1",
+      task: "review changes",
+      outputChars: 12,
+    });
+    expect(later?.waveSize).toBeUndefined();
+  });
+
   it("still redacts credentials in the full task", () => {
     const start = projectSubagentEvent({
       kind: "start",

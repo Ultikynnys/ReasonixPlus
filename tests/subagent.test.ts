@@ -28,6 +28,7 @@ import {
   spawnSubagent,
   subagentBudgetHint,
 } from "../src/tools/subagent.js";
+import { registerTodoTool } from "../src/tools/todo.js";
 import {
   type FakeResponseShape,
   makeFakeClient,
@@ -1517,4 +1518,97 @@ describe("subagent effort — the child thinks at the session's level", () => {
     await parent.dispatch("spawn_subagent", JSON.stringify({ task: "anything" }));
     expect(fake.captured[0]?.reasoning_effort).toBe("high");
   });
+});
+
+describe("subagent fan-out — one batch is one wave", () => {
+  /** One assistant response carrying every call of the batch, which is the shape the
+   *  dispatcher chunks. */
+  function batch(
+    ...calls: Array<{ name: string; args: Record<string, unknown> }>
+  ): FakeResponseShape {
+    return {
+      content: "",
+      tool_calls: calls.map((call, i) => ({
+        id: `call_${i + 1}`,
+        type: "function" as const,
+        function: { name: call.name, arguments: JSON.stringify(call.args) },
+      })),
+    };
+  }
+
+  function runParent(client: DeepSeekClient, tools: ToolRegistry): CacheFirstLoop {
+    return new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "parent", toolSpecs: tools.specs() }),
+      tools,
+      session: "parent-session",
+      stream: false,
+    });
+  }
+
+  /** Every spawn start this batch emitted, in order. */
+  const starts = (events: SubagentEvent[]): SubagentEvent[] =>
+    events.filter((ev) => ev.kind === "start");
+
+  /** A wave barrier between two spawns shows up as start/end pairs interleaved; every
+   *  start landing before the first end is what proves the batch shared one wave. */
+  function startsBeforeFirstEnd(events: SubagentEvent[]): boolean {
+    const firstEnd = events.findIndex((ev) => ev.kind === "end");
+    const lastStart = events.reduce((last, ev, i) => (ev.kind === "start" ? i : last), -1);
+    return firstEnd >= 0 && lastStart >= 0 && lastStart < firstEnd;
+  }
+
+  it("starts all five spawns of one batch before any of them ends", async () => {
+    const parent = new ToolRegistry();
+    const { sink, events } = makeSink();
+    const client = makeClient([
+      batch(
+        ...Array.from({ length: 5 }, (_, i) => ({
+          name: "spawn_subagent",
+          args: { task: `probe ${i + 1}` },
+        })),
+      ),
+      { content: "child answer" },
+    ]);
+    registerSubagentTool(parent, { client, sink, defaultModel: "deepseek-v4-flash" });
+
+    for await (const _ of runParent(client, parent).step("fan out")) {
+      // drain
+    }
+
+    const spawned = starts(events);
+    expect(spawned).toHaveLength(5);
+    expect(spawned.map((ev) => ev.waveSize)).toEqual([5, 5, 5, 5, 5]);
+    expect(startsBeforeFirstEnd(events)).toBe(true);
+  }, 30_000);
+
+  it("does not split the burst on the todo_write an agent writes just before it", async () => {
+    const parent = new ToolRegistry();
+    const { sink, events } = makeSink();
+    const client = makeClient([
+      batch(
+        { name: "spawn_subagent", args: { task: "probe a" } },
+        {
+          name: "todo_write",
+          args: {
+            todos: [{ content: "fan out", status: "pending", activeForm: "Fanning out" }],
+          },
+        },
+        { name: "spawn_subagent", args: { task: "probe b" } },
+      ),
+      { content: "child answer" },
+    ]);
+    registerSubagentTool(parent, { client, sink, defaultModel: "deepseek-v4-flash" });
+    registerTodoTool(parent);
+
+    for await (const _ of runParent(client, parent).step("fan out")) {
+      // drain
+    }
+
+    const spawned = starts(events);
+    expect(spawned).toHaveLength(2);
+    // The wave includes the todo_write: the count is calls in the wave, not sibling spawns.
+    expect(spawned.map((ev) => ev.waveSize)).toEqual([3, 3]);
+    expect(startsBeforeFirstEnd(events)).toBe(true);
+  }, 30_000);
 });

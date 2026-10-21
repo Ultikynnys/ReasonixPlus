@@ -20,7 +20,7 @@ export interface DispatchContext {
   hasPendingGate?: () => boolean;
   inflightIdFor: (call: ToolCall) => string;
   inflightAdd: (id: string) => void;
-  runOne: (call: ToolCall, signal: AbortSignal) => Promise<RunOneToolCallResult>;
+  runOne: (call: ToolCall, signal: AbortSignal, waveSize: number) => Promise<RunOneToolCallResult>;
   appendAndPersist: (msg: ChatMessage) => void;
   /** Loop-owned set of dispatched call ids whose results have NOT been
    *  appended yet. If the turn generator is force-closed mid-dispatch, the
@@ -49,9 +49,12 @@ function resultLooksFailed(result: string | UserContentPart[]): boolean {
   }
 }
 
+/** Size of one wave of simultaneous tool work. The wave boundary is a full barrier, and
+ *  for a spawn burst that barrier costs a whole child run, so the default is sized for
+ *  fan-out rather than for reads alone. */
 function readParallelMax(): number {
   const raw = Number.parseInt(process.env.REASONIX_PARALLEL_MAX ?? "", 10);
-  return Number.isFinite(raw) && raw >= 1 ? Math.min(raw, 16) : 3;
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(raw, 16) : 8;
 }
 
 /** Collapse a content-parts tool result to a display string for the string-typed
@@ -116,7 +119,11 @@ export async function* dispatchToolCallsChunked(
       };
     }
 
-    const settled = await Promise.allSettled(chunk.map((c) => ctx.runOne(c, ctx.signal)));
+    // Every call reports the wave it landed in, so a tool can say whether siblings
+    // overlapped it. chunk.length is the whole wave: this barrier is its boundary.
+    const settled = await Promise.allSettled(
+      chunk.map((c) => ctx.runOne(c, ctx.signal, chunk.length)),
+    );
 
     for (let k = 0; k < chunk.length; k++) {
       const call = chunk[k]!;

@@ -19,6 +19,9 @@ export interface ToolCallContext {
   /** Parent loop turn and stable call id, used by nested activity UIs for exact association. */
   turn?: number;
   callId?: string;
+  /** Size of the dispatch wave this call ran in: >1 means siblings overlapped it, 1 means
+   *  nothing did. Lets a tool report its own parallelism instead of guessing it. */
+  waveSize?: number;
   /** Per-tool-call cancel signal — Ctrl+K or the desktop Stop button fires this to kill just the current running tool without aborting the turn. */
   cancelSignal?: AbortSignal;
   /** Inject a mock PauseGate for tests. When absent, tools use the singleton. */
@@ -273,6 +276,8 @@ export class ToolRegistry {
       signal?: AbortSignal;
       turn?: number;
       callId?: string;
+      /** Wave size of the chunk this call was dispatched in (see ToolCallContext). */
+      waveSize?: number;
       cancelSignal?: AbortSignal;
       maxResultChars?: number;
       maxResultTokens?: number;
@@ -399,6 +404,7 @@ export class ToolRegistry {
         signal: opts.signal,
         turn: opts.turn,
         callId: opts.callId,
+        waveSize: opts.waveSize,
         // Per-tool-call cancel (Ctrl+K / desktop Stop) must reach the tool's
         // ctx or the handler never learns the user force-stopped it — it would
         // keep running and no cancelledByUser result would ever be appended.

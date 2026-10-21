@@ -772,6 +772,7 @@ export function projectSubagentEvent(ev: SubagentEvent): SubagentProgressPayload
   const base = {
     runId: ev.runId,
     ...(ev.parentCallId ? { parentCallId: ev.parentCallId } : {}),
+    ...(ev.waveSize !== undefined ? { waveSize: ev.waveSize } : {}),
     // A spawn's start carries the instruction whole: the card shows the child's
     // task in full, so redaction is the only thing that may rewrite it. Later
     // events repeat it, and those stay previews.

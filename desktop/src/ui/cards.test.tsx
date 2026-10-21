@@ -25,6 +25,7 @@ import {
   parseEditResult,
   parseSubagentResult,
   runDid,
+  subagentDispatchMode,
   subagentTools,
   toolArgSummary,
 } from "./cards";
@@ -984,6 +985,41 @@ describe("SubagentCard — model visibility", () => {
     expect(rows[0]?.textContent).toContain("Checking Tauri events");
     expect(rows[1]?.textContent).toContain("Reading local event bridge");
     expect(rows[2]?.textContent).toContain("↳ web_fetch Tauri docs");
+  });
+
+  it("says whether the spawn shared a dispatch wave or ran alone", () => {
+    const run = (waveSize?: number) => ({
+      runId: "run-wave",
+      task: "Fan out two probes",
+      status: "running" as const,
+      tools: [],
+      recentRows: [],
+      ...(waveSize === undefined ? {} : { waveSize }),
+    });
+    const shared = render(<SubagentCard name="spawn_subagent" runs={[run(3)]} />);
+    expect(screen.getByText("parallel ×3")).toBeTruthy();
+    shared.unmount();
+
+    const solo = render(<SubagentCard name="spawn_subagent" runs={[run(1)]} />);
+    expect(screen.getByText("sequential")).toBeTruthy();
+    solo.unmount();
+
+    // A reloaded session records no wave: the card must not guess a mode for it.
+    render(<SubagentCard name="spawn_subagent" runs={[run()]} />);
+    expect(screen.queryByText("sequential")).toBeNull();
+    expect(screen.queryByText(/parallel/)).toBeNull();
+  });
+
+  it("reads the dispatch mode from the recorded wave, and stays silent when it is unknown", () => {
+    expect(subagentDispatchMode([])).toBeNull();
+    expect(subagentDispatchMode([undefined])).toBeNull();
+    // Zero and non-finite are amounts the wire never actually reports, so they read as
+    // unknown rather than as "ran alone".
+    expect(subagentDispatchMode([0])).toBeNull();
+    expect(subagentDispatchMode([Number.NaN])).toBeNull();
+    expect(subagentDispatchMode([1])).toEqual({ mode: "sequential", waveSize: 1 });
+    expect(subagentDispatchMode([2])).toEqual({ mode: "parallel", waveSize: 2 });
+    expect(subagentDispatchMode([3, 1, undefined])).toEqual({ mode: "parallel", waveSize: 3 });
   });
 
   it("names the run's skill in its first row, never the spawn tool", () => {
