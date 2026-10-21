@@ -74,6 +74,7 @@ import {
 } from "../voice/models";
 import { speechTranscriber } from "../voice/transcriber";
 import { type ChangelogState, PageChangelog } from "./changelog";
+import { FitText } from "./fit-text";
 import { activationHandler, escapeHandler } from "./keyboard";
 import { Shortcut, type ShortcutKey } from "./shortcut";
 
@@ -1880,7 +1881,6 @@ function ModelList({
           const enabled = enabledSet.has(id);
           // The card header already names the provider, so the id drops its prefix.
           const displayName = modelWireName(id);
-          const nameFontSize = Math.max(10, Math.min(14, (14 * 18) / displayName.length));
           return (
             <div
               key={id}
@@ -1895,9 +1895,7 @@ function ModelList({
               tabIndex={onSelect ? 0 : undefined}
             >
               <div className="nm">
-                <span className="model-name" style={{ fontSize: `${nameFontSize}px` }}>
-                  {displayName}
-                </span>
+                <FitText text={displayName} className="model-name" />
                 {acceptsImages(id) ? <span className="badge">vision</span> : null}
               </div>
               {onToggle ? (

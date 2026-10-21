@@ -11,6 +11,12 @@ import { SettingsModal } from "./settings";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
+/** A model card is identified by the value it toggles, not by its label: the
+ *  label drops the provider prefix its card already names. */
+function modelCard(container: HTMLElement, value: string): HTMLElement | null {
+  return container.querySelector(`.mcard[data-model="${value}"]`);
+}
+
 const baseSettings: Settings = {
   version: "1.0.0",
   reasoningEffort: "high",
@@ -280,7 +286,7 @@ describe("PageModels default-model enum", () => {
     });
 
     // The Ollama card is titled by the provider, so its rows drop the `ollama/` scheme.
-    const row = container.querySelector('.mcard[data-model="ollama/clef:27b"]');
+    const row = modelCard(container, "ollama/clef:27b");
     expect(row?.querySelector(".model-name")?.textContent).toBe("clef:27b");
     const names = Array.from(container.querySelectorAll(".mcard .model-name")).map(
       (name) => name.textContent,
@@ -315,9 +321,8 @@ describe("PageModels shared-id identity (qualified refs)", () => {
       if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
     });
 
-    const cardFor = (value: string) => container.querySelector(`.mcard[data-model="${value}"]`);
-    const native = cardFor("mimo-v2.6-pro");
-    const qualified = cardFor("opencode/mimo-v2.6-pro");
+    const native = modelCard(container, "mimo-v2.6-pro");
+    const qualified = modelCard(container, "opencode/mimo-v2.6-pro");
     expect(native).toBeTruthy();
     expect(qualified).toBeTruthy();
     // Each card names its own provider, so a row never repeats the prefix.
@@ -359,9 +364,8 @@ describe("PageModels shared-id identity (qualified refs)", () => {
         if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
       });
 
-      const cardFor = (value: string) => container.querySelector(`.mcard[data-model="${value}"]`);
-      const opencodeRow = cardFor("deepseek-v4.1-flash");
-      const experientialRow = cardFor("experiential/deepseek-v4.1-flash");
+      const opencodeRow = modelCard(container, "deepseek-v4.1-flash");
+      const experientialRow = modelCard(container, "experiential/deepseek-v4.1-flash");
       expect(opencodeRow).toBeTruthy();
       expect(experientialRow).toBeTruthy();
       expect(

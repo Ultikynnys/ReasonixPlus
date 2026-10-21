@@ -7895,8 +7895,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   max-width: calc(100% - 72px);
   min-width: 0;
 }
+/* Shrinkable so FitText can measure a real budget instead of the card guessing
+   a size from the label's length. */
 .mcard .nm .model-name {
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
 }
 .mcard .nm .badge {
   font-family: inherit;
