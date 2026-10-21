@@ -171,7 +171,7 @@ export interface SessionOpenedEvent extends EventBase {
   resumedFromTurn: number;
 }
 
-/** A session edit truncated the live log (retry / rewind / abort-discard / raw-context edit).
+/** A session edit truncated the live log (retry / rewind / abort-discard / context edit).
  *  The one event that REPLACES the conversation view, so replaying the events
  *  sidecar yields the truncated conversation. */
 export interface SessionRetractedEvent extends EventBase {

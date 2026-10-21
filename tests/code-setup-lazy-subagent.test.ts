@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ANTIGRAVITY_OAUTH_CLIENT_ID } from "../src/antigravity-oauth.js";
 import { buildCodeToolset } from "../src/code/setup.js";
-import { saveAntigravityOAuth, saveEnableSubagents } from "../src/config.js";
+import { saveAntigravityOAuth } from "../src/config.js";
 import { resetTypesafeValidationCache } from "../src/tools/jev.js";
 
 // #700-followup: buildCodeToolset used to eagerly construct a DeepSeekClient
@@ -121,7 +121,6 @@ describe("buildCodeToolset", () => {
   });
 
   it("registers no spawn tool when subagents are disabled", async () => {
-    saveEnableSubagents(false, cfgPath);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
 
@@ -155,13 +154,6 @@ describe("buildCodeToolset", () => {
     toolset.syncSubagentTools(true);
     toolset.syncSubagentTools(false);
     toolset.syncSubagentTools(false);
-    expect(toolset.tools.has("spawn_subagent")).toBe(false);
-    await toolset.jobs.shutdown();
-  });
-
-  it("ignores the config default: only the per-session option decides", async () => {
-    writeFileSync(cfgPath, JSON.stringify({ enableSubagents: true }), "utf8");
-    const toolset = await buildCodeToolset({ rootDir: tmpRoot, configPath: cfgPath });
     expect(toolset.tools.has("spawn_subagent")).toBe(false);
     await toolset.jobs.shutdown();
   });

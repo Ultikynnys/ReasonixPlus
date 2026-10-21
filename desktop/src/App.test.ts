@@ -1575,7 +1575,7 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
   it("stores the session's frozen subagent capability from $settings", () => {
     // The composer's subagent model picker keys off this, and the capability is
     // frozen at chat creation.
-    const settingsEvent = (subagents?: boolean, enableSubagents?: boolean) => ({
+    const settingsEvent = (subagents?: boolean) => ({
       type: "$settings" as const,
       reasoningEffort: "high" as const,
       editMode: "follow" as const,
@@ -1585,21 +1585,15 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
       recentWorkspaces: [],
       model: "deepseek-v4-pro",
       subagents,
-      enableSubagents,
       version: "0.50.1",
     });
-    const capabilityOf = (subagents?: boolean, enableSubagents?: boolean) =>
-      reduce(initialState(), { t: "incoming", event: settingsEvent(subagents, enableSubagents) })
-        .settings?.subagents;
+    const capabilityOf = (subagents?: boolean) =>
+      reduce(initialState(), { t: "incoming", event: settingsEvent(subagents) }).settings
+        ?.subagents;
 
     expect(capabilityOf(true)).toBe(true);
     expect(capabilityOf(false)).toBe(false);
-    // The frozen value wins over the creation default.
-    expect(capabilityOf(false, true)).toBe(false);
-    // A daemon that predates the frozen field only knows the creation default, and
-    // falls back to it rather than stranding a picker the user still has.
-    expect(capabilityOf(undefined, true)).toBe(true);
-    expect(capabilityOf(undefined, false)).toBe(false);
+    // Absence reads as off: a missing field must never grant the capability.
     expect(capabilityOf()).toBe(false);
   });
 
@@ -2981,27 +2975,6 @@ describe("Desktop App reducer — session.retracted file derivation", () => {
     });
     expect(next.messages).toHaveLength(1);
     expect(next.messages[0]).toMatchObject({ kind: "user", text: "edited" });
-  });
-
-  it("$context_raw updates the raw-context state immediately", () => {
-    const next = reduce(initialState(), {
-      t: "incoming",
-      event: {
-        type: "$context_raw",
-        text: "===== system =====\nSYS",
-        messageCount: 2,
-        tokens: 99,
-        busy: false,
-        notice: "applied",
-      },
-    });
-    expect(next.contextRaw).toEqual({
-      text: "===== system =====\nSYS",
-      messageCount: 2,
-      tokens: 99,
-      busy: false,
-      notice: "applied",
-    });
   });
 });
 

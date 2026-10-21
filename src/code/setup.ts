@@ -3,6 +3,7 @@ import {
   DEFAULT_MODEL,
   type EditMode,
   type ModelProvider,
+  type ReasoningEffort,
   isNeverAskMode,
   loadAllShellAllowed,
   loadEditMode,
@@ -83,6 +84,9 @@ export interface CodeToolsetOpts {
   /** Per-tab subagent model, resolved lazily at spawn time via a getter so a
    *  change applies to the next spawn without rebuilding the toolset. */
   subagentModel?: () => string;
+  /** The session's thinking budget, read at spawn time so a child reasons at the
+   *  same effort as the chat that spawned it. */
+  subagentEffort?: () => ReasoningEffort;
   /** Live inherited-loop options (window cap, compaction trigger, iteration/output
    *  caps, tool hooks), read at spawn time for the same reason: a mid-session change
    *  applies to the next child without a rebuild. */
@@ -224,6 +228,7 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
       configPath: opts.configPath,
       projectRoot: opts.rootDir,
       defaultModel: () => opts.subagentModel?.() ?? DEFAULT_MODEL,
+      effort: opts.subagentEffort,
       billingFor: (model) => opts.subagentBilling?.(model),
       inherited: opts.subagentLoopOptions,
       // Late-bound: the TUI's `useSubagent` writes the live callback into

@@ -5,6 +5,7 @@ import { PLAN_TOOL_NAMES } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "../client.js";
 import {
   type ModelProvider,
+  type ReasoningEffort,
   loadFallbackModels,
   loadMaxIterPerTurn,
   loadMaxOutputTokens,
@@ -142,6 +143,8 @@ export interface SpawnSubagentOptions {
   system: string;
   task: string;
   model?: string;
+  /** Thinking budget for this run. Omitted → the constrained subagent default. */
+  effort?: ReasoningEffort;
   maxResultChars?: number;
   sink?: SubagentSink;
   /** Forwarded into the child loop so parent Esc cancels nested work. */
@@ -215,6 +218,9 @@ export interface SubagentToolOptions {
   projectRoot?: string;
   /** Fixed model id, or a live getter read at spawn time. */
   defaultModel?: string | (() => string);
+  /** Session thinking budget: a fixed level, or a live getter read at spawn time so a
+   *  mid-session effort change applies to the next child without rebuilding the toolset. */
+  effort?: ReasoningEffort | (() => ReasoningEffort);
   maxResultChars?: number;
   sink?: SubagentSink;
   /** Per-spawn billing resolution (unit + quota probe), so a quota-billed child reports
@@ -262,7 +268,9 @@ const DEFAULT_MAX_RESULT_CHARS = 8000;
 // frontmatter `model: deepseek-v4-pro` is the opt-in override for
 // skills that empirically benefit from the stronger model.
 export const DEFAULT_SUBAGENT_MODEL = "deepseek-flash";
-const DEFAULT_SUBAGENT_EFFORT: import("../config.js").ReasoningEffort = "high";
+/** Fallback only: hosts pass the session's effort through `effort`, so a child
+ *  reasons at the same depth as the chat that spawned it. */
+const DEFAULT_SUBAGENT_EFFORT: ReasoningEffort = "high";
 
 const SUBAGENT_TOOL_NAME = "spawn_subagent";
 /** Delegation entry points are excluded → depth=1 hard cap; every plan tool is excluded
@@ -438,10 +446,10 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     prefix: childPrefix,
     tools: childTools,
     model,
-    // Subagents run on a constrained thinking budget by default — the
-    // task is already narrow by construction, and `high` cuts output
-    // tokens substantially vs `max`.
-    reasoningEffort: DEFAULT_SUBAGENT_EFFORT,
+    // The child thinks on the session's current effort, so a delegated task reasons
+    // as hard as the chat that commissioned it. Only a caller that hands no effort
+    // down at all falls back to the constrained subagent budget.
+    reasoningEffort: opts.effort ?? DEFAULT_SUBAGENT_EFFORT,
     stream: true,
     session: sessionName,
     // ALWAYS on, regardless of the parent's config: a child has no operator to
@@ -860,6 +868,11 @@ export function registerSubagentTool(
   const resolveModel = (): string =>
     (typeof opts.defaultModel === "function" ? opts.defaultModel() : opts.defaultModel) ??
     DEFAULT_SUBAGENT_MODEL;
+  /** Read per spawn: the child thinks on the session's current effort. Undefined
+   *  leaves `spawnSubagent` to apply the constrained default, so that default lives
+   *  in exactly one place. */
+  const resolveEffort = (): ReasoningEffort | undefined =>
+    typeof opts.effort === "function" ? opts.effort() : opts.effort;
   const resolveClient = (model: string): DeepSeekClient =>
     typeof opts.client === "function" ? opts.client(model) : opts.client;
   const maxResultChars = opts.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
@@ -906,12 +919,16 @@ export function registerSubagentTool(
        *  the quota fallback below can re-spawn without duplicating any of it. */
       const runSpawn = async (spawnModel: string): Promise<SubagentResult> => {
         const billing = opts.billingFor?.(spawnModel);
+        const effort = resolveEffort();
         const result = await spawnSubagent({
           client: resolveClient(spawnModel),
           parentRegistry,
           system: `${defaultSystemBase}\n\n${escalationContract(spawnModel)}`,
           task,
           model: spawnModel,
+          // Spread conditionally: an undefined key would let the spread override a
+          // default a future spawnSubagent applies differently.
+          ...(effort ? { effort } : {}),
           maxResultChars,
           sink: opts.sink,
           billingContext: {

@@ -236,7 +236,6 @@ export type {
   MemoryResultEvent,
   RetryResultEvent,
   BtwResultEvent,
-  ContextRawEvent,
   JobInfo,
   JobsEvent,
   LoadedSegment,

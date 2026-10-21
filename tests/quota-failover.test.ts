@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { isQuotaExhaustedError } from "../src/loop/errors.js";
 
-/** The failover acts on exactly this predicate: true means "the same model cannot
- *  get past this, try the next one". False positives reroute healthy requests. */
+/** The subagent failover acts on exactly this predicate. A child re-spawns its whole
+ *  task, so it stays quota-only; the main turn recovers from any model failure. */
 describe("isQuotaExhaustedError", () => {
   const accepted: Array<[string, string]> = [
     ["402 payment required", 'DeepSeek 402: {"error":{"message":"Insufficient Balance"}}'],

@@ -64,7 +64,6 @@ import {
   type ChoiceVerdict,
   type CodexQuota,
   type ConfirmationChoice,
-  type ContextRawEvent,
   type FeedbackCueId,
   type FeedbackCueSettings,
   type IncomingEvent,
@@ -527,9 +526,6 @@ export type QueuedSend = {
   images?: { id: string; thumbnail: string; wire?: UserImageAttachment }[];
 };
 
-/** Raw-context debug payload ($context_raw minus the wire tag) held in state. */
-type ContextRaw = Omit<ContextRawEvent, "type">;
-
 type State = {
   ready: boolean;
   needsSetup: boolean;
@@ -621,8 +617,6 @@ type State = {
   memoryDetail: MemoryDetail | null;
   /** Outcome of the last memory write/delete/import RPC — shown as a transient banner in the memory panel. */
   memoryResult: { ok: boolean; message: string } | null;
-  /** Latest $context_raw payload — the Raw context debug panel's read side. */
-  contextRaw: ContextRaw | null;
   jobs: JobInfo[];
   /** Live "skill running" indicator — set when a `skill_run` RPC dispatches, cleared on `$turn_complete`. */
   activeSkill: SkillOrigin | null;
@@ -2614,17 +2608,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     case "$memory_detail":
       return { ...state, memoryDetail: ev.detail };
-    case "$context_raw":
-      return {
-        ...state,
-        contextRaw: {
-          text: ev.text,
-          messageCount: ev.messageCount,
-          tokens: ev.tokens,
-          busy: ev.busy,
-          notice: ev.notice,
-        },
-      };
     case "$memory_result":
       return { ...state, memoryResult: { ok: ev.ok, message: ev.message } };
     case "$jobs": {
@@ -2729,17 +2712,14 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           contextTokens: ev.contextTokens ?? null,
           maxIterPerTurn: ev.maxIterPerTurn ?? null,
           maxIterPerTurnOverride: ev.maxIterPerTurnOverride ?? null,
-          enableSubagents: ev.enableSubagents === true,
-          // Frozen per session. A daemon that predates the field only knows the
-          // creation default, which is the closest available estimate for this chat;
-          // reading absence as "off" would drop a working picker on a stale build.
-          subagents: ev.subagents ?? ev.enableSubagents ?? false,
+          // Frozen per session, and absent reads as off: a daemon that predates the
+          // field minted nothing with the tool, so there is no picker to keep.
+          subagents: ev.subagents ?? false,
           elevationEnabled: ev.elevationEnabled ?? false,
           repetitionGuardEnabled: ev.repetitionGuardEnabled ?? false,
           autoCompact: ev.autoCompact ?? true,
           autoCompactTrigger: ev.autoCompactTrigger ?? null,
           questionTimerEnabled: ev.questionTimerEnabled ?? false,
-          rawTabEnabled: ev.rawTabEnabled ?? false,
           feedbackCues: ev.feedbackCues ?? {},
           baseUrl: ev.baseUrl,
           apiKeyPrefix: ev.apiKeyPrefix,
@@ -3635,7 +3615,6 @@ const TabRuntime = memo(function TabRuntime({
     memory: [],
     memoryDetail: null,
     memoryResult: null,
-    contextRaw: null,
     jobs: [],
     activeSkill: null,
     lastTurnOutcome: null,
@@ -5028,11 +5007,6 @@ const TabRuntime = memo(function TabRuntime({
   );
   const dismissMemoryResult = useCallback(() => dispatch({ t: "dismiss_memory_result" }), []);
   const compactContext = useCallback(() => sendRpc({ cmd: "context_compact" }), [sendRpc]);
-  const readContext = useCallback(() => sendRpc({ cmd: "context_raw_get" }), [sendRpc]);
-  const writeContext = useCallback(
-    (text: string) => sendRpc({ cmd: "context_raw_set", text }),
-    [sendRpc],
-  );
   const readPlans = useCallback(() => {
     void rpcSend({ cmd: "plan_history_get", tabId });
   }, [tabId]);
@@ -5485,10 +5459,7 @@ const TabRuntime = memo(function TabRuntime({
           onWriteMemory={writeMemory}
           onDeleteMemory={deleteMemory}
           onDismissMemoryResult={dismissMemoryResult}
-          rawContext={view.contextRaw}
           onCompact={compactContext}
-          onReadContext={readContext}
-          onWriteContext={writeContext}
           onAddRule={addRule}
           onRemoveRule={removeRule}
           onUpdateRule={updateRule}

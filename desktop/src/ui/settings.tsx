@@ -543,28 +543,6 @@ function PageGeneral({
 
       <section className="section">
         <div className="stitle">{t("settings.behaviorSection")}</div>
-        <div className="setting-row">
-          <div className="l">
-            <div className="n">{t("settings.rawTab")}</div>
-            <div className="h">{t("settings.rawTabHint")}</div>
-          </div>
-          <div className="seg-ctrl">
-            <button
-              type="button"
-              data-on={settings.rawTabEnabled === true}
-              onClick={() => onSave({ rawTabEnabled: true })}
-            >
-              {t("settings.rawTabShown")}
-            </button>
-            <button
-              type="button"
-              data-on={settings.rawTabEnabled !== true}
-              onClick={() => onSave({ rawTabEnabled: false })}
-            >
-              {t("settings.rawTabHidden")}
-            </button>
-          </div>
-        </div>
         <FeedbackCuesSection settings={settings} onSave={onSave} />
         <div className="setting-row">
           <div className="l">

@@ -74,7 +74,6 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     memory: [],
     memoryDetail: null,
     memoryResult: null,
-    contextRaw: null,
     jobs: [],
     activeSkill: null,
     lastTurnOutcome: null,

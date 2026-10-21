@@ -16,6 +16,16 @@ export interface FormatLoopErrorOptions {
   upstreamHost?: string;
 }
 
+/** The message of a thrown value or of a wire field: the classifiers below accept
+ *  either, so a caller can screen `errorDetail.message` without re-wrapping it. */
+function errorText(err: unknown): string {
+  return typeof err === "string" ? err : err instanceof Error ? err.message : "";
+}
+
+/** Every phrasing a provider has used for "the request is bigger than the window". */
+const CONTEXT_OVERFLOW_RE =
+  /maximum context length|context window|prompt too long|reduce the length/i;
+
 export function formatLoopError(
   err: Error,
   probe?: DeepSeekProbeResult,
@@ -42,7 +52,7 @@ export function formatLoopError(
   const status = match[2]!;
   const inner = extractProviderErrorMessage(match[3]!);
   if (status === "400" || status === "413" || status === "422") {
-    if (/maximum context length|context window|prompt too long|reduce the length/i.test(inner)) {
+    if (CONTEXT_OVERFLOW_RE.test(inner)) {
       return providerMessage(provider, "context", {
         requested: t("errors.contextOverflowTooMany"),
         inner,
@@ -93,8 +103,9 @@ export function is4xxError(err: unknown): boolean {
  *  rate allowance is spent: replaying the same model cannot get past it, so the
  *  only way to keep an unattended run alive is a different model. */
 export function isQuotaExhaustedError(err: unknown): boolean {
-  const msg = typeof err === "string" ? err : err instanceof Error ? err.message : "";
-  const match = new RegExp(`^(${PROVIDER_ERROR_BRANDS}) (\\d{3}):\\s*([\\s\\S]*)$`).exec(msg);
+  const match = new RegExp(`^(${PROVIDER_ERROR_BRANDS}) (\\d{3}):\\s*([\\s\\S]*)$`).exec(
+    errorText(err),
+  );
   if (!match) return false;
   const status = match[2]!;
   const inner = extractProviderErrorMessage(match[3]!);
@@ -112,10 +123,7 @@ export function isQuotaExhaustedError(err: unknown): boolean {
  *  window. Recoverable by compaction; mirrors the message patterns that
  *  formatLoopError classifies as the "context" error kind. */
 export function isContextOverflowError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  return /maximum context length|context window|prompt too long|reduce the length/i.test(
-    err.message ?? "",
-  );
+  return CONTEXT_OVERFLOW_RE.test(errorText(err));
 }
 
 /** A gateway that refuses the whole body without naming a field: OpenCode Zen/Go

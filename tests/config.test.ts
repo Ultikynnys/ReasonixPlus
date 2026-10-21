@@ -38,7 +38,6 @@ import {
   loadDuplicateSessionAutoProceed,
   loadDuplicateSessionTokens,
   loadEditMode,
-  loadEnableSubagents,
   loadEndpoint,
   loadEndpointForModel,
   loadExperientialApiKey,
@@ -60,7 +59,6 @@ import {
   loadProxyConfig,
   loadQuestionTimerEnabled,
   loadRateLimit,
-  loadRawTabEnabled,
   loadReasoningEffort,
   loadRecentWorkspaces,
   loadResolvedModelEndpoint,
@@ -90,7 +88,6 @@ import {
   saveDuplicateSessionAutoProceed,
   saveDuplicateSessionTokens,
   saveEditMode,
-  saveEnableSubagents,
   saveFeedbackCues,
   saveMaxIterPerTurn,
   saveModel,
@@ -98,7 +95,6 @@ import {
   saveOpenAIApiKey,
   saveOpenAIOAuth,
   saveQuestionTimerEnabled,
-  saveRawTabEnabled,
   saveReasoningEffort,
   saveSubagentModels,
   saveTheme,
@@ -1319,20 +1315,6 @@ describe("config", () => {
     expect(readConfig(path).maxIterPerTurn).toBeUndefined();
   });
 
-  it("enableSubagents defaults to false and persists either state", () => {
-    // Opt-in: enabling subagents rewrites the prompt prefix, so a chat must not get
-    // it merely because the key was never written.
-    expect(loadEnableSubagents(path)).toBe(false);
-
-    saveEnableSubagents(true, path);
-    expect(loadEnableSubagents(path)).toBe(true);
-    expect(readConfig(path).enableSubagents).toBe(true);
-
-    saveEnableSubagents(false, path);
-    expect(loadEnableSubagents(path)).toBe(false);
-    expect(readConfig(path).enableSubagents).toBe(false);
-  });
-
   it("autoCompact defaults to true and persists either state", () => {
     expect(loadAutoCompact(path)).toBe(true);
 
@@ -1386,18 +1368,6 @@ describe("config", () => {
     saveQuestionTimerEnabled(true, path);
     expect(loadQuestionTimerEnabled(path)).toBe(true);
     expect(readConfig(path).questionTimerEnabled).toBe(true);
-  });
-
-  it("rawTabEnabled defaults to false and persists either state", () => {
-    expect(loadRawTabEnabled(path)).toBe(false);
-
-    saveRawTabEnabled(true, path);
-    expect(loadRawTabEnabled(path)).toBe(true);
-    expect(readConfig(path).rawTabEnabled).toBe(true);
-
-    saveRawTabEnabled(false, path);
-    expect(loadRawTabEnabled(path)).toBe(false);
-    expect(readConfig(path).rawTabEnabled).toBe(false);
   });
 
   it("feedbackCues defaults to empty (all off) and round-trips the cue matrix", () => {

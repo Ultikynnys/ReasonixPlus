@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { serializeContext } from "../src/context-plaintext.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { ImmutablePrefix } from "../src/memory/runtime.js";
 import { makeFakeClient } from "./support/fake-client.js";
@@ -13,21 +12,8 @@ function makeLoop(model = "deepseek-reasoner") {
   });
 }
 
-describe("Raw context editor exposes only overwritable channels", () => {
-  it("renders no thinking block even when an assistant turn carries reasoning", () => {
-    const text = serializeContext({
-      system: "sys",
-      messages: [
-        { role: "user", content: "q" },
-        { role: "assistant", content: "a", reasoning_content: "secret thoughts" },
-      ],
-    });
-    expect(text).not.toContain("===== thinking =====");
-    expect(text).not.toContain("secret thoughts");
-    expect(text).toContain("===== assistant =====");
-  });
-
-  it("carries each turn's prior reasoning across an apply", () => {
+describe("reasoning survives a conversation replacement", () => {
+  it("carries each turn's prior reasoning across a replace", () => {
     const loop = makeLoop();
     loop.replaceConversation("s", [
       { role: "user", content: "q" },

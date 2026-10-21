@@ -5,12 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  contextRawPayload,
-  tabBusy,
-  tabStatus,
-  turnStartRejection,
-} from "../src/cli/commands/desktop.js";
+import { tabBusy, tabStatus, turnStartRejection } from "../src/cli/commands/desktop.js";
 import type { TurnImage } from "../src/types.js";
 
 const OPENAI_MODEL = "gate-test-openai";
@@ -141,7 +136,7 @@ describe("tabBusy / tabStatus — one busy source", () => {
     expect(tabBusy({ aborter: null, activeTurn: Promise.resolve() } as never)).toBe(true);
   });
 
-  it("$tab_status mirrors the same busy source the raw-context payload reports", () => {
+  it("$tab_status mirrors the same busy source as tabBusy", () => {
     const busyNoRuntime = {
       aborter: new AbortController(),
       activeTurn: undefined,
@@ -171,9 +166,6 @@ describe("tabBusy / tabStatus — one busy source", () => {
       compacting: false,
       switching: false,
     });
-
-    expect(contextRawPayload(busyNoRuntime as never).busy).toBe(true);
-    expect(contextRawPayload(idle as never).busy).toBe(false);
   });
 
   it("reports the loop's current turn when a runtime exists", () => {

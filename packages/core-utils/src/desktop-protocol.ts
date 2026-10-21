@@ -827,25 +827,6 @@ export interface MemoryResultEvent {
 
 export type RetryResultEvent = { type: "$retry_result"; text: string };
 
-/** Full request context (system prompt + conversation) rendered as editable
- *  plaintext: powers the desktop's read/write "Raw context" debug view.
- *  Aimed at inspecting/hand-editing what gets sent to the model (esp. local
- *  Ollama models). Writing back is refused while a turn is in flight. */
-export interface ContextRawEvent {
-  type: "$context_raw";
-  /** Editable plaintext of the full request context (system block + messages). */
-  text: string;
-  /** Conversation message count (excludes the system block). */
-  messageCount: number;
-  /** Bounded token estimate of the serialized context, for the UI header. */
-  tokens: number;
-  /** True while a turn is in flight; the UI disables Apply. */
-  busy: boolean;
-  /** Optional one-shot note surfaced after a write (e.g. unpaired tool messages
-   *  healed away to keep the request valid). Absent on a plain read. */
-  notice?: string;
-}
-
 export type BtwResultEvent = { type: "$btw_result"; question: string; answer: string };
 
 export interface JobInfo {
@@ -1021,7 +1002,7 @@ export interface SessionProviderCost {
   quotaUsedPct?: number;
 }
 
-/** A retry, rewind, abort-discard, raw-context edit, or context compaction
+/** A retry, rewind, abort-discard, context edit, or context compaction
  *  replaced the live conversation. The replacement uses the same LoadedMessage
  *  wire shape as session loading, while retaining the edit reason. */
 export interface SessionRetractedEvent {
@@ -1094,13 +1075,9 @@ export interface SettingsEvent {
   maxIterPerTurn?: number | null;
   /** Explicit config override; null means environment/default resolution is active. */
   maxIterPerTurnOverride?: number | null;
-  /** Whether a NEW chat starts with the subagent tool. Defaults to false (opt-in): the
-   *  flag is frozen into each session at creation, so this is a creation default, not a
-   *  live switch. */
-  enableSubagents?: boolean;
   /** Whether THIS session was minted with the subagent tool — the frozen per-chat
-   *  capability, unlike `enableSubagents`. Drives whether the composer offers the
-   *  subagent model picker at all: without the tool the choice has no effect. */
+   *  capability. Drives whether the composer offers the subagent model picker at
+   *  all: without the tool the choice has no effect. */
   subagents?: boolean;
   /** Whether `run_command` may run commands elevated via Windows UAC. Defaults to false. */
   elevationEnabled?: boolean;
@@ -1112,8 +1089,6 @@ export interface SettingsEvent {
   /** Auto-compaction trigger fraction; null = default (0.8). */
   autoCompactTrigger?: number | null;
   questionTimerEnabled?: boolean;
-  /** Whether the side panel shows the Raw context tab. Defaults to false. */
-  rawTabEnabled?: boolean;
   /** Duplicate-session context budget in tokens (default 50 000); null = default. */
   duplicateSessionTokens?: number | null;
   /** When true, a duplicated session auto-runs one turn to continue; default off (user proceeds manually). */
@@ -1580,15 +1555,11 @@ export interface SettingsPatch {
   autoCompact?: boolean;
   /** Auto-compaction trigger fraction, clamped to [0.5, 0.95]; null/undefined = default (0.8). */
   autoCompactTrigger?: number | null;
-  /** Default for chats created from now on (the flag is frozen per session at mint). */
-  enableSubagents?: boolean;
   /** Allow `run_command` to run commands elevated via Windows UAC. */
   elevationEnabled?: boolean;
   /** Allow the stream repetition / "stuck re-thinking" guard to abort a degenerating stream. */
   repetitionGuardEnabled?: boolean;
   questionTimerEnabled?: boolean;
-  /** Show the Raw context tab in the side panel. Default false. */
-  rawTabEnabled?: boolean;
   /** Duplicate-session context budget in tokens, clamped to [1000, 1000000]; null/undefined = default (50 000). */
   duplicateSessionTokens?: number | null;
   /** Auto-run one continuation turn in a freshly duplicated session. Default false. */
@@ -1793,16 +1764,11 @@ export type OutgoingCommand = { tabId?: string } & (
    *  restart job ids at 1, so `jobId` alone can match a different tab's job. */
   | { cmd: "jobs_stop"; jobId: number; tabId?: string }
   | { cmd: "jobs_stop_all" }
-  /** Request the full request context as editable plaintext ($context_raw reply). */
   | { cmd: "plan_history_get" }
   | { cmd: "plan_detail_get"; planId: string }
   /** Delete a plan for good, whatever its status. Replies with a fresh $plan_history
    *  (and $plan_cleared when the removed plan was the active one). */
   | { cmd: "plan_remove"; planId: string }
-  | { cmd: "context_raw_get" }
-  /** Replace the live context (system prompt + messages) from edited plaintext.
-   *  Refused while a turn is in flight; re-healed server-side before applying. */
-  | { cmd: "context_raw_set"; text: string }
   /** Fold/summarize the conversation to reclaim context space (manual
    *  compaction). Refused while a turn is in flight. */
   | { cmd: "context_compact" }

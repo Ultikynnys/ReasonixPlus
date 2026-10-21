@@ -173,10 +173,6 @@ export const en = {
     // section headers
     appearanceSection: "Appearance",
     behaviorSection: "Behavior",
-    rawTab: "Raw context tab",
-    rawTabHint: "Hidden by default.",
-    rawTabShown: "Shown",
-    rawTabHidden: "Hidden",
     feedbackCuesSection: "Feedback cues",
     feedbackCuesSectionHint:
       "Sounds and notifications for notable events. Everything is off by default; enable each cue individually. Notifications are raised only while the window is unfocused.",
@@ -924,16 +920,6 @@ export const en = {
     eventsOutcomeStarted: "started",
     eventsOutcomeDone: "completed",
     eventsOutcomeFailed: "failed",
-    rawTab: "Raw",
-    rawTitle: "Raw context",
-    rawHelp:
-      "Plaintext of the exact context sent to the model: system prompt, messages, and assistant thinking. Edit, then Apply (or Cmd/Ctrl+Enter) to replace the live context, for debugging local models. Unpaired tool results are dropped.",
-    rawAria: "Editable request context",
-    rawMeta: "{count} messages · {tokens} tokens",
-    rawRefresh: "Refresh",
-    rawApply: "Apply",
-    rawRevert: "Revert",
-    rawBusy: "Locked while a turn is running",
     contextTokens: "Context · tokens",
     compactNow: "Compact now",
     compactNowTooltip: "Summarize older context to free up space",

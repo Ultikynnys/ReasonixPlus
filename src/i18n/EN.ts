@@ -529,13 +529,13 @@ export const EN: TranslationSchema = {
     providerServerErrorRetry:
       "The model provider reported a temporary server error before producing a visible response: retrying automatically in 10 seconds.",
     failoverSwitching:
-      "{failed} has no quota left: continuing this turn on the backup model {next}.",
+      "{failed} could not complete this turn: continuing on the backup model {next}.",
     failoverNoBackup:
-      "{failed} ran out of quota and no backup model is configured. Add backup models in Settings → Backup models so an overnight or queued run keeps going after a provider runs dry.",
+      "{failed} could not complete this turn and no backup model is configured. Add backup models in Settings → Backup models so an overnight or queued run keeps going when a provider stops serving this chat.",
     failoverNoneUsable:
-      "{failed} ran out of quota, and no configured backup model can run here: their providers have no credential yet. Add a key for one of them in Settings → Models, or add a backup model from a provider that is already set up.",
+      "{failed} could not complete this turn, and no configured backup model can run here: their providers have no credential yet. Add a key for one of them in Settings → Models, or add a backup model from a provider that is already set up.",
     failoverAllExhausted:
-      "{failed} ran out of quota, and every backup model was tried and failed too: {models}. Top up a provider, or add another backup model in Settings → Backup models.",
+      "{failed} could not complete this turn, and every backup model was tried and failed too: {models}. Top up a provider, or add another backup model in Settings → Backup models.",
     failoverPromptUnavailable:
       "This turn cannot be replayed on {next}: its prompt is no longer the last message in the conversation, because it was compacted away or carried attachments. Send it again to run it on that model.",
     imagePayloadShrunk:

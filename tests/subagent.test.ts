@@ -1479,3 +1479,42 @@ describe("plan isolation", () => {
     }
   }, 30_000);
 });
+
+describe("subagent effort — the child thinks at the session's level", () => {
+  it("sends the effort the host hands down, not a fixed subagent budget", async () => {
+    const parent = new ToolRegistry();
+    const fake = makeFakeClient([{ content: "done" }]);
+    await spawnSubagent({
+      client: fake.client,
+      parentRegistry: parent,
+      system: "review",
+      task: "say something",
+      model: "deepseek-v4-pro",
+      effort: "low",
+    });
+    expect(fake.captured[0]?.reasoning_effort).toBe("low");
+  });
+
+  it("reads the session effort at spawn time, so a later change reaches the next child", async () => {
+    const parent = new ToolRegistry();
+    const fake = makeFakeClient([{ content: "one" }, { content: "two" }]);
+    let effort: "low" | "max" = "low";
+    registerSubagentTool(parent, {
+      client: fake.client,
+      defaultModel: "deepseek-v4-pro",
+      effort: () => effort,
+    });
+    await parent.dispatch("spawn_subagent", JSON.stringify({ task: "first" }));
+    effort = "max";
+    await parent.dispatch("spawn_subagent", JSON.stringify({ task: "second" }));
+    expect(fake.captured.map((req) => req.reasoning_effort)).toEqual(["low", "max"]);
+  });
+
+  it("falls back to the constrained budget only when the host supplies no effort", async () => {
+    const parent = new ToolRegistry();
+    const fake = makeFakeClient([{ content: "done" }]);
+    registerSubagentTool(parent, { client: fake.client, defaultModel: "deepseek-v4-pro" });
+    await parent.dispatch("spawn_subagent", JSON.stringify({ task: "anything" }));
+    expect(fake.captured[0]?.reasoning_effort).toBe("high");
+  });
+});

@@ -36,7 +36,6 @@ import type {
   ChoiceRequiredEvent,
   CodexQuotaEvent,
   ConfirmRequiredEvent,
-  ContextRawEvent,
   CtxBreakdownEvent,
   DesktopDiagnosticEvent,
   DirectKernelWireEvent,
@@ -153,7 +152,6 @@ import {
   loadEditMode,
   loadEffectiveMcpConfig,
   loadElevationEnabled,
-  loadEnableSubagents,
   loadEnabledModels,
   loadEndpoint,
   loadEndpointForModel,
@@ -179,7 +177,6 @@ import {
   loadProjectShellAllowed,
   loadQuestionTimerEnabled,
   loadQuickSendId,
-  loadRawTabEnabled,
   loadReasoningEffort,
   loadRecentWorkspaces,
   loadRepetitionGuardEnabled,
@@ -216,7 +213,6 @@ import {
   saveDuplicateSessionTokens,
   saveEditMode,
   saveElevationEnabled,
-  saveEnableSubagents,
   saveEnabledModels,
   saveFallbackModels,
   saveFeedbackCues,
@@ -231,7 +227,6 @@ import {
   saveOpencodeOAuth,
   saveQuestionTimerEnabled,
   saveQuickSendId,
-  saveRawTabEnabled,
   saveReasoningEffort,
   saveRepetitionGuardEnabled,
   saveWorkspaceDir,
@@ -240,7 +235,6 @@ import {
   updateRule,
   writeConfig,
 } from "../../config.js";
-import { parseContext, serializeContext } from "../../context-plaintext.js";
 import { ConcurrencyGate } from "../../core/concurrency-gate.js";
 import { redactEventValue } from "../../core/event-redaction.js";
 import { Eventizer } from "../../core/eventize.js";
@@ -310,7 +304,7 @@ import {
   type LoopEvent,
 } from "../../index.js";
 import { createLogger } from "../../logging.js";
-import { isQuotaExhaustedError } from "../../loop/errors.js";
+import { isContextOverflowError } from "../../loop/errors.js";
 import { MCP_CATALOG, catalogStdioCommand } from "../../mcp/catalog.js";
 import {
   GMAIL_MAIL_SERVER_NAME,
@@ -573,7 +567,6 @@ export type EmittableEvent =
   | PlaywrightBrowserInstallEvent
   | SkillsEvent
   | CtxBreakdownEvent
-  | ContextRawEvent
   | MemoryEvent
   | MemoryDetailEvent
   | MemoryResultEvent
@@ -1801,9 +1794,8 @@ function emitSettings(tab: Tab): void {
       maxIterPerTurn: tab.runtime?.loop.maxIterPerTurn ?? loadMaxIterPerTurn(),
       maxIterPerTurnOverride:
         typeof config.maxIterPerTurn === "number" ? config.maxIterPerTurn : null,
-      enableSubagents: loadEnableSubagents(),
-      // The session's frozen capability, not the creation default: it is what the
-      // composer's subagent model picker hides behind.
+      // The session's frozen capability: it is what the composer's subagent model
+      // picker hides behind.
       subagents: tab.subagents,
       elevationEnabled: loadElevationEnabled(),
       repetitionGuardEnabled:
@@ -1811,7 +1803,6 @@ function emitSettings(tab: Tab): void {
       autoCompact: tab.runtime?.loop.autoCompact ?? loadAutoCompact(),
       autoCompactTrigger: config.autoCompactTrigger ?? null,
       questionTimerEnabled: loadQuestionTimerEnabled(),
-      rawTabEnabled: loadRawTabEnabled(),
       duplicateSessionTokens: loadDuplicateSessionTokens(),
       duplicateSessionAutoProceed: loadDuplicateSessionAutoProceed(),
       enabledModels: loadEnabledModels(),
@@ -4266,35 +4257,9 @@ function emitCtxBreakdown(tab: Tab): void {
   );
 }
 
-// Full request context (system + messages) as editable plaintext (the desktop
-// "Raw context" debug view). Exported for tests.
-export function contextRawPayload(tab: Tab, notice?: string): ContextRawEvent {
-  if (!tab.runtime) {
-    return {
-      type: "$context_raw",
-      text: "",
-      messageCount: 0,
-      tokens: 0,
-      busy: tabBusy(tab),
-      ...(notice ? { notice } : {}),
-    };
-  }
-  const loop = tab.runtime.loop;
-  const messages = loop.log.toMessages();
-  const text = serializeContext({ system: loop.prefix.system, messages });
-  return {
-    type: "$context_raw",
-    text,
-    messageCount: messages.length,
-    tokens: countTokensForMeter(text),
-    busy: tabBusy(tab),
-    ...(notice ? { notice } : {}),
-  };
-}
-
 /** Ground-truth "a turn is in flight or parked" for one tab — the one busy
- *  source the $tab_status reply and the raw-context payload both report, so
- *  the desktop can reconcile against a single definition. */
+ *  source the $tab_status reply reports, so the desktop can reconcile against a
+ *  single definition. */
 export function tabBusy(tab: Pick<Tab, "aborter" | "activeTurn">): boolean {
   return tab.aborter !== null || tab.activeTurn !== undefined;
 }
@@ -4311,10 +4276,6 @@ export function tabStatus(tab: Tab): TabStatusEvent {
     compacting: tab.compactingManual,
     switching: tab.switching,
   };
-}
-
-function emitContextRaw(tab: Tab, notice?: string): void {
-  emit(contextRawPayload(tab, notice), tab.id);
 }
 
 /** Manual compaction for the desktop "Compact now" button: runs the loop's
@@ -4446,8 +4407,30 @@ interface RuntimeState {
   };
 }
 
+/** The one rule for "this failure is the model's, not the user's and not the
+ *  conversation's": both the loop's error event and a throwing generator feed it,
+ *  so the two paths can never disagree about whether a backup may take over. */
+function isModelFailure(
+  err: { name?: string; message?: string } | undefined,
+  aborted: boolean,
+): boolean {
+  if (aborted) return false;
+  if (err?.name === "AbortError") return false;
+  return !isContextOverflowError(err?.message);
+}
+
+/** Whether a finished attempt hands the turn to a backup model. Any terminal model
+ *  failure qualifies; an answer, a user abort and a context overflow do not. */
+export function shouldFailover(attempt: {
+  aborted: boolean;
+  producedAnswer: boolean;
+  modelFailure: boolean;
+}): boolean {
+  return attempt.modelFailure && !attempt.aborted && !attempt.producedAnswer;
+}
+
 /** One turn-generator drive's outcome: what settlement reports, plus the
- *  quota-exhaustion signal the backup-model failover acts on. */
+ *  model-failure signal the backup-model failover acts on. */
 interface TurnAttempt {
   aborted: boolean;
   lastTurn: number;
@@ -4455,9 +4438,10 @@ interface TurnAttempt {
   producedAnswer: boolean;
   sawError: boolean;
   lastStopReason: string;
-  /** The attempt died because the provider's quota/credits ran out, so replaying
-   *  the SAME model cannot help — only a different model can. */
-  quotaExhausted: boolean;
+  /** The attempt ended on a model failure another model may survive (rate limit,
+   *  spent quota, provider outage, unreachable endpoint). A context overflow is
+   *  excluded: it is a property of the conversation, and the loop already folded. */
+  modelFailure: boolean;
 }
 
 type SymbolEntry = { name: string; path: string; line: number; kind: string };
@@ -5495,9 +5479,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       currentSubagentModel: restore?.subagentModel,
       currentReasoningEffort: restore?.reasoningEffort ?? loadReasoningEffort(),
       ctxMaxOverride: loadContextTokens(),
-      // A new session's subagent flag starts at the Settings default and is overwritten
-      // by the picker's answer; a restored conversation re-reads its own meta below.
-      subagents: loadEnableSubagents(),
+      // Every new session starts without the subagent tool; the session-start picker
+      // is the only place to opt in, and a restored conversation re-reads its own meta.
+      subagents: false,
       toolset: null,
       system: "",
       initialization: null,
@@ -6335,7 +6319,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         let producedAnswer = false;
         let sawError = false;
         let lastStopReason = "";
-        let quotaExhausted = false;
+        let modelFailure = false;
+        /** Aborted means the user stopped it: never a model failure, however the
+         *  signal reached us (the tab's aborter, or a Stop that raced this attempt). */
+        const turnAborted = (): boolean => aborted || tab.aborter?.signal.aborted === true;
         try {
           let emittedTurnContext = false;
           while (true) {
@@ -6370,7 +6357,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
               if (ev.error) lastStopReason = ev.error;
               // The loop exhausted every in-loop recovery it has for this model,
               // so only a DIFFERENT model can still finish the turn.
-              if (isQuotaExhaustedError(ev.errorDetail?.message)) quotaExhausted = true;
+              modelFailure = isModelFailure(ev.errorDetail, turnAborted());
             }
             if (ev.role === "warning" && ev.severity === "high" && ev.content) {
               lastStopReason = ev.content;
@@ -6392,7 +6379,14 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             }
           }
         } catch (err) {
-          emit({ type: "$error", message: (err as Error).message }, tab.id);
+          // A generator that THROWS instead of yielding an error event is still a
+          // dead model — the failure just never reached the event stream, so without
+          // this the turn would stop here with backups sitting unused.
+          const message = err instanceof Error ? err.message : String(err);
+          sawError = true;
+          lastStopReason = message;
+          modelFailure = isModelFailure(err instanceof Error ? err : { message }, turnAborted());
+          emit({ type: "$error", message }, tab.id);
         } finally {
           if (aborted) {
             // Manual compaction must wait for the suspended dispatch to unwind.
@@ -6420,14 +6414,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           producedAnswer,
           sawError,
           lastStopReason,
-          quotaExhausted,
+          modelFailure,
         };
       };
 
       let attempt = await driveAttempt(text);
-      // Automatic backup-model failover: a provider that runs out of quota
-      // mid-conversation would otherwise end the turn here, leaving an
-      // unattended (overnight) run idle until someone wakes up to switch models.
+      // Automatic backup-model failover: a provider that fails mid-conversation
+      // (rate limit, spent quota, outage, unreachable endpoint) would otherwise
+      // end the turn here, leaving an unattended (overnight) run idle until
+      // someone wakes up to switch models.
       // Each backup is switched to, then the prompt is replayed exactly like the
       // desktop's Retry, until an attempt answers or the chain runs out.
       // The model that actually hit the wall: a chain moves tab.currentModel, so every
@@ -6437,7 +6432,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       const triedModels = new Set([primaryModel]);
       let failedOverTo: string | null = null;
       let failoverBroken = false;
-      while (attempt.quotaExhausted && !attempt.aborted && !attempt.producedAnswer) {
+      while (shouldFailover(attempt)) {
         const next = pickFallbackModel(configuredFallbacks, triedModels, modelUsableFor);
         if (!next) break;
         triedModels.add(next);
@@ -6502,12 +6497,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         notify(t("loop.failoverSwitching", { failed: failedModel, next }));
         attempt = await driveAttempt(text);
       }
-      if (
-        attempt.quotaExhausted &&
-        !attempt.aborted &&
-        !attempt.producedAnswer &&
-        !failoverBroken
-      ) {
+      if (shouldFailover(attempt) && !failoverBroken) {
         // Nothing left to try. Name the situation the run ended in, so the stop is
         // explained instead of left to the provider's raw error card: no backups at
         // all, backups that cannot run here, or backups that were tried and failed.
@@ -6709,10 +6699,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       loadSessionIntoTab(tab, resume.name, { abortTurn, cancelPendingGates, persistOpenTabs });
     } else {
       // A workspace with no sessions yet: mint one and gate it like any other session
-      // start. The confirm builds the runtime, so its prefix freezes the answered set.
-      const seed = loadEnableSubagents();
-      tab.currentSession = mintSessionFor(target, undefined, { mcpSetup: true, subagents: seed });
-      bindSessionSubagents(tab, seed);
+      // start. The confirm builds the runtime, so its prefix freezes the answered set,
+      // and the pre-fill is always off: opting in is the picker's job.
+      tab.currentSession = mintSessionFor(target, undefined, {
+        mcpSetup: true,
+        subagents: false,
+      });
+      bindSessionSubagents(tab, false);
       emit(
         {
           type: "$session_loaded",
@@ -7133,6 +7126,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       subagentSink: subagentSinkFor(tab),
       subagentBilling: (m) => subagentBillingFor(m),
       subagentModel: () => tab.currentSubagentModel ?? tab.currentModel,
+      // The session's effort, not a fixed subagent budget: a spawned child must
+      // reason as hard as the chat that commissioned it.
+      subagentEffort: () => tab.currentReasoningEffort,
       // Everything a child inherits from this tab's loop, read at spawn time: the
       // runtime is built after the toolset, and every value here can change
       // mid-session. Hooks matter most — a user's PreToolUse gate must not be
@@ -9506,13 +9502,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           saveDuplicateSessionAutoProceed(msg.duplicateSessionAutoProceed);
           for (const openTab of tabs.values()) emitSettings(openTab);
         }
-        if (msg.enableSubagents !== undefined) {
-          // Default for NEW chats only. A live session's flag is frozen in its meta:
-          // rewriting the tool spec and prompt section mid-conversation would throw
-          // away the cached prefix, so existing tabs are left exactly as they are.
-          saveEnableSubagents(msg.enableSubagents);
-          for (const openTab of tabs.values()) emitSettings(openTab);
-        }
         if (msg.elevationEnabled !== undefined) {
           // The shell tool reads this via a live getter, so no toolset rebuild
           // is needed — persisting + re-emitting settings is enough.
@@ -9533,10 +9522,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         }
         if (msg.questionTimerEnabled !== undefined) {
           saveQuestionTimerEnabled(msg.questionTimerEnabled);
-          for (const openTab of tabs.values()) emitSettings(openTab);
-        }
-        if (msg.rawTabEnabled !== undefined) {
-          saveRawTabEnabled(msg.rawTabEnabled);
           for (const openTab of tabs.values()) emitSettings(openTab);
         }
         if (msg.enabledModels !== undefined) {
@@ -9829,48 +9814,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // stdin line handler — surface it as an error event instead.
         emit({ type: "$error", message: `plan_remove failed: ${(err as Error).message}` }, tab.id);
       }
-      return;
-    }
-    if (msg.cmd === "context_raw_get") {
-      emitContextRaw(tab);
-      return;
-    }
-    if (msg.cmd === "context_raw_set") {
-      if (!tab.runtime) {
-        emit({ type: "$error", message: "No active agent to edit context for." }, tab.id);
-        return;
-      }
-      // A rewrite mid-turn would race the in-flight request; require idle.
-      if (tab.aborter !== null) {
-        emit(
-          { type: "$error", message: "Context is locked while a turn is running; stop first." },
-          tab.id,
-        );
-        return;
-      }
-      const before = tab.runtime.loop.log.length;
-      const { system, messages } = parseContext(msg.text);
-      const { dropped } = tab.runtime.loop.replaceConversation(system, messages);
-      // Swap the desktop transcript to the new log: the same out-of-band
-      // replacement channel retry / fold use, so the visible conversation
-      // matches the agent's live context instead of going stale.
-      emitKernelEvent(
-        tab.runtime.eventizer.emitSessionRetracted(
-          tab.runtime.loop.currentTurn,
-          "context-edit",
-          before,
-          tab.runtime.loop.log.length,
-          tab.runtime.loop.log.entries,
-        ),
-        tab.id,
-      );
-      emitContextRaw(
-        tab,
-        dropped > 0
-          ? `Applied. ${dropped} unpaired tool message(s) were dropped to keep the request valid.`
-          : undefined,
-      );
-      emitCtxBreakdown(tab);
       return;
     }
     if (msg.cmd === "context_compact") {

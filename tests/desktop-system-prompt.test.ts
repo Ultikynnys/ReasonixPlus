@@ -173,9 +173,8 @@ describe("refreshTabSystemPrompt — session MCP overlay", () => {
     expect(enabledTab.system).not.toContain("[disabled]");
   });
 
-  it("renders the subagent section from the session's flag, not from config", () => {
-    // Config says ON, but a session minted without the tool must stay silent.
-    writeFileSync(configPath, JSON.stringify({ enableSubagents: true }), "utf8");
+  it("renders the subagent section from the session's flag alone", () => {
+    // A session minted without the tool stays silent however the workspace is configured.
     const base = {
       rootDir: root,
       currentModel: "deepseek-v4-pro",
@@ -188,7 +187,7 @@ describe("refreshTabSystemPrompt — session MCP overlay", () => {
     expect(off.system).not.toContain("spawn_subagent");
     expect(off.system).not.toContain("# Subagents");
 
-    // Same workspace, same config file: only the session's frozen flag differs.
+    // Same workspace, only the session's frozen flag differs.
     const on = { ...base, subagents: true };
     refreshTabSystemPrompt(on);
     expect(on.system).toContain("spawn_subagent({ task, tools })");

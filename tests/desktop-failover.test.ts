@@ -1,13 +1,14 @@
-/** Backup-model failover: which model takes over after a quota wall, plus the
+/** Backup-model failover: which model takes over after a model failure, plus the
  *  structural guarantees the daemon keeps while it switches. */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { subagentPinFollowsFailover } from "../src/cli/commands/desktop.js";
+import { shouldFailover, subagentPinFollowsFailover } from "../src/cli/commands/desktop.js";
 import { pickFallbackModel } from "../src/config.js";
 import { t } from "../src/i18n/index.js";
+import { isContextOverflowError } from "../src/loop/errors.js";
 
 const allUsable = () => true;
 
@@ -52,8 +53,18 @@ describe("failover wiring — structural invariants in the daemon", () => {
   const bodyEnd = src.indexOf("async function switchWorkspace(");
   const body = src.slice(bodyStart, bodyEnd);
 
-  it("detects the quota wall from the loop's error detail, not the formatted message", () => {
-    expect(body).toContain("isQuotaExhaustedError(ev.errorDetail?.message)");
+  it("fails over on any terminal model failure, never only on a quota wall", () => {
+    // The case that exposed this was an OpenCode 429 ("Upstream request failed:
+    // Endpoint is unavailable") that stopped the stream with backups configured:
+    // the gate must not depend on a classifier match to notice a dead model.
+    expect(body).toContain("modelFailure = isModelFailure(ev.errorDetail, turnAborted())");
+    expect(body).not.toContain("isQuotaExhaustedError");
+    // A generator that throws never yields an error event, so the catch path has to
+    // mark the same failure or that shape of an outage stops the turn too.
+    expect(body).toContain("modelFailure = isModelFailure(");
+    // Both paths share one rule, so they cannot drift about the user's abort either.
+    expect(src).toContain("function isModelFailure(");
+    expect(src).toContain('if (err?.name === "AbortError") return false;');
   });
 
   it("switches before it rewinds, so a failed switch cannot drop the prompt", () => {
@@ -125,6 +136,42 @@ describe("failover wiring — structural invariants in the daemon", () => {
     expect(body).toContain('t("loop.failoverAllExhausted"');
     // And a rewind that cannot be replayed must say so instead of going quiet.
     expect(body).toContain('t("loop.failoverPromptUnavailable"');
+  });
+});
+
+describe("shouldFailover — which attempt hands the turn to a backup", () => {
+  const attempt = (over: Partial<Parameters<typeof shouldFailover>[0]> = {}) => ({
+    aborted: false,
+    producedAnswer: false,
+    modelFailure: true,
+    ...over,
+  });
+
+  it("hands over on a provider failure, whether it is a rate limit, a quota or an outage", () => {
+    expect(shouldFailover(attempt())).toBe(true);
+  });
+
+  it("never hands over a turn that already answered", () => {
+    expect(shouldFailover(attempt({ producedAnswer: true }))).toBe(false);
+  });
+
+  it("never hands over a user abort", () => {
+    expect(shouldFailover(attempt({ aborted: true }))).toBe(false);
+  });
+
+  it("leaves a healthy attempt alone", () => {
+    expect(shouldFailover(attempt({ modelFailure: false }))).toBe(false);
+  });
+
+  it("counts a context overflow as a conversation problem, not a model failure", () => {
+    // The driver screens the loop's raw detail with this predicate, so an overflow
+    // ends the turn instead of spending every backup on the same wall.
+    expect(isContextOverflowError("OpenCode 400: maximum context length exceeded")).toBe(true);
+    expect(
+      isContextOverflowError(
+        'OpenCode 429: {"error":{"message":"Upstream request failed: Endpoint is unavailable."}}',
+      ),
+    ).toBe(false);
   });
 });
 

@@ -29,9 +29,8 @@ describe("project-memory", () => {
     // biome-ignore lint/performance/noDelete: avoid leaking "undefined" into env
     delete process.env.REASONIX_MEMORY;
     // The codeSystemPrompt integration asserts offsets against the frozen
-    // CODE_SYSTEM_PROMPT (subagent section in its enabled form) — pin the
-    // config to a nonexistent tmp path so enableSubagents resolves to the
-    // default (true) instead of the dev machine's real setting.
+    // CODE_SYSTEM_PROMPT — pin the config to a nonexistent tmp path so the
+    // dev machine's real settings can't shape the prompt under test.
     process.env.REASONIX_CONFIG = join(root, "nonexistent-config.json");
   });
 

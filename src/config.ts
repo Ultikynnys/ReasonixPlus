@@ -479,8 +479,6 @@ export interface ReasonixConfig {
   duplicateSessionTokens?: number;
   /** When true, a duplicated session auto-runs one continuation turn. Default false. */
   duplicateSessionAutoProceed?: boolean;
-  /** Whether subagent skills may run. Defaults to true when absent. */
-  enableSubagents?: boolean;
   /** Whether `run_command` may run a command elevated via Windows UAC consent.
    *  Defaults to false: even if the model requests `elevate: true`, the tool
    *  refuses unless the user has pre-authorized the capability. */
@@ -489,9 +487,6 @@ export interface ReasonixConfig {
    *  degenerating model stream. Defaults to false: out of the box the loop lets
    *  repeated output through, and the guard only runs when the user opts in. */
   repetitionGuardEnabled?: boolean;
-  /** Whether the side panel shows the Raw context tab. Defaults to false; the
-   *  tab is an opt-in debugging surface, toggled from Settings → General. */
-  rawTabEnabled?: boolean;
   /** Per-type desktop sound/notification cue matrix. Absent = all off
    *  (sounds and notifications stay silent until the user opts in). */
   feedbackCues?: FeedbackCueSettings;
@@ -2682,21 +2677,6 @@ export function saveDuplicateSessionAutoProceed(
   writeConfig(cfg, path);
 }
 
-/** Whether a NEW chat starts with the subagent tool. Defaults to false: subagents
- *  are a session-creation choice (they change the system prompt and tool spec), so
- *  the capability is opt-in and a mid-session flip can never invalidate the prefix. */
-export function loadEnableSubagents(path: string = defaultConfigPath()): boolean {
-  return readConfig(path).enableSubagents === true;
-}
-
-/** Persist the default that a NEW chat starts with. Sessions already minted keep
- *  the value frozen in their meta. */
-export function saveEnableSubagents(enabled: boolean, path: string = defaultConfigPath()): void {
-  const cfg = readConfig(path);
-  cfg.enableSubagents = enabled;
-  writeConfig(cfg, path);
-}
-
 /** Whether `run_command` may run a command elevated via Windows UAC consent.
  *  Defaults to false: the capability is opt-in, so the model cannot even
  *  prompt for elevation until the user has enabled it. */
@@ -2767,19 +2747,6 @@ export function saveAutoCompactTrigger(
 ): void {
   const cfg = readConfig(path);
   cfg.autoCompactTrigger = ratio === null ? undefined : clampAutoCompactTrigger(ratio);
-  writeConfig(cfg, path);
-}
-
-/** Whether the side panel shows the Raw context tab. Defaults to false: the
- *  tab is a debugging surface and stays hidden until the user opts in. */
-export function loadRawTabEnabled(path: string = defaultConfigPath()): boolean {
-  return readConfig(path).rawTabEnabled === true;
-}
-
-/** Persist whether the side panel shows the Raw context tab. */
-export function saveRawTabEnabled(enabled: boolean, path: string = defaultConfigPath()): void {
-  const cfg = readConfig(path);
-  cfg.rawTabEnabled = enabled;
   writeConfig(cfg, path);
 }
 

@@ -16,7 +16,6 @@ import { t, useLang } from "../i18n";
 import type { TKey } from "../i18n";
 import { I } from "../icons";
 import type {
-  ContextRawEvent,
   McpSpecInfo,
   MemoryDetail,
   MemoryEntryInfo,
@@ -32,14 +31,13 @@ import { activationHandler } from "./keyboard";
 import { sessionTitle } from "./session-title";
 import type { JumpTarget } from "./transcript-jump";
 
-type Tab = "files" | "parameters" | "mcp" | "context" | "memory" | "rules" | "plan" | "events";
+type Tab = "files" | "parameters" | "mcp" | "memory" | "rules" | "plan" | "events";
 
 /** Side-panel nav order and labels; the tab bar below maps over this one list. */
 const PANEL_TABS: ReadonlyArray<{ id: Tab; label: TKey }> = [
   { id: "files", label: "contextPanel.filesTab" },
   { id: "parameters", label: "contextPanel.parametersTab" },
   { id: "mcp", label: "contextPanel.mcpTab" },
-  { id: "context", label: "contextPanel.rawTab" },
   { id: "memory", label: "contextPanel.memoryTab" },
   { id: "rules", label: "contextPanel.rulesTab" },
   { id: "plan", label: "contextPanel.planTab" },
@@ -82,9 +80,6 @@ export function ContextPanel({
   onRemoveRule,
   onSaveSettings,
   onCompact,
-  onReadContext,
-  onWriteContext,
-  rawContext,
   activePlan,
   planHistory,
   planDetails,
@@ -123,10 +118,6 @@ export function ContextPanel({
   onSaveSettings?: (patch: SettingsPatch) => void;
   /** Compact now button beside the context meter — runs manual compaction. */
   onCompact?: () => void;
-  /** Latest $context_raw payload — the Raw context read side. */
-  rawContext?: Omit<ContextRawEvent, "type"> | null;
-  onReadContext?: () => void;
-  onWriteContext?: (text: string) => void;
   activePlan?: ActivePlan | null;
   planHistory?: PlanHistoryItem[];
   planDetails?: Record<string, PlanDetail>;
@@ -173,14 +164,10 @@ export function ContextPanel({
     settings?.autoCompact === false
       ? null
       : Math.min(95, Math.max(50, Math.round((settings?.autoCompactTrigger ?? 0.8) * 100)));
-  // The Raw tab is an opt-in debugging surface — hidden unless enabled in Settings.
-  const visibleTabs = settings?.rawTabEnabled
-    ? PANEL_TABS
-    : PANEL_TABS.filter((tb) => tb.id !== "context");
   return (
     <aside className="ctx">
       <div className="ctx-tabs">
-        {visibleTabs.map((tb) => (
+        {PANEL_TABS.map((tb) => (
           <div
             key={tb.id}
             className="ctx-tab"
@@ -263,9 +250,6 @@ export function ContextPanel({
             <CtxParameters settings={settings} usage={usage} onSaveSettings={onSaveSettings} />
           )}
           {tab === "mcp" && <CtxMcp specs={mcpSpecs} bridged={mcpBridged} />}
-          {tab === "context" && settings?.rawTabEnabled && (
-            <CtxRaw raw={rawContext ?? null} onRead={onReadContext} onWrite={onWriteContext} />
-          )}
           {tab === "memory" && (
             <CtxMemory
               entries={memory}
@@ -568,104 +552,6 @@ function buildSessionTree(files: SessionFile[]): TreeNode[] {
   return out;
 }
 
-function CtxRaw({
-  raw,
-  onRead,
-  onWrite,
-}: {
-  raw: Omit<ContextRawEvent, "type"> | null;
-  onRead?: () => void;
-  onWrite?: (text: string) => void;
-}) {
-  const [draft, setDraft] = useState(raw?.text ?? "");
-  const [dirty, setDirty] = useState(false);
-  // Read from the seeding effect without re-running it on the dirty flip, which
-  // would briefly flash the pre-apply text back before the refresh lands.
-  const dirtyRef = useRef(false);
-  const busy = raw?.busy ?? false;
-
-  // Fetch on tab open; the Refresh button re-requests.
-  useEffect(() => {
-    onRead?.();
-  }, []);
-
-  // Reseed only when the server text itself changes, never over an active edit.
-  useEffect(() => {
-    if (!dirtyRef.current) setDraft(raw?.text ?? "");
-  }, [raw?.text]);
-
-  const markDirty = (value: string) => {
-    dirtyRef.current = true;
-    setDraft(value);
-    setDirty(true);
-  };
-
-  // Direct apply: the button, or Cmd/Ctrl+Enter in the editor.
-  const apply = () => {
-    if (!dirty || busy || !onWrite) return;
-    onWrite(draft);
-    dirtyRef.current = false;
-    setDirty(false);
-  };
-
-  return (
-    <div className="ctx-block">
-      <div className="h">
-        <span>{t("contextPanel.rawTitle")}</span>
-        <span className="right">
-          {raw
-            ? t("contextPanel.rawMeta", {
-                count: raw.messageCount,
-                tokens: raw.tokens.toLocaleString(),
-              })
-            : "-"}
-        </span>
-      </div>
-      <p className="ollama-help">{t("contextPanel.rawHelp")}</p>
-      <textarea
-        className="raw-context"
-        spellCheck={false}
-        value={draft}
-        disabled={busy}
-        aria-label={t("contextPanel.rawAria")}
-        onChange={(e) => markDirty(e.target.value)}
-        onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-            e.preventDefault();
-            apply();
-          }
-        }}
-      />
-      {raw?.notice ? <div className="raw-notice">{raw.notice}</div> : null}
-      <div className="raw-actions">
-        <button type="button" className="mini-btn" onClick={() => onRead?.()} disabled={busy}>
-          {t("contextPanel.rawRefresh")}
-        </button>
-        <button
-          type="button"
-          className="mini-btn"
-          disabled={!dirty || busy || !onWrite}
-          title={busy ? t("contextPanel.rawBusy") : undefined}
-          onClick={apply}
-        >
-          {t("contextPanel.rawApply")}
-        </button>
-        <button
-          type="button"
-          className="mini-btn"
-          disabled={!dirty}
-          onClick={() => {
-            dirtyRef.current = false;
-            setDraft(raw?.text ?? "");
-            setDirty(false);
-          }}
-        >
-          {t("contextPanel.rawRevert")}
-        </button>
-      </div>
-    </div>
-  );
-}
 
 /** A side-panel block whose header collapses its body. */
 function CtxCollapsible({

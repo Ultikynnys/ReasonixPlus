@@ -16,8 +16,7 @@ describe("codeSystemPrompt", () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "reasonix-prompt-"));
-    // The base prompt now depends on `enableSubagents` (knowledge-level gate) —
-    // pin it to a tmp config so containment assertions against the frozen
+    // Pin the config to a tmp file so containment assertions against the frozen
     // CODE_SYSTEM_PROMPT don't go machine-dependent on a dev's real
     // ~/.reasonix/config.json.
     cfgPath = join(root, "config.json");
@@ -175,12 +174,6 @@ describe("codeSystemPrompt", () => {
       expect(out).not.toContain("# Subagents");
     });
 
-    it("does not read the config default: a live settings edit cannot shape this prompt", () => {
-      writeFileSync(cfgPath, JSON.stringify({ enableSubagents: true }), "utf8");
-      const out = codeSystemPrompt(root, { configPath: cfgPath });
-      expect(out).not.toContain("spawn_subagent");
-    });
-
     it("renders the usage and task-authoring guidance only for an opted-in session", () => {
       const out = codeSystemPrompt(root, { configPath: cfgPath, subagentsEnabled: true });
       expect(out).toContain("# Subagents");
@@ -201,7 +194,6 @@ describe("codeSystemPrompt", () => {
     });
 
     it("never injects a skills index", () => {
-      writeFileSync(cfgPath, JSON.stringify({ enableSubagents: false }), "utf8");
       const skillDir = join(root, ".reasonix", "skills", "my-audit");
       mkdirSync(skillDir, { recursive: true });
       writeFileSync(
