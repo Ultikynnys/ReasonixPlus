@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,11 +15,34 @@ import { parseBingResults } from "../src/tools/web.js";
 const copy = (key: string, params?: Record<string, string | number>): string =>
   params ? `${key}:${JSON.stringify(params)}` : key;
 
+/** The one managed build a search engine may drive. */
+const BROWSER = "webkit" as const;
+
 const RESULT_HTML = `
-  <li class="b_algo"><h2><a href="https://example.com/a">Alpha result</a></h2>
+  <li class="b_algo"><h2><a href="https://example.com/a">Deepseek balance docs</a></h2>
     <div class="b_caption"><p>alpha snippet</p></div></li>
-  <li class="b_algo"><h2><a href="https://example.com/b">Beta result</a></h2>
+  <li class="b_algo"><h2><a href="https://example.com/b">Deepseek balance API</a></h2>
     <div class="b_caption"><p>beta snippet</p></div></li>`;
+
+/** A query whose topic words appear in RESULT_HTML, so the reduced-SERP guard passes. */
+const QUERY = "deepseek balance";
+
+/** Real Bing markup captured from the managed WebKit build, trimmed to #b_results. */
+const fixture = (name: string): string =>
+  readFileSync(new URL(`./fixtures/${name}.html`, import.meta.url), "utf-8");
+
+/** Assert one hit matches, naming the actual URLs when it does not. */
+function expectHit(
+  results: readonly BrowserSearchResult[],
+  matcher: RegExp,
+  description: string,
+): void {
+  const urls = results.map((result) => result.url);
+  expect(
+    urls.some((url) => matcher.test(url)),
+    `expected ${description}, got:\n${urls.join("\n")}`,
+  ).toBe(true);
+}
 
 interface FakeCall {
   kind: "launch" | "context" | "goto" | "wait" | "close";
@@ -72,7 +95,7 @@ function fakeBrowser(
 function coreOf(browserType: unknown) {
   return {
     kind: "ok" as const,
-    core: { chromium: browserType, firefox: browserType, webkit: browserType } as never,
+    core: { webkit: browserType } as never,
     executablePath: "/fake/chrome",
   };
 }
@@ -88,18 +111,13 @@ describe("searchWithBrowser", () => {
   it("navigates an en-US Bing SERP with a desktop UA and maps the results", async () => {
     const fake = fakeBrowser();
     __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
-    const results = await searchWithBrowser("deep seek balance", {
-      browser: "firefox",
-      copy,
-      parse,
-      topK: 5,
-    });
+    const results = await searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 5 });
     expect(results).toEqual([
-      { title: "Alpha result", url: "https://example.com/a", snippet: "alpha snippet" },
-      { title: "Beta result", url: "https://example.com/b", snippet: "beta snippet" },
+      { title: "Deepseek balance docs", url: "https://example.com/a", snippet: "alpha snippet" },
+      { title: "Deepseek balance API", url: "https://example.com/b", snippet: "beta snippet" },
     ]);
     const goto = fake.calls.find((c) => c.kind === "goto")!.detail as string;
-    expect(goto).toContain("bing.com/search?q=deep%20seek%20balance");
+    expect(goto).toContain("bing.com/search?q=deepseek%20balance");
     // setlang/cc make Bing serve a script-rendered page with no result nodes.
     expect(goto).not.toContain("setlang");
     expect(goto).not.toContain("cc=");
@@ -109,29 +127,29 @@ describe("searchWithBrowser", () => {
       locale: string;
     };
     expect(context.locale).toBe("en-US");
-    expect(context.userAgent).toContain("Firefox/121");
+    expect(context.userAgent).toContain("Safari/605");
     expect(context.userAgent).not.toContain("Headless");
   });
 
   it("honours topK", async () => {
     const fake = fakeBrowser();
     __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
-    const results = await searchWithBrowser("q", { browser: "chromium", copy, parse, topK: 1 });
+    const results = await searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 1 });
     expect(results).toHaveLength(1);
   });
 
   it("reuses one launched browser across searches and closes on demand", async () => {
     const fake = fakeBrowser();
     __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
-    await searchWithBrowser("one", { browser: "chromium", copy, parse, topK: 1 });
-    await searchWithBrowser("two", { browser: "chromium", copy, parse, topK: 1 });
+    await searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 1 });
+    await searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 1 });
     expect(fake.calls.filter((c) => c.kind === "launch")).toHaveLength(1);
     // Contexts are per search, and each one is closed.
     expect(fake.calls.filter((c) => c.kind === "context")).toHaveLength(2);
     expect(fake.calls.filter((c) => c.kind === "close")).toHaveLength(2);
     await closeBrowserSearches();
     // A search after teardown launches a fresh browser.
-    await searchWithBrowser("three", { browser: "chromium", copy, parse, topK: 1 });
+    await searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 1 });
     expect(fake.calls.filter((c) => c.kind === "launch")).toHaveLength(2);
   });
 
@@ -139,8 +157,8 @@ describe("searchWithBrowser", () => {
     const fake = fakeBrowser();
     __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
     await Promise.all([
-      searchWithBrowser("one", { browser: "chromium", copy, parse, topK: 1 }),
-      searchWithBrowser("two", { browser: "chromium", copy, parse, topK: 1 }),
+      searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 1 }),
+      searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 1 }),
     ]);
     // A second launch would leak a browser process, so the pair shares one.
     expect(fake.calls.filter((c) => c.kind === "launch")).toHaveLength(1);
@@ -167,10 +185,67 @@ describe("searchWithBrowser", () => {
       },
     };
     __setBrowserCoreLoaderForTests(() => coreOf(flaky));
-    const results = await searchWithBrowser("q", { browser: "chromium", copy, parse, topK: 1 });
+    const results = await searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 1 });
     expect(results).toHaveLength(1);
     expect(calls).toEqual(["dead"]);
     expect(launches).toBe(2);
+  });
+
+  it("resolves the managed build once, even when the browser is replaced", async () => {
+    let resolutions = 0;
+    let launches = 0;
+    const fake = fakeBrowser();
+    const flaky = {
+      executablePath: () => "/fake/chrome",
+      launch: async () => {
+        launches += 1;
+        const instance = await fake.browserType.launch();
+        if (launches > 1) return instance;
+        return {
+          ...instance,
+          newContext: async () => {
+            throw new Error("Target page, context or browser has been closed");
+          },
+        };
+      },
+    };
+    __setBrowserCoreLoaderForTests(() => {
+      resolutions += 1;
+      return coreOf(flaky);
+    });
+    await searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 1 });
+    expect(launches).toBe(2);
+    // A cached resolution means a replacement launch does not re-walk the npm cache.
+    expect(resolutions).toBe(1);
+  });
+
+  it("closes a browser whose launch a teardown overtook", async () => {
+    let closed = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const browserType = {
+      executablePath: () => "/fake/chrome",
+      launch: async () => {
+        await gate;
+        return {
+          newContext: async () => {
+            throw new Error("unreachable");
+          },
+          close: async () => {
+            closed += 1;
+          },
+        };
+      },
+    };
+    __setBrowserCoreLoaderForTests(() => coreOf(browserType));
+    const searching = searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 1 });
+    // Teardown while the launch is in flight: the browser that lands is nobody's.
+    await closeBrowserSearches();
+    release();
+    await expect(searching).rejects.toThrow(/^cannotReach:.*search cancelled/);
+    expect(closed).toBe(1);
   });
 
   it("stops promptly when the caller aborts", async () => {
@@ -180,7 +255,7 @@ describe("searchWithBrowser", () => {
     controller.abort();
     await expect(
       searchWithBrowser("q", {
-        browser: "chromium",
+        browser: BROWSER,
         copy,
         parse,
         topK: 1,
@@ -193,14 +268,14 @@ describe("searchWithBrowser", () => {
   it("reports a missing Playwright installation with the engine's own copy", async () => {
     __setBrowserCoreLoaderForTests(() => ({ kind: "notFound" }));
     await expect(
-      searchWithBrowser("q", { browser: "chromium", copy, parse, topK: 1 }),
-    ).rejects.toThrow(/^notFound:.*"browser":"chromium".*"Browser":"Chromium"/);
+      searchWithBrowser("q", { browser: BROWSER, copy, parse, topK: 1 }),
+    ).rejects.toThrow(/^notFound:.*"browser":"webkit".*"Browser":"WebKit"/);
   });
 
   it("reports a managed build that is not installed", async () => {
     __setBrowserCoreLoaderForTests(() => ({ kind: "notInstalled" }));
     await expect(
-      searchWithBrowser("q", { browser: "webkit", copy, parse, topK: 1 }),
+      searchWithBrowser("q", { browser: BROWSER, copy, parse, topK: 1 }),
     ).rejects.toThrow(/^notInstalled:.*"browser":"webkit".*"Browser":"WebKit"/);
   });
 
@@ -208,7 +283,7 @@ describe("searchWithBrowser", () => {
     __setBrowserCoreLoaderForTests(() => ({
       kind: "ok",
       core: {
-        chromium: {
+        webkit: {
           executablePath: () => "/fake",
           launch: async () => {
             throw new Error("libnss3 missing");
@@ -218,15 +293,15 @@ describe("searchWithBrowser", () => {
       executablePath: "/fake",
     }));
     await expect(
-      searchWithBrowser("q", { browser: "chromium", copy, parse, topK: 1 }),
-    ).rejects.toThrow(/^launchFailed:.*"Browser":"Chromium".*"message":"libnss3 missing"/);
+      searchWithBrowser("q", { browser: BROWSER, copy, parse, topK: 1 }),
+    ).rejects.toThrow(/^launchFailed:.*"Browser":"WebKit".*"message":"libnss3 missing"/);
   });
 
   it("reports an unreachable SERP", async () => {
     const fake = fakeBrowser({ gotoError: new Error("net::ERR_NAME_NOT_RESOLVED") });
     __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
     await expect(
-      searchWithBrowser("q", { browser: "chromium", copy, parse, topK: 1 }),
+      searchWithBrowser("q", { browser: BROWSER, copy, parse, topK: 1 }),
     ).rejects.toThrow(/^cannotReach:.*ERR_NAME_NOT_RESOLVED/);
   });
 
@@ -237,7 +312,7 @@ describe("searchWithBrowser", () => {
     });
     __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
     await expect(
-      searchWithBrowser("q", { browser: "chromium", copy, parse, topK: 1 }),
+      searchWithBrowser("q", { browser: BROWSER, copy, parse, topK: 1 }),
     ).rejects.toThrow(/^timeout:.*"ms":8000/);
   });
 
@@ -245,8 +320,44 @@ describe("searchWithBrowser", () => {
     const fake = fakeBrowser({ html: "<html><body>consent</body></html>" });
     __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
     await expect(
-      searchWithBrowser("q", { browser: "firefox", copy, parse, topK: 1 }),
+      searchWithBrowser("q", { browser: BROWSER, copy, parse, topK: 1 }),
     ).rejects.toThrow(/^blocked:.*"chars":\d+/);
+  });
+
+  it("rejects a reduced SERP that answers a different query", async () => {
+    // Bing serves this shape to some clients: results unrelated to the request.
+    const fake = fakeBrowser({
+      html: `<li class="b_algo"><h2><a href="https://en.wikipedia.org/wiki/Z">Z - Wikipedia</a></h2>
+        <div class="b_caption"><p>The last letter of the Latin alphabet.</p></div></li>`,
+    });
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    await expect(
+      searchWithBrowser("z.ai monitor usage quota endpoint", {
+        browser: BROWSER,
+        copy,
+        parse,
+        topK: 3,
+      }),
+    ).rejects.toThrow(/^mismatched:.*"first":"Z - Wikipedia"/);
+    // One retry with a fresh context, then the failure — never the unrelated hits.
+    expect(fake.calls.filter((c) => c.kind === "context")).toHaveLength(2);
+  });
+
+  it("accepts a SERP whose hits share a topic word with the query", async () => {
+    const fake = fakeBrowser({
+      html: `<li class="b_algo"><h2><a href="https://docs.z.ai/limits">Rate limits</a></h2>
+        <div class="b_caption"><p>Quota per plan.</p></div></li>`,
+    });
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const results = await searchWithBrowser("z.ai quota endpoint", {
+      browser: BROWSER,
+      copy,
+      parse,
+      topK: 3,
+    });
+    // "quota" appears in the snippet, so the page is about the request.
+    expect(results).toHaveLength(1);
+    expect(fake.calls.filter((c) => c.kind === "context")).toHaveLength(1);
   });
 
   it("returns [] for a real empty-result page", async () => {
@@ -256,27 +367,175 @@ describe("searchWithBrowser", () => {
     });
     __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
     await expect(
-      searchWithBrowser("zzyzx", { browser: "chromium", copy, parse, topK: 1 }),
+      searchWithBrowser("zzyzx", { browser: BROWSER, copy, parse, topK: 1 }),
     ).resolves.toEqual([]);
+    // No results is an answer, so it is not retried.
+    expect(fake.calls.filter((c) => c.kind === "context")).toHaveLength(1);
+  });
+
+  it("waits for a result node, not for the results container", async () => {
+    const fake = fakeBrowser();
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    await searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 1 });
+    // `#b_results` exists before any result renders, so waiting on it reads a mid-render DOM.
+    expect(fake.calls.find((c) => c.kind === "wait")!.detail).toBe("li.b_algo");
+  });
+
+  it("retries once when the results never rendered, then answers", async () => {
+    let contexts = 0;
+    const browserType = {
+      executablePath: () => "/fake/chrome",
+      launch: async () => ({
+        newContext: async () => {
+          contexts += 1;
+          const shell = contexts === 1;
+          return {
+            newPage: async () => ({
+              goto: async () => ({ status: () => 200 }),
+              waitForSelector: async () => {
+                if (shell) throw new Error("Timeout 8000ms exceeded");
+                return {};
+              },
+              content: async () => (shell ? "<html><body></body></html>" : RESULT_HTML),
+            }),
+            close: async () => undefined,
+          };
+        },
+        close: async () => undefined,
+      }),
+    };
+    __setBrowserCoreLoaderForTests(() => coreOf(browserType));
+    const results = await searchWithBrowser(QUERY, { browser: BROWSER, copy, parse, topK: 2 });
+    expect(results).toHaveLength(2);
+    expect(contexts).toBe(2);
+  });
+});
+
+/** What the engine is actually used for: reaching code, repo docs, and API references. */
+describe("real captured SERPs", () => {
+  async function searchFixture(name: string, query: string, topK = 10) {
+    // The transport caches a launched browser, so drop it between different fixtures.
+    await closeBrowserSearches();
+    const fake = fakeBrowser({ html: fixture(name) });
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const results = await searchWithBrowser(query, { browser: BROWSER, copy, parse, topK });
+    return { results, fake };
+  }
+
+  it("returns repository documentation hits for a docs query", async () => {
+    const { results } = await searchFixture(
+      "github-docs",
+      "github docs actions workflow syntax on push branches",
+    );
+    // The rendered docs site and the Markdown source of the same page both count.
+    expectHit(results, /^https:\/\/docs\.github\.com\/en\/actions\//, "a GitHub docs page");
+    expectHit(
+      results,
+      /^https:\/\/github\.com\/[^/]+\/[^/]+\/blob\//,
+      "a repository blob holding the docs source",
+    );
+  });
+
+  it("returns API endpoint references for a service docs query", async () => {
+    const { results } = await searchFixture(
+      "api-endpoints",
+      "ollama api chat endpoint request body documentation /api/chat",
+    );
+    expectHit(results, /^https:\/\/docs\.ollama\.com\/api\/chat/, "the /api/chat reference page");
+    // The endpoint documented inside the repository is equally useful to navigate to.
+    expectHit(
+      results,
+      /^https:\/\/github\.com\/ollama\/ollama\/blob\/main\/docs\/api\.md/,
+      "api.md",
+    );
+  });
+
+  it("returns the exact endpoint doc page, not just a service home page", async () => {
+    const { results } = await searchFixture(
+      "deepseek-endpoints",
+      "deepseek api get user balance endpoint documentation",
+    );
+    expectHit(
+      results,
+      /^https:\/\/api-docs\.deepseek\.com\/api\/get-user-balance\//,
+      "the get-user-balance reference",
+    );
+    // A home page alone would not answer "which endpoint and what does it take".
+    expect(results[0]?.url).toBe("https://api-docs.deepseek.com/api/get-user-balance/");
+  });
+
+  it("keeps every hit navigable: no ads, no SERP chrome, no click tracking", async () => {
+    const cases = [
+      ["github-docs", "github docs actions workflow syntax on push branches"],
+      ["api-endpoints", "ollama api chat endpoint request body documentation /api/chat"],
+      ["deepseek-endpoints", "deepseek api get user balance endpoint documentation"],
+    ] as const;
+    for (const [name, query] of cases) {
+      const { results } = await searchFixture(name, query);
+      expect(results.length).toBeGreaterThan(3);
+      for (const result of results) {
+        expect(result.url, `${name}: ${result.url}`).toMatch(/^https?:\/\//);
+        expect(result.url, `${name}: ${result.url}`).not.toContain("bing.com");
+        expect(result.url, `${name}: ${result.url}`).not.toContain("/aclick");
+        expect(result.url, `${name}: ${result.url}`).not.toMatch(/[?&]utm_/);
+        expect(result.title.length, `${name}: empty title`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("keeps a code-line anchor so a hit points at exact lines", async () => {
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo"><h2><a href="https://github.com/o/r/blob/main/src/app.ts#L120-L130">app.ts:120</a></h2>
+          <div class="b_caption"><p>the slice helper code lines</p></div></li>
+        <li class="b_algo"><h2><a href="https://github.com/o/r/blob/main/src/app.ts#L200">app.ts:200</a></h2>
+          <div class="b_caption"><p>a different region of the same file</p></div></li>
+      </ol>`;
+    const fake = fakeBrowser({ html });
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const results = await searchWithBrowser("app.ts slice helper code lines", {
+      browser: BROWSER,
+      copy,
+      parse,
+      topK: 5,
+    });
+    expect(results.map((result) => result.url)).toEqual([
+      "https://github.com/o/r/blob/main/src/app.ts#L120-L130",
+      "https://github.com/o/r/blob/main/src/app.ts#L200",
+    ]);
   });
 });
 
 describe("live managed browser", () => {
   // Opt-in: this launches a real browser and hits the network.
   const enabled = process.env.REASONIX_LIVE_BROWSER_SEARCH === "1";
-  const installed = enabled && __resolveBrowserCoreForTests("firefox").kind === "ok";
+  const installed = enabled && __resolveBrowserCoreForTests(BROWSER).kind === "ok";
 
   it.skipIf(!installed)(
-    "searches through the managed Firefox build",
+    "finds a repository source file for a code query",
     async () => {
-      const results = await searchWithBrowser("deepseek api get user balance", {
-        browser: "firefox",
-        copy: (key, params) => `${key}:${JSON.stringify(params ?? {})}`,
-        parse: parseBingResults,
-        topK: 3,
-      });
-      expect(results.length).toBeGreaterThan(0);
-      expect(results[0]?.url).toMatch(/^https?:\/\//);
+      // Naming the file plus its package path is what makes Bing surface /blob/ hits.
+      const results = await searchWithBrowser(
+        "playwright browserContext.ts source code github blob packages playwright-core",
+        { browser: BROWSER, copy, parse, topK: 10 },
+      );
+      expectHit(results, /^https:\/\/github\.com\/[^/]+\/[^/]+\/blob\//, "a repository blob URL");
+    },
+    90_000,
+  );
+
+  it.skipIf(!installed)(
+    "finds documentation for a service's API endpoints",
+    async () => {
+      const results = await searchWithBrowser(
+        "deepseek api get user balance endpoint documentation",
+        { browser: BROWSER, copy, parse, topK: 10 },
+      );
+      expectHit(
+        results,
+        /^https:\/\/api-docs\.deepseek\.com\/api\/get-user-balance\//,
+        "the get-user-balance reference page",
+      );
     },
     90_000,
   );
@@ -340,7 +599,7 @@ describe("__resolveBrowserCoreForTests", () => {
     writeFileSync(installed, "");
     fakeCore(cacheRoot, "current", installed);
 
-    const resolution = __resolveBrowserCoreForTests("chromium");
+    const resolution = __resolveBrowserCoreForTests(BROWSER);
     expect(resolution.kind).toBe("ok");
     if (resolution.kind === "ok") expect(resolution.executablePath).toBe(installed);
   });
@@ -349,12 +608,12 @@ describe("__resolveBrowserCoreForTests", () => {
     const cacheRoot = mkdtempSync(join(tmpdir(), "reasonix-npx-"));
     isolate(cacheRoot);
     fakeCore(cacheRoot, "stale", join(cacheRoot, "missing-browser", "chrome.exe"));
-    expect(__resolveBrowserCoreForTests("chromium").kind).toBe("notInstalled");
+    expect(__resolveBrowserCoreForTests(BROWSER).kind).toBe("notInstalled");
   });
 
   it("reports notFound when there is no Playwright installation at all", () => {
     const cacheRoot = mkdtempSync(join(tmpdir(), "reasonix-npx-"));
     isolate(cacheRoot);
-    expect(__resolveBrowserCoreForTests("chromium").kind).toBe("notFound");
+    expect(__resolveBrowserCoreForTests(BROWSER).kind).toBe("notFound");
   });
 });

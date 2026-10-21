@@ -1043,6 +1043,13 @@ interface EngineFetchRequest {
   signal?: AbortSignal;
 }
 
+/** Clip extracted text to the caller's cap, reporting whether anything was dropped. */
+function capText(text: string, maxChars: number): { text: string; truncated: boolean } {
+  return text.length > maxChars
+    ? { text: text.slice(0, maxChars), truncated: true }
+    : { text, truncated: false };
+}
+
 async function fetchEnginePage(
   url: string,
   request: EngineFetchRequest,
@@ -1088,11 +1095,12 @@ async function fetchEnginePage(
   }
 
   const text = data.content ?? "";
+  const capped = capText(text, request.maxChars);
   return {
     url,
     title: data.title,
-    text: text.length > request.maxChars ? text.slice(0, request.maxChars) : text,
-    truncated: text.length > request.maxChars,
+    text: capped.text,
+    truncated: capped.truncated,
     links: data.links,
   };
 }
@@ -1193,22 +1201,108 @@ function unwrapBingUrl(href: string): string {
   return href;
 }
 
-/** Title-anchor + snippet-paragraph passes paired positionally — robust to attribute reorder. */
+/** Hosts that are the SERP's own shell (privacy, feedback, account), never a destination
+ *  worth navigating to or citing. A real microsoft.com/learn docs hit is still kept. */
+const SERP_NOISE_HOSTS = /(?:^|\.)bing\.com$|^go\.microsoft\.com$|^account\.microsoft\.com$/i;
+
+/** Click bookkeeping, not page identity: stripped before dedupe and from the returned URL. */
+const TRACKING_PARAMS: readonly string[] = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+  "msclkid",
+  "form",
+  "ref",
+  "sp",
+  "ghc",
+  "ghsh",
+  "guru",
+];
+
+/** Fragments that are click bookkeeping rather than a place in the target page. */
+const TRACKING_FRAGMENT = /^#(?:utm_|mce_temp_url|_ga=)/i;
+
+/** A navigable, de-tracked URL, or null when the anchor is not a destination at all. */ function cleanResultUrl(
+  href: string,
+): string | null {
+  const unwrapped = unwrapBingUrl(href);
+  let url: URL;
+  try {
+    url = new URL(unwrapped);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (SERP_NOISE_HOSTS.test(url.hostname)) return null;
+  for (const param of TRACKING_PARAMS) url.searchParams.delete(param);
+  // The fragment is a destination in its own right (`#L120-L130` code lines, `#auth` docs
+  // sections), so only click bookkeeping is dropped, never the anchor.
+  if (url.hash.length > 1 && TRACKING_FRAGMENT.test(url.hash)) url.hash = "";
+  return url.toString();
+}
+
+/** A promoted block is an ad: marked by class, by an ad-click href, or by its label. */
+function isPromotedBlock(block: ReturnType<typeof parseHtml>): boolean {
+  const tokens = (block.getAttribute("class") ?? "").toLowerCase().split(/\s+/);
+  if (
+    tokens.some((token) => token === "b_ad" || token.startsWith("b_ad_") || token === "b_promoted")
+  ) {
+    return true;
+  }
+  if (block.querySelector("a[href*='/aclick']")) return true;
+  return /sponsored|anzeige|gesponsert/i.test(block.getAttribute("aria-label") ?? "");
+}
+
+/** Readable summary of a hit: Bing's caption if present, else its own text minus the title. */
+function serpSnippet(block: ReturnType<typeof parseHtml>, title: string): string {
+  for (const selector of ["div.b_caption p", ".b_snippet", "[class*='b_lineclamp']", "p"]) {
+    const text = flattenText(block.querySelector(selector)?.textContent ?? "");
+    if (text) return text;
+  }
+  const blockText = flattenText(block.textContent ?? "");
+  return (blockText.startsWith(title) ? blockText.slice(title.length) : blockText).trim();
+}
+
+/** Organic SERP hits only: ads, tracking redirects, Bing's own chrome, duplicate targets
+ *  and unreadable blocks are dropped so the caller gets destinations it can use. */
 export function parseBingResults(html: string): SearchResult[] {
   // DOM walk rather than regex — `<li[^>]*\bclass\b[^>]*>` triggers
   // polynomial backtracking on adversarial input (CodeQL js/polynomial-redos).
   const root = parseHtml(html);
   const results: SearchResult[] = [];
-  for (const li of root.querySelectorAll("li.b_algo")) {
-    const anchor = li.querySelector("h2 a[href]");
+  const seen = new Set<string>();
+  const add = (title: string, href: string, snippet: string) => {
+    const url = cleanResultUrl(href);
+    const cleanTitle = flattenText(title);
+    if (!url || !cleanTitle || seen.has(url)) return;
+    seen.add(url);
+    results.push({ title: cleanTitle, url, snippet: flattenText(snippet) });
+  };
+
+  for (const block of root.querySelectorAll("li.b_algo")) {
+    if (isPromotedBlock(block)) continue;
+    const anchor = block.querySelector("h2 a[href]") ?? block.querySelector("a[href]");
     if (!anchor) continue;
-    const href = unwrapBingUrl(anchor.getAttribute("href") || "");
-    if (!href) continue;
-    const title = anchor.textContent.trim();
-    if (!title) continue;
-    const cap = li.querySelector("div.b_caption p");
-    const snippet = cap ? flattenText(cap.textContent) : "";
-    results.push({ title, url: href, snippet });
+    const title = anchor.textContent ?? "";
+    add(title, anchor.getAttribute("href") ?? "", serpSnippet(block, flattenText(title)));
+  }
+  if (results.length > 0) return results;
+
+  // Layout drift: no b_algo blocks at all. Harvest readable anchors from the results
+  // container instead of reporting a withheld page.
+  const container = root.querySelector("#b_results") ?? root;
+  for (const anchor of container.querySelectorAll("a[href]")) {
+    const title = flattenText(anchor.textContent ?? "");
+    // Chrome links ("All", "Images", "›") carry no destination worth keeping.
+    if (title.length < 3) continue;
+    const block = anchor.parentNode?.parentNode ?? anchor.parentNode;
+    add(
+      title,
+      anchor.getAttribute("href") ?? "",
+      block ? flattenText(block.textContent ?? "") : "",
+    );
   }
   return results;
 }
@@ -1265,11 +1359,11 @@ export async function webFetch(url: string, opts: WebFetchOptions = {}): Promise
   const raw = await readBodyCapped(resp, FETCH_MAX_BYTES);
   const title = extractTitle(raw);
   const text = contentType.includes("text/html") ? htmlToText(raw) : raw;
-  const truncated = text.length > maxChars;
-  const finalText = truncated
-    ? `${text.slice(0, maxChars)}\n\n[… truncated ${text.length - maxChars} chars …]`
-    : text;
-  return { url: currentUrl, title, text: finalText, truncated };
+  const capped = capText(text, maxChars);
+  const finalText = capped.truncated
+    ? `${capped.text}\n\n[… truncated ${text.length - maxChars} chars …]`
+    : capped.text;
+  return { url: currentUrl, title, text: finalText, truncated: capped.truncated };
 }
 
 /** Streams + caps so chunked responses (or servers lying about Content-Length) can't balloon the heap. */

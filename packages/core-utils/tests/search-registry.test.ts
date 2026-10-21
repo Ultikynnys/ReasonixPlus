@@ -29,8 +29,6 @@ describe("search engine registry", () => {
       "ollama",
       "zai",
       "deepseek",
-      "playwright-chromium",
-      "playwright-firefox",
       "playwright-webkit",
     ].filter((id) => searchEngineDeclared(id));
     expect(SEARCH_ENGINE_IDS).toEqual(declared);
@@ -56,7 +54,7 @@ describe("search engine registry", () => {
           order: 2,
           kind: "keyless",
           strategy: "playwright",
-          browser: "chromium",
+          browser: "webkit",
           extends: "base",
           errors: { blocked: "child blocked" },
         },
@@ -89,19 +87,18 @@ describe("search engine registry", () => {
     ).toThrow(/extends cycle/);
   });
 
-  it("templates the playwright copy per browser instead of naming one", () => {
-    const firefox = requireSearchEngineSpec("playwright-firefox");
-    const chromium = requireSearchEngineSpec("playwright-chromium");
-    // The family declares its copy once; each engine renders it for its own build.
-    expect(firefox.extends).toBe("playwright-chromium");
-    expect(firefox.errors).toEqual(chromium.errors);
-    expect(requireSearchEngineError(firefox, "notInstalled")).toContain("{Browser}");
-    expect(requireSearchEngineError(firefox, "notInstalled")).toContain(
+  it("templates the playwright copy instead of hardcoding a browser name", () => {
+    const webkit = requireSearchEngineSpec("playwright-webkit");
+    // The transport binds these from the declared `browser`, so the copy stays reusable.
+    expect(requireSearchEngineError(webkit, "notInstalled")).toContain("{Browser}");
+    expect(requireSearchEngineError(webkit, "notInstalled")).toContain(
       "playwright install {browser}",
     );
+    // The retry hint is the engine's own wording, not a sentence in TypeScript.
+    expect(requireSearchEngineError(webkit, "mismatched")).toContain("{alternative}");
+    expect(webkit.browser).toBe("webkit");
     expect(requireSearchEngineError(requireSearchEngineSpec("bing"), "blocked")).toContain("Bing");
   });
-
   it("declares every message template its strategy can emit", () => {
     // A transport reads these keys by name, so a missing one must fail here rather
     // than at call time with "declares no errors.<key> message".
@@ -136,7 +133,16 @@ describe("search engine registry", () => {
         "noResults",
       ],
       metaso: [...keyed, "dailyLimit", "apiError"],
-      playwright: ["notFound", "notInstalled", "launchFailed", "cannotReach", "timeout", "blocked"],
+      playwright: [
+        "alternative",
+        "notFound",
+        "notInstalled",
+        "launchFailed",
+        "cannotReach",
+        "timeout",
+        "blocked",
+        "mismatched",
+      ],
     };
     const fetchKeys = [
       "fetchMissingKey",

@@ -113,8 +113,116 @@ describe("parseBingResults", () => {
     `;
     expect(parseBingResults(html)).toEqual([]);
   });
-});
 
+  it("drops promoted blocks and ad-click links", () => {
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo b_ad"><h2><a href="https://ads.example/sale">Buy now</a></h2>
+          <div class="b_caption"><p>sponsored offer</p></div></li>
+        <li class="b_algo"><h2>
+          <a href="https://www.bing.com/aclick?ld=e4Xyz&u=https%3a%2f%2fads.example%2f2">Another ad</a>
+        </h2><div class="b_caption"><p>ad copy</p></div></li>
+        <li class="b_algo" aria-label="Sponsored"><h2><a href="https://ads.example/3">Third ad</a></h2></li>
+        <li class="b_algo"><h2><a href="https://docs.example/real">Real docs page</a></h2>
+          <div class="b_caption"><p>the actual answer</p></div></li>
+      </ol>
+    `;
+    expect(parseBingResults(html)).toEqual([
+      {
+        title: "Real docs page",
+        url: "https://docs.example/real",
+        snippet: "the actual answer",
+      },
+    ]);
+  });
+
+  it("unwraps click-tracking redirects and strips tracking params", () => {
+    const target = "https://api-docs.example.com/guide";
+    const encoded = Buffer.from(target, "utf-8").toString("base64url");
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo"><h2>
+          <a href="/ck/a?u=a1${encoded}&hl=en">Wrapped result</a>
+        </h2><div class="b_caption"><p>unwrapped</p></div></li>
+        <li class="b_algo"><h2>
+          <a href="https://docs.example.com/other?utm_source=bing&utm_medium=cpc&keep=1#frag">Tracked result</a>
+        </h2><div class="b_caption"><p>cleaned</p></div></li>
+      </ol>
+    `;
+    expect(parseBingResults(html)).toEqual([
+      { title: "Wrapped result", url: target, snippet: "unwrapped" },
+      {
+        title: "Tracked result",
+        url: "https://docs.example.com/other?keep=1#frag",
+        snippet: "cleaned",
+      },
+    ]);
+  });
+
+  it("keeps a destination anchor and drops a tracking fragment", () => {
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo"><h2>
+          <a href="https://github.com/o/r/blob/main/src/a.ts#L120-L130">code lines</a>
+        </h2></li>
+        <li class="b_algo"><h2>
+          <a href="https://docs.example.com/api#authentication">docs section</a>
+        </h2></li>
+        <li class="b_algo"><h2>
+          <a href="https://docs.example.com/x#utm_source=bing">tracked</a>
+        </h2></li>
+      </ol>
+    `;
+    // An anchor is where the answer lives (`#L120` lines, `#auth` section), not bookkeeping.
+    expect(parseBingResults(html).map((result) => result.url)).toEqual([
+      "https://github.com/o/r/blob/main/src/a.ts#L120-L130",
+      "https://docs.example.com/api#authentication",
+      "https://docs.example.com/x",
+    ]);
+  });
+
+  it("collapses duplicate destinations and skips unusable hrefs", () => {
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo"><h2><a href="https://docs.example/a">Docs</a></h2></li>
+        <li class="b_algo"><h2><a href="https://docs.example/a?utm_source=x">Docs again</a></h2></li>
+        <li class="b_algo"><h2><a href="javascript:void(0)">Not a page</a></h2></li>
+        <li class="b_algo"><h2><a href="https://www.bing.com/search?q=more">Search Bing</a></h2></li>
+        <li class="b_algo"><h2><a href="https://example.org/b">Elsewhere</a></h2></li>
+      </ol>
+    `;
+    const items = parseBingResults(html);
+    expect(items.map((item) => item.url)).toEqual([
+      "https://docs.example/a",
+      "https://example.org/b",
+    ]);
+    expect(items[0]?.title).toBe("Docs");
+  });
+
+  it("falls back to the block's own text when a hit has no caption", () => {
+    const html = `
+      <li class="b_algo">
+        <h2><a href="https://docs.example/t">Title here</a></h2>
+        <div class="b_text">Readable body text without a caption.</div>
+      </li>
+    `;
+    const [item] = parseBingResults(html);
+    // The title is stripped so the snippet is body text only, not a repeat of the title.
+    expect(item?.snippet).toBe("Readable body text without a caption.");
+  });
+
+  it("harvests anchors from the results container when the block markup drifts", () => {
+    const html = `
+      <div id="b_results">
+        <div class="answer"><a href="https://docs.example/new">Docs answer</a>
+          <span>answer body</span></div>
+      </div>
+    `;
+    const items = parseBingResults(html);
+    expect(items).toHaveLength(1);
+    expect(items[0]?.url).toBe("https://docs.example/new");
+  });
+});
 describe("parseSearxngHtmlResults", () => {
   const sampleHtml = `
     <article class="result">

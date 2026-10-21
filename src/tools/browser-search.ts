@@ -55,34 +55,31 @@ export interface BrowserSearchOptions {
  *  Mojeek answer 403 to the harness. Do NOT add setlang/cc here — those switch Bing to
  *  a script-rendered variant whose DOM carries no result nodes at domcontentloaded. */
 const SERP_URL = "https://www.bing.com/search";
+/** A real empty SERP, as opposed to one whose results never rendered. */
+const EMPTY_SERP = /no results found|did not match any documents/i;
+/** The result *node*, not the container: `#b_results` exists before any result renders,
+ *  so waiting on it returns immediately and reads a mid-render DOM. The container is
+ *  still where a drifted layout is harvested from, but only after this wait gives up. */
 const RESULT_SELECTOR = "li.b_algo";
 const NAV_TIMEOUT_MS = 25_000;
 const RESULT_WAIT_MS = 8_000;
 /** A browser is expensive to launch and cheap to keep; drop it once searches stop. */
 const IDLE_CLOSE_MS = 60_000;
+/** Display name of the one searchable managed build. Templated into the engine's copy so
+ *  the wording lives in its JSON, not here. */
+const BROWSER_LABEL = "WebKit";
 
-/** Display name per browser, so one declared message set serves all three engines. */
-const BROWSER_LABELS: Readonly<Record<SearchEngineBrowser, string>> = {
-  chromium: "Chromium",
-  firefox: "Firefox",
-  webkit: "WebKit",
-};
-
-/** Bind the engine copy to this browser: `{browser}` is the id, `{Browser}` the label. */
+/** Bind the engine copy to this browser: `{browser}` is the id, `{Browser}` the label.
+ *  `{alternative}` is the engine's own suggestion, so the wording stays in its JSON. */
 function copyForBrowser(browser: SearchEngineBrowser, copy: EngineCopy): EngineCopy {
-  const bound = { browser, Browser: BROWSER_LABELS[browser] };
+  const bound = { browser, Browser: BROWSER_LABEL, alternative: copy("alternative") };
   return (key, params) => copy(key, { ...bound, ...params });
 }
 
 /** Headless Chromium advertises "HeadlessChrome" and Bing answers it with a page that
- *  has no result nodes, so each browser sends a normal desktop UA. */
-const USER_AGENTS: Readonly<Record<SearchEngineBrowser, string>> = {
-  chromium:
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  firefox: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-  webkit:
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-};
+ *  has no result nodes, so the browser sends a normal desktop UA. */
+const USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15";
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message.split("\n")[0]! : String(err);
@@ -159,16 +156,29 @@ function resolveCore(browser: SearchEngineBrowser): CoreResolution {
   return { kind: "notInstalled" };
 }
 
-interface RunningBrowser {
-  browser: PwBrowser;
-  idleTimer: NodeJS.Timeout;
+/** Everything known about one browser: the resolution cache, the in-flight launch and the
+ *  live instance live in one record so they cannot disagree about which build is running. */
+interface BrowserState {
+  /** Cached managed-build resolution; absent while unknown or known-bad. */
+  core?: CoreResolution;
+  instance?: PwBrowser;
+  idleTimer?: NodeJS.Timeout;
+  /** In-flight launch, so concurrent searches share one browser instead of racing. */
+  launching?: Promise<PwBrowser>;
+  /** Bumped by a teardown, so a launch that finishes afterwards cannot resurrect a browser. */
+  generation: number;
 }
 
-const running = new Map<SearchEngineBrowser, RunningBrowser>();
-/** In-flight launches: two concurrent searches share one browser instead of racing. */
-const launching = new Map<SearchEngineBrowser, Promise<PwBrowser>>();
-/** Successful resolutions only — an install that appears later must still be picked up. */
-const resolvedOk = new Map<SearchEngineBrowser, CoreResolution>();
+const states = new Map<SearchEngineBrowser, BrowserState>();
+
+function stateOf(browser: SearchEngineBrowser): BrowserState {
+  let state = states.get(browser);
+  if (!state) {
+    state = { generation: 0 };
+    states.set(browser, state);
+  }
+  return state;
+}
 
 /** Injectable seam: tests hand in a fake playwright-core instead of launching one. */
 type CoreLoader = (browser: SearchEngineBrowser) => CoreResolution;
@@ -176,7 +186,7 @@ let loadResolution: CoreLoader = resolveCore;
 
 export function __setBrowserCoreLoaderForTests(next: CoreLoader | null): void {
   loadResolution = next ?? resolveCore;
-  resolvedOk.clear();
+  for (const state of states.values()) state.core = undefined;
 }
 
 /** Exposed for tests: the managed-install resolution the transport actually uses. */
@@ -185,10 +195,11 @@ export function __resolveBrowserCoreForTests(browser: SearchEngineBrowser): Core
 }
 
 function resolutionFor(browser: SearchEngineBrowser): CoreResolution {
-  const cached = resolvedOk.get(browser);
+  const state = stateOf(browser);
+  const cached = state.core;
   if (cached) return cached;
   const resolution = loadResolution(browser);
-  if (resolution.kind === "ok") resolvedOk.set(browser, resolution);
+  if (resolution.kind === "ok") state.core = resolution;
   return resolution;
 }
 
@@ -201,15 +212,18 @@ function startIdleTimer(browser: SearchEngineBrowser): NodeJS.Timeout {
   return timer;
 }
 
-/** Close one browser and forget it; never throws. */
+/** Close one browser and forget it; never throws. It does not cancel an in-flight launch:
+ *  a search replacing a dead instance still wants the replacement that launch is making. */
 async function closeBrowser(browser: SearchEngineBrowser): Promise<void> {
-  const entry = running.get(browser);
-  running.delete(browser);
-  launching.delete(browser);
-  if (!entry) return;
-  clearTimeout(entry.idleTimer);
+  const state = states.get(browser);
+  if (!state) return;
+  const { instance, idleTimer } = state;
+  state.instance = undefined;
+  state.idleTimer = undefined;
+  if (idleTimer) clearTimeout(idleTimer);
+  if (!instance) return;
   try {
-    await entry.browser.close();
+    await instance.close();
   } catch {
     /* Already gone — a stale child is not worth a tool failure. */
   }
@@ -217,36 +231,51 @@ async function closeBrowser(browser: SearchEngineBrowser): Promise<void> {
 
 /** Tear down every browser this module launched (teardown, tests). */
 export async function closeBrowserSearches(): Promise<void> {
-  await Promise.all([...running.keys()].map(closeBrowser));
-  resolvedOk.clear();
+  // Cancels launches still in flight: one that lands after this must close itself rather
+  // than register a browser nobody will ever hand back or reap. Clearing the in-flight
+  // slot lets the next search launch immediately instead of awaiting the doomed one.
+  for (const state of states.values()) {
+    state.generation += 1;
+    state.launching = undefined;
+  }
+  await Promise.all([...states.keys()].map(closeBrowser));
+  for (const state of states.values()) state.core = undefined;
 }
 
 async function launch(browser: SearchEngineBrowser, copy: EngineCopy): Promise<PwBrowser> {
   const resolution = resolutionFor(browser);
   if (resolution.kind !== "ok") throw new Error(copy(resolution.kind));
+  const state = stateOf(browser);
+  const generation = state.generation;
   let launched: PwBrowser;
   try {
     launched = await resolution.core[browser].launch({ headless: true });
   } catch (err) {
     // A failed launch may mean the cached install went stale; let the next call re-resolve.
-    resolvedOk.delete(browser);
+    state.core = undefined;
     throw new Error(copy("launchFailed", { message: messageOf(err) }));
   }
-  running.set(browser, { browser: launched, idleTimer: startIdleTimer(browser) });
+  if (state.generation !== generation) {
+    await launched.close().catch(() => undefined);
+    throw new Error(copy("cannotReach", { message: CANCELLED }));
+  }
+  state.instance = launched;
+  state.idleTimer = startIdleTimer(browser);
   return launched;
 }
 
 /** The browser for this engine, launching at most one even under concurrent searches. */
 async function browserFor(browser: SearchEngineBrowser, copy: EngineCopy): Promise<PwBrowser> {
-  const existing = running.get(browser);
-  if (existing) {
-    existing.idleTimer.refresh?.();
-    return existing.browser;
+  const state = stateOf(browser);
+  if (state.instance) {
+    state.idleTimer?.refresh?.();
+    return state.instance;
   }
-  const inFlight = launching.get(browser);
-  if (inFlight) return inFlight;
-  const pending = launch(browser, copy).finally(() => launching.delete(browser));
-  launching.set(browser, pending);
+  if (state.launching) return state.launching;
+  const pending = launch(browser, copy).finally(() => {
+    if (state.launching === pending) state.launching = undefined;
+  });
+  state.launching = pending;
   return pending;
 }
 
@@ -262,36 +291,47 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promis
 }
 
 const ABORTED = "search aborted";
+/** A launch that a teardown overtook; the caller lost its browser, not the network. */
+const CANCELLED = "search cancelled";
+
+/** Same shape for the first try and the post-replacement retry. */
+const CONTEXT_OPTIONS = { userAgent: USER_AGENT, locale: "en-US" } as const;
 
 async function openContext(browser: SearchEngineBrowser, copy: EngineCopy): Promise<PwContext> {
   const instance = await browserFor(browser, copy);
   try {
-    return await instance.newContext({ userAgent: USER_AGENTS[browser], locale: "en-US" });
+    return await instance.newContext(CONTEXT_OPTIONS);
   } catch (err) {
     // A dead or wedged browser is replaced once rather than failing every later search.
     await closeBrowser(browser);
     const replacement = await browserFor(browser, copy);
     try {
-      return await replacement.newContext({ userAgent: USER_AGENTS[browser], locale: "en-US" });
+      return await replacement.newContext(CONTEXT_OPTIONS);
     } catch {
       throw new Error(copy("launchFailed", { message: messageOf(err) }));
     }
   }
 }
 
-/** One browser-backed search: navigate the SERP, wait for result nodes, hand the HTML
- *  to the engine's parser. A failed launch or an unparseable page throws engine copy. */
-export async function searchWithBrowser(
-  query: string,
-  opts: BrowserSearchOptions,
-): Promise<BrowserSearchResult[]> {
-  const { browser, parse, topK, signal } = opts;
-  const copy = copyForBrowser(browser, opts.copy);
-  if (signal?.aborted) throw new Error(copy("cannotReach", { message: ABORTED }));
+/** One navigation + parse. Each attempt gets its own context so a retry looks like a
+ *  brand-new visitor rather than a reload. */
+interface SerpAttempt {
+  results: BrowserSearchResult[];
+  html: string;
+  status: number;
+  settled: boolean;
+}
+
+async function runSerp(
+  browser: SearchEngineBrowser,
+  copy: EngineCopy,
+  url: string,
+  signal: AbortSignal | undefined,
+  parse: (html: string) => BrowserSearchResult[],
+): Promise<SerpAttempt> {
   const context = await openContext(browser, copy);
   try {
     const page = await context.newPage();
-    const url = `${SERP_URL}?q=${encodeURIComponent(query)}`;
     let status = 0;
     try {
       const response = await abortable(
@@ -311,16 +351,83 @@ export async function searchWithBrowser(
       settled = false;
     }
     const html = await page.content();
-    const results = parse(html).slice(0, topK);
-    if (results.length > 0) return results;
-    // A real empty page is an answer; anything else means the SERP was withheld.
-    if (/no results found|did not match any documents/i.test(html)) return [];
-    throw new Error(
-      settled
-        ? copy("blocked", { chars: html.length })
-        : copy("timeout", { ms: RESULT_WAIT_MS, status }),
-    );
+    return { results: parse(html), html, status, settled };
   } finally {
     await context.close().catch(() => undefined);
   }
+}
+
+/** Filler that carries no topic, so a reduced SERP cannot "match" on it alone. */
+const QUERY_STOPWORDS: ReadonlySet<string> = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "how",
+  "what",
+  "that",
+  "from",
+  "into",
+  "your",
+  "you",
+  "are",
+  "can",
+]);
+
+/** Topic words worth matching. CJK has no word boundaries, so a query with no ASCII
+ *  tokens yields none and the guard stays out of its way instead of misfiring. */
+function queryTokens(query: string): string[] {
+  const tokens = query.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [];
+  return [...new Set(tokens.filter((token) => !QUERY_STOPWORDS.has(token)))];
+}
+
+/** A reduced SERP answers some other query. When not one topic word of the request
+ *  appears anywhere in the hits, reporting them would be worse than failing. */
+function serpAnswersQuery(
+  results: readonly BrowserSearchResult[],
+  tokens: readonly string[],
+): boolean {
+  if (tokens.length === 0) return true;
+  const haystack = results
+    .map((result) => `${result.title} ${result.url} ${result.snippet}`.toLowerCase())
+    .join(" ");
+  return tokens.some((token) => haystack.includes(token));
+}
+
+/** One browser-backed search: navigate the SERP, reject a reduced page, hand the HTML to
+ *  the engine's parser. A failed launch or an unparseable page throws engine copy. */
+export async function searchWithBrowser(
+  query: string,
+  opts: BrowserSearchOptions,
+): Promise<BrowserSearchResult[]> {
+  const { browser, parse, topK, signal } = opts;
+  const copy = copyForBrowser(browser, opts.copy);
+  if (signal?.aborted) throw new Error(copy("cannotReach", { message: ABORTED }));
+  const url = `${SERP_URL}?q=${encodeURIComponent(query)}`;
+  const tokens = queryTokens(query);
+
+  /** The hits to return, `[]` for a page that legitimately has none, or null when the page
+   *  did not answer this query (reduced, withheld, or read before it rendered). */
+  const answerOf = (serp: SerpAttempt): BrowserSearchResult[] | null => {
+    if (serp.results.length === 0) return EMPTY_SERP.test(serp.html) ? [] : null;
+    if (!serpAnswersQuery(serp.results, tokens)) return null;
+    return serp.results.slice(0, topK);
+  };
+
+  let serp = await runSerp(browser, copy, url, signal, parse);
+  let answer = answerOf(serp);
+  if (!answer) {
+    // A fresh context is usually not served the reduced variant.
+    serp = await runSerp(browser, copy, url, signal, parse);
+    answer = answerOf(serp);
+  }
+  if (answer) return answer;
+  if (serp.results.length > 0) {
+    throw new Error(copy("mismatched", { first: serp.results[0]?.title ?? "" }));
+  }
+  throw new Error(
+    serp.settled
+      ? copy("blocked", { chars: serp.html.length })
+      : copy("timeout", { ms: RESULT_WAIT_MS, status: serp.status }),
+  );
 }

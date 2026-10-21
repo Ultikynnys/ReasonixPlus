@@ -10,8 +10,6 @@ import exa from "./search-engines/exa.json";
 import metaso from "./search-engines/metaso.json";
 import ollama from "./search-engines/ollama.json";
 import perplexity from "./search-engines/perplexity.json";
-import playwright_chromium from "./search-engines/playwright-chromium.json";
-import playwright_firefox from "./search-engines/playwright-firefox.json";
 import playwright_webkit from "./search-engines/playwright-webkit.json";
 import searxng from "./search-engines/searxng.json";
 import tavily from "./search-engines/tavily.json";
@@ -35,8 +33,6 @@ export const SEARCH_ENGINE_DOCUMENTS: readonly SearchEngineDocumentSource[] = [
   { file: "metaso.json", document: metaso },
   { file: "ollama.json", document: ollama },
   { file: "perplexity.json", document: perplexity },
-  { file: "playwright-chromium.json", document: playwright_chromium },
-  { file: "playwright-firefox.json", document: playwright_firefox },
   { file: "playwright-webkit.json", document: playwright_webkit },
   { file: "searxng.json", document: searxng },
   { file: "tavily.json", document: tavily },
@@ -57,8 +53,6 @@ export const SEARCH_ENGINE_NAMES = [
   "ollama",
   "zai",
   "deepseek",
-  "playwright-chromium",
-  "playwright-firefox",
   "playwright-webkit",
 ] as const;
 
