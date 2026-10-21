@@ -55,6 +55,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
     expect(modelEndpointFor("deepseek-v4-flash", path)).toEqual({
       provider: "deepseek",
       baseUrl: "https://api.deepseek.com",
+      billingKind: "usd",
       reasoningEfforts: ["low", "high", "max"],
     });
   });
@@ -64,6 +65,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
     expect(modelEndpointFor("deepseek-v4-flash", path)).toEqual({
       provider: "deepseek",
       baseUrl: "https://gateway.example.com/v1",
+      billingKind: "usd",
       reasoningEfforts: ["low", "high", "max"],
     });
   });

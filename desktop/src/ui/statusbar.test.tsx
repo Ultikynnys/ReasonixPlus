@@ -15,9 +15,9 @@ import { THEME, THEME_STYLES } from "../theme";
 import { StatusBar } from "./statusbar";
 
 /** Mirrors the daemon's `modelEndpointFor` for the ids used in these tests —
- *  the statusbar consumes the daemon-resolved provider, never the model name.
- *  Unmapped ids intentionally resolve to the default family: that is the
- *  "name doesn't imply provider" contract under test. */
+ *  the statusbar consumes the daemon-resolved provider and billing kind, never the
+ *  model name. Unmapped ids intentionally resolve to the default family: that is
+ *  the "name doesn't imply provider" contract under test. */
 function endpointFor(model: string): ModelEndpointInfo {
   if (model.startsWith("ollama/"))
     return {
@@ -27,22 +27,28 @@ function endpointFor(model: string): ModelEndpointInfo {
       deployment: "cloud",
     };
   if (model === "gpt-5.6-sol" || model === "gpt-5.6-terra")
-    return { provider: "openai", baseUrl: "https://api.openai.com/v1" };
+    return { provider: "openai", baseUrl: "https://api.openai.com/v1", billingKind: "quota" };
   // gpt-4o-custom here stands in for a custom id the user mapped to the
   // OpenAI provider via the `models` config (the daemon resolved it).
   if (model === "gpt-4o-custom")
-    return { provider: "openai", baseUrl: "https://api.openai.com/v1" };
+    return { provider: "openai", baseUrl: "https://api.openai.com/v1", billingKind: "quota" };
   if (
     model === "gpt-oss-120b-medium" ||
     model === "gemini-3.6-flash" ||
     model === "gemini-3.7-flash"
   )
-    return { provider: "gemini", baseUrl: "https://daily-cloudcode-pa.googleapis.com" };
-  if (model.startsWith("glm-")) return { provider: "zai", baseUrl: "https://api.z.ai/api/v1" };
+    return {
+      provider: "gemini",
+      baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+      billingKind: "quota",
+    };
+  if (model.startsWith("glm-"))
+    return { provider: "zai", baseUrl: "https://api.z.ai/api/v1", billingKind: "quota" };
   if (model === "opencode/big-pickle")
     return {
       provider: "opencode",
       baseUrl: "https://opencode.ai/zen/v1",
+      billingKind: "none",
       opencodeAuth: "oauth",
       opencodePlan: "free",
     };
@@ -50,11 +56,13 @@ function endpointFor(model: string): ModelEndpointInfo {
     return {
       provider: "opencode",
       baseUrl: "https://opencode.ai/zen/go/v1",
+      billingKind: "quota",
       opencodeAuth: "oauth",
       opencodePlan: "go",
     };
-  if (model.startsWith("mimo-")) return { provider: "mimo", baseUrl: "https://api.mimo.ai/v1" };
-  return { provider: "deepseek", baseUrl: "https://api.deepseek.com" };
+  if (model.startsWith("mimo-"))
+    return { provider: "mimo", baseUrl: "https://api.mimo.ai/v1", billingKind: "quota" };
+  return { provider: "deepseek", baseUrl: "https://api.deepseek.com", billingKind: "usd" };
 }
 
 function renderBar(overrides: Partial<Parameters<typeof StatusBar>[0]> = {}) {
@@ -140,10 +148,12 @@ describe("StatusBar quota display", () => {
       } as Settings,
       usage: { totalCostUsd: 0.5, lastCallCostUsd: 0.02 } as unknown as UsageStats,
     });
-    // No declared endpoint means no wallet to read: the chip would sit on a dash
-    // forever, so the measured $ cost is the money view instead.
+    // No declared endpoint and no declared rates: neither a wallet nor a dollar
+    // figure can be measured, so the ribbon claims neither instead of showing a
+    // dash or an invented $0.0000.
     expect(screen.queryByText("balance")).toBeNull();
-    expect(screen.getByText("this turn")).toBeTruthy();
+    expect(screen.queryByText("this turn")).toBeNull();
+    expect(screen.queryByText(/This session cost/)).toBeNull();
   });
 
   it("keeps the balance and $ turn cost for DeepSeek tabs", () => {
@@ -672,10 +682,10 @@ describe("StatusBar quota display", () => {
     expect(screen.getByText("plan usage")).toBeTruthy();
     expect(screen.getByText("free")).toBeTruthy();
     expect(screen.queryByText("Go usage")).toBeNull();
-    // Free models leave the quota path, so the cost chips still render (as
-    // $0.00) instead of being suppressed by a quota chip.
-    expect(screen.getByText("this turn")).toBeTruthy();
-    expect(screen.getByText("This session cost")).toBeTruthy();
+    // The free tier publishes no rates, so no dollar figure is claimed either —
+    // a $0.00 chip would be an invented number.
+    expect(screen.queryByText("this turn")).toBeNull();
+    expect(screen.queryByText("This session cost")).toBeNull();
     expect(screen.queryByText("balance")).toBeNull();
   });
 });

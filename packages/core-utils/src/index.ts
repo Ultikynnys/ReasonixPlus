@@ -179,6 +179,7 @@ export type {
   ProviderErrorsSpec,
   ProviderModelFilter,
   ProviderModelRate,
+  ProviderProbeStrategy,
   ProviderServerReport,
   ProviderThinkingStyle,
   ProviderWireFormat,

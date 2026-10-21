@@ -29,6 +29,7 @@ import type {
   ZaiQuota,
 } from "../protocol";
 import { THEME, THEME_STYLES, type Theme, type ThemeStyle, themeForStyle } from "../theme";
+import { resolveRibbonFunds } from "../usage-ribbon";
 import { hitPercent, tokenLabel } from "./format";
 import { activationHandler } from "./keyboard";
 import { localizeShortcutText } from "./shortcut";
@@ -216,30 +217,24 @@ export function StatusBar({
   const spec = ep?.provider ? providerSpec(ep.provider) : undefined;
   const auth = spec?.client.auth ?? null;
   const openaiTab = auth === "openai-oauth";
-  const geminiTab = auth === "gemini-oauth";
+  // These three classify the *rate-period* chip (a declared price calendar whose
+  // applicability is per model), never the money chips below.
   const ollamaTab = spec?.wire.format === "ollama-native";
   const zaiTab = spec?.wire.thinking === "zai-top-level";
-  const mimoTab = spec?.wire.thinking === "mimo-top-level";
-  const opencodeTab = auth === "opencode";
   const deepseekTab = spec?.errors.serverReport === "balance-probe";
-  // A wallet chip needs an endpoint to read. Only a provider that declares one gets
-  // it; everywhere else the measured $ cost is the money view.
-  const hasBalance = !!spec?.billing.balancePath;
-  const openaiTokenBilling = openaiTab && ep?.billingKind === "usd";
-  const openaiQuotaBilling = openaiTab && !openaiTokenBilling;
-  const ollamaTokenBilling = ollamaTab && ep?.billingKind === "usd";
-  const ollamaQuotaBilling = ollamaTab && !ollamaTokenBilling;
-  // A plan-window provider bills percentages, never dollars.
-  const zaiQuotaBilling = zaiTab;
-  // Only a Go-subscription tab bills plan-window %; the free tier exposes no
-  // usage endpoint, so it gets a tier chip instead.
-  const opencodeQuotaBilling = opencodeTab && ep?.opencodePlan === "go";
-  const opencodeFreeBilling = opencodeTab && ep?.opencodePlan === "free";
-  const mimoQuotaBilling = mimoTab;
+  // Which money chip this tab gets, and whether $ is its native unit — one resolver
+  // for every provider, so a new one needs no ribbon edit (see usage-ribbon.ts).
+  const funds = resolveRibbonFunds(spec, ep);
+  const probe = funds.probe;
+  // The payload is chosen by the declared probe, the same way for every provider.
+  const codexData = probe === "codex-oauth" ? codexQuota : null;
+  const ollamaData = probe === "ollama-balance" ? ollamaQuota : null;
+  const antigravityData = probe === "antigravity-quota" ? antigravityQuota : null;
+  const zaiData = probe === "zai-monitor" ? zaiQuota : null;
+  const opencodeData = probe === "opencode-usage" ? opencodeQuota : null;
+  // A plan-window tab reports its accumulated percentage, never a dollar figure.
   const sessionQuotaProvider =
-    openaiQuotaBilling || geminiTab || ollamaQuotaBilling || zaiQuotaBilling || opencodeQuotaBilling
-      ? (ep?.provider ?? null)
-      : null;
+    funds.chip === "quota" ? (ep?.provider ?? null) : null;
   const sessionQuotaCost =
     sessionQuotaProvider !== null ? usage.costByProvider?.[sessionQuotaProvider] : undefined;
   const sessionQuotaPct = sessionQuotaCost?.quotaUsedPct ?? null;
@@ -289,14 +284,14 @@ export function StatusBar({
   // swap follows the resolved provider, and even without quota data the
   // chips render an em dash + retry hint — the DeepSeek balance and $
   // amounts are meaningless on an OpenAI tab.
-  const quota = codexQuota && openaiQuotaBilling ? codexQuota : null;
+  const quota = codexData;
   const showQuota = !!quota;
   const quotaWeekly = quota?.weekly ?? null;
   const quotaFiveHour = quota?.fiveHour ?? null;
   // Official app-server format: windows carry remainingPercent (100 - usedPercent)
   // and an ISO resetsAt — the chip shows "% left" + plan, no credit amounts.
   const quotaLeftPct = quotaWeekly ? Math.round(quotaWeekly.remainingPercent) : 0;
-  const ollamaQuotaData = ollamaQuota && ollamaQuotaBilling ? ollamaQuota : null;
+  const ollamaQuotaData = ollamaData;
   const ollamaWeekly = ollamaQuotaData?.weekly ?? null;
   const ollamaSession = ollamaQuotaData?.session ?? null;
   // The "set an API key" hint is correct ONLY when the key is genuinely absent
@@ -336,7 +331,7 @@ export function StatusBar({
       : zaiTab
         ? ZAI_RATE_SCHEDULE
         : null;
-  const antigravityQuotaData = antigravityQuota && geminiTab ? antigravityQuota : null;
+  const antigravityQuotaData = antigravityData;
   const agActive =
     antigravityQuotaData?.windows.find((w) => w.modelId === settings?.model) ??
     antigravityQuotaData?.windows[0] ??
@@ -361,7 +356,7 @@ export function StatusBar({
       : antigravityQuotaTitle;
   // Z.AI GLM Coding Plan: the 5-hour window is the primary ribbon value (finer
   // resolution than weekly), falling back to weekly when the plan omits it.
-  const zaiQuotaData = zaiQuota && zaiQuotaBilling ? zaiQuota : null;
+  const zaiQuotaData = zaiData;
   const zaiFiveHour = zaiQuotaData?.fiveHour ?? null;
   const zaiWeekly = zaiQuotaData?.weekly ?? null;
   const zaiWindow = zaiFiveHour ?? zaiWeekly ?? null;
@@ -387,7 +382,7 @@ export function StatusBar({
   // OpenCode Go plan usage: the 5-hour rolling window is the primary ribbon
   // value (finer resolution than weekly/monthly), falling back to weekly then
   // monthly for payloads that omit a window.
-  const opencodeQuotaData = opencodeQuota && opencodeQuotaBilling ? opencodeQuota : null;
+  const opencodeQuotaData = opencodeData;
   const opencodeRolling = opencodeQuotaData?.rolling ?? null;
   const opencodeWeekly = opencodeQuotaData?.weekly ?? null;
   const opencodeMonthly = opencodeQuotaData?.monthly ?? null;
@@ -429,83 +424,77 @@ export function StatusBar({
     !showQuota && codexQuotaReason
       ? `${quotaTitle}\n${t("statusbar.codexReason", { reason: codexQuotaReason })}`
       : quotaTitle;
-  // Every quota-billed provider normalizes to one window model, so a single
-  // QuotaChip renders them all: the active provider's view feeds the ribbon and
-  // its label/title/refresh/plan fallback come from one place.
-  const activeQuotaView: ProviderUsageView | null = openaiQuotaBilling
-    ? quota
-      ? codexUsageView(quota)
-      : null
-    : ollamaQuotaBilling
-      ? ollamaQuotaData
-        ? ollamaUsageView(ollamaQuotaData, ollamaPlan ?? null)
-        : null
-      : geminiTab
-        ? antigravityQuotaData
-          ? antigravityUsageView(antigravityQuotaData, settings?.model)
-          : null
-        : zaiQuotaBilling
-          ? zaiQuotaData
-            ? zaiUsageView(zaiQuotaData)
-            : null
-          : opencodeQuotaBilling
-            ? opencodeQuotaData
-              ? opencodeUsageView(opencodeQuotaData)
-              : null
-            : mimoQuotaBilling
-              ? mimoUsageView(settings?.mimoQuota, specCopy("quotaPlanFallback") ?? "")
-              : null;
-  const quotaBilling =
-    openaiQuotaBilling ||
-    ollamaQuotaBilling ||
-    geminiTab ||
-    zaiQuotaBilling ||
-    opencodeQuotaBilling ||
-    mimoQuotaBilling;
-  // One chip serves every quota-billed provider, so its label, title and plan
-  // fallback are keyed on the declaration rather than on which tab is active.
-  const quotaChipLabel = specCopy("quotaLabel") ?? t("statusbar.quotaLabel");
-  const quotaChipTitle = openaiQuotaBilling
-    ? quotaTitleWithReason
-    : ollamaQuotaBilling
-      ? ollamaQuotaTitleWithReason
-      : geminiTab
-        ? antigravityQuotaTitleWithReason
-        : zaiQuotaBilling
-          ? zaiQuotaTitleWithReason
-          : mimoQuotaBilling
-            ? (specCopy("quotaTitle") ?? t("statusbar.quotaTitle"))
-            : opencodeQuotaTitleWithReason;
-  const quotaChipRefreshing = openaiQuotaBilling
-    ? codexQuotaRefreshing
-    : ollamaQuotaBilling
-      ? ollamaQuotaRefreshing
-      : geminiTab
-        ? antigravityQuotaRefreshing
-        : zaiQuotaBilling
-          ? zaiQuotaRefreshing
-          : mimoQuotaBilling
-            ? undefined
-            : opencodeQuotaRefreshing;
-  const quotaChipRefresh = openaiQuotaBilling
-    ? onRefreshCodexQuota
-    : ollamaQuotaBilling
-      ? onRefreshOllamaQuota
-      : geminiTab
-        ? onRefreshAntigravityQuota
-        : zaiQuotaBilling
-          ? onRefreshZaiQuota
-          : mimoQuotaBilling
-            ? undefined
-            : onRefreshOpencodeQuota;
+  // One chip serves every plan-window provider. The declared probe picks the view,
+  // title, refresh affordance and plan fallback together, so a new probe adds one
+  // arm here (plus its adapter) instead of five parallel cascades.
   const declaredPlanFallback = specCopy("quotaPlanFallback") ?? "";
-  const quotaChipPlanFallback = openaiQuotaBilling
-    ? (quota?.plan ?? declaredPlanFallback)
-    : ollamaQuotaBilling
-      ? (ollamaPlan ?? declaredPlanFallback)
-      : zaiQuotaBilling
-        ? (zaiQuotaData?.plan ?? declaredPlanFallback)
-        : declaredPlanFallback;
+  const quotaChip: {
+    view: ProviderUsageView | null;
+    title: string;
+    refreshing?: boolean;
+    refresh?: () => void;
+    planFallback: string;
+  } = (() => {
+    switch (probe) {
+      case "codex-oauth":
+        return {
+          view: quota ? codexUsageView(quota) : null,
+          title: quotaTitleWithReason,
+          refreshing: codexQuotaRefreshing,
+          refresh: onRefreshCodexQuota,
+          planFallback: quota?.plan ?? declaredPlanFallback,
+        };
+      case "ollama-balance":
+        return {
+          view: ollamaQuotaData ? ollamaUsageView(ollamaQuotaData, ollamaPlan ?? null) : null,
+          title: ollamaQuotaTitleWithReason,
+          refreshing: ollamaQuotaRefreshing,
+          refresh: onRefreshOllamaQuota,
+          planFallback: ollamaPlan ?? declaredPlanFallback,
+        };
+      case "antigravity-quota":
+        return {
+          view: antigravityQuotaData
+            ? antigravityUsageView(antigravityQuotaData, settings?.model)
+            : null,
+          title: antigravityQuotaTitleWithReason,
+          refreshing: antigravityQuotaRefreshing,
+          refresh: onRefreshAntigravityQuota,
+          planFallback: declaredPlanFallback,
+        };
+      case "zai-monitor":
+        return {
+          view: zaiQuotaData ? zaiUsageView(zaiQuotaData) : null,
+          title: zaiQuotaTitleWithReason,
+          refreshing: zaiQuotaRefreshing,
+          refresh: onRefreshZaiQuota,
+          planFallback: zaiQuotaData?.plan ?? declaredPlanFallback,
+        };
+      case "opencode-usage":
+        return {
+          view: opencodeQuotaData ? opencodeUsageView(opencodeQuotaData) : null,
+          title: opencodeQuotaTitleWithReason,
+          refreshing: opencodeQuotaRefreshing,
+          refresh: onRefreshOpencodeQuota,
+          planFallback: declaredPlanFallback,
+        };
+      case "mimo-console":
+        return {
+          view: mimoUsageView(settings?.mimoQuota, declaredPlanFallback),
+          title: specCopy("quotaTitle") ?? t("statusbar.quotaTitle"),
+          planFallback: declaredPlanFallback,
+        };
+      default:
+        return {
+          view: null,
+          title: specCopy("quotaNoData") ?? t("statusbar.quotaNoData"),
+          planFallback: declaredPlanFallback,
+        };
+    }
+  })();
+  // One chip serves every quota-billed provider, so its label is keyed on the
+  // declaration rather than on which tab is active.
+  const quotaChipLabel = specCopy("quotaLabel") ?? t("statusbar.quotaLabel");
   // Rate-period timing uses the same shared schedule engine as telemetry billing.
   const [rateNow, setRateNow] = useState(() => new Date());
   useEffect(() => {
@@ -592,21 +581,21 @@ export function StatusBar({
           <span className="v">{tokenLabel(totalTokens)}</span>
         </span>
       ) : null}
-      {showTurnCost ? (
+      {showTurnCost && (funds.chip === "quota" || funds.costFigures) ? (
         <span
           className="seg"
           title={
-            activeQuotaView?.turnUsedPct != null
-              ? (specCopy("quotaTurnTitle", { pct: activeQuotaView.turnUsedPct.toFixed(1) }) ??
-                t("statusbar.quotaTurnTitle", { pct: activeQuotaView.turnUsedPct.toFixed(1) }))
+            quotaChip.view?.turnUsedPct != null
+              ? (specCopy("quotaTurnTitle", { pct: quotaChip.view.turnUsedPct.toFixed(1) }) ??
+                t("statusbar.quotaTurnTitle", { pct: quotaChip.view.turnUsedPct.toFixed(1) }))
               : undefined
           }
         >
           <I.coin size={11} />
           <span>{t("statusbar.thisTurn")}</span>
-          {quotaBilling ? (
-            activeQuotaView?.turnUsedPct != null ? (
-              <span className="v ok">{activeQuotaView.turnUsedPct.toFixed(1)}%</span>
+          {funds.chip === "quota" ? (
+            quotaChip.view?.turnUsedPct != null ? (
+              <span className="v ok">{quotaChip.view.turnUsedPct.toFixed(1)}%</span>
             ) : (
               <span className="v ok">-</span>
             )
@@ -619,13 +608,7 @@ export function StatusBar({
         </span>
       ) : null}
 
-      {showSessionCost &&
-      !openaiQuotaBilling &&
-      !ollamaQuotaBilling &&
-      !geminiTab &&
-      !zaiQuotaBilling &&
-      !opencodeQuotaBilling &&
-      !mimoQuotaBilling ? (
+      {showSessionCost && funds.costFigures ? (
         <span className="seg" title={t("settings.sessionCost")}>
           <I.coin size={11} />
           <span>{t("settings.sessionCost")}</span>
@@ -686,46 +669,44 @@ export function StatusBar({
           <span className="v">{settings.workspaceDir.split(/[\\/]/).pop() || "ws"}</span>
         </span>
       ) : null}
-      {showBalance && (quotaBilling || opencodeFreeBilling || hasBalance) ? (
-        quotaBilling ? (
-          <QuotaChip
-            label={quotaChipLabel}
-            title={quotaChipTitle}
-            view={activeQuotaView}
-            refreshing={quotaChipRefreshing}
-            planFallback={quotaChipPlanFallback}
-            onRefresh={quotaChipRefresh}
-          />
-        ) : opencodeFreeBilling ? (
-          <span
-            className="seg"
-            style={{ cursor: "default" }}
-            title={specCopy("freeTitle") ?? t("statusbar.quotaTitle")}
-          >
-            <I.coin size={11} style={{ color: "var(--accent)" }} />
-            <span>{specCopy("freeLabel") ?? t("statusbar.quotaLabel")}</span>
-            <span className="v ok">{specCopy("freeTier") ?? ""}</span>
+      {showBalance && funds.chip === "quota" ? (
+        <QuotaChip
+          label={quotaChipLabel}
+          title={quotaChip.title}
+          view={quotaChip.view}
+          refreshing={quotaChip.refreshing}
+          planFallback={quotaChip.planFallback}
+          onRefresh={quotaChip.refresh}
+        />
+      ) : null}
+      {showBalance && funds.chip === "tier" ? (
+        <span
+          className="seg"
+          style={{ cursor: "default" }}
+          title={specCopy("freeTitle") ?? t("statusbar.quotaTitle")}
+        >
+          <I.coin size={11} style={{ color: "var(--accent)" }} />
+          <span>{specCopy("freeLabel") ?? t("statusbar.quotaLabel")}</span>
+          <span className="v ok">{specCopy("freeTier") ?? ""}</span>
+        </span>
+      ) : null}
+      {showBalance && funds.chip === "wallet" ? (
+        <span
+          className="seg"
+          title={t("statusbar.switchCurrency")}
+          onClick={onToggleCurrency}
+          onKeyDown={activationHandler(onToggleCurrency)}
+        >
+          <I.coin size={11} />
+          <span>{t("statusbar.balance")}</span>
+          <span className="v ok">
+            {balance && balance.infos.length > 0
+              ? balance.infos
+                  .map((info) => `${info.currency === "USD" ? "$" : "¥"} ${info.total.toFixed(2)}`)
+                  .join(" / ")
+              : balanceLabel}
           </span>
-        ) : (
-          <span
-            className="seg"
-            title={t("statusbar.switchCurrency")}
-            onClick={onToggleCurrency}
-            onKeyDown={activationHandler(onToggleCurrency)}
-          >
-            <I.coin size={11} />
-            <span>{t("statusbar.balance")}</span>
-            <span className="v ok">
-              {balance && balance.infos.length > 0
-                ? balance.infos
-                    .map(
-                      (info) => `${info.currency === "USD" ? "$" : "¥"} ${info.total.toFixed(2)}`,
-                    )
-                    .join(" / ")
-                : balanceLabel}
-            </span>
-          </span>
-        )
+        </span>
       ) : null}
       <span
         ref={themeButtonRef}

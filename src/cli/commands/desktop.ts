@@ -1715,7 +1715,20 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
   // its JSON declares, else the host the client itself would fall back to.
   const baseUrl =
     resolved.baseUrl ?? providerDefaultEndpoint(provider) ?? UNCONFIGURED_BASE_URL[provider] ?? "";
-  const base = { provider, baseUrl, reasoningEfforts };
+  // Resolved for every provider, not just the ones whose chip used to read it: the
+  // ribbon picks its money chip from this kind plus the declaration, so a provider
+  // never has to be reverse-engineered from its auth or wire shape.
+  const base = {
+    provider,
+    baseUrl,
+    reasoningEfforts,
+    billingKind: billingContextForModel(model, path).kind,
+    // Deployment classifies one provider's endpoint kind, so only the declaration
+    // that defines it reports one.
+    ...(spec?.wire.format === "ollama-native" && resolved.deployment
+      ? { deployment: resolved.deployment }
+      : {}),
+  };
   // The credential panel a provider reports is the auth strategy its JSON declares,
   // so a new declaration picks up its own panel without an edit here.
   switch (spec?.client.auth) {
@@ -1730,36 +1743,28 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
     case "opencode": {
       const oauth = readConfig(path).opencodeOAuth;
       const key = loadOpencodeApiKey(path);
+      // Go models bill the Go plan windows; free/anon Zen models have no usage API
+      // and paid Zen has no price table here, so both measure nothing. Resolved on
+      // the wire id, so a shared `opencode/<id>` still reads as Go.
+      const opencodePlan = opencodeUsagePlan(model, path);
       return {
         ...base,
+        billingKind: opencodePlan === "go" ? "quota" : "none",
         opencodeAuth: oauth?.accessToken ? "oauth" : key && key !== "public" ? "apiKey" : "none",
         opencodeAccount: oauth?.account,
-        // Go models bill the Go plan windows; free/anon Zen models have no usage
-        // API and paid Zen has no price table here — both fall back to no chip.
-        // Resolved on the wire id, so a shared `opencode/<id>` still reads as Go.
-        opencodePlan: opencodeUsagePlan(model, path),
+        opencodePlan,
       };
     }
     case "openai-oauth": {
       const oauth = readConfig(path).openaiOAuth;
       return {
         ...base,
-        billingKind: billingContextForModel(model, path).kind,
         openaiAuth: oauth?.accessToken ? "oauth" : resolved.apiKey ? "apiKey" : "none",
         oauthAccount: oauth?.account,
       };
     }
     default:
-      // Only the provider whose declared probe measures a plan window reports a
-      // billing kind and its deployment; read from the resolved provider, since an
-      // explicit provider mapping can name one the model id never spells.
-      return spec?.usage.probe === "ollama-balance"
-        ? {
-            ...base,
-            billingKind: billingContextForModel(model, path).kind,
-            deployment: resolved.deployment,
-          }
-        : base;
+      return base;
   }
 }
 
