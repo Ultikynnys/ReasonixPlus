@@ -5,6 +5,6 @@
   "order": 1,
   "kind": "keyless",
   "strategy": "bing-intl",
-  "fallback": true,
+  "extends": "bing",
   "settings": []
 }

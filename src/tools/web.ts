@@ -4,17 +4,21 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import {
   SEARCH_ENGINE_SPECS,
-  SEARCH_FALLBACK_ENGINES,
+  type SearchEngineFetchStrategy,
+  type SearchEngineSpec,
   type SearchEngineStrategy,
   WEB_SEARCH_ENGINE_NAMES,
   type WebSearchEngineName,
   flattenText,
+  requireSearchEngineError,
   searchEngineSpec,
+  sliceAlignedToCodepoint,
 } from "@reasonix/core-utils";
 import { parse as parseHtml } from "node-html-parser";
 import {
   loadBaiduApiKey,
   loadBraveApiKey,
+  loadDeepseekApiKey,
   loadExaApiKey,
   loadMetasoApiKey,
   loadOllamaApiKey,
@@ -24,8 +28,9 @@ import {
   webSearchEngine as loadWebSearchEngine,
   loadZaiApiKey,
 } from "../config.js";
-import { t } from "../i18n/index.js";
+import { interpolate, t } from "../i18n/index.js";
 import type { ToolRegistry } from "../tools.js";
+import { type EngineCopy, searchWithBrowser } from "./browser-search.js";
 
 export interface SearchResult {
   title: string;
@@ -89,19 +94,34 @@ const BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const OLLAMA_WEB_SEARCH_ENDPOINT = "https://ollama.com/api/web_search";
 const OLLAMA_WEB_FETCH_ENDPOINT = "https://ollama.com/api/web_fetch";
 const ZAI_WEB_SEARCH_ENDPOINT = "https://api.z.ai/api/paas/v4/web_search";
+const DEEPSEEK_SEARCH_ENDPOINT = "https://api.deepseek.com/v1/tools/search";
+const DEEPSEEK_FETCH_ENDPOINT = "https://api.deepseek.com/v1/tools/fetch";
+/** Documented cap on the query field; longer text is rejected by the API itself. */
+const DEEPSEEK_MAX_QUERY_CHARS = 128;
 const FETCH_MAX_REDIRECTS = 5;
 
-/** A recoverable backend failure (host unreachable, timed out, 5xx, blocked) that a
- *  different engine might survive. Config errors stay plain Errors so webSearch surfaces
- *  them, and only this type triggers the engine fallback. */
+/** A backend failure: the engine could not answer. Config errors stay plain Errors. */
 class SearchBackendError extends Error {}
+/** The declaration behind this call — dispatchSearch has always pinned opts.engine. */
+function specFor(opts: WebSearchOptions): SearchEngineSpec | undefined {
+  const id = opts.engine ?? WEB_SEARCH_ENGINE_NAMES.at(0);
+  return id ? searchEngineSpec(id) : undefined;
+}
 
-/** Pick a status-specific webErrors key so the model gets an actionable hint, not a bare status. */
-function searchStatusError(status: number): string {
-  if (status === 429) return t("webErrors.rateLimit429");
-  if (status === 403) return t("webErrors.forbidden403");
-  if (status >= 500 && status <= 599) return t("webErrors.serverError5xx", { status });
-  return t("webErrors.status", { status });
+/** Copy accessor for the engine answering this call (dispatchSearch pins it). */
+function copyFor(opts: WebSearchOptions): EngineCopy {
+  const spec = specFor(opts);
+  if (!spec) throw new Error(NO_ENGINE_MESSAGE);
+  return (key, params) => interpolate(requireSearchEngineError(spec, key), params);
+}
+
+/** Pick the engine's status-specific message so the model gets an actionable hint
+ *  written for that backend, not a generic status. */
+function searchStatusError(copy: EngineCopy, status: number): string {
+  if (status === 429) return copy("rateLimit");
+  if (status === 403) return copy("forbidden");
+  if (status >= 500 && status <= 599) return copy("serverError", { status });
+  return copy("status", { status });
 }
 
 function fetchStatusError(status: number, url: string): string {
@@ -115,6 +135,7 @@ function fetchStatusError(status: number, url: string): string {
 
 interface SearchApiErrorMap {
   authError: string;
+  cannotReach: (endpoint: string) => string;
   rateLimitError: string;
   serverError: (status: number) => string;
 }
@@ -140,7 +161,7 @@ async function fetchSearchApi(
     resp = await fetch(endpoint, { ...init, signal: searchSignal(signal) });
   } catch (err) {
     if (err instanceof TypeError && (err as Error).message.includes("fetch")) {
-      throw new SearchBackendError(t("webErrors.cannotReach", { endpoint }));
+      throw new SearchBackendError(errMap.cannotReach(endpoint));
     }
     throw err;
   }
@@ -328,12 +349,6 @@ function redirectLocation(resp: Response, currentUrl: string): string | null {
   return new URL(location, currentUrl).toString();
 }
 
-/** Engines that need neither an API key nor a local server — the last-resort
- *  fallbacks when the configured engine's backend is unreachable. Order matters:
- *  the international index first, then the CN-friendly default. */
-const KEYLESS_FALLBACK_ENGINES: readonly WebSearchEngineName[] =
-  SEARCH_FALLBACK_ENGINES as readonly WebSearchEngineName[];
-
 /** Transport per declared strategy, so a new engine needs no dispatch branch here. */
 const SEARCH_TRANSPORTS: Readonly<
   Record<SearchEngineStrategy, (query: string, opts: WebSearchOptions) => Promise<SearchResult[]>>
@@ -349,6 +364,8 @@ const SEARCH_TRANSPORTS: Readonly<
   brave: searchBrave,
   ollama: searchOllama,
   zai: searchZai,
+  deepseek: searchDeepseek,
+  playwright: searchPlaywright,
 };
 
 /** Shown when no engine file exists, so the failure names its own fix. */
@@ -362,29 +379,16 @@ async function dispatchSearch(query: string, opts: WebSearchOptions): Promise<Se
   return SEARCH_TRANSPORTS[spec.strategy](query, opts);
 }
 
-/** Distinguishes "truly 0 results" from "layout changed / blocked" so callers can tell.
- *  A failing backend falls through to the keyless engines so one outage doesn't sink
- *  the search; "0 results" is not a failure and never triggers a fallback. */
+/** One attempt against the configured engine, and nothing else: a second index
+ *  returns different results, so answering from another engine would present one
+ *  provider's junk as this engine's answer. A failure here reaches the caller. */
 export async function webSearch(
   query: string,
   opts: WebSearchOptions = {},
 ): Promise<SearchResult[]> {
-  const primary = opts.engine ?? WEB_SEARCH_ENGINE_NAMES.at(0);
-  if (!primary) throw new Error(NO_ENGINE_MESSAGE);
-  try {
-    return await dispatchSearch(query, { ...opts, engine: primary });
-  } catch (primaryError) {
-    if (!(primaryError instanceof SearchBackendError)) throw primaryError;
-    for (const engine of KEYLESS_FALLBACK_ENGINES) {
-      if (engine === primary) continue;
-      try {
-        return await dispatchSearch(query, { ...opts, engine });
-      } catch {
-        /* fall through to the next fallback */
-      }
-    }
-    throw primaryError;
-  }
+  const engine = opts.engine ?? WEB_SEARCH_ENGINE_NAMES.at(0);
+  if (!engine) throw new Error(NO_ENGINE_MESSAGE);
+  return dispatchSearch(query, { ...opts, engine });
 }
 
 async function searchBing(
@@ -392,6 +396,7 @@ async function searchBing(
   opts: WebSearchOptions = {},
   endpoint = BING_ENDPOINT,
 ): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
   const topK = Math.max(1, Math.min(10, opts.topK ?? DEFAULT_TOPK));
   let resp: Response;
   try {
@@ -406,18 +411,18 @@ async function searchBing(
     });
   } catch (err) {
     if (opts.signal?.aborted) throw err;
-    throw new SearchBackendError(t("webErrors.cannotReach", { endpoint }));
+    throw new SearchBackendError(copy("cannotReach", { endpoint }));
   }
-  if (!resp.ok) throw new SearchBackendError(searchStatusError(resp.status));
+  if (!resp.ok) throw new SearchBackendError(searchStatusError(copy, resp.status));
   const html = await resp.text();
   const results = parseBingResults(html).slice(0, topK);
   if (results.length === 0) {
     if (/no results found|did not match any documents/i.test(html)) return [];
     if (/captcha|verify you are human|access denied|forbidden/i.test(html)) {
-      throw new SearchBackendError(t("webErrors.bingBlocked"));
+      throw new SearchBackendError(copy("blocked"));
     }
     throw new SearchBackendError(
-      t("webErrors.bingNoResults", {
+      copy("noResults", {
         chars: html.length,
         preview: flattenText(html.slice(0, 120)),
       }),
@@ -427,22 +432,23 @@ async function searchBing(
 }
 
 /** Parse + validate a SearXNG endpoint. Returns origin (protocol + host). */
-function normalizeSearxngEndpoint(raw: string): string {
+function normalizeSearxngEndpoint(raw: string, copy: EngineCopy): string {
   let url: URL;
   try {
     url = new URL(raw.includes("://") ? raw : `http://${raw}`);
   } catch {
-    throw new Error(t("webErrors.invalidEndpoint", { endpoint: raw }));
+    throw new Error(copy("invalidEndpoint", { endpoint: raw }));
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(t("webErrors.endpointMustBeHttp", { protocol: url.protocol }));
+    throw new Error(copy("endpointMustBeHttp", { protocol: url.protocol }));
   }
   return url.origin;
 }
 
 async function searchSearxng(query: string, opts: WebSearchOptions = {}): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
   const topK = Math.max(1, Math.min(10, opts.topK ?? DEFAULT_TOPK));
-  const baseUrl = normalizeSearxngEndpoint(opts.endpoint ?? "http://localhost:8080");
+  const baseUrl = normalizeSearxngEndpoint(opts.endpoint ?? "http://localhost:8080", copy);
 
   // JSON API is often blocked by SearXNG's default limiter; HTML always works.
   const url = `${baseUrl}/search?format=html&q=${encodeURIComponent(query)}`;
@@ -458,15 +464,15 @@ async function searchSearxng(query: string, opts: WebSearchOptions = {}): Promis
   } catch (err) {
     if (opts.signal?.aborted) throw err;
     throw new SearchBackendError(
-      t("webErrors.cannotReach", { endpoint: opts.endpoint ?? "http://localhost:8080" }),
+      copy("cannotReach", { endpoint: opts.endpoint ?? "http://localhost:8080" }),
     );
   }
-  if (!resp.ok) throw new SearchBackendError(searchStatusError(resp.status));
+  if (!resp.ok) throw new SearchBackendError(searchStatusError(copy, resp.status));
   const html = await resp.text();
   const results = parseSearxngHtmlResults(html).slice(0, topK);
   if (results.length === 0) {
     if (/no results found|did not match any documents/i.test(html)) return [];
-    throw new SearchBackendError(t("webErrors.searxngNoResults", { chars: html.length }));
+    throw new SearchBackendError(copy("noResults", { chars: html.length }));
   }
   return results;
 }
@@ -490,9 +496,10 @@ interface MetasoSearchResponse {
 }
 
 async function searchMetaso(query: string, opts: WebSearchOptions = {}): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
   const topK = Math.max(1, Math.min(100, opts.topK ?? DEFAULT_TOPK));
   const apiKey = loadMetasoApiKey(opts.configPath);
-  if (!apiKey) throw new Error(t("webErrors.metasoMissingKey"));
+  if (!apiKey) throw new Error(copy("missingKey"));
 
   const resp = await fetchSearchApi(
     `${METASO_ENDPOINT}/search`,
@@ -507,28 +514,27 @@ async function searchMetaso(query: string, opts: WebSearchOptions = {}): Promise
     },
     opts.signal,
     {
-      authError: t("webErrors.metasoUnauthorized"),
-      rateLimitError: t("webErrors.metasoRateLimit"),
-      serverError: (s) => t("webErrors.metasoServerError", { status: s }),
+      authError: copy("unauthorized"),
+      cannotReach: (endpoint) => copy("cannotReach", { endpoint }),
+      rateLimitError: copy("rateLimit"),
+      serverError: (s) => copy("serverError", { status: s }),
     },
   );
 
   const raw = await resp.text();
   const data = parseSearchJson<MetasoSearchResponse>(
     raw,
-    t("webErrors.metasoParseError", { status: resp.status }),
+    copy("parseError", { status: resp.status }),
   );
 
   if (data.code === 3003) {
-    throw new Error(t("webErrors.metasoDailyLimit"));
+    throw new Error(copy("dailyLimit"));
   }
   if (data.code === 2005) {
-    throw new Error(t("webErrors.metasoUnauthorized"));
+    throw new Error(copy("unauthorized"));
   }
   if (data.code && data.code !== 0) {
-    throw new Error(
-      t("webErrors.metasoApiError", { code: data.code, message: data.message ?? "" }),
-    );
+    throw new Error(copy("apiError", { code: data.code, message: data.message ?? "" }));
   }
 
   const webpages = data.webpages ?? [];
@@ -554,9 +560,10 @@ interface ZaiSearchResponse {
 }
 
 async function searchZai(query: string, opts: WebSearchOptions = {}): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
   const topK = Math.max(1, Math.min(50, opts.topK ?? DEFAULT_TOPK));
   const apiKey = loadZaiApiKey(opts.configPath);
-  if (!apiKey) throw new Error(t("webErrors.zaiMissingKey"));
+  if (!apiKey) throw new Error(copy("missingKey"));
 
   const resp = await fetchSearchApi(
     ZAI_WEB_SEARCH_ENDPOINT,
@@ -576,15 +583,16 @@ async function searchZai(query: string, opts: WebSearchOptions = {}): Promise<Se
     },
     opts.signal,
     {
-      authError: t("webErrors.zaiUnauthorized"),
-      rateLimitError: t("webErrors.zaiRateLimit"),
-      serverError: (status) => t("webErrors.zaiServerError", { status }),
+      authError: copy("unauthorized"),
+      cannotReach: (endpoint) => copy("cannotReach", { endpoint }),
+      rateLimitError: copy("rateLimit"),
+      serverError: (status) => copy("serverError", { status }),
     },
   );
 
   const data = parseSearchJson<ZaiSearchResponse>(
     await resp.text(),
-    t("webErrors.zaiParseError", { status: resp.status }),
+    copy("parseError", { status: resp.status }),
   );
   return (data.search_result ?? [])
     .filter((item) => typeof item.title === "string" && typeof item.link === "string")
@@ -608,9 +616,10 @@ interface BaiduSearchResponse {
 }
 
 async function searchBaidu(query: string, opts: WebSearchOptions = {}): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
   const topK = Math.max(1, Math.min(10, opts.topK ?? DEFAULT_TOPK));
   const apiKey = loadBaiduApiKey(opts.configPath);
-  if (!apiKey) throw new Error(t("webErrors.baiduMissingKey"));
+  if (!apiKey) throw new Error(copy("missingKey"));
 
   // fetchSearchApi classifies HTTP errors (401/403/429/5xx) BEFORE the JSON
   // parse below — error bodies are not JSON, so ordering matters.
@@ -629,16 +638,17 @@ async function searchBaidu(query: string, opts: WebSearchOptions = {}): Promise<
     },
     opts.signal,
     {
-      authError: t("webErrors.baiduUnauthorized"),
-      rateLimitError: t("webErrors.baiduRateLimit"),
-      serverError: (s) => t("webErrors.baiduServerError", { status: s }),
+      authError: copy("unauthorized"),
+      cannotReach: (endpoint) => copy("cannotReach", { endpoint }),
+      rateLimitError: copy("rateLimit"),
+      serverError: (s) => copy("serverError", { status: s }),
     },
   );
 
   const raw = await resp.text();
   const data = parseSearchJson<BaiduSearchResponse>(
     raw,
-    t("webErrors.baiduParseError", { status: resp.status }),
+    copy("parseError", { status: resp.status }),
   );
 
   return (data.references ?? [])
@@ -665,9 +675,10 @@ interface TavilySearchResponse {
 }
 
 async function searchTavily(query: string, opts: WebSearchOptions = {}): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
   const topK = Math.max(1, Math.min(20, opts.topK ?? DEFAULT_TOPK));
   const apiKey = loadTavilyApiKey();
-  if (!apiKey) throw new Error(t("webErrors.tavilyMissingKey"));
+  if (!apiKey) throw new Error(copy("missingKey"));
 
   const resp = await fetchSearchApi(
     TAVILY_ENDPOINT,
@@ -686,9 +697,10 @@ async function searchTavily(query: string, opts: WebSearchOptions = {}): Promise
     },
     opts.signal,
     {
-      authError: t("webErrors.tavilyUnauthorized"),
-      rateLimitError: t("webErrors.tavilyRateLimit"),
-      serverError: (s) => t("webErrors.tavilyServerError", { status: s }),
+      authError: copy("unauthorized"),
+      cannotReach: (endpoint) => copy("cannotReach", { endpoint }),
+      rateLimitError: copy("rateLimit"),
+      serverError: (s) => copy("serverError", { status: s }),
     },
   );
 
@@ -696,7 +708,7 @@ async function searchTavily(query: string, opts: WebSearchOptions = {}): Promise
   try {
     data = (await resp.json()) as TavilySearchResponse;
   } catch {
-    throw new Error(t("webErrors.tavilyParseError", { status: resp.status }));
+    throw new Error(copy("parseError", { status: resp.status }));
   }
 
   const results = data.results ?? [];
@@ -720,9 +732,10 @@ async function searchPerplexity(
   query: string,
   opts: WebSearchOptions = {},
 ): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
   const topK = Math.max(1, Math.min(20, opts.topK ?? DEFAULT_TOPK));
   const apiKey = loadPerplexityApiKey();
-  if (!apiKey) throw new Error(t("webErrors.perplexityMissingKey"));
+  if (!apiKey) throw new Error(copy("missingKey"));
 
   const resp = await fetchSearchApi(
     PERPLEXITY_ENDPOINT,
@@ -738,16 +751,17 @@ async function searchPerplexity(
     },
     opts.signal,
     {
-      authError: t("webErrors.perplexityUnauthorized"),
-      rateLimitError: t("webErrors.perplexityRateLimit"),
-      serverError: (s) => t("webErrors.perplexityServerError", { status: s }),
+      authError: copy("unauthorized"),
+      cannotReach: (endpoint) => copy("cannotReach", { endpoint }),
+      rateLimitError: copy("rateLimit"),
+      serverError: (s) => copy("serverError", { status: s }),
     },
   );
 
   const raw = await resp.text();
   const data = parseSearchJson<PerplexityResponse>(
     raw,
-    t("webErrors.perplexityParseError", { status: resp.status }),
+    copy("parseError", { status: resp.status }),
   );
 
   const answer = data.choices?.[0]?.message?.content ?? "";
@@ -780,9 +794,10 @@ interface ExaAnswerResponse {
 }
 
 async function searchExa(query: string, opts: WebSearchOptions = {}): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
   const topK = Math.max(1, Math.min(20, opts.topK ?? DEFAULT_TOPK));
   const apiKey = loadExaApiKey();
-  if (!apiKey) throw new Error(t("webErrors.exaMissingKey"));
+  if (!apiKey) throw new Error(copy("missingKey"));
 
   const resp = await fetchSearchApi(
     EXA_ENDPOINT,
@@ -793,17 +808,15 @@ async function searchExa(query: string, opts: WebSearchOptions = {}): Promise<Se
     },
     opts.signal,
     {
-      authError: t("webErrors.exaUnauthorized"),
-      rateLimitError: t("webErrors.exaRateLimit"),
-      serverError: (s) => t("webErrors.exaServerError", { status: s }),
+      authError: copy("unauthorized"),
+      cannotReach: (endpoint) => copy("cannotReach", { endpoint }),
+      rateLimitError: copy("rateLimit"),
+      serverError: (s) => copy("serverError", { status: s }),
     },
   );
 
   const raw = await resp.text();
-  const data = parseSearchJson<ExaAnswerResponse>(
-    raw,
-    t("webErrors.exaParseError", { status: resp.status }),
-  );
+  const data = parseSearchJson<ExaAnswerResponse>(raw, copy("parseError", { status: resp.status }));
 
   return toAnswerFirstResults(
     data.answer ?? "",
@@ -823,13 +836,10 @@ interface OllamaSearchResponse {
 }
 
 async function searchOllama(query: string, opts: WebSearchOptions = {}): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
   const topK = Math.max(1, Math.min(10, opts.topK ?? DEFAULT_TOPK));
   const apiKey = loadOllamaApiKey(opts.configPath);
-  if (!apiKey) {
-    throw new Error(
-      "web_search: Ollama web search requires an API key: set OLLAMA_API_KEY or `ollamaApiKey` in ~/.reasonix/config.json.",
-    );
-  }
+  if (!apiKey) throw new Error(copy("missingKey"));
 
   const resp = await fetchSearchApi(
     OLLAMA_WEB_SEARCH_ENDPOINT,
@@ -844,9 +854,10 @@ async function searchOllama(query: string, opts: WebSearchOptions = {}): Promise
     },
     opts.signal,
     {
-      authError: "web_search: Ollama API key rejected: check OLLAMA_API_KEY.",
-      rateLimitError: "web_search: Ollama web search is rate-limited or quota-limited.",
-      serverError: (s) => `web_search: Ollama web search returned HTTP ${s}.`,
+      authError: copy("unauthorized"),
+      cannotReach: (endpoint) => copy("cannotReach", { endpoint }),
+      rateLimitError: copy("rateLimit"),
+      serverError: (s) => copy("serverError", { status: s }),
     },
   );
 
@@ -854,7 +865,7 @@ async function searchOllama(query: string, opts: WebSearchOptions = {}): Promise
   try {
     data = (await resp.json()) as OllamaSearchResponse;
   } catch {
-    throw new Error(`web_search: Ollama returned unparseable response (HTTP ${resp.status}).`);
+    throw new Error(copy("parseError", { status: resp.status }));
   }
 
   return (data.results ?? []).slice(0, topK).map((r, i) => ({
@@ -862,6 +873,105 @@ async function searchOllama(query: string, opts: WebSearchOptions = {}): Promise
     url: r.url || "",
     snippet: r.content ?? "",
   }));
+}
+
+interface DeepseekSearchItem {
+  title?: string;
+  url?: string;
+  snippet?: string;
+  summary?: string;
+}
+
+interface DeepseekSearchResponse {
+  results?: DeepseekSearchItem[];
+}
+
+/** DeepSeek's own Search API: a plain JSON endpoint with ranked results, unlike the
+ *  hosted model-tool searches other providers expose. */
+async function searchDeepseek(query: string, opts: WebSearchOptions = {}): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
+  const topK = Math.max(1, Math.min(50, opts.topK ?? DEFAULT_TOPK));
+  const apiKey = loadDeepseekApiKey(opts.configPath);
+  if (!apiKey) throw new Error(copy("missingKey"));
+
+  const resp = await fetchSearchApi(
+    DEEPSEEK_SEARCH_ENDPOINT,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        query: sliceAlignedToCodepoint(query, DEEPSEEK_MAX_QUERY_CHARS),
+        count: topK,
+        need_content: false,
+      }),
+    },
+    opts.signal,
+    {
+      authError: copy("unauthorized"),
+      cannotReach: (endpoint) => copy("cannotReach", { endpoint }),
+      rateLimitError: copy("rateLimit"),
+      serverError: (s) => copy("serverError", { status: s }),
+    },
+  );
+
+  const data = parseSearchJson<DeepseekSearchResponse>(
+    await resp.text(),
+    copy("parseError", { status: resp.status }),
+  );
+
+  return (data.results ?? [])
+    .filter((r) => typeof r.title === "string" && typeof r.url === "string")
+    .slice(0, topK)
+    .map((r) => ({
+      title: r.title!,
+      url: r.url!,
+      snippet: r.snippet ?? r.summary ?? "",
+    }));
+}
+
+interface DeepseekFetchResponse {
+  title?: string;
+  content?: string;
+}
+
+/** DeepSeek's Fetch API returns the page as Markdown, so no HTML sniffing here. */
+async function webFetchDeepseek(
+  url: string,
+  opts: WebFetchOptions,
+  copy: EngineCopy,
+): Promise<PageContent & { links?: string[] }> {
+  const apiKey = loadDeepseekApiKey(opts.configPath);
+  if (!apiKey) throw new Error(copy("fetchMissingKey"));
+  return fetchEnginePage(url, {
+    endpoint: DEEPSEEK_FETCH_ENDPOINT,
+    apiKey,
+    copy,
+    maxChars: opts.maxChars ?? DEFAULT_FETCH_MAX_CHARS,
+    timeoutMs: opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
+    signal: opts.signal,
+  });
+}
+
+/** Local, key-less search through a Playwright-managed browser; the engine's own JSON
+ *  names which build to drive, so adding a browser is a declaration, not a branch. */
+async function searchPlaywright(
+  query: string,
+  opts: WebSearchOptions = {},
+): Promise<SearchResult[]> {
+  const browser = specFor(opts)?.browser;
+  if (!browser) throw new Error(`web_search: engine "${opts.engine}" declares no browser`);
+  const topK = Math.max(1, Math.min(10, opts.topK ?? DEFAULT_TOPK));
+  return searchWithBrowser(query, {
+    browser,
+    copy: copyFor(opts),
+    parse: parseBingResults,
+    topK,
+    signal: opts.signal,
+  });
 }
 
 interface BraveWebResult {
@@ -877,9 +987,10 @@ interface BraveSearchResponse {
 }
 
 async function searchBrave(query: string, opts: WebSearchOptions = {}): Promise<SearchResult[]> {
+  const copy = copyFor(opts);
   const topK = Math.max(1, Math.min(20, opts.topK ?? DEFAULT_TOPK));
   const apiKey = loadBraveApiKey(opts.configPath);
-  if (!apiKey) throw new Error(t("webErrors.braveMissingKey"));
+  if (!apiKey) throw new Error(copy("missingKey"));
 
   const url = `${BRAVE_ENDPOINT}?q=${encodeURIComponent(query)}&count=${topK}`;
 
@@ -894,16 +1005,17 @@ async function searchBrave(query: string, opts: WebSearchOptions = {}): Promise<
     },
     opts.signal,
     {
-      authError: t("webErrors.braveUnauthorized"),
-      rateLimitError: t("webErrors.braveRateLimit"),
-      serverError: (s) => t("webErrors.braveServerError", { status: s }),
+      authError: copy("unauthorized"),
+      cannotReach: (endpoint) => copy("cannotReach", { endpoint }),
+      rateLimitError: copy("rateLimit"),
+      serverError: (s) => copy("serverError", { status: s }),
     },
   );
 
   const raw = await resp.text();
   const data = parseSearchJson<BraveSearchResponse>(
     raw,
-    t("webErrors.braveParseError", { status: resp.status }),
+    copy("parseError", { status: resp.status }),
   );
 
   const results = data.web?.results ?? [];
@@ -914,79 +1026,110 @@ async function searchBrave(query: string, opts: WebSearchOptions = {}): Promise<
   }));
 }
 
-interface OllamaFetchResponse {
+interface EngineFetchPage {
   title?: string;
   content?: string;
   links?: string[];
 }
 
-async function webFetchOllama(
-  url: string,
-  opts: WebFetchOptions = {},
-): Promise<PageContent & { links?: string[] }> {
-  const apiKey = loadOllamaApiKey(opts.configPath);
-  if (!apiKey) {
-    throw new Error(
-      "web_fetch: Ollama web fetch requires an API key: set OLLAMA_API_KEY or `ollamaApiKey` in ~/.reasonix/config.json.",
-    );
-  }
+/** The shape every engine-owned fetch API shares: POST `{url}`, bearer auth, and a
+ *  JSON page back. One implementation so both (and the next one) map errors identically. */
+interface EngineFetchRequest {
+  endpoint: string;
+  apiKey: string;
+  copy: EngineCopy;
+  maxChars: number;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}
 
+async function fetchEnginePage(
+  url: string,
+  request: EngineFetchRequest,
+): Promise<PageContent & { links?: string[] }> {
   const ctrl = new AbortController();
-  const timeout = setTimeout(
-    () =>
-      ctrl.abort(
-        new Error(
-          t("webErrors.fetchTimeout", { ms: opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS, url }),
-        ),
-      ),
-    opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
-  );
-  const signal = opts.signal ? AbortSignal.any([opts.signal, ctrl.signal]) : ctrl.signal;
+  const timer = setTimeout(() => ctrl.abort(), request.timeoutMs);
+  const signal = request.signal ? AbortSignal.any([request.signal, ctrl.signal]) : ctrl.signal;
 
   let resp: Response;
   try {
-    resp = await fetch(OLLAMA_WEB_FETCH_ENDPOINT, {
+    resp = await fetch(request.endpoint, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${request.apiKey}`,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
       body: JSON.stringify({ url }),
       signal,
     });
+  } catch (err) {
+    if (request.signal?.aborted) throw err;
+    if (ctrl.signal.aborted) {
+      throw new Error(t("webErrors.fetchTimeout", { ms: request.timeoutMs, url }));
+    }
+    throw err;
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(timer);
   }
 
   if (!resp.ok) {
-    if (resp.status === 401 || resp.status === 403) {
-      throw new Error("web_fetch: Ollama API key rejected: check OLLAMA_API_KEY.");
-    }
-    if (resp.status === 429) {
-      throw new Error("web_fetch: Ollama web fetch is rate-limited or quota-limited.");
-    }
-    throw new Error(`web_fetch: Ollama web fetch returned HTTP ${resp.status} for ${url}.`);
+    if (resp.status === 401 || resp.status === 403)
+      throw new Error(request.copy("fetchUnauthorized"));
+    if (resp.status === 429) throw new Error(request.copy("fetchRateLimit"));
+    throw new Error(request.copy("fetchServerError", { status: resp.status, url }));
   }
 
-  let data: OllamaFetchResponse;
+  let data: EngineFetchPage;
   try {
-    data = (await resp.json()) as OllamaFetchResponse;
+    data = (await resp.json()) as EngineFetchPage;
   } catch {
-    throw new Error(`web_fetch: Ollama returned unparseable response for ${url}.`);
+    throw new Error(request.copy("fetchParseError", { url }));
   }
 
-  const maxChars = opts.maxChars ?? DEFAULT_FETCH_MAX_CHARS;
   const text = data.content ?? "";
   return {
     url,
     title: data.title,
-    text: text.length > maxChars ? text.slice(0, maxChars) : text,
-    truncated: text.length > maxChars,
+    text: text.length > request.maxChars ? text.slice(0, request.maxChars) : text,
+    truncated: text.length > request.maxChars,
     links: data.links,
   };
 }
 
+async function webFetchOllama(
+  url: string,
+  opts: WebFetchOptions,
+  copy: EngineCopy,
+): Promise<PageContent & { links?: string[] }> {
+  const apiKey = loadOllamaApiKey(opts.configPath);
+  if (!apiKey) throw new Error(copy("fetchMissingKey"));
+  return fetchEnginePage(url, {
+    endpoint: OLLAMA_WEB_FETCH_ENDPOINT,
+    apiKey,
+    copy,
+    maxChars: opts.maxChars ?? DEFAULT_FETCH_MAX_CHARS,
+    timeoutMs: opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
+    signal: opts.signal,
+  });
+}
+
+/** `web_fetch` transport per declared fetch strategy. A strategy this map lacks is a
+ *  declaration error, reported rather than silently served by the generic fetch. */
+type FetchTransport = (
+  url: string,
+  opts: WebFetchOptions,
+  copy: EngineCopy,
+) => Promise<PageContent & { links?: string[] }>;
+
+const FETCH_TRANSPORTS: ReadonlyMap<SearchEngineFetchStrategy, FetchTransport> = new Map<
+  SearchEngineFetchStrategy,
+  FetchTransport
+>([
+  ["http", (url: string, opts: WebFetchOptions) => webFetch(url, opts)],
+  ["ollama", (url, opts, copy) => webFetchOllama(url, opts, copy)],
+  ["deepseek", (url, opts, copy) => webFetchDeepseek(url, opts, copy)],
+]);
 /** Parse SearXNG HTML search results using node-html-parser. */
 export function parseSearxngHtmlResults(html: string): SearchResult[] {
   const root = parseHtml(html);
@@ -1328,19 +1471,23 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
       }
       // Read at call time, not registration time — the engine setting mutates config mid-session (#1309).
       const engine = loadWebSearchEngine(opts.configPath);
-      if (engine === "ollama") {
-        const page = await webFetchOllama(args.url, {
-          maxChars: maxFetchChars,
-          signal: ctx?.signal,
-          configPath: opts.configPath,
-        });
-        const header = page.title ? `${page.title}\n${page.url}` : page.url;
-        const links = page.links?.length ? `\n\nlinks:\n${page.links.join("\n")}` : "";
-        return `engine: ${engine}\n\n${header}\n\n${page.text}${links}`;
+      const spec = engine ? searchEngineSpec(engine) : undefined;
+      if (!spec) throw new Error(NO_ENGINE_MESSAGE);
+      // Declared, not branched: an engine that owns a fetch API names it in its JSON.
+      const transport = FETCH_TRANSPORTS.get(spec.fetchStrategy);
+      if (!transport) {
+        throw new Error(
+          `web_fetch: engine "${spec.id}" declares fetchStrategy "${spec.fetchStrategy}"`,
+        );
       }
-      const page = await webFetch(args.url, { maxChars: maxFetchChars, signal: ctx?.signal });
+      const page = await transport(
+        args.url,
+        { maxChars: maxFetchChars, signal: ctx?.signal, configPath: opts.configPath },
+        copyFor({ engine: spec.id as WebSearchEngineName }),
+      );
       const header = page.title ? `${page.title}\n${page.url}` : page.url;
-      return `engine: ${engine}\n\n${header}\n\n${page.text}`;
+      const links = page.links?.length ? `\n\nlinks:\n${page.links.join("\n")}` : "";
+      return `engine: ${engine}\n\n${header}\n\n${page.text}${links}`;
     },
   });
 

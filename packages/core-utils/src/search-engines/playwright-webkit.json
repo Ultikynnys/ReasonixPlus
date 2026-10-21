@@ -1,0 +1,11 @@
+{
+  "id": "playwright-webkit",
+  "label": "WebKit (Playwright)",
+  "description": "Local: drives the Playwright-managed WebKit build. No key, no service.",
+  "order": 14,
+  "kind": "keyless",
+  "strategy": "playwright",
+  "browser": "webkit",
+  "extends": "playwright-chromium",
+  "settings": []
+}

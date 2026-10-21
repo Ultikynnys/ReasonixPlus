@@ -1,0 +1,24 @@
+{
+  "id": "deepseek",
+  "label": "DeepSeek",
+  "description": "DeepSeek's in-house search engine, with its own Fetch API.",
+  "order": 11,
+  "kind": "shared",
+  "strategy": "deepseek",
+  "fetchStrategy": "deepseek",
+  "errors": {
+    "cannotReach": "web_search: Cannot reach the DeepSeek search endpoint {endpoint} \u2014 try: check your network or proxy, then retry, or switch engines in Settings (General page).",
+    "missingKey": "web_search: DeepSeek web search requires an API key \u2014 set DEEPSEEK_API_KEY or configure the DeepSeek provider key. Get one at https://platform.deepseek.com/api_keys",
+    "unauthorized": "web_search: DeepSeek API key rejected \u2014 check DEEPSEEK_API_KEY or the DeepSeek provider key.",
+    "rateLimit": "web_search: DeepSeek web search is rate-limited or quota-limited \u2014 wait and retry, or check your DeepSeek billing.",
+    "serverError": "web_search: DeepSeek web search server error ({status}) \u2014 try again later, or switch engines in Settings (General page).",
+    "parseError": "web_search: DeepSeek returned unparseable response (HTTP {status}) \u2014 try again later",
+    "fetchMissingKey": "web_fetch: DeepSeek web fetch requires an API key \u2014 set DEEPSEEK_API_KEY or configure the DeepSeek provider key.",
+    "fetchUnauthorized": "web_fetch: DeepSeek API key rejected \u2014 check DEEPSEEK_API_KEY or the DeepSeek provider key.",
+    "fetchRateLimit": "web_fetch: DeepSeek web fetch is rate-limited or quota-limited \u2014 wait and retry, or check your DeepSeek billing.",
+    "fetchServerError": "web_fetch: DeepSeek web fetch server error ({status}) for {url} \u2014 try again later.",
+    "fetchParseError": "web_fetch: DeepSeek returned unparseable response for {url}."
+  },
+  "sharedCredential": { "provider": "deepseek", "key": "apiKey" },
+  "settings": []
+}

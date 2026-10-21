@@ -16,6 +16,10 @@ const KEYS = new Set([
   "quotaTitle",
   "quotaDualTitle",
   "quotaFiveHourTitle",
+  "quotaWeeklyTitle",
+  "quotaMonthlyTitle",
+  "quotaPlanTitle",
+  "creditTitle",
   "quotaNoData",
   "quotaNoDataUnavailable",
   "quotaTurnTitle",
@@ -61,6 +65,7 @@ const PLACEHOLDERS = new Set([
   "weekly",
   "rolling",
   "monthly",
+  "credit",
   "pct",
 ]);
 

@@ -1,11 +1,9 @@
 /** Xiaomi MiMo subscription usage. The console API needs web-session cookies
  *  (a separate credential), so this defaults to `unsupported` and never guesses. */
 
-import type { MiMoQuota } from "@reasonix/core-utils";
+import { type MiMoQuota, providerSpec } from "@reasonix/core-utils";
+import { fetchQuotaJson, usageUrls } from "./desktop/quota.js";
 import { mimoPlatform } from "./mimo-auth.js";
-
-/** Console usage path (relative to the platform origin). */
-export const MIMO_CONSOLE_USAGE_PATH = "/api/v1/tokenPlan/usage";
 
 export interface MiMoConsoleSession {
   /** `api-platform_serviceToken` cookie value. */
@@ -23,8 +21,10 @@ export function readMiMoConsoleSession(): MiMoConsoleSession | undefined {
   return { serviceToken, userId };
 }
 
-export function mimoConsoleUsageUrl(platform: string = mimoPlatform()): string {
-  return `${platform.replace(/\/+$/, "")}${MIMO_CONSOLE_USAGE_PATH}`;
+/** The console usage address on the platform origin, as the provider declares it. */
+export function mimoConsoleUsageUrl(platform: string = mimoPlatform()): string | undefined {
+  const [url] = usageUrls(providerSpec("mimo"), platform);
+  return url;
 }
 
 function num(v: unknown): number | undefined {
@@ -69,25 +69,31 @@ export async function fetchMiMoQuota(
   opts: { platform?: string; timeoutMs?: number; fetchImpl?: typeof fetch } = {},
 ): Promise<MiMoQuota> {
   if (!session) return { status: "unsupported", source: "none", reason: "no-console-session" };
-  const doFetch = opts.fetchImpl ?? fetch;
-  try {
-    const resp = await doFetch(mimoConsoleUsageUrl(opts.platform), {
-      method: "GET",
+  const url = mimoConsoleUsageUrl(opts.platform);
+  if (!url) return { status: "error", source: "console", reason: "no-usage-url" };
+  const reply = await fetchQuotaJson(
+    {
+      urls: [url],
       headers: {
-        Accept: "application/json",
         Cookie: `api-platform_serviceToken=${session.serviceToken}; userId=${session.userId}`,
       },
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
-    });
-    if (resp.status === 401 || resp.status === 403) {
+      timeoutMs: opts.timeoutMs,
+    },
+    opts.fetchImpl ?? fetch,
+  );
+  if (!reply.ok) {
+    if (reply.status === 401 || reply.status === 403) {
       return { status: "authentication_required", source: "console", reason: "console-auth" };
     }
-    if (!resp.ok) return { status: "error", source: "console", reason: `console-${resp.status}` };
-    const data = (await resp.json()) as Record<string, unknown>;
-    const parsed = parseMiMoUsage(data);
-    if (!parsed) return { status: "error", source: "console", reason: "unexpected-payload" };
-    return { status: "available", source: "console", ...parsed };
-  } catch {
-    return { status: "error", source: "console", reason: "network" };
+    if (reply.status)
+      return { status: "error", source: "console", reason: `console-${reply.status}` };
+    return { status: "error", source: "console", reason: reply.reason };
   }
+  const data = (reply.body && typeof reply.body === "object" ? reply.body : {}) as Record<
+    string,
+    unknown
+  >;
+  const parsed = parseMiMoUsage(data);
+  if (!parsed) return { status: "error", source: "console", reason: "unexpected-payload" };
+  return { status: "available", source: "console", ...parsed };
 }

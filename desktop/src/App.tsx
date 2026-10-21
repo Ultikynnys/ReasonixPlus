@@ -60,10 +60,8 @@ import {
 } from "./notifications";
 import { planLabelsBySession } from "./plan-labels";
 import {
-  type AntigravityQuota,
   type CheckpointVerdict,
   type ChoiceVerdict,
-  type CodexQuota,
   type ConfirmationChoice,
   type FeedbackCueId,
   type FeedbackCueSettings,
@@ -78,8 +76,6 @@ import {
   type McpSpecInfo,
   type MemoryDetail,
   type MemoryEntryInfo,
-  type OllamaQuota,
-  type OpencodeQuota,
   type OutgoingCommand,
   type PersistedNotice,
   type PlanStep,
@@ -88,6 +84,7 @@ import {
   type PlaywrightExtensionBrowser,
   type PlaywrightManagedBrowser,
   type PlaywrightMcpConnectionMode,
+  type ProviderUsage,
   type RevisionVerdict,
   type SessionEventRecord,
   type SettingsPatch,
@@ -96,7 +93,6 @@ import {
   type SubagentProgressEvent,
   type TurnOutcome,
   type UserImageAttachment,
-  type ZaiQuota,
   allQuickSends,
   resolveActiveQuickSend,
   rpcSend,
@@ -572,35 +568,16 @@ type State = {
   workspaceInitializationRevision: number;
   settings: Settings | null;
   balance: Balance | null;
-  codexQuota: CodexQuota | null;
-  /** True between a statusbar chip click and the $codex_quota reply — the chip shows a refresh indicator. */
-  codexQuotaRefreshing: boolean;
-  /** Why the last quota fetch produced no data — shown in the chip tooltip. */
-  codexQuotaReason: string | null;
-  /** Cloud Ollama usage (session + weekly windows) for Ollama-provider tabs. */
-  ollamaQuota: OllamaQuota | null;
-  /** True between a statusbar chip click and the $ollama_quota reply. */
-  ollamaQuotaRefreshing: boolean;
-  /** Why the last Ollama usage fetch produced no data — shown in the chip tooltip. */
-  ollamaQuotaReason: string | null;
-  /** Google Antigravity (Gemini Code Assist) plan + per-model usage. */
-  antigravityQuota: AntigravityQuota | null;
-  /** True between a statusbar chip click and the $antigravity_quota reply. */
-  antigravityQuotaRefreshing: boolean;
-  /** Why the last Antigravity quota fetch produced no data — shown in the chip tooltip. */
-  antigravityQuotaReason: string | null;
-  /** Z.AI GLM Coding Plan usage (5-hour + weekly) for zai-provider tabs. */
-  zaiQuota: ZaiQuota | null;
-  /** True between a statusbar chip click and the $zai_quota reply. */
-  zaiQuotaRefreshing: boolean;
-  /** Why the last Z.AI usage fetch produced no data — shown in the chip tooltip. */
-  zaiQuotaReason: string | null;
-  /** OpenCode Go plan usage (5-hour + weekly + monthly) for opencode-provider tabs. */
-  opencodeQuota: OpencodeQuota | null;
-  /** True between a statusbar chip click and the $opencode_quota reply. */
-  opencodeQuotaRefreshing: boolean;
-  /** Why the last OpenCode usage fetch produced no data — shown in the chip tooltip. */
-  opencodeQuotaReason: string | null;
+  /** Plan usage for this tab's provider, normalized by the daemon. One slot for
+   *  every provider: which probe fills it comes from the declaration. */
+  planUsage: ProviderUsage | null;
+  /** True between a statusbar chip click and the $usage reply — the chip shows a
+   *  refresh indicator. */
+  planUsageRefreshing: boolean;
+  /** Why the last usage read produced no data — shown in the chip tooltip. */
+  planUsageReason: string | null;
+  /** The reason means "not configured yet", so the tooltip asks for setup. */
+  planUsageNeedsSetup: boolean;
   mentionResults: MentionResults | null;
   mentionPreview: MentionPreviewState | null;
   mcpSpecs: McpSpecInfo[];
@@ -694,11 +671,7 @@ type Action =
   | { t: "antigravity_oauth_waiting"; waiting: boolean }
   | { t: "opencode_oauth_waiting"; waiting: boolean }
   | { t: "mimo_oauth_waiting"; waiting: boolean }
-  | { t: "codex_quota_refreshing" }
-  | { t: "ollama_quota_refreshing" }
-  | { t: "antigravity_quota_refreshing" }
-  | { t: "zai_quota_refreshing" }
-  | { t: "opencode_quota_refreshing" }
+  | { t: "plan_usage_refreshing" }
   | { t: "release_stale_send" }
   | { t: "push_notice"; text: string; severity?: NoticeSeverity };
 
@@ -1245,16 +1218,8 @@ export function reduceAction(state: State, action: Action): State {
       return { ...state, opencodeOAuthWaiting: action.waiting };
     case "mimo_oauth_waiting":
       return { ...state, mimoOAuthWaiting: action.waiting };
-    case "codex_quota_refreshing":
-      return { ...state, codexQuotaRefreshing: true };
-    case "ollama_quota_refreshing":
-      return { ...state, ollamaQuotaRefreshing: true };
-    case "antigravity_quota_refreshing":
-      return { ...state, antigravityQuotaRefreshing: true };
-    case "zai_quota_refreshing":
-      return { ...state, zaiQuotaRefreshing: true };
-    case "opencode_quota_refreshing":
-      return { ...state, opencodeQuotaRefreshing: true };
+    case "plan_usage_refreshing":
+      return { ...state, planUsageRefreshing: true };
     case "batch_delta": {
       const collapsed: DeltaBatchItem[] = [];
       for (const item of action.items) {
@@ -2619,40 +2584,13 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           infos: ev.balanceInfos ?? [],
         },
       };
-    case "$codex_quota":
+    case "$usage":
       return {
         ...state,
-        codexQuota: ev.quota,
-        codexQuotaReason: ev.reason ?? null,
-        codexQuotaRefreshing: false,
-      };
-    case "$ollama_quota":
-      return {
-        ...state,
-        ollamaQuota: ev.quota,
-        ollamaQuotaReason: ev.reason ?? null,
-        ollamaQuotaRefreshing: false,
-      };
-    case "$antigravity_quota":
-      return {
-        ...state,
-        antigravityQuota: ev.quota,
-        antigravityQuotaReason: ev.reason ?? null,
-        antigravityQuotaRefreshing: false,
-      };
-    case "$zai_quota":
-      return {
-        ...state,
-        zaiQuota: ev.quota,
-        zaiQuotaReason: ev.reason ?? null,
-        zaiQuotaRefreshing: false,
-      };
-    case "$opencode_quota":
-      return {
-        ...state,
-        opencodeQuota: ev.quota,
-        opencodeQuotaReason: ev.reason ?? null,
-        opencodeQuotaRefreshing: false,
+        planUsage: ev.usage,
+        planUsageReason: ev.reason ?? null,
+        planUsageNeedsSetup: ev.needsSetup ?? false,
+        planUsageRefreshing: false,
       };
     case "$settings": {
       const prevWs = state.settings?.workspaceDir;
@@ -2747,14 +2685,12 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           : state.antigravityOAuthWaiting,
         opencodeOAuthWaiting: ev.opencodeOAuth?.signedIn ? false : state.opencodeOAuthWaiting,
         mimoOAuthWaiting: ev.mimoOAuth?.signedIn ? false : state.mimoOAuthWaiting,
-        // Quota is only meaningful while its provider's models are active —
-        // drop stale numbers the moment the daemon-resolved provider changes.
-        // The provider comes from the resolved endpoint, never the model name.
-        codexQuota: ev.modelEndpoint?.provider === "openai" ? state.codexQuota : null,
-        ollamaQuota: ev.modelEndpoint?.provider === "ollama" ? state.ollamaQuota : null,
-        antigravityQuota: ev.modelEndpoint?.provider === "gemini" ? state.antigravityQuota : null,
-        // Only a Go model has Go plan windows; drop stale numbers for free/paid Zen.
-        opencodeQuota: ev.modelEndpoint?.opencodePlan === "go" ? state.opencodeQuota : null,
+        // Usage is only meaningful for the provider it was read from — drop stale
+        // numbers the moment the daemon-resolved provider changes.
+        planUsage:
+          ev.modelEndpoint?.provider === state.settings?.modelEndpoint?.provider
+            ? state.planUsage
+            : null,
       };
     }
     case "$session_bound": {
@@ -3582,21 +3518,10 @@ const TabRuntime = memo(function TabRuntime({
     workspaceInitializationRevision: 0,
     settings: null,
     balance: null,
-    codexQuota: null,
-    codexQuotaRefreshing: false,
-    codexQuotaReason: null,
-    ollamaQuota: null,
-    ollamaQuotaRefreshing: false,
-    ollamaQuotaReason: null,
-    antigravityQuota: null,
-    antigravityQuotaRefreshing: false,
-    antigravityQuotaReason: null,
-    zaiQuota: null,
-    zaiQuotaRefreshing: false,
-    zaiQuotaReason: null,
-    opencodeQuota: null,
-    opencodeQuotaRefreshing: false,
-    opencodeQuotaReason: null,
+    planUsage: null,
+    planUsageRefreshing: false,
+    planUsageReason: null,
+    planUsageNeedsSetup: false,
     mentionResults: null,
     mentionPreview: null,
     mcpSpecs: [],
@@ -3800,25 +3725,9 @@ const TabRuntime = memo(function TabRuntime({
     },
     [dispatch, flushSettings],
   );
-  const refreshCodexQuota = useCallback(() => {
-    dispatch({ t: "codex_quota_refreshing" });
-    sendRpc({ cmd: "codex_quota_get" });
-  }, [sendRpc]);
-  const refreshOllamaQuota = useCallback(() => {
-    dispatch({ t: "ollama_quota_refreshing" });
-    sendRpc({ cmd: "ollama_quota_get" });
-  }, [sendRpc]);
-  const refreshAntigravityQuota = useCallback(() => {
-    dispatch({ t: "antigravity_quota_refreshing" });
-    sendRpc({ cmd: "antigravity_quota_get" });
-  }, [sendRpc]);
-  const refreshZaiQuota = useCallback(() => {
-    dispatch({ t: "zai_quota_refreshing" });
-    sendRpc({ cmd: "zai_quota_get" });
-  }, [sendRpc]);
-  const refreshOpencodeQuota = useCallback(() => {
-    dispatch({ t: "opencode_quota_refreshing" });
-    sendRpc({ cmd: "opencode_quota_get" });
+  const refreshUsage = useCallback(() => {
+    dispatch({ t: "plan_usage_refreshing" });
+    sendRpc({ cmd: "funds_refresh" });
   }, [sendRpc]);
   // Fetch the Ollama catalog whenever the tab's model is an Ollama model — the
   // composer menu and the Models settings page render the fetched list. The
@@ -5457,27 +5366,11 @@ const TabRuntime = memo(function TabRuntime({
         <MemoStatusBar
           settings={view.settings}
           balance={view.balance}
-          codexQuota={view.codexQuota}
-          codexQuotaRefreshing={view.codexQuotaRefreshing}
-          codexQuotaReason={view.codexQuotaReason}
-          onRefreshCodexQuota={refreshCodexQuota}
-          ollamaQuota={view.ollamaQuota}
-          ollamaQuotaRefreshing={view.ollamaQuotaRefreshing}
-          ollamaQuotaReason={view.ollamaQuotaReason}
-          onRefreshOllamaQuota={refreshOllamaQuota}
-          ollamaPlan={ollamaPlan}
-          antigravityQuota={view.antigravityQuota}
-          antigravityQuotaRefreshing={view.antigravityQuotaRefreshing}
-          antigravityQuotaReason={view.antigravityQuotaReason}
-          onRefreshAntigravityQuota={refreshAntigravityQuota}
-          zaiQuota={view.zaiQuota}
-          zaiQuotaRefreshing={view.zaiQuotaRefreshing}
-          zaiQuotaReason={view.zaiQuotaReason}
-          onRefreshZaiQuota={refreshZaiQuota}
-          opencodeQuota={view.opencodeQuota}
-          opencodeQuotaRefreshing={view.opencodeQuotaRefreshing}
-          opencodeQuotaReason={view.opencodeQuotaReason}
-          onRefreshOpencodeQuota={refreshOpencodeQuota}
+          planUsage={view.planUsage}
+          planUsageRefreshing={view.planUsageRefreshing}
+          planUsageReason={view.planUsageReason}
+          planUsageNeedsSetup={view.planUsageNeedsSetup}
+          onRefreshPlanUsage={refreshUsage}
           usage={view.usage}
           busy={view.busy}
           ready={view.ready}

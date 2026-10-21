@@ -5,7 +5,20 @@
   "order": 9,
   "kind": "shared",
   "strategy": "ollama",
-  "fallback": false,
+  "fetchStrategy": "ollama",
+  "errors": {
+    "cannotReach": "web_search: cannot reach the Ollama endpoint {endpoint} \u2014 try: check your network or proxy, then retry, or switch engines in Settings (General page).",
+    "missingKey": "web_search: Ollama web search requires an API key: set OLLAMA_API_KEY or `ollamaApiKey` in ~/.reasonix/config.json.",
+    "unauthorized": "web_search: Ollama API key rejected: check OLLAMA_API_KEY.",
+    "rateLimit": "web_search: Ollama web search is rate-limited or quota-limited.",
+    "serverError": "web_search: Ollama web search returned HTTP {status}.",
+    "parseError": "web_search: Ollama returned unparseable response (HTTP {status}).",
+    "fetchMissingKey": "web_fetch: Ollama web fetch requires an API key: set OLLAMA_API_KEY or `ollamaApiKey` in ~/.reasonix/config.json.",
+    "fetchUnauthorized": "web_fetch: Ollama API key rejected: check OLLAMA_API_KEY.",
+    "fetchRateLimit": "web_fetch: Ollama web fetch is rate-limited or quota-limited.",
+    "fetchServerError": "web_fetch: Ollama web fetch returned HTTP {status} for {url}.",
+    "fetchParseError": "web_fetch: Ollama returned unparseable response for {url}."
+  },
   "sharedCredential": { "provider": "ollama", "key": "apiKey" },
   "settings": []
 }

@@ -5,6 +5,14 @@
   "order": 0,
   "kind": "keyless",
   "strategy": "bing-html",
-  "fallback": true,
+  "errors": {
+    "status": "web_search {status} \u2014 try: the search backend returned an error; rephrase the query, or switch engines in Settings (General page).",
+    "rateLimit": "web_search 429 \u2014 try: wait 10s before retrying, or rephrase the query; the search backend is rate-limiting this client",
+    "forbidden": "web_search 403 \u2014 try: the search backend is blocking this client; switch engines in Settings (General page), or wait and retry later.",
+    "serverError": "web_search {status} \u2014 try: open the search URL in a browser; if it loads this is transient and a retry in 30s may help",
+    "cannotReach": "web_search: Cannot reach the Bing endpoint at {endpoint} \u2014 try: check your network or proxy, then retry, or switch engines in Settings (General page).",
+    "blocked": "web_search: Bing anti-bot page \u2014 rate-limited or blocked \u2014 try: wait 30s and retry, or switch engines in Settings (General page).",
+    "noResults": "web_search: 0 results but response doesn't look like a real empty page ({chars} chars, first 120: {preview}) \u2014 try: rephrase the query with simpler terms, or switch engines in Settings (General page)."
+  },
   "settings": []
 }

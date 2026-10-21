@@ -28,13 +28,13 @@ import {
   toApprovalPrompt,
 } from "@reasonix/core-utils";
 import type {
-  AntigravityQuotaEvent,
+  AntigravityQuota,
   BalanceEvent,
   BtwResultEvent,
   ChangelogEvent,
   CheckpointRequiredEvent,
   ChoiceRequiredEvent,
-  CodexQuotaEvent,
+  CodexQuota,
   ConfirmRequiredEvent,
   CtxBreakdownEvent,
   DesktopDiagnosticEvent,
@@ -61,9 +61,8 @@ import type {
   ModelEndpointInfo,
   NeedsSetupEvent,
   OllamaModelsEvent,
-  OllamaQuotaEvent,
   OpencodeModelsEvent,
-  OpencodeQuotaEvent,
+  OpencodeQuota,
   PathAccessRequiredEvent,
   PlanClearedEvent,
   PlanHistoryItem,
@@ -92,7 +91,6 @@ import type {
   UserImageAttachment,
   WorkspaceInitializedEvent,
   ZaiQuota,
-  ZaiQuotaEvent,
   ZaiQuotaWindow,
 } from "@reasonix/core-utils";
 import {
@@ -254,6 +252,16 @@ import {
   writeMemoryEntry,
 } from "../../desktop/memory-browser.js";
 import { toPlanHistoryItems } from "../../desktop/plan-listing.js";
+import {
+  type QuotaCoordinator,
+  type QuotaOutcome,
+  fetchQuotaJson,
+  quotaCacheKey,
+  quotaCoordinator,
+  resetQuotaCoordinators,
+  scopedQuotaCoordinator,
+  usageUrls,
+} from "../../desktop/quota.js";
 import { toSessionListItems } from "../../desktop/session-listing.js";
 import { MAX_OPEN_TABS, pickTabToEvict } from "../../desktop/tab-cap.js";
 import { recordDiagnostic } from "../../diagnostics.js";
@@ -283,9 +291,18 @@ import { coveredRuleScopes } from "../../tools/shell/rule-scope.js";
 
 import {
   PROVIDER_SPECS,
+  type ProviderProbeStrategy,
   type ProviderSettingsMap,
+  type ProviderUsage,
+  type ProviderUsageEvent,
+  type ProviderUsageView,
   SEARCH_ENGINE_SPECS,
   type SearchSettingsMap,
+  antigravityUsageView,
+  codexUsageView,
+  mimoUsageView,
+  ollamaUsageView,
+  opencodeUsageView,
   parseProviderSettingsPatch,
   parseSearchSettingsPatch,
   providerDefaultEndpoint,
@@ -294,6 +311,8 @@ import {
   searchEngineSpec,
   searchSettingSpec,
   searchSharedCredential,
+  usageMinIntervalMs,
+  zaiUsageView,
 } from "@reasonix/core-utils";
 import {
   ANTIGRAVITY_OAUTH_CLIENT_ID,
@@ -369,7 +388,7 @@ import {
   writeSessionEvents,
   writeSessionNotices,
 } from "../../memory/session.js";
-import { type MiMoLoginFlow, beginMiMoLoginFlow } from "../../mimo-auth.js";
+import { type MiMoLoginFlow, beginMiMoLoginFlow, mimoPlatform } from "../../mimo-auth.js";
 import { fetchMiMoQuota, readMiMoConsoleSession } from "../../mimo-quota.js";
 import { createModelClient } from "../../model-client.js";
 import { type OAuthFlow, beginOAuthFlow, oauthAccount, signOutOpenAI } from "../../oauth.js";
@@ -554,14 +573,10 @@ export type EmittableEvent =
   | NeedsSetupEvent
   | SettingsEvent
   | BalanceEvent
-  | CodexQuotaEvent
-  | OllamaQuotaEvent
+  | ProviderUsageEvent
   | OllamaModelsEvent
   | OpencodeModelsEvent
   | ChangelogEvent
-  | AntigravityQuotaEvent
-  | ZaiQuotaEvent
-  | OpencodeQuotaEvent
   | MentionResultsEvent
   | MentionPreviewEvent
   | RetryResultEvent
@@ -959,26 +974,14 @@ function wireEventDetails(ev: EmittableEvent): Record<string, unknown> {
         logTokens: ev.logTokens ?? null,
         ctxMax: ev.ctxMax ?? null,
       };
-    case "$codex_quota":
+    case "$usage":
       return {
-        hasQuota: ev.quota !== null,
+        probe: ev.usage?.probe ?? null,
+        hasUsage: ev.usage !== null,
+        windows: ev.usage?.windows.length ?? 0,
+        plan: ev.usage?.plan ?? null,
         reason: ev.reason ?? null,
-        weekly: ev.quota?.weekly ?? null,
-        fiveHour: ev.quota?.fiveHour ?? null,
-      };
-    case "$ollama_quota":
-      return {
-        hasQuota: ev.quota !== null,
-        reason: ev.reason ?? null,
-        session: ev.quota?.session ?? null,
-        weekly: ev.quota?.weekly ?? null,
-      };
-    case "$zai_quota":
-      return {
-        hasQuota: ev.quota !== null,
-        reason: ev.reason ?? null,
-        weekly: ev.quota?.weekly ?? null,
-        fiveHour: ev.quota?.fiveHour ?? null,
+        needsSetup: ev.needsSetup ?? false,
       };
     case "$balance":
       return {
@@ -1675,9 +1678,6 @@ let pendingMiMoOAuth: MiMoLoginFlow | null = null;
 /** Last MiMo browser-flow failure — shown in the MiMo settings card until the
  *  next successful sign-in clears it. */
 let lastMiMoOAuthError: string | null = null;
-/** Cache of the last MiMo console quota — set only when a console session is
- *  configured (the console API is cookie-auth, unlike the inference key). */
-let mimoQuotaCache: MiMoQuota | null = null;
 
 async function refreshAntigravityModels(tab: Tab): Promise<void> {
   try {
@@ -1879,7 +1879,6 @@ function emitSettings(tab: Tab): void {
         signedIn: !!config.providerSettings?.mimo?.apiKey,
         flowError: lastMiMoOAuthError ?? undefined,
       },
-      mimoQuota: mimoQuotaCache,
       shellAllowedWorkspace: loadProjectShellAllowed(tab.rootDir),
       pathAllowedWorkspace: loadProjectPathAllowed(tab.rootDir),
       shellAllowedGlobal: loadGlobalShellAllowed(),
@@ -2465,7 +2464,11 @@ export async function refreshOllamaModels(
   return inflight;
 }
 
-async function emitBalance(tab: Tab): Promise<void> {
+/** Floor between wallet reads. Unlike plan usage, no provider declares one, so the
+ *  daemon owns it: a wallet moves only when someone spends or tops up. */
+const WALLET_FLOOR_MS = 60_000;
+
+async function emitBalance(tab: Tab, options: { force?: boolean } = {}): Promise<void> {
   if (!tab.runtime) {
     emitTabDiagnostic(tab, "balance.skipped", { reason: "runtime-not-ready" });
     return;
@@ -2478,15 +2481,26 @@ async function emitBalance(tab: Tab): Promise<void> {
     return;
   }
   emitTabDiagnostic(tab, "balance.fetch.started");
-  const bal = await tab.runtime.loop.client
-    .getBalance({ url: balance.url, shape: balance.shape })
-    .catch((err) => {
-      emitDiagnosticError("balance.fetch.failed", err, {
-        tabId: tab.id,
-        details: tabDiagnosticState(tab),
-      });
-      return null;
+  // Account-scoped, so a wallet read is shared by every tab on this client and
+  // replayed inside the floor: a turn end with several open tabs must not fan out
+  // into one wallet request per tab. No provider declares a wallet floor, so this
+  // one is the daemon's own.
+  const client = tab.runtime.loop.client;
+  const wallet = scopedQuotaCoordinator(
+    client,
+    `balance|${balance.url}|${providerForModel(tab.currentModel)}`,
+    WALLET_FLOOR_MS,
+    () => client.getBalance({ url: balance.url, shape: balance.shape }),
+    { hasData: (value) => value !== null, reason: () => "balance-unavailable" },
+  );
+  const delivery = await wallet.fetch({ force: options.force }).catch((err) => {
+    emitDiagnosticError("balance.fetch.failed", err, {
+      tabId: tab.id,
+      details: tabDiagnosticState(tab),
     });
+    return null;
+  });
+  const bal = delivery?.value ?? null;
   if (!bal) return;
   const primary = pickPrimaryBalance(bal.balance_infos);
   if (!primary) {
@@ -2535,41 +2549,75 @@ const codexQuotaCoordinator = new AccountQuotaCoordinator(
   },
 );
 
-/** Weekly Codex quota for the signed-in ChatGPT plan — OpenAI-model tabs only.
- *  OAuth HTTP fetch only (no codex CLI dependency). */
-async function emitCodexQuota(tab: Tab, options: { force?: boolean } = {}): Promise<void> {
-  if (probeForModel(tab.currentModel) !== "codex-oauth") {
-    emitTabDiagnostic(tab, "quota.skipped", { reason: "non-openai-provider" });
-    return;
-  }
+/** What a reader hands back about the plan: the normalized windows plus any credit
+ *  the same payload reported. The dispatcher stamps the probe, so a reader cannot
+ *  mislabel its own reading. */
+type UsageReadout = ProviderUsageView & { credit?: ProviderUsage["credit"] };
 
-  emitTabDiagnostic(tab, "quota.fetch.started");
+/** One probe's read: the normalized usage the tab's chip consumes, plus what to log. */
+interface UsageProbe {
+  /** Normalized plan usage, or null when the probe produced no reading. */
+  usage: UsageReadout | null;
+  status: "ok" | "skipped" | "failed";
+  /** The read had no data (failed) or a decision kept it from running (skipped). */
+  reason?: string;
+  details?: Record<string, unknown>;
+}
+
+/** A probe reader: fetch + parse one provider's usage. Credentials, tier gates and
+ *  the payload shape are the reader's business; emitting is the dispatcher's. */
+type UsageReader = (tab: Tab, options: { force?: boolean }) => Promise<UsageProbe>;
+
+/** The shared coordinator for one provider's usage source: endpoint + credential are
+ *  the identity (a different account starts cold) and the declared floor is the TTL. */
+function usageCoordinatorFor<T>(
+  providerId: string,
+  endpoint: string,
+  credential: string,
+  fetcher: () => Promise<T>,
+  outcome: QuotaOutcome<T>,
+): QuotaCoordinator<T> {
+  const spec = providerSpec(providerId);
+  return quotaCoordinator<T>(
+    quotaCacheKey(providerId, endpoint, credential),
+    usageMinIntervalMs(spec),
+    fetcher,
+    outcome,
+  );
+}
+
+/** A read that produced nothing, in the shape the dispatcher reports as failed. */
+function noUsage(reason: string, details?: Record<string, unknown>): UsageProbe {
+  return { usage: null, status: "failed", reason, ...(details ? { details } : {}) };
+}
+
+/** ChatGPT-plan Codex quota — OAuth HTTP only (no codex CLI dependency). */
+async function readCodexUsage(_tab: Tab, options: { force?: boolean }): Promise<UsageProbe> {
   const delivery = await codexQuotaCoordinator.fetch(options).catch((err) => ({
-    value: { quota: null, reason: (err as Error).message },
+    value: { quota: null as CodexQuota | null, reason: messageOf(err) },
     delivery: "underlying" as const,
     requestId: -1,
+    at: Date.now(),
   }));
   const quota = delivery.value.quota;
   const reason = delivery.value.reason;
-
   if (quota) {
-    emitTabDiagnostic(tab, "quota.fetch.succeeded", {
-      plan: quota.plan,
-      fiveHour: quota.fiveHour,
-      weekly: quota.weekly,
-      delivery: delivery.delivery,
-      requestId: delivery.requestId,
-    });
-    emit({ type: "$codex_quota", quota }, tab.id);
-    return;
+    return {
+      usage: codexUsageView(quota),
+      status: "ok",
+      details: {
+        plan: quota.plan,
+        fiveHour: quota.fiveHour,
+        weekly: quota.weekly,
+        delivery: delivery.delivery,
+        requestId: delivery.requestId,
+      },
+    };
   }
-  emitTabDiagnostic(tab, "quota.snapshot.delivered", {
-    ok: false,
-    reason,
+  return noUsage(reason ?? "no-quota-data", {
     delivery: delivery.delivery,
     requestId: delivery.requestId,
   });
-  emit({ type: "$codex_quota", quota: null, ...(reason ? { reason } : {}) }, tab.id);
 }
 
 /** One window from `GET {origin}/api/balance` — the % still available and its
@@ -2588,35 +2636,31 @@ function parseOllamaBalanceWindow(raw: unknown): OllamaBalanceWindow | null {
   return { remainingPct: r.remaining_percent, resetsAt: Number.isFinite(reset) ? reset : null };
 }
 
-/** Ollama Cloud plan balance — `GET {origin}/api/balance` (Bearer key). Holds
- *  the limit the statusbar needs: `included.session/weekly.remaining_percent`
+/** Ollama Cloud plan balance — the declared `/api/balance` route (Bearer key).
+ *  Holds the limit the statusbar needs: `included.session/weekly.remaining_percent`
  *  plus `purchased.balance_usd`. Undefined on any failure. */
 export async function fetchOllamaBalance(
   baseUrl: string,
   apiKey: string,
   timeoutMs = 10_000,
 ): Promise<OllamaBalance | undefined> {
-  try {
-    const resp = await fetch(`${new URL(baseUrl).origin}/api/balance`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!resp.ok) return undefined;
-    const data = (await resp.json()) as { included?: unknown; purchased?: unknown };
-    const included = (data.included ?? {}) as Record<string, unknown>;
-    const session = parseOllamaBalanceWindow(included.session);
-    const weekly = parseOllamaBalanceWindow(included.weekly);
-    if (!session && !weekly) return undefined;
-    const purchased = (data.purchased ?? {}) as Record<string, unknown>;
-    return {
-      session,
-      weekly,
-      purchasedUsd: typeof purchased.balance_usd === "number" ? purchased.balance_usd : null,
-    };
-  } catch {
-    return undefined;
-  }
+  const reply = await fetchQuotaJson({
+    urls: usageUrls(providerSpec("ollama"), baseUrl),
+    headers: { Authorization: `Bearer ${apiKey}` },
+    timeoutMs,
+  });
+  if (!reply.ok) return undefined;
+  const data = (reply.body ?? {}) as { included?: unknown; purchased?: unknown };
+  const included = (data.included ?? {}) as Record<string, unknown>;
+  const session = parseOllamaBalanceWindow(included.session);
+  const weekly = parseOllamaBalanceWindow(included.weekly);
+  if (!session && !weekly) return undefined;
+  const purchased = (data.purchased ?? {}) as Record<string, unknown>;
+  return {
+    session,
+    weekly,
+    purchasedUsd: typeof purchased.balance_usd === "number" ? purchased.balance_usd : null,
+  };
 }
 
 interface OllamaBalance {
@@ -2625,28 +2669,14 @@ interface OllamaBalance {
   purchasedUsd: number | null;
 }
 
-/** The balance is account-scoped, so one shared request serves every tab and a
- *  caller inside the TTL reuses the last result (only a click passes force).
- *  This is what keeps the statusbar from bursting one fetch per open tab. */
-const OLLAMA_BALANCE_TTL_MS = 60_000;
-let ollamaBalanceCache: {
-  balance: OllamaBalance | undefined;
-  fetchedAt: number;
-} | null = null;
-let ollamaBalanceInflight: Promise<{
-  balance: OllamaBalance | undefined;
-  fetchedAt: number;
-}> | null = null;
-
 /** Reset the shared balance cache + baseline (tests only). */
 export function resetOllamaBalanceCacheForTest(): void {
-  ollamaBalanceCache = null;
-  ollamaBalanceInflight = null;
+  resetQuotaCoordinators();
 }
 
-/** One coalesced, TTL-cached balance fetch shared across every tab. Concurrent
- *  callers join a single in-flight request; a fresh cache is reused unless
- *  `force`. `fetched` marks the caller that actually hit the network. */
+/** One coalesced balance read shared across every tab, replayed inside the declared
+ *  floor — a failure included, so a tab burst cannot hammer an endpoint that just
+ *  rate-limited us. `fetched` marks the caller that hit the network. */
 export async function ollamaBalanceSnapshot(
   baseUrl: string,
   apiKey: string,
@@ -2656,118 +2686,99 @@ export async function ollamaBalanceSnapshot(
   fetchedAt: number;
   fetched: boolean;
 }> {
-  if (
-    !force &&
-    ollamaBalanceCache &&
-    Date.now() - ollamaBalanceCache.fetchedAt < OLLAMA_BALANCE_TTL_MS
-  ) {
-    return { ...ollamaBalanceCache, fetched: false };
-  }
-  if (ollamaBalanceInflight) {
-    return { ...(await ollamaBalanceInflight), fetched: false };
-  }
-  const run = (async () => {
-    const balance = await fetchOllamaBalance(baseUrl, apiKey);
-    return { balance, fetchedAt: Date.now() };
-  })();
-  ollamaBalanceInflight = run;
-  let result: { balance: OllamaBalance | undefined; fetchedAt: number };
-  try {
-    result = await run;
-  } finally {
-    ollamaBalanceInflight = null;
-  }
-  ollamaBalanceCache = result;
-  return { ...result, fetched: true };
+  const coordinator = usageCoordinatorFor<OllamaBalance | undefined>(
+    "ollama",
+    baseUrl,
+    apiKey,
+    () => fetchOllamaBalance(baseUrl, apiKey),
+    { hasData: (balance) => balance !== undefined },
+  );
+  const delivery = await coordinator.fetch({ force });
+  return {
+    balance: delivery.value,
+    fetchedAt: delivery.at,
+    fetched: delivery.delivery === "underlying",
+  };
 }
-/** Cloud Ollama plan usage for the signed-in account — Ollama-provider tabs
- *  with a key only. The balance is account-scoped, so every tab shares one
- *  TTL-cached fetch; only a chip click (force) or the 1-min poll refetches. */
-async function emitOllamaQuota(tab: Tab, force = false): Promise<void> {
+/** Cloud Ollama plan usage for the signed-in account, shared across every tab. */
+async function readOllamaUsage(_tab: Tab, options: { force?: boolean }): Promise<UsageProbe> {
   const ep = loadOllamaEndpoint();
   const apiKey = ep.apiKey;
-  if (probeForModel(tab.currentModel) !== "ollama-balance") {
-    emitTabDiagnostic(tab, "quota.skipped", { reason: "non-ollama-provider" });
-    return;
-  }
   if (!apiKey) {
-    // A keyless endpoint still shows the chip; emit the reason (not just a
-    // diagnostic) so the statusbar renders the set-an-API-key hint and clears
-    // its refresh spinner instead of leaving a silent dash.
-    emitTabDiagnostic(tab, "quota.skipped", { reason: "ollama-no-api-key" });
-    emit({ type: "$ollama_quota", quota: null, reason: "ollama-no-api-key" }, tab.id);
-    return;
+    // A keyless endpoint still shows the chip; the setup flag makes the statusbar
+    // render its set-an-API-key hint and clear the refresh spinner.
+    return { usage: null, status: "skipped", reason: "ollama-no-api-key" };
   }
-  emitTabDiagnostic(tab, "quota.fetch.started", { force });
-  const snap = await ollamaBalanceSnapshot(ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL, apiKey, force);
+  const snap = await ollamaBalanceSnapshot(
+    ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL,
+    apiKey,
+    !!options.force,
+  );
   const balance = snap.balance;
   if (!balance) {
-    emitTabDiagnostic(
-      tab,
-      "quota.fetch.failed",
-      { reason: "usage-unavailable", shared: !snap.fetched },
-      "error",
-    );
-    emit({ type: "$ollama_quota", quota: null, reason: "usage-unavailable" }, tab.id);
-    return;
+    return noUsage("usage-unavailable", { shared: !snap.fetched });
   }
   const toWindow = (w: OllamaBalanceWindow | null) =>
     w
       ? { usagePct: 100 - w.remainingPct, remainingPct: w.remainingPct, resetsAt: w.resetsAt }
       : null;
-  emitTabDiagnostic(tab, "quota.fetch.succeeded", {
-    sessionRemainingPct: balance.session?.remainingPct,
-    weeklyRemainingPct: balance.weekly?.remainingPct,
-    purchasedUsd: balance.purchasedUsd,
-    shared: !snap.fetched,
-  });
-  emit(
+  // The account plan (free/pro) comes from the catalog's `/api/me` read, so the
+  // chip can name a tier the balance payload itself never mentions.
+  const view = ollamaUsageView(
     {
-      type: "$ollama_quota",
-      quota: {
-        session: toWindow(balance.session),
-        weekly: toWindow(balance.weekly),
-        purchasedUsd: balance.purchasedUsd,
-        fetchedAt: snap.fetchedAt,
-      },
+      session: toWindow(balance.session),
+      weekly: toWindow(balance.weekly),
+      purchasedUsd: balance.purchasedUsd,
+      fetchedAt: snap.fetchedAt,
     },
-    tab.id,
+    ollamaCatalogCache?.plan ?? null,
   );
+  return {
+    usage: {
+      ...view,
+      credit:
+        typeof balance.purchasedUsd === "number"
+          ? { currency: "USD", amount: balance.purchasedUsd }
+          : null,
+    },
+    status: "ok",
+    details: {
+      sessionRemainingPct: balance.session?.remainingPct,
+      weeklyRemainingPct: balance.weekly?.remainingPct,
+      purchasedUsd: balance.purchasedUsd,
+      shared: !snap.fetched,
+    },
+  };
 }
 
-/** Antigravity (Gemini Code Assist) plan + quota for the signed-in account —
- *  Gemini-provider tabs only. Uses the undocumented Code Assist `v1internal`
- *  API: loadCodeAssist for the plan, retrieveUserQuota for per-model windows. */
-async function emitAntigravityQuota(tab: Tab): Promise<void> {
-  if (probeForModel(tab.currentModel) !== "antigravity-quota") {
-    emitTabDiagnostic(tab, "quota.skipped", { reason: "non-gemini-provider" });
-    return;
-  }
-  emitTabDiagnostic(tab, "quota.fetch.started");
+/** Antigravity (Gemini Code Assist) plan + per-model windows, coalesced on the
+ *  declared floor: `loadCodeAssist` for the plan, `retrieveUserQuota` for windows. */
+async function readAntigravityUsage(_tab: Tab, options: { force?: boolean }): Promise<UsageProbe> {
   const auth = await resolveGeminiAuth();
   if (!auth) {
-    emitTabDiagnostic(tab, "quota.fetch.failed", { reason: "antigravity-not-signed-in" }, "error");
-    emit({ type: "$antigravity_quota", quota: null, reason: "not-signed-in" }, tab.id);
-    return;
+    return { usage: null, status: "failed", reason: "antigravity-not-signed-in" };
   }
-  const quota = await fetchAntigravityQuota(auth.accessToken, auth.projectId).catch((err) => {
-    emitTabDiagnostic(tab, "quota.fetch.failed", { reason: (err as Error).message }, "error");
-    emit({ type: "$antigravity_quota", quota: null, reason: (err as Error).message }, tab.id);
-    return null;
-  });
-  if (!quota) return;
-
-  // The active model's window, else the most-consumed window as a proxy.
-  const active =
-    quota.windows.find((w) => w.modelId === tab.currentModel) ??
-    [...quota.windows].sort((a, b) => b.usedFraction - a.usedFraction)[0] ??
-    null;
-  emitTabDiagnostic(tab, "quota.fetch.succeeded", {
-    plan: quota.plan?.tierId,
-    windows: quota.windows.length,
-    activeModel: active?.modelId,
-  });
-  emit({ type: "$antigravity_quota", quota }, tab.id);
+  // The token rotates hourly: the fetcher closes over the current one and the key
+  // deliberately omits it, so a rotation keeps the cache instead of a dead token.
+  const coordinator = usageCoordinatorFor<AntigravityQuota>(
+    "gemini",
+    auth.projectId,
+    "",
+    () => fetchAntigravityQuota(auth.accessToken, auth.projectId),
+    { hasData: () => true },
+  );
+  let quota: AntigravityQuota;
+  try {
+    quota = (await coordinator.fetch({ force: options.force })).value;
+  } catch (err) {
+    return noUsage(messageOf(err));
+  }
+  // The view picks the active model's bucket, else the most-consumed one.
+  return {
+    usage: antigravityUsageView(quota, _tab.currentModel),
+    status: "ok",
+    details: { plan: quota.plan?.tierId, windows: quota.windows.length },
+  };
 }
 
 /** A raw `limits[]` row from Z.AI's monitor endpoint — only the fields we read. */
@@ -2782,154 +2793,199 @@ interface ZaiLimitRow {
   nextResetTime?: number;
 }
 
-/** Z.AI GLM Coding Plan usage — `GET {origin}/api/monitor/usage/quota/limit`. The
- *  token/credit rows are matched by `unit` (3 = 5-hour, 6 = weekly); each carries a
- *  `percentage` (0-100) plus an epoch-ms `nextResetTime`. Undefined on any failure. */
+/** Z.AI GLM Coding Plan usage — the declared monitor route. The token/credit rows
+ *  are matched by `unit` (3 = 5-hour, 6 = weekly); each carries a `percentage`
+ *  (0-100) plus an epoch-ms `nextResetTime`. Undefined on any failure. */
 export async function fetchZaiQuota(
   baseUrl: string,
   apiKey: string,
   timeoutMs = 10_000,
 ): Promise<Omit<ZaiQuota, "fetchedAt"> | undefined> {
-  try {
-    const resp = await fetch(`${new URL(baseUrl).origin}/api/monitor/usage/quota/limit`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!resp.ok) return undefined;
-    const data = (await resp.json()) as {
-      data?: { limits?: unknown; level?: unknown };
+  const reply = await fetchQuotaJson({
+    urls: usageUrls(providerSpec("zai"), baseUrl),
+    headers: { Authorization: `Bearer ${apiKey}` },
+    timeoutMs,
+  });
+  if (!reply.ok) return undefined;
+  const data = (reply.body ?? {}) as {
+    data?: { limits?: unknown; level?: unknown };
+  };
+  const limits = data?.data?.limits;
+  if (!Array.isArray(limits)) return undefined;
+  const toWindow = (unit: number): ZaiQuotaWindow | null => {
+    const row = (limits as ZaiLimitRow[]).find(
+      (r) => r && (r.type === "TOKENS_LIMIT" || r.type === "CREDIT_LIMIT") && r.unit === unit,
+    );
+    if (!row) return null;
+    // The server usually reports `percentage` directly; fall back to the
+    // currentValue/usage ratio for payloads that omit it.
+    const pct =
+      typeof row.percentage === "number"
+        ? row.percentage
+        : typeof row.currentValue === "number" && typeof row.usage === "number" && row.usage > 0
+          ? (row.currentValue / row.usage) * 100
+          : null;
+    if (pct === null) return null;
+    return {
+      usagePct: pct,
+      remainingPct: Math.max(0, 100 - pct),
+      resetsAt: typeof row.nextResetTime === "number" ? row.nextResetTime : null,
     };
-    const limits = data?.data?.limits;
-    if (!Array.isArray(limits)) return undefined;
-    const toWindow = (unit: number): ZaiQuotaWindow | null => {
-      const row = (limits as ZaiLimitRow[]).find(
-        (r) => r && (r.type === "TOKENS_LIMIT" || r.type === "CREDIT_LIMIT") && r.unit === unit,
-      );
-      if (!row) return null;
-      // The server usually reports `percentage` directly; fall back to the
-      // currentValue/usage ratio for payloads that omit it.
-      const pct =
-        typeof row.percentage === "number"
-          ? row.percentage
-          : typeof row.currentValue === "number" && typeof row.usage === "number" && row.usage > 0
-            ? (row.currentValue / row.usage) * 100
-            : null;
-      if (pct === null) return null;
-      return {
-        usagePct: pct,
-        remainingPct: Math.max(0, 100 - pct),
-        resetsAt: typeof row.nextResetTime === "number" ? row.nextResetTime : null,
-      };
-    };
-    const fiveHour = toWindow(3);
-    const weekly = toWindow(6);
-    if (!fiveHour && !weekly) return undefined;
-    const level = data?.data?.level;
-    return { plan: typeof level === "string" ? level : null, fiveHour, weekly };
-  } catch {
-    return undefined;
-  }
+  };
+  const fiveHour = toWindow(3);
+  const weekly = toWindow(6);
+  if (!fiveHour && !weekly) return undefined;
+  const level = data?.data?.level;
+  return { plan: typeof level === "string" ? level : null, fiveHour, weekly };
 }
 
-/** Z.AI GLM Coding Plan usage for a `zai`-provider tab with a configured key.
- *  Fetches the monitor endpoint and scales the API's `percentage` to "% left". */
-async function emitZaiQuota(tab: Tab): Promise<void> {
-  if (probeForModel(tab.currentModel) !== "zai-monitor") {
-    emitTabDiagnostic(tab, "quota.skipped", { reason: "non-zai-provider" });
-    return;
-  }
+/** Z.AI GLM Coding Plan usage for a tab with a configured key, coalesced on the
+ *  declared floor. */
+async function readZaiUsage(_tab: Tab, options: { force?: boolean }): Promise<UsageProbe> {
   const apiKey = loadZaiApiKey();
   if (!apiKey) {
-    emitTabDiagnostic(tab, "quota.skipped", { reason: "zai-no-api-key" });
-    return;
+    return { usage: null, status: "skipped", reason: "zai-no-api-key" };
   }
-  emitTabDiagnostic(tab, "quota.fetch.started");
-  const ep = loadEndpointForModel(tab.currentModel);
-  const quota = await fetchZaiQuota(ep.baseUrl ?? DEFAULT_ZAI_CHAT_URL, apiKey);
-  if (!quota) {
-    emitTabDiagnostic(tab, "quota.fetch.failed", { reason: "usage-unavailable" }, "error");
-    emit({ type: "$zai_quota", quota: null, reason: "usage-unavailable" }, tab.id);
-    return;
-  }
-  // Prefer the 5-hour window (finer resolution); fall back to weekly for plans
-  // that report only the weekly window.
-  const fiveHourPct = quota.fiveHour?.usagePct ?? null;
-  const weeklyPct = quota.weekly?.usagePct ?? null;
-  emitTabDiagnostic(tab, "quota.fetch.succeeded", {
-    plan: quota.plan,
-    fiveHour: fiveHourPct,
-    weekly: weeklyPct,
-  });
-  emit({ type: "$zai_quota", quota: { ...quota, fetchedAt: Date.now() } }, tab.id);
+  const baseUrl = loadEndpointForModel(_tab.currentModel).baseUrl ?? DEFAULT_ZAI_CHAT_URL;
+  const coordinator = usageCoordinatorFor<Omit<ZaiQuota, "fetchedAt"> | undefined>(
+    "zai",
+    baseUrl,
+    apiKey,
+    () => fetchZaiQuota(baseUrl, apiKey),
+    { hasData: (quota) => quota !== undefined },
+  );
+  const quota = (await coordinator.fetch({ force: options.force })).value;
+  if (!quota) return noUsage("usage-unavailable");
+  return {
+    usage: zaiUsageView(quota),
+    status: "ok",
+    details: {
+      plan: quota.plan,
+      fiveHour: quota.fiveHour?.usagePct ?? null,
+      weekly: quota.weekly?.usagePct ?? null,
+    },
+  };
 }
 
-/** OpenCode Go plan usage for an `opencode`-provider tab with a credential —
- *  fetches /zen/go/v1/usage. */
-/** Refresh MiMo subscription usage. The console API needs a web-session cookie
- *  (not the inference key), so this is a no-op without a configured session —
- *  the statusbar then shows a static plan chip with no percentage. */
-async function emitMiMoQuota(tab: Tab): Promise<void> {
-  if (probeForModel(tab.currentModel) !== "mimo-console") return;
+/** MiMo subscription usage. The console API needs a web-session cookie (not the
+ *  inference key), so without one the chip names the plan and no percentage — the
+ *  declaration marks this provider's chip unit as `plan` for that case. */
+async function readMiMoUsage(_tab: Tab, options: { force?: boolean }): Promise<UsageProbe> {
   const session = readMiMoConsoleSession();
   if (!session) {
-    if (mimoQuotaCache === null) return;
-    mimoQuotaCache = null;
-    emitSettings(tab);
-    return;
+    return { usage: null, status: "skipped", reason: "mimo-no-console-session" };
   }
-  mimoQuotaCache = await fetchMiMoQuota(session);
-  emitSettings(tab);
+  const coordinator = usageCoordinatorFor<MiMoQuota>(
+    "mimo",
+    mimoPlatform(),
+    session.serviceToken,
+    () => fetchMiMoQuota(session),
+    { hasData: (quota) => quota.status === "available", reason: (quota) => quota.reason ?? null },
+  );
+  const quota = (await coordinator.fetch({ force: options.force })).value;
+  return {
+    usage: mimoUsageView(quota),
+    status: quota.status === "available" ? "ok" : "failed",
+    reason: quota.reason,
+    details: { status: quota.status, remainingPercent: quota.remainingPercent },
+  };
 }
 
-async function emitOpencodeQuota(tab: Tab): Promise<void> {
-  if (probeForModel(tab.currentModel) !== "opencode-usage") {
-    emitTabDiagnostic(tab, "quota.skipped", { reason: "non-opencode-provider" });
-    return;
-  }
-  // Only Go-subscription models have a usage API. Free/anon Zen models are
-  // rate-limited per-IP with no usage endpoint, so there is nothing to fetch —
-  // the statusbar keys its chip off the model's quota type, not a number.
-  const plan = opencodeUsagePlan(tab.currentModel);
+/** OpenCode Go plan usage for a tab with a credential, coalesced on the declared
+ *  floor. Free/anon Zen models have no usage API, so they are skipped. */
+async function readOpencodeUsage(_tab: Tab, options: { force?: boolean }): Promise<UsageProbe> {
+  const plan = opencodeUsagePlan(_tab.currentModel);
   if (plan !== "go") {
-    emitTabDiagnostic(tab, "quota.skipped", {
+    return {
+      usage: null,
+      status: "skipped",
       reason: plan === "free" ? "opencode-free-tier" : "opencode-not-go",
-    });
-    return;
+    };
   }
-  const ep = loadEndpointForModel(tab.currentModel);
-  const baseUrl = ep.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL;
-  // A Go subscription is required; the free public tier has no usage to show,
-  // so no credential (or a custom proxy base) simply yields no chip. The Go
-  // usage API accepts the workspace service key, not a Console OAuth session
-  // token (that 401s), so prefer the key and fall back to the session.
+  const baseUrl = loadEndpointForModel(_tab.currentModel).baseUrl ?? DEFAULT_OPENCODE_CHAT_URL;
+  // A Go subscription is required. The Go usage API accepts the workspace service
+  // key, not a Console OAuth session token (that 401s), so prefer the key.
   const token = loadOpencodeApiKey() ?? (await resolveOpencodeToken());
   if (!token || token === "public") {
-    emitTabDiagnostic(tab, "quota.skipped", { reason: "opencode-no-credential" });
-    return;
+    return { usage: null, status: "skipped", reason: "opencode-no-credential" };
   }
-  emitTabDiagnostic(tab, "quota.fetch.started");
-  const quota = await fetchOpencodeQuota(baseUrl, token);
-  if (!quota) {
-    emitTabDiagnostic(tab, "quota.fetch.failed", { reason: "usage-unavailable" }, "error");
-    emit({ type: "$opencode_quota", quota: null, reason: "usage-unavailable" }, tab.id);
-    return;
-  }
-  // The 5-hour rolling window is the primary value (finer resolution than the
-  // weekly/monthly windows). A rollover makes the delta go backwards — report
-  // no turn cost for this fetch and adopt the new baseline.
-  const rollingPct = quota.rolling?.usagePct ?? null;
-  emitTabDiagnostic(tab, "quota.fetch.succeeded", {
-    rolling: rollingPct,
-    weekly: quota.weekly?.usagePct,
-    monthly: quota.monthly?.usagePct,
-  });
-  emit({ type: "$opencode_quota", quota: { ...quota, fetchedAt: Date.now() } }, tab.id);
+  const coordinator = usageCoordinatorFor<Omit<OpencodeQuota, "fetchedAt"> | undefined>(
+    "opencode",
+    baseUrl,
+    token,
+    () => fetchOpencodeQuota(baseUrl, token),
+    { hasData: (quota) => quota !== undefined },
+  );
+  const quota = (await coordinator.fetch({ force: options.force })).value;
+  if (!quota) return noUsage("usage-unavailable");
+  return {
+    usage: opencodeUsageView(quota),
+    status: "ok",
+    details: {
+      rolling: quota.rolling?.usagePct ?? null,
+      weekly: quota.weekly?.usagePct,
+      monthly: quota.monthly?.usagePct,
+    },
+  };
 }
 
+/** Reader per declared probe. Exhaustive by type: a new `usage.probe` in a provider
+ *  file fails to compile until it has a reader here, and no caller names a provider. */
+const USAGE_READERS: Record<ProviderProbeStrategy, UsageReader> = {
+  "codex-oauth": readCodexUsage,
+  "ollama-balance": readOllamaUsage,
+  "antigravity-quota": readAntigravityUsage,
+  "zai-monitor": readZaiUsage,
+  "mimo-console": readMiMoUsage,
+  "opencode-usage": readOpencodeUsage,
+};
+
 /** The probe a model's provider declares, or null when it publishes no plan window. */
-function probeForModel(model: string): string | null {
+function probeForModel(model: string): ProviderProbeStrategy | null {
   return providerSpec(providerForModel(model))?.usage.probe ?? null;
+}
+
+/** Refresh the tab's declared plan-usage chip: which probe runs, and how often it
+ *  may hit the network, both come from the provider's declaration. */
+async function refreshTabUsage(tab: Tab, options: { force?: boolean } = {}): Promise<void> {
+  const probe = probeForModel(tab.currentModel);
+  if (!probe) {
+    emitTabDiagnostic(tab, "quota.skipped", { reason: "no-declared-probe" });
+    return;
+  }
+  emitTabDiagnostic(tab, "quota.fetch.started", { probe, force: !!options.force });
+  let result: UsageProbe;
+  try {
+    result = await USAGE_READERS[probe](tab, options);
+  } catch (err) {
+    result = { usage: null, status: "failed", reason: messageOf(err) };
+  }
+  if (result.status === "ok") {
+    emitTabDiagnostic(tab, "quota.fetch.succeeded", { probe, ...result.details });
+  } else if (result.reason) {
+    emitTabDiagnostic(
+      tab,
+      result.status === "skipped" ? "quota.skipped" : "quota.fetch.failed",
+      { probe, reason: result.reason, ...result.details },
+      result.status === "skipped" ? "debug" : "error",
+    );
+  }
+  emit(
+    {
+      type: "$usage",
+      usage: result.usage ? { probe, ...result.usage } : null,
+      ...(result.reason ? { reason: result.reason } : {}),
+      ...(result.status === "skipped" ? { needsSetup: true } : {}),
+    },
+    tab.id,
+  );
+}
+
+/** Refresh everything the status bar reports about money: the declared usage window
+ *  and the declared wallet. Both are coalesced and floored per declaration, so every
+ *  caller (turn end, restore, activation, poll, chip click) can call this. */
+async function refreshFunds(tab: Tab, options: { force?: boolean } = {}): Promise<void> {
+  await Promise.allSettled([refreshTabUsage(tab, options), emitBalance(tab, options)]);
 }
 
 async function emitSessions(
@@ -6347,13 +6403,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         refreshPlanSummary(tab);
         emitTabDiagnostic(tab, "turn.complete.emitted", { planProgress: tab.planSummary }, "info");
         void emitSessions(tab);
-        void emitBalance(tab);
-        void emitCodexQuota(tab, { force: true });
-        void emitOllamaQuota(tab);
-        void emitAntigravityQuota(tab);
-        void emitZaiQuota(tab);
-        void emitOpencodeQuota(tab);
-        void emitMiMoQuota(tab);
+        void refreshFunds(tab, { force: true });
         if (tab.hooks.some((h) => h.event === "Stop")) {
           const stopReport = await runHooks({
             hooks: tab.hooks,
@@ -7515,12 +7565,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // (and a late duplicate $session_loaded can no longer wipe it).
       emitRestoredPlan(tab, restoredMessages !== undefined);
       await emitWorkspaceInitialized(tab, sessionsInitialized);
-      void emitBalance(tab);
-      void emitCodexQuota(tab);
-      void emitOllamaQuota(tab);
-      void emitAntigravityQuota(tab);
-      void emitZaiQuota(tab);
-      void emitOpencodeQuota(tab);
+      void refreshFunds(tab);
     })().catch((err) => {
       // This display work sits outside tab.initialization, so without a catch a
       // throw here would vanish as an unhandled rejection instead of a diagnostic.
@@ -7648,18 +7693,16 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   })();
-  // Account-wide quotas change underneath us (other devices, window resets) -
-  // poll so the statusbar chips are never stale. Skipped mid-turn so the
-  // $turn_complete fetch stays the authoritative turn-cost measurement.
-  // The Ollama balance refreshes every minute (its /api/balance caps at
-  // 10 req/min); Codex/Antigravity refresh every 5th tick. Pauses after 15
-  // minutes of idle to conserve bandwidth on metered and poor connections.
-  const QUOTA_POLL_INTERVAL_MS = 60 * 1000;
-  const QUOTA_SLOW_POLL_EVERY = 5;
+  // Account-wide quotas change underneath us (other devices, window resets) — poll
+  // so the statusbar chips are never stale, and never mid-turn (the $turn_complete
+  // fetch is the authoritative turn-cost measurement). The tick is the shortest
+  // declared floor, so each provider is read exactly as often as its own file says:
+  // the coordinators refuse a read that is not yet due. Pauses after 15 minutes of
+  // idle to conserve bandwidth on metered connections.
+  const QUOTA_POLL_INTERVAL_MS = 30 * 1000;
   const QUOTA_POLL_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
   let lastUserActivityAt = Date.now();
   let quotaPolling = false;
-  let quotaPollTick = 0;
   quotaTimer = setInterval(() => {
     if (quotaPolling) return;
     if (Date.now() - lastUserActivityAt > QUOTA_POLL_IDLE_TIMEOUT_MS) {
@@ -7683,14 +7726,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       });
       return;
     }
-    quotaPollTick += 1;
-    const slow = quotaPollTick % QUOTA_SLOW_POLL_EVERY === 0;
-    emitTabDiagnostic(tab, "quota.poll.started", { intervalMs: QUOTA_POLL_INTERVAL_MS, slow });
+    emitTabDiagnostic(tab, "quota.poll.started", { intervalMs: QUOTA_POLL_INTERVAL_MS });
     quotaPolling = true;
-    void Promise.allSettled([
-      emitOllamaQuota(tab, true),
-      ...(slow ? [emitCodexQuota(tab, { force: false }), emitAntigravityQuota(tab)] : []),
-    ]).finally(() => {
+    void refreshFunds(tab).finally(() => {
       quotaPolling = false;
       emitTabDiagnostic(tab, "quota.poll.completed");
     });
@@ -7777,10 +7815,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         persistOpenTabs();
         // Refetch immediately — the tab may have sat idle for hours, and
         // the statusbar must show the current quota the moment it's shown.
-        void emitCodexQuota(activated, { force: true });
-        void emitOllamaQuota(activated);
-        void emitAntigravityQuota(activated);
-        void emitOpencodeQuota(activated);
+        void refreshFunds(activated, { force: true });
         // Lazily bridge MCP on first activation: non-focused restored tabs skip
         // the per-tab MCP tool registration at startup and pay it only when the
         // user actually opens them.
@@ -9157,24 +9192,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       emitSettings(tab);
       return;
     }
-    if (msg.cmd === "codex_quota_get") {
-      void emitCodexQuota(tab, { force: true });
-      return;
-    }
-    if (msg.cmd === "ollama_quota_get") {
-      void emitOllamaQuota(tab, true);
-      return;
-    }
-    if (msg.cmd === "antigravity_quota_get") {
-      void emitAntigravityQuota(tab);
-      return;
-    }
-    if (msg.cmd === "zai_quota_get") {
-      void emitZaiQuota(tab);
-      return;
-    }
-    if (msg.cmd === "opencode_quota_get") {
-      void emitOpencodeQuota(tab);
+    if (msg.cmd === "funds_refresh") {
+      void refreshFunds(tab, { force: true });
       return;
     }
     if (msg.cmd === "ollama_models_list") {

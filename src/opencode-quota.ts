@@ -1,26 +1,13 @@
-/** OpenCode Go plan usage — its own `/zen/go/v1/usage` API (same Bearer as chat),
- *  returning 5-hour rolling, weekly and monthly windows with a consumed percent. */
+/** OpenCode Go plan usage — the declared `/zen/go/v1/usage` route (same Bearer as chat). */
 
-import type { OpencodeQuota, OpencodeQuotaWindow } from "@reasonix/core-utils";
+import { type OpencodeQuota, type OpencodeQuotaWindow, providerSpec } from "@reasonix/core-utils";
+import { fetchQuotaJson, usageUrls } from "./desktop/quota.js";
 
-/** Go usage path relative to the Go endpoint origin (Go chat base is
- *  https://opencode.ai/zen/go/v1). */
-export const OPENCODE_GO_USAGE_PATH = "/zen/go/v1/usage";
-
-/** Fixed Go usage endpoint. */
-export const OPENCODE_GO_USAGE_URL = `https://opencode.ai${OPENCODE_GO_USAGE_PATH}`;
-
-/** Resolve the usage URL for a configured base URL. Only the public OpenCode
- *  hosts expose the Go usage API — a custom OPENCODE_BASE_URL proxy is left
- *  alone (undefined → no fetch), never a wrong number. */
+/** Resolve the usage URL for a configured base URL. Only a declared host exposes
+ *  the Go usage API, so a custom proxy resolves to none (undefined → no fetch). */
 export function opencodeUsageUrl(baseUrl: string): string | undefined {
-  try {
-    const url = new URL(baseUrl);
-    if (!url.hostname.endsWith("opencode.ai")) return undefined;
-    return `${url.origin}${OPENCODE_GO_USAGE_PATH}`;
-  } catch {
-    return undefined;
-  }
+  const [url] = usageUrls(providerSpec("opencode"), baseUrl);
+  return url;
 }
 
 function toWindow(raw: unknown): OpencodeQuotaWindow | null {
@@ -36,9 +23,9 @@ function toWindow(raw: unknown): OpencodeQuotaWindow | null {
   };
 }
 
-/** Fetch OpenCode Go plan usage — `GET {origin}/zen/go/v1/usage`. Undefined on
- *  any failure (no credential, non-2xx such as the 403 a non-Go account gets,
- *  malformed payload, or network error). */
+/** Fetch OpenCode Go plan usage. Undefined on any failure (no credential, an
+ *  undeclared host, a non-2xx such as the 403 a non-Go account gets, a malformed
+ *  payload, or a network error). */
 export async function fetchOpencodeQuota(
   baseUrl: string,
   token: string,
@@ -46,24 +33,20 @@ export async function fetchOpencodeQuota(
 ): Promise<Omit<OpencodeQuota, "fetchedAt"> | undefined> {
   const url = opencodeUsageUrl(baseUrl);
   if (!url || !token) return undefined;
-  try {
-    const resp = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!resp.ok) return undefined;
-    const data = (await resp.json()) as {
-      usage?: { rolling?: unknown; weekly?: unknown; monthly?: unknown };
-    };
-    const usage = data?.usage;
-    if (!usage || typeof usage !== "object") return undefined;
-    const rolling = toWindow(usage.rolling);
-    const weekly = toWindow(usage.weekly);
-    const monthly = toWindow(usage.monthly);
-    if (!rolling && !weekly && !monthly) return undefined;
-    return { rolling, weekly, monthly };
-  } catch {
-    return undefined;
-  }
+  const reply = await fetchQuotaJson({
+    urls: [url],
+    headers: { Authorization: `Bearer ${token}` },
+    timeoutMs,
+  });
+  if (!reply.ok) return undefined;
+  const data = reply.body as {
+    usage?: { rolling?: unknown; weekly?: unknown; monthly?: unknown };
+  } | null;
+  const usage = data?.usage;
+  if (!usage || typeof usage !== "object") return undefined;
+  const rolling = toWindow(usage.rolling);
+  const weekly = toWindow(usage.weekly);
+  const monthly = toWindow(usage.monthly);
+  if (!rolling && !weekly && !monthly) return undefined;
+  return { rolling, weekly, monthly };
 }

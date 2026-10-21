@@ -72,7 +72,7 @@ export {
   quotaWindowsSummary,
   zaiUsageView,
 } from "./provider-usage.js";
-export type { ProviderUsageView, QuotaWindowKey, QuotaWindowView } from "./provider-usage.js";
+export type { ProviderUsageView } from "./provider-usage.js";
 export {
   ANTIGRAVITY_MODELS,
   DEFAULT_MODEL,
@@ -160,6 +160,7 @@ export {
   requireProviderSpec,
   resolveProviderEndpoint,
   specForProvider,
+  usageMinIntervalMs,
 } from "./provider-registry.js";
 export type {
   ProviderAuthStrategy,
@@ -197,11 +198,12 @@ export type {
   ProviderVisionSpec,
 } from "./provider-registry.js";
 export {
+  BROWSER_SEARCH_ENGINES,
   SEARCH_ENGINE_IDS,
   SEARCH_ENGINE_SPECS,
-  SEARCH_FALLBACK_ENGINES,
   parseSearchRegistry,
   parseSearchSettingsPatch,
+  requireSearchEngineError,
   requireSearchEngineSpec,
   searchEngineDeclared,
   searchEngineSpec,
@@ -212,6 +214,8 @@ export {
 } from "./search-registry.js";
 export type {
   SearchCredentialShare,
+  SearchEngineBrowser,
+  SearchEngineFetchStrategy,
   SearchEngineKind,
   SearchEngineSpec,
   SearchEngineStrategy,
@@ -233,6 +237,8 @@ export {
   redactDiagnosticValue,
   sanitizeFilename,
   sanitizeTerminalText,
+  sliceAlignedToCodepoint,
+  sliceSuffixAlignedToCodepoint,
   stripAnsi,
   tailLines,
 } from "./text.js";
@@ -345,12 +351,10 @@ export type {
   SettingsPayload,
   AntigravityPlan,
   AntigravityQuota,
-  AntigravityQuotaEvent,
   AntigravityQuotaWindow,
   BalanceInfoItem,
   BalanceEvent,
   CodexQuota,
-  CodexQuotaEvent,
   CodexQuotaWindow,
   ModelEndpointInfo,
   ChangelogEvent,
@@ -358,14 +362,14 @@ export type {
   OllamaGenerationSettings,
   OllamaModelsEvent,
   OllamaQuota,
-  OllamaQuotaEvent,
   OllamaQuotaWindow,
   MiMoQuota,
+  ProviderUsage,
+  ProviderUsageEvent,
+  ProviderUsageWindow,
   ZaiQuota,
-  ZaiQuotaEvent,
   ZaiQuotaWindow,
   OpencodeQuota,
-  OpencodeQuotaEvent,
   OpencodeQuotaWindow,
   OpencodeModelsEvent,
   SettingsPatch,

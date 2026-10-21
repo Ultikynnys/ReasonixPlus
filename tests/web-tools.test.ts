@@ -170,6 +170,32 @@ describe("webSearch", () => {
     <li class="b_algo"><h2><a href="https://example.com/b">B</a></h2>
       <div class="b_caption"><p>snippet B</p></div></li>`;
 
+  it("caps the DeepSeek query at the documented 128 characters", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.DEEPSEEK_API_KEY;
+    process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
+    let sent = "";
+    globalThis.fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      sent = (JSON.parse(String(init?.body)) as { query: string }).query;
+      return new Response(JSON.stringify({ results: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    try {
+      await webSearch("q".repeat(300), { engine: "deepseek" });
+      expect(sent).toHaveLength(128);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) {
+        // biome-ignore lint/performance/noDelete: restoring an absent env var
+        delete process.env.DEEPSEEK_API_KEY;
+      } else {
+        process.env.DEEPSEEK_API_KEY = originalKey;
+      }
+    }
+  });
+
   it("calls Z.AI search-prime and normalizes results", async () => {
     const originalFetch = globalThis.fetch;
     const originalKey = process.env.ZAI_API_KEY;
@@ -310,33 +336,47 @@ describe("webSearch", () => {
     }
   });
 
-  it("falls back to a keyless engine when the configured backend is unreachable", async () => {
+  it("never substitutes another engine when the configured backend is unreachable", async () => {
     const originalFetch = globalThis.fetch;
     const calls: string[] = [];
     globalThis.fetch = vi.fn(async (url: string | URL) => {
       calls.push(String(url));
-      if (calls.length === 1) throw new TypeError("fetch failed");
-      return new Response(twoResultsHtml, { status: 200 });
+      throw new TypeError("fetch failed");
     }) as unknown as typeof fetch;
     try {
-      const results = await webSearch("q", { engine: "searxng" });
-      expect(results).toHaveLength(2);
+      await expect(webSearch("q", { engine: "searxng" })).rejects.toThrow(/Cannot reach/);
+      // One attempt, on the configured engine's endpoint only: a fallback index
+      // would answer with a different index's results under this engine's name.
+      expect(calls).toHaveLength(1);
       expect(calls[0]).toContain("localhost:8080");
-      expect(calls[1]).toContain("bing.com");
     } finally {
       globalThis.fetch = originalFetch;
     }
   });
 
-  it("surfaces the engine error only after every fallback also fails", async () => {
+  it("surfaces a credentialed engine's rate limit instead of searching elsewhere", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async () => {
-      throw new TypeError("fetch failed");
+    const originalKey = process.env.OLLAMA_API_KEY;
+    process.env.OLLAMA_API_KEY = "ollama-test-key";
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ error: "You reached your weekly limit." }), {
+        status: 429,
+      });
     }) as unknown as typeof fetch;
     try {
-      await expect(webSearch("q", { engine: "searxng" })).rejects.toThrow(/Cannot reach/);
+      await expect(webSearch("q", { engine: "ollama" })).rejects.toThrow(/rate-limited|quota/);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain("ollama.com");
     } finally {
       globalThis.fetch = originalFetch;
+      if (originalKey === undefined) {
+        // biome-ignore lint/performance/noDelete: restoring an absent env var
+        delete process.env.OLLAMA_API_KEY;
+      } else {
+        process.env.OLLAMA_API_KEY = originalKey;
+      }
     }
   });
 
@@ -1436,6 +1476,25 @@ describe("registerWebTools", () => {
     }
   });
 
+  it("fails the call when the configured engine fails, without a substitute engine", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      calls.push(String(url));
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath: isolatedConfigPath });
+      const out = await registry.dispatch("web_search", JSON.stringify({ query: "q" }));
+      expect(out).toContain("Cannot reach");
+      expect(out).not.toContain("[fallback]");
+      expect(calls).toHaveLength(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("appends consecutive search directive on repeated empty searches", async () => {
     const emptyHtml = "<html><body>Your search did not match any documents.</body></html>";
     const originalFetch = globalThis.fetch;
@@ -1557,6 +1616,132 @@ describe("registerWebTools", () => {
       expect(out).toContain("engine: ollama");
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("maps an engine fetch API's status onto that engine's declared copy", async () => {
+    const configPath = "/tmp/reasonix-web-tools-engine-fetch-errors.json";
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.OLLAMA_API_KEY;
+    process.env.OLLAMA_API_KEY = "ollama-test-key";
+    try {
+      for (const [status, expected] of [
+        [401, /Ollama API key rejected/],
+        [429, /Ollama web fetch is rate-limited or quota-limited/],
+        [503, /Ollama web fetch returned HTTP 503/],
+      ] as const) {
+        writeConfig({ webSearchEngine: "ollama" }, configPath);
+        globalThis.fetch = vi.fn(
+          async () => new Response("nope", { status }),
+        ) as unknown as typeof fetch;
+        const registry = new ToolRegistry();
+        registerWebTools(registry, { configPath });
+        const out = await registry.dispatch(
+          "web_fetch",
+          JSON.stringify({ url: "https://example.com/page" }),
+        );
+        expect(out).toMatch(expected);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) {
+        // biome-ignore lint/performance/noDelete: restoring an absent env var
+        delete process.env.OLLAMA_API_KEY;
+      } else {
+        process.env.OLLAMA_API_KEY = originalKey;
+      }
+    }
+  });
+
+  it("web_search can dispatch through DeepSeek's own Search API", async () => {
+    const configPath = "/tmp/reasonix-web-tools-deepseek-search-test.json";
+    writeConfig({ webSearchEngine: "deepseek" }, configPath);
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.DEEPSEEK_API_KEY;
+    // Env outranks the config store, so this keeps the test off any real key.
+    process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
+    globalThis.fetch = vi.fn(async (url, init) => {
+      expect(url).toBe("https://api.deepseek.com/v1/tools/search");
+      expect((init as RequestInit).headers).toMatchObject({
+        Authorization: "Bearer sk-deepseek-test",
+      });
+      expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
+        query: "deepseek balance",
+        count: 2,
+        need_content: false,
+      });
+      return new Response(
+        JSON.stringify({
+          results: [
+            {
+              title: "Balance API",
+              url: "https://api-docs.deepseek.com/api/get-user-balance",
+              snippet: "Returns the account balance.",
+              summary: "longer summary",
+            },
+            { title: "No url", snippet: "dropped" },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath });
+      const out = await registry.dispatch(
+        "web_search",
+        JSON.stringify({ query: "deepseek balance", topK: 2 }),
+      );
+      expect(out).toContain("engine: deepseek");
+      expect(out).toContain("Balance API");
+      expect(out).toContain("https://api-docs.deepseek.com/api/get-user-balance");
+      expect(out).toContain("Returns the account balance.");
+      expect(out).not.toContain("No url");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) {
+        // biome-ignore lint/performance/noDelete: restoring an absent env var
+        delete process.env.DEEPSEEK_API_KEY;
+      } else {
+        process.env.DEEPSEEK_API_KEY = originalKey;
+      }
+    }
+  });
+
+  it("web_fetch can dispatch through DeepSeek's Fetch API when selected", async () => {
+    const configPath = "/tmp/reasonix-web-tools-deepseek-fetch-test.json";
+    writeConfig({ webSearchEngine: "deepseek" }, configPath);
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.DEEPSEEK_API_KEY;
+    process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
+    globalThis.fetch = vi.fn(async (url, init) => {
+      expect(url).toBe("https://api.deepseek.com/v1/tools/fetch");
+      expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+        url: "https://example.com/page",
+      });
+      return new Response(
+        JSON.stringify({ title: "Fetched page", content: "# Heading\n\nBody as markdown." }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath });
+      const out = await registry.dispatch(
+        "web_fetch",
+        JSON.stringify({ url: "https://example.com/page" }),
+      );
+      expect(out).toContain("engine: deepseek");
+      expect(out).toContain("Fetched page");
+      expect(out).toContain("Body as markdown.");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) {
+        // biome-ignore lint/performance/noDelete: restoring an absent env var
+        delete process.env.DEEPSEEK_API_KEY;
+      } else {
+        process.env.DEEPSEEK_API_KEY = originalKey;
+      }
     }
   });
 });

@@ -53,7 +53,12 @@
     "excludeSpeech": false
   },
   "billing": { "kind": "quota", "schedule": null },
-  "usage": { "probe": "antigravity-quota" },
+  "usage": {
+    "probe": "antigravity-quota",
+    "urls": [],
+    "primaryWindow": "plan",
+    "minIntervalSeconds": 300
+  },
   "strings": {
     "notConfigured": "Not configured yet — sign in to Google Antigravity (Settings → Google) to use Gemini models.",
     "noCredential": "Not signed in to Google Antigravity — sign in from Settings to use Gemini models.",

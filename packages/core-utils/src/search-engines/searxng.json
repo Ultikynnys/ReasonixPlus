@@ -5,7 +5,16 @@
   "order": 2,
   "kind": "endpoint",
   "strategy": "searxng",
-  "fallback": false,
+  "errors": {
+    "status": "web_search {status} \u2014 try: the search backend returned an error; rephrase the query, or switch engines in Settings (General page).",
+    "rateLimit": "web_search 429 \u2014 try: wait 10s before retrying, or rephrase the query; the search backend is rate-limiting this client",
+    "forbidden": "web_search 403 \u2014 try: the search backend is blocking this client; switch engines in Settings (General page), or wait and retry later.",
+    "serverError": "web_search {status} \u2014 try: open the search URL in a browser; if it loads this is transient and a retry in 30s may help",
+    "cannotReach": "web_search: Cannot reach SearXNG server at {endpoint} \u2014 try: install and start SearXNG (https://github.com/searxng/searxng, e.g. `docker run -d -p 8080:8080 searxng/searxng`), or switch engines in Settings (General page).",
+    "invalidEndpoint": "web_search: invalid SearXNG endpoint \"{endpoint}\" \u2014 try: set a valid base URL in Settings (General page, SearXNG endpoint)",
+    "endpointMustBeHttp": "web_search: SearXNG endpoint must be http(s), got {protocol} \u2014 try: set a valid base URL in Settings (General page, SearXNG endpoint)",
+    "noResults": "web_search: 0 results but SearXNG response doesn't look like an empty results page ({chars} chars) \u2014 try: rephrase the query with simpler terms, or switch engines in Settings (General page)."
+  },
   "settings": [
     {
       "key": "endpoint",

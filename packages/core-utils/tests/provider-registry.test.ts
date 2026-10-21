@@ -31,6 +31,7 @@ import {
   requireProviderSpec,
   resolveProviderEndpoint,
   specForProvider,
+  usageMinIntervalMs,
 } from "../src/provider-registry.js";
 import { REASONING_EFFORT_ORDER } from "../src/reasoning-efforts.js";
 
@@ -167,6 +168,53 @@ describe("providers.json", () => {
     expect(requireProviderSpec("synthetic").billing.balance).toBeNull();
     const declared = PROVIDER_SPECS.filter((spec) => spec.billing.balance !== null);
     expect(declared.map((spec) => spec.id).sort()).toEqual(["deepseek", "experiential"]);
+  });
+
+  it("declares where every probing provider publishes usage", () => {
+    // The daemon reads these addresses instead of owning them, so a provider that
+    // moves its usage route is a JSON edit. Pinning the declared contract (not the
+    // vendor's path) keeps a new provider honest without freezing its routes.
+    const probing = PROVIDER_SPECS.filter((spec) => spec.usage.probe !== null);
+    expect(probing.map((spec) => spec.id).sort()).toEqual([
+      "gemini",
+      "mimo",
+      "ollama",
+      "openai",
+      "opencode",
+      "zai",
+    ]);
+    for (const spec of probing) {
+      expect(spec.usage.minIntervalSeconds).toBeGreaterThan(0);
+      for (const url of spec.usage.urls) {
+        if (url.startsWith("/")) continue;
+        expect(new URL(url).protocol).toBe("https:");
+      }
+    }
+    // Z.AI's 5-hour window is what its copy calls "{left}"; Codex answers weekly.
+    expect(requireProviderSpec("zai").usage).toMatchObject({
+      urls: ["/api/monitor/usage/quota/limit"],
+      primaryWindow: "5h",
+      resetsStyle: "absolute",
+    });
+    expect(requireProviderSpec("openai").usage).toMatchObject({
+      primaryWindow: "wk",
+      resetsStyle: "absolute",
+    });
+    // The free tier must never ask a custom proxy for usage: the address is gated
+    // on the hosts this provider declares.
+    expect(requireProviderSpec("opencode").usage.urlGate).toBe("declared-hosts");
+    // Antigravity's reader composes its addresses from the declared endpoint RPCs.
+    expect(requireProviderSpec("gemini").usage.urls).toEqual([]);
+  });
+
+  it("exposes each provider's declared refresh floor in ms, with one default", () => {
+    // The daemon reads this instead of restating the number, so a spec's floor and
+    // the fallback for an undeclared provider are the same arithmetic.
+    for (const spec of PROVIDER_SPECS) {
+      expect(usageMinIntervalMs(spec)).toBe(spec.usage.minIntervalSeconds * 1000);
+    }
+    expect(usageMinIntervalMs(undefined)).toBeGreaterThan(0);
+    expect(usageMinIntervalMs(undefined) % 1000).toBe(0);
   });
 
   it("orders bare-id precedence exactly as declared", () => {
@@ -418,6 +466,36 @@ describe("adding a provider", () => {
     expect(() => parseProviderRegistry({ providers: [broken] })).toThrow(
       /endpoint\.strategy: unsupported value "carrier-pigeon"/,
     );
+  });
+
+  it("rejects a usage address that would leak a key over plain http", () => {
+    const broken = { ...ACME, usage: { probe: "zai-monitor", urls: ["http://usage.test/limit"] } };
+    expect(() => parseProviderRegistry({ providers: [broken] })).toThrow(
+      /usage\.urls\[0\]: expected a \/path or an https URL/,
+    );
+  });
+
+  it("rejects an unknown usage url base, gate or reset style", () => {
+    for (const [key, value] of [
+      ["urlBase", "hostname"],
+      ["urlGate", "own-host"],
+      ["resetsStyle", "friendly"],
+      ["primaryWindow", "1d"],
+    ] as const) {
+      const broken = { ...ACME, usage: { probe: "zai-monitor", [key]: value } };
+      expect(() => parseProviderRegistry({ providers: [broken] })).toThrow(
+        new RegExp(`usage\\.${key}: unsupported value "${value}"`),
+      );
+    }
+  });
+
+  it("rejects a refresh floor that is not a positive whole number of seconds", () => {
+    for (const value of [0, -5, 1.5]) {
+      const broken = { ...ACME, usage: { probe: "zai-monitor", minIntervalSeconds: value } };
+      expect(() => parseProviderRegistry({ providers: [broken] })).toThrow(
+        /usage\.minIntervalSeconds: expected a whole number of seconds above zero/,
+      );
+    }
   });
 
   it("rejects duplicate ids", () => {

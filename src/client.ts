@@ -10,7 +10,7 @@ import {
   stripProviderQualifier,
 } from "@reasonix/core-utils";
 import { type EventSourceMessage, createParser } from "eventsource-parser";
-import { ANTIGRAVITY_CLOUD_CODE_URL, antigravityHeaders } from "./antigravity-oauth.js";
+import { antigravityCloudCodeUrl, antigravityHeaders } from "./antigravity-oauth.js";
 import {
   DEFAULT_ZAI_CHAT_URL,
   DEFAULT_ZAI_CODING_CHAT_URL,
@@ -1361,7 +1361,8 @@ export class DeepSeekClient {
     accessToken: string,
     init: RequestInit,
   ): Promise<Response> {
-    return this._fetch(`${ANTIGRAVITY_CLOUD_CODE_URL}${path}`, {
+    const origin = antigravityCloudCodeUrl();
+    return this._fetch(`${origin}${path}`, {
       ...init,
       headers: { ...antigravityHeaders(accessToken), ...init.headers },
     });

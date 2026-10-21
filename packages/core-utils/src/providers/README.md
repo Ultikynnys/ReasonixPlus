@@ -70,8 +70,8 @@ as the generic fallback.
 Values are plain strings with optional `{placeholder}` slots, filled at the call
 site: `{model}`, `{error}`, `{baseUrl}`, `{account}`, `{org}`, `{message}`,
 `{when}`, `{left}`, `{resets}`, `{weeklyResets}`, `{session}`, `{sessionResets}`,
-`{plan}`, `{fiveHour}`, `{weekly}`, `{rolling}`, `{monthly}` and `{pct}`. An
-unmatched placeholder stays literal. Every key is optional: an undeclared key
+`{plan}`, `{fiveHour}`, `{weekly}`, `{rolling}`, `{monthly}`, `{credit}` and `{pct}`.
+An unmatched placeholder stays literal. Every key is optional: an undeclared key
 returns `undefined`, so the call site keeps its generic wording and a new provider
 can adopt one sentence at a time.
 
@@ -193,6 +193,46 @@ resolves the whole period with one call (`ratePeriodForSchedule`), so the chip's
 label and countdown can never disagree. There is no schedule constant
 in code to drift out of sync.
 
+## Usage
+
+A provider that reports plan usage declares where that usage is published and how
+often it may be read. The probe name picks the payload reader; everything about
+the address is data, so a provider moving its usage API is a JSON edit.
+
+```json
+"usage": {
+  "probe": "zai-monitor",
+  "urls": ["/api/monitor/usage/quota/limit"],
+  "primaryWindow": "5h",
+  "resetsStyle": "absolute"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `probe` | Payload reader: `codex-oauth`, `ollama-balance`, `antigravity-quota`, `zai-monitor`, `mimo-console`, `opencode-usage`; `null` declares no plan window, so no chip renders |
+| `urls` | Addresses the probe reads, tried in order: a `/path`, or an absolute https URL (OpenAI's Codex backend lists its current route, then the legacy one). Empty means the reader composes its own address from the declared endpoint, as the Antigravity `v1internal` RPC pair does |
+| `urlBase` | What a `/path` rides: `origin` (the usual case, since a usage route rarely shares the chat path prefix) or `endpoint` (the configured base URL as-is) |
+| `urlGate` | `any`, or `declared-hosts` to refuse the probe unless the endpoint host is one this provider lists in `errors.hosts`. OpenCode depends on it: a custom proxy must never receive the account's token just to be asked for usage |
+| `minIntervalSeconds` | Floor between network reads, in seconds (default 60). Each API caps reads differently, so the cadence is the provider's own statement rather than a poller constant |
+| `primaryWindow` | Window whose "% left" fills `{left}` in the chip copy; `null` (default) means the first window the payload reports |
+| `resetsStyle` | How a reset time reads: `relative` ("resets in 2h 15m", the default) or `absolute` (the locale date-time the API reports) |
+| `measures` | What the chip shows when the probe reports no percentages: `windows` (default, a dash) or `plan` (the plan's name, for a provider whose percentages need a second credential) |
+
+Each reader normalizes its own payload into one shape, `ProviderUsage`: a plan
+label plus ordered windows carrying a label, % left, reset time and an optional
+rate-limited flag. The status bar therefore renders every provider's usage through
+a single chip, and `primaryWindow` / `resetsStyle` are what keep each provider's
+declared tooltip copy readable without a branch in the UI: `quotaTitle` fills from
+the primary window, `quotaDualTitle` (when declared) names several windows in one
+sentence, and a window the main sentence leaves out gets its own line from
+`quotaFiveHourTitle` / `quotaWeeklyTitle` / `quotaMonthlyTitle` / `quotaPlanTitle`.
+`creditTitle` appends the spendable credit a payload reported alongside usage.
+
+A provider that publishes an account *wallet* instead of plan windows declares
+`billing.balance` instead: a plan measures windows, a wallet holds money, and the
+two chips differ.
+
 ## Fields
 
 Top level:
@@ -231,6 +271,7 @@ Objects:
 | `settingsPanel` | panel name or null | Bespoke behavior panel the settings card renders above its fields |
 | `usable` | `apiKey`, `keylessLocal`, `always` | Ways the model can run right now |
 | `billing` | `kind`, `schedule`, `peakModels`, `balance` | Peak/off-peak calendar (see Peak hours) and the account-balance endpoint |
+| `usage` | `probe`, `urls`, `urlBase`, `urlGate`, `minIntervalSeconds`, `primaryWindow`, `resetsStyle` | Where plan usage is published (see Usage) |
 | `routing` | `staticCatalog`, `discoveredCatalog`, `checkedLast`, `foreignCatalog`, `modelScheme` | How a bare model id reaches this provider |
 | `discovery` | `strategy`, `listField`, `idField`, `excludeSpeech` | Where the live catalog comes from and how to read it |
 | `client` | `auth`, `transport`, `allowMissingKey` | Per-request credentials and wire format |

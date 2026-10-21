@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  BROWSER_SEARCH_ENGINES,
   SEARCH_ENGINE_IDS,
   SEARCH_ENGINE_SPECS,
-  SEARCH_FALLBACK_ENGINES,
   parseSearchRegistry,
   parseSearchSettingsPatch,
+  requireSearchEngineError,
   requireSearchEngineSpec,
   searchEngineDeclared,
   searchEngineSpec,
@@ -27,6 +28,10 @@ describe("search engine registry", () => {
       "brave",
       "ollama",
       "zai",
+      "deepseek",
+      "playwright-chromium",
+      "playwright-firefox",
+      "playwright-webkit",
     ].filter((id) => searchEngineDeclared(id));
     expect(SEARCH_ENGINE_IDS).toEqual(declared);
     expect(SEARCH_ENGINE_SPECS.map((spec) => spec.order)).toEqual(
@@ -34,13 +39,156 @@ describe("search engine registry", () => {
     );
   });
 
-  it("derives the keyless fallback list from the declarations", () => {
-    expect(SEARCH_FALLBACK_ENGINES).toEqual(["bing", "bing-intl"]);
+  it("inherits error copy from a sibling engine, with own keys winning", () => {
+    const [base, child] = parseSearchRegistry({
+      engines: [
+        {
+          id: "base",
+          label: "Base",
+          order: 1,
+          kind: "keyless",
+          strategy: "bing-html",
+          errors: { status: "base status", blocked: "base blocked" },
+        },
+        {
+          id: "child",
+          label: "Child",
+          order: 2,
+          kind: "keyless",
+          strategy: "playwright",
+          browser: "chromium",
+          extends: "base",
+          errors: { blocked: "child blocked" },
+        },
+      ],
+    });
+    // Inherited what it did not declare, overrode what it did.
+    expect(child?.errors.rateLimit).toBeUndefined();
+    expect(child?.errors.status).toBe("base status");
+    expect(child?.errors.blocked).toBe("child blocked");
+    expect(base?.errors.blocked).toBe("base blocked");
+  });
+
+  it("rejects a broken copy chain loudly", () => {
+    const engine = (extra: Record<string, unknown>) => ({
+      engines: [
+        { id: "child", label: "Child", order: 1, kind: "keyless", strategy: "bing-html", ...extra },
+      ],
+    });
+    expect(() => parseSearchRegistry(engine({ extends: "missing" }))).toThrow(
+      /extends undeclared engine "missing"/,
+    );
+    expect(() => parseSearchRegistry(engine({ extends: "child" }))).toThrow(/cannot extend itself/);
+    expect(() =>
+      parseSearchRegistry({
+        engines: [
+          { id: "a", label: "A", order: 1, kind: "keyless", strategy: "bing-html", extends: "b" },
+          { id: "b", label: "B", order: 2, kind: "keyless", strategy: "bing-html", extends: "a" },
+        ],
+      }),
+    ).toThrow(/extends cycle/);
+  });
+
+  it("templates the playwright copy per browser instead of naming one", () => {
+    const firefox = requireSearchEngineSpec("playwright-firefox");
+    const chromium = requireSearchEngineSpec("playwright-chromium");
+    // The family declares its copy once; each engine renders it for its own build.
+    expect(firefox.extends).toBe("playwright-chromium");
+    expect(firefox.errors).toEqual(chromium.errors);
+    expect(requireSearchEngineError(firefox, "notInstalled")).toContain("{Browser}");
+    expect(requireSearchEngineError(firefox, "notInstalled")).toContain(
+      "playwright install {browser}",
+    );
+    expect(requireSearchEngineError(requireSearchEngineSpec("bing"), "blocked")).toContain("Bing");
+  });
+
+  it("declares every message template its strategy can emit", () => {
+    // A transport reads these keys by name, so a missing one must fail here rather
+    // than at call time with "declares no errors.<key> message".
+    const keyed = [
+      "cannotReach",
+      "missingKey",
+      "unauthorized",
+      "rateLimit",
+      "serverError",
+      "parseError",
+    ];
+    const bingKeys = [
+      "status",
+      "rateLimit",
+      "forbidden",
+      "serverError",
+      "cannotReach",
+      "blocked",
+      "noResults",
+    ];
+    const required: Record<string, string[]> = {
+      "bing-html": bingKeys,
+      "bing-intl": bingKeys,
+      searxng: [
+        "status",
+        "rateLimit",
+        "forbidden",
+        "serverError",
+        "cannotReach",
+        "invalidEndpoint",
+        "endpointMustBeHttp",
+        "noResults",
+      ],
+      metaso: [...keyed, "dailyLimit", "apiError"],
+      playwright: ["notFound", "notInstalled", "launchFailed", "cannotReach", "timeout", "blocked"],
+    };
+    const fetchKeys = [
+      "fetchMissingKey",
+      "fetchUnauthorized",
+      "fetchRateLimit",
+      "fetchServerError",
+      "fetchParseError",
+    ];
+    for (const spec of SEARCH_ENGINE_SPECS) {
+      for (const key of required[spec.strategy] ?? keyed) {
+        expect(Object.keys(spec.errors), `${spec.id} declares ${key}`).toContain(key);
+      }
+      if (spec.fetchStrategy === "http") continue;
+      for (const key of fetchKeys) {
+        expect(Object.keys(spec.errors), `${spec.id} declares ${key}`).toContain(key);
+      }
+    }
   });
 
   it("declares no settings on a keyless engine", () => {
     expect(requireSearchEngineSpec("bing").settings).toEqual([]);
     expect(requireSearchEngineSpec("bing").kind).toBe("keyless");
+  });
+
+  it("pairs the playwright strategy with exactly one managed browser", () => {
+    for (const spec of SEARCH_ENGINE_SPECS) {
+      if (spec.strategy !== "playwright") {
+        expect(spec.browser, spec.id).toBeNull();
+        continue;
+      }
+      expect(BROWSER_SEARCH_ENGINES, spec.id).toContain(spec.browser);
+    }
+    // The browser is what the transport launches, so a document without one is invalid.
+    expect(() =>
+      parseSearchRegistry({
+        engines: [{ id: "pw", label: "PW", order: 1, kind: "keyless", strategy: "playwright" }],
+      }),
+    ).toThrow(/browser: required for the playwright strategy/);
+    expect(() =>
+      parseSearchRegistry({
+        engines: [
+          {
+            id: "bingish",
+            label: "Bingish",
+            order: 1,
+            kind: "keyless",
+            strategy: "bing-html",
+            browser: "chromium",
+          },
+        ],
+      }),
+    ).toThrow(/browser: only the playwright strategy drives a browser/);
   });
 
   it("declares display copy for every engine", () => {
@@ -105,7 +253,6 @@ describe("search engine registry", () => {
     expect(spec?.id).toBe("acme-search");
     // A description is optional: an engine without one renders title-only.
     expect(spec?.description).toBeNull();
-    expect(spec?.fallback).toBe(false);
     expect(spec?.settings[0]?.env).toEqual(["ACME_SEARCH_KEY"]);
   });
 

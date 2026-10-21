@@ -6,7 +6,12 @@
 import type { ApprovalPrompt } from "./approval-prompt.js";
 import type { ChangelogRelease } from "./changelog.js";
 import type { ChoiceOption, PlanStep, ReasoningEffort } from "./permission-types.js";
-import type { ProviderID } from "./provider-registry.js";
+import type { PlaywrightManagedBrowser } from "./playwright-browsers.js";
+import type {
+  ProviderID,
+  ProviderProbeStrategy,
+  ProviderUsageWindowLabel,
+} from "./provider-registry.js";
 import type { SearchEngineID } from "./search-engines.generated.js";
 
 /** Trust dial: 3 settings, not 4.
@@ -646,11 +651,12 @@ export interface McpSetupEvent {
   subagents: boolean;
 }
 
-/** Single source of truth for managed Playwright browser modes; the daemon, the UI
- *  dropdown, and the installer all derive from it. */
-export const PLAYWRIGHT_MANAGED_BROWSERS = ["chromium", "firefox", "webkit", "msedge"] as const;
-
-export type PlaywrightManagedBrowser = (typeof PLAYWRIGHT_MANAGED_BROWSERS)[number];
+/** Managed Playwright browser modes live in their own leaf module so the search
+ *  registry can read them without depending on this protocol. */
+export {
+  PLAYWRIGHT_MANAGED_BROWSERS,
+  type PlaywrightManagedBrowser,
+} from "./playwright-browsers.js";
 
 /** Extension relay targets: the Playwright Extension is Chromium-only, so the
  *  card chooses between Chrome (the default) and Edge. */
@@ -1172,9 +1178,7 @@ export interface SettingsEvent {
     /** Last browser-flow failure — shown in the MiMo settings card. */
     flowError?: string;
   };
-  /** Xiaomi MiMo subscription usage. Only populated when a console session is
-   *  configured; otherwise the UI shows a static plan chip with no percentage. */
-  mimoQuota?: MiMoQuota | null;
+  /** Xiaomi MiMo subscription usage rides `$usage` like every other plan window. */
   /** Rule lists scoped to the current workspace (project config). */
   shellAllowedWorkspace?: string[];
   pathAllowedWorkspace?: string[];
@@ -1245,6 +1249,47 @@ export interface BalanceEvent {
   balanceInfos: BalanceInfoItem[];
 }
 
+/** One usage window, normalized daemon-side so every provider's plan usage reaches
+ *  the ribbon in the same shape. */
+export interface ProviderUsageWindow {
+  /** Ribbon label: "5h" (rolling/session), "wk", "mo", or "plan" (per-model). */
+  label: ProviderUsageWindowLabel;
+  /** % of the window's limit still available (the ribbon's "% left"). */
+  remainingPct: number;
+  /** Epoch-ms reset time, or null when the provider reported none. */
+  resetsAt: number | null;
+  /** True when the provider flagged the window rate-limited (OpenCode Go). */
+  limited?: boolean;
+}
+
+/** A provider's plan usage, already normalized: one plan label plus ordered
+ *  windows. The daemon builds it from whichever payload the provider speaks, so
+ *  the status bar renders every provider through one code path. */
+export interface ProviderUsage {
+  /** Probe that produced this reading (echoed for diagnostics). */
+  probe: ProviderProbeStrategy;
+  /** Plan/tier badge text, or null when the provider reports none. */
+  plan: string | null;
+  /** Ordered windows, primary first; empty when the provider reported no numbers. */
+  windows: ProviderUsageWindow[];
+  /** Spendable credit the same payload reported, when it reports one. */
+  credit?: { currency: string; amount: number } | null;
+}
+
+/** Plan usage for the active tab. A `null` payload means "no data" — nothing
+ *  configured, a tier that measures nothing, or a failed read — and the chip
+ *  degrades to a dash plus this reason, never a guessed number. */
+export interface ProviderUsageEvent {
+  type: "$usage";
+  usage: ProviderUsage | null;
+  /** Why usage is null, in the transport's own vocabulary (`http-429`,
+   *  `network`, `no-credential`, ...). */
+  reason?: string;
+  /** The reason means "not configured yet", so the tooltip asks for setup rather
+   *  than reporting a failed read. */
+  needsSetup?: boolean;
+}
+
 /** One quota window reported by the Codex app-server (account/rateLimits/read).
  *  Windows are identified by `windowMinutes`, never by position — OpenAI has
  *  changed which buckets appear for different plans (issue #32707). */
@@ -1273,14 +1318,6 @@ export interface CodexQuota {
   fetchedAt: number;
 }
 
-export interface CodexQuotaEvent {
-  type: "$codex_quota";
-  quota: CodexQuota | null;
-  /** Why quota is null (HTTP status, malformed payload, network error) —
-   *  surfaced in the statusbar tooltip so a silent "—" is diagnosable. */
-  reason?: string;
-}
-
 /** One Ollama Cloud plan window (`GET {origin}/api/balance`). The API reports
  *  the % of the window's limit still available; the daemon derives the consumed
  *  % to mirror how the Codex quota reports usedPercent. */
@@ -1304,13 +1341,6 @@ export interface OllamaQuota {
   /** Purchased (extra) credit balance in USD, when the account reports it. */
   purchasedUsd?: number | null;
   fetchedAt: number;
-}
-
-export interface OllamaQuotaEvent {
-  type: "$ollama_quota";
-  quota: OllamaQuota | null;
-  /** Why quota is null — surfaced in the statusbar tooltip. */
-  reason?: string;
 }
 
 /** One Z.AI GLM Coding Plan usage window (`GET {origin}/api/monitor/usage/quota/limit`).
@@ -1342,13 +1372,6 @@ export interface ZaiQuota {
   fetchedAt: number;
 }
 
-export interface ZaiQuotaEvent {
-  type: "$zai_quota";
-  quota: ZaiQuota | null;
-  /** Why quota is null — surfaced in the statusbar tooltip. */
-  reason?: string;
-}
-
 /** One OpenCode Go plan usage window (`GET {origin}/zen/go/v1/usage`). The API
  *  reports each window's consumed share directly as `percent` (0-100) plus an
  *  ISO reset timestamp; `limited` mirrors the server's `status:
@@ -1376,13 +1399,6 @@ export interface OpencodeQuota {
   /** Monthly window. */
   monthly: OpencodeQuotaWindow | null;
   fetchedAt: number;
-}
-
-export interface OpencodeQuotaEvent {
-  type: "$opencode_quota";
-  quota: OpencodeQuota | null;
-  /** Why quota is null — surfaced in the statusbar tooltip. */
-  reason?: string;
 }
 
 /** Xiaomi MiMo subscription usage. The console usage API
@@ -1434,13 +1450,6 @@ export interface AntigravityQuota {
   /** Per-model usage windows (already vertex-deduped, daemon-side). */
   windows: AntigravityQuotaWindow[];
   fetchedAt: number;
-}
-
-export interface AntigravityQuotaEvent {
-  type: "$antigravity_quota";
-  quota: AntigravityQuota | null;
-  /** Why quota is null — surfaced in the statusbar tooltip. */
-  reason?: string;
 }
 
 /** Dynamically fetched model list for the Ollama provider — driven by the
@@ -1654,11 +1663,8 @@ export type OutgoingCommand = { tabId?: string } & (
     }
   | { cmd: "settings_get" }
   | ({ cmd: "settings_save" } & SettingsPatch)
-  | { cmd: "codex_quota_get" }
-  | { cmd: "ollama_quota_get" }
-  | { cmd: "antigravity_quota_get" }
-  | { cmd: "zai_quota_get" }
-  | { cmd: "opencode_quota_get" }
+  /** Refresh the tab's money chips: the declared plan-usage probe and its wallet. */
+  | { cmd: "funds_refresh" }
   | { cmd: "ollama_models_list"; force?: boolean }
   /** Fetch the repo commit history for the Settings changelog page. */
   | { cmd: "changelog_get"; force?: boolean }

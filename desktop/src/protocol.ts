@@ -6,8 +6,6 @@
  *  and stay declared here until the kernel Event union itself moves into
  *  core-utils. */
 import type {
-  AntigravityQuota,
-  AntigravityQuotaEvent,
   BalanceEvent,
   BtwResultEvent,
   ChangelogEvent,
@@ -16,8 +14,6 @@ import type {
   ChoiceOption,
   ChoiceRequiredEvent,
   ChoiceVerdict,
-  CodexQuota,
-  CodexQuotaEvent,
   ConfirmRequiredEvent,
   ConfirmationChoice,
   ConnectedEvent,
@@ -73,13 +69,7 @@ import type {
   OllamaGenerationPatch,
   OllamaGenerationSettings,
   OllamaModelsEvent,
-  OllamaQuota,
-  OllamaQuotaEvent,
-  OllamaQuotaWindow,
   OpencodeModelsEvent,
-  OpencodeQuota,
-  OpencodeQuotaEvent,
-  OpencodeQuotaWindow,
   OutgoingCommand,
   PathAccessRequiredEvent,
   PersistedNotice,
@@ -94,6 +84,8 @@ import type {
   PlaywrightManagedBrowser,
   PlaywrightMcpConnectionMode,
   ProtocolErrorEvent,
+  ProviderUsage,
+  ProviderUsageEvent,
   QuickSend,
   ReadyEvent,
   ReasoningEffort,
@@ -126,9 +118,6 @@ import type {
   UserImageAttachment,
   WebSearchEngineName,
   WorkspaceInitializedEvent,
-  ZaiQuota,
-  ZaiQuotaEvent,
-  ZaiQuotaWindow,
 } from "@reasonix/core-utils";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -147,29 +136,19 @@ export {
 } from "@reasonix/core-utils";
 
 export type {
-  AntigravityQuota,
-  AntigravityQuotaEvent,
   BalanceEvent,
   BtwResultEvent,
   ConnectedEvent,
   DesktopDiagnosticEvent,
   DesktopDiagnosticLevel,
   OllamaModelsEvent,
-  OllamaQuota,
-  OllamaQuotaEvent,
-  OllamaQuotaWindow,
   OpencodeModelsEvent,
-  OpencodeQuota,
-  OpencodeQuotaEvent,
-  OpencodeQuotaWindow,
   ChangelogEvent,
   CheckpointRequiredEvent,
   CheckpointVerdict,
   ChoiceOption,
   ChoiceRequiredEvent,
   ChoiceVerdict,
-  CodexQuota,
-  CodexQuotaEvent,
   ConfirmRequiredEvent,
   ConfirmationChoice,
   CtxBreakdownEvent,
@@ -218,6 +197,8 @@ export type {
   PlanStep,
   PlanVerdict,
   ProtocolErrorEvent,
+  ProviderUsage,
+  ProviderUsageEvent,
   ReadyEvent,
   ReasoningEffort,
   RetryResultEvent,
@@ -247,9 +228,6 @@ export type {
   UserImageAttachment,
   QuickSend,
   WebSearchEngineName,
-  ZaiQuota,
-  ZaiQuotaEvent,
-  ZaiQuotaWindow,
 };
 
 /** Legacy alias for the memory-browser name (context-panel imports it). */
@@ -296,14 +274,10 @@ export type IncomingEvent = { tabId?: string } & (
   | NeedsSetupEvent
   | SettingsEvent
   | BalanceEvent
-  | CodexQuotaEvent
-  | OllamaQuotaEvent
+  | ProviderUsageEvent
   | OllamaModelsEvent
   | OpencodeModelsEvent
   | ChangelogEvent
-  | AntigravityQuotaEvent
-  | ZaiQuotaEvent
-  | OpencodeQuotaEvent
   | CheckpointRequiredEvent
   | RevisionRequiredEvent
   | StepCompletedEvent

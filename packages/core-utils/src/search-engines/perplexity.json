@@ -5,7 +5,14 @@
   "order": 6,
   "kind": "api-key",
   "strategy": "perplexity",
-  "fallback": false,
+  "errors": {
+    "cannotReach": "web_search: cannot reach the Perplexity endpoint {endpoint} \u2014 try: check your network or proxy, then retry, or switch engines in Settings (General page).",
+    "missingKey": "web_search: Perplexity backend requires an API key \u2014 set PERPLEXITY_API_KEY env var or `perplexityApiKey` in ~/.reasonix/config.json; get one at https://perplexity.ai/settings/api",
+    "unauthorized": "web_search: Perplexity API key rejected \u2014 check PERPLEXITY_API_KEY or get one at https://perplexity.ai/settings/api",
+    "rateLimit": "web_search: Perplexity rate-limited \u2014 wait and retry, or switch engines in Settings (General page).",
+    "serverError": "web_search: Perplexity server error ({status}) \u2014 try again later, or switch engines in Settings (General page).",
+    "parseError": "web_search: Perplexity returned unparseable response (HTTP {status}) \u2014 try again later"
+  },
   "settings": [
     {
       "key": "apiKey",

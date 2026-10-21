@@ -78,12 +78,18 @@
   },
   "wire": { "thinking": "mimo-top-level", "reasoningEffort": false },
   "billing": { "kind": "quota", "schedule": null },
-  "usage": { "probe": "mimo-console" },
+  "usage": {
+    "probe": "mimo-console",
+    "urls": ["/api/v1/tokenPlan/usage"],
+    "measures": "plan",
+    "primaryWindow": "plan"
+  },
   "strings": {
     "notConfigured": "Not configured yet — add a Xiaomi MiMo API key in Settings → Models to use MiMo models.",
     "noCredential": "No Xiaomi MiMo credential for {model} — add a MiMo key in Settings → Models.",
     "quotaLabel": "MiMo plan",
     "quotaTitle": "Xiaomi MiMo subscription plan. MiMo bills through your plan; per-token usage isn't reported.",
+    "quotaNoData": "Xiaomi MiMo subscription plan. MiMo bills through your plan; per-token usage isn't reported.",
     "quotaPlanFallback": "Token Plan",
     "panelSignInTitle": "Sign in with Xiaomi",
     "panelSignIn": "Sign in",

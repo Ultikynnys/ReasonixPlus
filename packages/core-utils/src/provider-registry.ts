@@ -356,9 +356,49 @@ export const PROVIDER_PROBE_STRATEGIES: ReadonlySet<string> = new Set<ProviderPr
   "opencode-usage",
 ]);
 
+/** Window labels a normalized usage view carries: "5h" (rolling/session), "wk",
+ *  "mo", or "plan" for a per-model bucket. */
+export type ProviderUsageWindowLabel = "5h" | "wk" | "mo" | "plan";
+
+/** What a probe's relative URL resolves against: the endpoint's origin (a usage
+ *  route rarely shares the chat path prefix) or the configured base URL. */
+export type ProviderUsageUrlBase = "origin" | "endpoint";
+
+/** Which host a probe may talk to: any, or only the hosts the provider declares
+ *  in `errors.hosts` (a custom proxy must never receive the account's token). */
+export type ProviderUsageUrlGate = "any" | "declared-hosts";
+
+/** How a reset time reads in the chip tooltip. */
+export type ProviderUsageResetsStyle = "relative" | "absolute";
+
+/** A provider's chip unit: a measured window percentage, or just the plan's name
+ *  when reading a percentage needs a second credential. */
+export type ProviderUsageMeasures = "windows" | "plan";
+
+/** Where a provider publishes plan usage, and how the daemon should read it. The
+ *  probe name selects the payload reader; everything about the address and the
+ *  refresh floor is declared here so a provider moving its usage API is a JSON
+ *  edit. */
 export interface ProviderUsageSpec {
   /** Quota probe this provider exposes, or null when it publishes no plan window. */
   probe: ProviderProbeStrategy | null;
+  /** Addresses the probe reads, tried in order: a `/path` resolved against
+   *  `urlBase`, or an absolute https URL. Empty when the reader composes its own
+   *  address from the declared endpoint (a method-keyed POST RPC or an OAuth
+   *  backend that has no single usage route). */
+  urls: readonly string[];
+  urlBase: ProviderUsageUrlBase;
+  urlGate: ProviderUsageUrlGate;
+  /** Floor between network reads, in seconds. Declared because each API caps
+   *  reads differently (Ollama's balance allows ~10/min). */
+  minIntervalSeconds: number;
+  /** Window whose "% left" fills `{left}` in the chip copy; null means the first
+   *  window the payload reports. */
+  primaryWindow: ProviderUsageWindowLabel | null;
+  resetsStyle: ProviderUsageResetsStyle;
+  /** What the chip shows when the probe reports no percentages (default
+   *  `windows`: a dash). */
+  measures: ProviderUsageMeasures;
 }
 
 /** Provider-specific UI copy. Every key is optional: a missing key falls back to the
@@ -410,9 +450,27 @@ const SETTINGS_PANELS: ReadonlySet<string> = new Set([
   "opencode-auth",
   "ollama-generation",
 ]);
+const USAGE_URL_BASES: ReadonlySet<string> = new Set(["origin", "endpoint"]);
+const USAGE_URL_GATES: ReadonlySet<string> = new Set(["any", "declared-hosts"]);
+const USAGE_RESETS_STYLES: ReadonlySet<string> = new Set(["relative", "absolute"]);
+const USAGE_WINDOW_LABELS: ReadonlySet<string> = new Set(["5h", "wk", "mo", "plan"]);
+const USAGE_MEASURES: ReadonlySet<string> = new Set(["windows", "plan"]);
+/** One read per minute unless a provider's API allows fewer. */
+const DEFAULT_USAGE_MIN_INTERVAL_SECONDS = 60;
 
 function fail(where: string, detail: string): never {
   throw new Error(`provider registry: ${where}: ${detail}`);
+}
+
+/** A usage or balance address: a `/path` that rides the endpoint, or an absolute
+ *  https URL when the route lives on another prefix (the wallet is fetched with
+ *  the same bearer key, so plain http is refused). */
+function endpointUrl(value: unknown, where: string): string {
+  const url = text(value, where);
+  if (!url.startsWith("/") && !/^https:\/\//.test(url)) {
+    fail(where, "expected a /path or an https URL");
+  }
+  return url;
 }
 
 function record(value: unknown, where: string): Record<string, unknown> {
@@ -626,11 +684,47 @@ function parseDiscovery(value: unknown, where: string): ProviderDiscoverySpec {
 
 function parseUsage(value: unknown, where: string): ProviderUsageSpec {
   const raw = record(value ?? {}, where);
+  const urls = raw.urls ?? [];
+  if (!Array.isArray(urls)) fail(`${where}.urls`, "expected an array of URLs");
+  const minIntervalSeconds = number(
+    raw.minIntervalSeconds ?? DEFAULT_USAGE_MIN_INTERVAL_SECONDS,
+    `${where}.minIntervalSeconds`,
+  );
+  if (!Number.isInteger(minIntervalSeconds) || minIntervalSeconds <= 0) {
+    fail(`${where}.minIntervalSeconds`, "expected a whole number of seconds above zero");
+  }
   return {
     probe: nullableChoice<ProviderProbeStrategy>(
       raw.probe,
       PROVIDER_PROBE_STRATEGIES,
       `${where}.probe`,
+    ),
+    urls: urls.map((entry, index) => endpointUrl(entry, `${where}.urls[${index}]`)),
+    urlBase: choice<ProviderUsageUrlBase>(
+      raw.urlBase ?? "origin",
+      USAGE_URL_BASES,
+      `${where}.urlBase`,
+    ),
+    urlGate: choice<ProviderUsageUrlGate>(
+      raw.urlGate ?? "any",
+      USAGE_URL_GATES,
+      `${where}.urlGate`,
+    ),
+    minIntervalSeconds,
+    primaryWindow: nullableChoice<ProviderUsageWindowLabel>(
+      raw.primaryWindow,
+      USAGE_WINDOW_LABELS,
+      `${where}.primaryWindow`,
+    ),
+    resetsStyle: choice<ProviderUsageResetsStyle>(
+      raw.resetsStyle ?? "relative",
+      USAGE_RESETS_STYLES,
+      `${where}.resetsStyle`,
+    ),
+    measures: choice<ProviderUsageMeasures>(
+      raw.measures ?? "windows",
+      USAGE_MEASURES,
+      `${where}.measures`,
     ),
   };
 }
@@ -712,13 +806,11 @@ function parseBilling(value: unknown, where: string): ProviderBillingSpec {
 function parseBalance(value: unknown, where: string): ProviderBalanceSpec | null {
   if (value === undefined || value === null) return null;
   const raw = record(value, where);
-  const url = text(raw.url, `${where}.url`);
-  // A relative path rides the endpoint; an absolute URL must stay on https, since
-  // the wallet is fetched with the provider's bearer key.
-  if (!url.startsWith("/") && !/^https:\/\//.test(url)) {
-    fail(`${where}.url`, "expected a /path or an https URL");
-  }
-  return { url, shape: choice<ProviderBalanceShape>(raw.shape, PROVIDER_BALANCE_SHAPES, `${where}.shape`) };
+  const url = endpointUrl(raw.url, `${where}.url`);
+  return {
+    url,
+    shape: choice<ProviderBalanceShape>(raw.shape, PROVIDER_BALANCE_SHAPES, `${where}.shape`),
+  };
 }
 
 function parseClient(value: unknown, where: string): ProviderClientSpec {
@@ -933,6 +1025,12 @@ export const MODELS_DEV_SPECS: readonly ProviderSpec[] = PROVIDER_SPECS.filter(
 /** Catalog entry by its catalog id (e.g. `opencode`), or undefined when unknown. */
 export function providerSpec(id: string): ProviderSpec | undefined {
   return SPEC_BY_ID.get(id);
+}
+
+/** The floor between usage reads for a provider, in ms. The default lives here and
+ *  nowhere else, so a caller that holds a spec never restates it. */
+export function usageMinIntervalMs(spec: ProviderSpec | undefined): number {
+  return (spec?.usage.minIntervalSeconds ?? DEFAULT_USAGE_MIN_INTERVAL_SECONDS) * 1000;
 }
 
 /** A provider's short model-prefix tag (`DS`), or "" when the id is undeclared. */

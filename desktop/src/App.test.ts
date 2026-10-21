@@ -4698,36 +4698,44 @@ describe("Desktop App reducer — plan labels are workspace-scoped", () => {
   });
 });
 
-describe("Desktop App reducer — Ollama usage quota", () => {
-  it("$ollama_quota stores the windows and clears the refresh flag", () => {
-    const state = { ...initialState(), ollamaQuotaRefreshing: true };
+describe("Desktop App reducer — plan usage", () => {
+  it("$usage stores the normalized windows and clears the refresh flag", () => {
+    const state = { ...initialState(), planUsageRefreshing: true };
     const next = reduce(state, {
       t: "incoming",
       event: {
-        type: "$ollama_quota",
-        quota: {
-          session: { usagePct: 0.3, remainingPct: 99.7 },
-          weekly: { usagePct: 0.1, remainingPct: 99.9 },
-          fetchedAt: 1234,
+        type: "$usage",
+        usage: {
+          probe: "ollama-balance",
+          plan: "free",
+          windows: [
+            { label: "5h", remainingPct: 99.7, resetsAt: null },
+            { label: "wk", remainingPct: 99.9, resetsAt: null },
+          ],
         },
       },
     });
-    expect(next.ollamaQuota).toMatchObject({
-      session: { usagePct: 0.3, remainingPct: 99.7 },
-      weekly: { usagePct: 0.1, remainingPct: 99.9 },
+    expect(next.planUsage).toMatchObject({
+      plan: "free",
+      windows: [
+        { label: "5h", remainingPct: 99.7 },
+        { label: "wk", remainingPct: 99.9 },
+      ],
     });
-    expect(next.ollamaQuotaRefreshing).toBe(false);
-    expect(next.ollamaQuotaReason).toBeNull();
+    expect(next.planUsageRefreshing).toBe(false);
+    expect(next.planUsageReason).toBeNull();
+    expect(next.planUsageNeedsSetup).toBe(false);
   });
 
-  it("$ollama_quota with null quota carries the reason", () => {
+  it("$usage with a null payload carries the reason and its setup flag", () => {
     const next = reduce(initialState(), {
       t: "incoming",
-      event: { type: "$ollama_quota", quota: null, reason: "usage-unavailable" },
+      event: { type: "$usage", usage: null, reason: "http-429", needsSetup: true },
     });
-    expect(next.ollamaQuota).toBeNull();
-    expect(next.ollamaQuotaReason).toBe("usage-unavailable");
-    expect(next.ollamaQuotaRefreshing).toBe(false);
+    expect(next.planUsage).toBeNull();
+    expect(next.planUsageReason).toBe("http-429");
+    expect(next.planUsageNeedsSetup).toBe(true);
+    expect(next.planUsageRefreshing).toBe(false);
   });
 });
 

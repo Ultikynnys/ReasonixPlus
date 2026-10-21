@@ -1058,6 +1058,11 @@ export function loadZaiApiKey(path: string = defaultConfigPath()): string | unde
   return providerApiKey("zai", path);
 }
 
+/** DeepSeek API key shared by chat and DeepSeek web search: env > config > undefined. */
+export function loadDeepseekApiKey(path: string = defaultConfigPath()): string | undefined {
+  return providerApiKey("deepseek", path);
+}
+
 /** OpenCode API key: env > config > undefined; the client falls back to `public`
  *  for free models when unconfigured. */
 export function loadOpencodeApiKey(path: string = defaultConfigPath()): string | undefined {

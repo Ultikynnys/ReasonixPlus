@@ -7,6 +7,26 @@ export function flattenText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/** Slicing inside a UTF-16 surrogate pair (emoji, supplementary CJK) leaves a lone
+ *  surrogate that crashes downstream JSON parsers (issue #1970): trim one unit back. */
+export function sliceAlignedToCodepoint(s: string, end: number): string {
+  if (end <= 0) return "";
+  if (end >= s.length) return s;
+  const last = s.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) return s.slice(0, end - 1);
+  return s.slice(0, end);
+}
+
+/** Suffix twin of `sliceAlignedToCodepoint`, for head+tail truncation. */
+export function sliceSuffixAlignedToCodepoint(s: string, len: number): string {
+  if (len <= 0) return "";
+  if (len >= s.length) return s;
+  const start = s.length - len;
+  const first = s.charCodeAt(start);
+  if (first >= 0xdc00 && first <= 0xdfff) return s.slice(start + 1);
+  return s.slice(start);
+}
+
 /** Last `n` lines of `text` (CRLF-aware). With `elisionMarker`, a longer input is
  *  prefixed by a `[… N earlier lines …]` note — shared by the job/command output tails. */
 export function tailLines(text: string, n: number, opts: { elisionMarker?: boolean } = {}): string {

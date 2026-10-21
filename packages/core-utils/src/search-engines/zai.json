@@ -5,7 +5,14 @@
   "order": 10,
   "kind": "shared",
   "strategy": "zai",
-  "fallback": false,
+  "errors": {
+    "cannotReach": "web_search: cannot reach the Z.AI search endpoint {endpoint} \u2014 try: check your network or proxy, then retry, or switch engines in Settings (General page).",
+    "missingKey": "web_search: Z.AI search requires an API key. Set ZAI_API_KEY or configure zaiApiKey, then select zai in Settings (General page).",
+    "unauthorized": "web_search: Z.AI API key rejected. Check ZAI_API_KEY or zaiApiKey in settings.",
+    "rateLimit": "web_search: Z.AI search rate-limited or quota exceeded. Wait and retry or check your Z.AI plan.",
+    "serverError": "web_search: Z.AI search server error ({status}). Try again later or select another engine.",
+    "parseError": "web_search: Z.AI search returned an unparseable response (HTTP {status}). Try again later."
+  },
   "sharedCredential": { "provider": "zai", "key": "apiKey" },
   "settings": []
 }

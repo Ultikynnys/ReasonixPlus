@@ -5,7 +5,16 @@
   "order": 3,
   "kind": "api-key",
   "strategy": "metaso",
-  "fallback": false,
+  "errors": {
+    "cannotReach": "web_search: cannot reach the Metaso endpoint {endpoint} \u2014 try: check your network or proxy, then retry, or switch engines in Settings (General page).",
+    "missingKey": "web_search: Metaso requires an API key \u2014 set METASO_API_KEY or `metasoApiKey` in ~/.reasonix/config.json. Get one at https://metaso.cn/search-api/playground",
+    "unauthorized": "web_search: Metaso API key rejected \u2014 check METASO_API_KEY or get one at https://metaso.cn/search-api/playground",
+    "rateLimit": "web_search: Metaso rate-limited \u2014 wait and retry, or get your own API key at https://metaso.cn/search-api/playground",
+    "serverError": "web_search: Metaso server error ({status}) \u2014 try again later, or switch engines in Settings (General page).",
+    "parseError": "web_search: Metaso returned unparseable response (HTTP {status}) \u2014 try again later",
+    "dailyLimit": "web_search: Metaso daily search limit reached \u2014 set METASO_API_KEY or get a key at https://metaso.cn/search-api/playground",
+    "apiError": "web_search: Metaso API error (code {code}: {message}) \u2014 try again later"
+  },
   "settings": [
     {
       "key": "apiKey",

@@ -28,6 +28,42 @@ const CODEX: CodexQuota = {
   fetchedAt: 0,
 };
 
+describe("window normalization", () => {
+  // One normalizer serves every provider, so a payload cannot reach the chip with a
+  // percentage or reset time no renderer can print.
+  it("clamps a percentage into 0-100 and drops a reset time that is not a real date", () => {
+    const view = codexUsageView({
+      ...CODEX,
+      fiveHour: { windowMinutes: 300, usedPercent: -40, remainingPercent: 140, resetsAt: null },
+      weekly: {
+        windowMinutes: 10080,
+        usedPercent: 0,
+        remainingPercent: 58,
+        resetsAt: "not a date",
+      },
+    });
+    expect(view.windows.map((w) => w.remainingPct)).toEqual([100, 58]);
+    expect(view.windows.every((w) => w.resetsAt === null)).toBe(true);
+  });
+
+  it("keeps the rate-limited flag only when the provider set it", () => {
+    const limited = opencodeUsageView({
+      plan: null,
+      rolling: { usagePct: 100, remainingPct: 0, resetsAt: null, limited: true },
+      weekly: null,
+      monthly: null,
+    });
+    expect(limited.windows[0]?.limited).toBe(true);
+    const plain = opencodeUsageView({
+      plan: null,
+      rolling: { usagePct: 10, remainingPct: 90, resetsAt: null, limited: false },
+      weekly: null,
+      monthly: null,
+    });
+    expect(plain.windows[0]).not.toHaveProperty("limited");
+  });
+});
+
 describe("codexUsageView", () => {
   it("maps 5-hour then weekly and parses ISO resets to epoch ms", () => {
     const view = codexUsageView(CODEX);

@@ -4,6 +4,7 @@ import {
   type AntigravityPlan,
   type AntigravityQuotaWindow,
   isUsableAntigravityModel,
+  providerDefaultEndpoint,
 } from "@reasonix/core-utils";
 import {
   type AntigravityOAuthCreds,
@@ -32,8 +33,17 @@ export const ANTIGRAVITY_OAUTH_CLIENT_SECRET = "GOCSPX-K58FWR486LdLJ1mLB8sXC4z6q
 export const ANTIGRAVITY_DEFAULT_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 export const ANTIGRAVITY_DEFAULT_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const ANTIGRAVITY_DEFAULT_USERINFO_URL = "https://www.googleapis.com/oauth2/v1/userinfo";
-export const ANTIGRAVITY_CLOUD_CODE_URL = "https://daily-cloudcode-pa.googleapis.com";
-export const ANTIGRAVITY_CLOUD_CODE_API = `${ANTIGRAVITY_CLOUD_CODE_URL}/v1internal`;
+/** The Code Assist origin, as the provider declares it (`gemini.endpoint.default`).
+ *  The onboarding, model-list and quota RPCs all live under this one host. */
+export function antigravityCloudCodeUrl(): string {
+  return providerDefaultEndpoint("gemini") ?? "";
+}
+
+/** The `v1internal` RPC root every Code Assist method hangs off. */
+export function antigravityCloudCodeApi(): string {
+  const root = antigravityCloudCodeUrl();
+  return root ? `${root}/v1internal` : "";
+}
 
 /** Scopes Antigravity's login requests; this client is allowlisted for these. */
 const DEFAULT_SCOPE = [
@@ -304,7 +314,9 @@ async function antigravityPost<T>(
   method: string,
   payload: unknown,
 ): Promise<T> {
-  const res = await fetch(`${ANTIGRAVITY_CLOUD_CODE_API}:${method}`, {
+  const api = antigravityCloudCodeApi();
+  if (!api) throw new Error("no declared Code Assist endpoint");
+  const res = await fetch(`${api}:${method}`, {
     method: "POST",
     headers: antigravityHeaders(accessToken),
     body: JSON.stringify(payload),
@@ -360,7 +372,9 @@ export async function onboardAntigravity(accessToken: string): Promise<string> {
       throw new Error("Code Assist onboarding returned an invalid operation name");
     }
     const name = segments.map((segment) => encodeURIComponent(segment)).join("/");
-    const res = await fetch(`${ANTIGRAVITY_CLOUD_CODE_API}/${name}`, {
+    const api = antigravityCloudCodeApi();
+    if (!api) throw new Error("no declared Code Assist endpoint");
+    const res = await fetch(`${api}/${name}`, {
       headers: { authorization: `Bearer ${accessToken}` },
       signal: AbortSignal.timeout(30_000),
     });

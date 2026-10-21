@@ -6,15 +6,7 @@ import { type ChangelogRelease, groupReleases } from "@reasonix/core-utils";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Settings, UsageStats } from "../App";
-import type {
-  AntigravityQuota,
-  CodexQuota,
-  ModelEndpointInfo,
-  OllamaQuota,
-  OpencodeQuota,
-  SessionEventRecord,
-  ZaiQuota,
-} from "../protocol";
+import type { ModelEndpointInfo, ProviderUsage, SessionEventRecord } from "../protocol";
 import { THEME, THEME_STYLES } from "../theme";
 import { CardHead } from "./card-head";
 import { type ChangelogState, PageChangelog } from "./changelog";
@@ -87,11 +79,7 @@ describe("statusbar", () => {
     if (!settings.modelEndpoint) settings.modelEndpoint = endpointFor(settings.model);
     const props: Parameters<typeof StatusBar>[0] = {
       balance: null,
-      codexQuota: null,
-      ollamaQuota: null,
-      antigravityQuota: null,
-      zaiQuota: null,
-      opencodeQuota: null,
+      planUsage: null,
       usage: {} as UsageStats,
       busy: false,
       ready: true,
@@ -109,26 +97,30 @@ describe("statusbar", () => {
     return render(<StatusBar {...props} />);
   }
 
-  const GPT_QUOTA: CodexQuota = {
-    plan: "plus",
-    fiveHour: { windowMinutes: 300, usedPercent: 50, remainingPercent: 50, resetsAt: null },
-    weekly: { windowMinutes: 10080, usedPercent: 42, remainingPercent: 58, resetsAt: null },
-    fetchedAt: 0,
-  };
+  /** A normalized `$usage` payload, the one shape every provider's chip reads. */
+  const usageOf = (
+    probe: ProviderUsage["probe"],
+    plan: string | null,
+    windows: ProviderUsage["windows"],
+  ): ProviderUsage => ({ probe, plan, windows });
 
-  const OLLAMA_QUOTA: OllamaQuota = {
-    session: { usagePct: 25, remainingPct: 75 },
-    weekly: { usagePct: 12.5, remainingPct: 87.5 },
-    fetchedAt: 0,
-  };
+  const GPT_QUOTA = usageOf("codex-oauth", "plus", [
+    { label: "5h", remainingPct: 50, resetsAt: null },
+    { label: "wk", remainingPct: 58, resetsAt: null },
+  ]);
 
-  const ANTIGRAVITY_QUOTA: AntigravityQuota = {
-    plan: { tierId: "free-tier", name: "Antigravity" },
-    windows: [
-      { modelId: "gemini-3.6-flash", usedFraction: 0.1, resetTime: "2026-09-01T13:37:06Z" },
-    ],
-    fetchedAt: 0,
-  };
+  const OLLAMA_QUOTA = usageOf("ollama-balance", "free", [
+    { label: "5h", remainingPct: 75, resetsAt: null },
+    { label: "wk", remainingPct: 87.5, resetsAt: null },
+  ]);
+
+  const ANTIGRAVITY_QUOTA = usageOf("antigravity-quota", "Antigravity", [
+    {
+      label: "plan",
+      remainingPct: 90,
+      resetsAt: Date.parse("2026-09-01T13:37:06Z"),
+    },
+  ]);
 
   describe("StatusBar quota display", () => {
     afterEach(() => {
@@ -281,12 +273,10 @@ describe("statusbar", () => {
     it("shows GLM plan % left + plan for Z.AI tabs with both 5-hour and weekly limits", () => {
       renderBar({
         settings: { model: "glm-5.3-flash" } as Settings,
-        zaiQuota: {
-          plan: "pro",
-          fiveHour: { usagePct: 30, remainingPct: 70, resetsAt: null },
-          weekly: { usagePct: 12, remainingPct: 88, resetsAt: null },
-          fetchedAt: 0,
-        } as ZaiQuota,
+        planUsage: usageOf("zai-monitor", "pro", [
+          { label: "5h", remainingPct: 70, resetsAt: null },
+          { label: "wk", remainingPct: 88, resetsAt: null },
+        ]),
       });
       expect(screen.getByText(/5h\s*70%\s*·\s*wk\s*88%\s*left/)).toBeTruthy();
       expect(screen.getByText("pro")).toBeTruthy();
@@ -298,18 +288,15 @@ describe("statusbar", () => {
     it("shows single window % left when Z.AI reports only one limit window", () => {
       renderBar({
         settings: { model: "glm-5.3-flash" } as Settings,
-        zaiQuota: {
-          plan: "pro",
-          fiveHour: { usagePct: 30, remainingPct: 70, resetsAt: null },
-          weekly: null,
-          fetchedAt: 0,
-        } as ZaiQuota,
+        planUsage: usageOf("zai-monitor", "pro", [
+          { label: "5h", remainingPct: 70, resetsAt: null },
+        ]),
       });
       expect(screen.getByText(/70%\s*left/)).toBeTruthy();
     });
 
     it("keeps the GLM usage chip (em dash + retry) without data — never the DeepSeek balance", () => {
-      renderBar({ settings: { model: "glm-5.3-flash" } as Settings, zaiQuota: null });
+      renderBar({ settings: { model: "glm-5.3-flash" } as Settings, planUsage: null });
       expect(screen.getByText("GLM usage")).toBeTruthy();
       expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(1);
       expect(screen.queryByText("balance")).toBeNull();
@@ -327,8 +314,8 @@ describe("statusbar", () => {
     it("surfaces the Z.AI usage fetch failure reason in the chip tooltip", () => {
       renderBar({
         settings: { model: "glm-5.3-flash" } as Settings,
-        zaiQuota: null,
-        zaiQuotaReason: "usage-unavailable",
+        planUsage: null,
+        planUsageReason: "usage-unavailable",
       });
       expect(screen.getByTitle(/usage-unavailable/)).toBeTruthy();
     });
@@ -359,7 +346,7 @@ describe("statusbar", () => {
     it("shows the 5h + weekly quota ribbon and plan for gpt-5.6 tabs", () => {
       renderBar({
         settings: { model: "gpt-5.6-sol" } as Settings,
-        codexQuota: GPT_QUOTA,
+        planUsage: GPT_QUOTA,
       });
       expect(screen.getByText(/5h 50% · wk 58% left/)).toBeTruthy();
       expect(screen.getByText(/58%\s*left/)).toBeTruthy();
@@ -372,7 +359,7 @@ describe("statusbar", () => {
     it("keeps the quota chips (em dash + retry) for gpt tabs when quota data is missing — never the DeepSeek balance", () => {
       renderBar({
         settings: { model: "gpt-5.6-sol" } as Settings,
-        codexQuota: null,
+        planUsage: null,
       });
       // The codex chip renders a dash when there is no data.
       expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(1);
@@ -393,7 +380,7 @@ describe("statusbar", () => {
             openaiAuth: "oauth",
           },
         } as Settings,
-        codexQuota: null,
+        planUsage: null,
       });
       expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(1);
       expect(screen.getByTitle(/sign in with ChatGPT/)).toBeTruthy();
@@ -404,7 +391,7 @@ describe("statusbar", () => {
       // OpenAI because the user mapped it via the `models` config.
       renderBar({
         settings: { model: "gpt-4o-custom" } as Settings,
-        codexQuota: GPT_QUOTA,
+        planUsage: GPT_QUOTA,
       });
       expect(screen.getByText(/58%\s*left/)).toBeTruthy();
       expect(screen.queryByText("balance")).toBeNull();
@@ -419,7 +406,7 @@ describe("statusbar", () => {
           model: "gpt-4o-custom",
           modelEndpoint: { provider: "deepseek", baseUrl: "https://api.deepseek.com" },
         } as Settings,
-        codexQuota: GPT_QUOTA,
+        planUsage: GPT_QUOTA,
       });
       expect(screen.getByText("balance")).toBeTruthy();
       expect(screen.queryByText(/58%\s*left/)).toBeNull();
@@ -429,17 +416,7 @@ describe("statusbar", () => {
     it("treats gpt-oss-* (Antigravity-served) models as Antigravity tabs, never OpenAI", () => {
       renderBar({
         settings: { model: "gpt-oss-120b-medium" } as Settings,
-        codexQuota: GPT_QUOTA,
-        antigravityQuota: {
-          ...ANTIGRAVITY_QUOTA,
-          windows: [
-            {
-              modelId: "gpt-oss-120b-medium",
-              usedFraction: 0.1,
-              resetTime: "2026-09-01T13:37:06Z",
-            },
-          ],
-        },
+        planUsage: ANTIGRAVITY_QUOTA,
       });
       // The Antigravity quota chips render — plan name + window %.
       expect(screen.getByText(/90%\s*left/)).toBeTruthy();
@@ -454,12 +431,9 @@ describe("statusbar", () => {
     it("falls back to the ChatGPT label when the plan is unknown", () => {
       renderBar({
         settings: { model: "gpt-5.6-sol" } as Settings,
-        codexQuota: {
-          plan: null,
-          fiveHour: null,
-          weekly: { windowMinutes: 10080, usedPercent: 75, remainingPercent: 25, resetsAt: null },
-          fetchedAt: 0,
-        },
+        planUsage: usageOf("codex-oauth", null, [
+          { label: "wk", remainingPct: 25, resetsAt: null },
+        ]),
       });
       expect(screen.getByText(/25%\s*left/)).toBeTruthy();
       expect(screen.getByText("ChatGPT")).toBeTruthy();
@@ -469,8 +443,8 @@ describe("statusbar", () => {
     it("shows a refresh indicator while a retry is in flight", () => {
       renderBar({
         settings: { model: "gpt-5.6-sol" } as Settings,
-        codexQuota: null,
-        codexQuotaRefreshing: true,
+        planUsage: null,
+        planUsageRefreshing: true,
       });
       expect(screen.getByText("…")).toBeTruthy();
       expect(screen.getByText("codex")).toBeTruthy();
@@ -486,8 +460,8 @@ describe("statusbar", () => {
             openaiAuth: "oauth",
           },
         } as Settings,
-        codexQuota: null,
-        codexQuotaReason: "no OAuth token",
+        planUsage: null,
+        planUsageReason: "no OAuth token",
       });
       expect(screen.getByTitle(/sign in with ChatGPT/)).toBeTruthy();
       expect(screen.getByTitle(/no OAuth token/)).toBeTruthy();
@@ -505,8 +479,7 @@ describe("statusbar", () => {
           },
         } as Settings,
         usage: {} as unknown as UsageStats,
-        ollamaQuota: OLLAMA_QUOTA,
-        ollamaPlan: "medium",
+        planUsage: usageOf("ollama-balance", "medium", OLLAMA_QUOTA.windows),
       });
       expect(screen.getByText(/88%\s*left/)).toBeTruthy();
       expect(screen.getByText("medium")).toBeTruthy();
@@ -517,8 +490,7 @@ describe("statusbar", () => {
     it("shows the 5h + weekly ribbon and plan for quota-billed Ollama tabs", () => {
       renderBar({
         settings: { model: "ollama/gpt-oss:20b" } as Settings,
-        ollamaQuota: OLLAMA_QUOTA,
-        ollamaPlan: "free",
+        planUsage: OLLAMA_QUOTA,
       });
       expect(screen.getByText(/5h 75% · wk 88% left/)).toBeTruthy();
       expect(screen.getByText(/88%\s*left/)).toBeTruthy();
@@ -531,10 +503,10 @@ describe("statusbar", () => {
     it("shows the reset countdowns in the Ollama plan tooltip", () => {
       renderBar({
         settings: { model: "ollama/gpt-oss:20b" } as Settings,
-        ollamaQuota: {
-          ...OLLAMA_QUOTA,
-          weekly: { ...OLLAMA_QUOTA.weekly!, resetsAt: Date.now() + 3 * 60 * 60 * 1000 },
-        },
+        planUsage: usageOf("ollama-balance", "free", [
+          OLLAMA_QUOTA.windows[0]!,
+          { label: "wk", remainingPct: 87.5, resetsAt: Date.now() + 3 * 60 * 60 * 1000 },
+        ]),
       });
       expect(screen.getByTitle(/resets in 3h/)).toBeTruthy();
     });
@@ -542,7 +514,8 @@ describe("statusbar", () => {
     it("keeps the quota chips for ollama tabs when usage data is missing — never the DeepSeek balance", () => {
       renderBar({
         settings: { model: "ollama/gpt-oss:20b" } as Settings,
-        ollamaQuota: null,
+        planUsage: null,
+        planUsageNeedsSetup: true,
       });
       expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(1);
       expect(screen.getByText("plan usage")).toBeTruthy();
@@ -554,8 +527,8 @@ describe("statusbar", () => {
     it("surfaces the Ollama usage fetch failure reason in the chip tooltip", () => {
       renderBar({
         settings: { model: "ollama/gpt-oss:20b" } as Settings,
-        ollamaQuota: null,
-        ollamaQuotaReason: "usage-unavailable",
+        planUsage: null,
+        planUsageReason: "usage-unavailable",
       });
       expect(screen.getByTitle(/usage-unavailable/)).toBeTruthy();
     });
@@ -563,8 +536,8 @@ describe("statusbar", () => {
     it("does not claim an API key is missing when one is set but the fetch failed", () => {
       renderBar({
         settings: { model: "ollama/gpt-oss:20b" } as Settings,
-        ollamaQuota: null,
-        ollamaQuotaReason: "usage-unavailable",
+        planUsage: null,
+        planUsageReason: "usage-unavailable",
       });
       expect(screen.getByText("plan usage")).toBeTruthy();
       expect(screen.queryByTitle(/set an API key/)).toBeNull();
@@ -575,8 +548,9 @@ describe("statusbar", () => {
     it("shows the set-an-API-key hint only when the daemon reports a missing key", () => {
       renderBar({
         settings: { model: "ollama/gpt-oss:20b" } as Settings,
-        ollamaQuota: null,
-        ollamaQuotaReason: "ollama-no-api-key",
+        planUsage: null,
+        planUsageReason: "ollama-no-api-key",
+        planUsageNeedsSetup: true,
       });
       expect(screen.getByTitle(/set an API key/)).toBeTruthy();
       expect(screen.queryByTitle(/an API key is set/)).toBeNull();
@@ -585,7 +559,7 @@ describe("statusbar", () => {
     it("shows only quota percentages for an Antigravity tab", () => {
       renderBar({
         settings: { model: "gemini-3.6-flash" } as Settings,
-        antigravityQuota: ANTIGRAVITY_QUOTA,
+        planUsage: ANTIGRAVITY_QUOTA,
       });
       expect(screen.getByText(/90%\s*left/)).toBeTruthy();
       expect(screen.getByText("Antigravity")).toBeTruthy();
@@ -597,7 +571,7 @@ describe("statusbar", () => {
     it("shows an em dash for the Antigravity chip when no quota data exists", () => {
       renderBar({
         settings: { model: "gemini-3.7-flash" } as Settings,
-        antigravityQuota: null,
+        planUsage: null,
       });
       expect(screen.getByText("plan usage")).toBeTruthy();
       expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(1);
@@ -606,15 +580,14 @@ describe("statusbar", () => {
     });
 
     it("shows the Go plan '% left' chip for an opencode tab", () => {
-      const OPENCODE_QUOTA: OpencodeQuota = {
-        rolling: { usagePct: 30, remainingPct: 70, resetsAt: null, limited: false },
-        weekly: { usagePct: 12, remainingPct: 88, resetsAt: null, limited: false },
-        monthly: { usagePct: 5, remainingPct: 95, resetsAt: null, limited: false },
-        fetchedAt: 0,
-      };
+      const OPENCODE_QUOTA = usageOf("opencode-usage", null, [
+        { label: "5h", remainingPct: 70, resetsAt: null },
+        { label: "wk", remainingPct: 88, resetsAt: null },
+        { label: "mo", remainingPct: 95, resetsAt: null },
+      ]);
       renderBar({
         settings: { model: "opencode/qwen3.8-max" } as Settings,
-        opencodeQuota: OPENCODE_QUOTA,
+        planUsage: OPENCODE_QUOTA,
       });
       expect(screen.getByText("Go usage")).toBeTruthy();
       expect(screen.getByText(/5h 70% · wk 88% · mo 95% left/)).toBeTruthy();
@@ -626,12 +599,46 @@ describe("statusbar", () => {
     it("shows a dash + reason for the opencode chip with no usage data", () => {
       renderBar({
         settings: { model: "opencode/qwen3.8-max" } as Settings,
-        opencodeQuota: null,
-        opencodeQuotaReason: "usage-unavailable",
+        planUsage: null,
+        planUsageReason: "usage-unavailable",
       });
       expect(screen.getByText("Go usage")).toBeTruthy();
       expect(screen.getByTitle(/usage-unavailable/)).toBeTruthy();
       expect(screen.queryByText("balance")).toBeNull();
+    });
+
+    it("renders the secondary window on its own declared tooltip line", () => {
+      // Codex answers weekly first, so the 5-hour window gets the extra line the
+      // declaration provides — one builder, no per-provider branch.
+      renderBar({
+        settings: { model: "gpt-5.6-sol" } as Settings,
+        planUsage: GPT_QUOTA,
+      });
+      expect(screen.getByTitle(/5-hour window: 50% left/)).toBeTruthy();
+    });
+
+    it("appends the credit a usage payload reported alongside its windows", () => {
+      renderBar({
+        settings: { model: "ollama/gpt-oss:20b" } as Settings,
+        planUsage: { ...OLLAMA_QUOTA, credit: { currency: "USD", amount: 12.5 } },
+      });
+      expect(screen.getByTitle(/Purchased credit: \$12\.50/)).toBeTruthy();
+    });
+
+    it("names the plan with no windows for a plan-only provider", () => {
+      // MiMo's console percentages need a second credential, so the chip still
+      // names the plan the account bills against.
+      renderBar({
+        settings: { model: "mimo-v2.6-pro" } as Settings,
+        planUsage: null,
+        planUsageReason: "mimo-no-console-session",
+        planUsageNeedsSetup: true,
+      });
+      expect(screen.getByText("Token Plan")).toBeTruthy();
+      // No fabricated percentage: the chip names the plan and the tooltip states
+      // that the plan bills without per-token numbers.
+      expect(screen.queryByText(/left$/)).toBeNull();
+      expect(screen.getByTitle(/MiMo bills through your plan/)).toBeTruthy();
     });
 
     it("shows a free-tier chip (not Go usage) for a free OpenCode model", () => {

@@ -91,13 +91,18 @@
       "weekendOffsetMinutes": 480
     }
   },
-  "usage": { "probe": "zai-monitor" },
+  "usage": {
+    "probe": "zai-monitor",
+    "urls": ["/api/monitor/usage/quota/limit"],
+    "primaryWindow": "5h",
+    "resetsStyle": "absolute"
+  },
   "strings": {
     "notConfigured": "Not configured yet — add a Z.AI API key in Settings → General to use GLM models.",
     "noCredential": "No Z.AI credential for {model} — add a Z.AI key in Settings → Models.",
     "quotaLabel": "GLM usage",
     "quotaTitle": "GLM Coding Plan {plan} · {left}% left · click to refresh",
-    "quotaDualTitle": "GLM Coding Plan {plan} · 5h: {fiveHour}% left · weekly: {weekly}% left · resets {resets} · click to refresh",
+    "quotaDualTitle": "GLM Coding Plan {plan} · 5h: {fiveHour}% left · weekly: {weekly}% left · resets {weeklyResets} · click to refresh",
     "quotaNoData": "GLM usage · no data: set a Z.AI API key (Settings → Z.AI / GLM) to see plan usage · click to retry",
     "quotaPlanName": "GLM Coding Plan",
     "quotaPlanFallback": "GLM",

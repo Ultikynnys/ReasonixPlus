@@ -5,7 +5,14 @@
   "order": 5,
   "kind": "api-key",
   "strategy": "tavily",
-  "fallback": false,
+  "errors": {
+    "cannotReach": "web_search: cannot reach the Tavily endpoint {endpoint} \u2014 try: check your network or proxy, then retry, or switch engines in Settings (General page).",
+    "missingKey": "web_search: Tavily backend requires an API key \u2014 set TAVILY_API_KEY env var or `tavilyApiKey` in ~/.reasonix/config.json; free 1000/mo signup at https://tavily.com",
+    "unauthorized": "web_search: Tavily API key rejected \u2014 check TAVILY_API_KEY or get one at https://tavily.com",
+    "rateLimit": "web_search: Tavily rate-limited or monthly quota exceeded \u2014 wait, switch engines in Settings (General page), or upgrade your Tavily plan.",
+    "serverError": "web_search: Tavily server error ({status}) \u2014 try again later, or switch engines in Settings (General page).",
+    "parseError": "web_search: Tavily returned unparseable response (HTTP {status}) \u2014 try again later"
+  },
   "settings": [
     {
       "key": "apiKey",

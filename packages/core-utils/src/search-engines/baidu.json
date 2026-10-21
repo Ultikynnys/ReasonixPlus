@@ -5,7 +5,14 @@
   "order": 4,
   "kind": "api-key",
   "strategy": "baidu",
-  "fallback": false,
+  "errors": {
+    "cannotReach": "web_search: cannot reach the Baidu AI Search endpoint {endpoint} \u2014 try: check your network or proxy, then retry, or switch engines in Settings (General page).",
+    "missingKey": "web_search: Baidu AI Search requires an API key \u2014 set BAIDU_API_KEY or QIANFAN_API_KEY env var, or configure `baiduApiKey` in ~/.reasonix/config.json. Get one from Baidu Cloud Qianfan.",
+    "unauthorized": "web_search: Baidu AI Search API key rejected \u2014 check BAIDU_API_KEY, QIANFAN_API_KEY, or `baiduApiKey`.",
+    "rateLimit": "web_search: Baidu AI Search rate-limited or quota exceeded \u2014 wait and retry, or switch engines in Settings (General page).",
+    "serverError": "web_search: Baidu AI Search server error ({status}) \u2014 try again later, or switch engines in Settings (General page).",
+    "parseError": "web_search: Baidu AI Search returned unparseable response (HTTP {status}) \u2014 try again later"
+  },
   "settings": [
     {
       "key": "apiKey",

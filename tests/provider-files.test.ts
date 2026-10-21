@@ -128,11 +128,12 @@ describe("search-engines/ files", () => {
     expect([...SEARCH_ENGINE_NAMES]).toEqual(ids);
   });
 
-  it("validates each file against the registry schema", () => {
-    for (const { file, document } of readSearchEngineDocuments(SEARCH_DIR)) {
-      const [spec] = parseSearchRegistry({ engines: [document] });
-      expect(spec?.id, file).toBe((document as { id?: string }).id);
-    }
+  it("validates every file against the registry schema", () => {
+    // As one registry, not file by file: an engine may extend a sibling's error copy,
+    // which a single document cannot resolve.
+    const documents = readSearchEngineDocuments(SEARCH_DIR);
+    const specs = parseSearchRegistry({ engines: documents.map((entry) => entry.document) });
+    expect(specs.map((spec) => spec.id).sort()).toEqual(documents.map((entry) => entry.id).sort());
   });
 
   it("reports the offending file when a document is not valid JSON", () => {

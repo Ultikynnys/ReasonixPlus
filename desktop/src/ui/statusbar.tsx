@@ -1,30 +1,17 @@
 import {
-  antigravityUsageView,
-  codexUsageView,
   isPeakPricedModel,
-  mimoUsageView,
-  ollamaUsageView,
-  opencodeUsageView,
   providerRateSchedule,
   providerSpec,
   providerString,
   quotaWindowsSummary,
   ratePeriodForSchedule,
-  zaiUsageView,
 } from "@reasonix/core-utils";
-import type { ProviderUsageView } from "@reasonix/core-utils";
+import type { ProviderUsage, ProviderUsageView, ProviderUsageWindow } from "@reasonix/core-utils";
 import { useEffect, useRef, useState } from "react";
 import type { Balance, Settings, UsageStats } from "../App";
 import { t } from "../i18n";
 import { I } from "../icons";
-import type {
-  AntigravityQuota,
-  CodexQuota,
-  JobInfo,
-  OllamaQuota,
-  OpencodeQuota,
-  ZaiQuota,
-} from "../protocol";
+import type { JobInfo } from "../protocol";
 import { THEME, THEME_STYLES, type Theme, type ThemeStyle, themeForStyle } from "../theme";
 import { resolveRibbonFunds } from "../usage-ribbon";
 import { hitPercent, tokenLabel } from "./format";
@@ -41,6 +28,14 @@ function formatReset(d: Date): string {
   const m = mins % 60;
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
+
+/** Declared per-window tooltip line for a window the main sentence omits. */
+const WINDOW_TITLE_KEYS: Record<ProviderUsageWindow["label"], string> = {
+  "5h": "quotaFiveHourTitle",
+  wk: "quotaWeeklyTitle",
+  mo: "quotaMonthlyTitle",
+  plan: "quotaPlanTitle",
+};
 
 /** One chip for every quota-billed provider. Each provider normalizes to a
  *  ProviderUsageView, so the ribbon ("5h 70% · wk 88% left") renders through a
@@ -91,27 +86,11 @@ function QuotaChip({
 export function StatusBar({
   settings,
   balance,
-  codexQuota,
-  onRefreshCodexQuota,
-  codexQuotaRefreshing,
-  codexQuotaReason,
-  ollamaQuota,
-  onRefreshOllamaQuota,
-  ollamaQuotaRefreshing,
-  ollamaQuotaReason,
-  ollamaPlan,
-  antigravityQuota,
-  onRefreshAntigravityQuota,
-  antigravityQuotaRefreshing,
-  antigravityQuotaReason,
-  zaiQuota,
-  onRefreshZaiQuota,
-  zaiQuotaRefreshing,
-  zaiQuotaReason,
-  opencodeQuota,
-  onRefreshOpencodeQuota,
-  opencodeQuotaRefreshing,
-  opencodeQuotaReason,
+  planUsage,
+  onRefreshPlanUsage,
+  planUsageRefreshing,
+  planUsageReason,
+  planUsageNeedsSetup,
   usage,
   busy,
   ready,
@@ -125,34 +104,17 @@ export function StatusBar({
 }: {
   settings: Settings | null;
   balance: Balance | null;
-  codexQuota: CodexQuota | null;
-  onRefreshCodexQuota?: () => void;
-  /** True between a chip click and the $codex_quota reply — renders a refresh indicator. */
-  codexQuotaRefreshing?: boolean;
-  /** Why the last quota fetch produced no data — appended to the chip tooltip. */
-  codexQuotaReason?: string | null;
-  /** Cloud Ollama usage — mirrors codexQuota for the Ollama provider. */
-  ollamaQuota: OllamaQuota | null;
-  onRefreshOllamaQuota?: () => void;
-  ollamaQuotaRefreshing?: boolean;
-  ollamaQuotaReason?: string | null;
-  /** The account's Ollama plan (e.g. `free`) — labels the usage chip. */
-  ollamaPlan?: string | null;
-  /** Google Antigravity (Gemini Code Assist) plan + per-model usage. */
-  antigravityQuota: AntigravityQuota | null;
-  onRefreshAntigravityQuota?: () => void;
-  antigravityQuotaRefreshing?: boolean;
-  antigravityQuotaReason?: string | null;
-  /** Z.AI GLM Coding Plan usage (5-hour + weekly) — mirrors the Ollama chip. */
-  zaiQuota: ZaiQuota | null;
-  onRefreshZaiQuota?: () => void;
-  zaiQuotaRefreshing?: boolean;
-  zaiQuotaReason?: string | null;
-  /** OpenCode Go plan usage (5-hour + weekly + monthly) — mirrors the Z.AI chip. */
-  opencodeQuota: OpencodeQuota | null;
-  onRefreshOpencodeQuota?: () => void;
-  opencodeQuotaRefreshing?: boolean;
-  opencodeQuotaReason?: string | null;
+  /** Plan usage for this tab's provider, normalized by the daemon from whichever
+   *  probe the declaration names. */
+  planUsage: ProviderUsage | null;
+  onRefreshPlanUsage?: () => void;
+  /** True between a chip click and the $usage reply — renders a refresh indicator. */
+  planUsageRefreshing?: boolean;
+  /** Why the last usage read produced no data — appended to the chip tooltip. */
+  planUsageReason?: string | null;
+  /** The reason means "not configured yet", so the tooltip asks for setup instead
+   *  of reporting a failed read. */
+  planUsageNeedsSetup?: boolean;
   usage: UsageStats;
   busy: boolean;
   ready: boolean;
@@ -202,13 +164,6 @@ export function StatusBar({
   // Which money chip this tab gets, and whether $ is its native unit — one resolver
   // for every provider, so a new one needs no ribbon edit (see usage-ribbon.ts).
   const funds = resolveRibbonFunds(spec, ep);
-  const probe = funds.probe;
-  // The payload is chosen by the declared probe, the same way for every provider.
-  const codexData = probe === "codex-oauth" ? codexQuota : null;
-  const ollamaData = probe === "ollama-balance" ? ollamaQuota : null;
-  const antigravityData = probe === "antigravity-quota" ? antigravityQuota : null;
-  const zaiData = probe === "zai-monitor" ? zaiQuota : null;
-  const opencodeData = probe === "opencode-usage" ? opencodeQuota : null;
   const balanceLabel = balance
     ? `${balance.currency === "USD" ? "$" : "¥"} ${balance.total.toFixed(2)}`
     : "-";
@@ -249,44 +204,6 @@ export function StatusBar({
   }
   const dotDanger = connState === "off" || authFailed;
   const dotWarn = !dotDanger && openaiAuth === "none";
-  // OpenAI tabs swap the balance / $ display for the API-reported weekly
-  // Codex quota: % + credits left. The
-  // swap follows the resolved provider, and even without quota data the
-  // chips render an em dash + retry hint — the DeepSeek balance and $
-  // amounts are meaningless on an OpenAI tab.
-  const quota = codexData;
-  const showQuota = !!quota;
-  const quotaWeekly = quota?.weekly ?? null;
-  const quotaFiveHour = quota?.fiveHour ?? null;
-  // Official app-server format: windows carry remainingPercent (100 - usedPercent)
-  // and an ISO resetsAt — the chip shows "% left" + plan, no credit amounts.
-  const quotaLeftPct = quotaWeekly ? Math.round(quotaWeekly.remainingPercent) : 0;
-  const ollamaQuotaData = ollamaData;
-  const ollamaWeekly = ollamaQuotaData?.weekly ?? null;
-  const ollamaSession = ollamaQuotaData?.session ?? null;
-  // The "set an API key" hint is correct ONLY when the key is genuinely absent
-  // (the daemon flags that with the `ollama-no-api-key` reason). A keyed account
-  // whose balance endpoint is unreachable, or a proxied/local endpoint with no
-  // /api/balance, must never be told to set a key it already has.
-  const ollamaKeyMissing = ollamaQuotaReason === "ollama-no-api-key";
-  const ollamaQuotaTitle =
-    ollamaQuotaData && ollamaWeekly
-      ? (specCopy("quotaTitle", {
-          left: String(Math.round(ollamaWeekly.remainingPct)),
-          weeklyResets: ollamaWeekly.resetsAt
-            ? formatReset(new Date(ollamaWeekly.resetsAt))
-            : "-",
-          session: ollamaSession ? String(Math.round(ollamaSession.remainingPct)) : "-",
-          sessionResets: ollamaSession?.resetsAt
-            ? formatReset(new Date(ollamaSession.resetsAt))
-            : "-",
-        }) ?? t("statusbar.quotaTitle"))
-      : ollamaQuotaData || (ollamaQuotaReason && !ollamaKeyMissing)
-        ? (specCopy("quotaNoDataUnavailable") ??
-          specCopy("quotaNoData") ??
-          t("statusbar.quotaNoData"))
-        : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
-  // Antigravity (Gemini Code Assist): plan + the active model's used fraction.
   // Peak pricing follows daemon-resolved provider/deployment metadata and applies
   // only to the ids the provider lists as priced (`billing.peakModels`), so a
   // cheaper hosted model never inherits the rate chip.
@@ -298,170 +215,99 @@ export function StatusBar({
   // The calendar is whatever the provider declares (`billing.schedule`): editing
   // its JSON moves the peak hours, no code change needed.
   const rateSchedule = ollamaTab && !ollamaPeakPricing ? null : providerRateSchedule(spec);
-  const antigravityQuotaData = antigravityData;
-  const agActive =
-    antigravityQuotaData?.windows.find((w) => w.modelId === settings?.model) ??
-    antigravityQuotaData?.windows[0] ??
+
+  // ---- Money chip ---------------------------------------------------------
+  // One `$usage` payload reaches this file, so the chip and its tooltip are
+  // computed once: windows, plan, primary window and reset style all come from
+  // the provider's declaration, and the copy is that provider's own words.
+  const planFallback = specCopy("quotaPlanFallback") ?? "";
+  const planName = planUsage?.plan ?? specCopy("quotaPlanName") ?? "";
+  // A provider that bills a plan it cannot always measure still names the plan in
+  // the chip (`usage.measures: "plan"`); every other provider shows a dash.
+  const chipView: ProviderUsageView | null = planUsage
+    ? { plan: planUsage.plan ?? (planFallback || null), windows: planUsage.windows }
+    : spec?.usage.measures === "plan"
+      ? { plan: planFallback || null, windows: [] }
+      : null;
+  const formatResetAt = (resetsAt: number | null): string =>
+    resetsAt === null
+      ? "-"
+      : spec?.usage.resetsStyle === "absolute"
+        ? new Date(resetsAt).toLocaleString()
+        : formatReset(new Date(resetsAt));
+  const pctOf = (w: ProviderUsageWindow | null): string =>
+    w ? String(Math.round(w.remainingPct)) : "-";
+  const windowBy = (label: ProviderUsageWindow["label"]): ProviderUsageWindow | null =>
+    planUsage?.windows.find((w) => w.label === label) ?? null;
+  const fiveHourWindow = windowBy("5h");
+  const primaryWindow =
+    (spec?.usage.primaryWindow ? windowBy(spec.usage.primaryWindow) : null) ??
+    planUsage?.windows[0] ??
     null;
-  const agRemainingPct =
-    agActive && agActive.usedFraction < 1 ? Math.round((1 - agActive.usedFraction) * 100) : null;
-  const antigravityQuotaTitle =
-    antigravityQuotaData && agActive
-      ? (specCopy("quotaTitle", {
-          left: String(agRemainingPct ?? 0),
-          plan:
-            antigravityQuotaData.plan?.name ??
-            antigravityQuotaData.plan?.tierId ??
-            specCopy("quotaPlanName") ??
-            "",
-          resets: agActive.resetTime ? formatReset(new Date(agActive.resetTime)) : "-",
-        }) ?? t("statusbar.quotaTitle"))
+  // Every declared template names its placeholders from this one map: the shared
+  // `{left}`/`{resets}` pair (the primary window) plus each window's aliases.
+  const usageVars: Record<string, string> = {
+    plan: planName,
+    left: pctOf(primaryWindow),
+    resets: formatResetAt(primaryWindow?.resetsAt ?? null),
+    fiveHour: pctOf(fiveHourWindow),
+    session: pctOf(fiveHourWindow),
+    rolling: pctOf(fiveHourWindow),
+    weekly: pctOf(windowBy("wk")),
+    monthly: pctOf(windowBy("mo")),
+    planLeft: pctOf(windowBy("plan")),
+    weeklyResets: formatResetAt(windowBy("wk")?.resetsAt ?? null),
+    sessionResets: formatResetAt(fiveHourWindow?.resetsAt ?? null),
+    ...(planUsage?.credit ? { credit: planUsage.credit.amount.toFixed(2) } : {}),
+  };
+  // A "not configured yet" reason is already spelled out by the copy itself, so
+  // only a real failure appends its slugs to the tooltip.
+  const reasonLine =
+    !planUsage && planUsageReason && !planUsageNeedsSetup
+      ? `\n${t("statusbar.codexReason", { reason: planUsageReason })}`
+      : "";
+  const noDataCopy =
+    planUsage || (planUsageReason && !planUsageNeedsSetup)
+      ? (specCopy("quotaNoDataUnavailable") ??
+        specCopy("quotaNoData") ??
+        t("statusbar.quotaNoData"))
       : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
-  const antigravityQuotaTitleWithReason =
-    !antigravityQuotaData && antigravityQuotaReason
-      ? `${antigravityQuotaTitle}\n${t("statusbar.codexReason", { reason: antigravityQuotaReason })}`
-      : antigravityQuotaTitle;
-  // Z.AI GLM Coding Plan: the 5-hour window is the primary ribbon value (finer
-  // resolution than weekly), falling back to weekly when the plan omits it.
-  const zaiQuotaData = zaiData;
-  const zaiFiveHour = zaiQuotaData?.fiveHour ?? null;
-  const zaiWeekly = zaiQuotaData?.weekly ?? null;
-  const zaiWindow = zaiFiveHour ?? zaiWeekly ?? null;
-  const zaiPlanName = zaiQuotaData?.plan ?? specCopy("quotaPlanName") ?? "";
-  const zaiQuotaTitle =
-    zaiQuotaData && (zaiFiveHour || zaiWeekly)
-      ? zaiFiveHour && zaiWeekly
-        ? (specCopy("quotaDualTitle", {
-            fiveHour: String(Math.round(zaiFiveHour.remainingPct)),
-            weekly: String(Math.round(zaiWeekly.remainingPct)),
-            resets: zaiWeekly.resetsAt ? new Date(zaiWeekly.resetsAt).toLocaleString() : "-",
-            plan: zaiPlanName,
-          }) ?? t("statusbar.quotaTitle"))
-        : (specCopy("quotaTitle", {
-            left: String(Math.round(zaiWindow!.remainingPct)),
-            plan: zaiPlanName,
-          }) ?? t("statusbar.quotaTitle"))
-      : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
-  const zaiQuotaTitleWithReason =
-    !zaiQuotaData && zaiQuotaReason
-      ? `${zaiQuotaTitle}\n${t("statusbar.codexReason", { reason: zaiQuotaReason })}`
-      : zaiQuotaTitle;
-  // OpenCode Go plan usage: the 5-hour rolling window is the primary ribbon
-  // value (finer resolution than weekly/monthly), falling back to weekly then
-  // monthly for payloads that omit a window.
-  const opencodeQuotaData = opencodeData;
-  const opencodeRolling = opencodeQuotaData?.rolling ?? null;
-  const opencodeWeekly = opencodeQuotaData?.weekly ?? null;
-  const opencodeMonthly = opencodeQuotaData?.monthly ?? null;
-  const opencodePrimaryWindow = opencodeRolling ?? opencodeWeekly ?? opencodeMonthly ?? null;
-  const opencodeQuotaTitle =
-    opencodeQuotaData && opencodePrimaryWindow
-      ? (specCopy("quotaTitle", {
-          rolling: opencodeRolling ? String(Math.round(opencodeRolling.remainingPct)) : "-",
-          weekly: opencodeWeekly ? String(Math.round(opencodeWeekly.remainingPct)) : "-",
-          monthly: opencodeMonthly ? String(Math.round(opencodeMonthly.remainingPct)) : "-",
-        }) ?? t("statusbar.quotaTitle"))
-      : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
-  const opencodeQuotaTitleWithReason =
-    !opencodeQuotaData && opencodeQuotaReason
-      ? `${opencodeQuotaTitle}\n${t("statusbar.codexReason", { reason: opencodeQuotaReason })}`
-      : opencodeQuotaTitle;
-  // A failed fetch stays diagnosable: append the reason to the tooltip, except
-  // for the no-key slug the base hint already spells out.
-  const ollamaQuotaTitleWithReason =
-    !ollamaQuotaData && ollamaQuotaReason && !ollamaKeyMissing
-      ? `${ollamaQuotaTitle}\n${t("statusbar.codexReason", { reason: ollamaQuotaReason })}`
-      : ollamaQuotaTitle;
-  const quotaTitle = quotaWeekly
-    ? (specCopy("quotaTitle", {
-        left: String(quotaLeftPct),
-        resets: quotaWeekly.resetsAt ? new Date(quotaWeekly.resetsAt).toLocaleString() : "-",
-        plan: quota?.plan ?? specCopy("quotaPlanName") ?? "",
-      }) ?? t("statusbar.quotaTitle")) +
-      (quotaFiveHour
-        ? `\n${
-            specCopy("quotaFiveHourTitle", {
-              left: String(Math.round(quotaFiveHour.remainingPercent)),
-            }) ?? ""
-          }`
-        : "")
-    : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
-  // A failed fetch stays diagnosable: append the app-server reason to the tooltip.
-  const quotaTitleWithReason =
-    !showQuota && codexQuotaReason
-      ? `${quotaTitle}\n${t("statusbar.codexReason", { reason: codexQuotaReason })}`
-      : quotaTitle;
-  // One chip serves every plan-window provider. The declared probe picks the view,
-  // title, refresh affordance and plan fallback together, so a new probe adds one
-  // arm here (plus its adapter) instead of five parallel cascades.
-  const declaredPlanFallback = specCopy("quotaPlanFallback") ?? "";
-  const quotaChip: {
-    view: ProviderUsageView | null;
-    title: string;
-    refreshing?: boolean;
-    refresh?: () => void;
-    planFallback: string;
-  } = (() => {
-    switch (probe) {
-      case "codex-oauth":
-        return {
-          view: quota ? codexUsageView(quota) : null,
-          title: quotaTitleWithReason,
-          refreshing: codexQuotaRefreshing,
-          refresh: onRefreshCodexQuota,
-          planFallback: quota?.plan ?? declaredPlanFallback,
-        };
-      case "ollama-balance":
-        return {
-          view: ollamaQuotaData ? ollamaUsageView(ollamaQuotaData, ollamaPlan ?? null) : null,
-          title: ollamaQuotaTitleWithReason,
-          refreshing: ollamaQuotaRefreshing,
-          refresh: onRefreshOllamaQuota,
-          planFallback: ollamaPlan ?? declaredPlanFallback,
-        };
-      case "antigravity-quota":
-        return {
-          view: antigravityQuotaData
-            ? antigravityUsageView(antigravityQuotaData, settings?.model)
-            : null,
-          title: antigravityQuotaTitleWithReason,
-          refreshing: antigravityQuotaRefreshing,
-          refresh: onRefreshAntigravityQuota,
-          planFallback: declaredPlanFallback,
-        };
-      case "zai-monitor":
-        return {
-          view: zaiQuotaData ? zaiUsageView(zaiQuotaData) : null,
-          title: zaiQuotaTitleWithReason,
-          refreshing: zaiQuotaRefreshing,
-          refresh: onRefreshZaiQuota,
-          planFallback: zaiQuotaData?.plan ?? declaredPlanFallback,
-        };
-      case "opencode-usage":
-        return {
-          view: opencodeQuotaData ? opencodeUsageView(opencodeQuotaData) : null,
-          title: opencodeQuotaTitleWithReason,
-          refreshing: opencodeQuotaRefreshing,
-          refresh: onRefreshOpencodeQuota,
-          planFallback: declaredPlanFallback,
-        };
-      case "mimo-console":
-        return {
-          view: mimoUsageView(settings?.mimoQuota, declaredPlanFallback),
-          title: specCopy("quotaTitle") ?? t("statusbar.quotaTitle"),
-          planFallback: declaredPlanFallback,
-        };
-      default:
-        return {
-          view: null,
-          title: specCopy("quotaNoData") ?? t("statusbar.quotaNoData"),
-          planFallback: declaredPlanFallback,
-        };
-    }
-  })();
+  const quotaChipTitle = !planUsage
+    ? `${noDataCopy}${reasonLine}`
+    : [
+        // A provider naming both windows in one sentence declares a dual template;
+        // the rest read the single-window one.
+        (planUsage.windows.length > 1 ? specCopy("quotaDualTitle", usageVars) : undefined) ??
+          specCopy("quotaTitle", usageVars) ??
+          t("statusbar.quotaTitle"),
+        // A window the main sentence left out gets its own declared line.
+        ...planUsage.windows
+          .filter((w) => w !== primaryWindow)
+          .map((w) =>
+            specCopy(WINDOW_TITLE_KEYS[w.label], {
+              ...usageVars,
+              left: pctOf(w),
+              resets: formatResetAt(w.resetsAt),
+            }),
+          )
+          .filter((line): line is string => !!line),
+        ...(planUsage.credit
+          ? [specCopy("creditTitle", { credit: planUsage.credit.amount.toFixed(2) })].filter(
+              (line): line is string => !!line,
+            )
+          : []),
+      ].join("\n");
+  const quotaChip = {
+    view: chipView,
+    title: quotaChipTitle,
+    refreshing: planUsageRefreshing,
+    refresh: onRefreshPlanUsage,
+    planFallback,
+  };
   // One chip serves every quota-billed provider, so its label is keyed on the
   // declaration rather than on which tab is active.
   const quotaChipLabel = specCopy("quotaLabel") ?? t("statusbar.quotaLabel");
+
   // Rate-period timing uses the same shared schedule engine as telemetry billing.
   const [rateNow, setRateNow] = useState(() => new Date());
   useEffect(() => {

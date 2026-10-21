@@ -1,0 +1,18 @@
+{
+  "id": "playwright-chromium",
+  "label": "Chromium (Playwright)",
+  "description": "Local: drives the Playwright-managed Chromium build. No key, no service.",
+  "order": 12,
+  "kind": "keyless",
+  "strategy": "playwright",
+  "browser": "chromium",
+  "errors": {
+    "notFound": "web_search: no Playwright installation to drive {Browser} — install the Playwright MCP (npx @playwright/mcp) so its managed browsers are available.",
+    "notInstalled": "web_search: the managed {Browser} build is not installed — run `npx playwright install {browser}`, then retry.",
+    "launchFailed": "web_search: the managed {Browser} browser failed to launch ({message}) — try again, or switch engines in Settings (General page).",
+    "cannotReach": "web_search: {Browser} could not reach the search page ({message}) — check your network or proxy, then retry.",
+    "timeout": "web_search: {Browser} timed out after {ms}ms waiting for search results — retry, or switch engines in Settings (General page).",
+    "blocked": "web_search: {Browser} reached the search page but it yielded no parseable results ({chars} chars) — retry, or switch engines in Settings (General page)."
+  },
+  "settings": []
+}

@@ -5,7 +5,14 @@
   "order": 8,
   "kind": "api-key",
   "strategy": "brave",
-  "fallback": false,
+  "errors": {
+    "cannotReach": "web_search: cannot reach the Brave Search endpoint {endpoint} \u2014 try: check your network or proxy, then retry, or switch engines in Settings (General page).",
+    "missingKey": "web_search: Brave Search requires an API key \u2014 set BRAVE_SEARCH_API_KEY (or BRAVE_API_KEY) env var or `braveApiKey` in ~/.reasonix/config.json; free 2000/mo signup at https://brave.com/search/api/",
+    "unauthorized": "web_search: Brave Search API key rejected \u2014 check BRAVE_SEARCH_API_KEY or get one at https://brave.com/search/api/",
+    "rateLimit": "web_search: Brave Search API rate-limited or monthly quota exceeded \u2014 wait or upgrade at https://brave.com/search/api/",
+    "serverError": "web_search: Brave Search server error ({status}) \u2014 try again later, or switch engines in Settings (General page).",
+    "parseError": "web_search: Brave Search returned unparseable response (HTTP {status}) \u2014 try again later"
+  },
   "settings": [
     {
       "key": "apiKey",

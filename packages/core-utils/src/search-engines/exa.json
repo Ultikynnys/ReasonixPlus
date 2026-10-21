@@ -5,7 +5,14 @@
   "order": 7,
   "kind": "api-key",
   "strategy": "exa",
-  "fallback": false,
+  "errors": {
+    "cannotReach": "web_search: cannot reach the Exa endpoint {endpoint} \u2014 try: check your network or proxy, then retry, or switch engines in Settings (General page).",
+    "missingKey": "web_search: Exa backend requires an API key \u2014 set EXA_API_KEY env var or `exaApiKey` in ~/.reasonix/config.json; free 1000/mo signup at https://exa.ai",
+    "unauthorized": "web_search: Exa API key rejected \u2014 check EXA_API_KEY or get one at https://exa.ai",
+    "rateLimit": "web_search: Exa API rate-limited or monthly quota exceeded \u2014 wait or upgrade at https://exa.ai/pricing",
+    "serverError": "web_search: Exa server error ({status}) \u2014 try again later, or switch engines in Settings (General page).",
+    "parseError": "web_search: Exa returned unparseable response (HTTP {status}) \u2014 try again later"
+  },
   "settings": [
     {
       "key": "apiKey",

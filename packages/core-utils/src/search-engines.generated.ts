@@ -5,10 +5,14 @@ import baidu from "./search-engines/baidu.json";
 import bing_intl from "./search-engines/bing-intl.json";
 import bing from "./search-engines/bing.json";
 import brave from "./search-engines/brave.json";
+import deepseek from "./search-engines/deepseek.json";
 import exa from "./search-engines/exa.json";
 import metaso from "./search-engines/metaso.json";
 import ollama from "./search-engines/ollama.json";
 import perplexity from "./search-engines/perplexity.json";
+import playwright_chromium from "./search-engines/playwright-chromium.json";
+import playwright_firefox from "./search-engines/playwright-firefox.json";
+import playwright_webkit from "./search-engines/playwright-webkit.json";
 import searxng from "./search-engines/searxng.json";
 import tavily from "./search-engines/tavily.json";
 import zai from "./search-engines/zai.json";
@@ -26,10 +30,14 @@ export const SEARCH_ENGINE_DOCUMENTS: readonly SearchEngineDocumentSource[] = [
   { file: "bing-intl.json", document: bing_intl },
   { file: "bing.json", document: bing },
   { file: "brave.json", document: brave },
+  { file: "deepseek.json", document: deepseek },
   { file: "exa.json", document: exa },
   { file: "metaso.json", document: metaso },
   { file: "ollama.json", document: ollama },
   { file: "perplexity.json", document: perplexity },
+  { file: "playwright-chromium.json", document: playwright_chromium },
+  { file: "playwright-firefox.json", document: playwright_firefox },
+  { file: "playwright-webkit.json", document: playwright_webkit },
   { file: "searxng.json", document: searxng },
   { file: "tavily.json", document: tavily },
   { file: "zai.json", document: zai },
@@ -48,6 +56,10 @@ export const SEARCH_ENGINE_NAMES = [
   "brave",
   "ollama",
   "zai",
+  "deepseek",
+  "playwright-chromium",
+  "playwright-firefox",
+  "playwright-webkit",
 ] as const;
 
 /** Falls back to string when no engine is declared, so an empty set still builds. */

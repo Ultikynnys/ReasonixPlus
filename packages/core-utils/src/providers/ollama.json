@@ -66,7 +66,11 @@
     },
     "peakModels": ["deepseek-v4-flash", "deepseek-v4-pro"]
   },
-  "usage": { "probe": "ollama-balance" },
+  "usage": {
+    "probe": "ollama-balance",
+    "urls": ["/api/balance"],
+    "primaryWindow": "wk"
+  },
   "strings": {
     "notConfigured": "Not configured yet — set an Ollama base URL / key and pick an Ollama model (Settings → Models).",
     "noCredential": "No Ollama endpoint configured for {model} — set a base URL / key (Settings → Models → Ollama).",
@@ -75,6 +79,7 @@
     "quotaTitle": "Weekly plan usage {left}% left (resets in {weeklyResets}) · session {session}% left (resets in {sessionResets}) · click to refresh",
     "quotaNoData": "Ollama usage · no data: set an API key in Settings → Models to see plan usage · click to retry",
     "quotaNoDataUnavailable": "Ollama usage · no data: an API key is set · click to retry",
+    "creditTitle": "Purchased credit: ${credit}",
     "quotaPlanFallback": "free",
     "offPeakTitle": "Ollama Cloud off-peak: half of peak rates · Peak hours 12:00–18:00 UTC (weekdays), off-peak all day on weekends · changes in {when}",
     "peakTitle": "Ollama Cloud peak: double the off-peak rate · Peak hours 12:00–18:00 UTC (weekdays), off-peak all day on weekends · changes in {when}",

@@ -67,7 +67,16 @@
   },
   "wire": { "storeFlag": true },
   "billing": { "kind": "usd-unless-oauth", "schedule": null },
-  "usage": { "probe": "codex-oauth" },
+  "usage": {
+    "probe": "codex-oauth",
+    "urls": [
+      "https://chatgpt.com/backend-api/wham/usage",
+      "https://chatgpt.com/backend-api/codex/rate_limits"
+    ],
+    "primaryWindow": "wk",
+    "resetsStyle": "absolute",
+    "minIntervalSeconds": 300
+  },
   "strings": {
     "notConfigured": "Not configured yet — add an OpenAI key or sign in with ChatGPT (Settings → OpenAI) first.",
     "noCredential": "No OpenAI credential for {model} — add an OpenAI key or sign in with ChatGPT (Settings → OpenAI).",

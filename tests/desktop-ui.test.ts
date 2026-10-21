@@ -1,7 +1,7 @@
 // Consolidated from 17 per-module test files; each source keeps its own
 // describe() wrapper so its helpers stay file-scoped. Test bodies are unchanged.
 
-import { derivePrefix as fromCoreUtils } from "@reasonix/core-utils";
+import { derivePrefix as fromCoreUtils, parseProviderRegistry } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nextAbortDraftCandidate, restoreAbortedDraft } from "../desktop/src/abort-draft";
 import {
@@ -43,6 +43,14 @@ import {
   resetLoginShellPathCache,
   resolveLoginShellPath,
 } from "../src/desktop/login-shell-path.js";
+import {
+  QuotaCoordinator,
+  fetchQuotaJson,
+  quotaCacheKey,
+  quotaCoordinator,
+  resetQuotaCoordinators,
+  usageUrls,
+} from "../src/desktop/quota.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { ImmutablePrefix } from "../src/memory/runtime.js";
 import {
@@ -180,6 +188,277 @@ describe("desktop-account-quota", () => {
       await coordinator.fetch();
       await Promise.all([coordinator.fetch({ force: true }), coordinator.fetch({ force: true })]);
       expect(fetcher).toHaveBeenCalledTimes(3);
+    });
+  });
+});
+
+describe("desktop-quota-transport", () => {
+  const jsonResponse = (body: unknown): Response =>
+    new Response(JSON.stringify(body), { status: 200 });
+
+  const specOf = (overrides: Record<string, unknown>) => {
+    const [spec] = parseProviderRegistry({
+      providers: [
+        {
+          id: "future",
+          providerId: "zai",
+          label: "Future",
+          shortLabel: "FUT",
+          groupLabelKey: "composer.modelZaiGroup",
+          order: 99,
+          setupGate: ["apiKey"],
+          precedence: null,
+          defaultModel: null,
+          knownCatalog: false,
+          models: ["future-1"],
+          endpoint: { strategy: "standard", default: "https://future.test/v1", tiers: {} },
+          settings: [],
+          usable: { apiKey: true, keylessLocal: false, always: false },
+          discovery: {
+            strategy: "models-endpoint",
+            listField: "data",
+            idField: "id",
+            excludeSpeech: false,
+          },
+          client: { auth: "api-key", transport: null, allowMissingKey: false },
+          ...overrides,
+        },
+      ],
+    });
+    if (!spec) throw new Error("fixture provider did not parse");
+    return spec;
+  };
+
+  describe("fetchQuotaJson", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("returns the JSON body and stamps the Accept header", async () => {
+      const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ usage: 1 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(
+        fetchQuotaJson({
+          urls: ["https://api.future.test/usage"],
+          headers: { Authorization: "Bearer k" },
+        }),
+      ).resolves.toEqual({ ok: true, body: { usage: 1 } });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.future.test/usage",
+        expect.objectContaining({
+          method: "GET",
+          headers: { Accept: "application/json", Authorization: "Bearer k" },
+        }),
+      );
+    });
+
+    it("names the status, the body shape, the timeout and the network as one vocabulary", async () => {
+      const cases: Array<[() => Promise<Response>, string]> = [
+        [async () => new Response("nope", { status: 404 }), "http-404"],
+        [
+          async () =>
+            new Response("not json", {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+          "malformed-json",
+        ],
+        [
+          async () => {
+            const error = new Error("aborted");
+            error.name = "TimeoutError";
+            throw error;
+          },
+          "timeout",
+        ],
+        [
+          async () => {
+            throw new Error("ECONNREFUSED");
+          },
+          "network",
+        ],
+      ];
+      for (const [impl, reason] of cases) {
+        vi.stubGlobal("fetch", vi.fn(impl));
+        await expect(
+          fetchQuotaJson({ urls: ["https://api.future.test/usage"] }),
+        ).resolves.toMatchObject({ ok: false, reason });
+      }
+    });
+
+    it("keeps the status and a capped body snippet for the probes that key on them", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response("x".repeat(500), { status: 401 })),
+      );
+      const reply = await fetchQuotaJson({ urls: ["https://api.future.test/usage"] });
+      expect(reply).toMatchObject({ ok: false, reason: "http-401", status: 401 });
+      expect(reply).toHaveProperty("detail", "x".repeat(200));
+    });
+
+    it("walks the declared addresses in order and reports each one that refused", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("gone", { status: 410 }))
+        .mockResolvedValueOnce(jsonResponse({ usage: 2 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(
+        fetchQuotaJson({
+          urls: ["https://one.test/a", "https://two.test/b"],
+        }),
+      ).resolves.toEqual({ ok: true, body: { usage: 2 } });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      const bothFail = vi.fn(async () => new Response("gone", { status: 410 }));
+      vi.stubGlobal("fetch", bothFail);
+      await expect(
+        fetchQuotaJson({ urls: ["https://one.test/a", "https://two.test/b"] }),
+      ).resolves.toMatchObject({ ok: false, reason: "one.test/a http-410; two.test/b http-410" });
+    });
+
+    it("reports no-usage-url rather than throwing when a provider declares none", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(fetchQuotaJson({ urls: [] })).resolves.toEqual({
+        ok: false,
+        reason: "no-usage-url",
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("usageUrls", () => {
+    it("rides the endpoint's origin so a chat path prefix never leaks into the usage route", () => {
+      const spec = specOf({ usage: { probe: "zai-monitor", urls: ["/api/usage"] } });
+      expect(usageUrls(spec, "https://api.future.test/api/paas/v4")).toEqual([
+        "https://api.future.test/api/usage",
+      ]);
+    });
+
+    it("keeps the configured base when the provider declares urlBase endpoint", () => {
+      const spec = specOf({
+        usage: { probe: "zai-monitor", urls: ["/user/balance"], urlBase: "endpoint" },
+      });
+      expect(usageUrls(spec, "https://api.future.test/v1")).toEqual([
+        "https://api.future.test/v1/user/balance",
+      ]);
+    });
+
+    it("passes an absolute address through untouched", () => {
+      const spec = specOf({
+        usage: { probe: "codex-oauth", urls: ["https://chatgpt.com/backend-api/wham/usage"] },
+      });
+      expect(usageUrls(spec, "https://api.future.test/v1")).toEqual([
+        "https://chatgpt.com/backend-api/wham/usage",
+      ]);
+    });
+
+    it("yields nothing for a host the provider does not declare when the gate asks it to", () => {
+      const spec = specOf({
+        usage: { probe: "opencode-usage", urls: ["/zen/go/v1/usage"], urlGate: "declared-hosts" },
+        errors: { hosts: ["future.test"] },
+      });
+      expect(usageUrls(spec, "https://future.test/zen/go/v1")).toEqual([
+        "https://future.test/zen/go/v1/usage",
+      ]);
+      // A custom proxy must never be handed the account's token for a usage read, so
+      // it gets no address to fetch at all — not a bare path a caller might still try.
+      expect(usageUrls(spec, "https://proxy.example/v1")).toEqual([]);
+      // A look-alike suffix is not the declared host.
+      expect(usageUrls(spec, "https://notfuture.test/v1")).toEqual([]);
+    });
+
+    it("answers nothing for a provider with no declared address or an unparseable base", () => {
+      const spec = specOf({ usage: { probe: "antigravity-quota" } });
+      expect(usageUrls(spec, "https://api.future.test/v1")).toEqual([]);
+      const declared = specOf({ usage: { probe: "zai-monitor", urls: ["/api/usage"] } });
+      expect(usageUrls(declared, "not a url")).toEqual([]);
+      expect(usageUrls(undefined, "https://api.future.test/v1")).toEqual([]);
+    });
+  });
+
+  describe("quotaCoordinator", () => {
+    afterEach(() => {
+      resetQuotaCoordinators();
+    });
+
+    it("reuses one coordinator per probe, endpoint and credential fingerprint", () => {
+      const fetcher = vi.fn(async () => "value");
+      const outcome = { hasData: () => true };
+      const first = quotaCoordinator("probe|https://a.test|k1", 60_000, fetcher, outcome);
+      const again = quotaCoordinator("probe|https://a.test|k1", 60_000, fetcher, outcome);
+      expect(again).toBe(first);
+      const other = quotaCoordinator("probe|https://a.test|k2", 60_000, fetcher, outcome);
+      expect(other).not.toBe(first);
+    });
+
+    it("keys on a hash so a raw credential never reaches the cache key", () => {
+      const key = quotaCacheKey("zai-monitor", "https://api.z.ai", "sk-secret-key");
+      expect(key).toContain("zai-monitor|https://api.z.ai|");
+      expect(key).not.toContain("sk-secret-key");
+      expect(quotaCacheKey("zai-monitor", "https://api.z.ai", "other-key")).not.toBe(key);
+      expect(quotaCacheKey("zai-monitor", "https://api.z.ai", "")).toContain("|anonymous");
+    });
+
+    it("rebinds the fetcher so a rotated credential is used, not the closure it was born with", async () => {
+      const stale = vi.fn(async () => "expired-token");
+      const fresh = vi.fn(async () => "rotated-token");
+      // The key omits the credential (a token rotates hourly and the cache should
+      // survive it), so only the rebind can keep the read on the live token.
+      const first = quotaCoordinator("probe|project|", 0, stale, { hasData: () => true });
+      expect((await first.fetch()).value).toBe("expired-token");
+      const again = quotaCoordinator("probe|project|", 0, fresh, { hasData: () => true });
+      expect(again).toBe(first);
+      expect((await again.fetch()).value).toBe("rotated-token");
+      expect(stale).toHaveBeenCalledTimes(1);
+    });
+
+    it("stays bounded when credentials keep rotating", async () => {
+      const outcome = { hasData: () => true };
+      const made: ReturnType<typeof quotaCoordinator<string>>[] = [];
+      for (let i = 0; i < 40; i += 1) {
+        made.push(quotaCoordinator(`probe|x|k${i}`, 60_000, async () => String(i), outcome));
+      }
+      // Old entries are evicted (they only lose a warm cache, never correctness)...
+      const oldest = quotaCoordinator("probe|x|k0", 60_000, async () => "k0", outcome);
+      expect(made).not.toContain(oldest);
+      // ... and a fresh entry still works.
+      expect((await oldest.fetch()).value).toBe("k0");
+    });
+
+    it("reports a no-data reply to the observer while still caching it for the floor", async () => {
+      const failed = vi.fn();
+      const fetcher = vi.fn(async () => undefined);
+      const coordinator = new QuotaCoordinator<undefined>(
+        fetcher,
+        60_000,
+        {
+          hasData: (value) => value !== undefined,
+          reason: () => "http-429",
+        },
+        Date.now,
+        { failed },
+      );
+      await coordinator.fetch();
+      expect(failed).toHaveBeenCalledWith(1, "http-429");
+      // A rate-limited endpoint must not be re-asked by every tab in the burst.
+      const second = await coordinator.fetch();
+      expect(second.delivery).toBe("cache");
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      // ... but a click (force) goes back out.
+      await coordinator.fetch({ force: true });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it("leaves a reply out of the cache when the probe says it is not cacheable", async () => {
+      const fetcher = vi.fn(async () => null);
+      const coordinator = new QuotaCoordinator<null>(fetcher, 60_000, {
+        hasData: () => false,
+        cacheable: () => false,
+      });
+      await coordinator.fetch();
+      await coordinator.fetch();
+      expect(fetcher).toHaveBeenCalledTimes(2);
     });
   });
 });

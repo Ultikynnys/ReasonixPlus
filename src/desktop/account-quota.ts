@@ -1,76 +1,34 @@
-import { messageOf } from "@reasonix/core-utils";
 import type { CodexQuotaResult } from "../codex-backend.js";
+import { QuotaCoordinator, type QuotaFetchObserver } from "./quota.js";
 
-interface CachedQuota {
-  value: CodexQuotaResult;
-  expiresAt: number;
-  requestId: number;
-}
+export type {
+  QuotaDelivery,
+  QuotaDeliveryResult,
+} from "./quota.js";
+export type { QuotaFetchObserver };
 
-export type QuotaDelivery = "underlying" | "shared" | "cache";
-
-export interface QuotaDeliveryResult {
-  value: CodexQuotaResult;
-  delivery: QuotaDelivery;
-  requestId: number;
-}
-
-export interface QuotaFetchObserver {
-  started?: (requestId: number) => void;
-  succeeded?: (requestId: number, value: CodexQuotaResult) => void;
-  failed?: (requestId: number, reason: string) => void;
-}
-
-export class AccountQuotaCoordinator {
-  private cached: CachedQuota | null = null;
-  private inflight: Promise<CodexQuotaResult> | null = null;
-  private inflightRequestId = 0;
-  private nextRequestId = 1;
-
+/** ChatGPT-plan Codex quota. A reply with no windows is a failure (not signed in,
+ *  rejected, malformed), so it is never cached: the next read retries instead of
+ *  serving "no data" for a whole TTL. */
+export class AccountQuotaCoordinator extends QuotaCoordinator<CodexQuotaResult> {
   constructor(
-    private readonly fetcher: () => Promise<CodexQuotaResult>,
-    private readonly ttlMs = 15_000,
-    private readonly now: () => number = Date.now,
-    private readonly observer: QuotaFetchObserver = {},
-  ) {}
-
-  fetch(options: { force?: boolean } = {}): Promise<QuotaDeliveryResult> {
-    if (this.inflight) {
-      const requestId = this.inflightRequestId;
-      return this.inflight.then((value) => ({ value, delivery: "shared", requestId }));
-    }
-    if (!options.force && this.cached && this.cached.expiresAt > this.now()) {
-      return Promise.resolve({
-        value: this.cached.value,
-        delivery: "cache",
-        requestId: this.cached.requestId,
-      });
-    }
-    const requestId = this.nextRequestId++;
-    this.inflightRequestId = requestId;
-    this.observer.started?.(requestId);
-    const request = this.fetcher()
-      .then((value) => {
-        if (value.quota) {
-          this.cached = { value, expiresAt: this.now() + this.ttlMs, requestId };
-          this.observer.succeeded?.(requestId, value);
-        } else {
-          this.observer.failed?.(requestId, value.reason ?? "no quota data");
-        }
-        return value;
-      })
-      .catch((error) => {
-        this.observer.failed?.(requestId, messageOf(error));
-        throw error;
-      })
-      .finally(() => {
-        if (this.inflight === request) this.inflight = null;
-      });
-    this.inflight = request;
-    return request.then((value) => ({ value, delivery: "underlying", requestId }));
-  }
-
-  invalidate(): void {
-    this.cached = null;
+    fetcher: () => Promise<CodexQuotaResult>,
+    ttlMs = 15_000,
+    now: () => number = Date.now,
+    observer: QuotaFetchObserver<CodexQuotaResult> = {},
+  ) {
+    super(
+      fetcher,
+      ttlMs,
+      {
+        hasData: (value) => value.quota !== null,
+        // A no-data reply must stay retryable: caching it would serve "not signed
+        // in" for a whole TTL after the user signs in.
+        cacheable: (value) => value.quota !== null,
+        reason: (value) => value.reason,
+      },
+      now,
+      observer,
+    );
   }
 }

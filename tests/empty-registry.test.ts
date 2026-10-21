@@ -15,7 +15,6 @@ import {
 } from "../packages/core-utils/src/provider-registry.js";
 import {
   SEARCH_ENGINE_SPECS,
-  SEARCH_FALLBACK_ENGINES,
   parseSearchRegistry,
   requireSearchEngineSpec,
   searchEngineSpec,
@@ -73,7 +72,6 @@ describe("optional registries", () => {
     expect(PROVIDER_MODEL_PRECEDENCE.length).toBeGreaterThan(0);
     expect(SUPPORTED_OFFICIAL_MODELS.length).toBeGreaterThan(0);
     expect(SEARCH_ENGINE_SPECS.length).toBeGreaterThan(0);
-    expect(SEARCH_FALLBACK_ENGINES.length).toBeGreaterThan(0);
   });
 });
 
@@ -115,7 +113,6 @@ describe("zero-data boot", () => {
     expect(models.KNOWN_MODELS).toEqual([]);
     expect(search.SEARCH_ENGINE_SPECS).toEqual([]);
     expect(search.SEARCH_ENGINE_IDS).toEqual([]);
-    expect(search.SEARCH_FALLBACK_ENGINES).toEqual([]);
     expect(search.searchEngineDeclared("bing")).toBe(false);
 
     // The daemon loads and degrades instead of throwing.

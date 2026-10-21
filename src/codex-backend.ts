@@ -1,8 +1,14 @@
 /** Codex backend transport + OAuth quota — routes gpt-* requests through
  *  chatgpt.com for plan-quota billing, and fetches rate-limit windows. */
 
-import { type CodexQuota, type CodexQuotaWindow, asRecord } from "@reasonix/core-utils";
+import {
+  type CodexQuota,
+  type CodexQuotaWindow,
+  asRecord,
+  providerSpec,
+} from "@reasonix/core-utils";
 import type { ResolvedTransport } from "./client.js";
+import { fetchQuotaJson } from "./desktop/quota.js";
 import { createLogger } from "./logging.js";
 import { accountFromIdToken, resolveOpenAIToken } from "./oauth.js";
 
@@ -259,10 +265,6 @@ export async function generateImageViaCodex(
 
 // ── OAuth-based quota fetch (no codex CLI dependency) ──────────────────────
 
-/** Official Codex usage endpoint used by the Codex client for ChatGPT accounts. */
-const CODEX_QUOTA_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
-/** Kept as a compatibility fallback for older ChatGPT backend deployments. */
-const LEGACY_CODEX_QUOTA_ENDPOINT = "https://chatgpt.com/backend-api/codex/rate_limits";
 const FIVE_HOUR_MINUTES = 300;
 const WEEKLY_MINUTES = 10080;
 
@@ -342,21 +344,23 @@ export interface CodexQuotaResult {
 async function fetchQuotaEndpoint(
   url: string,
   auth: CodexAuth,
-  signal: AbortSignal,
+  timeoutMs: number,
 ): Promise<CodexQuotaResult> {
-  const resp = await fetch(url, {
+  const reply = await fetchQuotaJson({
+    urls: [url],
     headers: { ...codexHeaders(auth), "User-Agent": "codex-cli" },
-    signal,
+    timeoutMs,
   });
 
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    const reason = `${url} returned ${resp.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
+  if (!reply.ok) {
+    // The body names the reason a plan refused (a revoked token reads differently
+    // from a plan without windows), so keep a capped snippet with the status.
+    const reason = `${url} ${reply.reason}${reply.detail ? `: ${reply.detail}` : ""}`;
     log.debug(reason);
     return { quota: null, reason };
   }
 
-  const quota = parseCodexQuotaPayload(await resp.json());
+  const quota = parseCodexQuotaPayload(reply.body);
   if (!quota) {
     const reason = `${url} response contained no usable rate-limit windows`;
     log.debug(reason);
@@ -373,31 +377,26 @@ async function fetchQuotaEndpoint(
   return { quota, reason: null };
 }
 
-/** Fetch ChatGPT plan quota via the Codex backend API using OAuth.
- *  The current Codex client reads `/wham/usage`; the legacy endpoint remains
- *  a fallback for older ChatGPT backend deployments. */
+/** Fetch ChatGPT plan quota via the Codex backend API using OAuth. The declared
+ *  addresses are tried in order: the route the Codex client reads today, then the
+ *  legacy one older ChatGPT backends still answer. */
 export async function fetchCodexQuotaViaOAuth(timeoutMs = 10_000): Promise<CodexQuotaResult> {
   const auth = await resolveCodexAuth();
   if (!auth.ok) return { quota: null, reason: auth.reason };
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const endpoints = providerSpec("openai")?.usage.urls ?? [];
   const reasons: string[] = [];
 
-  try {
-    for (const endpoint of [CODEX_QUOTA_ENDPOINT, LEGACY_CODEX_QUOTA_ENDPOINT]) {
-      try {
-        const result = await fetchQuotaEndpoint(endpoint, auth, ctrl.signal);
-        if (result.quota) return result;
-        if (result.reason) reasons.push(result.reason);
-      } catch (err) {
-        const reason = `${endpoint} fetch failed: ${(err as Error).message}`;
-        log.debug(reason);
-        reasons.push(reason);
-      }
+  for (const endpoint of endpoints) {
+    try {
+      const result = await fetchQuotaEndpoint(endpoint, auth, timeoutMs);
+      if (result.quota) return result;
+      if (result.reason) reasons.push(result.reason);
+    } catch (err) {
+      const reason = `${endpoint} fetch failed: ${(err as Error).message}`;
+      log.debug(reason);
+      reasons.push(reason);
     }
-    return { quota: null, reason: reasons.join("; ") || "no quota data" };
-  } finally {
-    clearTimeout(timer);
   }
+  return { quota: null, reason: reasons.join("; ") || "no declared usage endpoint" };
 }

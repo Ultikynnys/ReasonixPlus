@@ -12,6 +12,7 @@ import {
 } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { providerSpec } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type BalanceInfo, pickPrimaryBalance } from "../src/client.js";
 import { readConfig, saveOpencodeOAuth, writeConfig } from "../src/config.js";
@@ -52,11 +53,7 @@ import {
   resolveOpencodeToken,
   signOutOpencode,
 } from "../src/opencode-oauth.js";
-import {
-  OPENCODE_GO_USAGE_URL,
-  fetchOpencodeQuota,
-  opencodeUsageUrl,
-} from "../src/opencode-quota.js";
+import { fetchOpencodeQuota, opencodeUsageUrl } from "../src/opencode-quota.js";
 
 describe("opencode-models", () => {
   const TEST_DIR = join(process.cwd(), ".tmp-test-opencode-models");
@@ -566,7 +563,10 @@ describe("opencode-quota", () => {
       // A custom proxy (or a non-opencode host) must never be guessed at.
       expect(opencodeUsageUrl("https://my-gateway.example.com/v1")).toBeUndefined();
       expect(opencodeUsageUrl("not a url")).toBeUndefined();
-      expect(OPENCODE_GO_USAGE_URL).toBe("https://opencode.ai/zen/go/v1/usage");
+      // The public Go address is the declared route on the declared Go tier, so a
+      // provider file edit moves both ends together.
+      const goTier = providerSpec("opencode")?.endpoint.tiers.go ?? "";
+      expect(opencodeUsageUrl(goTier)).toBe("https://opencode.ai/zen/go/v1/usage");
     });
 
     it("parses the rolling/weekly/monthly windows into %-left windows", async () => {

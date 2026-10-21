@@ -1,3 +1,5 @@
+import type { SearchEngineBrowser } from "./playwright-browsers.js";
+import { BROWSER_SEARCH_ENGINES } from "./playwright-browsers.js";
 import { providerSettingPath, providerSpec } from "./provider-registry.js";
 import { SEARCH_ENGINE_DOCUMENTS, type SearchEngineID } from "./search-engines.generated.js";
 
@@ -17,11 +19,17 @@ export type SearchEngineStrategy =
   | "perplexity"
   | "exa"
   | "brave"
+  | "deepseek"
   | "ollama"
-  | "zai";
-
+  | "zai"
+  | "playwright";
 export type SearchSettingKind = "secret" | "url";
 
+/** The transport that performs a `web_fetch` for this engine. `http` is the generic
+ *  page fetch; the others go through the engine's own fetch API. */
+export type SearchEngineFetchStrategy = "http" | "ollama" | "deepseek";
+
+export { BROWSER_SEARCH_ENGINES, type SearchEngineBrowser } from "./playwright-browsers.js";
 /** One persisted setting an engine declares for itself. */
 export interface SearchSettingSpec {
   /** Setting key inside the engine's store entry (e.g. `apiKey`, `endpoint`). */
@@ -58,12 +66,19 @@ export interface SearchEngineSpec {
   order: number;
   kind: SearchEngineKind;
   strategy: SearchEngineStrategy;
-  /** Whether `webSearch` falls back to this engine when the primary backend fails. */
-  fallback: boolean;
+  /** Message templates this engine owns: every string it can emit for `web_search`
+   *  and `web_fetch` is declared here, never hardcoded in TS. `extends` copies are
+   *  already merged in, so a reader never has to follow the chain. */
+  errors: Readonly<Record<string, string>>;
+  /** Transport that performs `web_fetch` for this engine. */
+  fetchStrategy: SearchEngineFetchStrategy;
+  /** Managed browser this engine drives; set exactly when the strategy is "playwright". */
+  browser: SearchEngineBrowser | null;
+  /** Engine whose error copy this one reuses, so identical engines declare it once. */
+  extends: string | null;
   sharedCredential: SearchCredentialShare | null;
   settings: readonly SearchSettingSpec[];
 }
-
 /** One validated write from a search settings patch. */
 export interface SearchSettingWrite {
   engineId: string;
@@ -83,11 +98,14 @@ const STRATEGIES: ReadonlySet<string> = new Set([
   "perplexity",
   "exa",
   "brave",
+  "deepseek",
   "ollama",
   "zai",
+  "playwright",
 ]);
 const SETTING_KINDS: ReadonlySet<string> = new Set(["secret", "url"]);
-
+const FETCH_STRATEGIES: ReadonlySet<string> = new Set(["http", "ollama", "deepseek"]);
+const BROWSERS: ReadonlySet<string> = new Set(BROWSER_SEARCH_ENGINES);
 function fail(where: string, message: string): never {
   throw new Error(`search-engines: ${where}: ${message}`);
 }
@@ -114,12 +132,6 @@ function number(value: unknown, where: string): number {
   return value;
 }
 
-function flag(value: unknown, where: string): boolean {
-  if (value === undefined || value === null) return false;
-  if (typeof value !== "boolean") fail(where, "expected a boolean");
-  return value;
-}
-
 function texts(value: unknown, where: string): string[] {
   if (!Array.isArray(value)) fail(where, "expected an array");
   return value.map((entry, index) => text(entry, `${where}[${index}]`));
@@ -131,6 +143,19 @@ function choice<T extends string>(value: unknown, allowed: ReadonlySet<string>, 
     fail(where, `unsupported value "${raw}" (expected ${[...allowed].join(", ")})`);
   }
   return raw as T;
+}
+
+/** Message templates are a free-form map — the engine's strategy decides which keys
+ *  it reads, so one engine can declare `dailyLimit` while another declares `blocked`. */
+function errorTemplates(value: unknown, where: string): Record<string, string> {
+  if (value === undefined || value === null) return {};
+  const raw = record(value, where);
+  const out: Record<string, string> = {};
+  for (const [key, message] of Object.entries(raw)) {
+    if (!/^[a-z][A-Za-z0-9]*$/.test(key)) fail(`${where}.${key}`, `invalid message key "${key}"`);
+    out[key] = text(message, `${where}.${key}`);
+  }
+  return out;
 }
 
 function parseSetting(value: unknown, where: string): SearchSettingSpec {
@@ -188,20 +213,69 @@ export function parseSearchEngine(value: unknown, source: string): SearchEngineS
   if (kind !== "shared" && raw.sharedCredential !== undefined) {
     fail(`${scope}: sharedCredential`, "only a shared engine may reuse a provider credential");
   }
+  const strategy = choice<SearchEngineStrategy>(raw.strategy, STRATEGIES, `${scope}: strategy`);
+  // The browser is the engine's whole point, so a playwright engine without one
+  // cannot be dispatched — and no other strategy may carry a stray browser field.
+  if (strategy === "playwright" && raw.browser === undefined) {
+    fail(`${scope}: browser`, "required for the playwright strategy");
+  }
+  if (strategy !== "playwright" && raw.browser !== undefined) {
+    fail(`${scope}: browser`, "only the playwright strategy drives a browser");
+  }
+  const copyFrom = nullableText(raw.extends, `${scope}: extends`);
+  if (copyFrom === id) fail(`${scope}: extends`, "an engine cannot extend itself");
   return {
     id,
     label: text(raw.label, `${scope}: label`),
     description: nullableText(raw.description, `${scope}: description`),
     order: number(raw.order, `${scope}: order`),
     kind,
-    strategy: choice<SearchEngineStrategy>(raw.strategy, STRATEGIES, `${scope}: strategy`),
-    fallback: flag(raw.fallback, `${scope}: fallback`),
+    strategy,
+    errors: errorTemplates(raw.errors, `${scope}: errors`),
+    fetchStrategy:
+      raw.fetchStrategy === undefined
+        ? "http"
+        : choice<SearchEngineFetchStrategy>(
+            raw.fetchStrategy,
+            FETCH_STRATEGIES,
+            `${scope}: fetchStrategy`,
+          ),
+    browser:
+      raw.browser === undefined
+        ? null
+        : choice<SearchEngineBrowser>(raw.browser, BROWSERS, `${scope}: browser`),
+    extends: copyFrom,
     sharedCredential:
       raw.sharedCredential === undefined
         ? null
         : parseShare(raw.sharedCredential, `${scope}: sharedCredential`, settings),
     settings,
   };
+}
+
+/** Errors for one engine, following its `extends` chain; own keys always win. */
+function resolveErrorCopy(specs: readonly SearchEngineSpec[]): Map<string, Record<string, string>> {
+  const byId = new Map(specs.map((spec) => [spec.id, spec]));
+  const resolved = new Map<string, Record<string, string>>();
+  const resolving = new Set<string>();
+  const forSpec = (spec: SearchEngineSpec): Record<string, string> => {
+    const cached = resolved.get(spec.id);
+    if (cached) return cached;
+    if (resolving.has(spec.id)) fail(`engine "${spec.id}"`, "extends cycle in error copy");
+    resolving.add(spec.id);
+    let merged: Record<string, string> = {};
+    if (spec.extends) {
+      const base = byId.get(spec.extends);
+      if (!base) fail(`engine "${spec.id}"`, `extends undeclared engine "${spec.extends}"`);
+      merged = { ...forSpec(base) };
+    }
+    Object.assign(merged, spec.errors);
+    resolving.delete(spec.id);
+    resolved.set(spec.id, merged);
+    return merged;
+  };
+  for (const spec of specs) forSpec(spec);
+  return resolved;
 }
 
 /** Validate a whole registry document (`{ engines: [...] }`), ordered by `order`. */
@@ -214,7 +288,12 @@ export function parseSearchRegistry(value: unknown): SearchEngineSpec[] {
     if (seen.has(spec.id)) fail("engines", `duplicate engine id "${spec.id}"`);
     seen.add(spec.id);
   }
-  return specs.sort((a, b) => a.order - b.order);
+  // Copy inheritance is resolved here, not in parseSearchEngine: a single document
+  // cannot see the engine it extends.
+  const copy = resolveErrorCopy(specs);
+  return specs
+    .map((spec) => ({ ...spec, errors: Object.freeze({ ...(copy.get(spec.id) ?? spec.errors) }) }))
+    .sort((a, b) => a.order - b.order);
 }
 
 /** Every engine, in picker order. Built from the generated barrel, so adding an engine
@@ -232,10 +311,13 @@ const BY_ID: ReadonlyMap<string, SearchEngineSpec> = new Map(
 /** Engine ids in picker order. */
 export const SEARCH_ENGINE_IDS: readonly string[] = SEARCH_ENGINE_SPECS.map((spec) => spec.id);
 
-/** Engines `webSearch` falls back to when the primary backend fails. */
-export const SEARCH_FALLBACK_ENGINES: readonly string[] = SEARCH_ENGINE_SPECS.filter(
-  (spec) => spec.fallback,
-).map((spec) => spec.id);
+/** One message template this engine declares; throws when the declaration lacks it, so
+ *  a missing string fails loudly at the call site instead of silently printing English. */
+export function requireSearchEngineError(spec: SearchEngineSpec, key: string): string {
+  const message = spec.errors[key];
+  if (!message) fail(`engine "${spec.id}"`, `declares no errors.${key} message`);
+  return message;
+}
 
 /** Engine by id, or undefined when unknown. */
 export function searchEngineSpec(id: string): SearchEngineSpec | undefined {

@@ -1,4 +1,8 @@
-import { messageOf } from "@reasonix/core-utils";
+import {
+  messageOf,
+  sliceAlignedToCodepoint,
+  sliceSuffixAlignedToCodepoint,
+} from "@reasonix/core-utils";
 import { withDeadline } from "../core/with-deadline.js";
 import { recordDiagnostic } from "../diagnostics.js";
 import { countTokens, countTokensBounded } from "../tokenizer.js";
@@ -500,25 +504,6 @@ export function truncateForModel(s: string, maxChars: number, extraNote?: string
   const dropped = s.length - head.length - tail.length;
   const note = extraNote ? `: ${extraNote}` : "";
   return `${head}\n\n[…truncated ${dropped} chars: raise BridgeOptions.maxResultChars, or call the tool with a narrower scope (filter, head, pagination)${note}…]\n\n${tail}`;
-}
-
-/** Slicing inside a UTF-16 surrogate pair (emoji, supplementary CJK) leaves a lone surrogate
- *  that crashes downstream JSON parsers (issue #1970). Trim one code unit back if needed. */
-function sliceAlignedToCodepoint(s: string, end: number): string {
-  if (end <= 0) return "";
-  if (end >= s.length) return s;
-  const last = s.charCodeAt(end - 1);
-  if (last >= 0xd800 && last <= 0xdbff) return s.slice(0, end - 1);
-  return s.slice(0, end);
-}
-
-function sliceSuffixAlignedToCodepoint(s: string, len: number): string {
-  if (len <= 0) return "";
-  if (len >= s.length) return s;
-  const start = s.length - len;
-  const first = s.charCodeAt(start);
-  if (first >= 0xdc00 && first <= 0xdfff) return s.slice(start + 1);
-  return s.slice(start);
 }
 
 /** Never tokenizes full input — pathological repetitive text (`AAAA…`) costs 30s+ on the pure-TS BPE port. */
