@@ -56,6 +56,20 @@ describe("modelAcceptsImages", () => {
     expect(modelAcceptsImages("big-pickle")).toBe(false);
   });
 
+  it("carries DeepSeek's vision to an alias or variant of the same build", () => {
+    // A gateway resells the multimodal Flash build under suffixed ids; naming the
+    // family instead of each id is what keeps the next alias from losing images.
+    expect(modelAcceptsImages("deepseek-v4.1-flash-1017")).toBe(true);
+    expect(modelAcceptsImages("deepseek-v4.1-flash-ultraspeed")).toBe(true);
+    expect(modelAcceptsImages("experiential/deepseek-v4.1-flash-1017")).toBe(true);
+    expect(modelAcceptsImages("ollama/deepseek-v4.1-flash-turbo:cloud")).toBe(true);
+    // A near miss is not the family: the Pro and retired text lines stay text-only.
+    expect(modelAcceptsImages("deepseek-v4-pro")).toBe(false);
+    expect(modelAcceptsImages("deepseek-chat")).toBe(false);
+    expect(modelAcceptsImages("deepseek-reasoner")).toBe(false);
+    expect(modelAcceptsImages("deepseek-v4-flashlite")).toBe(false);
+  });
+
   it("accepts MiMo's V2.6 multimodal models and rejects its text-only ids", () => {
     expect(modelAcceptsImages("mimo-v2.6-pro")).toBe(true);
     expect(modelAcceptsImages("mimo-v2.6-flash")).toBe(true);

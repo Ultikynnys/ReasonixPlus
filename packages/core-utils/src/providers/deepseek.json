@@ -31,7 +31,8 @@
       "deepseek-v4-flash",
       "deepseek-v4-flash-vision-exp",
       "deepseek-v4.1-flash"
-    ]
+    ],
+    "patterns": ["^deepseek-(?:v\\d+(?:\\.\\d+)?-)?flash(?:[-:.].*)?$"]
   },
   "modelFilter": null,
   "reasoningEfforts": ["low", "high", "max"],
