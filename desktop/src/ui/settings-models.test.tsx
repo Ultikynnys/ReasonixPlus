@@ -265,6 +265,28 @@ describe("PageModels default-model enum", () => {
     expect(col.querySelectorAll(".mcard")).toHaveLength(0);
     expect(within(col).getByText("No models match your search.")).toBeTruthy();
   });
+
+  it("lists a provider's models without repeating the provider in each row", () => {
+    const { container } = render(
+      <SettingsModal
+        {...baseProps}
+        settings={{ ...baseSettings, enabledModels: ["ollama/beam"] }}
+        ollamaModels={["beam", "clef:27b"]}
+        initialPage="models"
+      />,
+    );
+    container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
+      if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+    });
+
+    // The Ollama card is titled by the provider, so its rows drop the `ollama/` scheme.
+    const row = container.querySelector('.mcard[data-model="ollama/clef:27b"]');
+    expect(row?.querySelector(".model-name")?.textContent).toBe("clef:27b");
+    const names = Array.from(container.querySelectorAll(".mcard .model-name")).map(
+      (name) => name.textContent,
+    );
+    expect(names).not.toContain("ollama/clef:27b");
+  });
 });
 
 describe("PageModels shared-id identity (qualified refs)", () => {
@@ -293,14 +315,14 @@ describe("PageModels shared-id identity (qualified refs)", () => {
       if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
     });
 
-    const cardFor = (name: string) =>
-      Array.from(container.querySelectorAll(".mcard")).find(
-        (card) => card.querySelector(".model-name")?.textContent === name,
-      );
+    const cardFor = (value: string) => container.querySelector(`.mcard[data-model="${value}"]`);
     const native = cardFor("mimo-v2.6-pro");
     const qualified = cardFor("opencode/mimo-v2.6-pro");
     expect(native).toBeTruthy();
     expect(qualified).toBeTruthy();
+    // Each card names its own provider, so a row never repeats the prefix.
+    expect(native?.querySelector(".model-name")?.textContent).toBe("mimo-v2.6-pro");
+    expect(qualified?.querySelector(".model-name")?.textContent).toBe("mimo-v2.6-pro");
 
     // Disabling the OPENCODE row removes only the qualified identity.
     fireEvent.click(within(qualified as HTMLElement).getByRole("button", { name: "Disable" }));
@@ -337,10 +359,7 @@ describe("PageModels shared-id identity (qualified refs)", () => {
         if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
       });
 
-      const cardFor = (name: string) =>
-        Array.from(container.querySelectorAll(".mcard")).find(
-          (card) => card.querySelector(".model-name")?.textContent === name,
-        );
+      const cardFor = (value: string) => container.querySelector(`.mcard[data-model="${value}"]`);
       const opencodeRow = cardFor("deepseek-v4.1-flash");
       const experientialRow = cardFor("experiential/deepseek-v4.1-flash");
       expect(opencodeRow).toBeTruthy();

@@ -158,6 +158,7 @@ Top level:
 | `id` | string | Catalog id, must match the file name |
 | `providerId` | string or null | Routable id (joins `ProviderID`), or null for catalog-only |
 | `label` | string | Human name for logs and diagnostics |
+| `shortLabel` | string | Tag that prefixes a model id in picker rows and model pills (`DS · deepseek-v4-flash`), ≤5 chars and unique per provider; omit to fall back to `label` |
 | `groupLabelKey` | string | i18n key naming the provider's card or picker group |
 | `pickerGroup` | string or null | Desktop picker group to render in; null means the provider's own id |
 | `order` | number | Picker and catalog order, ascending |

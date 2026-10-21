@@ -13,7 +13,8 @@ import {
   messageOf,
   modelAcceptsAudioVideo,
   modelAcceptsImages,
-  modelDisplayName,
+  modelDisplayLabel,
+  modelWireName,
   sanitizeFilename,
 } from "@reasonix/core-utils";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -3369,12 +3370,12 @@ function duplicateModelOptions(
   const listed = groups.some((g) => g.ids.includes(active));
   return (
     <>
-      {active && !listed ? <option value={active}>{modelDisplayName(active)}</option> : null}
+      {active && !listed ? <option value={active}>{modelWireName(active)}</option> : null}
       {groups.map((g) => (
         <optgroup key={g.key} label={g.label}>
           {g.ids.map((id) => (
             <option key={id} value={id}>
-              {modelDisplayName(id)}
+              {modelWireName(id)}
             </option>
           ))}
         </optgroup>
@@ -5333,11 +5334,13 @@ const TabRuntime = memo(function TabRuntime({
                 onRefreshOpencodeModels={onRefreshOpencodeModels}
                 onModelChange={(model) => {
                   saveSettings({ model });
-                  appendNotice(t("app.toast.modelSwitched", { model }));
+                  appendNotice(t("app.toast.modelSwitched", { model: modelDisplayLabel(model) }));
                 }}
                 onSubagentModelChange={(model) => {
                   saveSettings({ subagentModel: model });
-                  appendNotice(t("app.toast.subagentModelSwitched", { model }));
+                  appendNotice(
+                    t("app.toast.subagentModelSwitched", { model: modelDisplayLabel(model) }),
+                  );
                 }}
                 onEffortChange={applyReasoningEffort}
                 editMode={state.settings?.editMode ?? "follow"}
@@ -5473,7 +5476,6 @@ const TabRuntime = memo(function TabRuntime({
           onToggleJobs={toggleJobs}
           onSetThemeStyle={onSetThemeStyle}
           onToggleCurrency={onToggleCurrency}
-          onOpenSettings={openSettings}
           onOpenWorkdir={openWorkdir}
         />
 
@@ -6146,7 +6148,7 @@ function MainHead({
           </span>
           {model ? (
             <span className="pill">
-              <I.brain size={10} /> {model}
+              <I.brain size={10} /> {modelDisplayLabel(model)}
             </span>
           ) : null}
         </div>

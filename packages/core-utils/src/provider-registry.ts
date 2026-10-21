@@ -259,6 +259,9 @@ export interface ProviderSpec {
   /** Routing id, or null for a catalog-only entry that never routes a model id. */
   providerId: ProviderID | null;
   label: string;
+  /** Tag that prefixes a model id in a picker row or a model pill, e.g. `DS`
+   *  for DeepSeek. Falls back to `label` when a declaration omits it. */
+  shortLabel: string;
   /** i18n key naming the provider's card/group in the desktop UI. */
   groupLabelKey: string;
   /** Desktop picker group this provider renders in; null = its own id. */
@@ -728,6 +731,8 @@ function parseProvider(value: unknown, source: string): ProviderSpec {
     id,
     providerId: nullableChoice<ProviderID>(raw.providerId, PROVIDER_ID_SET, `${scope}: providerId`),
     label,
+    // Optional so a minimal declaration still loads; the full name is a usable tag.
+    shortLabel: raw.shortLabel === undefined ? label : text(raw.shortLabel, `${scope}: shortLabel`),
     groupLabelKey: text(raw.groupLabelKey, `${scope}: groupLabelKey`),
     pickerGroup: nullableText(raw.pickerGroup, `${scope}: pickerGroup`),
     order: number(raw.order, `${scope}: order`),
@@ -866,6 +871,11 @@ export const MODELS_DEV_SPECS: readonly ProviderSpec[] = PROVIDER_SPECS.filter(
 /** Catalog entry by its catalog id (e.g. `opencode`), or undefined when unknown. */
 export function providerSpec(id: string): ProviderSpec | undefined {
   return SPEC_BY_ID.get(id);
+}
+
+/** A provider's short model-prefix tag (`DS`), or "" when the id is undeclared. */
+export function providerShortLabel(id: string): string {
+  return providerSpec(id)?.shortLabel ?? "";
 }
 
 /** Declared UI copy with `{name}` placeholders filled from `vars`; an unmatched

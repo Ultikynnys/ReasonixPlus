@@ -6,6 +6,7 @@ import {
   type ProviderSpec,
   isUsableAntigravityModel,
   modelAcceptsImages,
+  providerSpec,
   providerSpecsInOrder,
   qualifyModelRef,
   stripProviderQualifier,
@@ -210,4 +211,27 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     acceptsImages: (model) =>
       modelAcceptsImages(model, options.ollamaVisionModels, options.opencodeVisionModels),
   };
+}
+
+/** Live catalogs by provider id, for `modelDisplayLabel`: the ids a discovery
+ *  sync added beyond the static catalog. Twin of `deriveModelCatalog`'s
+ *  discovery switch (rows there, tags here); an undeclared provider adds none. */
+export function modelProviderHints(sources: {
+  providerCatalogs?: Partial<Record<ProviderCatalogKey, ProviderCatalogView>>;
+  discoveredAntigravityModels?: readonly string[];
+  opencodeModels?: readonly string[];
+}): Record<string, readonly string[]> {
+  const hints: Record<string, readonly string[]> = {};
+  // Keyed by provider id (not the catalog id a source is named by), since that is
+  // the key the registry-side resolver reads.
+  const add = (catalogId: string, models: readonly string[] | undefined): void => {
+    const provider = providerSpec(catalogId)?.providerId;
+    if (provider && models && models.length > 0) hints[provider] = models;
+  };
+  for (const [catalogId, view] of Object.entries(sources.providerCatalogs ?? {})) {
+    add(catalogId, view?.models);
+  }
+  add("opencode", sources.opencodeModels);
+  add("gemini", sources.discoveredAntigravityModels);
+  return hints;
 }

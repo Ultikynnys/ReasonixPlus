@@ -2,6 +2,7 @@
   "id": "experiential",
   "providerId": "experiential",
   "label": "Experiential Labs",
+  "shortLabel": "EXP",
   "order": 7,
   "setupGate": ["apiKey", "baseUrl"],
   "pickerGate": "catalog",

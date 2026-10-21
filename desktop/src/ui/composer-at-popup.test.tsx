@@ -243,3 +243,40 @@ describe("desktop Composer model catalog", () => {
     expect(antigravityItems.some((t) => t.includes("gemini-3.7-flash-tiered"))).toBe(true);
   });
 });
+
+describe("desktop Composer provider tags", () => {
+  it("names the provider on the main and subagent model pills", () => {
+    const { container } = renderComposer({
+      modelLabel: "deepseek-v4-flash",
+      subagentModelLabel: "glm-5.3-flash",
+    });
+
+    expect(container.querySelector(".model-pill")?.textContent).toBe("DS · deepseek-v4-flash");
+    expect(container.querySelector(".subagent-pill")?.textContent).toBe("ZAI · glm-5.3-flash");
+  });
+
+  it("tags an id only the live catalog lists", () => {
+    const { container } = renderComposer({
+      modelLabel: "brand-new-model",
+      opencodeModels: ["brand-new-model"],
+    });
+
+    expect(container.querySelector(".model-pill")?.textContent).toBe("OC · brand-new-model");
+  });
+
+  it("tags each picker row, so a resold id keeps its own provider", () => {
+    const { container } = renderComposer({
+      modelLabel: "deepseek-v4-flash",
+      // The live OpenCode catalog resells an id DeepSeek owns natively.
+      opencodeModels: ["deepseek-v4-flash"],
+      enabledModels: ["deepseek-v4-flash", "opencode/deepseek-v4-flash"],
+    });
+    fireEvent.click(container.querySelector(".model-pill")!);
+
+    const rows = Array.from(container.querySelectorAll(".model-menu-list .popup-item .cmd")).map(
+      (row) => row.textContent,
+    );
+    expect(rows).toContain("DS · deepseek-v4-flash");
+    expect(rows).toContain("OC · deepseek-v4-flash");
+  });
+});

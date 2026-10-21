@@ -2,6 +2,7 @@
   "id": "synthetic",
   "providerId": "synthetic",
   "label": "Synthetic",
+  "shortLabel": "SYN",
   "order": 10,
   "setupGate": ["apiKey"],
   "groupLabelKey": "composer.modelSyntheticGroup",

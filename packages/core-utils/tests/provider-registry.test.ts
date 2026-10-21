@@ -23,6 +23,7 @@ import {
   providerCountsAsConfigured,
   providerReasoningEfforts,
   providerSettingSpec,
+  providerShortLabel,
   providerSpec,
   providerString,
   providerUsable,
@@ -114,6 +115,19 @@ describe("providers.json", () => {
       expect(spec.groupLabelKey).toContain(".");
       expect(Number.isFinite(spec.order)).toBe(true);
     }
+  });
+
+  it("tags every provider with a distinct short model prefix", () => {
+    const tags = PROVIDER_SPECS.map((spec) => spec.shortLabel);
+    for (const tag of tags) {
+      expect(tag.length).toBeGreaterThan(0);
+      // A tag prefixes a model id, so it must stay short enough to read inline.
+      expect(tag.length).toBeLessThanOrEqual(5);
+    }
+    expect(new Set(tags).size).toBe(tags.length);
+    expect(requireProviderSpec("deepseek").shortLabel).toBe("DS");
+    expect(providerShortLabel("deepseek")).toBe("DS");
+    expect(providerShortLabel("no-such-provider")).toBe("");
   });
 
   it("orders bare-id precedence exactly as declared", () => {

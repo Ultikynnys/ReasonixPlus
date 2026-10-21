@@ -83,7 +83,6 @@ function renderBar(overrides: Partial<Parameters<typeof StatusBar>[0]> = {}) {
     onToggleJobs: () => undefined,
     onSetThemeStyle: () => undefined,
     onToggleCurrency: () => undefined,
-    onOpenSettings: () => undefined,
     ...overrides,
     // The merged settings (with the resolved endpoint) win over the raw
     // override copy so the endpoint injection is never clobbered.
@@ -117,6 +116,16 @@ const ANTIGRAVITY_QUOTA: AntigravityQuota = {
 describe("StatusBar quota display", () => {
   afterEach(() => {
     cleanup();
+  });
+
+  it("leaves model and effort to the composer, not the bottom ribbon", () => {
+    renderBar({ settings: { model: "deepseek-v4-flash", reasoningEffort: "high" } as Settings });
+    // Both are set in the composer's own pills, so repeating them beside the
+    // quota chip was noise.
+    expect(screen.queryByText("deepseek-v4-flash")).toBeNull();
+    expect(screen.queryByText("high")).toBeNull();
+    // The chips the ribbon does own still render.
+    expect(screen.getByText("balance")).toBeTruthy();
   });
 
   it("keeps the balance and $ turn cost for DeepSeek tabs", () => {

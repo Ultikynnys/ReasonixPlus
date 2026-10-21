@@ -173,6 +173,25 @@ describe("PageFallbacks — backup-model list", () => {
     expect(values).not.toContain("deepseek-flash");
   });
 
+  it("names each offered model's provider, including across providers", () => {
+    renderPage(
+      {
+        ...baseSettings,
+        enabledModels: ["deepseek-v4-flash", "glm-5.3-flash", "opencode/big-pickle"],
+        fallbackModels: ["deepseek-v4-flash"],
+      },
+      vi.fn(),
+    );
+    const first = screen.getByLabelText("Backup model 1") as HTMLSelectElement;
+    const labelOf = (value: string): string | undefined =>
+      Array.from(first.options).find((option) => option.value === value)?.textContent ?? undefined;
+    // The closed select shows its option's text, so the tag is what makes a
+    // cross-provider backup list readable at a glance.
+    expect(labelOf("deepseek-v4-flash")).toBe("DS · deepseek-v4-flash");
+    expect(labelOf("glm-5.3-flash")).toBe("ZAI · glm-5.3-flash");
+    expect(labelOf("opencode/big-pickle")).toBe("OC · big-pickle");
+  });
+
   it("keeps an enabled model that no catalog places reachable under its own group", () => {
     renderPage(
       { ...baseSettings, enabledModels: [...baseSettings.enabledModels!, "hand-picked-model"] },

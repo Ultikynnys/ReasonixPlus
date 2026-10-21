@@ -4,6 +4,7 @@ import {
   PROVIDER_IDS,
   PROVIDER_MODEL_PRECEDENCE,
   type ProviderID,
+  providerShortLabel,
   providerSpec,
   providerSpecsInOrder,
   providerVisionSpec,
@@ -120,6 +121,75 @@ export const MODEL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 export function modelDisplayName(model: string | undefined | null): string {
   if (!model) return "";
   return MODEL_DISPLAY_NAMES[model] ?? model;
+}
+
+/** Live model ids a caller already holds, keyed by provider id (a discovery
+ *  sync): used only to attribute an id no static catalog lists. */
+export type ModelOwnerHints = Readonly<Record<string, readonly string[] | undefined>>;
+
+/** Providers that own a model-id scheme (`ollama/`), straight from the registry. */
+const SCHEME_OWNERS: readonly { scheme: string; provider: ProviderID }[] =
+  providerSpecsInOrder().flatMap((spec): { scheme: string; provider: ProviderID }[] => {
+    const scheme = spec.routing.modelScheme;
+    return spec.providerId && scheme ? [{ scheme, provider: spec.providerId }] : [];
+  });
+
+/** Bare-id ownership order: ranked providers first, then any that take none. */
+const OWNER_ORDER: readonly ProviderID[] = [
+  ...PROVIDER_MODEL_PRECEDENCE,
+  ...PROVIDER_IDS.filter((id) => !PROVIDER_MODEL_PRECEDENCE.includes(id)),
+];
+
+/** The provider a model id belongs to, from the registry alone: a `<provider>/`
+ *  qualifier, then an id scheme, then the catalogs in precedence order. Display
+ *  attribution only — send paths route through `providerForModel`. */
+export function modelOwnerProvider(
+  model: string | undefined | null,
+  hints?: ModelOwnerHints,
+): ProviderID | null {
+  if (typeof model !== "string") return null;
+  const trimmed = model.trim();
+  if (!trimmed) return null;
+  const ref = parseModelRef(trimmed);
+  if (ref.provider) return ref.provider;
+  for (const { scheme, provider } of SCHEME_OWNERS) {
+    if (trimmed.startsWith(scheme)) return provider;
+  }
+  for (const provider of OWNER_ORDER) {
+    if (hints?.[provider]?.includes(trimmed)) return provider;
+    const spec = providerSpec(provider);
+    if (spec && (spec.models.includes(ref.id) || spec.goModels.includes(ref.id))) return provider;
+  }
+  return null;
+}
+
+/** A model's provider tag (`DS`), or "" when no provider claims the id. */
+export function modelProviderTag(
+  model: string | undefined | null,
+  hints?: ModelOwnerHints,
+): string {
+  const provider = modelOwnerProvider(model, hints);
+  return provider ? providerShortLabel(provider) : "";
+}
+
+/** A model's own name, with the `<provider>/` qualifier dropped: user-facing
+ *  surfaces name the provider separately (a tag, a card header, a group), so
+ *  repeating it inside the id is noise. `ollama/beam` → `beam`. */
+export function modelWireName(model: string | undefined | null): string {
+  if (typeof model !== "string" || !model) return "";
+  return modelDisplayName(stripProviderQualifier(model));
+}
+
+/** The label a model pill, picker row or model list shows: `DS · deepseek-v4-flash`.
+ *  A provider-less id keeps its own display name, qualifier and all. */
+export function modelDisplayLabel(
+  model: string | undefined | null,
+  hints?: ModelOwnerHints,
+): string {
+  const raw = modelDisplayName(model);
+  const tag = modelProviderTag(model, hints);
+  if (!tag || typeof model !== "string") return raw;
+  return `${tag} · ${modelWireName(model) || raw}`;
 }
 
 /** Static OpenCode vision catalog; a models.dev sync overrides it at runtime. */

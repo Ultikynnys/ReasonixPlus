@@ -6209,9 +6209,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .statusbar .seg .v.acc {
   color: var(--accent);
 }
-.statusbar .seg .v.vio {
-  color: var(--violet);
-}
 .statusbar .grow {
   flex: 1;
 }

@@ -5,8 +5,10 @@ import {
   type ModelCatalogGroupKey,
   deriveModelCatalog,
   modelCatalogGroupLabel,
+  modelProviderHints,
+  providerForModelGroup,
 } from "./model-catalog";
-import { providerDeclared, providerSpecsInOrder } from "@reasonix/core-utils";
+import { modelOwnerProvider, providerDeclared, providerSpecsInOrder } from "@reasonix/core-utils";
 
 describe("deriveModelCatalog", () => {
   it("labels exactly the groups a declared provider fills", () => {
@@ -217,6 +219,21 @@ describe("deriveModelCatalog", () => {
     expect(models("opencode")).toContain("big-pickle");
   });
 
+  it("keys live catalogs by the provider id the tag resolver reads", () => {
+    // The antigravity picker group belongs to the `gemini` provider: a discovered
+    // id must reach the resolver under the provider id, not the group name.
+    expect(modelProviderHints({ discoveredAntigravityModels: ["gemini-x"] })).toEqual({
+      gemini: ["gemini-x"],
+    });
+    expect(modelProviderHints({ opencodeModels: ["brand-new-free"] })).toEqual({
+      opencode: ["brand-new-free"],
+    });
+    expect(
+      modelProviderHints({ providerCatalogs: { zai: { models: ["glm-x"], source: "cache" } } }),
+    ).toEqual({ zai: ["glm-x"] });
+    expect(modelProviderHints({ opencodeModels: [] })).toEqual({});
+  });
+
   it("dedupes within a group after qualifying", () => {
     const catalog = deriveModelCatalog({
       opencodeModels: ["mimo-v2.6-pro", "opencode/mimo-v2.6-pro", "mimo-v2.6-pro"],
@@ -225,4 +242,29 @@ describe("deriveModelCatalog", () => {
     const opencode = catalog.groups.find((group) => group.key === "opencode")!.models;
     expect(opencode.filter((id) => id === "opencode/mimo-v2.6-pro")).toHaveLength(1);
   });
+
+  it.skipIf(!providerDeclared("experiential"))(
+    "attributes every row to the provider whose group shows it",
+    () => {
+      // The row values come from `deriveModelCatalog` and the provider tags from
+      // `modelOwnerProvider`; this pins the two to the same answer, so a row can
+      // never read `OC` under an OpenAI header.
+      const sources = {
+        opencodeModels: ["mimo-v2.6-pro", "deepseek-v4-flash", "big-pickle"],
+        discoveredAntigravityModels: ["claude-sonnet-4-6", "gemini-3.7-flash-preview"],
+        providerCatalogs: {
+          experiential: { models: ["gpt-5.6-luna", "glm-5.3", "fable-9"], source: "live" as const },
+        },
+      };
+      const catalog = deriveModelCatalog({ ...sources, includeAntigravity: true });
+      const hints = modelProviderHints(sources);
+
+      for (const group of catalog.groups) {
+        const provider = providerForModelGroup(group.key)?.providerId;
+        for (const row of group.models) {
+          expect({ row, owner: modelOwnerProvider(row, hints) }).toEqual({ row, owner: provider });
+        }
+      }
+    },
+  );
 });

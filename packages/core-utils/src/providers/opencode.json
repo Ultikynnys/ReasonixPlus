@@ -2,6 +2,7 @@
   "id": "opencode",
   "providerId": "opencode",
   "label": "OpenCode",
+  "shortLabel": "OC",
   "order": 5,
   "setupGate": ["apiKey", "baseUrl", "oauth"],
   "routing": {

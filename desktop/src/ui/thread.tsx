@@ -1,5 +1,5 @@
 import type { ApprovalAction, ApprovalPrompt } from "@reasonix/core-utils";
-import { sanitizeTerminalText } from "@reasonix/core-utils";
+import { modelDisplayLabel, sanitizeTerminalText } from "@reasonix/core-utils";
 import { formatBytes } from "@reasonix/core-utils";
 import type { PickerWindow, PlanStep } from "@reasonix/core-utils";
 import { PLAN_INTERACTIVE_TOOL_NAMES } from "@reasonix/core-utils";
@@ -513,7 +513,7 @@ export const AssistantMsg = memo(function AssistantMsg({
       <div className="body">
         <div className="who">
           <span className="name">Reasonix+</span>
-          {model ? <span className="model">{model}</span> : null}
+          {model ? <span className="model">{modelDisplayLabel(model)}</span> : null}
           {time ? <span className="time">{time}</span> : null}
         </div>
         {segments.map((s, i) => {

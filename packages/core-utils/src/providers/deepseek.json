@@ -2,6 +2,7 @@
   "id": "deepseek",
   "providerId": "deepseek",
   "label": "DeepSeek",
+  "shortLabel": "DS",
   "order": 1,
   "setupGate": ["apiKey"],
   "routing": {

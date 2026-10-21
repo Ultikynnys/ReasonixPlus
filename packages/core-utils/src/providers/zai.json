@@ -2,6 +2,7 @@
   "id": "zai",
   "providerId": "zai",
   "label": "Z.AI",
+  "shortLabel": "ZAI",
   "order": 3,
   "setupGate": ["apiKey"],
   "routing": {

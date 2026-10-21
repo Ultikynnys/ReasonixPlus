@@ -99,12 +99,16 @@ export {
   isUsableAntigravityModel,
   modelAcceptsAudioVideo,
   modelAcceptsImages,
+  modelDisplayLabel,
   modelDisplayName,
+  modelOwnerProvider,
+  modelProviderTag,
+  modelWireName,
   parseModelRef,
   qualifyModelRef,
   stripProviderQualifier,
 } from "./models.js";
-export type { ParsedModelRef } from "./models.js";
+export type { ModelOwnerHints, ParsedModelRef } from "./models.js";
 export {
   PLAN_INTERACTIVE_TOOL_NAMES,
   PLAN_TOOL_NAMES,
@@ -149,6 +153,7 @@ export {
   providerDefaultEndpoint,
   providerReasoningEfforts,
   providerSettingSpec,
+  providerShortLabel,
   providerSpec,
   providerSpecsInOrder,
   providerString,

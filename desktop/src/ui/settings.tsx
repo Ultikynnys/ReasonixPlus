@@ -5,7 +5,8 @@ import {
   type SearchEngineSpec,
   type SearchSettingSpec,
   messageOf,
-  modelDisplayName,
+  modelDisplayLabel,
+  modelWireName,
   providerSpec,
   providerString,
   searchSharedCredential,
@@ -29,6 +30,7 @@ import {
   MODEL_CATALOG_GROUP_LABELS,
   type ModelCatalogGroupKey,
   deriveModelCatalog,
+  modelProviderHints,
   providerForModelGroup,
 } from "../model-catalog";
 import type {
@@ -1832,7 +1834,7 @@ function ModelList({
   const shown = needle
     ? models.filter(
         (id) =>
-          modelDisplayName(id).toLowerCase().includes(needle) || id.toLowerCase().includes(needle),
+          modelWireName(id).toLowerCase().includes(needle) || id.toLowerCase().includes(needle),
       )
     : models;
   return (
@@ -1876,12 +1878,14 @@ function ModelList({
       <div className="provider-models-scroll">
         {shown.map((id) => {
           const enabled = enabledSet.has(id);
-          const displayName = modelDisplayName(id);
+          // The card header already names the provider, so the id drops its prefix.
+          const displayName = modelWireName(id);
           const nameFontSize = Math.max(10, Math.min(14, (14 * 18) / displayName.length));
           return (
             <div
               key={id}
               className="mcard"
+              data-model={id}
               data-on={currentModel === id}
               data-disabled={onToggle ? !enabled : undefined}
               data-static={!onToggle ? "true" : undefined}
@@ -2017,6 +2021,19 @@ function ProviderRefreshRow({
   );
 }
 
+/** The live catalogs a settings page already holds, for `modelDisplayLabel`: both
+ *  provider-spanning enums (default model, backup models) tag their options. */
+function settingsProviderHints(
+  settings: SettingsType,
+  opencodeModels?: string[],
+): Record<string, readonly string[]> {
+  return modelProviderHints({
+    providerCatalogs: settings.providerCatalogs,
+    discoveredAntigravityModels: settings.antigravityOAuth?.models,
+    opencodeModels,
+  });
+}
+
 function PageModels({
   settings,
   onSave,
@@ -2125,6 +2142,8 @@ function PageModels({
     enabledChoices.length > 0 && !enabledChoices.includes(settings.model)
       ? [settings.model, ...enabledChoices]
       : enabledChoices;
+  // This enum spans every provider, so each option names its own.
+  const providerHints = settingsProviderHints(settings, opencodeModels);
 
   const toggleEnabled = (id: string): void => {
     const next = new Set(settings.enabledModels ?? []);
@@ -2172,7 +2191,7 @@ function PageModels({
             ) : (
               defaultModelOptions.map((id) => (
                 <option key={id} value={id}>
-                  {modelDisplayName(id)}
+                  {modelDisplayLabel(id, providerHints)}
                 </option>
               ))
             )}
@@ -2574,6 +2593,8 @@ function PageFallbacks({
       : groups;
   const known = new Set(options.flatMap((group) => [...group.models]));
   const list = settings.fallbackModels ?? [];
+  // The row's closed select shows its option text, so each option names its provider.
+  const providerHints = settingsProviderHints(settings, opencodeModels);
   const save = (next: string[]): void => onSave({ fallbackModels: next });
   const move = (from: number, to: number): void => save(moveInList(list, from, to));
   const firstUnused = options
@@ -2612,7 +2633,7 @@ function PageFallbacks({
                     shows a blank select — labelled, because it is no longer offered. */}
                 {known.has(id) ? null : (
                   <option value={id}>
-                    {`${modelDisplayName(id)}${t("settings.fallbackNotEnabledSuffix")}`}
+                    {`${modelDisplayLabel(id, providerHints)}${t("settings.fallbackNotEnabledSuffix")}`}
                   </option>
                 )}
                 {options.map((group) => (
@@ -2623,7 +2644,7 @@ function PageFallbacks({
                         value={model}
                         disabled={model !== id && list.includes(model)}
                       >
-                        {modelDisplayName(model)}
+                        {modelDisplayLabel(model, providerHints)}
                       </option>
                     ))}
                   </optgroup>

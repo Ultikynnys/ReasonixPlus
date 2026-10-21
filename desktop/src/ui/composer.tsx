@@ -1,8 +1,9 @@
 import {
   DEFAULT_MODEL,
+  type ModelOwnerHints,
   clampReasoningEffort,
   messageOf,
-  modelDisplayName,
+  modelDisplayLabel,
   providerString,
 } from "@reasonix/core-utils";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -29,6 +30,7 @@ import {
   type ProviderCatalogKey,
   type ProviderCatalogView,
   deriveModelCatalog,
+  modelProviderHints,
 } from "../model-catalog";
 import {
   BUILTIN_QUICK_SENDS,
@@ -43,6 +45,7 @@ import { speechTranscriber } from "../voice/transcriber";
 import { toWorkspaceRelative } from "../workspace-path";
 import type { ComposerDraft } from "./composer-draft";
 import { DEFAULT_COMPOSER_ROWS } from "./composer-sizing";
+import { FitText } from "./fit-text";
 import { activationHandler } from "./keyboard";
 import { StuckLabel, TimerSpan } from "./live";
 import { Shortcut } from "./shortcut";
@@ -584,6 +587,14 @@ export function Composer({
   const turnActive = busy ?? false;
   const statusText = turnActive && busyLabel ? busyLabel : null;
 
+  // A pill names its provider, so the model a tab runs on is readable without
+  // opening the menu: the live catalogs cover ids discovery added.
+  const providerHints = modelProviderHints({
+    providerCatalogs,
+    discoveredAntigravityModels: antigravityModels,
+    opencodeModels,
+  });
+
   const modelListProps = {
     ollamaModels,
     ollamaModelsError,
@@ -596,6 +607,7 @@ export function Composer({
     opencodeVisionModels,
     enabledModels,
     providerCatalogs,
+    providerHints,
     onRefreshOllamaModels,
     onRefreshAntigravityModels,
     onRefreshOpencodeModels,
@@ -812,7 +824,7 @@ export function Composer({
                 title={t("composer.switchModel")}
               >
                 <I.brain size={12} />
-                <span>{modelDisplayName(modelLabel)}</span>
+                <FitText text={modelDisplayLabel(modelLabel, providerHints)} />
                 <I.chev size={10} />
               </button>
               {openMenu === "model" ? (
@@ -843,7 +855,7 @@ export function Composer({
                   title={t("composer.switchSubagentModel")}
                 >
                   <I.bot size={12} />
-                  <span>{modelDisplayName(subagentModelLabel)}</span>
+                  <FitText text={modelDisplayLabel(subagentModelLabel, providerHints)} />
                   <I.chev size={10} />
                 </button>
                 {openMenu === "subagent" ? (
@@ -1024,6 +1036,7 @@ export function ModelList({
   opencodeVisionModels,
   enabledModels,
   providerCatalogs,
+  providerHints,
   onRefreshOllamaModels,
   onRefreshAntigravityModels,
   onRefreshOpencodeModels,
@@ -1040,6 +1053,9 @@ export function ModelList({
   opencodeModelsError?: string;
   opencodeVisionModels?: ReadonlySet<string>;
   providerCatalogs?: Partial<Record<ProviderCatalogKey, ProviderCatalogView>>;
+  /** Live-catalog ids per provider, so every row's tag names the provider that
+   *  actually serves it (a resold id keeps its own qualifier). */
+  providerHints?: ModelOwnerHints;
   /** Model ids offered by the picker (opt-in allow-list). The active model
    *  always stays visible so a running tab can never strand itself. */
   enabledModels?: string[];
@@ -1194,7 +1210,7 @@ export function ModelList({
                   <Icon size={12} />
                 </span>
                 <div className="nm">
-                  <span className="cmd">{modelDisplayName(model)}</span>
+                  <span className="cmd">{modelDisplayLabel(model, providerHints)}</span>
                 </div>
                 {catalog.acceptsImages(model) ? <span className="badge">vision</span> : null}
               </div>
@@ -1213,7 +1229,7 @@ export function ModelList({
             <I.brain size={12} />
           </span>
           <div className="nm">
-            <span className="cmd">{modelDisplayName(activeModel)}</span>
+            <span className="cmd">{modelDisplayLabel(activeModel, providerHints)}</span>
           </div>
         </div>
       )}

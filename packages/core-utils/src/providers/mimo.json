@@ -2,6 +2,7 @@
   "id": "mimo",
   "providerId": "mimo",
   "label": "Xiaomi MiMo",
+  "shortLabel": "MIMO",
   "order": 4,
   "setupGate": ["apiKey", "baseUrl"],
   "routing": {

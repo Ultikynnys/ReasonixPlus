@@ -12,7 +12,11 @@ import {
   ZAI_MODELS,
   modelAcceptsAudioVideo,
   modelAcceptsImages,
+  modelDisplayLabel,
   modelDisplayName,
+  modelOwnerProvider,
+  modelProviderTag,
+  modelWireName,
   parseModelRef,
   qualifyModelRef,
   stripProviderQualifier,
@@ -185,6 +189,91 @@ describe("modelDisplayName", () => {
     expect(modelDisplayName(null)).toBe("");
     expect(modelDisplayName(undefined)).toBe("");
     expect(modelDisplayName("")).toBe("");
+  });
+});
+
+describe("modelOwnerProvider", () => {
+  it("names the provider that owns a bare catalog id", () => {
+    expect(modelOwnerProvider("deepseek-v4-flash")).toBe("deepseek");
+    expect(modelOwnerProvider("glm-5.3-flash")).toBe("zai");
+    expect(modelOwnerProvider("mimo-v2.6-pro")).toBe("mimo");
+    expect(modelOwnerProvider("big-pickle")).toBe("opencode");
+    expect(modelOwnerProvider("gemini-3.6-flash-low")).toBe("gemini");
+  });
+
+  it("keeps a native id with its own provider when a reseller also serves it", () => {
+    expect(modelOwnerProvider("deepseek-v4-flash")).toBe("deepseek");
+    expect(modelOwnerProvider("opencode/deepseek-v4-flash")).toBe("opencode");
+  });
+
+  it("reads a declared id scheme as its provider", () => {
+    expect(modelOwnerProvider("ollama/llama3.1:latest")).toBe("ollama");
+  });
+
+  it("needs a hint for an id only a live catalog lists", () => {
+    expect(modelOwnerProvider("brand-new-free")).toBeNull();
+    expect(modelOwnerProvider("brand-new-free", { opencode: ["brand-new-free"] })).toBe("opencode");
+  });
+
+  it("returns null for an id no provider claims", () => {
+    expect(modelOwnerProvider("my-private-gateway-id")).toBeNull();
+    expect(modelOwnerProvider("")).toBeNull();
+    expect(modelOwnerProvider(undefined)).toBeNull();
+  });
+});
+
+describe("modelWireName", () => {
+  it("drops the provider prefix a label names separately", () => {
+    expect(modelWireName("ollama/beam")).toBe("beam");
+    expect(modelWireName("ollama/clef:27b")).toBe("clef:27b");
+    expect(modelWireName("opencode/mimo-v2.6-pro")).toBe("mimo-v2.6-pro");
+  });
+
+  it("leaves a bare id and an unrecognized prefix alone", () => {
+    expect(modelWireName("deepseek-v4-flash")).toBe("deepseek-v4-flash");
+    expect(modelWireName("hf:zai-org/GLM-5.3")).toBe("hf:zai-org/GLM-5.3");
+  });
+
+  it("returns an empty string for no model", () => {
+    expect(modelWireName(" ")).toBe("");
+    expect(modelWireName("")).toBe("");
+    expect(modelWireName(null)).toBe("");
+    expect(modelWireName(undefined)).toBe("");
+  });
+});
+
+describe("modelDisplayLabel", () => {
+  it("prefixes the model id with its provider tag", () => {
+    expect(modelDisplayLabel("deepseek-v4-flash")).toBe("DS · deepseek-v4-flash");
+    expect(modelDisplayLabel("glm-5.3-flash")).toBe("ZAI · glm-5.3-flash");
+  });
+
+  it("drops the qualifier the tag already names", () => {
+    expect(modelDisplayLabel("opencode/big-pickle")).toBe("OC · big-pickle");
+    expect(modelDisplayLabel("ollama/llava")).toBe("OLL · llava");
+    expect(modelDisplayLabel("ollama/llama3.1:latest")).toBe("OLL · llama3.1:latest");
+  });
+
+  it("keeps a resold id's two owners apart by tag, not by id", () => {
+    // Same wire id, two providers: the tag is what distinguishes the rows.
+    expect(modelDisplayLabel("deepseek-v4-flash")).toBe("DS · deepseek-v4-flash");
+    expect(modelDisplayLabel("opencode/deepseek-v4-flash")).toBe("OC · deepseek-v4-flash");
+  });
+
+  it("keeps an unrecognized prefix, which is part of the id", () => {
+    expect(modelDisplayLabel("hf:zai-org/GLM-5.3")).toBe("SYN · hf:zai-org/GLM-5.3");
+  });
+
+  it("prefixes ids whose shape carries a colon", () => {
+    expect(modelProviderTag("syn:large:text")).toBe("SYN");
+    expect(modelDisplayLabel("syn:large:text")).toBe("SYN · syn:large:text");
+  });
+
+  it("leaves an unattributed id unprefixed rather than guessing", () => {
+    expect(modelProviderTag("my-private-gateway-id")).toBe("");
+    expect(modelDisplayLabel("my-private-gateway-id")).toBe("my-private-gateway-id");
+    expect(modelDisplayLabel("")).toBe("");
+    expect(modelDisplayLabel(null)).toBe("");
   });
 });
 

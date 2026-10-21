@@ -444,6 +444,31 @@ describe("SubagentCard — model visibility", () => {
     expect(header.textContent).toContain("$0.0123");
   });
 
+  it("prefixes the child model with its provider tag", () => {
+    render(<SubagentCard name="explore" runs={[run]} />);
+
+    const header = screen.getByRole("button", { name: /explore/ });
+    expect(header.querySelector(".meta-model")?.textContent).toBe("DS · deepseek-v4-flash");
+  });
+
+  it("tags each model when concurrent runs used different providers", () => {
+    render(
+      <SubagentCard
+        name="explore"
+        runs={[
+          run,
+          { ...run, runId: "run-2", model: "glm-5.3-flash" },
+          { ...run, runId: "run-3", model: "opencode/big-pickle" },
+        ]}
+      />,
+    );
+
+    const header = screen.getByRole("button", { name: /explore/ });
+    expect(header.querySelector(".meta-model")?.textContent).toBe(
+      "DS · deepseek-v4-flash + ZAI · glm-5.3-flash + OC · big-pickle",
+    );
+  });
+
   it("updates context while running and hides cost until completion", () => {
     const { rerender } = render(
       <SubagentCard
@@ -547,7 +572,7 @@ describe("SubagentCard — model visibility", () => {
     );
 
     const header = screen.getByRole("button", { name: /explore/ });
-    expect(header.textContent).toContain("deepseek-v4-flash + deepseek-v4-pro");
+    expect(header.textContent).toContain("DS · deepseek-v4-flash + DS · deepseek-v4-pro");
     expect(header.textContent).toContain("ctx 12.3k / 24.7k");
     expect(header.textContent).toContain("$0.0323");
   });

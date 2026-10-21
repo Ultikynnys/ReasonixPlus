@@ -2,6 +2,7 @@
   "id": "openai",
   "providerId": "openai",
   "label": "OpenAI",
+  "shortLabel": "OAI",
   "order": 2,
   "setupGate": ["apiKey", "oauth"],
   "routing": {

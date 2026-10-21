@@ -2,6 +2,7 @@
   "id": "ollama",
   "providerId": "ollama",
   "label": "Ollama",
+  "shortLabel": "OLL",
   "order": 9,
   "setupGate": ["apiKey", "baseUrl"],
   "picker": false,

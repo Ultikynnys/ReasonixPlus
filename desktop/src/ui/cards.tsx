@@ -1,4 +1,4 @@
-import { sanitizeTerminalText } from "@reasonix/core-utils";
+import { modelDisplayLabel, sanitizeTerminalText } from "@reasonix/core-utils";
 import { type CSSProperties, type ReactNode, memo, useContext, useMemo, useState } from "react";
 import { Markdown, WorkspaceContext, resolveAgainstWorkspace, revealInExplorer } from "../Markdown";
 import { t, useLang } from "../i18n";
@@ -375,7 +375,7 @@ export function ReasoningCard({
           <div className="meta">
             {model ? (
               <span>
-                <span className="k">{t("settings.model")}</span> {model}
+                <span className="k">{t("settings.model")}</span> {modelDisplayLabel(model)}
               </span>
             ) : null}
             {tokens !== undefined ? (
@@ -1435,7 +1435,11 @@ export function SubagentCard({
               {t(DISPATCH_TEXT[dispatch.mode].label, { count: dispatch.waveSize })}
             </span>
           ) : null}
-          {models.length > 0 ? <span className="meta-model">{models.join(" + ")}</span> : null}
+          {models.length > 0 ? (
+            <span className="meta-model">
+              {models.map((m) => modelDisplayLabel(m)).join(" + ")}
+            </span>
+          ) : null}
           {contexts.length > 0 ? (
             <span className="meta-context">ctx {contexts.join(" / ")}</span>
           ) : null}
@@ -1515,7 +1519,7 @@ export function SubagentCard({
                 </span>
                 <span className="role sub-run-stats">
                   {dotJoin([
-                    run.model,
+                    run.model ? modelDisplayLabel(run.model) : null,
                     run.phase,
                     run.iter !== undefined
                       ? `${run.iter} tools${run.maxToolIters !== undefined ? ` / ${run.maxToolIters}` : ""}`

@@ -6,7 +6,6 @@ import {
   codexUsageView,
   isOllamaPeakPricedModel,
   mimoUsageView,
-  modelDisplayName,
   ollamaUsageView,
   opencodeUsageView,
   providerSpec,
@@ -126,7 +125,6 @@ export function StatusBar({
   onToggleJobs,
   onSetThemeStyle,
   onToggleCurrency,
-  onOpenSettings,
   onOpenWorkdir,
 }: {
   settings: Settings | null;
@@ -170,7 +168,6 @@ export function StatusBar({
   onToggleJobs: () => void;
   onSetThemeStyle: (style: ThemeStyle) => void;
   onToggleCurrency: () => void;
-  onOpenSettings: () => void;
   onOpenWorkdir?: (anchor: { bottom: number; left: number }) => void;
 }) {
   const sessionPromptTokens =
@@ -686,16 +683,6 @@ export function StatusBar({
           <span className="v">{settings.workspaceDir.split(/[\\/]/).pop() || "ws"}</span>
         </span>
       ) : null}
-      <span
-        className="seg"
-        title={`model · effort ${settings?.reasoningEffort ?? "high"}`}
-        onClick={onOpenSettings}
-        onKeyDown={activationHandler(onOpenSettings)}
-      >
-        <I.brain size={11} style={{ color: "var(--violet)" }} />
-        <span className="v vio">{settings?.model ? modelDisplayName(settings.model) : "-"}</span>
-        <span className="v">{settings?.reasoningEffort ?? "high"}</span>
-      </span>
       {showBalance ? (
         quotaBilling ? (
           <QuotaChip
