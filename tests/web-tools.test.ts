@@ -159,6 +159,111 @@ describe("parseBingResults", () => {
     ]);
   });
 
+  it("returns a readable snippet when a rich card nests a stylesheet", () => {
+    // Reproduced from a live SERP: the block carries Bing's stylesheet inline, and its
+    // textContent is thousands of characters of CSS rather than a summary.
+    const css = ".b_richcard+.b_factrow{margin-top:-10px}.tab-head{display:flex}";
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo">
+          <style>${css}</style>
+          <h2><a href="https://doc.rust-lang.org/std/slice/">std::slice - Rust</a></h2>
+          <div class="b_attribution">Rust Programming Language</div>
+          <div class="b_caption"><p>Utilities for the slice primitive type.</p></div>
+        </li>
+      </ol>
+    `;
+    const [result] = parseBingResults(html);
+    expect(result?.snippet).toBe("Utilities for the slice primitive type.");
+    expect(result?.snippet).not.toContain("{");
+    expect(result?.snippet).not.toContain("margin-top");
+  });
+
+  it("drops a snippet that is only stylesheet, rather than shipping CSS", () => {
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo">
+          <h2><a href="https://docs.example.com/a">A page</a></h2>
+          <style>.tab-menu li{padding:0 16px}.tab-active{color:#111}</style>
+          <div class="b_caption"><p>.b_richcard+.b_factrow{margin-top:-10px}</p></div>
+        </li>
+      </ol>
+    `;
+    // The caption itself is CSS: better an empty summary than 4KB of stylesheet.
+    expect(parseBingResults(html)[0]?.snippet).toBe("");
+  });
+
+  it("caps a long snippet instead of pasting a whole block", () => {
+    const long = "word ".repeat(400);
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo"><h2><a href="https://docs.example.com/long">Long</a></h2>
+          <div class="b_caption"><p>${long}</p></div></li>
+      </ol>
+    `;
+    const snippet = parseBingResults(html)[0]?.snippet ?? "";
+    expect(snippet.length).toBeLessThanOrEqual(321);
+    expect(snippet.endsWith("…")).toBe(true);
+  });
+
+  it("keeps words apart when a block's text sits in sibling elements", () => {
+    // Live SERP markup glues textContent: "Rust Programming Languagehttps://doc.rust-lang.org".
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo">
+          <h2><a href="https://doc.rust-lang.org/std/slice/">std::slice - Rust</a></h2>
+          <div class="b_attribution">Rust Programming Language</div>
+          <div>https://doc.rust-lang.org › std › slice</div>
+        </li>
+      </ol>
+    `;
+    const [result] = parseBingResults(html);
+    expect(result?.snippet).toContain("Rust Programming Language https://doc.rust-lang.org");
+  });
+
+  it("never splits a word that markup broke mid-token", () => {
+    // Bing bolds query terms, so "windows" arrives as win<strong>dows</strong>.
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo">
+          <h2><a href="https://docs.example.com/w">Getting <strong>started</strong></a></h2>
+          <div class="b_caption"><p>All about win<strong>dows</strong> and https://doc.<span>rust-lang.org</span></p></div>
+        </li>
+      </ol>
+    `;
+    const [result] = parseBingResults(html);
+    expect(result?.title).toBe("Getting started");
+    // Block boundaries still separate, inline spans must not.
+    expect(result?.snippet).toBe("All about windows and https://doc.rust-lang.org");
+  });
+
+  it("never splits a surrogate pair when it caps text", () => {
+    // A 320-unit cut landing mid-emoji used to leave a lone surrogate (issue #1970).
+    const emoji = "🙂";
+    const text = `${"a ".repeat(159)}${emoji.repeat(40)}`;
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo"><h2><a href="https://docs.example.com/e">Emoji</a></h2>
+          <div class="b_caption"><p>${text}</p></div></li>
+      </ol>
+    `;
+    const snippet = parseBingResults(html)[0]?.snippet ?? "";
+    expect(snippet.isWellFormed?.()).not.toBe(false);
+    expect(snippet).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  it("caps a title that a drifted layout stretched into a sentence", () => {
+    const long = "Title word ".repeat(60);
+    const html = `
+      <ol id="b_results">
+        <li class="b_algo"><h2><a href="https://docs.example.com/t">${long}</a></h2></li>
+      </ol>
+    `;
+    const result = parseBingResults(html)[0];
+    expect((result?.title.length ?? 0) <= 201).toBe(true);
+    expect(result?.title.endsWith("…")).toBe(true);
+  });
+
   it("keeps a destination anchor and drops a tracking fragment", () => {
     const html = `
       <ol id="b_results">

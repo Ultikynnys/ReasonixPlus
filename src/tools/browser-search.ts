@@ -313,6 +313,22 @@ async function openContext(browser: SearchEngineBrowser, copy: EngineCopy): Prom
   }
 }
 
+/** Run `work` on a fresh page in a fresh context of the cached managed browser, then
+ *  close the context. The SERP transport and the website probe share this path, so the
+ *  install resolution, launch reuse and desktop UA have one home. */
+export async function withManagedPage<T>(
+  browser: SearchEngineBrowser,
+  copy: EngineCopy,
+  work: (page: PwPage) => Promise<T>,
+): Promise<T> {
+  const context = await openContext(browser, copyForBrowser(browser, copy));
+  try {
+    return await work(await context.newPage());
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
+
 /** One navigation + parse. Each attempt gets its own context so a retry looks like a
  *  brand-new visitor rather than a reload. */
 interface SerpAttempt {

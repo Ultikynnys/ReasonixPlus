@@ -1224,6 +1224,11 @@ const TRACKING_PARAMS: readonly string[] = [
 /** Fragments that are click bookkeeping rather than a place in the target page. */
 const TRACKING_FRAGMENT = /^#(?:utm_|mce_temp_url|_ga=)/i;
 
+/** Snippet cap: a rich card can nest a whole stylesheet, and the model needs a line. */
+const SERP_SNIPPET_MAX = 320;
+/** Title cap: a drifted layout can hand back a whole sentence as an anchor's text. */
+const SERP_TITLE_MAX = 200;
+
 /** A navigable, de-tracked URL, or null when the anchor is not a destination at all. */ function cleanResultUrl(
   href: string,
 ): string | null {
@@ -1255,13 +1260,100 @@ function isPromotedBlock(block: ReturnType<typeof parseHtml>): boolean {
   return /sponsored|anzeige|gesponsert/i.test(block.getAttribute("aria-label") ?? "");
 }
 
+/** The slice of a parsed node the text walk reads. */
+interface TextNode {
+  nodeType: number;
+  text?: string;
+  rawTagName?: string;
+  childNodes?: TextNode[];
+}
+
+/** Elements that end a line of text. A separator after anything else would split a word
+ *  Bing bolded mid-token (`win<strong>dows</strong>`) or a URL broken across spans. */
+const BLOCK_TAGS: ReadonlySet<string> = new Set([
+  "address",
+  "article",
+  "aside",
+  "blockquote",
+  "br",
+  "dd",
+  "div",
+  "dl",
+  "dt",
+  "figcaption",
+  "figure",
+  "footer",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "hr",
+  "li",
+  "main",
+  "nav",
+  "ol",
+  "p",
+  "pre",
+  "section",
+  "table",
+  "tbody",
+  "td",
+  "th",
+  "tr",
+  "ul",
+]);
+
+/** A node's text with block boundaries separated and style/script bodies dropped.
+ *  `textContent` glues neighbours ("Rust Programming Languagehttps://…") and carries a
+ *  nested `<style>` verbatim, so neither is a summary on its own. */
+function readableText(node: ReturnType<typeof parseHtml>): string {
+  const parts: string[] = [];
+  const visit = (current: TextNode): void => {
+    // 3 is TEXT_NODE; node-html-parser's `text` is the entity-decoded form.
+    if (current.nodeType === 3) {
+      parts.push(current.text ?? "");
+      return;
+    }
+    const tag = current.rawTagName?.toLowerCase() ?? "";
+    if (tag === "script" || tag === "style" || tag === "noscript") return;
+    for (const child of current.childNodes ?? []) visit(child);
+    if (BLOCK_TAGS.has(tag)) parts.push(" ");
+  };
+  visit(node as unknown as TextNode);
+  return flattenText(parts.join(""));
+}
+
+/** A stylesheet or script body is not a summary: drop it rather than ship CSS. */
+function isMarkupNoise(text: string): boolean {
+  return /(?:^|[\s;])[.#][\w-]+(?:\s*[,>+~]\s*[.#]?[\w-]+)*\s*\{[^}]*\}/.test(text);
+}
+
+/** Clip at a word boundary without splitting a surrogate pair (issue #1970). */
+function clipText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const clipped = sliceAlignedToCodepoint(text, max);
+  const boundary = clipped.lastIndexOf(" ");
+  return `${(boundary > max * 0.6 ? clipped.slice(0, boundary) : clipped).trimEnd()}…`;
+}
+
+/** Short, readable snippet: flattened, CSS/junk rejected, capped. */
+function snippetText(raw: string): string {
+  const text = flattenText(raw);
+  if (!text || isMarkupNoise(text)) return "";
+  return clipText(text, SERP_SNIPPET_MAX);
+}
+
 /** Readable summary of a hit: Bing's caption if present, else its own text minus the title. */
 function serpSnippet(block: ReturnType<typeof parseHtml>, title: string): string {
   for (const selector of ["div.b_caption p", ".b_snippet", "[class*='b_lineclamp']", "p"]) {
-    const text = flattenText(block.querySelector(selector)?.textContent ?? "");
+    const found = block.querySelector(selector);
+    const text = found ? snippetText(readableText(found)) : "";
     if (text) return text;
   }
-  const blockText = flattenText(block.textContent ?? "");
+  const blockText = snippetText(readableText(block));
   return (blockText.startsWith(title) ? blockText.slice(title.length) : blockText).trim();
 }
 
@@ -1275,10 +1367,14 @@ export function parseBingResults(html: string): SearchResult[] {
   const seen = new Set<string>();
   const add = (title: string, href: string, snippet: string) => {
     const url = cleanResultUrl(href);
-    const cleanTitle = flattenText(title);
+    const cleanTitle = snippetText(title);
     if (!url || !cleanTitle || seen.has(url)) return;
     seen.add(url);
-    results.push({ title: cleanTitle, url, snippet: flattenText(snippet) });
+    results.push({
+      title: clipText(cleanTitle, SERP_TITLE_MAX),
+      url,
+      snippet: flattenText(snippet),
+    });
   };
 
   for (const block of root.querySelectorAll("li.b_algo")) {
@@ -1294,15 +1390,11 @@ export function parseBingResults(html: string): SearchResult[] {
   // container instead of reporting a withheld page.
   const container = root.querySelector("#b_results") ?? root;
   for (const anchor of container.querySelectorAll("a[href]")) {
-    const title = flattenText(anchor.textContent ?? "");
+    const title = readableText(anchor);
     // Chrome links ("All", "Images", "›") carry no destination worth keeping.
     if (title.length < 3) continue;
     const block = anchor.parentNode?.parentNode ?? anchor.parentNode;
-    add(
-      title,
-      anchor.getAttribute("href") ?? "",
-      block ? flattenText(block.textContent ?? "") : "",
-    );
+    add(title, anchor.getAttribute("href") ?? "", block ? snippetText(readableText(block)) : "");
   }
   return results;
 }
