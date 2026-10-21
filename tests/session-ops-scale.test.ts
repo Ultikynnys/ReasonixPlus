@@ -5,6 +5,8 @@
 //   delete = deleteSession() (folder rm + index drop) and deleteSessions() (batch).
 // The ablation appends JSONL directly: the same volume with no metadata tax.
 //
+// Gated: 46 s of measured, not asserted, time. `npm run test:perf` runs it.
+//
 // Recorded on Windows x64 (Node 24) for 10 sessions x 2000 messages.
 //   BEFORE  create  55,994 ms  (2.800 ms/record)   delete x10  11 ms
 //   AFTER   create   8,681 ms  (0.434 ms/record)   delete x10  10 ms
@@ -20,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import type { ChatMessage } from "../src/types.js";
+import { PERF_ENABLED } from "./support/perf-gate.js";
 
 const home = mkdtempSync(join(tmpdir(), "reasonix-session-ops-"));
 vi.stubEnv("USERPROFILE", home);
@@ -55,7 +58,7 @@ function nameFor(i: number): string {
   return `scale-ops-${process.pid}-${i}`;
 }
 
-describe("session create/delete at 10 x 2000", () => {
+describe.skipIf(!PERF_ENABLED)("session create/delete at 10 x 2000", () => {
   it("creates 10 sessions of 2000 messages each", () => {
     const started = performance.now();
     for (let s = 0; s < SESSIONS; s++) {

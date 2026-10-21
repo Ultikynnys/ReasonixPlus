@@ -90,7 +90,6 @@ import {
   type PlaywrightMcpConnectionMode,
   type RevisionVerdict,
   type SessionEventRecord,
-  type SessionProviderCost,
   type SettingsPatch,
   type SettingsPayload,
   type SkillInfo,
@@ -154,6 +153,7 @@ import {
   isSubagentTool,
   noticeName,
   parseEditResult,
+  parseSubagentResult,
   subagentCallDetails,
   subagentStartLabel,
 } from "./ui/cards";
@@ -298,9 +298,6 @@ export type SubagentRunProgress = {
   reasoningChars?: number;
   toolReadChars?: number;
   turns?: number;
-  costUsd?: number;
-  billingKind?: "usd" | "quota" | "none";
-  quotaUsedPct?: number;
   maxToolIters?: number;
   maxElapsedMs?: number;
   budgetExhausted?: "tool-iters" | "elapsed";
@@ -312,7 +309,15 @@ export type SubagentRunProgress = {
 
 export type AssistantSegment =
   | { kind: "text"; text: string }
-  | { kind: "reasoning"; text: string; startedAt?: number; durationMs?: number }
+  | {
+      kind: "reasoning";
+      text: string;
+      startedAt?: number;
+      durationMs?: number;
+      /** The model that produced this run. Stamped when the run opens, so a turn
+       *  that fell back mid-way shows each run's own model. */
+      model?: string;
+    }
   | {
       kind: "tool";
       callId: string;
@@ -436,14 +441,6 @@ export type PendingRevision = PickerWindow & {
 };
 
 export type UsageStats = {
-  totalCostUsd: number;
-  /** Cost of the most recent model call — the statusbar "this turn" figure for
-   *  pay-per-token providers (DeepSeek). Distinct from the cumulative session total. */
-  lastCallCostUsd: number;
-  /** Per-provider cumulative costs in each provider's native unit (USD for
-   *  token-priced APIs, plan-window % for quota APIs). Never converted between
-   *  providers. Keyed by provider id ("deepseek" | "openai" | "ollama" | "gemini"). */
-  costByProvider?: Record<string, SessionProviderCost>;
   totalPromptTokens: number;
   totalCompletionTokens: number;
   cacheHitTokens: number;
@@ -677,7 +674,7 @@ type Action =
   | { t: "incoming"; event: IncomingEvent }
   | { t: "batch_delta"; items: DeltaBatchItem[] }
   | { t: "rpc_exit"; code: number | null }
-  | { t: "clear" }
+  | { t: "detach_session" }
   | { t: "resolve_confirm"; id: number }
   | { t: "resolve_path_access"; id: number }
   | { t: "resolve_choice"; id: number; verdict: ChoiceVerdict }
@@ -689,6 +686,7 @@ type Action =
   | { t: "mention_preview"; preview: MentionPreviewState }
   | { t: "enqueue_send"; send?: QueuedSend | string; text?: string }
   | { t: "dequeue_send"; index: number }
+  | { t: "promote_queued_send"; index: number }
   | { t: "shift_queued_send" }
   | { t: "settings_patch"; patch: SettingsPatch }
   | { t: "workspace_recent_removed"; path: string }
@@ -857,16 +855,34 @@ function recordSubagentSpawn(
   );
 }
 
+/** A settled spawn's own words, from the same envelope its card parses: the answer it
+ *  gave, or why it gave none. A partial run was cut short mid-answer, so its note (what
+ *  stopped it) rides along instead of being lost to the text it managed to produce. */
+function subagentResultText(output?: string): string | undefined {
+  const view = parseSubagentResult(output);
+  const words = view.output.trim() || view.error?.trim() || "";
+  const note = view.note?.trim() ?? "";
+  const kept = [words, note].filter((part) => part !== "");
+  return kept.length > 0 ? kept.join("\n\n") : undefined;
+}
+
 /** Settle a subagent's Events row with the verdict its card carries: same row,
- *  same stamp, because the spawn did not happen twice. */
+ *  same stamp, because the spawn did not happen twice. The child's answer comes with
+ *  it: once the card has scrolled out of the transcript, the row is what is left. */
 function settleSubagentEvent(
   state: Pick<State, "messages" | "sessionEvents">,
   callId: string,
   ok: boolean,
+  output?: string,
 ): SessionEventRecord[] {
   const event = state.sessionEvents.find((existing) => existing.id === subagentEventId(callId));
   if (!event) return state.sessionEvents;
-  return recordSessionEvent(state.sessionEvents, { ...event, outcome: ok ? "done" : "failed" });
+  const result = subagentResultText(output);
+  return recordSessionEvent(state.sessionEvents, {
+    ...event,
+    outcome: ok ? "done" : "failed",
+    ...(result ? { result } : {}),
+  });
 }
 
 /** The tool call of the gate currently asking, read from the transcript: the
@@ -1273,6 +1289,7 @@ export function reduceAction(state: State, action: Action): State {
               segments,
               it.channel === "content" ? "text" : "reasoning",
               it.text,
+              state.model,
             );
           }
           // A fresh stream re-opens the card: a mid-turn `model.final` settles the
@@ -1287,7 +1304,9 @@ export function reduceAction(state: State, action: Action): State {
         messages,
       };
     }
-    case "clear":
+    case "detach_session":
+      // The channel holds no session at all: drop every trace of the one it had, so
+      // nothing on screen outlives the session it belonged to.
       return {
         ...state,
         busy: false,
@@ -1464,6 +1483,14 @@ export function reduceAction(state: State, action: Action): State {
         ...state,
         queuedSends: state.queuedSends.filter((_, i) => i !== action.index),
       };
+    case "promote_queued_send": {
+      const promoted = state.queuedSends[action.index];
+      if (!promoted || action.index === 0) return state;
+      return {
+        ...state,
+        queuedSends: [promoted, ...state.queuedSends.filter((_, i) => i !== action.index)],
+      };
+    }
     case "shift_queued_send":
       return { ...state, queuedSends: state.queuedSends.slice(1) };
     case "release_stale_send": {
@@ -1893,9 +1920,6 @@ function deriveSessionFiles(loaded: ChatMessage[]): SessionFile[] {
 
 function zeroUsage(): UsageStats {
   return {
-    totalCostUsd: 0,
-    lastCallCostUsd: 0,
-    costByProvider: {},
     totalPromptTokens: 0,
     totalCompletionTokens: 0,
     cacheHitTokens: 0,
@@ -1907,37 +1931,30 @@ function zeroUsage(): UsageStats {
   };
 }
 
-/** Fold a measured plan-window delta (percentage points) into the session's
- *  per-provider quota usage. Native unit only — never converted to dollars. */
-function applyQuotaDelta(usage: UsageStats, provider: string, usedPct: number | null): UsageStats {
-  if (usedPct === null || usedPct <= 0) return usage;
-  const prev = usage.costByProvider?.[provider];
-  const prevPct = prev?.quotaUsedPct ?? 0;
-  const kind = prev?.totalCostUsd !== undefined ? "mixed" : "quota";
-  return {
-    ...usage,
-    costByProvider: {
-      ...(usage.costByProvider ?? {}),
-      [provider]: {
-        ...prev,
-        kind,
-        quotaUsedPct: prevPct + usedPct,
-      },
-    },
-  };
-}
-
 function appendTextSegment(
   segments: AssistantSegment[],
   kind: "text" | "reasoning",
   text: string,
+  model?: string,
 ): AssistantSegment[] {
   const last = segments[segments.length - 1];
-  if (last && last.kind === kind) {
+  if (kind === "reasoning") {
+    if (last && last.kind === "reasoning") {
+      const next = { ...last, text: last.text + text };
+      // A run restored from history has no model stamp: adopt the model in force
+      // the moment it streams again, rather than showing the card's model.
+      if (!next.model && model) next.model = model;
+      return [...segments.slice(0, -1), next];
+    }
+    return [
+      ...closeTrailingReasoning(segments),
+      { kind: "reasoning", text, startedAt: Date.now(), ...(model ? { model } : {}) },
+    ];
+  }
+  if (last && last.kind === "text") {
     return [...segments.slice(0, -1), { ...last, text: last.text + text }];
   }
-  const base = closeTrailingReasoning(segments);
-  return [...base, kind === "reasoning" ? { kind, text, startedAt: Date.now() } : { kind, text }];
+  return [...closeTrailingReasoning(segments), { kind: "text", text }];
 }
 
 // Stamp the wall-clock duration onto a trailing reasoning segment that's still
@@ -2194,9 +2211,6 @@ export function applySubagentProgress(
     reasoningChars: ev.reasoningChars ?? previous?.reasoningChars,
     toolReadChars: ev.toolReadChars ?? previous?.toolReadChars,
     turns: ev.turns ?? previous?.turns,
-    costUsd: ev.costUsd ?? previous?.costUsd,
-    billingKind: ev.billingKind ?? previous?.billingKind,
-    quotaUsedPct: ev.quotaUsedPct ?? previous?.quotaUsedPct,
     maxToolIters: ev.maxToolIters ?? previous?.maxToolIters,
     maxElapsedMs: ev.maxElapsedMs ?? previous?.maxElapsedMs,
     budgetExhausted: ev.budgetExhausted ?? previous?.budgetExhausted,
@@ -2611,9 +2625,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         codexQuota: ev.quota,
         codexQuotaReason: ev.reason ?? null,
         codexQuotaRefreshing: false,
-        // Native unit: the measured plan-window delta accumulates as quota % —
-        // never converted to a dollar figure.
-        usage: applyQuotaDelta(state.usage, "openai", ev.quota?.turnUsedPct ?? null),
       };
     case "$ollama_quota":
       return {
@@ -2621,7 +2632,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         ollamaQuota: ev.quota,
         ollamaQuotaReason: ev.reason ?? null,
         ollamaQuotaRefreshing: false,
-        usage: applyQuotaDelta(state.usage, "ollama", ev.quota?.turnUsedPct ?? null),
       };
     case "$antigravity_quota":
       return {
@@ -2629,7 +2639,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         antigravityQuota: ev.quota,
         antigravityQuotaReason: ev.reason ?? null,
         antigravityQuotaRefreshing: false,
-        usage: applyQuotaDelta(state.usage, "gemini", ev.quota?.turnUsedPct ?? null),
       };
     case "$zai_quota":
       return {
@@ -2637,7 +2646,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         zaiQuota: ev.quota,
         zaiQuotaReason: ev.reason ?? null,
         zaiQuotaRefreshing: false,
-        usage: applyQuotaDelta(state.usage, "zai", ev.quota?.turnUsedPct ?? null),
       };
     case "$opencode_quota":
       return {
@@ -2645,7 +2653,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         opencodeQuota: ev.quota,
         opencodeQuotaReason: ev.reason ?? null,
         opencodeQuotaRefreshing: false,
-        usage: applyQuotaDelta(state.usage, "opencode", ev.quota?.turnUsedPct ?? null),
       };
     case "$settings": {
       const prevWs = state.settings?.workspaceDir;
@@ -2750,6 +2757,18 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         opencodeQuota: ev.modelEndpoint?.opencodePlan === "go" ? state.opencodeQuota : null,
       };
     }
+    case "$session_bound": {
+      // The channel's binding moved without a transcript swap. An empty name is the
+      // NEUTRAL state (the session it held was deleted): drop everything that
+      // belonged to that conversation.
+      if (!ev.name) return reduceAction(state, { t: "detach_session" });
+      if (ev.name === state.currentSession) return state;
+      // From the neutral state, the transcript IS the message that created this
+      // session, so keep it. Any other rebind leaves us ignorant of the new
+      // session's history: dropping it beats showing — and re-saving — the old one's.
+      if (state.currentSession === undefined) return { ...state, currentSession: ev.name };
+      return { ...reduceAction(state, { t: "detach_session" }), currentSession: ev.name };
+    }
     case "$session_loaded": {
       // A resync echo of the session we've ALREADY loaded must not clobber
       // the live transcript — the on-disk snapshot is behind the deltas the
@@ -2781,8 +2800,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         activePlan: null,
         usage: {
           ...zeroUsage(),
-          totalCostUsd: ev.carryover.totalCostUsd,
-          costByProvider: ev.carryover.costByProvider ?? {},
           totalPromptTokens: ev.carryover.cacheHitTokens + ev.carryover.cacheMissTokens,
           totalCompletionTokens: ev.carryover.totalCompletionTokens ?? 0,
           cacheHitTokens: ev.carryover.cacheHitTokens,
@@ -2904,7 +2921,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           if (ev.channel === "reasoning") {
             return {
               ...m,
-              segments: appendTextSegment(m.segments, "reasoning", ev.text),
+              segments: appendTextSegment(m.segments, "reasoning", ev.text, state.model),
               pending: true,
             };
           }
@@ -2919,8 +2936,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       const callMiss = u?.prompt_cache_miss_tokens ?? Math.max(0, promptTokens - callHit);
       const hasCall = promptTokens > 0 || callHit > 0 || callMiss > 0;
       const usage: UsageStats = {
-        totalCostUsd: state.usage.totalCostUsd + (ev.costUsd ?? 0),
-        lastCallCostUsd: ev.costUsd ?? 0,
         totalPromptTokens: state.usage.totalPromptTokens + promptTokens,
         totalCompletionTokens: state.usage.totalCompletionTokens + (u?.completion_tokens ?? 0),
         cacheHitTokens: state.usage.cacheHitTokens + callHit,
@@ -2949,7 +2964,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           let segments = ev.replaceStreamedOutput
             ? [
                 ...(ev.reasoningContent
-                  ? [{ kind: "reasoning" as const, text: ev.reasoningContent }]
+                  ? [{ kind: "reasoning" as const, text: ev.reasoningContent, model: state.model }]
                   : []),
                 ...(ev.content ? [{ kind: "text" as const, text: ev.content }] : []),
               ]
@@ -3099,7 +3114,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turnLastEventMs: Date.now(),
         // Settles the spawn's Events row when the call has one; a no-op for every
         // other tool, since the row id is derived from THIS call id.
-        sessionEvents: settleSubagentEvent(state, ev.callId, ev.ok),
+        sessionEvents: settleSubagentEvent(state, ev.callId, ev.ok, ev.output),
         messages: state.messages.map((m) => {
           if (m.kind !== "assistant") return m;
           let mutated = false;
@@ -3402,7 +3417,6 @@ interface TabRuntimeProps {
    *  (hidden) so returning to it does not remount and re-parse the conversation. */
   keepAlive?: boolean;
   backendConnected: boolean;
-  currency: "CNY" | "USD";
   registerDispatch: (tabId: string, d: TabDispatcher | null) => void;
   onWorkspaceInitialized: (tabId: string) => void;
   onNewTab: () => void;
@@ -3446,7 +3460,6 @@ interface TabRuntimeProps {
   onCtxResizeDown: (e: React.MouseEvent) => void;
   onToggleSide: () => void;
   onToggleCtx: () => void;
-  onToggleCurrency: () => void;
   /** App-global Ollama model catalog (raw ids, e.g. `llama3.1:latest`) — shared
    *  across every tab; the catalog depends on global config, not on the tab. */
   ollamaModels: string[];
@@ -3499,7 +3512,6 @@ const TabRuntime = memo(function TabRuntime({
   active,
   keepAlive,
   backendConnected,
-  currency,
   registerDispatch,
   onWorkspaceInitialized,
   onNewTab,
@@ -3507,7 +3519,6 @@ const TabRuntime = memo(function TabRuntime({
     items: sessions,
     mutation: sessionsMutation,
     pendingDeleteCount,
-    confirmed: sessionsConfirmed,
     openIntentId: sessionIntentId,
   },
   onSessionIntent,
@@ -3532,7 +3543,6 @@ const TabRuntime = memo(function TabRuntime({
   onCtxResizeDown,
   onToggleSide,
   onToggleCtx,
-  onToggleCurrency,
   ollamaModels,
   ollamaModelsError,
   ollamaPlan,
@@ -4159,6 +4169,10 @@ const TabRuntime = memo(function TabRuntime({
   // card can never wedge the queue. `engaged` is the one predicate the composer,
   // the drain and send() share: a turn OR a fold is in flight, so a send QUEUES.
   const engaged = state.busy || state.awaitingAck || state.compacting;
+  // A session mutation (create/delete/clear) is rewriting this workspace's session
+  // set, and a send now could land in a session on its way out. Hold the turn until
+  // it settles: the draft stays in the composer, so nothing is lost.
+  const sessionListSettled = sessionsMutation === null;
 
   const send = useCallback(
     (override?: string | QueuedSend) => {
@@ -4183,7 +4197,8 @@ const TabRuntime = memo(function TabRuntime({
         }
       }
 
-      if ((!text && sendImages.length === 0) || !state.ready || engaged) return;
+      if ((!text && sendImages.length === 0) || !state.ready || engaged || !sessionListSettled)
+        return;
 
       const clientId = `c-${Date.now()}`;
       // ChatGPT models: typed `@path` image mentions get an optimistic echo —
@@ -4217,6 +4232,7 @@ const TabRuntime = memo(function TabRuntime({
       imageCapable,
       state.ready,
       engaged,
+      sessionListSettled,
       state.settings?.workspaceDir,
       sendRpc,
       recordAbortDraft,
@@ -4263,12 +4279,12 @@ const TabRuntime = memo(function TabRuntime({
   useEffect(() => {
     // Hold the drain through a fold too: the queued message must land AFTER the
     // compaction settles, not race it.
-    if (engaged || !state.ready || state.queuedSends.length === 0) return;
+    if (engaged || !state.ready || !sessionListSettled || state.queuedSends.length === 0) return;
     const next = state.queuedSends[0];
     if (!next) return;
     dispatch({ t: "shift_queued_send" });
     send(next);
-  }, [engaged, state.ready, state.queuedSends, send]);
+  }, [engaged, sessionListSettled, state.ready, state.queuedSends, send]);
 
   useEffect(() => {
     const currentSnapshot: ApprovalSnapshot = {
@@ -5008,11 +5024,6 @@ const TabRuntime = memo(function TabRuntime({
     [tabId],
   );
 
-  // The empty-list prompt may only replace an EMPTY transcript. Gating on the list
-  // alone unmounted a live conversation whenever a snapshot momentarily listed
-  // nothing, which read to the user as "my session vanished".
-  const showNoSessions = sessionsConfirmed && sessions.length === 0 && state.messages.length === 0;
-
   return (
     <WorkspaceProvider value={{ dir: state.settings?.workspaceDir }}>
       <div
@@ -5029,8 +5040,6 @@ const TabRuntime = memo(function TabRuntime({
         }}
       >
         <MemoTitleBar
-          session={session}
-          model={view.settings?.model}
           sideOn={!sideCollapsed}
           ctxOn={!ctxCollapsed}
           onToggleSide={onToggleSide}
@@ -5099,8 +5108,6 @@ const TabRuntime = memo(function TabRuntime({
               onPickWorkspace={pickWorkspace}
               onOpenSettings={() => openSettingsAt("models")}
             />
-          ) : showNoSessions ? (
-            <NoSessionsView onNewChat={newChat} />
           ) : (
             <>
               <MainHead
@@ -5383,7 +5390,13 @@ const TabRuntime = memo(function TabRuntime({
                   );
                   composerRef.current?.focus();
                 }}
-                onSendNow={() => sendRpc({ cmd: "abort" })}
+                onSendQueuedNow={(index) => {
+                  // Promote first — the drain sends the queue head — then stop the
+                  // running turn so that happens now. Only an engaged turn needs the
+                  // abort: idle, the drain fires the promoted message by itself.
+                  dispatch({ t: "promote_queued_send", index });
+                  if (engaged) sendRpc({ cmd: "abort" });
+                }}
                 pendingImages={pendingImages}
                 onRemoveImage={removePendingImage}
                 imageCapable={imageCapable}
@@ -5468,14 +5481,12 @@ const TabRuntime = memo(function TabRuntime({
           usage={view.usage}
           busy={view.busy}
           ready={view.ready}
-          currency={currency}
           theme={theme}
           themeStyle={themeStyle}
           jobs={view.jobs}
           jobsOpen={jobsOpen}
           onToggleJobs={toggleJobs}
           onSetThemeStyle={onSetThemeStyle}
-          onToggleCurrency={onToggleCurrency}
           onOpenWorkdir={openWorkdir}
         />
 
@@ -5678,15 +5689,11 @@ function WinClose() {
 }
 
 function TitleBar({
-  session,
-  model,
   sideOn,
   ctxOn,
   onToggleSide,
   onToggleCtx,
 }: {
-  session: string;
-  model?: string;
   sideOn: boolean;
   ctxOn: boolean;
   onToggleSide: () => void;
@@ -5770,12 +5777,6 @@ function TitleBar({
             <span className="mark" />
             <span className="brand-name">Reasonix+</span>
           </div>
-          {session && (
-            <div className="crumbs" data-tauri-drag-region>
-              <span className="sep">/</span>
-              <span className="cur">{model ?? "-"}</span>
-            </div>
-          )}
         </div>
       </div>
 
@@ -6398,20 +6399,6 @@ function EmptyState({
   );
 }
 
-/** Empty-workspace panel. Deliberately mutation-agnostic: the one in-flight
- *  indicator is the main-area pill above it, so this surface never restates it
- *  (and the New chat button is never disabled into a dead, unexplained control). */
-function NoSessionsView({ onNewChat }: { onNewChat: () => void }) {
-  useLang();
-  return (
-    <EmptyPanel title={t("app.noSessions.title")} hint={t("app.noSessions.hint")}>
-      <button type="button" className="btn" style={{ fontSize: 12 }} onClick={onNewChat}>
-        {t("sidebarPanel.newChat")}
-      </button>
-    </EmptyPanel>
-  );
-}
-
 function NeedsSetupView({
   workspaceDir,
   onPickWorkspace,
@@ -6728,10 +6715,6 @@ export function App() {
     downloaded: number;
     total: number | null;
   } | null>(null);
-  const [currency, setCurrency] = useState<"CNY" | "USD">(() => {
-    const v = localStorage.getItem("reasonix.currency");
-    return v === "USD" ? "USD" : "CNY";
-  });
   // Per-tab theme map — each tab keeps its own theme/style so switching tabs
   // never mixes them up. Entries are seeded on $tab_opened and dropped on
   // $tab_closed; the active tab's entry drives document.documentElement.
@@ -6841,15 +6824,6 @@ export function App() {
     localStorage.setItem("reasonix.fontFamily", fontFamily);
     localStorage.setItem("reasonix.customFontFamily", customFontFamily);
   }, [fontFamily, customFontFamily]);
-
-  useEffect(() => {
-    const onCur = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail === "CNY" || detail === "USD") setCurrency(detail);
-    };
-    window.addEventListener("reasonix:currency", onCur);
-    return () => window.removeEventListener("reasonix:currency", onCur);
-  }, []);
 
   const deliverToTab = useCallback((tabId: string, action: TabAction) => {
     const dispatch = dispatchersRef.current.get(tabId);
@@ -7579,15 +7553,6 @@ export function App() {
     [activeTabId],
   );
 
-  const onToggleCurrency = useCallback(() => {
-    setCurrency((c) => {
-      const next = c === "CNY" ? "USD" : "CNY";
-      localStorage.setItem("reasonix.currency", next);
-      window.dispatchEvent(new CustomEvent("reasonix:currency", { detail: next }));
-      return next;
-    });
-  }, []);
-
   const onRemoveWorkspace = useCallback(
     (path: string) => {
       // Forgetting a workspace closes every tab on it, so it cannot run while any
@@ -7627,7 +7592,6 @@ export function App() {
           active={t.id === activeTabId}
           keepAlive={t.id === previousActiveTabId}
           backendConnected={backendConnected}
-          currency={currency}
           registerDispatch={registerDispatch}
           sessionView={sessionViewFor(t.workspaceDir)}
           onSessionIntent={beginSessionIntent}
@@ -7654,7 +7618,6 @@ export function App() {
           onCtxResizeDown={onCtxResizeDown}
           onToggleSide={onToggleSide}
           onToggleCtx={onToggleCtx}
-          onToggleCurrency={onToggleCurrency}
           ollamaModels={ollamaCatalog.models}
           ollamaModelsError={ollamaCatalog.error}
           ollamaPlan={ollamaCatalog.plan}

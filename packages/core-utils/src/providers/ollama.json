@@ -64,10 +64,7 @@
       "peakWindowsUtc": [{ "startMinute": 720, "endMinute": 1080 }],
       "weekendOffsetMinutes": 0
     },
-    "pricing": {
-      "deepseek-v4-flash": { "inputCacheHit": 0.007, "inputCacheMiss": 0.22, "output": 0.66 },
-      "deepseek-v4-pro": { "inputCacheHit": 0.022, "inputCacheMiss": 0.66, "output": 1.98 }
-    }
+    "peakModels": ["deepseek-v4-flash", "deepseek-v4-pro"]
   },
   "usage": { "probe": "ollama-balance" },
   "strings": {
@@ -78,7 +75,6 @@
     "quotaTitle": "Weekly plan usage {left}% left (resets in {weeklyResets}) · session {session}% left (resets in {sessionResets}) · click to refresh",
     "quotaNoData": "Ollama usage · no data: set an API key in Settings → Models to see plan usage · click to retry",
     "quotaNoDataUnavailable": "Ollama usage · no data: an API key is set · click to retry",
-    "quotaTurnTitle": "This turn used {pct}% of the session usage",
     "quotaPlanFallback": "free",
     "offPeakTitle": "Ollama Cloud off-peak: half of peak rates · Peak hours 12:00–18:00 UTC (weekdays), off-peak all day on weekends · changes in {when}",
     "peakTitle": "Ollama Cloud peak: double the off-peak rate · Peak hours 12:00–18:00 UTC (weekdays), off-peak all day on weekends · changes in {when}",

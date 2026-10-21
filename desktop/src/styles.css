@@ -1063,22 +1063,6 @@ html[data-platform="macos"] .titlebar .tb-left {
   font-size: 13.5px;
 }
 
-/* breadcrumb */
-.titlebar .crumbs {
-  display: flex;
-  gap: 5px;
-  align-items: center;
-  color: var(--muted);
-  font-size: 13px;
-  padding-left: 2px;
-}
-.titlebar .crumbs .sep {
-  opacity: 0.4;
-}
-.titlebar .crumbs .cur {
-  color: var(--fg-2);
-}
-
 /* icon buttons inside titlebar */
 .titlebar .iconbtn {
   width: 30px;
@@ -5160,15 +5144,10 @@ html[data-platform="macos"] .startup-loading-overlay {
 /* Compact the shared model rows (main-agent + subagent columns) so each
    column stays narrow and the whole picker fits narrow windows. */
 .model-menu-list .popup-item {
-  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
   padding: 5px 6px;
   font-size: 13px;
-}
-.model-menu-list .popup-item .ico {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
 }
 .model-menu-list .popup-item .cmd {
   display: block;
@@ -5180,7 +5159,7 @@ html[data-platform="macos"] .startup-loading-overlay {
   overflow-x: hidden;
 }
 .effort-menu-list .popup-item {
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   font-size: clamp(11px, 2vw, 14px);
 }
@@ -5191,11 +5170,12 @@ html[data-platform="macos"] .startup-loading-overlay {
   font-size: clamp(10px, 1.7vw, 12px);
   overflow-wrap: anywhere;
 }
+/* Side padding matches the rows' so a group title sits over its models. */
 .model-menu-group {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px 2px;
+  padding: 6px 6px 2px;
   font-size: 11px;
   color: var(--muted);
   text-transform: uppercase;
@@ -5229,9 +5209,11 @@ html[data-platform="macos"] .startup-loading-overlay {
   color: var(--fg);
   background: var(--panel);
 }
+/* A row is label + optional trailing badge, starting at the row's left edge:
+   the picker rows carry no glyph, so an icon column would be empty width. */
 .popup-item {
   display: grid;
-  grid-template-columns: 24px 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   padding: 7px 8px;
@@ -5242,16 +5224,6 @@ html[data-platform="macos"] .startup-loading-overlay {
 .popup-item:hover,
 .popup-item[data-active="true"] {
   background: var(--panel);
-}
-.popup-item .ico {
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  background: var(--panel-2);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg-2);
 }
 .popup-item .nm {
   font-weight: 500;
@@ -5866,6 +5838,19 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--fg-2);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+/* A subagent's answer, kept beside its instruction: both are the row's substance,
+   so the answer carries the same key column the metadata lines use. */
+.ctx-evt-result {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-2);
+}
+.ctx-evt-result .ctx-evt-detail {
+  margin: 0;
+  min-width: 0;
 }
 /* Text lists inside an expanded row, shared by a choice's offered options and a
    plan's checklist; each only adds its own marker or numbering. */
@@ -6786,7 +6771,8 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   white-space: nowrap;
   min-width: 0;
 }
-.composer-queue-chip .x {
+.composer-queue-chip .x,
+.composer-queue-chip .send-now {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -6795,8 +6781,10 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-radius: 50%;
   cursor: pointer;
   color: var(--muted);
+  flex-shrink: 0;
 }
-.composer-queue-chip .x:hover {
+.composer-queue-chip .x:hover,
+.composer-queue-chip .send-now:hover {
   background: var(--border);
   color: var(--fg);
 }
@@ -6806,40 +6794,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .composer-queue-chip .text.editable:hover {
   color: var(--fg);
   text-decoration: underline;
-}
-.composer-queue-chip .edit {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  cursor: pointer;
-  color: var(--muted);
-  flex-shrink: 0;
-}
-.composer-queue-chip .edit:hover {
-  background: var(--border);
-  color: var(--fg);
-}
-.composer-queued-send {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  padding: 2px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg-2);
-  font-size: 12px;
-  font-family: inherit;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-.composer-queued-send:hover {
-  background: var(--border);
-  color: var(--fg);
 }
 
 /* ---- queued tab-row indicator (multiple sessions running) ---- */
@@ -9519,11 +9473,13 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   flex-shrink: 0;
   white-space: nowrap;
 }
+/* The pill carries no leading glyph, so its whole width is label: the cap is
+   what a long id may use before FitText starts shrinking it. */
 .composer-foot .model-pill {
   white-space: nowrap;
   flex-shrink: 1;
   min-width: 0;
-  max-width: 220px;
+  max-width: 280px;
   overflow: hidden;
 }
 .composer-foot .model-pill > span:not(.badge) {
@@ -9571,7 +9527,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
     display: none;
   }
   .composer-foot .model-pill {
-    max-width: 140px;
+    max-width: 170px;
   }
   .composer-foot .quick-proceed-btn span {
     max-width: 90px;
@@ -9579,7 +9535,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 @container composer (max-width: 420px) {
   .composer-foot .model-pill {
-    max-width: 100px;
+    max-width: 130px;
   }
   .composer-foot .quick-proceed-btn {
     padding: 0 8px;

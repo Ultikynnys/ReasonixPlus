@@ -288,7 +288,6 @@ export class Eventizer {
       content: "[aborted by user: no response produced.]",
       toolCalls: [],
       usage: {},
-      costUsd: 0,
     };
   }
 
@@ -378,7 +377,6 @@ export class Eventizer {
           prompt_cache_miss_tokens: ev.stats.usage.promptCacheMissTokens,
         }
       : {};
-    const costUsd = ev.stats?.cost ?? 0;
     const out: ModelFinalEvent = {
       id: ++this.nextId,
       ts: new Date().toISOString(),
@@ -388,7 +386,6 @@ export class Eventizer {
       // toolCalls land later via tool_start → tool.intent — not in this event.
       toolCalls: [] as ReadonlyArray<ToolCall>,
       usage,
-      costUsd,
     };
     if (ev.reasoningContent !== undefined) out.reasoningContent = ev.reasoningContent;
     if (ev.replaceStreamedOutput) out.replaceStreamedOutput = true;

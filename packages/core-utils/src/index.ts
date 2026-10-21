@@ -55,18 +55,14 @@ export {
 } from "./session-order.js";
 export type { SessionRecencyInput } from "./session-order.js";
 export {
-  DEEPSEEK_RATE_SCHEDULE,
-  OLLAMA_RATE_SCHEDULE,
-  ZAI_RATE_SCHEDULE,
   isOffPeakRate,
-  isOllamaPeakPricedModel,
+  isPeakPricedModel,
   isPeakRate,
   isRateScheduleWeekend,
   minutesUntilRateChangeForSchedule,
-  normalizeOllamaModelId,
-  rateMultiplierForSchedule,
+  ratePeriodForSchedule,
 } from "./rate-periods.js";
-export type { RateSchedule } from "./rate-periods.js";
+export type { RatePeriod, RateSchedule } from "./rate-periods.js";
 export {
   antigravityUsageView,
   codexUsageView,
@@ -148,12 +144,12 @@ export {
   providerApiKeyValue,
   providerForErrorBrand,
   providerForErrorHost,
-  providerPricing,
   providerBaseUrlValue,
   providerCountsAsConfigured,
   providerDeclared,
   providerDefaultEndpoint,
   providerReasoningEfforts,
+  providerRateSchedule,
   providerSettingSpec,
   providerShortLabel,
   providerSpec,
@@ -183,7 +179,6 @@ export type {
   ProviderErrorsSpec,
   ProviderModelFilter,
   ProviderModelIdSpec,
-  ProviderModelRate,
   ProviderProbeStrategy,
   ProviderServerReport,
   ProviderThinkingStyle,
@@ -342,7 +337,7 @@ export type {
   SessionEventType,
   SessionHistoryEvent,
   SessionLoadedEvent,
-  SessionProviderCost,
+  SessionBoundEvent,
   SessionRetractedEvent,
   SessionEmptyEvent,
   NeedsSetupEvent,

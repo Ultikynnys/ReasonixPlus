@@ -90,6 +90,10 @@ export interface ChatMessage {
   /** When the record was written (epoch ms). Transcript metadata for the Events
    *  tab's timeline; stripped at the wire boundary, so no provider ever sees it. */
   ts?: number;
+  /** The model that produced this assistant record. Transcript metadata like `ts`:
+   *  stamped at append so a reloaded transcript keeps each run's own model,
+   *  stripped at the wire boundary. */
+  model?: string;
 }
 
 export interface RawUsage {

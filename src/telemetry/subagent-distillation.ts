@@ -5,7 +5,6 @@ import { countTokensBounded } from "../tokenizer.js";
 /** Minimum shape `computeSpawnDistillation` needs. `SubagentResult` matches structurally; declaring a local interface avoids a stats ↔ subagent ↔ loop import cycle. */
 export interface SubagentResultLike {
   output: string;
-  costUsd: number;
   usage: { completionTokens: number };
 }
 
@@ -18,7 +17,6 @@ export interface SpawnDistillation {
   compressionRatio: number;
   /** True iff `output.trim().length > 0`. */
   hasOutput: boolean;
-  costUsd: number;
 }
 
 export function computeSpawnDistillation(result: SubagentResultLike): SpawnDistillation {
@@ -32,7 +30,6 @@ export function computeSpawnDistillation(result: SubagentResultLike): SpawnDisti
     savingsTokens,
     compressionRatio,
     hasOutput: result.output.trim().length > 0,
-    costUsd: result.costUsd,
   };
 }
 
@@ -46,7 +43,6 @@ export interface SubagentSessionSummary {
   totalSavingsTokens: number;
   /** Weighted by completion tokens — fair vs. naive mean of ratios. */
   aggregateCompressionRatio: number;
-  totalCostUsd: number;
 }
 
 export function summarizeSubagentSession(spawns: SpawnDistillation[]): SubagentSessionSummary {
@@ -60,20 +56,17 @@ export function summarizeSubagentSession(spawns: SpawnDistillation[]): SubagentS
       totalOutputTokens: 0,
       totalSavingsTokens: 0,
       aggregateCompressionRatio: 1,
-      totalCostUsd: 0,
     };
   }
   let usefulSpawnCount = 0;
   let totalCompletionTokens = 0;
   let totalOutputTokens = 0;
   let totalSavingsTokens = 0;
-  let totalCostUsd = 0;
   for (const s of spawns) {
     if (s.hasOutput) usefulSpawnCount++;
     totalCompletionTokens += s.completionTokens;
     totalOutputTokens += s.outputTokens;
     totalSavingsTokens += s.savingsTokens;
-    totalCostUsd += s.costUsd;
   }
   const aggregateCompressionRatio =
     totalCompletionTokens > 0 ? totalOutputTokens / totalCompletionTokens : 1;
@@ -85,7 +78,6 @@ export function summarizeSubagentSession(spawns: SpawnDistillation[]): SubagentS
     totalOutputTokens,
     totalSavingsTokens,
     aggregateCompressionRatio,
-    totalCostUsd,
   };
 }
 

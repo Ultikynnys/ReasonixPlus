@@ -25,7 +25,6 @@ const CODEX: CodexQuota = {
     resetsAt: "2026-09-01T13:37:06Z",
   },
   weekly: { windowMinutes: 10080, usedPercent: 42, remainingPercent: 58, resetsAt: null },
-  turnUsedPct: 2.5,
   fetchedAt: 0,
 };
 
@@ -33,7 +32,6 @@ describe("codexUsageView", () => {
   it("maps 5-hour then weekly and parses ISO resets to epoch ms", () => {
     const view = codexUsageView(CODEX);
     expect(view.plan).toBe("plus");
-    expect(view.turnUsedPct).toBe(2.5);
     expect(view.windows.map((w) => w.label)).toEqual(["5h", "wk"]);
     expect(view.windows.map((w) => w.remainingPct)).toEqual([50, 58]);
     expect(view.windows[0]!.resetsAt).toBe(Date.parse("2026-09-01T13:37:06Z"));
@@ -68,7 +66,6 @@ describe("zaiUsageView", () => {
       plan: "pro",
       fiveHour: { usagePct: 30, remainingPct: 70, resetsAt: 42 },
       weekly: { usagePct: 12, remainingPct: 88, resetsAt: null },
-      turnUsedPct: 1.5,
       fetchedAt: 0,
     };
     const view = zaiUsageView(quota);
@@ -86,7 +83,6 @@ describe("opencodeUsageView", () => {
       rolling: { usagePct: 30, remainingPct: 70, resetsAt: null, limited: true },
       weekly: { usagePct: 12, remainingPct: 88, resetsAt: null, limited: false },
       monthly: { usagePct: 5, remainingPct: 95, resetsAt: null, limited: false },
-      turnUsedPct: 1.2,
       fetchedAt: 0,
     };
     const view = opencodeUsageView(quota);
@@ -142,7 +138,6 @@ describe("mimoUsageView", () => {
     expect(mimoUsageView(null, "MiMo plan")).toEqual({
       plan: "MiMo plan",
       windows: [],
-      turnUsedPct: null,
     });
     expect(mimoUsageView({ status: "unsupported", source: "none" }, "MiMo plan").windows).toEqual(
       [],

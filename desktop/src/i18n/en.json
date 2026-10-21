@@ -50,8 +50,7 @@
     "newline": "newline",
     "placeholder": "Ask the agent / describe a task…",
     "queueCount": "queued {n}",
-    "sendNow": "send now",
-    "editQueued": "Edit in composer",
+    "sendQueuedNow": "Send this now",
     "queue": "queue",
     "interrupt": "stop",
     "proceed": "Proceed",
@@ -93,8 +92,6 @@
   "settings": {
     "title": "Settings",
     "close": "close",
-    "costCurrency": "Cost currency",
-    "costCurrencyHint": "Display only. Internal cost is computed in USD-equiv per token and converted at the configured display rate.",
     "cnyDesc": "matches DeepSeek dashboard",
     "usdDesc": "matches per-token reference rates",
     "themeStyle": "Style",
@@ -337,7 +334,6 @@
     "quickSendMoveDownAria": "Move quick send down: {shorthand}",
     "quickSendRemoveAria": "Remove quick send: {shorthand}",
     "quickSendNoCustom": "No custom quick sends.",
-    "sessionCost": "This session cost",
     "shortcutNewChat": "New chat",
     "shortcutNewTab": "New tab",
     "shortcutCloseTab": "Close tab",
@@ -523,10 +519,6 @@
       "suggestion2": "Update the README to match the code base",
       "suggestion3": "Find DRY violations in the code base"
     },
-    "noSessions": {
-      "title": "No conversations yet",
-      "hint": "Create a new chat to get started in this workspace."
-    },
     "deletingSessions": {
       "one": "Deleting session…",
       "bulk": "Deleting {count} sessions…"
@@ -648,14 +640,11 @@
     "outputSaved": "saved",
     "outputSavedTip": "Shell output filtering: {pct}% of command-output tokens removed before reaching the model ({saved} of {raw} tokens, this session)",
     "tokens": "tokens",
-    "thisTurn": "this turn",
     "switchWorkspace": "Switch workspace · {workspace}",
-    "switchCurrency": "Switch currency (CNY / USD)",
     "balance": "balance",
     "quotaLabel": "plan usage",
     "quotaTitle": "Plan usage · click to refresh",
     "quotaNoData": "Plan usage · no data · click to retry",
-    "quotaTurnTitle": "This turn used {pct}% of the plan quota",
     "quotaRefreshing": "…",
     "codexReason": "Last refresh failed: {reason}",
     "quotaLeft": "left",
@@ -736,6 +725,7 @@
     "eventsKindColumn": "Type",
     "eventsOptions": "Options offered",
     "eventsSteps": "Plan steps",
+    "eventsResult": "Result",
     "eventsOutcomeColumn": "Outcome",
     "eventsWhenColumn": "When",
     "eventsTurnColumn": "Turn",
@@ -948,7 +938,6 @@
   },
   "extraCards": {
     "sessionUsage": "Session usage",
-    "sessionCost": "Cost {costLabel}",
     "approve": "Approve",
     "reject": "Reject",
     "doctorTitle": "System check",

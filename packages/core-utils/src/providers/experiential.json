@@ -58,6 +58,7 @@
   },
   "billing": {
     "kind": "usd",
+    "schedule": null,
     "balance": {
       "url": "https://api.experientiallabs.ai/api/v1/credits",
       "shape": "credits-usage"

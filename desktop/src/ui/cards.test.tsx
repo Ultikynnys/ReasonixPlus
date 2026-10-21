@@ -98,6 +98,18 @@ describe("card duration labels", () => {
     expect(container.querySelectorAll(".reason .stream p")).toHaveLength(12);
   });
 
+  it("names the model behind a reasoning run in the card header", () => {
+    const { container } = render(
+      wrap(<ReasoningCard text="weighing options" streaming={false} model="deepseek-v4-flash" />),
+    );
+    expect(container.querySelector(".meta-model")?.textContent).toMatch(/deepseek-v4-flash/i);
+  });
+
+  it("shows no model chip on a reasoning run that carries none", () => {
+    const { container } = render(wrap(<ReasoningCard text="weighing options" streaming={false} />));
+    expect(container.querySelector(".meta-model")).toBeNull();
+  });
+
   it("renders a tool card's duration in seconds once it passes 1s", () => {
     render(<ToolCard name="read_file" args="{}" result="ok" durationMs={2500} ok />);
     expect(screen.getByText("2.5s")).toBeTruthy();
@@ -431,7 +443,6 @@ describe("SubagentCard — model visibility", () => {
     model: "deepseek-v4-flash",
     status: "done" as const,
     contextTokens: 12_345,
-    costUsd: 0.0123,
     tools: [],
   };
 
@@ -441,7 +452,6 @@ describe("SubagentCard — model visibility", () => {
     const header = screen.getByRole("button", { name: /explore/ });
     expect(header.textContent).toContain("deepseek-v4-flash");
     expect(header.textContent).toContain("ctx 12.3k");
-    expect(header.textContent).toContain("$0.0123");
   });
 
   it("prefixes the child model with its provider tag", () => {
@@ -469,22 +479,20 @@ describe("SubagentCard — model visibility", () => {
     );
   });
 
-  it("updates context while running and hides cost until completion", () => {
+  it("updates context while running and settles after completion", () => {
     const { rerender } = render(
       <SubagentCard
         name="explore"
-        runs={[{ ...run, status: "running", contextTokens: 8_000, costUsd: undefined }]}
+        runs={[{ ...run, status: "running", contextTokens: 8_000 }]}
       />,
     );
 
     let header = screen.getByRole("button", { name: /explore/ });
     expect(header.textContent).toContain("ctx 8.0k");
-    expect(header.textContent).not.toContain("$");
 
     rerender(<SubagentCard name="explore" runs={[run]} />);
     header = screen.getByRole("button", { name: /explore/ });
     expect(header.textContent).toContain("ctx 12.3k");
-    expect(header.textContent).toContain("$0.0123");
   });
 
   it("shows the child context meter instead of raw char counters on the run row", () => {
@@ -515,45 +523,6 @@ describe("SubagentCard — model visibility", () => {
     expect(container.textContent).not.toContain("read chars");
   });
 
-  it("shows a provider quota % instead of a dollar figure for plan-billed runs", () => {
-    render(
-      <SubagentCard
-        name="explore"
-        runs={[
-          {
-            ...run,
-            costUsd: 0,
-            billingKind: "quota",
-            quotaUsedPct: 2.5,
-          },
-        ]}
-      />,
-    );
-
-    const header = screen.getByRole("button", { name: /explore/ });
-    expect(header.textContent).toContain("2.50%");
-    expect(header.textContent).not.toContain("$");
-  });
-
-  it("shows no cost metric when the run has no measurable billing", () => {
-    render(<SubagentCard name="explore" runs={[{ ...run, costUsd: 0, billingKind: "none" }]} />);
-    const header = screen.getByRole("button", { name: /explore/ });
-    expect(header.textContent).not.toContain("$");
-    expect(header.textContent).not.toContain("%");
-  });
-
-  it("shows no cost metric when a quota run produced no measurable delta", () => {
-    render(
-      <SubagentCard
-        name="explore"
-        runs={[{ ...run, costUsd: 0, billingKind: "quota", quotaUsedPct: undefined }]}
-      />,
-    );
-    const header = screen.getByRole("button", { name: /explore/ });
-    expect(header.textContent).not.toContain("$");
-    expect(header.textContent).not.toContain("%");
-  });
-
   it("shows every distinct model for mixed-model fan-out", () => {
     render(
       <SubagentCard
@@ -565,7 +534,6 @@ describe("SubagentCard — model visibility", () => {
             runId: "run-2",
             model: "deepseek-v4-pro",
             contextTokens: 24_680,
-            costUsd: 0.02,
           },
         ]}
       />,
@@ -574,7 +542,6 @@ describe("SubagentCard — model visibility", () => {
     const header = screen.getByRole("button", { name: /explore/ });
     expect(header.textContent).toContain("DS · deepseek-v4-flash + DS · deepseek-v4-pro");
     expect(header.textContent).toContain("ctx 12.3k / 24.7k");
-    expect(header.textContent).toContain("$0.0323");
   });
 
   it("renders subagent kind badge and markdown result in card body", () => {
@@ -883,7 +850,7 @@ describe("SubagentCard — model visibility", () => {
     expect(isSubagentTool("run_command")).toBe(false);
   });
 
-  it("recovers model and cost from the persisted result envelope", () => {
+  it("recovers model metadata from the persisted result envelope", () => {
     expect(
       extractSubagentResultMeta(
         JSON.stringify({
@@ -897,25 +864,16 @@ describe("SubagentCard — model visibility", () => {
         }),
       ),
     ).toEqual({
-      costUsd: 0.0062,
       model: "deepseek-v4-flash",
-      billingKind: "usd",
       elapsedMs: 25223,
       turns: 6,
     });
-
-    // quota-billed run
-    expect(
-      extractSubagentResultMeta(
-        JSON.stringify({ cost_usd: 0, billing_kind: "quota", quota_used_pct: 2.5 }),
-      ),
-    ).toEqual({ costUsd: 0, billingKind: "quota", quotaUsedPct: 2.5 });
 
     expect(extractSubagentResultMeta("not json")).toEqual({});
     expect(extractSubagentResultMeta(undefined)).toEqual({});
   });
 
-  it("shows model and cost on a result-only run (no subagentRuns after reload)", () => {
+  it("shows model on a result-only run (no subagentRuns after reload)", () => {
     render(
       <SubagentCard
         name="explore"
@@ -926,8 +884,6 @@ describe("SubagentCard — model visibility", () => {
             skillName: "explore",
             model: "deepseek-v4-flash",
             status: "done",
-            costUsd: 0.0422,
-            billingKind: "usd",
             tools: [],
           },
         ]}
@@ -936,7 +892,6 @@ describe("SubagentCard — model visibility", () => {
 
     const header = screen.getByRole("button", { name: /explore/ });
     expect(header.textContent).toContain("deepseek-v4-flash");
-    expect(header.textContent).toContain("$0.0422");
   });
 
   it("shows the last 3 rows of thinking and process when subagent is running", () => {
@@ -1548,7 +1503,6 @@ describe("SubagentCard — task, progress and result sections", () => {
     status: "done" as const,
     contextTokens: 12_345,
     contextMax: 300_000,
-    costUsd: 0.0012,
     tools: [],
   };
 

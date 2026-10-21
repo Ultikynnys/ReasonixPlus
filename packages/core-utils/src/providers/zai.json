@@ -84,7 +84,13 @@
     "excludeSpeech": false
   },
   "wire": { "streamOptions": false, "toolStream": true, "thinking": "zai-top-level" },
-  "billing": { "kind": "quota-if-key" },
+  "billing": {
+    "kind": "quota-if-key",
+    "schedule": {
+      "peakWindowsUtc": [{ "startMinute": 360, "endMinute": 600 }],
+      "weekendOffsetMinutes": 480
+    }
+  },
   "usage": { "probe": "zai-monitor" },
   "strings": {
     "notConfigured": "Not configured yet — add a Z.AI API key in Settings → General to use GLM models.",
@@ -93,7 +99,6 @@
     "quotaTitle": "GLM Coding Plan {plan} · {left}% left · click to refresh",
     "quotaDualTitle": "GLM Coding Plan {plan} · 5h: {fiveHour}% left · weekly: {weekly}% left · resets {resets} · click to refresh",
     "quotaNoData": "GLM usage · no data: set a Z.AI API key (Settings → Z.AI / GLM) to see plan usage · click to retry",
-    "quotaTurnTitle": "This turn used {pct}% of the GLM 5-hour quota",
     "quotaPlanName": "GLM Coding Plan",
     "quotaPlanFallback": "GLM",
     "offPeakTitle": "Z.AI off-peak: half of the standard rate · Peak hours 14:00–18:00 SGT (06:00–10:00 UTC, weekdays), off-peak all other times · changes in {when}",

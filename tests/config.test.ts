@@ -54,7 +54,6 @@ import {
   loadOllamaGenerationOverrides,
   loadOllamaGenerationSettings,
   loadOpencodeApiKey,
-  loadPricingOverride,
   loadProjectPathAllowed,
   loadProjectShellAllowed,
   loadProxyConfig,
@@ -860,21 +859,6 @@ describe("config", () => {
         path,
       );
       expect(anyProviderConfigured(path)).toBe(true);
-    });
-  });
-
-  it("loads pricingOverride with valid non-negative fields", () => {
-    writeConfig(
-      {
-        pricingOverride: {
-          "third-party-model": { inputCacheHit: 0, inputCacheMiss: 1.5, output: 3 },
-          invalid: { inputCacheHit: -1, inputCacheMiss: "bad" as unknown as number },
-        },
-      },
-      path,
-    );
-    expect(loadPricingOverride(path)).toEqual({
-      "third-party-model": { inputCacheHit: 0, inputCacheMiss: 1.5, output: 3 },
     });
   });
 

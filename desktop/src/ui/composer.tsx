@@ -173,7 +173,7 @@ export function Composer({
   onQueueWhileBusy,
   onDequeueSend,
   onEditQueuedSend,
-  onSendNow,
+  onSendQueuedNow,
   pendingImages,
   onRemoveImage,
   imageCapable,
@@ -259,8 +259,9 @@ export function Composer({
   onDequeueSend?: (index: number) => void;
   /** Brings a queued message back into the composer to edit — removes it from the queue and restores its text + images. */
   onEditQueuedSend?: (index: number) => void;
-  /** Sends the whole queue immediately — the app aborts the running turn so the drain fires on turn-complete. */
-  onSendNow?: () => void;
+  /** Sends ONE queued message immediately — the app promotes it to the queue head and,
+   *  while a turn is running, stops that turn so the drain fires this message next. */
+  onSendQueuedNow?: (index: number) => void;
   /** Vision attachments queued for the next send (ChatGPT models only). */
   pendingImages?: { id: string; thumbnail: string; wire?: UserImageAttachment }[];
   onRemoveImage?: (id: string) => void;
@@ -633,7 +634,7 @@ export function Composer({
               ]
                 .filter(Boolean)
                 .join(" ");
-              // Hoisted so the chip's text and its pencil share one handler.
+              // The chip body is the edit affordance; the arrow sends this one now.
               const editQueued = onEditQueuedSend ? () => onEditQueuedSend(i) : undefined;
 
               return (
@@ -660,14 +661,14 @@ export function Composer({
                       {item.text}
                     </span>
                   ) : null}
-                  {editQueued ? (
+                  {onSendQueuedNow ? (
                     <span
-                      className="edit"
-                      title={t("composer.editQueued")}
-                      onClick={editQueued}
-                      onKeyDown={activationHandler(editQueued)}
+                      className="send-now"
+                      title={t("composer.sendQueuedNow")}
+                      onClick={() => onSendQueuedNow(i)}
+                      onKeyDown={activationHandler(() => onSendQueuedNow(i))}
                     >
-                      <I.pencil size={10} />
+                      <I.arrowUp size={11} />
                     </span>
                   ) : null}
                   {onDequeueSend ? (
@@ -682,12 +683,6 @@ export function Composer({
                 </span>
               );
             })}
-            {onSendNow ? (
-              <button type="button" className="composer-queued-send" onClick={onSendNow}>
-                <I.send size={11} />
-                {t("composer.sendNow")}
-              </button>
-            ) : null}
           </div>
         ) : null}
 
@@ -823,7 +818,6 @@ export function Composer({
                 onClick={() => toggleMenu("model")}
                 title={t("composer.switchModel")}
               >
-                <I.brain size={12} />
                 <FitText text={modelDisplayLabel(modelLabel, providerHints)} />
                 <I.chev size={10} />
               </button>
@@ -888,7 +882,6 @@ export function Composer({
                 }}
                 title={t("composer.switchEffort")}
               >
-                <I.cpu size={12} />
                 <span>{displayEffort}</span>
                 <I.chev size={10} />
               </button>
@@ -899,7 +892,6 @@ export function Composer({
                     {efforts.map((e) => (
                       <MenuRow
                         key={e}
-                        icon={<I.cpu size={12} />}
                         label={e}
                         desc={t(`effort.${e}Desc` as TKey)}
                         active={e === displayEffort}
@@ -939,7 +931,6 @@ export function Composer({
                     {quickSendOptions.map((q) => (
                       <MenuRow
                         key={q.id}
-                        icon={<I.play size={12} />}
                         label={q.shorthand}
                         desc={q.message}
                         active={q.id === activeQuickSendId}
@@ -1083,7 +1074,6 @@ export function ModelList({
     key: string;
     title: string;
     models: readonly string[];
-    icon?: (props: { size?: number }) => React.ReactNode;
     refresh?: () => void;
     refreshTitle?: string;
     error?: string;
@@ -1137,7 +1127,6 @@ export function ModelList({
             key: "ollama",
             title: t("composer.modelOllamaGroup"),
             models: (ollamaModels ?? []).map((id) => `ollama/${id}`),
-            icon: I.bot,
             refresh: () => onRefreshOllamaModels?.(true),
             refreshTitle: t("settings.modelsRefresh"),
             error:
@@ -1180,7 +1169,6 @@ export function ModelList({
       )}
       {visibleGroups.map((group) => {
         if (group.models.length === 0 && !group.error) return null;
-        const Icon = group.icon ?? I.brain;
         return (
           <Fragment key={group.key}>
             <div className="model-menu-group">
@@ -1206,9 +1194,6 @@ export function ModelList({
                 onClick={() => onPick(model)}
                 onKeyDown={activationHandler(() => onPick(model))}
               >
-                <span className="ico">
-                  <Icon size={12} />
-                </span>
                 <div className="nm">
                   <span className="cmd">{modelDisplayLabel(model, providerHints)}</span>
                 </div>
@@ -1225,9 +1210,6 @@ export function ModelList({
           onClick={() => onPick(activeModel)}
           onKeyDown={activationHandler(() => onPick(activeModel))}
         >
-          <span className="ico">
-            <I.brain size={12} />
-          </span>
           <div className="nm">
             <span className="cmd">{modelDisplayLabel(activeModel, providerHints)}</span>
           </div>
@@ -1242,16 +1224,14 @@ function MenuHeader({ label }: { label: string }) {
   return <div className="ph">{label}</div>;
 }
 
-/** Shared dropdown row — icon + label + optional description, activated by
- *  click or keyboard. Backs the quick-send and reasoning-effort menus. */
+/** Shared dropdown row — label + optional description, activated by click or
+ *  keyboard. Backs the quick-send and reasoning-effort menus. */
 function MenuRow({
-  icon,
   label,
   desc,
   active,
   onPick,
 }: {
-  icon: React.ReactNode;
   label: string;
   desc?: string;
   active?: boolean;
@@ -1264,7 +1244,6 @@ function MenuRow({
       onClick={onPick}
       onKeyDown={activationHandler(onPick)}
     >
-      <span className="ico">{icon}</span>
       <div className="nm">
         <span className="cmd">{label}</span>
         {desc !== undefined ? <div className="desc">{desc}</div> : null}

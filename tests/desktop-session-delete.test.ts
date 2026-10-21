@@ -4,42 +4,63 @@ import {
   deletableSessionNames,
   sessionRunningRefusal,
   sessionsWithLiveTurn,
-  shouldMaterializeFreshSession,
-  shouldMaterializeRestoredSession,
-  shouldReplaceDeletedSession,
+  shouldDetachDeletedSession,
+  skeletonSessionFor,
   tabNeedsWorkspace,
 } from "../src/cli/commands/desktop.js";
 
 describe("desktop session deletion synchronization", () => {
-  it("replaces the backend-bound session after deleting the active session", () => {
-    expect(shouldReplaceDeletedSession("active-session", "active-session", true)).toBe(true);
+  it("detaches the backend-bound session after deleting the active session", () => {
+    expect(shouldDetachDeletedSession("active-session", "active-session", true)).toBe(true);
   });
 
   it("keeps the current conversation when an inactive session is deleted", () => {
-    expect(shouldReplaceDeletedSession("active-session", "older-session", true)).toBe(false);
+    expect(shouldDetachDeletedSession("active-session", "older-session", true)).toBe(false);
   });
 
-  it("does not replace the current session when deletion fails", () => {
-    expect(shouldReplaceDeletedSession("active-session", "active-session", false)).toBe(false);
+  it("does not detach the current session when deletion fails", () => {
+    expect(shouldDetachDeletedSession("active-session", "active-session", false)).toBe(false);
   });
 
-  it("keeps deletion replacements virtual so deleted sessions stay absent", () => {
-    expect(shouldMaterializeFreshSession("session-delete")).toBe(false);
+  it("never leaves a channel in the deleted session it kept after a failed delete", () => {
+    // The session is still on disk, so the channel keeps it: only a successful
+    // delete may move the channel out of a session.
+    expect(shouldDetachDeletedSession("doomed", "doomed", false)).toBe(false);
+  });
+});
+
+describe("desktop — how a channel skeleton gets its session", () => {
+  it("adopts a persisted session that still exists", () => {
+    expect(skeletonSessionFor({ session: "kept" }, "kept")).toEqual({
+      kind: "adopt",
+      name: "kept",
+    });
   });
 
-  it("still materializes an explicit New chat immediately", () => {
-    expect(shouldMaterializeFreshSession("new-chat")).toBe(true);
+  it("mints for a genuinely new channel", () => {
+    expect(skeletonSessionFor(undefined, undefined)).toEqual({ kind: "mint" });
+    expect(skeletonSessionFor({ active: true }, undefined)).toEqual({ kind: "mint" });
   });
 
-  it("does not resurrect a restored tab whose session was deleted", () => {
-    // The persisted tab points at a session name that no longer exists — it
-    // must stay virtual so the deletion survives a restart.
-    expect(shouldMaterializeRestoredSession({ session: "deleted-session" })).toBe(false);
+  it("lands neutral when the persisted session is gone", () => {
+    // No name may be bound to a session that is absent from disk.
+    expect(skeletonSessionFor({ session: "deleted-session" }, undefined)).toEqual({
+      kind: "neutral",
+    });
   });
 
-  it("materializes a genuinely new tab with no persisted session", () => {
-    expect(shouldMaterializeRestoredSession(undefined)).toBe(true);
-    expect(shouldMaterializeRestoredSession({})).toBe(true);
+  it("restores a channel persisted neutral as neutral instead of minting", () => {
+    expect(skeletonSessionFor({ detached: true }, undefined)).toEqual({ kind: "neutral" });
+  });
+
+  it("treats a channel persisted as both detached and named as neutral", () => {
+    expect(skeletonSessionFor({ session: "kept", detached: true }, "kept")).toEqual({
+      kind: "neutral",
+    });
+  });
+
+  it("does not adopt a session another workspace owns", () => {
+    expect(skeletonSessionFor({ session: "foreign" }, undefined)).toEqual({ kind: "neutral" });
   });
 });
 

@@ -191,13 +191,6 @@ export const PROVIDER_BILLING_KINDS: ReadonlySet<string> = new Set([
   "quota-if-key",
 ]);
 
-/** One model's published rate, in USD per 1M tokens. */
-export interface ProviderModelRate {
-  inputCacheHit: number;
-  inputCacheMiss: number;
-  output: number;
-}
-
 /** Response shapes an account-balance endpoint speaks. `balance-infos` is DeepSeek's
  *  `{balance_infos: [...]}`; `credits-usage` is a `{data: {total_credits,
  *  total_usage}}` credits ledger, whose balance is the difference. */
@@ -234,16 +227,16 @@ export const DEFAULT_PROVIDER_MODEL_ID: ProviderModelIdSpec = {
   labels: {},
 };
 
-/** How a provider prices and reports usage, all declared rather than inferred. */
+/** How a provider reports its account state, all declared rather than inferred. */
 export interface ProviderBillingSpec {
   kind: ProviderBillingKind;
   /** Published peak/off-peak windows; null when the rate never changes. */
   schedule: RateSchedule | null;
+  /** Model ids whose token price moves with the schedule; empty when none do. */
+  peakModels: readonly string[];
   /** Where the account balance is published; null means nowhere, so the ribbon
-   *  shows measured cost only instead of a chip it could never fill. */
+   *  shows no wallet chip it could never fill. */
   balance: ProviderBalanceSpec | null;
-  /** USD per 1M tokens at the base rate, keyed by wire model id. */
-  pricing: Readonly<Record<string, ProviderModelRate>>;
 }
 
 /** Wire format the transport speaks for this provider. */
@@ -674,36 +667,35 @@ function parseRateSchedule(value: unknown, where: string): RateSchedule | null {
   if (value === undefined || value === null) return null;
   const raw = record(value, where);
   if (!Array.isArray(raw.peakWindowsUtc)) fail(`${where}.peakWindowsUtc`, "expected an array");
+  if (raw.peakWindowsUtc.length === 0) {
+    fail(`${where}.peakWindowsUtc`, "expected at least one window: use null for no peak rate");
+  }
+  const minuteOfDay = (entry: unknown, at: string): number => {
+    const minute = number(entry, at);
+    if (!Number.isInteger(minute) || minute < 0 || minute > 1440) {
+      fail(at, "expected a whole minute-of-day between 0 and 1440");
+    }
+    return minute;
+  };
+  const weekendOffsetMinutes = number(
+    raw.weekendOffsetMinutes ?? 0,
+    `${where}.weekendOffsetMinutes`,
+  );
+  if (!Number.isInteger(weekendOffsetMinutes) || Math.abs(weekendOffsetMinutes) > 1440) {
+    fail(`${where}.weekendOffsetMinutes`, "expected a whole-minute offset within one day");
+  }
   return {
     peakWindowsUtc: raw.peakWindowsUtc.map((entry, index) => {
-      const win = record(entry, `${where}.peakWindowsUtc[${index}]`);
-      return {
-        startMinute: number(win.startMinute, `${where}.peakWindowsUtc[${index}].startMinute`),
-        endMinute: number(win.endMinute, `${where}.peakWindowsUtc[${index}].endMinute`),
-      };
+      const at = `${where}.peakWindowsUtc[${index}]`;
+      const win = record(entry, at);
+      const startMinute = minuteOfDay(win.startMinute, `${at}.startMinute`);
+      const endMinute = minuteOfDay(win.endMinute, `${at}.endMinute`);
+      // Half-open windows: a reversed or empty range would silently never fire.
+      if (endMinute <= startMinute) fail(at, "expected endMinute > startMinute");
+      return { startMinute, endMinute };
     }),
-    weekendOffsetMinutes: number(raw.weekendOffsetMinutes ?? 0, `${where}.weekendOffsetMinutes`),
-    ...(raw.peakMultiplier === undefined
-      ? {}
-      : { peakMultiplier: number(raw.peakMultiplier, `${where}.peakMultiplier`) }),
-    ...(raw.offPeakMultiplier === undefined
-      ? {}
-      : { offPeakMultiplier: number(raw.offPeakMultiplier, `${where}.offPeakMultiplier`) }),
+    weekendOffsetMinutes,
   };
-}
-
-function parsePricing(value: unknown, where: string): Record<string, ProviderModelRate> {
-  if (value === undefined) return {};
-  const rates: Record<string, ProviderModelRate> = {};
-  for (const [model, entry] of Object.entries(record(value, where))) {
-    const rate = record(entry, `${where}.${model}`);
-    rates[model] = {
-      inputCacheHit: number(rate.inputCacheHit, `${where}.${model}.inputCacheHit`),
-      inputCacheMiss: number(rate.inputCacheMiss, `${where}.${model}.inputCacheMiss`),
-      output: number(rate.output, `${where}.${model}.output`),
-    };
-  }
-  return rates;
 }
 
 function parseBilling(value: unknown, where: string): ProviderBillingSpec {
@@ -711,8 +703,9 @@ function parseBilling(value: unknown, where: string): ProviderBillingSpec {
   return {
     kind: choice<ProviderBillingKind>(raw.kind ?? "quota", PROVIDER_BILLING_KINDS, `${where}.kind`),
     schedule: parseRateSchedule(raw.schedule, `${where}.schedule`),
+    peakModels:
+      raw.peakModels === undefined ? [] : texts(raw.peakModels, `${where}.peakModels`),
     balance: parseBalance(raw.balance, `${where}.balance`),
-    pricing: parsePricing(raw.pricing, `${where}.pricing`),
   };
 }
 
@@ -947,6 +940,15 @@ export function providerShortLabel(id: string): string {
   return providerSpec(id)?.shortLabel ?? "";
 }
 
+/** The peak/off-peak calendar a provider declares, or null when its rate never
+ *  changes. Takes an id or an already-resolved spec, like `providerString`. */
+export function providerRateSchedule(
+  provider: string | ProviderSpec | undefined,
+): RateSchedule | null {
+  const spec = typeof provider === "string" ? providerSpec(provider) : provider;
+  return spec?.billing.schedule ?? null;
+}
+
 /** Declared UI copy with `{name}` placeholders filled from `vars`; an unmatched
  *  placeholder stays literal. Undefined when the provider or key is undeclared, or
  *  the declared value is empty, so the caller keeps its own generic wording. */
@@ -964,11 +966,6 @@ export function providerString(
  *  building or destructuring a spec. */
 export function providerDeclared(id: string): boolean {
   return SPEC_BY_ID.has(id);
-}
-
-/** A provider's declared per-model rates, or {} when it declares none. */
-export function providerPricing(id: string): Readonly<Record<string, ProviderModelRate>> {
-  return providerSpec(id)?.billing.pricing ?? {};
 }
 
 /** A provider's effort ladder, or an empty ladder when the id is undeclared. */

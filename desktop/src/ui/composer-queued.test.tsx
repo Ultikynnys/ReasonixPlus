@@ -20,12 +20,12 @@ function renderQueued({
   queuedSends,
   onDequeueSend,
   onEditQueuedSend,
-  onSendNow,
+  onSendQueuedNow,
 }: {
   queuedSends?: QueuedSendItem[];
   onDequeueSend?: (index: number) => void;
   onEditQueuedSend?: (index: number) => void;
-  onSendNow?: () => void;
+  onSendQueuedNow?: (index: number) => void;
 }) {
   return render(
     <Composer
@@ -33,23 +33,32 @@ function renderQueued({
       queuedSends={queuedSends ?? []}
       onDequeueSend={onDequeueSend}
       onEditQueuedSend={onEditQueuedSend}
-      onSendNow={onSendNow}
+      onSendQueuedNow={onSendQueuedNow}
     />,
   );
 }
 
 describe("Composer queued-sends row", () => {
-  it("renders the queue label, per-message chips, and a Send now button", () => {
+  it("renders the queue label and one per-message chip each", () => {
     renderQueued({
       queuedSends: ["first message", "second message"],
       onDequeueSend: vi.fn(),
-      onSendNow: vi.fn(),
+      onSendQueuedNow: vi.fn(),
     });
 
     expect(screen.getByText("queued 2")).toBeTruthy();
     expect(screen.getByText("first message")).toBeTruthy();
     expect(screen.getByText("second message")).toBeTruthy();
-    expect(screen.getByText("send now")).toBeTruthy();
+  });
+
+  it("puts no whole-queue action in the row — sending now is per message", () => {
+    renderQueued({
+      queuedSends: ["first message", "second message"],
+      onSendQueuedNow: vi.fn(),
+      onDequeueSend: vi.fn(),
+    });
+
+    expect(document.querySelectorAll(".composer-queued button").length).toBe(0);
   });
 
   it("removing a chip calls onDequeueSend with its index", () => {
@@ -57,7 +66,7 @@ describe("Composer queued-sends row", () => {
     renderQueued({
       queuedSends: ["first message", "second message"],
       onDequeueSend,
-      onSendNow: vi.fn(),
+      onSendQueuedNow: vi.fn(),
     });
 
     const removeButtons = document.querySelectorAll(".composer-queue-chip .x");
@@ -66,17 +75,34 @@ describe("Composer queued-sends row", () => {
     expect(onDequeueSend).toHaveBeenCalledWith(1);
   });
 
-  it("Send now fires onSendNow", () => {
-    const onSendNow = vi.fn();
-    renderQueued({ queuedSends: ["queued text"], onSendNow });
+  it("each chip's arrow sends only that queued message", () => {
+    const onSendQueuedNow = vi.fn();
+    renderQueued({
+      queuedSends: ["first message", "second message"],
+      onSendQueuedNow,
+    });
 
-    fireEvent.click(screen.getByText("send now"));
-    expect(onSendNow).toHaveBeenCalledTimes(1);
+    const arrows = document.querySelectorAll(".composer-queue-chip .send-now");
+    expect(arrows.length).toBe(2);
+    fireEvent.click(arrows[1]);
+    expect(onSendQueuedNow).toHaveBeenCalledTimes(1);
+    expect(onSendQueuedNow).toHaveBeenCalledWith(1);
   });
 
-  it("omits the Send now button when onSendNow is not wired", () => {
+  it("the arrow sends without also pulling the message back for editing", () => {
+    const onEditQueuedSend = vi.fn();
+    const onSendQueuedNow = vi.fn();
+    renderQueued({ queuedSends: ["only message"], onEditQueuedSend, onSendQueuedNow });
+
+    fireEvent.click(document.querySelector(".composer-queue-chip .send-now")!);
+
+    expect(onSendQueuedNow).toHaveBeenCalledWith(0);
+    expect(onEditQueuedSend).not.toHaveBeenCalled();
+  });
+
+  it("omits the per-message send arrow when onSendQueuedNow is not wired", () => {
     renderQueued({ queuedSends: ["queued text"], onDequeueSend: vi.fn() });
-    expect(screen.queryByText("send now")).toBeNull();
+    expect(document.querySelectorAll(".composer-queue-chip .send-now").length).toBe(0);
   });
 
   it("renders nothing when the queue is empty", () => {
@@ -139,17 +165,14 @@ describe("Composer queued-sends row", () => {
 });
 
 describe("Composer queued-chip edit affordance", () => {
-  it("clicking the edit button calls onEditQueuedSend with its index", () => {
-    const onEditQueuedSend = vi.fn();
+  it("has no pen button — the chip body is the edit affordance", () => {
     renderQueued({
       queuedSends: ["first message", "second message"],
-      onEditQueuedSend,
+      onEditQueuedSend: vi.fn(),
+      onSendQueuedNow: vi.fn(),
     });
 
-    const editButtons = document.querySelectorAll(".composer-queue-chip .edit");
-    expect(editButtons.length).toBe(2);
-    fireEvent.click(editButtons[1]);
-    expect(onEditQueuedSend).toHaveBeenCalledWith(1);
+    expect(document.querySelectorAll(".composer-queue-chip .edit").length).toBe(0);
   });
 
   it("clicking a chip's text pulls that message back for editing", () => {
@@ -166,7 +189,6 @@ describe("Composer queued-chip edit affordance", () => {
   it("omits the edit affordance when onEditQueuedSend is not wired", () => {
     renderQueued({ queuedSends: ["queued text"], onDequeueSend: vi.fn() });
 
-    expect(document.querySelectorAll(".composer-queue-chip .edit").length).toBe(0);
     expect(screen.getByText("queued text").classList.contains("editable")).toBe(false);
   });
 });

@@ -1,16 +1,20 @@
 /** Post-build smoke — confirm bundled `dist/{index,cli/index}.js` resolves the tokenizer data file at package-root. */
 
+// The dist block is gated: it asserts on whatever `dist/` is on disk (12.8 s), which
+// `npm test` never builds. `npm run test:perf` runs it after a build.
+
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { PERF_ENABLED } from "./support/perf-gate.js";
 
 const LIB_BUNDLE = resolve("dist/index.js");
 const CLI_BUNDLE = resolve("dist/cli/index.js");
 
-describe("bundled dist — tokenizer path resolution", () => {
+describe.skipIf(!PERF_ENABLED)("bundled dist — tokenizer path resolution", () => {
   it("dist/index.js resolves the tokenizer data file at package-root data/", () => {
     expect(existsSync(LIB_BUNDLE), "dist/index.js is missing — run npm run build first").toBe(true);
     // truncateForModelByTokens internally calls countTokens when the

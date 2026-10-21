@@ -66,20 +66,7 @@
     "excludeSpeech": false
   },
   "wire": { "storeFlag": true },
-  "billing": {
-    "kind": "usd-unless-oauth",
-    "schedule": null,
-    "pricing": {
-      "gpt-6-astra": { "inputCacheHit": 1.0, "inputCacheMiss": 10, "output": 50 },
-      "gpt-6-sol": { "inputCacheHit": 0.2, "inputCacheMiss": 2, "output": 10 },
-      "gpt-6-luna": { "inputCacheHit": 0.01, "inputCacheMiss": 0.1, "output": 0.5 },
-      "gpt-6.1-sol": { "inputCacheHit": 0.1, "inputCacheMiss": 2, "output": 10 },
-      "gpt-5.6": { "inputCacheHit": 0.5, "inputCacheMiss": 5, "output": 30 },
-      "gpt-5.6-sol": { "inputCacheHit": 0.5, "inputCacheMiss": 5, "output": 30 },
-      "gpt-5.6-terra": { "inputCacheHit": 0.2, "inputCacheMiss": 2, "output": 12 },
-      "gpt-5.6-luna": { "inputCacheHit": 0.02, "inputCacheMiss": 0.2, "output": 1.2 }
-    }
-  },
+  "billing": { "kind": "usd-unless-oauth", "schedule": null },
   "usage": { "probe": "codex-oauth" },
   "strings": {
     "notConfigured": "Not configured yet — add an OpenAI key or sign in with ChatGPT (Settings → OpenAI) first.",
@@ -92,7 +79,6 @@
     "quotaTitle": "Codex weekly quota · {left}% left · resets {resets} · plan {plan} · click to refresh",
     "quotaFiveHourTitle": "5-hour window: {left}% left",
     "quotaNoData": "Codex quota · no data: sign in with ChatGPT (Settings → OpenAI) to see plan usage · click to retry",
-    "quotaTurnTitle": "This turn used {pct}% of the weekly Codex quota",
     "quotaPlanName": "ChatGPT",
     "quotaPlanFallback": "ChatGPT",
     "panelSignInTitle": "Website sign-in",

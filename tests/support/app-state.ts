@@ -29,8 +29,6 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     pendingRevisions: [],
     activePlan: null,
     usage: {
-      totalCostUsd: 0,
-      lastCallCostUsd: 0,
       totalPromptTokens: 0,
       totalCompletionTokens: 0,
       cacheHitTokens: 0,

@@ -43,7 +43,7 @@ export async function fetchOpencodeQuota(
   baseUrl: string,
   token: string,
   timeoutMs = 10_000,
-): Promise<Omit<OpencodeQuota, "turnUsedPct" | "fetchedAt"> | undefined> {
+): Promise<Omit<OpencodeQuota, "fetchedAt"> | undefined> {
   const url = opencodeUsageUrl(baseUrl);
   if (!url || !token) return undefined;
   try {

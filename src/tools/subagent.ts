@@ -4,14 +4,12 @@
 import { PLAN_TOOL_NAMES } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "../client.js";
 import {
-  type ModelProvider,
   type ReasoningEffort,
   loadFallbackModels,
   loadMaxIterPerTurn,
   loadMaxOutputTokens,
   modelUsableFor,
   pickFallbackModel,
-  providerForModel,
 } from "../config.js";
 import type { ResolvedHook } from "../hooks.js";
 import { CacheFirstLoop } from "../loop.js";
@@ -52,13 +50,6 @@ export interface SubagentEvent {
   /** See SubagentResult.stopCause. */
   stopCause?: WarningCause;
   turns?: number;
-  costUsd?: number;
-  /** How this run bills: "usd" = token-priced API cost (costUsd is meaningful),
-   *  "quota" = provider plan window % consumed (see quotaUsedPct), "none" = not measurable. */
-  billingKind?: "usd" | "quota" | "none";
-  /** Percent points of the provider plan window consumed by this run, when
-   *  billingKind === "quota" and a valid before/after delta was measurable. */
-  quotaUsedPct?: number;
   usage?: Usage;
   /** When kind === "inner": the raw child loop event. Parent UI translates to a child summary. */
   inner?: import("../loop.js").LoopEvent;
@@ -170,14 +161,6 @@ export interface SpawnSubagentOptions {
   /** Everything the child loop inherits from the parent loop (cap, compaction trigger,
    *  iteration/output caps, tool hooks). */
   inherited?: SubagentLoopOptions;
-  /** Provider and native billing unit resolved by the caller. */
-  billingContext?: { kind: "usd" | "quota" | "none"; provider: ModelProvider };
-  /** @deprecated Compatibility option. Prefer billingContext. */
-  billingKind?: "usd" | "quota" | "none";
-  /** Returns the provider plan-window used % (0..100) for this run's model.
-   *  Snapshotted before and after the run to compute the consumed quota delta.
-   *  Only consulted when billingKind === "quota". */
-  measureQuota?: () => Promise<number | null>;
 }
 
 export interface SubagentResult {
@@ -187,11 +170,6 @@ export interface SubagentResult {
   turns: number;
   toolIters: number;
   elapsedMs: number;
-  costUsd: number;
-  /** See SubagentEvent.billingKind. */
-  billingKind?: "usd" | "quota" | "none";
-  /** Percent points of the provider plan window consumed by this run, when measurable. */
-  quotaUsedPct?: number;
   model: string;
   skillName?: string;
   /** Zero-filled when no API calls landed so consumers always see a valid shape. */
@@ -217,7 +195,7 @@ export interface SubagentToolOptions {
   /** A client, or a per-model resolver so a mid-session model switch applies to the next
    *  spawn without rebuilding the toolset. */
   client: DeepSeekClient | ((model: string) => DeepSeekClient);
-  /** Config path for provider resolution when no `billingFor` is supplied. */
+  /** Config path for fallback-model usability checks. */
   configPath?: string;
   defaultSystem?: string;
   projectRoot?: string;
@@ -228,26 +206,8 @@ export interface SubagentToolOptions {
   effort?: ReasoningEffort | (() => ReasoningEffort);
   maxResultChars?: number;
   sink?: SubagentSink;
-  /** Per-spawn billing resolution (unit + quota probe), so a quota-billed child reports
-   *  its consumption the way the parent loop does. */
-  billingFor?: (model: string) =>
-    | {
-        kind: "usd" | "quota" | "none";
-        /** Defaults to the provider resolved from the model id. */
-        provider?: ModelProvider;
-        measureQuota?: () => Promise<number | null>;
-      }
-    | undefined;
   /** Fires once per spawn, after `spawnSubagent` returns and before its result is formatted for the parent. Bind a `SubagentTelemetry.record` here for automatic distillation capture. */
   onSpawnComplete?: (result: SubagentResult) => void;
-  /** Folds the child loop's usage (cost, cache hit/miss, completion tokens) into the
-   *  parent session's SessionStats via `recordExternal` — the parent stats panel then
-   *  shows the full spend, not just parent-loop API calls. (#2008) */
-  recordExternal?: (
-    model: string,
-    usage: Usage,
-    billing: { kind: "usd" | "quota" | "none"; quotaUsedPct?: number },
-  ) => void;
   /** Live inherited-loop options, resolved at spawn time so a mid-session cap, ratio or
    *  hook change applies to the next child without rebuilding the toolset. */
   inherited?: () => SubagentLoopOptions | undefined;
@@ -332,10 +292,6 @@ function isRepetitionGuardStop(cause: WarningCause | undefined): boolean {
 /** Errors captured in the result shape, never thrown — caller decides how to surface. */
 export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<SubagentResult> {
   const model = opts.model ?? DEFAULT_SUBAGENT_MODEL;
-  const billingContext = opts.billingContext ?? {
-    kind: opts.billingKind ?? "usd",
-    provider: providerForModel(model),
-  };
   // The child inherits the parent's configured cap, so its enforced limit and the
   // denominator the UI's ctx meter displays are the same number the tab runs on.
   const contextMax = resolveContextTokens(model, opts.inherited?.ctxMaxOverride);
@@ -391,8 +347,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
         elapsedMs: Date.now() - startedAt,
         error: errorMessage,
         turns: 0,
-        costUsd: 0,
-        billingKind: billingContext.kind,
         usage: new Usage(),
       });
       return {
@@ -402,8 +356,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
         turns: 0,
         toolIters: 0,
         elapsedMs: Date.now() - startedAt,
-        costUsd: 0,
-        billingKind: billingContext.kind,
         model,
         skillName,
         usage: new Usage(),
@@ -434,12 +386,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
       return undefined;
     });
   }
-  // Quota-billed runs snapshot the provider plan window before the child does
-  // any work; the after-snapshot (post-loop) yields this run's consumed delta.
-  let quotaBaseline: number | null = null;
-  if (billingContext.kind === "quota" && opts.measureQuota) {
-    quotaBaseline = await opts.measureQuota().catch(() => null);
-  }
   const childPrefix = new ImmutablePrefix({
     system: opts.system,
     toolSpecs: childTools.specs(),
@@ -462,7 +408,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     // notice a degenerate stream, and a runaway child spends real tokens before
     // any budget caps it. Terminating a lost run early is the cheap outcome.
     repetitionGuardEnabled: true,
-    billingContextFor: () => billingContext,
     // Nobody can type "continue" into a child: the loop drives the cap's own
     // recovery (wrap-up nudge, then a forced summary carrying the reason).
     unattended: true,
@@ -705,19 +650,7 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
 
   const elapsedMs = Date.now() - startedAt;
   const turns = childLoop.stats.turns.length;
-  const costUsd = childLoop.stats.totalCost;
   const usage = aggregateChildUsage(childLoop);
-  const billingKind = billingContext.kind;
-  // After-snapshot the provider window for quota-billed runs. Only a non-negative
-  // delta under 100pp (no window reset / no overlap double-count) is trustworthy.
-  let quotaUsedPct: number | undefined;
-  if (billingKind === "quota" && opts.measureQuota && quotaBaseline !== null) {
-    const after = await opts.measureQuota().catch(() => null);
-    const delta = after !== null ? after - quotaBaseline : null;
-    if (delta !== null && Number.isFinite(delta) && delta >= 0 && delta < 100) {
-      quotaUsedPct = delta;
-    }
-  }
 
   const truncated =
     final.length > maxResultChars
@@ -737,9 +670,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     ...(stopReason ? { stopReason } : {}),
     ...(stopCause ? { stopCause } : {}),
     turns,
-    costUsd,
-    billingKind,
-    ...(quotaUsedPct !== undefined ? { quotaUsedPct } : {}),
     usage,
     contextTokens,
     contextMax,
@@ -755,9 +685,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     turns,
     toolIters: toolIter,
     elapsedMs,
-    costUsd,
-    billingKind,
-    ...(quotaUsedPct !== undefined ? { quotaUsedPct } : {}),
     model,
     skillName,
     usage,
@@ -785,14 +712,12 @@ function aggregateChildUsage(loop: CacheFirstLoop): Usage {
 }
 
 export function formatSubagentResult(r: SubagentResult): string {
-  // Model + billing metadata ride in the result envelope so the UI can render
-  // model name / cost / quota even when the live `subagent.progress` event
-  // stream (which normally carries them) was never attached — e.g. after a
-  // session reload, where `subagentRuns` is not persisted.
+  // Model metadata rides in the result envelope so the UI can render the model
+  // name even when the live `subagent.progress` event stream (which normally
+  // carries it) was never attached — e.g. after a session reload, where
+  // `subagentRuns` is not persisted.
   const meta = {
     ...(r.model ? { model: r.model } : {}),
-    ...(r.billingKind ? { billing_kind: r.billingKind } : {}),
-    ...(r.quotaUsedPct !== undefined ? { quota_used_pct: r.quotaUsedPct } : {}),
     // The loop's own reason for stopping. Skipped when the forced summary body
     // already IS that text, so the parent does not read the same sentence twice.
     ...(r.stopReason && r.stopReason !== r.output ? { stop_reason: r.stopReason } : {}),
@@ -813,7 +738,6 @@ export function formatSubagentResult(r: SubagentResult): string {
       turns: r.turns,
       tool_iters: r.toolIters,
       elapsed_ms: r.elapsedMs,
-      cost_usd: r.costUsd,
       ...meta,
       note: "Subagent stopped at its enforced work budget. Treat any output as partial findings; follow up directly only on a specific unresolved risk.",
     });
@@ -826,7 +750,6 @@ export function formatSubagentResult(r: SubagentResult): string {
       turns: r.turns,
       tool_iters: r.toolIters,
       elapsed_ms: r.elapsedMs,
-      cost_usd: r.costUsd,
       ...meta,
       note: "Subagent was force-summarized: it was stopped before finishing (iteration cap, work budget, repetition or context guard) and never produced an answer of its own. `output` carries what it had produced: useful but potentially incomplete. Decide whether to accept the partial, narrow the task and re-spawn, or fall back to direct tools.",
     });
@@ -847,7 +770,6 @@ export function formatSubagentResult(r: SubagentResult): string {
     turns: r.turns,
     tool_iters: r.toolIters,
     elapsed_ms: r.elapsedMs,
-    cost_usd: r.costUsd,
     ...meta,
   });
 }
@@ -924,7 +846,6 @@ export function registerSubagentTool(
       /** One spawn attempt on `model`, with its per-spawn bookkeeping. Split out so
        *  the quota fallback below can re-spawn without duplicating any of it. */
       const runSpawn = async (spawnModel: string): Promise<SubagentResult> => {
-        const billing = opts.billingFor?.(spawnModel);
         const effort = resolveEffort();
         const result = await spawnSubagent({
           client: resolveClient(spawnModel),
@@ -937,11 +858,6 @@ export function registerSubagentTool(
           ...(effort ? { effort } : {}),
           maxResultChars,
           sink: opts.sink,
-          billingContext: {
-            kind: billing?.kind ?? "usd",
-            provider: billing?.provider ?? providerForModel(spawnModel, opts.configPath),
-          },
-          ...(billing?.measureQuota ? { measureQuota: billing.measureQuota } : {}),
           // The whitelist IS the child's tool set; absent means "inherit mine".
           ...(tools.length > 0 ? { allowedTools: tools } : {}),
           // This call's own identity, so every progress event names the card that
@@ -955,16 +871,6 @@ export function registerSubagentTool(
         });
         sessionSpawnCount++;
         sessionSpawnTokens += result.usage.totalTokens;
-        if (opts.recordExternal && result.usage) {
-          try {
-            opts.recordExternal(result.model, result.usage, {
-              kind: result.billingKind ?? "usd",
-              quotaUsedPct: result.quotaUsedPct,
-            });
-          } catch {
-            // Stats folding must never break the spawn-tool dispatch.
-          }
-        }
         if (opts.onSpawnComplete) {
           try {
             opts.onSpawnComplete(result);

@@ -77,7 +77,7 @@
     "excludeSpeech": true
   },
   "wire": { "thinking": "mimo-top-level", "reasoningEffort": false },
-  "billing": { "kind": "quota" },
+  "billing": { "kind": "quota", "schedule": null },
   "usage": { "probe": "mimo-console" },
   "strings": {
     "notConfigured": "Not configured yet — add a Xiaomi MiMo API key in Settings → Models to use MiMo models.",

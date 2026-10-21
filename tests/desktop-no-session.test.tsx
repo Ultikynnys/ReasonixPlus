@@ -4,13 +4,15 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 // @vitest-environment jsdom
 // Mounts the full App against a mocked Tauri bridge and drives the daemon's
 // session events, so the "no sessions" main-area state is exercised end to end.
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../desktop/src/App";
 
 const WS = "C:\\ws";
 const handlers = new Map<string, (e: { payload: unknown }) => void>();
+/** Every command the app pushed to the daemon, in order. */
+const sent: Record<string, unknown>[] = [];
 
 async function feed(ev: Record<string, unknown>, tabId?: string) {
   const h = handlers.get("rpc:event");
@@ -73,7 +75,6 @@ async function startupWithSessionA() {
         },
       ],
       carryover: {
-        totalCostUsd: 0,
         cacheHitTokens: 0,
         cacheMissTokens: 0,
         totalCompletionTokens: 0,
@@ -96,6 +97,7 @@ async function startupWithSessionA() {
 describe("desktop — no-session main-area state", () => {
   beforeEach(() => {
     handlers.clear();
+    sent.length = 0;
     (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
       observe() {}
       unobserve() {}
@@ -117,7 +119,12 @@ describe("desktop — no-session main-area state", () => {
         return () => handlers.delete(name);
       },
     );
-    (invoke as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (invoke as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      async (cmd: string, args?: { line?: string }) => {
+        if (cmd === "rpc_send" && args?.line) sent.push(JSON.parse(args.line));
+        return undefined;
+      },
+    );
     (getCurrentWindow as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       isMaximized: vi.fn(async () => false),
       isFocused: vi.fn(async () => true),
@@ -149,28 +156,15 @@ describe("desktop — no-session main-area state", () => {
     expect(screen.queryByText(/No conversations yet/)).toBeNull();
   });
 
-  it("swaps the transcript for a create-session prompt once the last session is gone", async () => {
+  it("keeps the composer, not a prompt, once the last session is gone", async () => {
     render(<App />);
     await act(async () => {
       await Promise.resolve();
     });
     await startupWithSessionA();
 
-    // The daemon deletes A, mints a virtual replacement B, and lists no sessions.
-    await feed(
-      {
-        type: "$session_loaded",
-        name: "B",
-        messages: [],
-        carryover: {
-          totalCostUsd: 0,
-          cacheHitTokens: 0,
-          cacheMissTokens: 0,
-          totalCompletionTokens: 0,
-        },
-      },
-      "t1",
-    );
+    // The daemon deletes A and detaches the channel: nothing is bound.
+    await feed({ type: "$session_bound", name: "" }, "t1");
     await feed(
       {
         type: "$sessions",
@@ -184,7 +178,12 @@ describe("desktop — no-session main-area state", () => {
     await settle(50);
 
     expect(screen.queryByText(/hello from session A/)).toBeNull();
-    expect(screen.getByText(/No conversations yet/)).toBeTruthy();
+    // The neutral channel must still be typable: that is where the next session
+    // comes from, so no "create a chat first" panel may replace the composer.
+    expect(screen.queryByText(/No conversations yet/)).toBeNull();
+    const composer = screen.getByPlaceholderText(/Ask the agent/);
+    expect(composer).toBeTruthy();
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
   });
 
   it("shows a deleting throbber from the optimistic delete until the daemon settles it", async () => {
@@ -207,21 +206,8 @@ describe("desktop — no-session main-area state", () => {
     expect(screen.getAllByText("Deleting session…")).toHaveLength(1);
     expect(screen.queryByText("Deleting…")).toBeNull();
 
-    // Daemon settles: it mints a virtual replacement and lists no sessions.
-    await feed(
-      {
-        type: "$session_loaded",
-        name: "B",
-        messages: [],
-        carryover: {
-          totalCostUsd: 0,
-          cacheHitTokens: 0,
-          cacheMissTokens: 0,
-          totalCompletionTokens: 0,
-        },
-      },
-      "t1",
-    );
+    // Daemon settles: it detaches the channel and lists no sessions.
+    await feed({ type: "$session_bound", name: "" }, "t1");
     await feed(
       {
         type: "$sessions",
@@ -236,7 +222,50 @@ describe("desktop — no-session main-area state", () => {
 
     expect(screen.queryByText("Deleting…")).toBeNull();
     expect(screen.queryByText("Deleting session…")).toBeNull();
-    expect(screen.getByText(/No conversations yet/)).toBeTruthy();
+    expect(screen.queryByText(/hello from session A/)).toBeNull();
+    expect(screen.getByPlaceholderText(/Ask the agent/)).toBeTruthy();
+  });
+
+  it("creates the session from the message typed in the neutral state", async () => {
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await startupWithSessionA();
+    await feed({ type: "$session_bound", name: "" }, "t1");
+    await feed(
+      {
+        type: "$sessions",
+        epoch: "e1",
+        revision: 2,
+        items: [],
+        settledDeletes: [{ name: "A", removed: true }],
+      },
+      "t1",
+    );
+    await settle(40);
+    expect(screen.queryByText(/hello from session A/)).toBeNull();
+
+    // Sending from the neutral channel is what brings a session back: the message
+    // goes out on the channel that holds nothing, and the daemon mints the session
+    // it lands in. (The composer is the typing path and is asserted above; this
+    // uses the empty-state suggestion so the assertion is about the send, not about
+    // simulated keystrokes.)
+    await act(async () => {
+      screen.getByText("Review my latest commit changes").click();
+    });
+    await settle(30);
+
+    const sentUserInput = sent.filter((command) => command.cmd === "user_input");
+    expect(sentUserInput).toHaveLength(1);
+    expect(sentUserInput[0]).toMatchObject({ text: "Review my latest commit changes" });
+    // The echo is visible immediately, before the daemon names the session.
+    expect(screen.getByText("Review my latest commit changes")).toBeTruthy();
+
+    // The bind names the session the message created and keeps that transcript.
+    await feed({ type: "$session_bound", name: "desktop-20260101120000-3" }, "t1");
+    await settle(20);
+    expect(screen.getByText("Review my latest commit changes")).toBeTruthy();
   });
 
   it("surfaces a New-chat creation and seeds the channel from the workspace's sessions", async () => {

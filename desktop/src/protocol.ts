@@ -100,12 +100,12 @@ import type {
   RetryResultEvent,
   RevisionRequiredEvent,
   RevisionVerdict,
+  SessionBoundEvent,
   SessionEmptyEvent,
   SessionEventRecord,
   SessionEventType,
   SessionHistoryEvent,
   SessionLoadedEvent,
-  SessionProviderCost,
   SessionRetractedEvent,
   SessionsEvent,
   SettingsEvent,
@@ -223,6 +223,7 @@ export type {
   RetryResultEvent,
   RevisionRequiredEvent,
   RevisionVerdict,
+  SessionBoundEvent,
   SessionEmptyEvent,
   SessionEventRecord,
   SessionEventType,
@@ -233,7 +234,6 @@ export type {
   SettingsEvent,
   SettingsPatch,
   SettingsPayload,
-  SessionProviderCost,
   SkillInfo,
   SkillsEvent,
   SkillScope,
@@ -289,6 +289,7 @@ export type IncomingEvent = { tabId?: string } & (
   | ChoiceRequiredEvent
   | PlanRequiredEvent
   | SessionsEvent
+  | SessionBoundEvent
   | SessionLoadedEvent
   | SessionHistoryEvent
   | SessionEmptyEvent

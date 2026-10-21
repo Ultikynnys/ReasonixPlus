@@ -25,14 +25,12 @@ export interface QuotaWindowView {
   limited?: boolean;
 }
 
-/** A provider's plan label + normalized windows + a native-unit turn delta. */
+/** A provider's plan label + normalized windows. */
 export interface ProviderUsageView {
   /** Plan/tier badge text, or null when the provider reports none. */
   plan: string | null;
   /** Ordered windows, primary first. Empty when the provider has no data. */
   windows: QuotaWindowView[];
-  /** % of the primary window consumed since the previous fetch, or null. */
-  turnUsedPct: number | null;
 }
 
 function parseIso(iso: string | null | undefined): number | null {
@@ -58,7 +56,7 @@ export function codexUsageView(quota: CodexQuota): ProviderUsageView {
       resetsAt: parseIso(quota.weekly.resetsAt),
     });
   }
-  return { plan: quota.plan ?? null, windows, turnUsedPct: quota.turnUsedPct ?? null };
+  return { plan: quota.plan ?? null, windows };
 }
 
 /** Ollama Cloud windows (5-hour session + weekly). `plan` is the account tier
@@ -79,7 +77,7 @@ export function ollamaUsageView(quota: OllamaQuota, plan: string | null = null):
       resetsAt: quota.weekly.resetsAt ?? null,
     });
   }
-  return { plan, windows, turnUsedPct: quota.turnUsedPct ?? null };
+  return { plan, windows };
 }
 
 /** Z.AI GLM Coding Plan windows (5-hour + weekly). */
@@ -99,7 +97,7 @@ export function zaiUsageView(quota: ZaiQuota): ProviderUsageView {
       resetsAt: quota.weekly.resetsAt,
     });
   }
-  return { plan: quota.plan ?? null, windows, turnUsedPct: quota.turnUsedPct ?? null };
+  return { plan: quota.plan ?? null, windows };
 }
 
 /** OpenCode Go windows (5-hour rolling + weekly + monthly). */
@@ -129,7 +127,7 @@ export function opencodeUsageView(quota: OpencodeQuota): ProviderUsageView {
       limited: quota.monthly.limited,
     });
   }
-  return { plan: null, windows, turnUsedPct: quota.turnUsedPct ?? null };
+  return { plan: null, windows };
 }
 
 /** Xiaomi MiMo subscription usage. The console usage API needs web-session
@@ -149,7 +147,7 @@ export function mimoUsageView(
       resetsAt: parseIso(quota.resetsAt),
     });
   }
-  return { plan: quota?.plan ?? plan, windows, turnUsedPct: null };
+  return { plan: quota?.plan ?? plan, windows };
 }
 
 /** Antigravity (Gemini Code Assist) per-model window, normalized. Only the
@@ -171,7 +169,6 @@ export function antigravityUsageView(
   return {
     plan: quota.plan?.name ?? quota.plan?.tierId ?? null,
     windows,
-    turnUsedPct: quota.turnUsedPct ?? null,
   };
 }
 

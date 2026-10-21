@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 /** Workspace and session switching at 2 workspaces x 10 sessions x 2000 messages. */
 
+// Gated: ~22 s of measured, not asserted, time. `npm run test:perf` runs it.
+//
 // Three different paths, measured apart:
 //   workspace switch = list the target workspace's sessions (index scan, then cache)
 //   session switch   = read + parse one 4.7 MB transcript, project it to the wire
@@ -11,7 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanup, render } from "@testing-library/react";
 import React from "react";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { PERF_ENABLED } from "./support/perf-gate.js";
 
 const home = mkdtempSync(join(tmpdir(), "reasonix-switch-"));
 vi.stubEnv("USERPROFILE", home);
@@ -27,7 +30,6 @@ const { wireSessionOfSize, writeScaleStore } = await import("./fixtures/scale-se
 /** 2 workspaces x 10 sessions x 2000 messages, the shape the report named. */
 const SPEC = { workspaces: 2, sessionsPerWorkspace: 10, messagesPerSession: 2000 };
 const WORKSPACE = "C:\\perf\\workspace-0";
-const seeded = writeScaleStore(layout.sessionsRootDir(), SPEC);
 
 afterAll(() => {
   rmSync(home, { recursive: true, force: true });
@@ -74,7 +76,13 @@ function rows(ui: readonly Ui[]) {
   });
 }
 
-describe("switching at 2 workspaces x 10 sessions x 2000 messages", () => {
+describe.skipIf(!PERF_ENABLED)("switching at 2 workspaces x 10 sessions x 2000 messages", () => {
+  // Seeded here, not at import: a skipped run must not write the 360 MB fixture.
+  let seeded: ReturnType<typeof writeScaleStore>;
+  beforeAll(() => {
+    seeded = writeScaleStore(layout.sessionsRootDir(), SPEC);
+  });
+
   it("lists a workspace's sessions on a workspace switch", async () => {
     expect(seeded.sessions).toBe(SPEC.workspaces * SPEC.sessionsPerWorkspace);
 

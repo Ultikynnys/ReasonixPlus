@@ -13,6 +13,7 @@
     "build:desktop": "npm --prefix desktop run build",
     "dev": "tsx src/cli/index.ts desktop",
     "test": "vitest run",
+    "test:perf": "node scripts/perf-test.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "biome check src tests",

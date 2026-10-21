@@ -149,6 +149,50 @@ or a provider never means editing TypeScript.
 `antigravity-auth`, `mimo-auth`, `opencode-auth`, `ollama-generation`); a
 provider id never selects it.
 
+## Peak hours
+
+A provider that bills a peak rate declares the calendar in its own file, so
+moving peak hours is a JSON edit: no TypeScript, no rebuild, and `providers:sync`
+leaves the data untouched.
+
+```json
+"billing": {
+  "kind": "usd",
+  "schedule": {
+    "peakWindowsUtc": [
+      { "startMinute": 60, "endMinute": 240 },
+      { "startMinute": 360, "endMinute": 600 }
+    ],
+    "weekendOffsetMinutes": 480
+  },
+  "peakModels": []
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `peakWindowsUtc` | Half-open UTC windows `[startMinute, endMinute)`, minutes from midnight, `1440` = the day boundary. Validated on load: at least one window, whole minutes inside a day and `endMinute > startMinute` |
+| `weekendOffsetMinutes` | Shift applied before asking "is this a weekend?": `480` puts the calendar on Beijing/SGT time, `0` keeps it on UTC. Weekends are always off-peak |
+| `peakModels` | Ids whose token price actually moves with the schedule. Empty (the default) means every model of the provider; a list narrows it, matched ignoring a `<provider>/` scheme and any `:tag` suffix. `ollama` lists its two token-priced builds |
+
+The schedule answers "which period is it, and when does it change": it carries no
+price multiplier, because a per-provider factor reads inconsistently (DeepSeek
+surcharges peak, Z.AI discounts off-peak) and the chip shows the period alone.
+What discount or surcharge applies is stated once, in that file's `offPeakTitle` /
+`peakTitle` copy.
+
+`"schedule": null` (or no `schedule` key) means the provider has no price
+calendar, and the status bar renders no rate chip at all. Only `deepseek.json`,
+`ollama.json` and `zai.json` declare one. The `offPeakTitle` / `peakTitle` copy in
+the same file spells the windows out in words: `tests/rate-periods.test.ts`
+cross-checks those sentences against `peakWindowsUtc`, so copy naming a stale
+hour fails the suite instead of drifting.
+
+The status bar reads the schedule through `providerRateSchedule(id|spec)` and
+resolves the whole period with one call (`ratePeriodForSchedule`), so the chip's
+label and countdown can never disagree. There is no schedule constant
+in code to drift out of sync.
+
 ## Fields
 
 Top level:
@@ -186,6 +230,7 @@ Objects:
 | `settings` | array | Persisted fields this provider declares, see Settings above |
 | `settingsPanel` | panel name or null | Bespoke behavior panel the settings card renders above its fields |
 | `usable` | `apiKey`, `keylessLocal`, `always` | Ways the model can run right now |
+| `billing` | `kind`, `schedule`, `peakModels`, `balance` | Peak/off-peak calendar (see Peak hours) and the account-balance endpoint |
 | `routing` | `staticCatalog`, `discoveredCatalog`, `checkedLast`, `foreignCatalog`, `modelScheme` | How a bare model id reaches this provider |
 | `discovery` | `strategy`, `listField`, `idField`, `excludeSpeech` | Where the live catalog comes from and how to read it |
 | `client` | `auth`, `transport`, `allowMissingKey` | Per-request credentials and wire format |

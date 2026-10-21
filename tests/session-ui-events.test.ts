@@ -174,6 +174,32 @@ describe("per-session Events sidecar", () => {
     expect(loadSessionEvents("events-demo")).toEqual([spawn]);
   });
 
+  it("keeps the answer a settled spawn came back with", () => {
+    const settled: SessionEventRecord = {
+      id: "subagent-tc-7",
+      type: "subagent",
+      ts: 1_700_000_120_000,
+      turn: 2,
+      outcome: "done",
+      label: "explore",
+      detail: "Survey the Events tab consumers.",
+      result: "Three consumers: the thread, the panel, the export.",
+      anchor: "call:tc-7",
+    };
+    ensureSessionDir("events-result");
+    writeSessionEvents("events-result", [settled]);
+    expect(loadSessionEvents("events-result")).toEqual([settled]);
+  });
+
+  it("drops a row whose result is not text", () => {
+    const dir = ensureSessionDir("bad-result");
+    writeFileSync(
+      join(dir, "ui-events.json"),
+      JSON.stringify([planVerdict, { ...planVerdict, id: "x", result: 42 }]),
+    );
+    expect(loadSessionEvents("bad-result")).toEqual([planVerdict]);
+  });
+
   it("drops a row whose anchor is not text", () => {
     const dir = ensureSessionDir("bad-anchor");
     writeFileSync(

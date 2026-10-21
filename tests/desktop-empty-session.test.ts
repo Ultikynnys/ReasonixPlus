@@ -80,8 +80,8 @@ describe("desktop empty session persistence and workspace visibility", () => {
   it("a desktop session that materialized without workspace meta is hidden until stamped", async () => {
     const name = "desktop-20260905150000-7-abcdef12";
     ensureSessionDir(name);
-    // Materialized without a workspace stamp (e.g. a virtual deletion-
-    // replacement whose first send wrote messages before any meta.workspace).
+    // Materialized without a workspace stamp: an older build wrote messages
+    // before any meta.workspace existed.
     patchSessionMeta(name, { summary: "New Chat" });
 
     const before = await listSessionsForWorkspaceAsync("/test/workspace").value;
@@ -92,7 +92,7 @@ describe("desktop empty session persistence and workspace visibility", () => {
     expect(after.some((s) => s.name === name)).toBe(true);
   });
 
-  it("stampSessionWorkspace leaves a purely virtual session untouched", () => {
+  it("stampSessionWorkspace leaves an absent session untouched", () => {
     const name = "desktop-20260905160000-8-deadbeef";
     expect(sessionExists(name)).toBe(false);
     expect(stampSessionWorkspace(name, "/test/workspace")).toBe(false);

@@ -129,8 +129,6 @@ export type OllamaGenerationPatch = {
  *  settings payload and the persisted config so the field lists cannot drift. */
 export interface StatusBarToggles {
   showBalance?: boolean;
-  showSessionCost?: boolean;
-  showTurnCost?: boolean;
   showCacheHit?: boolean;
   showCtxUsage?: boolean;
   showVersion?: boolean;
@@ -236,7 +234,6 @@ export interface KernelModelFinalEvent extends KernelWireEventBase {
   replaceStreamedOutput?: boolean;
   toolCalls: ReadonlyArray<KernelWireToolCall>;
   usage: KernelUsage;
-  costUsd: number;
   forcedSummary?: boolean;
   image?: { dataUrl: string; mimeType: string };
 }
@@ -295,9 +292,6 @@ export interface KernelSubagentProgressEvent extends KernelWireEventBase {
   toolOk?: boolean;
   error?: string;
   turns?: number;
-  costUsd?: number;
-  billingKind?: "usd" | "quota" | "none";
-  quotaUsedPct?: number;
   maxToolIters?: number;
   maxElapsedMs?: number;
   budgetExhausted?: "tool-iters" | "elapsed";
@@ -857,7 +851,7 @@ export interface JobsEvent {
 
 export type LoadedSegment =
   | { kind: "text"; text: string }
-  | { kind: "reasoning"; text: string }
+  | { kind: "reasoning"; text: string; model?: string }
   | { kind: "image"; dataUrl: string; mimeType: string }
   | {
       kind: "tool";
@@ -922,6 +916,10 @@ export interface SessionEventRecord {
   /** The plan's own text, stored when `label` is only its summary — otherwise the
    *  label already carries it. */
   body?: string;
+  /** What came back: a subagent's own answer (or the reason it gave none), read from
+   *  the same result envelope its card parses. `detail` says what the child was
+   *  asked; without this a row never said what it found. */
+  result?: string;
   /** The plan's checklist titles, in order: a verdict that keeps only the title
    *  of the plan loses what was actually agreed to. */
   steps?: readonly string[];
@@ -967,11 +965,6 @@ export interface SessionLoadedEvent {
   /** User turns dropped from the front of this page, so turn numbers stay absolute. */
   turnBase?: number;
   carryover: {
-    totalCostUsd: number;
-    /** Per-provider cumulative costs in each provider's native unit (USD for
-     *  token-priced APIs, plan-window % for quota APIs). Never converted between
-     *  providers. Keyed by catalog id. */
-    costByProvider?: Record<string, SessionProviderCost>;
     cacheHitTokens: number;
     cacheMissTokens: number;
     totalCompletionTokens: number;
@@ -984,6 +977,14 @@ export interface SessionLoadedEvent {
   resync?: boolean;
 }
 
+/** The channel's session binding changed WITHOUT a transcript swap. An empty
+ *  name is the neutral state: the session it held was deleted, so the channel
+ *  holds nothing and the next message creates the session it lands in. */
+export interface SessionBoundEvent {
+  type: "$session_bound";
+  name: string;
+}
+
 /** One older page of a session's transcript, requested by `session_history_page`.
  *  `turnBase` is how many user turns precede it, so the frontend numbers the
  *  prepended rows exactly as the live transcript would. */
@@ -993,18 +994,6 @@ export interface SessionHistoryEvent {
   messages: LoadedMessage[];
   hasOlder: boolean;
   turnBase: number;
-}
-
-/** Per-provider cumulative session usage in the provider's native unit. Mirrors
- *  src/telemetry/stats.ts SessionProviderCost — defined here so the frontend
- *  has a standalone wire shape (core-utils cannot import from src). */
-export interface SessionProviderCost {
-  /** Providers can carry both units after a model or plan switch. */
-  kind: "usd" | "quota" | "none" | "mixed";
-  /** Cumulative token-priced USD, when measured. */
-  totalCostUsd?: number;
-  /** Cumulative plan-window percentage points, when measured. */
-  quotaUsedPct?: number;
 }
 
 /** A retry, rewind, abort-discard, context edit, or context compaction
@@ -1281,10 +1270,6 @@ export interface CodexQuota {
   fiveHour: CodexQuotaWindow | null;
   /** Weekly window — the primary ribbon value. */
   weekly: CodexQuotaWindow | null;
-  /** Percentage points of the weekly window consumed since the previous fetch
-   *  (fetches fire on every $turn_complete). Null until a second measurement
-   *  exists. Pure API numbers, no cost conversion. */
-  turnUsedPct?: number | null;
   fetchedAt: number;
 }
 
@@ -1318,10 +1303,6 @@ export interface OllamaQuota {
   weekly: OllamaQuotaWindow | null;
   /** Purchased (extra) credit balance in USD, when the account reports it. */
   purchasedUsd?: number | null;
-  /** Percentage points of the session window consumed since the previous
-   *  fetch (fetches fire on every $turn_complete). Null until a second
-   *  measurement exists. */
-  turnUsedPct?: number | null;
   fetchedAt: number;
 }
 
@@ -1358,10 +1339,6 @@ export interface ZaiQuota {
   fiveHour: ZaiQuotaWindow | null;
   /** Weekly window (`unit: 6`), or null when the plan has none. */
   weekly: ZaiQuotaWindow | null;
-  /** Percentage points of the 5-hour window consumed since the previous fetch
-   *  (fetches fire on every $turn_complete). Null until a second measurement
-   *  exists. */
-  turnUsedPct?: number | null;
   fetchedAt: number;
 }
 
@@ -1398,10 +1375,6 @@ export interface OpencodeQuota {
   weekly: OpencodeQuotaWindow | null;
   /** Monthly window. */
   monthly: OpencodeQuotaWindow | null;
-  /** Percentage points of the rolling window consumed since the previous fetch
-   *  (fetches fire on every $turn_complete). Null until a second measurement.
-   */
-  turnUsedPct?: number | null;
   fetchedAt: number;
 }
 
@@ -1460,10 +1433,6 @@ export interface AntigravityQuota {
   plan: AntigravityPlan | null;
   /** Per-model usage windows (already vertex-deduped, daemon-side). */
   windows: AntigravityQuotaWindow[];
-  /** Percentage points of the active model's window consumed since the previous
-   *  fetch (fetches fire on every $turn_complete). Null until a second
-   *  measurement exists. */
-  turnUsedPct?: number | null;
   fetchedAt: number;
 }
 

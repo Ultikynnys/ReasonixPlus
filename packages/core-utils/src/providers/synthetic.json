@@ -89,7 +89,7 @@
     "checkedLast": false,
     "modelScheme": null
   },
-  "billing": { "kind": "usd" },
+  "billing": { "kind": "usd", "schedule": null },
   "errors": {
     "i18nPrefix": "synthetic",
     "brands": ["Synthetic"],

@@ -250,6 +250,12 @@ export function EventsPanel({ messages, events, onJump }: EventsPanelProps) {
                       </div>
                     ) : null}
                     {event.detail ? <p className="ctx-evt-detail">{event.detail}</p> : null}
+                    {event.result ? (
+                      <div className="ctx-evt-result">
+                        <span className="ctx-evt-key">{t("contextPanel.eventsResult")}</span>
+                        <p className="ctx-evt-detail">{event.result}</p>
+                      </div>
+                    ) : null}
                     {event.body ? <p className="ctx-evt-detail">{event.body}</p> : null}
                     {event.steps ? (
                       <ol className="ctx-evt-steps" aria-label={t("contextPanel.eventsSteps")}>

@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Usage } from "../client.js";
 import type { ChatMessage, ToolSpec } from "../types.js";
-import { type PricingContext, cacheSavingsUsd } from "./stats.js";
 
 export const CACHE_DIAGNOSTICS_MAX_ENTRIES = 50;
 
@@ -32,8 +31,6 @@ export interface CacheDiagnosticEntry extends PrefixDiagnosticHashes {
   cachedTokens: number;
   cacheMissTokens: number;
   cacheHitRate: number;
-  estimatedCostUsd: number;
-  savedCostUsd: number;
   missReason: CacheMissReason;
   missReasonDetail: string;
   /** DeepSeek reports token counts only; miss reason is inferred locally from stable prefix evidence. */
@@ -44,11 +41,9 @@ export interface CacheDiagnosticInput {
   turn: number;
   model: string;
   usage: Usage;
-  estimatedCostUsd: number;
   prefix: PrefixDiagnosticHashes;
   previous?: CacheDiagnosticEntry | null;
   now?: number;
-  pricingContext?: PricingContext;
 }
 
 export function stableHash(value: unknown): string {
@@ -90,13 +85,6 @@ export function buildCacheDiagnostic(input: CacheDiagnosticInput): CacheDiagnost
     cachedTokens: usage.promptCacheHitTokens,
     cacheMissTokens: usage.promptCacheMissTokens,
     cacheHitRate: usage.cacheHitRatio,
-    estimatedCostUsd: input.estimatedCostUsd,
-    savedCostUsd: cacheSavingsUsd(
-      input.model,
-      usage.promptCacheHitTokens,
-      undefined,
-      input.pricingContext,
-    ),
     missReason: reason,
     missReasonDetail: detail,
     inferred: true,
@@ -209,16 +197,15 @@ export function renderCacheMissReport(
   const totalMiss = valid.reduce((sum, e) => sum + e.cacheMissTokens, 0);
   const totalInput = totalCached + totalMiss;
   const hitRate = totalInput > 0 ? totalCached / totalInput : 0;
-  const saved = valid.reduce((sum, e) => sum + e.savedCostUsd, 0);
   const lines = [
     "cache miss report",
-    `turns: ${valid.length} · input: ${totalInput.toLocaleString()} · cached: ${totalCached.toLocaleString()} · hit rate: ${pct(hitRate)} · saved: ${usd(saved)}`,
+    `turns: ${valid.length} · input: ${totalInput.toLocaleString()} · cached: ${totalCached.toLocaleString()} · hit rate: ${pct(hitRate)}`,
     "note: DeepSeek does not return a cache-miss reason; Ollama reports no hit/miss split (hits are estimated from prefix overlap). Reasonix+ infers miss reasons locally from byte-stable prefix evidence.",
     "",
   ];
   for (const entry of recent) {
     lines.push(
-      `#${entry.turn} ${entry.model} · input ${entry.inputTokens.toLocaleString()} · cached ${entry.cachedTokens.toLocaleString()} · miss ${entry.cacheMissTokens.toLocaleString()} · hit ${pct(entry.cacheHitRate)} · cost ${usd(entry.estimatedCostUsd)} · saved ${usd(entry.savedCostUsd)}`,
+      `#${entry.turn} ${entry.model} · input ${entry.inputTokens.toLocaleString()} · cached ${entry.cachedTokens.toLocaleString()} · miss ${entry.cacheMissTokens.toLocaleString()} · hit ${pct(entry.cacheHitRate)}`,
       `  reason: ${entry.missReason} — ${entry.missReasonDetail}`,
       `  prefix: ${short(entry.prefixHash)} · system ${short(entry.systemHash)} · tools ${short(entry.toolSpecsHash)} (${entry.toolCount}) · few-shot ${short(entry.fewShotsHash)}`,
     );
@@ -241,8 +228,6 @@ export function isCacheDiagnosticEntry(value: unknown): value is CacheDiagnostic
     typeof entry.cachedTokens === "number" &&
     typeof entry.cacheMissTokens === "number" &&
     typeof entry.cacheHitRate === "number" &&
-    typeof entry.estimatedCostUsd === "number" &&
-    typeof entry.savedCostUsd === "number" &&
     typeof entry.missReason === "string" &&
     typeof entry.missReasonDetail === "string"
   );
@@ -258,8 +243,4 @@ function short(hash: string): string {
 
 function pct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
-}
-
-function usd(value: number): string {
-  return `$${value < 0.01 ? value.toFixed(6) : value.toFixed(4)}`;
 }

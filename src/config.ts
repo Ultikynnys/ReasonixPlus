@@ -659,12 +659,6 @@ export interface McpServerConfig {
   disabled?: boolean;
 }
 
-export interface PricingOverride {
-  inputCacheHit?: number;
-  inputCacheMiss?: number;
-  output?: number;
-}
-
 export interface RateLimitConfig {
   /** Client-side self-throttle in requests/minute — paces outbound chat calls with a min-interval timer. NOT a DeepSeek-enforced limit: DeepSeek's actual cap is concurrency, not RPM (500 for v4-pro, 2500 for v4-flash, account-wide), surfaced as HTTP 429. Set this only to be a polite neighbor on shared infra; single-user CLI rarely needs it. */
   rpm?: number;
@@ -899,8 +893,6 @@ export interface ReasonixConfig {
   };
   /** Per-field visibility toggles for the bottom status row. All default to true (visible). */
   statusBar?: StatusBarToggles;
-  /** Preferred display currency for costs (e.g. "USD" or "CNY"). When unset, defaults to USD. */
-  costCurrency?: string;
   /** Global auto-approved shell command patterns (e.g. "git *", "npm test"). */
   shellAllowed?: string[];
   /** Global auto-approved outside-sandbox directory prefixes. */
@@ -935,7 +927,6 @@ export interface ReasonixConfig {
   memory?: {
     customTypes?: CustomMemoryTypeConfig[];
   };
-  pricingOverride?: Record<string, PricingOverride>;
   /** Per-app proxy override. Layered on top of HTTPS_PROXY / NO_PROXY env vars + the default DeepSeek-bypass whitelist. */
   proxy?: ProxyConfig;
   rateLimit?: RateLimitConfig;
@@ -1777,28 +1768,6 @@ export function bridgeEndpointEnv(path: string = defaultConfigPath()): void {
   const ep = loadEndpoint(path);
   if (ep.apiKey) process.env.DEEPSEEK_API_KEY = ep.apiKey;
   if (ep.baseUrl) process.env.DEEPSEEK_BASE_URL = ep.baseUrl;
-}
-
-function isNonNegativeNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-export function loadPricingOverride(
-  path: string = defaultConfigPath(),
-): Record<string, PricingOverride> {
-  const raw = readConfig(path).pricingOverride;
-  if (!isPlainObject(raw)) return {};
-
-  const result: Record<string, PricingOverride> = {};
-  for (const [model, value] of Object.entries(raw)) {
-    if (!isPlainObject(value)) continue;
-    const pricing: PricingOverride = {};
-    if (isNonNegativeNumber(value.inputCacheHit)) pricing.inputCacheHit = value.inputCacheHit;
-    if (isNonNegativeNumber(value.inputCacheMiss)) pricing.inputCacheMiss = value.inputCacheMiss;
-    if (isNonNegativeNumber(value.output)) pricing.output = value.output;
-    if (Object.keys(pricing).length > 0) result[model] = pricing;
-  }
-  return result;
 }
 
 export function loadProxyConfig(path: string = defaultConfigPath()): ProxyConfig {
@@ -3260,6 +3229,10 @@ export interface DesktopOpenTab {
   id?: string;
   /** Session the channel had loaded; reopened on boot if its jsonl still exists. */
   session?: string;
+  /** The channel was in the neutral state (no session bound) when the app closed.
+   *  Restoring it as neutral avoids minting an empty session the user never asked
+   *  for just because the tab came back. */
+  detached?: boolean;
   /** Workspace-tab identity. Every channel for the same canonical workspace
    *  is normalized onto one group during desktop restore. */
   groupId?: string;
@@ -3282,7 +3255,14 @@ export function loadDesktopOpenTabs(path: string = defaultConfigPath()): Desktop
       (entry as DesktopOpenTab).dir.length > 0
     ) {
       const e = entry as DesktopOpenTab;
-      out.push({ dir: e.dir, id: e.id, session: e.session, groupId: e.groupId, active: e.active });
+      out.push({
+        dir: e.dir,
+        id: e.id,
+        session: e.session,
+        detached: e.detached === true ? true : undefined,
+        groupId: e.groupId,
+        active: e.active,
+      });
     }
   }
   return out;
@@ -3299,6 +3279,7 @@ export function saveDesktopOpenTabs(
       const e: DesktopOpenTab = { dir: t.dir };
       if (t.id) e.id = t.id;
       if (t.session) e.session = t.session;
+      if (t.detached) e.detached = true;
       if (t.groupId) e.groupId = t.groupId;
       if (t.active) e.active = true;
       return e;

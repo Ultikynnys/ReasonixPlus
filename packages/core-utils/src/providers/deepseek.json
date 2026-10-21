@@ -81,14 +81,6 @@
         { "startMinute": 360, "endMinute": 600 }
       ],
       "weekendOffsetMinutes": 480
-    },
-    "pricing": {
-      "deepseek-flash": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 },
-      "deepseek-v4-flash": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 },
-      "deepseek-v4-flash-vision-exp": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 },
-      "deepseek-v4-pro": { "inputCacheHit": 0.022, "inputCacheMiss": 0.66, "output": 1.98 },
-      "deepseek-chat": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 },
-      "deepseek-reasoner": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 }
     }
   },
   "strings": {

@@ -1,48 +1,23 @@
-/** A recurring provider price schedule expressed in UTC clock windows. */
+import { stripOllamaSchemeAndTag, stripProviderQualifier } from "./models.js";
+
+/**
+ * A provider's peak/off-peak calendar, declared in its `providers/<id>.json`
+ * `billing.schedule`. Changing peak hours is a JSON edit, never a code change;
+ * these functions only interpret whatever the declaration states.
+ */
 export interface RateSchedule {
   /** Half-open UTC peak windows: [start minute, end minute). */
   peakWindowsUtc: readonly { startMinute: number; endMinute: number }[];
   /** Offset used to decide whether the provider's billing calendar is on a weekend. */
   weekendOffsetMinutes: number;
-  /** Peak-window multiplier vs the provider's standard rate (default 2 = surcharge). */
-  peakMultiplier?: number;
-  /** Off-peak multiplier vs the standard rate (default 1 = baseline). */
-  offPeakMultiplier?: number;
 }
 
-/** DeepSeek's billing calendar uses Beijing weekdays and two UTC peak windows. */
-export const DEEPSEEK_RATE_SCHEDULE: RateSchedule = {
-  peakWindowsUtc: [
-    { startMinute: 60, endMinute: 240 },
-    { startMinute: 360, endMinute: 600 },
-  ],
-  weekendOffsetMinutes: 8 * 60,
-};
-
-/** Ollama Cloud peaks from 12:00 through 18:00 UTC on UTC weekdays. */
-export const OLLAMA_RATE_SCHEDULE: RateSchedule = {
-  peakWindowsUtc: [{ startMinute: 12 * 60, endMinute: 18 * 60 }],
-  weekendOffsetMinutes: 0,
-};
-
-/** Z.AI (GLM) charges off-peak usage at half the standard rate; peak is
- *  Mon–Fri 14:00–18:00 SGT (06:00–10:00 UTC). */
-export const ZAI_RATE_SCHEDULE: RateSchedule = {
-  peakWindowsUtc: [{ startMinute: 360, endMinute: 600 }],
-  weekendOffsetMinutes: 8 * 60,
-  peakMultiplier: 1,
-  offPeakMultiplier: 0.5,
-};
-
-/** Strip the `ollama/` namespace prefix and any `:tag` suffix from an Ollama model id. */
-export function normalizeOllamaModelId(model: string): string {
-  return model.replace(/^ollama\//, "").replace(/:[^:]*$/, "");
-}
-
-/** Models whose Ollama Cloud token price changes with OLLAMA_RATE_SCHEDULE. */
-export function isOllamaPeakPricedModel(model: string): boolean {
-  const id = normalizeOllamaModelId(model);
-  return id === "deepseek-v4-flash" || id === "deepseek-v4-pro";
+/** The billing period a moment falls in, resolved once from a declared schedule. */
+export interface RatePeriod {
+  /** Inside a peak window on a billing weekday. */
+  peak: boolean;
+  /** Minutes until the next real transition, weekend suppression included. */
+  minutesUntilChange: number;
 }
 
 /** True when `date` falls on Saturday or Sunday in the schedule's billing calendar. */
@@ -61,23 +36,40 @@ export function isPeakRate(date: Date, schedule: RateSchedule): boolean {
   );
 }
 
-export function isOffPeakRate(date: Date, schedule: RateSchedule): boolean {
-  return !isPeakRate(date, schedule);
-}
-
-/** The rate multiplier the status bar shows for the current peak/off-peak period. */
-export function rateMultiplierForSchedule(date: Date, schedule: RateSchedule): number {
-  return isPeakRate(date, schedule)
-    ? (schedule.peakMultiplier ?? 2)
-    : (schedule.offPeakMultiplier ?? 1);
-}
-
-/** Minutes until the next actual peak/off-peak transition, including weekend suppression. */
-export function minutesUntilRateChangeForSchedule(date: Date, schedule: RateSchedule): number {
-  const peak = isPeakRate(date, schedule);
+/** Minutes from `date` to the next peak/off-peak flip, skipping weekend hours. */
+function minutesUntilRateChange(date: Date, schedule: RateSchedule, peak: boolean): number {
   const minuteStart = Math.floor(date.getTime() / 60_000) * 60_000;
   for (let minutes = 1; minutes <= 8 * 24 * 60; minutes++) {
     if (isPeakRate(new Date(minuteStart + minutes * 60_000), schedule) !== peak) return minutes;
   }
   return 8 * 24 * 60;
+}
+
+/** The whole period at `date` — one call, so a chip's label and countdown read
+ *  from a single computation instead of two that could drift. */
+export function ratePeriodForSchedule(date: Date, schedule: RateSchedule): RatePeriod {
+  const peak = isPeakRate(date, schedule);
+  return { peak, minutesUntilChange: minutesUntilRateChange(date, schedule, peak) };
+}
+
+export function isOffPeakRate(date: Date, schedule: RateSchedule): boolean {
+  return !isPeakRate(date, schedule);
+}
+
+/** Minutes until the next actual peak/off-peak transition, including weekend suppression. */
+export function minutesUntilRateChangeForSchedule(date: Date, schedule: RateSchedule): number {
+  return ratePeriodForSchedule(date, schedule).minutesUntilChange;
+}
+
+/** True when `model` is one of the ids a provider declares as peak-priced
+ *  (`billing.peakModels`). The `<provider>/` scheme and any `:tag` suffix are
+ *  ignored, so a hosted copy of a priced id still matches. */
+export function isPeakPricedModel(
+  model: string,
+  peakModels: readonly string[] | null | undefined,
+): boolean {
+  if (!peakModels || peakModels.length === 0) return false;
+  return [stripProviderQualifier(model), stripOllamaSchemeAndTag(model)].some((candidate) =>
+    peakModels.includes(candidate),
+  );
 }

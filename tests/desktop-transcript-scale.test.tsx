@@ -53,6 +53,7 @@ import {
   writeScaleStore,
 } from "./fixtures/scale-sessions.js";
 import { baseAppState } from "./support/app-state.js";
+import { PERF_ENABLED } from "./support/perf-gate.js";
 
 type UiMessage = ReturnType<typeof mapLoadedMessages>[number];
 
@@ -170,31 +171,36 @@ describe("transcript at 2000 messages", () => {
     expect(userTurns.at(-1)).toBe(userTurns.length);
   });
 
-  it("mounts the whole transcript inside a ceiling only a blow-up breaches", () => {
-    const started = performance.now();
-    const { container } = render(<div className="thread-inner">{transcriptRows(loaded)}</div>);
-    const elapsed = performance.now() - started;
+  // Gated: jsdom mount of 2000 rows costs ~19 s and only fails on a blow-up.
+  it.skipIf(!PERF_ENABLED)(
+    "mounts the whole transcript inside a ceiling only a blow-up breaches",
+    () => {
+      const started = performance.now();
+      const { container } = render(<div className="thread-inner">{transcriptRows(loaded)}</div>);
+      const elapsed = performance.now() - started;
 
-    expect(container.querySelectorAll(".thread-row")).toHaveLength(loaded.length);
-    // Row order is the transcript order: every user row keeps its own turn number.
-    expect(
-      [...container.querySelectorAll(".thread-row[data-turn]")].map((el) =>
-        el.getAttribute("data-turn"),
-      ),
-    ).toEqual(loaded.filter((m) => m.kind === "user").map((m) => String(m.turn)));
-    // Real prose rendered through react-markdown, not a stub.
-    expect(container.querySelectorAll(".markdown").length).toBeGreaterThan(500);
-    const nodes = container.querySelectorAll("*").length;
-    // Deterministic gate, unlike the clock: the unoptimized shape is ~70k nodes
-    // for 2000 messages, and collapsing history cards is what cuts it.
-    expect(nodes).toBeGreaterThan(loaded.length);
-    expect(nodes).toBeLessThan(120_000);
-    console.log(
-      `[scale] mount ${loaded.length} messages: ${elapsed.toFixed(0)} ms, ${nodes} DOM nodes`,
-    );
-    // Blow-up detector only; jsdom timing is far noisier than a real WebView.
-    expect(elapsed).toBeLessThan(30_000);
-  }, 120_000);
+      expect(container.querySelectorAll(".thread-row")).toHaveLength(loaded.length);
+      // Row order is the transcript order: every user row keeps its own turn number.
+      expect(
+        [...container.querySelectorAll(".thread-row[data-turn]")].map((el) =>
+          el.getAttribute("data-turn"),
+        ),
+      ).toEqual(loaded.filter((m) => m.kind === "user").map((m) => String(m.turn)));
+      // Real prose rendered through react-markdown, not a stub.
+      expect(container.querySelectorAll(".markdown").length).toBeGreaterThan(500);
+      const nodes = container.querySelectorAll("*").length;
+      // Deterministic gate, unlike the clock: the unoptimized shape is ~70k nodes
+      // for 2000 messages, and collapsing history cards is what cuts it.
+      expect(nodes).toBeGreaterThan(loaded.length);
+      expect(nodes).toBeLessThan(120_000);
+      console.log(
+        `[scale] mount ${loaded.length} messages: ${elapsed.toFixed(0)} ms, ${nodes} DOM nodes`,
+      );
+      // Blow-up detector only; jsdom timing is far noisier than a real WebView.
+      expect(elapsed).toBeLessThan(30_000);
+    },
+    120_000,
+  );
 
   it("opens exactly one card and grows only that card across 60 flushes", () => {
     const state = baseAppState({ messages: loaded });
@@ -392,7 +398,6 @@ describe("history cards", () => {
 
 describe("session paging", () => {
   const carryover = {
-    totalCostUsd: 0,
     cacheHitTokens: 0,
     cacheMissTokens: 0,
     totalCompletionTokens: 0,

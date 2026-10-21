@@ -73,6 +73,7 @@ import type {
   PlaywrightBrowserInstallEvent,
   RetryResultEvent,
   RevisionRequiredEvent,
+  SessionBoundEvent,
   SessionEmptyEvent,
   SessionHistoryEvent,
   SessionLoadedEvent,
@@ -546,6 +547,7 @@ export type EmittableEvent =
   | import("@reasonix/core-utils").PlanDetailEvent
   | PlanRestoredEvent
   | SessionsEvent
+  | SessionBoundEvent
   | SessionLoadedEvent
   | SessionHistoryEvent
   | SessionEmptyEvent
@@ -604,8 +606,9 @@ export function normalizeSessionTitle(raw: string): string {
   return flattenText(raw).slice(0, SESSION_TITLE_MAX_CHARS);
 }
 
-/** Active deletion must replace the backend-bound session before the refreshed list is emitted. */
-export function shouldReplaceDeletedSession(
+/** A channel holding the deleted session must be detached before the refreshed list
+ *  is emitted, so the UI never sits in a session that no longer exists. */
+export function shouldDetachDeletedSession(
   currentSession: string,
   deletedSession: string,
   deleted: boolean,
@@ -705,16 +708,24 @@ export const WORKSPACE_SWITCH_BLOCKED_MESSAGE =
 export const WORKSPACE_REMOVE_BLOCKED_MESSAGE =
   "This workspace is creating or deleting a session. Wait for it to finish, then remove it.";
 
-/** Explicit New chat sessions list immediately; a blank replacement created
- * after deletion stays virtual until its first user-visible activity. */
-export function shouldMaterializeFreshSession(reason: "new-chat" | "session-delete"): boolean {
-  return reason === "new-chat";
-}
+/** How a channel's skeleton gets its session: adopt a persisted one, mint a genuinely
+ *  fresh one, or stay neutral because the session it held was deleted. Only the two
+ *  session-holding outcomes ever put a name on the channel. */
+export type SkeletonSession =
+  | { kind: "adopt"; name: string }
+  | { kind: "mint" }
+  | { kind: "neutral" };
 
-/** Boot restore: a persisted tab whose session was DELETED must not resurrect
- * it on disk — mint a virtual one; only a genuinely new tab self-materializes. */
-export function shouldMaterializeRestoredSession(restore?: { session?: string }): boolean {
-  return !restore?.session;
+export function skeletonSessionFor(
+  restore: { session?: string; detached?: boolean } | undefined,
+  adoptable: string | undefined,
+): SkeletonSession {
+  if (restore?.detached === true) return { kind: "neutral" };
+  if (adoptable) return { kind: "adopt", name: adoptable };
+  // A persisted session that no longer exists must not be resurrected: naming a
+  // channel after it would put the UI in a session that is absent from disk.
+  if (restore?.session) return { kind: "neutral" };
+  return { kind: "mint" };
 }
 
 /** Whether a restored channel waits for its first activation before building a toolset.
@@ -821,9 +832,6 @@ export function projectSubagentEvent(ev: SubagentEvent): SubagentProgressPayload
         action: "end",
         ...(ev.error ? { error: redactDesktopDiagnosticMessage(ev.error, 500) } : {}),
         ...(ev.turns !== undefined ? { turns: ev.turns } : {}),
-        ...(ev.costUsd !== undefined ? { costUsd: ev.costUsd } : {}),
-        ...(ev.billingKind !== undefined ? { billingKind: ev.billingKind } : {}),
-        ...(ev.quotaUsedPct !== undefined ? { quotaUsedPct: ev.quotaUsedPct } : {}),
       };
     case "inner": {
       const inner = ev.inner;
@@ -921,7 +929,6 @@ function wireEventDetails(ev: EmittableEvent): Record<string, unknown> {
         reasoningChars: ev.reasoningContent?.length ?? 0,
         toolCalls: ev.toolCalls.length,
         usage: ev.usage,
-        costUsd: ev.costUsd,
       };
     case "tool.preparing":
       return { turn: ev.turn, callId: ev.callId, name: ev.name };
@@ -958,7 +965,6 @@ function wireEventDetails(ev: EmittableEvent): Record<string, unknown> {
         reason: ev.reason ?? null,
         weekly: ev.quota?.weekly ?? null,
         fiveHour: ev.quota?.fiveHour ?? null,
-        turnUsedPct: ev.quota?.turnUsedPct ?? null,
       };
     case "$ollama_quota":
       return {
@@ -966,7 +972,6 @@ function wireEventDetails(ev: EmittableEvent): Record<string, unknown> {
         reason: ev.reason ?? null,
         session: ev.quota?.session ?? null,
         weekly: ev.quota?.weekly ?? null,
-        turnUsedPct: ev.quota?.turnUsedPct ?? null,
       };
     case "$zai_quota":
       return {
@@ -974,7 +979,6 @@ function wireEventDetails(ev: EmittableEvent): Record<string, unknown> {
         reason: ev.reason ?? null,
         weekly: ev.quota?.weekly ?? null,
         fiveHour: ev.quota?.fiveHour ?? null,
-        turnUsedPct: ev.quota?.turnUsedPct ?? null,
       };
     case "$balance":
       return {
@@ -1146,8 +1150,6 @@ function emit(ev: EmittableEvent, tabId?: string): void {
  *  shape so the App reducer can swap in the truncated conversation. */
 export function sessionCarryover(meta: SessionMeta): SessionLoadedEvent["carryover"] {
   return {
-    totalCostUsd: meta.totalCostUsd ?? 0,
-    costByProvider: meta.costByProvider,
     cacheHitTokens: meta.cacheHitTokens ?? 0,
     cacheMissTokens: meta.cacheMissTokens ?? 0,
     totalCompletionTokens: meta.totalCompletionTokens ?? 0,
@@ -1156,8 +1158,6 @@ export function sessionCarryover(meta: SessionMeta): SessionLoadedEvent["carryov
 
 export function emptySessionCarryover(): SessionLoadedEvent["carryover"] {
   return {
-    totalCostUsd: 0,
-    costByProvider: {},
     cacheHitTokens: 0,
     cacheMissTokens: 0,
     totalCompletionTokens: 0,
@@ -1403,7 +1403,9 @@ export function buildLoadedMessages(records: ChatMessage[]): LoadedMessage[] {
     if (rec.role === "assistant") {
       assistantRecord += 1;
       const segments: LoadedSegment[] = [];
-      if (rec.reasoning_content) segments.push({ kind: "reasoning", text: rec.reasoning_content });
+      if (rec.reasoning_content) {
+        segments.push({ kind: "reasoning", text: rec.reasoning_content, model: rec.model });
+      }
       if (typeof rec.content === "string" && rec.content) {
         segments.push({ kind: "text", text: rec.content });
       } else if (Array.isArray(rec.content)) {
@@ -2514,27 +2516,10 @@ async function emitBalance(tab: Tab): Promise<void> {
   });
 }
 
-/** Last API-reported five-hour / weekly usage — the delta to the next fetch is
- *  percent points consumed since (each $turn_complete refetches). The five-hour
- *  window has ~33× better resolution; weekly covers plans that report only weekly. */
-let lastCodexFiveHourUsedPct: number | null = null;
-let lastCodexWeeklyUsedPct: number | null = null;
+/** ChatGPT-plan Codex quota fetch, coalesced across tabs. */
 const codexQuotaCoordinator = new AccountQuotaCoordinator(
   async () => {
-    const result = await fetchCodexQuotaViaOAuth(10_000);
-    if (!result.quota) return result;
-    const fiveHourUsedPct = result.quota.fiveHour?.usedPercent ?? null;
-    const weeklyUsedPct = result.quota.weekly?.usedPercent ?? null;
-    const usedPct = fiveHourUsedPct !== null ? fiveHourUsedPct : weeklyUsedPct;
-    const previousBaseline =
-      fiveHourUsedPct !== null ? lastCodexFiveHourUsedPct : lastCodexWeeklyUsedPct;
-    const turnUsedPct =
-      previousBaseline !== null && usedPct !== null && usedPct >= previousBaseline
-        ? usedPct - previousBaseline
-        : null;
-    if (fiveHourUsedPct !== null) lastCodexFiveHourUsedPct = fiveHourUsedPct;
-    else if (weeklyUsedPct !== null) lastCodexWeeklyUsedPct = weeklyUsedPct;
-    return { ...result, quota: { ...result.quota, turnUsedPct } };
+    return await fetchCodexQuotaViaOAuth(10_000);
   },
   15_000,
   Date.now,
@@ -2549,26 +2534,6 @@ const codexQuotaCoordinator = new AccountQuotaCoordinator(
       emitDiagnostic("quota.snapshot.fetch.failed", { requestId, reason }, { level: "error" }),
   },
 );
-
-/** Accumulate a measured plan-window delta (percentage points) into the open
- *  session's per-provider quota usage. Native unit only — never converted to
- *  dollars; USD-kind providers untouched. Meta-write failure is logged, never silent. */
-function accumulateQuotaIntoSession(tab: Tab, provider: string, usedPct: number | null): void {
-  if (usedPct === null || usedPct <= 0 || !tab.currentSession) return;
-  try {
-    const meta = loadSessionMeta(tab.currentSession);
-    const prev = meta.costByProvider?.[provider];
-    const prevPct = prev && prev.kind === "quota" ? (prev.quotaUsedPct ?? 0) : 0;
-    patchSessionMeta(tab.currentSession, {
-      costByProvider: {
-        ...(meta.costByProvider ?? {}),
-        [provider]: { kind: "quota", quotaUsedPct: prevPct + usedPct },
-      },
-    });
-  } catch (err) {
-    process.stderr.write(`reasonix: session quota accumulation failed — ${messageOf(err)}\n`);
-  }
-}
 
 /** Weekly Codex quota for the signed-in ChatGPT plan — OpenAI-model tabs only.
  *  OAuth HTTP fetch only (no codex CLI dependency). */
@@ -2592,14 +2557,9 @@ async function emitCodexQuota(tab: Tab, options: { force?: boolean } = {}): Prom
       plan: quota.plan,
       fiveHour: quota.fiveHour,
       weekly: quota.weekly,
-      turnUsedPct: quota.turnUsedPct ?? null,
       delivery: delivery.delivery,
       requestId: delivery.requestId,
     });
-    // Native unit: the measured plan-window delta accumulates as quota % in the
-    // session's per-provider cost — OpenAI plans expose no dollar amounts, so
-    // no USD is ever derived from this.
-    accumulateQuotaIntoSession(tab, providerForModel(tab.currentModel), quota.turnUsedPct ?? null);
     emit({ type: "$codex_quota", quota }, tab.id);
     return;
   }
@@ -2665,22 +2625,16 @@ interface OllamaBalance {
   purchasedUsd: number | null;
 }
 
-/** Last API-reported Ollama session usage % — the delta to the next fetch is
- *  the percent points of the session window consumed since. */
-let lastOllamaSessionUsagePct: number | null = null;
-
 /** The balance is account-scoped, so one shared request serves every tab and a
  *  caller inside the TTL reuses the last result (only a click passes force).
  *  This is what keeps the statusbar from bursting one fetch per open tab. */
 const OLLAMA_BALANCE_TTL_MS = 60_000;
 let ollamaBalanceCache: {
   balance: OllamaBalance | undefined;
-  turnUsedPct: number | null;
   fetchedAt: number;
 } | null = null;
 let ollamaBalanceInflight: Promise<{
   balance: OllamaBalance | undefined;
-  turnUsedPct: number | null;
   fetchedAt: number;
 }> | null = null;
 
@@ -2688,18 +2642,6 @@ let ollamaBalanceInflight: Promise<{
 export function resetOllamaBalanceCacheForTest(): void {
   ollamaBalanceCache = null;
   ollamaBalanceInflight = null;
-  lastOllamaSessionUsagePct = null;
-}
-
-/** Session-% consumed since the previous fetch. Computed once per network fetch
- *  so cache followers report the same delta instead of re-deriving a zero. */
-function computeTurnUsedPct(balance: OllamaBalance | undefined): number | null {
-  if (!balance?.session) return null;
-  const sessionPct = 100 - balance.session.remainingPct;
-  const previous = lastOllamaSessionUsagePct;
-  lastOllamaSessionUsagePct = sessionPct;
-  // Rollover (session window reset) makes the delta go backwards — report none.
-  return previous !== null && sessionPct >= previous ? sessionPct - previous : null;
 }
 
 /** One coalesced, TTL-cached balance fetch shared across every tab. Concurrent
@@ -2711,7 +2653,6 @@ export async function ollamaBalanceSnapshot(
   force: boolean,
 ): Promise<{
   balance: OllamaBalance | undefined;
-  turnUsedPct: number | null;
   fetchedAt: number;
   fetched: boolean;
 }> {
@@ -2727,10 +2668,10 @@ export async function ollamaBalanceSnapshot(
   }
   const run = (async () => {
     const balance = await fetchOllamaBalance(baseUrl, apiKey);
-    return { balance, turnUsedPct: computeTurnUsedPct(balance), fetchedAt: Date.now() };
+    return { balance, fetchedAt: Date.now() };
   })();
   ollamaBalanceInflight = run;
-  let result: { balance: OllamaBalance | undefined; turnUsedPct: number | null; fetchedAt: number };
+  let result: { balance: OllamaBalance | undefined; fetchedAt: number };
   try {
     result = await run;
   } finally {
@@ -2739,10 +2680,6 @@ export async function ollamaBalanceSnapshot(
   ollamaBalanceCache = result;
   return { ...result, fetched: true };
 }
-/** Last Antigravity active-model used fraction (0..1) — the delta to the next
- *  fetch is the fraction of the window consumed since (each $turn_complete
- *  refetches; windows reset periodically). */
-let lastAntigravityUsedFraction: number | null = null;
 /** Cloud Ollama plan usage for the signed-in account — Ollama-provider tabs
  *  with a key only. The balance is account-scoped, so every tab shares one
  *  TTL-cached fetch; only a chip click (force) or the 1-min poll refetches. */
@@ -2782,13 +2719,8 @@ async function emitOllamaQuota(tab: Tab, force = false): Promise<void> {
     sessionRemainingPct: balance.session?.remainingPct,
     weeklyRemainingPct: balance.weekly?.remainingPct,
     purchasedUsd: balance.purchasedUsd,
-    turnUsedPct: snap.turnUsedPct,
     shared: !snap.fetched,
   });
-  // The delta is account-scoped: fold it into the session once, on the fetch
-  // that measured it, so cache followers don't double-count.
-  if (snap.fetched)
-    accumulateQuotaIntoSession(tab, providerForModel(tab.currentModel), snap.turnUsedPct);
   emit(
     {
       type: "$ollama_quota",
@@ -2796,7 +2728,6 @@ async function emitOllamaQuota(tab: Tab, force = false): Promise<void> {
         session: toWindow(balance.session),
         weekly: toWindow(balance.weekly),
         purchasedUsd: balance.purchasedUsd,
-        turnUsedPct: snap.turnUsedPct,
         fetchedAt: snap.fetchedAt,
       },
     },
@@ -2831,24 +2762,12 @@ async function emitAntigravityQuota(tab: Tab): Promise<void> {
     quota.windows.find((w) => w.modelId === tab.currentModel) ??
     [...quota.windows].sort((a, b) => b.usedFraction - a.usedFraction)[0] ??
     null;
-  let turnUsedPct: number | null = null;
-  const usedFraction = active?.usedFraction ?? null;
-  if (usedFraction !== null) {
-    const usedPct = usedFraction * 100;
-    if (lastAntigravityUsedFraction !== null && usedPct >= lastAntigravityUsedFraction * 100) {
-      turnUsedPct = usedPct - lastAntigravityUsedFraction * 100;
-    }
-    lastAntigravityUsedFraction = usedFraction;
-  }
   emitTabDiagnostic(tab, "quota.fetch.succeeded", {
     plan: quota.plan?.tierId,
     windows: quota.windows.length,
     activeModel: active?.modelId,
-    turnUsedPct,
   });
-  // Native unit: Antigravity bills plan-window %, not dollars.
-  accumulateQuotaIntoSession(tab, providerForModel(tab.currentModel), turnUsedPct);
-  emit({ type: "$antigravity_quota", quota: { ...quota, turnUsedPct } }, tab.id);
+  emit({ type: "$antigravity_quota", quota }, tab.id);
 }
 
 /** A raw `limits[]` row from Z.AI's monitor endpoint — only the fields we read. */
@@ -2870,7 +2789,7 @@ export async function fetchZaiQuota(
   baseUrl: string,
   apiKey: string,
   timeoutMs = 10_000,
-): Promise<Omit<ZaiQuota, "turnUsedPct" | "fetchedAt"> | undefined> {
+): Promise<Omit<ZaiQuota, "fetchedAt"> | undefined> {
   try {
     const resp = await fetch(`${new URL(baseUrl).origin}/api/monitor/usage/quota/limit`, {
       method: "GET",
@@ -2913,15 +2832,8 @@ export async function fetchZaiQuota(
   }
 }
 
-/** Last API-reported Z.AI 5-hour / weekly usage % — the delta to the next fetch
- *  is the percent points of the window consumed since (each $turn_complete
- *  refetches; the 5-hour window resets on a rolling basis). */
-let lastZaiFiveHourUsedPct: number | null = null;
-let lastZaiWeeklyUsedPct: number | null = null;
-
 /** Z.AI GLM Coding Plan usage for a `zai`-provider tab with a configured key.
- *  Fetches the monitor endpoint, scales the API's `percentage` to "% left", and
- *  accumulates the measured delta as the session's native-unit quota %. */
+ *  Fetches the monitor endpoint and scales the API's `percentage` to "% left". */
 async function emitZaiQuota(tab: Tab): Promise<void> {
   if (probeForModel(tab.currentModel) !== "zai-monitor") {
     emitTabDiagnostic(tab, "quota.skipped", { reason: "non-zai-provider" });
@@ -2944,35 +2856,16 @@ async function emitZaiQuota(tab: Tab): Promise<void> {
   // that report only the weekly window.
   const fiveHourPct = quota.fiveHour?.usagePct ?? null;
   const weeklyPct = quota.weekly?.usagePct ?? null;
-  const currentPct = fiveHourPct !== null ? fiveHourPct : weeklyPct;
-  const baseline = fiveHourPct !== null ? lastZaiFiveHourUsedPct : lastZaiWeeklyUsedPct;
-  // A rollover (window reset) makes the delta go backwards — report no turn cost
-  // for this fetch and adopt the new baseline.
-  const turnUsedPct =
-    baseline !== null && currentPct !== null && currentPct >= baseline
-      ? currentPct - baseline
-      : null;
-  if (fiveHourPct !== null) lastZaiFiveHourUsedPct = fiveHourPct;
-  else if (weeklyPct !== null) lastZaiWeeklyUsedPct = weeklyPct;
   emitTabDiagnostic(tab, "quota.fetch.succeeded", {
     plan: quota.plan,
     fiveHour: fiveHourPct,
     weekly: weeklyPct,
-    turnUsedPct,
   });
-  // Native unit: the GLM Coding Plan bills plan-window %, not dollars.
-  accumulateQuotaIntoSession(tab, providerForModel(tab.currentModel), turnUsedPct);
-  emit({ type: "$zai_quota", quota: { ...quota, turnUsedPct, fetchedAt: Date.now() } }, tab.id);
+  emit({ type: "$zai_quota", quota: { ...quota, fetchedAt: Date.now() } }, tab.id);
 }
 
-/** Last API-reported OpenCode Go 5-hour (rolling) usage % — the delta to the
- *  next fetch is the percent points of the window consumed since (each
- *  $turn_complete refetches; the rolling window resets on a rolling basis). */
-let lastOpencodeRollingUsedPct: number | null = null;
-
 /** OpenCode Go plan usage for an `opencode`-provider tab with a credential —
- *  fetches /zen/go/v1/usage and accumulates the measured rolling-window delta
- *  as the session's native-unit quota %. */
+ *  fetches /zen/go/v1/usage. */
 /** Refresh MiMo subscription usage. The console API needs a web-session cookie
  *  (not the inference key), so this is a no-op without a configured session —
  *  the statusbar then shows a static plan chip with no percentage. */
@@ -3026,77 +2919,17 @@ async function emitOpencodeQuota(tab: Tab): Promise<void> {
   // weekly/monthly windows). A rollover makes the delta go backwards — report
   // no turn cost for this fetch and adopt the new baseline.
   const rollingPct = quota.rolling?.usagePct ?? null;
-  const turnUsedPct =
-    lastOpencodeRollingUsedPct !== null &&
-    rollingPct !== null &&
-    rollingPct >= lastOpencodeRollingUsedPct
-      ? rollingPct - lastOpencodeRollingUsedPct
-      : null;
-  if (rollingPct !== null) lastOpencodeRollingUsedPct = rollingPct;
   emitTabDiagnostic(tab, "quota.fetch.succeeded", {
     rolling: rollingPct,
     weekly: quota.weekly?.usagePct,
     monthly: quota.monthly?.usagePct,
-    turnUsedPct,
   });
-  // Native unit: the Go plan bills plan-window %, not dollars.
-  accumulateQuotaIntoSession(tab, providerForModel(tab.currentModel), turnUsedPct);
-  emit(
-    { type: "$opencode_quota", quota: { ...quota, turnUsedPct, fetchedAt: Date.now() } },
-    tab.id,
-  );
+  emit({ type: "$opencode_quota", quota: { ...quota, fetchedAt: Date.now() } }, tab.id);
 }
 
-/** Provider-aware billing for subagent and main-loop model calls. */
 /** The probe a model's provider declares, or null when it publishes no plan window. */
 function probeForModel(model: string): string | null {
   return providerSpec(providerForModel(model))?.usage.probe ?? null;
-}
-
-/** Measurers for the declared probes that report a percentage; the others publish
- *  a plan window the statusbar shows without a "used" figure. */
-const QUOTA_MEASURERS: Partial<Record<string, (model: string) => () => Promise<number | null>>> = {
-  "codex-oauth": () => async (): Promise<number | null> => {
-    const r = await fetchCodexQuotaViaOAuth(8000).catch(() => ({
-      quota: null,
-      reason: "quota fetch failed",
-    }));
-    const used = r.quota?.fiveHour?.usedPercent ?? r.quota?.weekly?.usedPercent;
-    return typeof used === "number" ? used : null;
-  },
-  "ollama-balance": () => {
-    const ep = loadOllamaEndpoint();
-    const baseUrl = ep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL;
-    const apiKey = ep.apiKey;
-    return async (): Promise<number | null> => {
-      if (!apiKey) return null;
-      const balance = await fetchOllamaBalance(baseUrl, apiKey, 8000);
-      return balance?.session ? 100 - balance.session.remainingPct : null;
-    };
-  },
-  "antigravity-quota": (model: string) => async (): Promise<number | null> => {
-    const auth = await resolveGeminiAuth().catch(() => null);
-    if (!auth) return null;
-    const quota = await fetchAntigravityQuota(auth.accessToken, auth.projectId).catch(() => null);
-    if (!quota) return null;
-    const active =
-      quota.windows.find((w) => w.modelId === model) ??
-      [...quota.windows].sort((a, b) => b.usedFraction - a.usedFraction)[0] ??
-      null;
-    return active ? active.usedFraction * 100 : null;
-  },
-};
-
-function subagentBillingFor(model: string): import("../../code/setup.js").SubagentBilling {
-  const context = billingContextForModel(model);
-  // Only a quota-kind context carries a plan window; anything else keeps the
-  // plain context so an unconfigured provider still reports its real kind.
-  if (context.kind !== "quota") return { kind: context.kind, provider: context.provider };
-  const probe = providerSpec(context.provider)?.usage.probe ?? null;
-  if (probe === null) return { kind: context.kind, provider: context.provider };
-  const measure = QUOTA_MEASURERS[probe];
-  if (!measure) return { kind: context.kind, provider: context.provider };
-  return { kind: "quota", provider: context.provider, measureQuota: measure(model) };
 }
 
 async function emitSessions(
@@ -4719,7 +4552,6 @@ function mintSessionFor(
   rootDir: string,
   prefs?: ModelPrefs,
   options: {
-    materialize?: boolean;
     mcp?: SessionMcpState;
     mcpSetup?: boolean;
     /** Session-creation flag, frozen into the meta: this chat either has the spawn
@@ -4727,22 +4559,15 @@ function mintSessionFor(
     subagents?: boolean;
   } = {},
 ): string {
-  const materialize = options.materialize !== false;
-  // Virtual deletion replacements need unique names even though they do not
-  // occupy disk yet. Eager sessions retain the stable, human-readable suffix.
-  const suffix = materialize ? `${tabCounter}` : `${tabCounter}-${randomUUID().slice(0, 8)}`;
   // Seconds precision repeats when `new_chat` fires twice within one second —
   // reuse the collision loop so the second mint takes `-1`, `-2`, … instead
   // of truncating a session that already exists.
-  const name = firstFreeSessionName(`desktop-${timestampSuffix(14)}-${suffix}`, (candidate) =>
+  const name = firstFreeSessionName(`desktop-${timestampSuffix(14)}-${tabCounter}`, (candidate) =>
     sessionExists(candidate),
   );
-  if (!materialize) return name;
-
-  // EAGER creation: New chat means NEW chat — the folder and its (empty)
-  // transcript + meta land on disk immediately. An empty session is a real
-  // session: it lists in the sidebar, survives switches, and is only ever
-  // removed by an explicit delete.
+  // EVERY mint is eager: the folder, its empty transcript and its meta land on
+  // disk immediately. A name with no session behind it is exactly the state the
+  // UI must never be in, so there is no lazy mint.
   try {
     ensureSessionDir(name);
     // Seed the session's MCP state from the Settings default so later default
@@ -5046,11 +4871,6 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
     maxOutputTokens: loadMaxOutputTokens(),
     autoCompact: loadAutoCompact(),
     repetitionGuardEnabled: loadRepetitionGuardEnabled(),
-    // Provider and billing unit come from resolved endpoint/config evidence.
-    billingContextFor: (model) => {
-      const billing = subagentBillingFor(model);
-      return { kind: billing.kind, provider: billing.provider };
-    },
     // Live thunk (not a snapshot) so a mid-session Shift+Tab mode flip
     // stops the iteration cap from pausing the turn in yolo.
     getEditMode: () => loadEditMode(),
@@ -5408,6 +5228,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     restore?: {
       groupId?: string;
       session?: string;
+      /** The channel was persisted with no session bound (the neutral state). */
+      detached?: boolean;
       /** Fresh-channel (New chat) overrides — inherit the source session's prefs
        *  rather than the global config default. */
       model?: string;
@@ -5438,10 +5260,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     const groupId = restore?.groupId ?? nextGroupId();
     const groupMatch = /^g(\d+)$/.exec(groupId);
     if (groupMatch) groupCounter = Math.max(groupCounter, Number(groupMatch[1]));
-    // Every session this skeleton MINTS is gated: its capabilities are chosen at that
-    // session boundary and frozen by the answer, exactly when it materializes a new
-    // session. A restored conversation keeps the set frozen in its own meta.
-    const gateSession = !pending && shouldMaterializeRestoredSession(restore);
+    // A channel mints its session eagerly at creation, and every mint is gated:
+    // its capabilities are chosen at that session boundary and frozen by the
+    // answer. A restored conversation keeps the set frozen in its own meta, and a
+    // channel that comes back neutral mints nothing to gate. A PENDING channel has
+    // no workspace to mint into, so it tops out at neutral.
+    const skeleton = pending
+      ? ({ kind: "neutral" } as const)
+      : skeletonSessionFor(restore, adoptableRestoredSession(restore?.session, dir));
+    const gateSession = skeleton.kind === "mint";
     const tab: Tab = {
       id,
       groupId,
@@ -5480,11 +5307,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       hooks: pending ? [] : loadHooks({ projectRoot: dir }),
     };
     // A restored session binds its real jsonl when it still exists AND this
-    // workspace owns it. A restored tab whose session was DELETED must stay
-    // VIRTUAL (no folder) so it is not resurrected on restart; only a genuinely
-    // new tab materializes eagerly. A persisted pairing that names another
-    // workspace's session is dropped here so it can't outlive the fix.
-    const restoredSession = adoptableRestoredSession(restore?.session, dir);
+    // workspace owns it; `skeletonSessionFor` decides that, so no channel is ever
+    // named after a session that is absent from disk. A persisted pairing that
+    // names another workspace's session is dropped by `adoptableRestoredSession`
+    // so it can't outlive the fix.
+    const restoredSession = skeleton.kind === "adopt" ? skeleton.name : undefined;
     // Seed the flag from the session we are about to bind, not from the creation
     // default: the skeleton is announced (and its settings emitted) before startTabInit
     // reads the meta, and a later meta failure must not leave a tab claiming a
@@ -5496,23 +5323,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         void 0; /* unreadable meta: keep the creation default; startTabInit logs the failure */
       }
     }
-    tab.currentSession = pending
-      ? ""
-      : restoredSession
-        ? restoredSession
-        : mintSessionFor(
-            dir,
-            {
-              model: tab.currentModel,
-              reasoningEffort: tab.currentReasoningEffort,
-              subagentModel: tab.currentSubagentModel,
-            },
-            {
-              materialize: shouldMaterializeRestoredSession(restore),
-              mcpSetup: gateSession,
-              subagents: tab.subagents,
-            },
-          );
+    tab.currentSession =
+      skeleton.kind === "adopt"
+        ? skeleton.name
+        : skeleton.kind === "mint"
+          ? mintSessionFor(
+              dir,
+              {
+                model: tab.currentModel,
+                reasoningEffort: tab.currentReasoningEffort,
+                subagentModel: tab.currentSubagentModel,
+              },
+              { mcpSetup: gateSession, subagents: tab.subagents },
+            )
+          : "";
     tabs.set(tab.id, tab);
     emitTabDiagnostic(tab, "tab.created", { active: false }, "info");
     return tab;
@@ -5863,6 +5687,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             dir: t.rootDir,
             id: t.id,
             session: t.currentSession || undefined,
+            // A channel holding no session persists AS neutral: minting on restore
+            // would resurrect a chat the user never asked for.
+            detached: t.currentSession ? undefined : true,
             groupId: t.groupId,
             active: t.id === lastActiveTabId,
           }))
@@ -5897,7 +5724,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         workspaceDir: tab.rootDir,
         active,
         groupId: tab.groupId,
-        sessions: [tab.currentSession],
+        // A neutral channel owns no session, so it advertises an empty list rather
+        // than one blank name.
+        sessions: tab.currentSession ? [tab.currentSession] : [],
         activeSession: tab.currentSession,
         creating,
       },
@@ -6247,10 +6076,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       }
     }
     // A running channel's session must carry its workspace: the workspace's
-    // session list is filtered by meta.workspace, so a session that materialized
-    // without one (e.g. a virtual deletion-replacement on its first send) stays
-    // invisible in the sidebar while its tab badge counts it as an active agent
-    // — a "ghost" session. Stamp it, then re-emit so it appears immediately.
+    // session list is filtered by meta.workspace, so a session without one (a
+    // restored archive, a session written by an older build) stays invisible in
+    // the sidebar while its tab badge counts it as an active agent — a "ghost"
+    // session. Stamp it, then re-emit so it appears immediately.
     if (tab.currentSession && stampSessionWorkspace(tab.currentSession, tab.rootDir)) {
       emitSessionsForWorkspace(tab.rootDir);
     }
@@ -6642,7 +6471,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     tab.recentMentions.length = 0;
     tab.hooks = loadHooks({ projectRoot: target });
     if (tab.currentSession && !sessionExists(tab.currentSession)) {
-      // Virtual deletion replacements don't exist on disk — clean up if left dangling.
+      // A bound session that vanished (deleted from outside this app) has no index
+      // entry worth keeping; the channel is re-bound below anyway.
       deleteSession(tab.currentSession);
     }
     // Drop the previous workspace's session binding before the awaits below: a
@@ -6811,69 +6641,73 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       .finally(() => emitJobs());
   }
 
-  function startFreshSession(
-    tab: Tab,
-    options: {
-      reason: "new-chat" | "session-delete";
-      settledDeletes?: SessionsEvent["settledDeletes"];
-      conversationCancelled?: boolean;
-      /** Leave the trailing workspace list emit to the caller, which sends one
-       *  snapshot per workspace instead of one per replaced channel. */
-      deferSessionList?: boolean;
-    },
-  ): void {
-    const diagnosticPrefix = options.reason === "new-chat" ? "session.new-chat" : "session.delete";
-    emitTabDiagnostic(tab, `${diagnosticPrefix}.started`, undefined, "info");
-    // Only set switching when a live turn is being aborted. Otherwise it would
-    // suppress the first events emitted by the replacement session (#1217).
-    if (!options.conversationCancelled) {
-      if (tab.aborter) tab.switching = true;
-      cancelConversation(tab);
-    }
-    // Explicit New chat sessions are persisted immediately. A replacement for
-    // a deleted active session stays virtual so clear-all can leave the sidebar
-    // genuinely empty; the first send materializes it through normal writes.
+  /** Build the tab's runtime, `fresh` meaning it now serves a DIFFERENT (or no) session.
+   *  Turn ordinals are session-wide identity, so a fresh binding must not inherit the
+   *  previous conversation's floor; the same session keeps it across a rebuild. */
+  function rebuildTabRuntime(tab: Tab, options: { fresh?: boolean } = {}): void {
+    if (options.fresh) tab.runtime = null;
     try {
-      tab.currentSession = mintSessionFor(
-        tab.rootDir,
-        {
-          model: tab.currentModel,
-          reasoningEffort: tab.currentReasoningEffort,
-          subagentModel: tab.currentSubagentModel,
-        },
-        {
-          materialize: shouldMaterializeFreshSession(options.reason),
-          // Clearing a conversation mints a new session that keeps the capability
-          // the user already chose here, so no tool/prompt resync is needed.
-          subagents: tab.subagents,
-        },
-      );
-      persistOpenTabs();
       tab.runtime = tab.toolset && tabCurrentModelUsable(tab) ? buildRuntimeFor(tab) : null;
     } catch (err) {
-      emitDiagnosticError(`${diagnosticPrefix}.failed`, err, {
+      emitDiagnosticError("session.runtime.rebuild.failed", err, {
         tabId: tab.id,
-        details: tabDiagnosticState(tab),
+        details: { fresh: options.fresh === true, ...tabDiagnosticState(tab) },
       });
-      emit(
-        { type: "$error", message: `${options.reason} failed: ${(err as Error).message}` },
-        tab.id,
-      );
-      return;
+      tab.runtime = null;
     }
-    emit(
-      {
-        type: "$session_loaded",
-        name: tab.currentSession,
-        messages: [],
-        events: [],
-        carryover: emptySessionCarryover(),
-      },
-      tab.id,
-    );
+  }
+
+  /** Move a channel's session binding — the ONE place it moves outside a session load.
+   *  `name` is the empty string for the neutral state (no session bound at all). */
+  function rebindTabSession(tab: Tab, name: string): void {
+    tab.currentSession = name;
+    persistOpenTabs();
+    rebuildTabRuntime(tab, { fresh: true });
+    emit({ type: "$session_bound", name }, tab.id);
     emitRestoredPlan(tab, false);
-    if (!options.deferSessionList) emitSessionsForWorkspace(tab.rootDir, options.settledDeletes);
-    emitTabDiagnostic(tab, `${diagnosticPrefix}.completed`, undefined, "info");
+    emitCtxBreakdown(tab);
+  }
+
+  /** Land a channel whose session was just deleted in the NEUTRAL state: nothing bound,
+   *  empty transcript, and the next message creates the session it lands in. */
+  function detachTabSession(tab: Tab): void {
+    emitTabDiagnostic(tab, "session.detach.started", undefined, "info");
+    rebindTabSession(tab, "");
+    emitTabDiagnostic(tab, "session.detach.completed", undefined, "info");
+  }
+
+  /** The other half of the neutral state: the message sent into a channel that holds no
+   *  session creates that session HERE, carrying the message. */
+  function bindSessionForSend(tab: Tab): void {
+    const name = mintSessionFor(
+      tab.rootDir,
+      {
+        model: tab.currentModel,
+        reasoningEffort: tab.currentReasoningEffort,
+        subagentModel: tab.currentSubagentModel,
+      },
+      // The capability is frozen at this session boundary like any other mint; the
+      // neutral channel cannot host a picker, so it takes the configured default.
+      { subagents: tab.subagents },
+    );
+    rebindTabSession(tab, name);
+    // List it now: the sidebar is where the user sees the chat they just started.
+    emitSessionsForWorkspace(tab.rootDir);
+    emitTabDiagnostic(tab, "session.bind.completed", { name }, "info");
+  }
+
+  /** Every user turn funnels through here, so a channel holding no session creates the
+   *  session its message lands in first. False means it cannot run, and the refusal
+   *  has been emitted. */
+  function ensureTurnSession(tab: Tab): boolean {
+    // A channel with no runtime cannot send at all, so it mints nothing: an empty
+    // session would outlive the refusal below.
+    if (!tab.currentSession && tab.runtime) bindSessionForSend(tab);
+    if (!tab.runtime) {
+      emitTurnEnded(tab, "stopped", { reason: notConfiguredMessage(tab.currentModel) });
+      return false;
+    }
+    return true;
   }
 
   /** Abort every live writer bound to a doomed session BEFORE its folder is
@@ -6905,36 +6739,21 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   function restoreUntouchedRuntimes(affected: readonly Tab[], removed: ReadonlySet<string>): void {
     for (const t of affected) {
       if (removed.has(t.currentSession)) continue;
-      try {
-        t.runtime = t.toolset && tabCurrentModelUsable(t) ? buildRuntimeFor(t) : null;
-      } catch (err) {
-        emitDiagnosticError("session.runtime.restore.failed", err, {
-          tabId: t.id,
-          details: tabDiagnosticState(t),
-        });
-        t.runtime = null;
-      }
+      // Same session as before, so its ordinal floor still applies.
+      rebuildTabRuntime(t);
       t.switching = false;
     }
   }
 
-  /** Shared post-delete resync: replace every tab still bound to a removed
-   *  session with a fresh virtual one; every other tab just gets the refreshed
-   *  sidebar list. `shouldReplace` is the caller's membership test. */
+  /** Post-delete resync: detach every tab still bound to a removed session instead of
+   *  naming a session that is gone; every tab gets the refreshed sidebar list. */
   function resyncAfterDeletes(
     settledDeletes: SessionsEvent["settledDeletes"],
-    shouldReplace: (tab: Tab) => boolean,
+    shouldDetach: (tab: Tab) => boolean,
   ): void {
     const refreshed = new Set<string>();
     for (const openTab of tabs.values()) {
-      if (shouldReplace(openTab)) {
-        startFreshSession(openTab, {
-          reason: "session-delete",
-          settledDeletes,
-          conversationCancelled: true,
-          deferSessionList: true,
-        });
-      }
+      if (shouldDetach(openTab)) detachTabSession(openTab);
       refreshed.add(openTab.rootDir);
     }
     // One snapshot per affected workspace, never one per channel: a clear-all
@@ -7099,7 +6918,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       onRulesChanged: () => emitSettingsToAllTabs(),
       onShellOutput: shellOutputFor(tab),
       subagentSink: subagentSinkFor(tab),
-      subagentBilling: (m) => subagentBillingFor(m),
       subagentModel: () => tab.currentSubagentModel ?? tab.currentModel,
       // The session's effort, not a fixed subagent budget: a spawned child must
       // reason as hard as the chat that commissioned it.
@@ -7467,6 +7285,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   type TabRestore = {
     id?: string;
     session?: string;
+    /** Persisted with no session bound: restore it neutral instead of minting. */
+    detached?: boolean;
     active?: boolean;
     groupId?: string;
     pending?: boolean;
@@ -7648,8 +7468,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       if (tab.currentSession) {
         patchSessionWorkspaceIfMissing(tab.currentSession, tab.rootDir);
         // Repair a session that materialized without a workspace stamp (see
-        // stampSessionWorkspace) so a restored ghost lists on the emitSessions
-        // below. No-op for an already-stamped or purely virtual session.
+        // stampSessionWorkspace) so a restored ghost lists on the emitSessions below.
         stampSessionWorkspace(tab.currentSession, tab.rootDir);
       }
       const sessionsInitialized = emitSessions(tab, undefined, { primeFromCache: true });
@@ -8644,10 +8463,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "skill_run") {
-      if (!tab.runtime) {
-        emitTurnEnded(tab, "stopped", { reason: notConfiguredMessage(tab.currentModel) });
-        return;
-      }
       try {
         const store = new SkillStore({
           projectRoot: tab.rootDir,
@@ -8658,6 +8473,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           emitTurnEnded(tab, "stopped", { reason: `skill not found: ${msg.name}` });
           return;
         }
+        // A skill that resolved is a real turn: a neutral channel creates the session
+        // it lands in. Resolving first keeps a stale skill from minting an empty one.
+        if (!ensureTurnSession(tab)) return;
         const extra = msg.args?.trim() ?? "";
         const header = `# Skill: ${found.name}${found.description ? `\n> ${found.description}` : ""}`;
         const argsLine = extra ? `\n\nArguments: ${extra}` : "";
@@ -8705,7 +8523,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         restoreUntouchedRuntimes(affectedTabs, new Set());
       }
       resyncAfterDeletes([{ name: msg.name, removed }], (t) =>
-        shouldReplaceDeletedSession(t.currentSession, msg.name, removed),
+        shouldDetachDeletedSession(t.currentSession, msg.name, removed),
       );
       return;
     }
@@ -9798,10 +9616,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "user_input") {
-      if (!tab.runtime) {
-        emitTurnEnded(tab, "stopped", { reason: notConfiguredMessage(tab.currentModel) });
-        return;
-      }
+      if (!ensureTurnSession(tab)) return;
       void (async () => {
         let text = msg.text;
         let attachments = msg.images ? [...msg.images] : [];

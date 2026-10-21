@@ -38,14 +38,13 @@ function specOf(overrides: Record<string, unknown>) {
 }
 
 describe("resolveRibbonFunds", () => {
-  it("gives a plan-window provider the quota chip and no dollar figures", () => {
+  it("gives a plan-window provider the quota chip", () => {
     const spec = specOf({
       billing: { kind: "quota" },
       usage: { probe: "zai-monitor" },
     });
     expect(resolveRibbonFunds(spec, { billingKind: "quota" })).toEqual({
       chip: "quota",
-      costFigures: false,
       probe: "zai-monitor",
     });
   });
@@ -54,7 +53,6 @@ describe("resolveRibbonFunds", () => {
     const spec = specOf({ billing: { kind: "none" }, usage: { probe: "opencode-usage" } });
     expect(resolveRibbonFunds(spec, { billingKind: "none" })).toEqual({
       chip: "tier",
-      costFigures: false,
       probe: "opencode-usage",
     });
   });
@@ -66,36 +64,19 @@ describe("resolveRibbonFunds", () => {
   });
 
   it("shows the wallet only when the provider publishes a balance", () => {
-    const priced = { "future-1": { inputCacheHit: 0.1, inputCacheMiss: 0.2, output: 0.3 } };
-    const wallet = specOf({ billing: { kind: "usd", balance: { url: "/wallet", shape: "balance-infos" }, pricing: priced } });
+    const wallet = specOf({
+      billing: { kind: "usd", balance: { url: "/wallet", shape: "balance-infos" } },
+    });
     expect(resolveRibbonFunds(wallet, { billingKind: "usd" })).toEqual({
       chip: "wallet",
-      costFigures: true,
       probe: null,
     });
   });
 
-  it("falls to cost figures when a token-priced provider publishes no balance", () => {
-    const spec = specOf({
-      billing: {
-        kind: "usd",
-        pricing: { "future-1": { inputCacheHit: 1, inputCacheMiss: 2, output: 3 } },
-      },
-    });
-    expect(resolveRibbonFunds(spec, { billingKind: "usd" })).toEqual({
-      chip: "none",
-      costFigures: true,
-      probe: null,
-    });
-  });
-
-  it("claims no figure at all when the provider publishes no rates", () => {
-    // A paid gateway with no declared table measures nothing: a $0.0000 chip would
-    // be an invented number, so the ribbon shows no money chip.
+  it("claims no money chip when a token-priced provider publishes no balance", () => {
     const spec = specOf({ billing: { kind: "usd" } });
     expect(resolveRibbonFunds(spec, { billingKind: "usd" })).toEqual({
       chip: "none",
-      costFigures: false,
       probe: null,
     });
   });
@@ -116,7 +97,6 @@ describe("resolveRibbonFunds", () => {
   it("claims nothing for a provider that is not declared", () => {
     expect(resolveRibbonFunds(undefined, { billingKind: "usd" })).toEqual({
       chip: "none",
-      costFigures: false,
       probe: null,
     });
   });

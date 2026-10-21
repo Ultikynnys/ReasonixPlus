@@ -52,7 +52,7 @@
     "idField": "id",
     "excludeSpeech": false
   },
-  "billing": { "kind": "quota" },
+  "billing": { "kind": "quota", "schedule": null },
   "usage": { "probe": "antigravity-quota" },
   "strings": {
     "notConfigured": "Not configured yet — sign in to Google Antigravity (Settings → Google) to use Gemini models.",
@@ -60,7 +60,6 @@
     "quotaLabel": "plan usage",
     "quotaTitle": "Antigravity plan {plan} · {left}% left · resets in {resets} · click to refresh",
     "quotaNoData": "Antigravity usage · no data: sign in to Google Antigravity (Settings → Gemini) to see plan usage · click to retry",
-    "quotaTurnTitle": "This turn used {pct}% of the Antigravity quota",
     "quotaPlanName": "Antigravity",
     "quotaPlanFallback": "Antigravity",
     "panelSignInTitle": "Website sign-in",

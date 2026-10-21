@@ -1011,11 +1011,11 @@ describe("session persistence", () => {
     });
   });
 
-  describe("issue #333 — resume seeds cost carryover from session meta", () => {
-    it("CacheFirstLoop on resume preloads totalCostUsd / turnCount into stats", () => {
+  describe("issue #333 — resume seeds turn count from session meta", () => {
+    it("CacheFirstLoop on resume preloads turnCount into stats", () => {
       appendSessionMessage("c333", { role: "user", content: "hi" });
       appendSessionMessage("c333", { role: "assistant", content: "hello" });
-      patchSessionMeta("c333", { totalCostUsd: 0.0123, turnCount: 5 });
+      patchSessionMeta("c333", { turnCount: 5 });
 
       const client = new DeepSeekClient({ apiKey: "sk-test" });
       const loop = new CacheFirstLoop({
@@ -1024,10 +1024,7 @@ describe("session persistence", () => {
         session: "c333",
       });
 
-      expect(loop.stats.totalCost).toBe(0.0123);
-      const summary = loop.stats.summary();
-      expect(summary.totalCostUsd).toBe(0.0123);
-      expect(summary.turns).toBe(5);
+      expect(loop.stats.summary().turns).toBe(5);
     });
 
     it("fresh session (no meta) leaves carryover at zero", () => {
@@ -1037,7 +1034,6 @@ describe("session persistence", () => {
         prefix: new ImmutablePrefix({ system: "test" }),
         session: "fresh-c333",
       });
-      expect(loop.stats.totalCost).toBe(0);
       expect(loop.stats.summary().turns).toBe(0);
     });
   });

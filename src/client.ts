@@ -2223,11 +2223,13 @@ function stampWireMessageIds(messages: readonly ChatMessage[]): ChatMessage[] {
 }
 
 /** Transcript-only bookkeeping must never reach the wire: `synthetic` marks machine
- *  records, `ts` is when the record was written. Payload builders that pass messages
- *  through verbatim would hand a strict provider an unknown field. */
+ *  records, `ts` is when the record was written, `model` which model produced it.
+ *  Verbatim payload builders would hand a strict provider an unknown field. */
 export function stripTranscriptMarkers(messages: readonly ChatMessage[]): ChatMessage[] {
-  if (!messages.some((m) => m.synthetic === true || m.ts !== undefined)) return [...messages];
-  return messages.map(({ synthetic: _synthetic, ts: _ts, ...rest }) => rest);
+  if (!messages.some((m) => m.synthetic === true || m.ts !== undefined || m.model !== undefined)) {
+    return [...messages];
+  }
+  return messages.map(({ synthetic: _synthetic, ts: _ts, model: _model, ...rest }) => rest);
 }
 
 // Mid-stream chat-completions error frame → {message, code}. `type:

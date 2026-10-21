@@ -1,9 +1,12 @@
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
-const maxWorkers = process.env.CI ? 4 : 8;
+// 8 is the floor that was always safe here; 12 cores measured ~5 s better at 10, and
+// the two cores left over keep the editor and the OS responsive mid-run.
+const maxWorkers = process.env.CI ? 4 : Math.max(8, Math.min(10, availableParallelism() - 2));
 
 export default defineConfig({
   resolve: {
@@ -36,12 +39,13 @@ export default defineConfig({
     globals: false,
     // Forks pool: per-file process isolation keeps tokenizer BPE, tree-sitter
     // WASMs, and sqlite native handles from accumulating in one shared heap.
-    // Keep CI lower than local runs: Windows coverage at eight forks can starve
+    // Keep CI lower than local runs: Windows coverage at high fork counts can starve
     // Vitest's worker RPC and time out onTaskUpdate even after tests pass.
     pool: "forks",
     maxWorkers,
-    // One retry absorbs Windows scheduler hiccups in jobs.test.ts / loop.test.ts /
-    // bundle-smoke (real spawns + tokenizer cold load). A real failure still re-fails.
+    // One retry absorbs Windows scheduler hiccups in the jobs-*.test.ts spawns /
+    // loop.test.ts / bundle-smoke (real spawns + tokenizer cold load). A real
+    // failure still re-fails.
     retry: 1,
     coverage: {
       provider: "v8",

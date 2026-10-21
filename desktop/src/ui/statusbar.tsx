@@ -1,16 +1,15 @@
 import {
-  DEEPSEEK_RATE_SCHEDULE,
-  OLLAMA_RATE_SCHEDULE,
-  ZAI_RATE_SCHEDULE,
   antigravityUsageView,
   codexUsageView,
-  isOllamaPeakPricedModel,
+  isPeakPricedModel,
   mimoUsageView,
   ollamaUsageView,
   opencodeUsageView,
+  providerRateSchedule,
   providerSpec,
   providerString,
   quotaWindowsSummary,
+  ratePeriodForSchedule,
   zaiUsageView,
 } from "@reasonix/core-utils";
 import type { ProviderUsageView } from "@reasonix/core-utils";
@@ -18,8 +17,6 @@ import { useEffect, useRef, useState } from "react";
 import type { Balance, Settings, UsageStats } from "../App";
 import { t } from "../i18n";
 import { I } from "../icons";
-import { formatMoney } from "../money";
-import { isOffPeak, minutesUntilRateChange, rateMultiplier } from "../peak-hours";
 import type {
   AntigravityQuota,
   CodexQuota,
@@ -118,14 +115,12 @@ export function StatusBar({
   usage,
   busy,
   ready,
-  currency,
   theme,
   themeStyle,
   jobs,
   jobsOpen,
   onToggleJobs,
   onSetThemeStyle,
-  onToggleCurrency,
   onOpenWorkdir,
 }: {
   settings: Settings | null;
@@ -161,14 +156,12 @@ export function StatusBar({
   usage: UsageStats;
   busy: boolean;
   ready: boolean;
-  currency: "CNY" | "USD";
   theme: Theme;
   themeStyle: ThemeStyle;
   jobs: JobInfo[];
   jobsOpen: boolean;
   onToggleJobs: () => void;
   onSetThemeStyle: (style: ThemeStyle) => void;
-  onToggleCurrency: () => void;
   onOpenWorkdir?: (anchor: { bottom: number; left: number }) => void;
 }) {
   const sessionPromptTokens =
@@ -188,24 +181,10 @@ export function StatusBar({
         )
       : null;
   const runningJobs = jobs.filter((j) => j.running).length;
-  // "This turn" for pay-per-token providers is the latest model call's cost,
-  // NOT the cumulative session total (which feeds the settings session-cost card).
-  const turnCost = formatMoney(usage.lastCallCostUsd ?? 0, currency);
-  // Dual-currency: keep the primary display currency and show the conversion
-  // to the other one right next to it (¥ primary → $ conversion by default).
-  const turnCostOther = formatMoney(usage.lastCallCostUsd ?? 0, currency === "CNY" ? "USD" : "CNY");
   // Per-field visibility toggles — each defaults to true when absent from config.
-  const showTurnCost = settings?.statusBar?.showTurnCost ?? true;
-  const showSessionCost = settings?.statusBar?.showSessionCost ?? true;
   const showBalance = settings?.statusBar?.showBalance ?? true;
   const showCacheHit = settings?.statusBar?.showCacheHit ?? true;
   const showCtxUsage = settings?.statusBar?.showCtxUsage ?? true;
-  // Session-total cost (the settings card's figure) — a distinct chip from the
-  // per-turn "this turn" number, gated by showSessionCost. Quota-billed sessions
-  // show their accumulated plan-window % (native unit) instead of a dollar
-  // figure — never converted between providers.
-  const sessionCostDisplay = formatMoney(usage.totalCostUsd, currency);
-  const sessionCostOther = formatMoney(usage.totalCostUsd, currency === "CNY" ? "USD" : "CNY");
   // The tab's provider comes from the daemon-resolved endpoint info
   // (`ModelEndpointInfo.provider`), NEVER from the model name — a name doesn't
   // imply its provider (gpt-oss-* ids are served by Antigravity; custom gateway
@@ -217,11 +196,9 @@ export function StatusBar({
   const spec = ep?.provider ? providerSpec(ep.provider) : undefined;
   const auth = spec?.client.auth ?? null;
   const openaiTab = auth === "openai-oauth";
-  // These three classify the *rate-period* chip (a declared price calendar whose
+  // These two classify the *rate-period* chip (a declared price calendar whose
   // applicability is per model), never the money chips below.
   const ollamaTab = spec?.wire.format === "ollama-native";
-  const zaiTab = spec?.wire.thinking === "zai-top-level";
-  const deepseekTab = spec?.errors.serverReport === "balance-probe";
   // Which money chip this tab gets, and whether $ is its native unit — one resolver
   // for every provider, so a new one needs no ribbon edit (see usage-ribbon.ts).
   const funds = resolveRibbonFunds(spec, ep);
@@ -232,12 +209,6 @@ export function StatusBar({
   const antigravityData = probe === "antigravity-quota" ? antigravityQuota : null;
   const zaiData = probe === "zai-monitor" ? zaiQuota : null;
   const opencodeData = probe === "opencode-usage" ? opencodeQuota : null;
-  // A plan-window tab reports its accumulated percentage, never a dollar figure.
-  const sessionQuotaProvider =
-    funds.chip === "quota" ? (ep?.provider ?? null) : null;
-  const sessionQuotaCost =
-    sessionQuotaProvider !== null ? usage.costByProvider?.[sessionQuotaProvider] : undefined;
-  const sessionQuotaPct = sessionQuotaCost?.quotaUsedPct ?? null;
   const balanceLabel = balance
     ? `${balance.currency === "USD" ? "$" : "¥"} ${balance.total.toFixed(2)}`
     : "-";
@@ -279,8 +250,7 @@ export function StatusBar({
   const dotDanger = connState === "off" || authFailed;
   const dotWarn = !dotDanger && openaiAuth === "none";
   // OpenAI tabs swap the balance / $ display for the API-reported weekly
-  // Codex quota: % + credits left, and this turn's cost as % of the weekly
-  // limit (delta between fetches — OpenAI reports no dollar amounts). The
+  // Codex quota: % + credits left. The
   // swap follows the resolved provider, and even without quota data the
   // chips render an em dash + retry hint — the DeepSeek balance and $
   // amounts are meaningless on an OpenAI tab.
@@ -317,20 +287,17 @@ export function StatusBar({
           t("statusbar.quotaNoData"))
         : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
   // Antigravity (Gemini Code Assist): plan + the active model's used fraction.
-  // Rate-period visibility follows daemon-resolved provider/deployment metadata.
-  // Model matching only selects a price row after Ollama has already been resolved.
+  // Peak pricing follows daemon-resolved provider/deployment metadata and applies
+  // only to the ids the provider lists as priced (`billing.peakModels`), so a
+  // cheaper hosted model never inherits the rate chip.
   const ollamaPeakPricing =
     ollamaTab &&
     ep?.deployment === "cloud" &&
     ep?.billingKind === "usd" &&
-    isOllamaPeakPricedModel(settings?.model ?? "");
-  const rateSchedule = ollamaPeakPricing
-    ? OLLAMA_RATE_SCHEDULE
-    : deepseekTab
-      ? DEEPSEEK_RATE_SCHEDULE
-      : zaiTab
-        ? ZAI_RATE_SCHEDULE
-        : null;
+    isPeakPricedModel(settings?.model ?? "", spec?.billing.peakModels);
+  // The calendar is whatever the provider declares (`billing.schedule`): editing
+  // its JSON moves the peak hours, no code change needed.
+  const rateSchedule = ollamaTab && !ollamaPeakPricing ? null : providerRateSchedule(spec);
   const antigravityQuotaData = antigravityData;
   const agActive =
     antigravityQuotaData?.windows.find((w) => w.modelId === settings?.model) ??
@@ -501,9 +468,9 @@ export function StatusBar({
     const id = setInterval(() => setRateNow(new Date()), 30_000);
     return () => clearInterval(id);
   }, []);
-  const offPeak = rateSchedule ? isOffPeak(rateNow, rateSchedule) : true;
-  const rateMins = rateSchedule ? minutesUntilRateChange(rateNow, rateSchedule) : 0;
-  const rateMult = rateSchedule ? rateMultiplier(rateNow, rateSchedule) : 1;
+  const rate = rateSchedule ? ratePeriodForSchedule(rateNow, rateSchedule) : null;
+  const offPeak = !rate?.peak;
+  const rateMins = rate?.minutesUntilChange ?? 0;
   // Weekends push the next change past a full day — render "2d 9h" instead of
   // a raw "3420 min".
   const when =
@@ -581,57 +548,11 @@ export function StatusBar({
           <span className="v">{tokenLabel(totalTokens)}</span>
         </span>
       ) : null}
-      {showTurnCost && (funds.chip === "quota" || funds.costFigures) ? (
-        <span
-          className="seg"
-          title={
-            quotaChip.view?.turnUsedPct != null
-              ? (specCopy("quotaTurnTitle", { pct: quotaChip.view.turnUsedPct.toFixed(1) }) ??
-                t("statusbar.quotaTurnTitle", { pct: quotaChip.view.turnUsedPct.toFixed(1) }))
-              : undefined
-          }
-        >
-          <I.coin size={11} />
-          <span>{t("statusbar.thisTurn")}</span>
-          {funds.chip === "quota" ? (
-            quotaChip.view?.turnUsedPct != null ? (
-              <span className="v ok">{quotaChip.view.turnUsedPct.toFixed(1)}%</span>
-            ) : (
-              <span className="v ok">-</span>
-            )
-          ) : (
-            <span className="v ok">
-              {turnCost}
-              <span className="conv">{`(${turnCostOther})`}</span>
-            </span>
-          )}
-        </span>
-      ) : null}
-
-      {showSessionCost && funds.costFigures ? (
-        <span className="seg" title={t("settings.sessionCost")}>
-          <I.coin size={11} />
-          <span>{t("settings.sessionCost")}</span>
-          <span className="v ok">
-            {sessionCostDisplay}
-            <span className="conv">{`(${sessionCostOther})`}</span>
-          </span>
-        </span>
-      ) : showSessionCost && sessionQuotaPct !== null ? (
-        // Quota-billed session: accumulated plan-window % — the native unit, no
-        // dollar figure is ever derived from quota usage.
-        <span className="seg" title={t("settings.sessionCost")}>
-          <I.coin size={11} />
-          <span>{t("settings.sessionCost")}</span>
-          <span className="v ok">{sessionQuotaPct.toFixed(2)}%</span>
-        </span>
-      ) : null}
       {rateSchedule ? (
         <span className="seg" title={rateTitle}>
           <I.clock size={11} style={{ color: offPeak ? "var(--success)" : "var(--warning)" }} />
           <span className={`v ${offPeak ? "ok" : "warn"}`}>
             {offPeak ? t("statusbar.offPeak") : t("statusbar.peak")}
-            <span className="conv">{`${rateMult}x`}</span>
           </span>
         </span>
       ) : null}
@@ -691,12 +612,7 @@ export function StatusBar({
         </span>
       ) : null}
       {showBalance && funds.chip === "wallet" ? (
-        <span
-          className="seg"
-          title={t("statusbar.switchCurrency")}
-          onClick={onToggleCurrency}
-          onKeyDown={activationHandler(onToggleCurrency)}
-        >
+        <span className="seg">
           <I.coin size={11} />
           <span>{t("statusbar.balance")}</span>
           <span className="v ok">

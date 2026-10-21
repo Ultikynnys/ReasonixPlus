@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Usage } from "../src/client.js";
 import { appendUsage } from "../src/telemetry/usage.js";
 
-describe("appendUsage provider-aware pricing", () => {
+describe("appendUsage", () => {
   let dir: string;
   let path: string;
 
@@ -18,46 +18,39 @@ describe("appendUsage provider-aware pricing", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("persists Ollama Cloud off-peak USD cost from explicit provider context", () => {
+  it("persists the token snapshot for a turn", () => {
     const record = appendUsage({
       session: "test",
-      model: "ollama/deepseek-v4-flash",
+      model: "deepseek-v4-flash",
       usage: new Usage(2_000_000, 1_000_000, 3_000_000, 1_000_000, 1_000_000),
       now: Date.UTC(2026, 8, 5, 13),
       path,
-      billingKind: "usd",
-      provider: "ollama",
     });
     expect(record).toMatchObject({
-      provider: "ollama",
-      billingKind: "usd",
-      costUsd: 0.887,
+      session: "test",
+      model: "deepseek-v4-flash",
+      promptTokens: 2_000_000,
+      completionTokens: 1_000_000,
+      cacheHitTokens: 1_000_000,
+      cacheMissTokens: 1_000_000,
     });
   });
 
-  it("persists 2x Ollama Cloud pricing during the weekday peak window", () => {
+  it("tags a subagent row and keeps its attribution metadata", () => {
     const record = appendUsage({
       session: null,
-      model: "ollama/deepseek-v4-pro:cloud",
-      usage: new Usage(2_000_000, 1_000_000, 3_000_000, 1_000_000, 1_000_000),
-      now: Date.UTC(2026, 0, 1, 12),
+      model: "deepseek-v4-flash",
+      usage: new Usage(100, 10),
       path,
-      billingKind: "usd",
-      provider: "ollama",
+      kind: "subagent",
+      subagent: {
+        skillName: "review",
+        taskPreview: "review changes",
+        toolIters: 3,
+        durationMs: 1200,
+      },
     });
-    expect(record.costUsd).toBeCloseTo((0.022 + 0.66 + 1.98) * 2, 10);
-  });
-
-  it("does not apply Ollama pricing to the same id resolved to another provider", () => {
-    const record = appendUsage({
-      session: null,
-      model: "ollama/deepseek-v4-flash",
-      usage: new Usage(1_000_000, 1_000_000, 2_000_000, 0, 1_000_000),
-      now: Date.UTC(2026, 0, 1, 13),
-      path,
-      billingKind: "usd",
-      provider: "openai",
-    });
-    expect(record.costUsd).toBe(0);
+    expect(record.kind).toBe("subagent");
+    expect(record.subagent).toMatchObject({ skillName: "review", toolIters: 3, durationMs: 1200 });
   });
 });

@@ -354,6 +354,7 @@ export function ReasoningCard({
       name={t("cards.reasoningName")}
       meta={
         <>
+          {model ? <span className="meta-model">{modelDisplayLabel(model)}</span> : null}
           {durationMs !== undefined ? (
             <span className="meta-dur">{formatDuration(durationMs)}</span>
           ) : null}
@@ -371,18 +372,11 @@ export function ReasoningCard({
     >
       <div className="reason">
         <ReasoningStream text={text} streaming={streaming} />
-        {model || tokens !== undefined ? (
+        {tokens !== undefined ? (
           <div className="meta">
-            {model ? (
-              <span>
-                <span className="k">{t("settings.model")}</span> {modelDisplayLabel(model)}
-              </span>
-            ) : null}
-            {tokens !== undefined ? (
-              <span>
-                <span className="k">{t("statusbar.tokens")}</span> {tokens.toLocaleString()}
-              </span>
-            ) : null}
+            <span>
+              <span className="k">{t("statusbar.tokens")}</span> {tokens.toLocaleString()}
+            </span>
           </div>
         ) : null}
       </div>
@@ -1114,16 +1108,13 @@ function dotJoin(parts: ReadonlyArray<string | number | null | undefined>): stri
 }
 
 export type SubagentResultMeta = {
-  costUsd?: number;
-  billingKind?: "usd" | "quota" | "none";
-  quotaUsedPct?: number;
   model?: string;
   elapsedMs?: number;
   turns?: number;
 };
 
-/** Recover model / cost / billing from the subagent's persisted result envelope. The
- *  live `subagent.progress` stream carries these on `subagentRuns`, but after a session
+/** Recover model metadata from the subagent's persisted result envelope. The
+ *  live `subagent.progress` stream carries it on `subagentRuns`, but after a session
  *  reload `subagentRuns` is not persisted — the result JSON is the reliable source. */
 export function extractSubagentResultMeta(result?: string): SubagentResultMeta {
   if (!result) return {};
@@ -1131,16 +1122,7 @@ export function extractSubagentResultMeta(result?: string): SubagentResultMeta {
     const parsed = JSON.parse(result) as Record<string, unknown>;
     if (!parsed || typeof parsed !== "object") return {};
     const out: SubagentResultMeta = {};
-    if (typeof parsed.cost_usd === "number") out.costUsd = parsed.cost_usd;
     if (typeof parsed.model === "string") out.model = parsed.model;
-    if (
-      parsed.billing_kind === "usd" ||
-      parsed.billing_kind === "quota" ||
-      parsed.billing_kind === "none"
-    ) {
-      out.billingKind = parsed.billing_kind;
-    }
-    if (typeof parsed.quota_used_pct === "number") out.quotaUsedPct = parsed.quota_used_pct;
     if (typeof parsed.elapsed_ms === "number") out.elapsedMs = parsed.elapsed_ms;
     if (typeof parsed.turns === "number") out.turns = parsed.turns;
     return out;
@@ -1358,26 +1340,6 @@ export function SubagentCard({
       ? "failed"
       : "done";
   const settled = status !== "running";
-  // Token-priced runs: sum the real USD cost once every run has settled.
-  const settledCostUsd =
-    settled && runs.every((run) => run.costUsd !== undefined)
-      ? runs.reduce((total, run) => total + (run.costUsd ?? 0), 0)
-      : null;
-  // Plan-based runs: sum the consumed provider-window % for runs that produced
-  // a measurable quota delta. A `$` figure would be invented for these models.
-  const quotaRuns = runs.filter(
-    (run) => run.billingKind === "quota" && run.quotaUsedPct !== undefined,
-  );
-  const settledQuotaPct =
-    settled && quotaRuns.length > 0
-      ? quotaRuns.reduce((total, run) => total + (run.quotaUsedPct ?? 0), 0)
-      : null;
-  const billingMeta =
-    settledQuotaPct !== null
-      ? `${settledQuotaPct.toFixed(2)}%`
-      : settledCostUsd !== null && settledCostUsd > 0
-        ? `$${settledCostUsd.toFixed(4)}`
-        : null;
   // The envelope is parsed once: echoing the raw JSON is what made the card
   // unreadable, so the answer / partial / error split is derived here instead.
   const view = useMemo(() => parseSubagentResult(result), [result]);
@@ -1443,7 +1405,6 @@ export function SubagentCard({
           {contexts.length > 0 ? (
             <span className="meta-context">ctx {contexts.join(" / ")}</span>
           ) : null}
-          {billingMeta ? <span className="meta-cost">{billingMeta}</span> : null}
           <span>
             {done} / {runs.length} {t("cards.subagentDoneProgress")}
           </span>
@@ -1571,7 +1532,6 @@ export function SubagentCard({
                     ? `${run.reasoningChars.toLocaleString()} reasoning chars`
                     : null,
                   run.turns !== undefined ? `${run.turns} turns` : null,
-                  run.costUsd !== undefined ? `$${run.costUsd.toFixed(4)}` : null,
                 ])}
               </div>
               {run.budgetExhausted ? (

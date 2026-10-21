@@ -92,12 +92,9 @@ import {
   latestCacheDiagnostic,
 } from "./telemetry/cache-diagnostics.js";
 import {
-  type BillingContext,
-  type BillingKind,
   type CacheDiagnostics,
   SessionStats,
   type TurnStats,
-  billingContextForModel,
   resolveContextTokens,
 } from "./telemetry/stats.js";
 import {
@@ -224,10 +221,6 @@ export interface CacheFirstLoopOptions {
    *  (not a snapshot) so a mid-session Shift+Tab flip takes effect, same
    *  pattern as shell.ts's `allowAll`. */
   getEditMode?: () => EditMode;
-  /** Resolves provider and native billing unit from endpoint/config evidence. */
-  billingContextFor?: (model: string) => Omit<BillingContext, "at">;
-  /** @deprecated Compatibility hook. Prefer billingContextFor. */
-  billingKindFor?: (model: string) => BillingKind;
   /** User-configured context-window cap (tokens). Undefined = per-model default.
    *  Hot-applied via configure(). */
   ctxMaxOverride?: number;
@@ -415,9 +408,6 @@ export class CacheFirstLoop {
 
   private readonly _rebuildSystem: (() => string) | null;
 
-  /** Provider and native billing resolver. Timestamp is attached at request completion. */
-  private readonly _billingContextFor: (model: string) => Omit<BillingContext, "at">;
-
   private _turn = 0;
   private _streamPreference: boolean;
   /** Threaded through HTTP + every tool dispatch so Esc cancels in-flight work, not after. */
@@ -573,14 +563,6 @@ export class CacheFirstLoop {
     this.hookCwd = opts.hookCwd ?? process.cwd();
     this.confirmationGate = opts.confirmationGate ?? defaultPauseGate;
     this._rebuildSystem = opts.rebuildSystem ?? null;
-    this._billingContextFor =
-      opts.billingContextFor ??
-      ((model) => {
-        const resolved = billingContextForModel(model);
-        return opts.billingKindFor
-          ? { kind: opts.billingKindFor(model), provider: resolved.provider }
-          : resolved;
-      });
     this._streamPreference = opts.stream ?? true;
     this.stream = this._streamPreference;
 
@@ -626,18 +608,15 @@ export class CacheFirstLoop {
       // rewrite and let a rebuilt runtime reissue ordinals the desktop
       // already rendered.
       this._turn = Math.max(this._turn, resumeTurnBaseline(messages));
-      // Carry forward cumulative cost / turn count so the TUI's session
-      // total continues across resumes; otherwise each restart resets to $0.
+      // Carry forward the turn count and cumulative token stats across resumes.
       if (messages.length > 0) {
         const meta = loadSessionMeta(this.sessionName);
         this.stats.seedCarryover({
-          totalCostUsd: meta.totalCostUsd,
           turnCount: meta.turnCount,
           cacheHitTokens: meta.cacheHitTokens,
           cacheMissTokens: meta.cacheMissTokens,
           totalCompletionTokens: meta.totalCompletionTokens,
           lastPromptTokens: meta.lastPromptTokens,
-          costByProvider: meta.costByProvider,
         });
       }
       if (healedCount > 0 || pruned.prunedCount > 0) {
@@ -2221,7 +2200,6 @@ export class CacheFirstLoop {
         callModel,
         usage ?? new Usage(),
         cacheDiagnostics,
-        { ...this._billingContextFor(callModel), at: Date.now() },
       );
 
       // Carry cumulative stats across app restarts.
@@ -2229,13 +2207,8 @@ export class CacheFirstLoop {
         turn: this._turn,
         model: callModel,
         usage: turnStats.usage,
-        estimatedCostUsd: turnStats.cost,
         prefix: prefixEvidence,
         previous: latestCacheDiagnostic(this.stats.cacheDiagnostics),
-        pricingContext:
-          turnStats.pricedAt === undefined
-            ? undefined
-            : { provider: turnStats.provider, at: turnStats.pricedAt },
       });
       if (this.sessionName) {
         try {
@@ -2246,22 +2219,12 @@ export class CacheFirstLoop {
             turn: this._turn,
             model: callModel,
             usage: turnStats.usage,
-            estimatedCostUsd: turnStats.cost,
             prefix: prefixEvidence,
             previous: latestCacheDiagnostic(meta.cacheDiagnostics),
-            pricingContext:
-              turnStats.pricedAt === undefined
-                ? undefined
-                : { provider: turnStats.provider, at: turnStats.pricedAt },
           });
           const last =
             this.stats.turns.length > 0 ? this.stats.turns[this.stats.turns.length - 1] : null;
           patchSessionMeta(this.sessionName, {
-            totalCostUsd: this.stats.totalCost,
-            // Deep-merge per-provider costs: the loop owns USD-kind providers
-            // (from its stats), while the desktop accumulates plan-window quota
-            // deltas directly into meta — one must never overwrite the other.
-            costByProvider: { ...meta.costByProvider, ...this.stats.providerCosts },
             cacheHitTokens: this.stats.cumulativeCacheHitTokens,
             cacheMissTokens: this.stats.cumulativeCacheMissTokens,
             totalCompletionTokens: this.stats.cumulativeCompletionTokens,
@@ -2270,7 +2233,7 @@ export class CacheFirstLoop {
           });
         } catch (err) {
           // Best-effort; don't crash the turn loop on a write failure — but
-          // never silent: a lost cost/usage update is real data loss.
+          // never silent: a lost usage update is real data loss.
           process.stderr.write(`reasonix: session meta patch failed — ${messageOf(err)}\n`);
         }
       }

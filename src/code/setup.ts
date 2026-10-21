@@ -2,7 +2,6 @@ import type { DeepSeekClient } from "../client.js";
 import {
   DEFAULT_MODEL,
   type EditMode,
-  type ModelProvider,
   type ReasoningEffort,
   isNeverAskMode,
   loadAllShellAllowed,
@@ -12,7 +11,6 @@ import {
   loadProjectShellAllowed,
   loadSubagentModels,
   loadToolRateLimit,
-  providerForModel,
   readConfig,
   regexRulePatterns,
   ruleModeInForce,
@@ -46,19 +44,6 @@ import { registerTodoTool } from "../tools/todo.js";
 import { registerWaitTool } from "../tools/wait.js";
 import { registerWebTools } from "../tools/web.js";
 
-/** How a subagent model is billed, for display purposes only. "usd" = a token-priced
- *  API cost is meaningful; "quota" = the provider's plan window % is the real unit
- *  (no monetary cost is exposed); "none" = no cost metric should be shown. */
-export interface SubagentBilling {
-  kind: "usd" | "quota" | "none";
-  /** Provider resolved from config/catalog/endpoint evidence. */
-  provider: ModelProvider;
-  /** Returns the provider plan-window used % (0..100) for the model. Snapshotted
-   *  before and after the run to compute the consumed quota delta. Only consulted
-   *  when kind === "quota". */
-  measureQuota?: () => Promise<number | null>;
-}
-
 export interface CodeToolsetOpts {
   rootDir: string;
   /** Override the default `~/.reasonix/config.json` lookup — primarily for tests that pin a tmp config. */
@@ -73,10 +58,6 @@ export interface CodeToolsetOpts {
   onShellOutput?: (ev: import("../tools/shell.js").ShellOutputEvent) => void;
   /** Shared `{current: callback}` sink the TUI populates after mount. Setup forwards it into every `spawnSubagent` so live progress events reach the rich subagent row even though setup runs before the UI does. */
   subagentSink?: SubagentSink;
-  /** Declares how a subagent model bills, per resolved model id. Omitted → "usd"
-   *  (token-priced cost). Desktop supplies this so plan-based providers show a
-   *  quota % instead of an invented dollar figure. */
-  subagentBilling?: (model: string) => SubagentBilling | undefined;
   /** Per-tab subagent model, resolved lazily at spawn time via a getter so a
    *  change applies to the next spawn without rebuilding the toolset. */
   subagentModel?: () => string;
@@ -207,7 +188,6 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
       projectRoot: opts.rootDir,
       defaultModel: () => opts.subagentModel?.() ?? DEFAULT_MODEL,
       effort: opts.subagentEffort,
-      billingFor: (model) => opts.subagentBilling?.(model),
       inherited: opts.subagentLoopOptions,
       // Late-bound: the TUI's `useSubagent` writes the live callback into
       // SHARED_SUBAGENT_SINK after mount. Until then `.current` is null

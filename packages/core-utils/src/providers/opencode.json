@@ -132,7 +132,7 @@
     "idField": "id",
     "excludeSpeech": false
   },
-  "billing": { "kind": "none" },
+  "billing": { "kind": "none", "schedule": null },
   "usage": { "probe": "opencode-usage" },
   "strings": {
     "notConfigured": "Not configured yet — OpenCode endpoint is unavailable.",
@@ -141,7 +141,6 @@
     "quotaLabel": "Go usage",
     "quotaTitle": "OpenCode Go plan · 5h: {rolling}% left · weekly: {weekly}% left · monthly: {monthly}% left · click to refresh",
     "quotaNoData": "OpenCode Go usage · no data: sign in to OpenCode (Settings → OpenCode) with a Go subscription to see plan usage · click to retry",
-    "quotaTurnTitle": "This turn used {pct}% of the OpenCode Go 5-hour quota",
     "quotaPlanFallback": "Go",
     "freeLabel": "plan usage",
     "freeTier": "free",

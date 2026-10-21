@@ -13,8 +13,6 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn() }));
 
 const usage: UsageStats = {
-  totalCostUsd: 0,
-  lastCallCostUsd: 0,
   totalPromptTokens: 0,
   totalCompletionTokens: 0,
   cacheHitTokens: 0,

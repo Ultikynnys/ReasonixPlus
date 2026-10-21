@@ -15,7 +15,7 @@ export function buildAssistantMessage(
         { type: "image" as const, data_url: image.dataUrl, mime_type: image.mimeType },
       ]
     : content;
-  const msg: ChatMessage = { role: "assistant", content: msgContent };
+  const msg: ChatMessage = { role: "assistant", content: msgContent, model: producingModel };
   if (toolCalls.length > 0) msg.tool_calls = toolCalls;
   // V4-era deepseek-chat returns reasoning_content even with thinking.type
   // disabled, and the API rejects round-trips that drop it. Whitelist on

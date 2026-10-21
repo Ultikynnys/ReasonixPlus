@@ -140,7 +140,6 @@ describe("Desktop App reducer — usage", () => {
         content: "ok",
         toolCalls: [],
         usage: { prompt_tokens: 1234, completion_tokens: 56, total_tokens: 1290 },
-        costUsd: 0.001,
       },
     });
 
@@ -170,7 +169,6 @@ describe("Desktop App reducer — usage", () => {
           prompt_cache_hit_tokens: 800,
           prompt_cache_miss_tokens: 200,
         },
-        costUsd: 0,
       },
     });
 
@@ -1197,7 +1195,6 @@ describe("Desktop App reducer — usage", () => {
         name: "sess-2",
         messages: [],
         carryover: {
-          totalCostUsd: 0,
           cacheHitTokens: 0,
           cacheMissTokens: 0,
           totalCompletionTokens: 0,
@@ -1230,7 +1227,6 @@ describe("Desktop App reducer — usage", () => {
         content: "ok",
         toolCalls: [],
         usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 },
-        costUsd: 0,
       },
     });
 
@@ -1258,7 +1254,6 @@ describe("Desktop App reducer — usage", () => {
         content: "ok",
         toolCalls: [],
         usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 },
-        costUsd: 0,
       },
     });
 
@@ -1374,7 +1369,7 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
         },
       ],
     };
-    const next = reduce(state, { t: "clear" });
+    const next = reduce(state, { t: "detach_session" });
     expect(next.pendingConfirms).toHaveLength(0);
     expect(next.pendingPathAccess).toHaveLength(0);
   });
@@ -2347,6 +2342,81 @@ describe("Desktop App reducer — Events tab recordings", () => {
     expect(settled.sessionEvents[0]).toMatchObject({ type: "subagent", outcome: "failed" });
     // The row keeps the stamp of the spawn: it did not happen a second time.
     expect(settled.sessionEvents[0]?.ts).toBe(started);
+    // A result that is not the subagent envelope is the answer as it came.
+    expect(settled.sessionEvents[0]?.result).toBe("ERROR: gave up");
+  });
+
+  it("settles the subagent row with the answer the child came back with", () => {
+    const spawned = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "tool.intent",
+        id: 1,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        callId: "tc-4",
+        name: "spawn_subagent",
+        args: JSON.stringify({ task: "find the callers" }),
+      },
+    });
+    const settled = reduce(spawned, {
+      t: "incoming",
+      event: {
+        type: "tool.result",
+        id: 2,
+        ts: "2026-05-27T00:00:01.000Z",
+        turn: 1,
+        callId: "tc-4",
+        ok: true,
+        output: JSON.stringify({
+          success: true,
+          output: "The callers are in src/loop.ts and src/tools.",
+          turns: 2,
+        }),
+      },
+    });
+    // The row says what the child found, not just that it finished: the card that
+    // carried the answer scrolls away, the row does not.
+    expect(settled.sessionEvents[0]).toMatchObject({
+      type: "subagent",
+      outcome: "done",
+      result: "The callers are in src/loop.ts and src/tools.",
+    });
+  });
+
+  it("keeps a partial child's note beside the answer it did produce", () => {
+    const spawned = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "tool.intent",
+        id: 1,
+        ts: "2026-05-27T00:00:00.000Z",
+        turn: 1,
+        callId: "tc-5",
+        name: "spawn_subagent",
+        args: JSON.stringify({ task: "audit the loop" }),
+      },
+    });
+    const settled = reduce(spawned, {
+      t: "incoming",
+      event: {
+        type: "tool.result",
+        id: 2,
+        ts: "2026-05-27T00:00:01.000Z",
+        turn: 1,
+        callId: "tc-5",
+        ok: true,
+        output: JSON.stringify({
+          success: true,
+          partial: true,
+          output: "Halfway through the reducer chain.",
+          note: "budget exhausted",
+        }),
+      },
+    });
+    expect(settled.sessionEvents[0]?.result).toBe(
+      "Halfway through the reducer chain.\n\nbudget exhausted",
+    );
   });
 
   it("records no event for a tool call that is not a subagent", () => {
@@ -2376,7 +2446,6 @@ describe("Desktop App reducer — Events tab recordings", () => {
           { id: "plan-1", type: "plan", ts: 1_000, turn: 1, outcome: "refine", label: "Rework" },
         ],
         carryover: {
-          totalCostUsd: 0,
           cacheHitTokens: 0,
           cacheMissTokens: 0,
           totalCompletionTokens: 0,
@@ -2384,7 +2453,7 @@ describe("Desktop App reducer — Events tab recordings", () => {
       },
     });
     expect(loaded.sessionEvents.map((e) => e.id)).toEqual(["plan-1"]);
-    expect(reduce(loaded, { t: "clear" }).sessionEvents).toEqual([]);
+    expect(reduce(loaded, { t: "detach_session" }).sessionEvents).toEqual([]);
   });
 });
 
@@ -2675,7 +2744,6 @@ describe("Desktop App reducer — card ordering", () => {
           },
         ],
         carryover: {
-          totalCostUsd: 0,
           cacheHitTokens: 0,
           cacheMissTokens: 0,
           totalCompletionTokens: 0,
@@ -2996,7 +3064,6 @@ describe("Desktop App reducer — $session_loaded resync echo", () => {
           },
         ],
         carryover: {
-          totalCostUsd: 0,
           cacheHitTokens: 0,
           cacheMissTokens: 0,
           totalCompletionTokens: 0,
@@ -3031,6 +3098,75 @@ describe("Desktop App reducer — $session_loaded resync echo", () => {
     const next = reduce(base, loaded("sess-2", false));
     expect(next.currentSession).toBe("sess-2");
     expect(next.messages).toHaveLength(2);
+  });
+});
+
+describe("Desktop App reducer — $session_bound (the neutral state)", () => {
+  const bound = (name: string): Parameters<typeof reduce>[1] => ({
+    t: "incoming",
+    event: { type: "$session_bound", name },
+  });
+
+  it("drops the deleted conversation when the channel is bound to nothing", () => {
+    const base = {
+      ...initialState(),
+      currentSession: "doomed",
+      messages: [{ kind: "user" as const, text: "typed into it", clientId: "c", turn: 1 }],
+    };
+    const next = reduce(base, bound(""));
+    expect(next.currentSession).toBeUndefined();
+    expect(next.messages).toEqual([]);
+  });
+
+  it("clears the per-session plan, queue and files that belonged to the deleted session", () => {
+    const base = {
+      ...initialState(),
+      currentSession: "doomed",
+      activePlan: {
+        plan: "# Body",
+        steps: [{ id: "step-1", title: "t", action: "a" }],
+        completedStepIds: [],
+        stepResults: {},
+        status: "active" as const,
+      },
+      queuedSends: [{ text: "queued before the delete" }],
+      sessionFiles: [{ path: "src/App.tsx", status: "m" as const }],
+    };
+    const next = reduce(base, bound(""));
+    expect(next.activePlan).toBeNull();
+    expect(next.queuedSends).toEqual([]);
+    expect(next.sessionFiles).toEqual([]);
+  });
+
+  it("adopts the session created for the message typed while neutral, keeping that message", () => {
+    // The daemon binds the session on the first send, so the optimistic echo the
+    // user is looking at must survive: only the name changes.
+    const echoing = reduce(
+      { ...initialState(), currentSession: undefined },
+      { t: "send_user", text: "hello", clientId: "c-9" },
+    );
+    const next = reduce(echoing, bound("desktop-20260101120000-3"));
+    expect(next.currentSession).toBe("desktop-20260101120000-3");
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({ kind: "user", text: "hello" });
+  });
+
+  it("keeps the state untouched when the channel is already bound to that session", () => {
+    const base = { ...initialState(), currentSession: "sess-1" };
+    expect(reduce(base, bound("sess-1"))).toBe(base);
+  });
+
+  it("drops a transcript it can no longer vouch for when the bind swaps sessions", () => {
+    // A rebind between two sessions is not a load: the rows on screen belong to the
+    // other conversation, so they must not be shown — or synced — under this name.
+    const base = {
+      ...initialState(),
+      currentSession: "old",
+      messages: [{ kind: "user" as const, text: "old question", clientId: "c", turn: 1 }],
+    };
+    const next = reduce(base, bound("new"));
+    expect(next.currentSession).toBe("new");
+    expect(next.messages).toEqual([]);
   });
 });
 
@@ -3214,6 +3350,28 @@ describe("Desktop App reducer — reasoning duration", () => {
     }
   });
 
+  it("stamps each reasoning run with the model that produced it", () => {
+    const delta = (id: number, channel: "reasoning" | "content", text: string) =>
+      ({ type: "model.delta", id, ts: "t", turn: 1, channel, text }) as const;
+
+    let state = reduce(initialState(), { t: "incoming", event: turnStarted });
+    state = reduce(state, { t: "incoming", event: delta(2, "reasoning", "primary") });
+    // Content closes the first run; the fallback model then owns the second.
+    state = reduce(state, { t: "incoming", event: delta(3, "content", "answer") });
+    state = reduce(state, {
+      t: "incoming",
+      event: { ...turnStarted, id: 4, model: "deepseek-v4-pro" },
+    });
+    state = reduce(state, { t: "incoming", event: delta(5, "reasoning", "retry") });
+
+    const assistant = state.messages.find((m) => m.kind === "assistant");
+    if (assistant?.kind !== "assistant") throw new Error("no assistant card");
+    expect(assistant.segments.filter((s) => s.kind === "reasoning")).toMatchObject([
+      { text: "primary", model: "deepseek-v4-flash" },
+      { text: "retry", model: "deepseek-v4-pro" },
+    ]);
+  });
+
   it("closes an open reasoning run at model.final when nothing else streamed", () => {
     const now = vi.spyOn(Date, "now");
     try {
@@ -3241,7 +3399,6 @@ describe("Desktop App reducer — reasoning duration", () => {
           content: "",
           toolCalls: [],
           usage: {},
-          costUsd: 0,
         },
       });
 
@@ -3310,7 +3467,6 @@ describe("Desktop App reducer — model.final content", () => {
         content: "[aborted by user — no response produced.]",
         toolCalls: [],
         usage: {},
-        costUsd: 0,
       },
     });
     const assistant = next.messages.find((m) => m.kind === "assistant");
@@ -3336,7 +3492,6 @@ describe("Desktop App reducer — model.final content", () => {
         content: "",
         toolCalls: [],
         usage: {},
-        costUsd: 0,
         image: { dataUrl: "data:image/jpeg;base64,AAAA", mimeType: "image/jpeg" },
       },
     });
@@ -3368,7 +3523,6 @@ describe("Desktop App reducer — model.final content", () => {
         content: "",
         toolCalls: [],
         usage: {},
-        costUsd: 0,
       },
     });
     let assistant = state.messages.find((m) => m.kind === "assistant");
@@ -3408,7 +3562,6 @@ describe("Desktop App reducer — model.final content", () => {
         content: "partial answer",
         toolCalls: [],
         usage: {},
-        costUsd: 0,
       },
     });
     const assistant = next.messages.find((m) => m.kind === "assistant");
@@ -3442,14 +3595,13 @@ describe("Desktop App reducer — model.final content", () => {
         replaceStreamedOutput: true,
         toolCalls: [],
         usage: {},
-        costUsd: 0,
       },
     });
     const assistant = next.messages.find((m) => m.kind === "assistant");
     if (assistant?.kind !== "assistant") throw new Error("no assistant message");
     expect(assistant.pending).toBe(false);
     expect(assistant.segments).toEqual([
-      { kind: "reasoning", text: "Checked files." },
+      { kind: "reasoning", text: "Checked files.", model: "deepseek-v4-flash" },
       { kind: "text", text: "Safe prefix " },
     ]);
   });
@@ -3466,7 +3618,6 @@ describe("Desktop App reducer — model.final content", () => {
         content: "Useful text before loop.",
         toolCalls: [],
         usage: {},
-        costUsd: 0,
       },
     });
     const next = reduce(state, {
@@ -3547,7 +3698,6 @@ describe("Desktop App reducer — model.final content", () => {
         content: "[aborted by user (Esc) — interrupted turn discarded. Ask again when ready.]",
         toolCalls: [],
         usage: {},
-        costUsd: 0,
         forcedSummary: true,
       },
     });
@@ -3806,7 +3956,6 @@ describe("Desktop App reducer — image attachments", () => {
           },
         ],
         carryover: {
-          totalCostUsd: 0,
           cacheHitTokens: 0,
           cacheMissTokens: 0,
           totalCompletionTokens: 0,
@@ -4481,7 +4630,6 @@ describe("Desktop App reducer — plan restore", () => {
         name: "other",
         messages: [],
         carryover: {
-          totalCostUsd: 0,
           cacheHitTokens: 0,
           cacheMissTokens: 0,
           totalCompletionTokens: 0,
@@ -4537,7 +4685,6 @@ describe("Desktop App reducer — plan labels are workspace-scoped", () => {
         name: "foreground",
         messages: [],
         carryover: {
-          totalCostUsd: 0,
           cacheHitTokens: 0,
           cacheMissTokens: 0,
           totalCompletionTokens: 0,
@@ -4561,7 +4708,6 @@ describe("Desktop App reducer — Ollama usage quota", () => {
         quota: {
           session: { usagePct: 0.3, remainingPct: 99.7 },
           weekly: { usagePct: 0.1, remainingPct: 99.9 },
-          turnUsedPct: 0.1,
           fetchedAt: 1234,
         },
       },
@@ -4569,7 +4715,6 @@ describe("Desktop App reducer — Ollama usage quota", () => {
     expect(next.ollamaQuota).toMatchObject({
       session: { usagePct: 0.3, remainingPct: 99.7 },
       weekly: { usagePct: 0.1, remainingPct: 99.9 },
-      turnUsedPct: 0.1,
     });
     expect(next.ollamaQuotaRefreshing).toBe(false);
     expect(next.ollamaQuotaReason).toBeNull();
@@ -4826,5 +4971,40 @@ describe("Desktop App reducer — turn phase vs daemon status", () => {
     expect(next.turnStatus).toBe("responding");
     expect(next.turnStatusWait).toBeNull();
     expect(next.turnLastEventMs).toBeGreaterThan(1);
+  });
+});
+
+describe("Desktop App reducer — queued sends", () => {
+  function queued(...texts: string[]): Parameters<typeof reduce>[0] {
+    return { ...initialState(), queuedSends: texts.map((text) => ({ text })) };
+  }
+
+  it("promotes the clicked message to the head, keeping the rest in order", () => {
+    const next = reduce(queued("first", "second", "third"), {
+      t: "promote_queued_send",
+      index: 2,
+    });
+
+    expect(next.queuedSends.map((item) => item.text)).toEqual(["third", "first", "second"]);
+  });
+
+  it("leaves the queue object alone when the message is already the head", () => {
+    const state = queued("first", "second");
+    expect(reduce(state, { t: "promote_queued_send", index: 0 })).toBe(state);
+  });
+
+  it("ignores a promote for an index the queue no longer holds", () => {
+    const state = queued("first", "second");
+    expect(reduce(state, { t: "promote_queued_send", index: 5 })).toBe(state);
+  });
+
+  it("dequeue keeps working by index after a promote", () => {
+    const promoted = reduce(queued("first", "second", "third"), {
+      t: "promote_queued_send",
+      index: 2,
+    });
+    const dequeued = reduce(promoted, { t: "dequeue_send", index: 0 });
+
+    expect(dequeued.queuedSends.map((item) => item.text)).toEqual(["first", "second"]);
   });
 });

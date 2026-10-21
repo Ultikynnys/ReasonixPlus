@@ -36,7 +36,6 @@ import {
 } from "../desktop/session-directory-index.js";
 import { reasonixHome } from "../reasonix-home.js";
 import type { CacheDiagnosticEntry } from "../telemetry/cache-diagnostics.js";
-import type { SessionProviderCost } from "../telemetry/stats.js";
 import type { ChatMessage } from "../types.js";
 import {
   SESSION_MESSAGES_FILENAME,
@@ -130,7 +129,6 @@ export interface SessionMeta {
    *  sidebar's creation-date sort; sessions minted before this field existed
    *  fall back to the timestamp embedded in their name. */
   createdAt?: number;
-  totalCostUsd?: number;
   turnCount?: number;
   /** Byte length of messages.jsonl when this meta was last written, with the
    *  record count for exactly those bytes. The directory index trusts the pair to
@@ -142,12 +140,6 @@ export interface SessionMeta {
   lastTurn?: number;
   /** Absolute path of the workspace root the session was created/used in. */
   workspace?: string;
-  /** Wallet currency at last save — used to format `totalCostUsd` in the picker without re-fetching balance. */
-  balanceCurrency?: string;
-  /** Per-provider cumulative costs in each provider's native unit (USD for
-   *  token-priced APIs, plan-window % for quota APIs). Never converted between
-   *  providers. Keyed by provider id ("deepseek" | "openai" | "ollama" | "gemini"). */
-  costByProvider?: Record<string, SessionProviderCost>;
   /** Cumulative cache hit / miss tokens across the session — survives resume so the status cache% isn't 0 on a fresh boot. */
   cacheHitTokens?: number;
   cacheMissTokens?: number;
@@ -559,6 +551,7 @@ function isSessionEventRecord(value: unknown): value is SessionEventRecord {
     optionalText(v.detail) &&
     optionalTextList(v.options) &&
     optionalText(v.body) &&
+    optionalText(v.result) &&
     optionalTextList(v.steps) &&
     optionalText(v.anchor) &&
     optionalText(v.anchorAlias)
