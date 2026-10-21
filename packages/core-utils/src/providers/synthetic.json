@@ -26,6 +26,16 @@
   ],
   "goModels": [],
   "speechModels": [],
+  "modelId": {
+    "stripPrefixes": ["hf:"],
+    "stripOwner": true,
+    "labels": {
+      "syn:large:text": "Large (text)",
+      "syn:large:vision": "Large (vision)",
+      "syn:small:text": "Small (text)",
+      "syn:small:vision": "Small (vision)"
+    }
+  },
   "vision": {
     "models": [
       "syn:large:text",

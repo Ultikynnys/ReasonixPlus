@@ -216,6 +216,24 @@ export interface ProviderBalanceSpec {
   shape: ProviderBalanceShape;
 }
 
+/** How a provider's model ids read to a person. The wire id stays the value that
+ *  routes and persists; this only decides what the label says. */
+export interface ProviderModelIdSpec {
+  /** Leading scheme markers that carry no meaning for a reader (`hf:`). */
+  stripPrefixes: readonly string[];
+  /** Drop a hub-style `<owner>/` segment (`Qwen/Qwen3.8-27B` → `Qwen3.8-27B`). */
+  stripOwner: boolean;
+  /** Exact labels for ids that are an alias rather than a name, keyed by wire id. */
+  labels: Readonly<Record<string, string>>;
+}
+
+/** Safe defaults: an id is its own label unless the provider says otherwise. */
+export const DEFAULT_PROVIDER_MODEL_ID: ProviderModelIdSpec = {
+  stripPrefixes: [],
+  stripOwner: false,
+  labels: {},
+};
+
 /** How a provider prices and reports usage, all declared rather than inferred. */
 export interface ProviderBillingSpec {
   kind: ProviderBillingKind;
@@ -297,6 +315,8 @@ export interface ProviderSpec {
   models: readonly string[];
   goModels: readonly string[];
   speechModels: readonly string[];
+  /** How this provider's ids read as a label; defaults to the id itself. */
+  modelId: ProviderModelIdSpec;
   vision: ProviderVisionSpec;
   modelFilter: ProviderModelFilter | null;
   reasoningEfforts: readonly ReasoningEffort[];
@@ -755,6 +775,20 @@ function parseRouting(value: unknown, where: string): ProviderRoutingSpec {
   };
 }
 
+function parseModelId(value: unknown, where: string): ProviderModelIdSpec {
+  if (value === undefined || value === null) return DEFAULT_PROVIDER_MODEL_ID;
+  const raw = record(value, where);
+  const labels: Record<string, string> = {};
+  for (const [id, label] of Object.entries(record(raw.labels ?? {}, `${where}.labels`))) {
+    labels[id] = text(label, `${where}.labels.${id}`);
+  }
+  return {
+    stripPrefixes: texts(raw.stripPrefixes ?? [], `${where}.stripPrefixes`),
+    stripOwner: flag(raw.stripOwner ?? false, `${where}.stripOwner`),
+    labels,
+  };
+}
+
 function parseProvider(value: unknown, source: string): ProviderSpec {
   const raw = record(value, source);
   const id = text(raw.id, `${source}: id`);
@@ -776,6 +810,7 @@ function parseProvider(value: unknown, source: string): ProviderSpec {
     models: texts(raw.models ?? [], `${scope}: models`),
     goModels: texts(raw.goModels ?? [], `${scope}: goModels`),
     speechModels: texts(raw.speechModels ?? [], `${scope}: speechModels`),
+    modelId: parseModelId(raw.modelId, `${scope}: modelId`),
     vision: parseVision(raw.vision, `${scope}: vision`),
     modelFilter: nullableChoice<ProviderModelFilter>(
       raw.modelFilter,

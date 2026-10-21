@@ -293,6 +293,23 @@ describe("PageModels default-model enum", () => {
     );
     expect(names).not.toContain("ollama/clef:27b");
   });
+
+  it("shows a hub id's own name, keeping the wire id on hover", () => {
+    const { container } = render(<SettingsModal {...baseProps} initialPage="models" />);
+    container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
+      if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+    });
+
+    // Synthetic serves `hf:<owner>/<model>` and `syn:<tier>` ids: the label keeps the
+    // model's own name, and the id it toggles stays one hover away.
+    const row = modelCard(container, "hf:Qwen/Qwen3.8-27B");
+    const label = row?.querySelector(".model-name");
+    expect(label?.textContent).toBe("Qwen3.8-27B");
+    expect(label?.getAttribute("title")).toBe("hf:Qwen/Qwen3.8-27B");
+    expect(modelCard(container, "syn:large:text")?.querySelector(".model-name")?.textContent).toBe(
+      "Large (text)",
+    );
+  });
 });
 
 describe("PageModels shared-id identity (qualified refs)", () => {

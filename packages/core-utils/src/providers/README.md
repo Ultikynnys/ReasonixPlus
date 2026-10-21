@@ -168,6 +168,7 @@ Top level:
 | `models` | string[] | Offline catalog |
 | `goModels` | string[] | Ids served by the subscription tier endpoint |
 | `speechModels` | string[] | Non-chat ids, never offered as chat |
+| `modelId` | object | How ids read as a label: `stripPrefixes` (scheme markers such as `hf:`) and `stripOwner` (drops a hub `<owner>/` segment). Omit to show the id verbatim |
 | `vision` | object | Image-capability rules, see below |
 | `modelFilter` | `antigravity` or null | Id filter applied to `models` |
 | `reasoningEfforts` | string[] | Accepted effort ladder, `[]` = no effort field |

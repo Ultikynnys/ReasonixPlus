@@ -245,7 +245,24 @@ describe("modelWireName", () => {
 
   it("leaves a bare id and an unrecognized prefix alone", () => {
     expect(modelWireName("deepseek-v4-flash")).toBe("deepseek-v4-flash");
-    expect(modelWireName("hf:zai-org/GLM-5.3")).toBe("hf:zai-org/GLM-5.3");
+    // No provider owns it, so no display rule applies and the id keeps its slash.
+    expect(modelWireName("foo/bar")).toBe("foo/bar");
+  });
+
+  it("applies the owning provider's declared display rule", () => {
+    // Synthetic's ids carry a scheme marker and, for hub models, an owner segment;
+    // neither belongs in a label the caller already sees under "Synthetic".
+    expect(modelWireName("hf:Qwen/Qwen3.8-27B")).toBe("Qwen3.8-27B");
+    expect(modelWireName("hf:deepseek-ai/DeepSeek-V4.1-Flash-1017")).toBe(
+      "DeepSeek-V4.1-Flash-1017",
+    );
+    // An alias reads as its declared label, not as an id fragment.
+    expect(modelWireName("syn:large:text")).toBe("Large (text)");
+    expect(modelWireName("syn:small:vision")).toBe("Small (vision)");
+    // An alias the provider has not labelled stays whole rather than half-stripped.
+    expect(modelWireName("syn:future:tier")).toBe("syn:future:tier");
+    // A provider that declares no rule keeps its ids verbatim.
+    expect(modelWireName("glm-5.3-flash")).toBe("glm-5.3-flash");
   });
 
   it("returns an empty string for no model", () => {
@@ -274,13 +291,13 @@ describe("modelDisplayLabel", () => {
     expect(modelDisplayLabel("opencode/deepseek-v4-flash")).toBe("OC · deepseek-v4-flash");
   });
 
-  it("keeps an unrecognized prefix, which is part of the id", () => {
-    expect(modelDisplayLabel("hf:zai-org/GLM-5.3")).toBe("SYN · hf:zai-org/GLM-5.3");
+  it("keeps an unrecognized prefix that no provider owns", () => {
+    expect(modelDisplayLabel("foo/bar")).toBe("foo/bar");
   });
 
   it("prefixes ids whose shape carries a colon", () => {
     expect(modelProviderTag("syn:large:text")).toBe("SYN");
-    expect(modelDisplayLabel("syn:large:text")).toBe("SYN · syn:large:text");
+    expect(modelDisplayLabel("syn:large:text")).toBe("SYN · Large (text)");
   });
 
   it("leaves an unattributed id unprefixed rather than guessing", () => {

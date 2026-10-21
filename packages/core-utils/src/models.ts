@@ -4,6 +4,7 @@ import {
   PROVIDER_IDS,
   PROVIDER_MODEL_PRECEDENCE,
   type ProviderID,
+  type ProviderSpec,
   providerShortLabel,
   providerSpec,
   providerSpecsInOrder,
@@ -172,12 +173,40 @@ export function modelProviderTag(
   return provider ? providerShortLabel(provider) : "";
 }
 
-/** A model's own name, with the `<provider>/` qualifier dropped: user-facing
- *  surfaces name the provider separately (a tag, a card header, a group), so
- *  repeating it inside the id is noise. `ollama/beam` → `beam`. */
-export function modelWireName(model: string | undefined | null): string {
+/** The readable part of a wire id: an exact label the provider declares for an
+ *  alias, else its display rules applied (a scheme marker, a hub `<owner>/`
+ *  segment), else the id unchanged. */
+function readableModelName(wire: string, spec: ProviderSpec | undefined): string {
+  const rule = spec?.modelId;
+  if (!rule) return wire;
+  const labelled = rule.labels[wire];
+  if (labelled) return labelled;
+  let name = wire;
+  for (const prefix of rule.stripPrefixes) {
+    if (name.startsWith(prefix)) {
+      name = name.slice(prefix.length);
+      break;
+    }
+  }
+  if (rule.stripOwner) {
+    const slash = name.indexOf("/");
+    if (slash > 0) name = name.slice(slash + 1);
+  }
+  return name || wire;
+}
+
+/** A model's own name, with the qualifier and any provider decoration dropped:
+ *  user-facing surfaces name the provider separately (a tag, a card header, a
+ *  group), so repeating it inside the id is noise. `ollama/beam` → `beam`,
+ *  `hf:Qwen/Qwen3.8-27B` → `Qwen3.8-27B`. */
+export function modelWireName(
+  model: string | undefined | null,
+  hints?: ModelOwnerHints,
+): string {
   if (typeof model !== "string" || !model) return "";
-  return modelDisplayName(stripProviderQualifier(model));
+  const owner = modelOwnerProvider(model, hints);
+  const spec = owner ? providerSpec(owner) : undefined;
+  return modelDisplayName(readableModelName(stripProviderQualifier(model), spec));
 }
 
 /** The label a model pill, picker row or model list shows: `DS · deepseek-v4-flash`.
@@ -189,7 +218,7 @@ export function modelDisplayLabel(
   const raw = modelDisplayName(model);
   const tag = modelProviderTag(model, hints);
   if (!tag || typeof model !== "string") return raw;
-  return `${tag} · ${modelWireName(model) || raw}`;
+  return `${tag} · ${modelWireName(model, hints) || raw}`;
 }
 
 /** Static OpenCode vision catalog; a models.dev sync overrides it at runtime. */

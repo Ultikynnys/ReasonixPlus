@@ -1895,7 +1895,7 @@ function ModelList({
               tabIndex={onSelect ? 0 : undefined}
             >
               <div className="nm">
-                <FitText text={displayName} className="model-name" />
+                <FitText text={displayName} className="model-name" title={id} />
                 {acceptsImages(id) ? <span className="badge">vision</span> : null}
               </div>
               {onToggle ? (
