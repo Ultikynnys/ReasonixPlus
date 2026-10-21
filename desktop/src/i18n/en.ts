@@ -70,6 +70,7 @@ export const en = {
     modelOpencodeError: "Couldn't fetch OpenCode models: {error}",
     modelAntigravityGroup: "Google Antigravity",
     modelExperientialGroup: "Experiential Labs",
+    modelSyntheticGroup: "Synthetic",
     modelNoneEnabled: "No models enabled. Enable them in Settings → Models to pick them here.",
     modelAntigravityError: "Couldn't refresh Antigravity models: {error}",
     modelOllamaGroup: "Ollama",
@@ -145,10 +146,14 @@ export const en = {
       opencode: "OpenCode API key (OpenCode Zen)",
       typesafe: "JEV API key (TypeSafe)",
       experiential: "Experiential Labs API key",
+      synthetic: "Synthetic API key",
     },
     baseUrl: "DeepSeek base URL",
     baseUrlHint: "Override only if using a proxy. Empty = official endpoint. Restart required.",
     apiKey: "DeepSeek API key",
+    providerBaseUrl: "{provider} base URL",
+    providerBaseUrlHint:
+      "OpenAI-compatible endpoint override for {provider}. Empty uses the provider's default endpoint.",
     apiKeyHint: "DeepSeek key: saved to ~/.reasonix/config.json (0600).",
     apiKeyNotSet: "(not set)",
     apiKeyCancel: COMMON_STRINGS.cancelLabel,
@@ -329,6 +334,9 @@ export const en = {
     experientialBaseUrl: "Experiential Labs base URL",
     experientialBaseUrlHint:
       "OpenAI-compatible endpoint override for all gateway models. Defaults to https://api.experientiallabs.ai/v1.",
+    syntheticBaseUrl: "Synthetic base URL",
+    syntheticBaseUrlHint:
+      "OpenAI-compatible endpoint override for every Synthetic model. Defaults to https://api.synthetic.new/openai/v1.",
     mimoSignInHint:
       "Authorize Reasonix+ in your browser to provision a MiMo inference key automatically.",
     mimoSignIn: "Sign in",
@@ -745,8 +753,7 @@ export const en = {
     subagentDidFiles: "Files",
     subagentDidCommands: "Commands",
     subagentDidFailedCalls: "Failed calls",
-    subagentParallelTitle:
-      "Ran at the same time as {others} other call(s) in one dispatch wave.",
+    subagentParallelTitle: "Ran at the same time as {others} other call(s) in one dispatch wave.",
     subagentSequentialTitle: "Ran in its own dispatch wave, so nothing overlapped it.",
     memoryName: "Memory",
     memoryCountSuffix: "items",

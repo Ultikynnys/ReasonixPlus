@@ -1,14 +1,12 @@
 import { join } from "node:path";
 import {
-  ANTIGRAVITY_MODELS,
+  FOREIGN_CATALOG_SPECS,
+  MODELS_DEV_SPECS,
   type ModelEndpointInfo,
-  OPENAI_MODELS,
   OPENCODE_GO_MODELS,
   OPENCODE_MODELS,
   OPENCODE_VISION_MODELS,
   type ProviderID,
-  SUPPORTED_OFFICIAL_MODELS,
-  ZAI_MODELS,
   messageOf,
   stripProviderQualifier,
 } from "@reasonix/core-utils";
@@ -132,12 +130,9 @@ export function writeOpencodeModelsCache(
 
 /** Ids owned by another provider's native catalog — dropped from the OpenCode
  *  picker because the resolver keeps native-provider precedence for overlaps. */
-const FOREIGN_CATALOG_IDS: ReadonlySet<string> = new Set<string>([
-  ...SUPPORTED_OFFICIAL_MODELS,
-  ...OPENAI_MODELS,
-  ...ZAI_MODELS,
-  ...ANTIGRAVITY_MODELS,
-]);
+const FOREIGN_CATALOG_IDS: ReadonlySet<string> = new Set<string>(
+  FOREIGN_CATALOG_SPECS.flatMap((spec) => spec.models),
+);
 
 /** Static fallback ids for the active credential state: free Zen always, plus
  *  the Go subscription catalog when a credential is present. */
@@ -210,12 +205,13 @@ function collect(
 }
 
 /** models.dev provider keys whose `reasoning_options` feed a native Reasonix+
- *  provider. OpenCode Zen/Go are handled alongside the catalog split above. */
-const NATIVE_REASONING_PROVIDERS: ReadonlyArray<{ key: string; provider: ProviderID }> = [
-  { key: "deepseek", provider: "deepseek" },
-  { key: "openai", provider: "openai" },
-  { key: "zai", provider: "zai" },
-];
+ *  provider, taken from the registry. OpenCode Zen/Go are handled alongside the
+ *  catalog split above. */
+const NATIVE_REASONING_PROVIDERS: ReadonlyArray<{ key: string; provider: ProviderID }> =
+  MODELS_DEV_SPECS.map((spec) => ({
+    key: spec.modelsDev as string,
+    provider: spec.providerId as ProviderID,
+  }));
 
 /** Copy every model's `reasoning_options` from a models.dev provider block into
  *  the `out[provider]` bucket. `undefined` options leave the model absent. */

@@ -10,14 +10,12 @@ let resolveTranscribe: ((res: { text: string }) => void) | null = null;
 
 vi.mock("../voice/audio-recorder", () => {
   return {
-    AudioRecorder: vi.fn().mockImplementation(function () {
-      return {
+    AudioRecorder: vi.fn().mockImplementation(() => ({
         recording: true,
         start: vi.fn().mockResolvedValue(undefined),
         stop: vi.fn().mockResolvedValue({ audioData: new Float32Array(100), durationSeconds: 1 }),
         cancel: vi.fn(),
-      };
-    }),
+      })),
   };
 });
 
@@ -86,14 +84,12 @@ describe("Composer Voice Input Button", () => {
   it("reports microphone startup failures through the durable chat callback", async () => {
     const onVoiceError = vi.fn();
     vi.mocked(AudioRecorder).mockImplementationOnce(
-      function () {
-        return {
+      () => {
           recording: false,
           start: vi.fn().mockRejectedValue(new Error("name=NotAllowedError, message=Blocked")),
           stop: vi.fn(),
           cancel: vi.fn(),
-        } as unknown as AudioRecorder;
-      },
+        } as unknown as AudioRecorder,
     );
     render(<Composer {...baseProps} onVoiceError={onVoiceError} />);
 

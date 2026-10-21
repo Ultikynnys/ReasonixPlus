@@ -1,0 +1,781 @@
+/** Declarative model-provider registry: providers/<id>.json is the single source of truth. */
+
+import type { ReasoningEffort } from "./permission-types.js";
+import { PROVIDER_DOCUMENTS, PROVIDER_IDS, type ProviderID } from "./providers.generated.js";
+
+/** Routable provider ids, generated from providers/*.json by `npm run providers:sync`. */
+export { PROVIDER_IDS };
+export type { ProviderID };
+
+const PROVIDER_ID_SET: ReadonlySet<string> = new Set<string>(PROVIDER_IDS);
+
+export type ProviderEndpointStrategy = "standard" | "fixed" | "tiered";
+export type ProviderDiscoveryStrategy =
+  | "models-endpoint"
+  | "models.dev"
+  | "oauth-quota"
+  | "runtime";
+export type ProviderAuthStrategy = "api-key" | "openai-oauth" | "opencode" | "gemini-oauth";
+export type ProviderTransportStrategy =
+  | "codex"
+  | "zai-responses"
+  | "mimo-responses"
+  | "opencode-muse-responses";
+export type ProviderSetupSource = "apiKey" | "baseUrl" | "oauth";
+export type ProviderModelFilter = "antigravity";
+/** What must be true before a picker shows this provider's group. */
+export type ProviderPickerGate = "catalog" | "signin";
+
+export type ProviderVisionPredicate = "antigravity";
+
+export interface ProviderVisionSpec {
+  /** Model ids known to accept images. */
+  models?: readonly string[];
+  /** Regexes matched against the wire model id. */
+  patterns?: readonly string[];
+  /** Named predicate for providers whose vision rule is not a list. */
+  predicate?: ProviderVisionPredicate;
+  /** A sync may replace this catalog at runtime (the static list is a fallback). */
+  refreshable?: boolean;
+  /** Inherits another provider's vision catalog (Ollama hosting a DeepSeek build). */
+  fromProvider?: ProviderID;
+  /** Strips an `ollama/`-scheme prefix and `:tag` suffix before matching. */
+  stripSchemeAndTag?: boolean;
+}
+
+export interface ProviderEndpointSpec {
+  strategy: ProviderEndpointStrategy;
+  /** Default base URL; null means "no default, the config must supply one". */
+  default: string | null;
+  /** Alternate endpoints keyed by tier (e.g. OpenCode Zen vs Go, Z.AI responses). */
+  tiers: Readonly<Record<string, string>>;
+  /** `strict`: a base-URL override owns its key (a stale env key never bleeds
+   *  into a custom gateway). `resolve`: the key resolves env-then-config anyway. */
+  keyTuple: "strict" | "resolve";
+}
+
+export interface ProviderCredentialsSpec {
+  baseUrlEnv: readonly string[];
+  apiKeyEnv: readonly string[];
+  baseUrlConfig: string | null;
+  apiKeyConfig: string | null;
+  /** Key assumed when nothing is configured and the endpoint is open (OpenCode's `public`). */
+  publicKey: string | null;
+  /** Config field holding the OAuth credentials for this provider, when it has a sign-in. */
+  oauthConfig: string | null;
+}
+
+export type ProviderSettingKind = "secret" | "url";
+
+/** A persisted setting a provider declares. The config surface, the settings card
+ *  and the masked-status payload are all derived from these entries. */
+export interface ProviderSettingSpec {
+  /** Setting key inside the provider's own store entry (e.g. `apiKey`, `baseUrl`). */
+  key: string;
+  kind: ProviderSettingKind;
+  /** Environment variables that override the persisted value, highest priority first. */
+  env: readonly string[];
+  /** Config field name this setting maps to. Replaced by the store path in a later step. */
+  configKey: string | null;
+  /** i18n key for the field label. */
+  labelKey: string;
+  /** i18n key for the field hint, when the field needs one. */
+  hintKey: string | null;
+  /** Placeholder text; null means the provider's declared endpoint. */
+  placeholder: string | null;
+  /** Where to obtain a key, rendered as a link. */
+  signupUrl: string | null;
+}
+
+/** A bespoke behavior panel the settings page renders above the declared fields.
+ *  Sign-in flows and provider-specific editors are code; the panel is selected
+ *  by name from JSON, never by a provider id. */
+export type ProviderSettingsPanel =
+  | "openai-auth"
+  | "antigravity-auth"
+  | "mimo-auth"
+  | "opencode-auth"
+  | "ollama-generation"
+  | "typesafe-validation";
+
+export interface ProviderUsableSpec {
+  /** A resolved endpoint API key alone makes the model runnable. */
+  apiKey: boolean;
+  /** A keyless localhost daemon counts as runnable. */
+  keylessLocal: boolean;
+  /** The provider always runs (OpenCode falls back to free models). */
+  always: boolean;
+}
+
+export interface ProviderDiscoverySpec {
+  strategy: ProviderDiscoveryStrategy;
+  /** JSON list field carrying the ids; null when the strategy has no body to read. */
+  listField: string | null;
+  /** JSON field carrying a model id. */
+  idField: string;
+  /** Drops `speechModels` from the discovered catalog. */
+  excludeSpeech: boolean;
+}
+
+/** How a bare model id may route to this provider. */
+export interface ProviderRoutingSpec {
+  /** A bare id listed in `models` routes here. */
+  staticCatalog: boolean;
+  /** A bare id found in the provider's discovery cache routes here. */
+  discoveredCatalog: boolean;
+  /** Only consulted after every earlier provider declined (resold gateways). */
+  checkedLast: boolean;
+  /** Resold catalogs hide this provider's ids: a bare overlap keeps its native route. */
+  foreignCatalog: boolean;
+  /** Model-id prefix that always routes here, e.g. Ollama's `ollama/` scheme. */
+  modelScheme: string | null;
+}
+
+export interface ProviderClientSpec {
+  auth: ProviderAuthStrategy;
+  transport: ProviderTransportStrategy | null;
+  /** The provider works without a key, so the client may omit one. */
+  allowMissingKey: boolean;
+}
+
+export interface ProviderSpec {
+  id: string;
+  /** Routing id, or null for a catalog-only entry (e.g. TypeSafe evaluations). */
+  providerId: ProviderID | null;
+  label: string;
+  /** i18n key naming the provider's card/group in the desktop UI. */
+  groupLabelKey: string;
+  /** Desktop picker group this provider renders in; null = its own id. */
+  pickerGroup: string | null;
+  /** Display and catalog order, ascending. */
+  order: number;
+  /** Bare-id ownership rank; null means the provider never takes a bare id. */
+  precedence: number | null;
+  defaultModel: string | null;
+  /** Contributes to `KNOWN_MODELS` and the default pickers. */
+  knownCatalog: boolean;
+  models: readonly string[];
+  goModels: readonly string[];
+  speechModels: readonly string[];
+  vision: ProviderVisionSpec;
+  modelFilter: ProviderModelFilter | null;
+  reasoningEfforts: readonly ReasoningEffort[];
+  endpoint: ProviderEndpointSpec;
+  credentials: ProviderCredentialsSpec;
+  /** Persisted settings this provider declares, in card order. */
+  settings: readonly ProviderSettingSpec[];
+  /** Bespoke behavior panel for the settings card, when the provider needs one. */
+  settingsPanel: ProviderSettingsPanel | null;
+  usable: ProviderUsableSpec;
+  /** Credential sources that make the install count as "set up" for this provider. */
+  setupGate: readonly ProviderSetupSource[];
+  /** What the model picker waits for before showing this provider; null = always. */
+  pickerGate: ProviderPickerGate | null;
+  /** Whether the desktop model picker has a group for this provider at all. */
+  picker: boolean;
+  routing: ProviderRoutingSpec;
+  /** models.dev provider key whose `reasoning_options` feed this provider, when any. */
+  modelsDev: string | null;
+  discovery: ProviderDiscoverySpec;
+  client: ProviderClientSpec;
+}
+
+/** Environment and persisted-config accessors the endpoint/credential resolvers need. */
+export interface ProviderCredentialContext {
+  env?: (name: string) => string | undefined;
+  /** Reads a provider string field from the config by name (e.g. `zaiApiKey`). */
+  configField: (field: string) => string | undefined;
+  /** Reads the access token stored under a provider's `oauthConfig` field. */
+  oauthToken?: (field: string) => string | undefined;
+}
+
+export interface ProviderEndpoint {
+  baseUrl: string | undefined;
+  apiKey: string | undefined;
+}
+
+const ENDPOINT_STRATEGIES: ReadonlySet<string> = new Set(["standard", "fixed", "tiered"]);
+const DISCOVERY_STRATEGIES: ReadonlySet<string> = new Set([
+  "models-endpoint",
+  "models.dev",
+  "oauth-quota",
+  "runtime",
+]);
+const AUTH_STRATEGIES: ReadonlySet<string> = new Set([
+  "api-key",
+  "openai-oauth",
+  "opencode",
+  "gemini-oauth",
+]);
+const TRANSPORT_STRATEGIES: ReadonlySet<string> = new Set([
+  "codex",
+  "zai-responses",
+  "mimo-responses",
+  "opencode-muse-responses",
+]);
+const SETUP_SOURCES: ReadonlySet<string> = new Set(["apiKey", "baseUrl", "oauth"]);
+const MODEL_FILTERS: ReadonlySet<string> = new Set(["antigravity"]);
+const PICKER_GATES: ReadonlySet<string> = new Set(["catalog", "signin"]);
+const VISION_PREDICATES: ReadonlySet<string> = new Set(["antigravity"]);
+const SETTING_KINDS: ReadonlySet<string> = new Set(["secret", "url"]);
+const SETTINGS_PANELS: ReadonlySet<string> = new Set([
+  "openai-auth",
+  "antigravity-auth",
+  "mimo-auth",
+  "opencode-auth",
+  "ollama-generation",
+  "typesafe-validation",
+]);
+
+function fail(where: string, detail: string): never {
+  throw new Error(`provider registry: ${where}: ${detail}`);
+}
+
+function record(value: unknown, where: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    fail(where, "expected an object");
+  return value as Record<string, unknown>;
+}
+
+function text(value: unknown, where: string): string {
+  if (typeof value !== "string" || !value.trim()) fail(where, "expected a non-empty string");
+  return value;
+}
+
+function nullableText(value: unknown, where: string): string | null {
+  if (value === null || value === undefined) return null;
+  return text(value, where);
+}
+
+function flag(value: unknown, where: string): boolean {
+  if (typeof value !== "boolean") fail(where, "expected a boolean");
+  return value;
+}
+
+function number(value: unknown, where: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) fail(where, "expected a number");
+  return value;
+}
+
+function nullableNumber(value: unknown, where: string): number | null {
+  if (value === null || value === undefined) return null;
+  return number(value, where);
+}
+
+function texts(value: unknown, where: string): string[] {
+  if (!Array.isArray(value)) fail(where, "expected an array of strings");
+  return value.map((entry, index) => text(entry, `${where}[${index}]`));
+}
+
+function choice<T extends string>(value: unknown, allowed: ReadonlySet<string>, where: string): T {
+  const picked = text(value, where);
+  if (!allowed.has(picked)) fail(where, `unsupported value "${picked}"`);
+  return picked as T;
+}
+
+function nullableChoice<T extends string>(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+  where: string,
+): T | null {
+  if (value === null || value === undefined) return null;
+  return choice<T>(value, allowed, where);
+}
+
+function subset<T extends string>(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+  where: string,
+): T[] {
+  return texts(value, where).map((entry, index) => choice<T>(entry, allowed, `${where}[${index}]`));
+}
+
+function urlTable(value: unknown, where: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, url] of Object.entries(record(value ?? {}, where))) {
+    out[key] = text(url, `${where}.${key}`);
+  }
+  return out;
+}
+
+function parseVision(value: unknown, where: string): ProviderVisionSpec {
+  const raw = record(value ?? {}, where);
+  const out: ProviderVisionSpec = {};
+  if (raw.models !== undefined) out.models = texts(raw.models, `${where}.models`);
+  if (raw.patterns !== undefined) {
+    const patterns = texts(raw.patterns, `${where}.patterns`);
+    for (const [index, pattern] of patterns.entries()) {
+      try {
+        new RegExp(pattern);
+      } catch {
+        fail(`${where}.patterns[${index}]`, "invalid regular expression");
+      }
+    }
+    out.patterns = patterns;
+  }
+  if (raw.predicate !== undefined) {
+    out.predicate = choice<ProviderVisionPredicate>(
+      raw.predicate,
+      VISION_PREDICATES,
+      `${where}.predicate`,
+    );
+  }
+  if (raw.fromProvider !== undefined) {
+    out.fromProvider = choice<ProviderID>(
+      raw.fromProvider,
+      PROVIDER_ID_SET,
+      `${where}.fromProvider`,
+    );
+  }
+  if (raw.stripSchemeAndTag !== undefined) {
+    out.stripSchemeAndTag = flag(raw.stripSchemeAndTag, `${where}.stripSchemeAndTag`);
+  }
+  if (raw.refreshable !== undefined) {
+    out.refreshable = flag(raw.refreshable, `${where}.refreshable`);
+  }
+  return out;
+}
+
+function parseEndpoint(value: unknown, where: string): ProviderEndpointSpec {
+  const raw = record(value, where);
+  return {
+    strategy: choice<ProviderEndpointStrategy>(
+      raw.strategy,
+      ENDPOINT_STRATEGIES,
+      `${where}.strategy`,
+    ),
+    default: nullableText(raw.default, `${where}.default`),
+    tiers: urlTable(raw.tiers, `${where}.tiers`),
+    keyTuple:
+      raw.keyTuple === undefined
+        ? "strict"
+        : choice<"strict" | "resolve">(
+            raw.keyTuple,
+            new Set(["strict", "resolve"]),
+            `${where}.keyTuple`,
+          ),
+  };
+}
+
+function parseCredentials(
+  value: unknown,
+  where: string,
+  settings: readonly ProviderSettingSpec[],
+): ProviderCredentialsSpec {
+  const raw = record(value ?? {}, where);
+  // Env names and config paths come from the declared settings, so a provider
+  // never repeats its credentials in two places.
+  const declared = (key: string): ProviderSettingSpec | undefined =>
+    settings.find((setting) => setting.key === key);
+  return {
+    baseUrlEnv: declared("baseUrl")?.env ?? [],
+    apiKeyEnv: declared("apiKey")?.env ?? [],
+    baseUrlConfig: declared("baseUrl")?.configKey ?? null,
+    apiKeyConfig: declared("apiKey")?.configKey ?? null,
+    publicKey: nullableText(raw.publicKey, `${where}.publicKey`),
+    oauthConfig: nullableText(raw.oauthConfig, `${where}.oauthConfig`),
+  };
+}
+
+function parseSetting(value: unknown, where: string): ProviderSettingSpec {
+  const raw = record(value, where);
+  const key = text(raw.key, `${where}.key`);
+  if (!/^[a-z][A-Za-z0-9]*$/.test(key)) fail(`${where}.key`, `invalid setting key "${key}"`);
+  return {
+    key,
+    kind: choice<ProviderSettingKind>(raw.kind, SETTING_KINDS, `${where}.kind`),
+    env: texts(raw.env ?? [], `${where}.env`),
+    configKey: nullableText(raw.configKey, `${where}.configKey`),
+    labelKey: text(raw.labelKey, `${where}.labelKey`),
+    hintKey: nullableText(raw.hintKey, `${where}.hintKey`),
+    placeholder: nullableText(raw.placeholder, `${where}.placeholder`),
+    signupUrl: nullableText(raw.signupUrl, `${where}.signupUrl`),
+  };
+}
+
+function parseSettings(value: unknown, where: string): ProviderSettingSpec[] {
+  if (!Array.isArray(value)) fail(where, "expected an array");
+  const settings = value.map((entry, index) => parseSetting(entry, `${where}[${index}]`));
+  const seen = new Set<string>();
+  for (const setting of settings) {
+    if (seen.has(setting.key)) fail(where, `duplicate setting "${setting.key}"`);
+    seen.add(setting.key);
+  }
+  return settings;
+}
+
+function parseUsable(value: unknown, where: string): ProviderUsableSpec {
+  const raw = record(value, where);
+  return {
+    apiKey: flag(raw.apiKey, `${where}.apiKey`),
+    keylessLocal: flag(raw.keylessLocal, `${where}.keylessLocal`),
+    always: flag(raw.always, `${where}.always`),
+  };
+}
+
+function parseDiscovery(value: unknown, where: string): ProviderDiscoverySpec {
+  const raw = record(value, where);
+  return {
+    strategy: choice<ProviderDiscoveryStrategy>(
+      raw.strategy,
+      DISCOVERY_STRATEGIES,
+      `${where}.strategy`,
+    ),
+    listField: nullableText(raw.listField, `${where}.listField`),
+    idField: text(raw.idField, `${where}.idField`),
+    excludeSpeech: flag(raw.excludeSpeech, `${where}.excludeSpeech`),
+  };
+}
+
+function parseClient(value: unknown, where: string): ProviderClientSpec {
+  const raw = record(value, where);
+  return {
+    auth: choice<ProviderAuthStrategy>(raw.auth, AUTH_STRATEGIES, `${where}.auth`),
+    transport: nullableChoice<ProviderTransportStrategy>(
+      raw.transport,
+      TRANSPORT_STRATEGIES,
+      `${where}.transport`,
+    ),
+    allowMissingKey: flag(raw.allowMissingKey, `${where}.allowMissingKey`),
+  };
+}
+
+function parseRouting(value: unknown, where: string): ProviderRoutingSpec {
+  const raw = record(value ?? {}, where);
+  return {
+    staticCatalog: flag(raw.staticCatalog ?? false, `${where}.staticCatalog`),
+    discoveredCatalog: flag(raw.discoveredCatalog ?? false, `${where}.discoveredCatalog`),
+    checkedLast: flag(raw.checkedLast ?? false, `${where}.checkedLast`),
+    foreignCatalog: flag(raw.foreignCatalog ?? false, `${where}.foreignCatalog`),
+    modelScheme: nullableText(raw.modelScheme, `${where}.modelScheme`),
+  };
+}
+
+function parseProvider(value: unknown, source: string): ProviderSpec {
+  const raw = record(value, source);
+  const id = text(raw.id, `${source}: id`);
+  const scope = `${source}: provider "${id}"`;
+  const settings = parseSettings(raw.settings ?? [], `${scope}: settings`);
+  return {
+    id,
+    providerId: nullableChoice<ProviderID>(raw.providerId, PROVIDER_ID_SET, `${scope}: providerId`),
+    label: text(raw.label, `${scope}: label`),
+    groupLabelKey: text(raw.groupLabelKey, `${scope}: groupLabelKey`),
+    pickerGroup: nullableText(raw.pickerGroup, `${scope}: pickerGroup`),
+    order: number(raw.order, `${scope}: order`),
+    precedence: nullableNumber(raw.precedence, `${scope}: precedence`),
+    defaultModel: nullableText(raw.defaultModel, `${scope}: defaultModel`),
+    knownCatalog: flag(raw.knownCatalog, `${scope}: knownCatalog`),
+    models: texts(raw.models ?? [], `${scope}: models`),
+    goModels: texts(raw.goModels ?? [], `${scope}: goModels`),
+    speechModels: texts(raw.speechModels ?? [], `${scope}: speechModels`),
+    vision: parseVision(raw.vision, `${scope}: vision`),
+    modelFilter: nullableChoice<ProviderModelFilter>(
+      raw.modelFilter,
+      MODEL_FILTERS,
+      `${scope}: modelFilter`,
+    ),
+    reasoningEfforts: texts(
+      raw.reasoningEfforts ?? [],
+      `${scope}: reasoningEfforts`,
+    ) as ReasoningEffort[],
+    endpoint: parseEndpoint(raw.endpoint, `${scope}: endpoint`),
+    credentials: parseCredentials(raw.credentials, `${scope}: credentials`, settings),
+    settings,
+    settingsPanel: nullableChoice<ProviderSettingsPanel>(
+      raw.settingsPanel,
+      SETTINGS_PANELS,
+      `${scope}: settingsPanel`,
+    ),
+    usable: parseUsable(raw.usable, `${scope}: usable`),
+    setupGate: subset<ProviderSetupSource>(
+      raw.setupGate ?? [],
+      SETUP_SOURCES,
+      `${scope}: setupGate`,
+    ),
+    pickerGate: nullableChoice<ProviderPickerGate>(
+      raw.pickerGate,
+      PICKER_GATES,
+      `${scope}: pickerGate`,
+    ),
+    picker: flag(raw.picker ?? true, `${scope}: picker`),
+    routing: parseRouting(raw.routing, `${scope}: routing`),
+    modelsDev: nullableText(raw.modelsDev, `${scope}: modelsDev`),
+    discovery: parseDiscovery(raw.discovery, `${scope}: discovery`),
+    client: parseClient(raw.client, `${scope}: client`),
+  };
+}
+
+/** Rejects duplicate ids across a set of provider documents. */
+function assertUnique(specs: readonly ProviderSpec[]): void {
+  const seenIds = new Set<string>();
+  const seenProviders = new Set<string>();
+  for (const spec of specs) {
+    if (seenIds.has(spec.id)) fail(`provider "${spec.id}"`, "duplicate id");
+    seenIds.add(spec.id);
+    if (spec.providerId === null) continue;
+    if (seenProviders.has(spec.providerId)) fail(`provider "${spec.id}"`, "duplicate providerId");
+    seenProviders.add(spec.providerId);
+  }
+}
+
+/** Validates a `{ providers: [...] }` document — an embedder's own registry. */
+function parseRegistry(value: unknown): ProviderSpec[] {
+  const root = record(value, "root");
+  if (!Array.isArray(root.providers)) fail("root.providers", "expected an array");
+  if (root.providers.length === 0) fail("root.providers", "expected at least one provider");
+  const specs = root.providers.map((entry, index) => parseProvider(entry, `providers[${index}]`));
+  assertUnique(specs);
+  return specs;
+}
+
+/** Parses every `providers/<id>.json`, rejecting a file whose name and id disagree. */
+function loadProviderSpecs(): ProviderSpec[] {
+  const specs = PROVIDER_DOCUMENTS.map((source) => {
+    const label = `providers/${source.file}`;
+    const spec = parseProvider(source.document, label);
+    if (`${spec.id}.json` !== source.file) {
+      fail(label, `declares id "${spec.id}" — the file must be named after its id`);
+    }
+    return spec;
+  });
+  assertUnique(specs);
+  return specs;
+}
+
+/** Validate and normalize a provider registry document. Exported so embedders can
+ *  load their own registry and tests can prove a provider needs no code edit. */
+export function parseProviderRegistry(value: unknown): ProviderSpec[] {
+  return parseRegistry(value);
+}
+
+/** Every catalog entry, one per providers/*.json file. */
+export const PROVIDER_SPECS: readonly ProviderSpec[] = loadProviderSpecs();
+
+const SPEC_BY_ID: ReadonlyMap<string, ProviderSpec> = new Map(
+  PROVIDER_SPECS.map((spec) => [spec.id, spec]),
+);
+
+const SPEC_BY_PROVIDER: ReadonlyMap<ProviderID, ProviderSpec> = new Map(
+  PROVIDER_SPECS.flatMap((spec) =>
+    spec.providerId === null ? [] : [[spec.providerId, spec] as const],
+  ),
+);
+
+/** Every routable entry, ascending by display/`order`. */
+export const ROUTABLE_PROVIDER_SPECS: readonly ProviderSpec[] = [...PROVIDER_SPECS]
+  .filter((spec) => spec.providerId !== null)
+  .sort((a, b) => a.order - b.order);
+
+/** Every entry, ascending by display/`order`. */
+export function providerSpecsInOrder(): readonly ProviderSpec[] {
+  return [...PROVIDER_SPECS].sort((a, b) => a.order - b.order);
+}
+
+/** A provider's declared setting, when it declares one with this key. */
+export function providerSettingSpec(
+  spec: ProviderSpec,
+  key: string,
+): ProviderSettingSpec | undefined {
+  return spec.settings.find((setting) => setting.key === key);
+}
+
+/** Providers whose ids keep their native route even when a reseller serves them. */
+export const FOREIGN_CATALOG_SPECS: readonly ProviderSpec[] = PROVIDER_SPECS.filter(
+  (spec) => spec.providerId !== null && spec.routing.foreignCatalog,
+);
+
+/** Providers whose models.dev block supplies per-model reasoning ladders. */
+export const MODELS_DEV_SPECS: readonly ProviderSpec[] = PROVIDER_SPECS.filter(
+  (spec) => spec.providerId !== null && spec.modelsDev !== null,
+);
+
+/** Catalog entry by its catalog id (e.g. `typesafe`), or undefined when unknown. */
+export function providerSpec(id: string): ProviderSpec | undefined {
+  return SPEC_BY_ID.get(id);
+}
+
+/** Catalog entry by catalog id; throws when providers.json has no such entry. */
+export function requireProviderSpec(id: string): ProviderSpec {
+  const spec = SPEC_BY_ID.get(id);
+  if (!spec) throw new Error(`providers.json has no entry for "${id}"`);
+  return spec;
+}
+
+/** The entry that routes a provider id. */
+export function specForProvider(id: ProviderID): ProviderSpec {
+  const spec = SPEC_BY_PROVIDER.get(id);
+  if (!spec) throw new Error(`providers.json has no routable entry for "${id}"`);
+  return spec;
+}
+
+/** A provider's default endpoint, optionally a named tier (e.g. OpenCode `go`). */
+export function providerDefaultEndpoint(id: string, tier?: string): string | undefined {
+  const endpoint = providerSpec(id)?.endpoint;
+  if (!endpoint) return undefined;
+  const tiered = tier ? endpoint.tiers[tier] : undefined;
+  return tiered ?? endpoint.default ?? undefined;
+}
+
+/** Bare-id ownership rank, lowest first. */
+export const PROVIDER_MODEL_PRECEDENCE: readonly ProviderID[] = PROVIDER_SPECS.filter(
+  (spec): spec is ProviderSpec & { providerId: ProviderID; precedence: number } =>
+    spec.providerId !== null && spec.precedence !== null,
+)
+  .sort((a, b) => a.precedence - b.precedence)
+  .map((spec) => spec.providerId);
+
+/** Every routable provider's static reasoning-effort ladder. */
+export const PROVIDER_REASONING_EFFORTS: Record<ProviderID, readonly ReasoningEffort[]> =
+  Object.fromEntries(
+    PROVIDER_SPECS.filter((spec) => spec.providerId !== null).map((spec) => [
+      spec.providerId,
+      spec.reasoningEfforts,
+    ]),
+  ) as Record<ProviderID, readonly ReasoningEffort[]>;
+
+function firstEnv(
+  names: readonly string[],
+  env: (name: string) => string | undefined,
+): string | undefined {
+  for (const name of names) {
+    const value = env(name)?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+/** (baseUrl, apiKey) for a provider, honouring the endpoint strategy in providers.json.
+ *  The tuple rule holds per provider: whichever source supplies the base URL owns
+ *  the key, so a stale env key never bleeds into a custom gateway. */
+export function resolveProviderEndpoint(
+  spec: ProviderSpec,
+  options: ProviderCredentialContext & { tier?: string | null },
+): ProviderEndpoint {
+  const env = options.env ?? ((name: string) => process.env[name]);
+  const readConfig = (field: string | null): string | undefined => readConfigField(options, field);
+  const publicKey = spec.credentials.publicKey ?? undefined;
+  const { endpoint, credentials } = spec;
+
+  if (endpoint.strategy === "fixed") {
+    return { baseUrl: endpoint.default ?? undefined, apiKey: undefined };
+  }
+
+  const envKey = firstEnv(credentials.apiKeyEnv, env);
+  const configKey = readConfig(credentials.apiKeyConfig);
+  // Whichever source supplies the base URL owns the key, unless the provider
+  // opts into `resolve` (Ollama), which falls back to the other source anyway.
+  const tupleKey = (own: string | undefined, other: string | undefined): string | undefined =>
+    own ?? (endpoint.keyTuple === "resolve" ? other : undefined);
+
+  const envBaseUrl = firstEnv(credentials.baseUrlEnv, env);
+  if (envBaseUrl) return { baseUrl: envBaseUrl, apiKey: tupleKey(envKey, configKey) ?? publicKey };
+
+  const configBaseUrl = readConfig(credentials.baseUrlConfig);
+  if (configBaseUrl) {
+    return { baseUrl: configBaseUrl, apiKey: tupleKey(configKey, envKey) ?? publicKey };
+  }
+
+  const tierUrl =
+    endpoint.strategy === "tiered" && options.tier ? endpoint.tiers[options.tier] : undefined;
+  return {
+    baseUrl: tierUrl ?? endpoint.default ?? undefined,
+    apiKey: envKey ?? configKey ?? publicKey,
+  };
+}
+
+/** True for a keyless localhost daemon (localhost / 127.0.0.1 / ::1). An
+ *  unresolved endpoint counts as local, mirroring the Ollama default. */
+export function isLocalBaseUrl(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return true;
+  try {
+    const host = new URL(baseUrl).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the model can run now: its provider has a usable credential, a local
+ *  daemon, or no credential requirement at all. */
+export function providerUsable(
+  spec: ProviderSpec,
+  context: ProviderCredentialContext & { endpoint: ProviderEndpoint },
+): boolean {
+  if (spec.usable.always) return true;
+  if (spec.usable.apiKey && context.endpoint.apiKey) return true;
+  const oauthField = spec.credentials.oauthConfig;
+  if (oauthField && context.oauthToken?.(oauthField)) return true;
+  return spec.usable.keylessLocal && isLocalBaseUrl(context.endpoint.baseUrl);
+}
+
+function readConfigField(
+  context: ProviderCredentialContext,
+  field: string | null,
+): string | undefined {
+  if (!field) return undefined;
+  const value = context.configField(field)?.trim();
+  return value || undefined;
+}
+
+function credentialValue(
+  spec: ProviderSpec,
+  context: ProviderCredentialContext,
+  kind: "apiKey" | "baseUrl",
+): string | undefined {
+  const env = context.env ?? ((name: string) => process.env[name]);
+  const envNames = kind === "apiKey" ? spec.credentials.apiKeyEnv : spec.credentials.baseUrlEnv;
+  const configField =
+    kind === "apiKey" ? spec.credentials.apiKeyConfig : spec.credentials.baseUrlConfig;
+  return firstEnv(envNames, env) ?? readConfigField(context, configField);
+}
+
+/** The API key a provider resolves from env-then-config, independent of any
+ *  base-URL override (the `strict` tuple rule lives in `resolveProviderEndpoint`). */
+export function providerApiKeyValue(
+  spec: ProviderSpec,
+  context: ProviderCredentialContext,
+): string | undefined {
+  return credentialValue(spec, context, "apiKey");
+}
+
+/** The base URL a provider resolves from env-then-config, before any default. */
+export function providerBaseUrlValue(
+  spec: ProviderSpec,
+  context: ProviderCredentialContext,
+): string | undefined {
+  return credentialValue(spec, context, "baseUrl");
+}
+
+/** Whether any credential source this provider gates setup on is present. */
+export function providerCountsAsConfigured(
+  spec: ProviderSpec,
+  context: ProviderCredentialContext,
+): boolean {
+  for (const source of spec.setupGate) {
+    if (source === "apiKey" && providerApiKeyValue(spec, context)) return true;
+    if (source === "baseUrl" && providerBaseUrlValue(spec, context)) return true;
+    const oauthField = spec.credentials.oauthConfig;
+    if (source === "oauth" && oauthField && context.oauthToken?.(oauthField)) return true;
+  }
+  return false;
+}
+
+/** The vision rules a provider declares, resolved through any `fromProvider` link.
+ *  A provider absent from providers/ contributes no rules, so removing one can
+ *  never break module load. */
+export function providerVisionSpec(id: ProviderID): ProviderVisionSpec {
+  const spec = providerSpec(id);
+  if (!spec) return {};
+  const inherited = spec.vision.fromProvider
+    ? providerSpec(spec.vision.fromProvider)?.vision
+    : undefined;
+  if (!inherited) return spec.vision;
+  return {
+    models: inherited.models,
+    patterns: inherited.patterns,
+    predicate: inherited.predicate,
+    refreshable: spec.vision.refreshable,
+    stripSchemeAndTag: spec.vision.stripSchemeAndTag,
+  };
+}

@@ -406,6 +406,17 @@ const ERROR_KEYS: Record<ErrorProvider, Record<ErrorKind, keyof TranslationSchem
     rate: "experientialRate",
     server: "experientialServer",
   },
+  synthetic: {
+    auth: "syntheticAuth",
+    credits: "syntheticCredits",
+    permission: "syntheticPermission",
+    notFound: "syntheticNotFound",
+    request: "syntheticRequest",
+    context: "syntheticContext",
+    timeout: "syntheticTimeout",
+    rate: "syntheticRate",
+    server: "syntheticServer",
+  },
   upstream: {
     auth: "customAuth",
     credits: "customCredits",
@@ -441,6 +452,7 @@ function resolveErrorProvider(
   if (prefix === "OpenCode") return "opencode";
   if (prefix === "MiMo") return "mimo";
   if (prefix === "Experiential") return "experiential";
+  if (prefix === "Synthetic") return "synthetic";
   if (upstreamHost) {
     try {
       const host = new URL(upstreamHost).hostname.toLowerCase();
@@ -454,6 +466,7 @@ function resolveErrorProvider(
       if (host.endsWith("opencode.ai")) return "opencode";
       if (host.endsWith("xiaomimimo.com")) return "mimo";
       if (host.endsWith("experientiallabs.ai")) return "experiential";
+      if (host.endsWith("synthetic.new")) return "synthetic";
     } catch {
       return "upstream";
     }

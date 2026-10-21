@@ -1,0 +1,63 @@
+{
+  "id": "experiential",
+  "providerId": "experiential",
+  "label": "Experiential Labs",
+  "order": 7,
+  "setupGate": ["apiKey", "baseUrl"],
+  "pickerGate": "catalog",
+  "routing": {
+    "staticCatalog": false,
+    "discoveredCatalog": false,
+    "checkedLast": true,
+    "modelScheme": null
+  },
+  "groupLabelKey": "composer.modelExperientialGroup",
+  "precedence": 7,
+  "defaultModel": "qwen3.8-27b",
+  "knownCatalog": false,
+  "models": ["qwen3.8-27b", "fable-5"],
+  "goModels": [],
+  "speechModels": [],
+  "vision": {},
+  "modelFilter": null,
+  "reasoningEfforts": [],
+  "endpoint": {
+    "strategy": "standard",
+    "default": "https://api.experientiallabs.ai/v1",
+    "tiers": {}
+  },
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["EXPERIENTIAL_API_KEY", "EXPLABS_API_KEY"],
+      "configKey": "experientialApiKey",
+      "labelKey": "settings.webSearchApiKey.experiential",
+      "signupUrl": "https://platform.experientiallabs.ai/settings/keys"
+    },
+    {
+      "key": "baseUrl",
+      "kind": "url",
+      "env": ["EXPERIENTIAL_BASE_URL"],
+      "configKey": "experientialBaseUrl",
+      "labelKey": "settings.experientialBaseUrl",
+      "hintKey": "settings.experientialBaseUrlHint"
+    }
+  ],
+  "credentials": {
+    "publicKey": null,
+    "oauthConfig": null
+  },
+  "usable": { "apiKey": true, "keylessLocal": false, "always": false },
+  "discovery": {
+    "strategy": "models-endpoint",
+    "listField": "data",
+    "idField": "id",
+    "excludeSpeech": false
+  },
+  "client": {
+    "auth": "api-key",
+    "transport": null,
+    "allowMissingKey": false
+  }
+}

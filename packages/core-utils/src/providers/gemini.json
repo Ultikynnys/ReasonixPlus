@@ -1,0 +1,59 @@
+{
+  "id": "gemini",
+  "providerId": "gemini",
+  "label": "Google Gemini",
+  "order": 8,
+  "setupGate": ["oauth"],
+  "pickerGate": "signin",
+  "routing": {
+    "staticCatalog": true,
+    "discoveredCatalog": false,
+    "checkedLast": false,
+    "foreignCatalog": true,
+    "modelScheme": null
+  },
+  "groupLabelKey": "composer.modelAntigravityGroup",
+  "pickerGroup": "antigravity",
+  "precedence": 1,
+  "defaultModel": "gemini-3.6-flash-low",
+  "knownCatalog": true,
+  "models": [
+    "gemini-3.6-flash-low",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-tiered",
+    "gemini-3.7-flash-tiered",
+    "gemini-3.8-flash-tiered",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium"
+  ],
+  "goModels": [],
+  "speechModels": [],
+  "vision": { "predicate": "antigravity" },
+  "modelFilter": "antigravity",
+  "reasoningEfforts": ["low", "medium", "high"],
+  "endpoint": {
+    "strategy": "fixed",
+    "default": "https://daily-cloudcode-pa.googleapis.com",
+    "tiers": {}
+  },
+  "settingsPanel": "antigravity-auth",
+  "settings": [],
+  "credentials": {
+    "publicKey": null,
+    "oauthConfig": "antigravityOAuth"
+  },
+  "usable": { "apiKey": false, "keylessLocal": false, "always": false },
+  "discovery": {
+    "strategy": "oauth-quota",
+    "listField": null,
+    "idField": "id",
+    "excludeSpeech": false
+  },
+  "client": {
+    "auth": "gemini-oauth",
+    "transport": null,
+    "allowMissingKey": false
+  }
+}

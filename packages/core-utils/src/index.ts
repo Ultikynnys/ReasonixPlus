@@ -130,6 +130,48 @@ export {
 } from "./reasoning-efforts.js";
 export type { ProviderID } from "./reasoning-efforts.js";
 export {
+  FOREIGN_CATALOG_SPECS,
+  MODELS_DEV_SPECS,
+  PROVIDER_SPECS,
+  ROUTABLE_PROVIDER_SPECS,
+  isLocalBaseUrl,
+  parseProviderRegistry,
+  providerApiKeyValue,
+  providerBaseUrlValue,
+  providerCountsAsConfigured,
+  providerDefaultEndpoint,
+  providerSettingSpec,
+  providerSpec,
+  providerSpecsInOrder,
+  providerUsable,
+  providerVisionSpec,
+  requireProviderSpec,
+  resolveProviderEndpoint,
+  specForProvider,
+} from "./provider-registry.js";
+export type {
+  ProviderAuthStrategy,
+  ProviderClientSpec,
+  ProviderCredentialContext,
+  ProviderCredentialsSpec,
+  ProviderDiscoverySpec,
+  ProviderDiscoveryStrategy,
+  ProviderEndpoint,
+  ProviderEndpointSpec,
+  ProviderEndpointStrategy,
+  ProviderModelFilter,
+  ProviderPickerGate,
+  ProviderSettingKind,
+  ProviderSettingSpec,
+  ProviderSettingsPanel,
+  ProviderSetupSource,
+  ProviderSpec,
+  ProviderTransportStrategy,
+  ProviderUsableSpec,
+  ProviderVisionPredicate,
+  ProviderVisionSpec,
+} from "./provider-registry.js";
+export {
   toApprovalPrompt,
   resolveApprovalPrompt,
 } from "./approval-prompt.js";

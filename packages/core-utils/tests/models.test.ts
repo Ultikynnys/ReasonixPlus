@@ -17,6 +17,7 @@ import {
   qualifyModelRef,
   stripProviderQualifier,
 } from "../src/models.js";
+import { requireProviderSpec } from "../src/provider-registry.js";
 
 describe("modelAcceptsImages", () => {
   it("accepts OpenAI models including GPT-6 family and GPT-5.6 family", () => {
@@ -152,6 +153,8 @@ describe("KNOWN_MODELS", () => {
       ...MIMO_MODELS,
       ...OPENCODE_MODELS,
       ...ANTIGRAVITY_MODELS,
+      // Synthetic is last in display order, so its catalog closes the list.
+      ...requireProviderSpec("synthetic").models,
     ]);
   });
 });

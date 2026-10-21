@@ -473,8 +473,6 @@ describe("ContextPanel plan tab", () => {
     expect(screen.getByText("done")).toBeTruthy();
   });
 
-
-
   it("keeps the Plan tab visible without an active plan", () => {
     const { container } = renderPanel();
     expect(

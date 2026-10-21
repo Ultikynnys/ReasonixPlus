@@ -1,0 +1,64 @@
+{
+  "id": "ollama",
+  "providerId": "ollama",
+  "label": "Ollama",
+  "order": 9,
+  "setupGate": ["apiKey", "baseUrl"],
+  "picker": false,
+  "routing": {
+    "staticCatalog": false,
+    "discoveredCatalog": false,
+    "checkedLast": false,
+    "modelScheme": "ollama/"
+  },
+  "groupLabelKey": "settings.ollamaSection",
+  "precedence": null,
+  "defaultModel": null,
+  "knownCatalog": false,
+  "models": [],
+  "goModels": [],
+  "speechModels": [],
+  "vision": { "fromProvider": "deepseek", "stripSchemeAndTag": true },
+  "modelFilter": null,
+  "reasoningEfforts": ["low", "medium", "high", "max"],
+  "endpoint": {
+    "strategy": "standard",
+    "default": "https://ollama.com/v1",
+    "tiers": {},
+    "keyTuple": "resolve"
+  },
+  "settingsPanel": "ollama-generation",
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["OLLAMA_API_KEY", "ollamaApiKey"],
+      "configKey": "ollamaApiKey",
+      "labelKey": "settings.webSearchApiKey.ollama",
+      "signupUrl": "https://ollama.com/settings/keys"
+    },
+    {
+      "key": "baseUrl",
+      "kind": "url",
+      "env": ["OLLAMA_BASE_URL"],
+      "configKey": "ollamaBaseUrl",
+      "labelKey": "settings.ollamaBaseUrl"
+    }
+  ],
+  "credentials": {
+    "publicKey": null,
+    "oauthConfig": null
+  },
+  "usable": { "apiKey": true, "keylessLocal": true, "always": false },
+  "discovery": {
+    "strategy": "runtime",
+    "listField": null,
+    "idField": "id",
+    "excludeSpeech": false
+  },
+  "client": {
+    "auth": "api-key",
+    "transport": null,
+    "allowMissingKey": true
+  }
+}

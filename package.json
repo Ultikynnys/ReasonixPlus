@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/postinstall.mjs",
+    "providers:sync": "node scripts/generate-provider-registry.mjs",
     "build": "tsup && node scripts/copy-tree-sitter-grammars.mjs && node scripts/copy-ripgrep.mjs",
     "build:desktop": "npm --prefix desktop run build",
     "dev": "tsx src/cli/index.ts desktop",

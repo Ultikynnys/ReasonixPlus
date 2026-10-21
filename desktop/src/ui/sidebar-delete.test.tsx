@@ -103,9 +103,7 @@ describe("sidebar delete operators", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear all sessions" }));
     const popover = container.querySelector(".session-delete-popover");
     expect(popover?.querySelector(".name")?.textContent).toBe("1 session(s) for this workspace");
-    expect(popover?.querySelector(".note")?.textContent).toBe(
-      "1 running session(s) will be kept",
-    );
+    expect(popover?.querySelector(".note")?.textContent).toBe("1 running session(s) will be kept");
   });
 
   it("disables clear-all when every session is running", () => {

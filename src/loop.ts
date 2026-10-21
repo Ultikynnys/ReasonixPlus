@@ -483,6 +483,8 @@ export class CacheFirstLoop {
   /** True when nobody can type "continue" to this loop — see CacheFirstLoopOptions.unattended. */
   private readonly _unattended: boolean;
   private readonly _planContext: boolean;
+  /** Plan-state signature already injected this turn — see takePlanContext(). */
+  private _injectedPlanSig: string | null = null;
   /** Live edit-mode getter — hosts that don't pass it keep the default pause. */
   private readonly _getEditMode: (() => EditMode) | undefined;
   /** Latched once per turn — the empty-completion guard retries exactly once. */
@@ -927,13 +929,25 @@ export class CacheFirstLoop {
   private planRepository: PlanRepository | undefined;
   private planRepositoryKey: string | null = null;
 
+  /** The plan store bound to this run's workspace+session, or undefined for a
+   *  session-less loop (REPL or a test harness), which injects nothing. Repointed
+   *  whenever the binding moves — so every reader goes through here, never the field. */
+  private planStore(): PlanRepository | undefined {
+    const key = this.sessionName ? `${this.hookCwd}\0${this.sessionName}` : null;
+    if (key !== this.planRepositoryKey) {
+      this.planRepositoryKey = key;
+      this.planRepository = key ? planRepository(this.hookCwd) : undefined;
+    }
+    return this.planRepository;
+  }
+
   /** This session's in-flight plan, or null. Plan context is additive, the conversation
    *  is not: an unreadable or lock-held store must not take the turn down with it. */
   private activePlanForSession(): PlanRecord | null {
     if (!this._planContext) return null;
     try {
       return (
-        this.planRepository?.activeFor(claimingSession(this.sessionName), {
+        this.planStore()?.activeFor(claimingSession(this.sessionName), {
           adoptUnclaimed: true,
         }) ?? null
       );
@@ -943,15 +957,9 @@ export class CacheFirstLoop {
     }
   }
 
-  private buildMessages(): ChatMessage[] {
-    const healedMessages = this.healActiveLogBeforeSend();
-    // Plan context belongs to a bound conversation: a session-less loop (REPL or a
-    // test harness) injects nothing, and a workspace/session switch repoints the store.
-    const key = this.sessionName ? `${this.hookCwd}\0${this.sessionName}` : null;
-    if (key !== this.planRepositoryKey) {
-      this.planRepositoryKey = key;
-      this.planRepository = key ? planRepository(this.hookCwd) : undefined;
-    }
+  /** The plan-state note this session is due, or null. `sig` names one plan state so
+   *  a turn can inject it once instead of on every iteration. */
+  private planNote(): { sig: string; message: ChatMessage } | null {
     // Only THIS session's plan: another session's in-flight plan in the same workspace
     // is not ours to continue, and injecting it is exactly how two sessions end up
     // driving one plan. An unclaimed pre-ownership plan is adopted on first read.
@@ -959,15 +967,49 @@ export class CacheFirstLoop {
     // Only nudge on a plan that still has an unfinished step — a finished leftover
     // (e.g. an imported legacy plan) must not inject "continue the next step" forever.
     const nextStep = active?.steps.find((s) => !Object.hasOwn(active.completions, s.id));
-    const planContext: ChatMessage[] =
-      active && nextStep
-        ? [
-            {
-              role: "user",
-              content: `Authoritative session plan state (not a new user request): ${JSON.stringify({ planId: active.id, summary: active.summary, status: active.status, steps: active.steps, completedStepIds: Object.keys(active.completions), nextStepId: nextStep.id })}\nThis plan belongs to this session, so continue the next unfinished step in order. Supply this planId to mark_step_complete and revise_plan. Use open_plan for full accepted work and list_plans for history. Do not silently abandon or replace the plan, and do not work a plan another session holds: only this planId is yours.`,
-            },
-          ]
-        : [];
+    if (!active || !nextStep) return null;
+    const completedStepIds = Object.keys(active.completions);
+    // Every input that changes what the note says belongs in the sig, not just the
+    // timestamp: a revision landing in the same millisecond as a completion would
+    // otherwise read as the same state and never re-inject.
+    const sig = [
+      active.id,
+      active.updatedAt,
+      nextStep.id,
+      active.steps.length,
+      completedStepIds.length,
+      active.revisions.length,
+    ].join("\0");
+    return {
+      sig,
+      message: {
+        role: "user",
+        content: `Authoritative session plan state (not a new user request): ${JSON.stringify({ planId: active.id, summary: active.summary, status: active.status, steps: active.steps, completedStepIds, nextStepId: nextStep.id })}\nThis plan belongs to this session, so continue the next unfinished step in order. Supply this planId to mark_step_complete and revise_plan. Use open_plan for full accepted work and list_plans for history. Do not silently abandon or replace the plan, and do not work a plan another session holds: only this planId is yours.`,
+      },
+    };
+  }
+
+  /** The plan note for ONE request: the turn's first, plus any later request whose plan
+   *  state moved on (a step completed, a revision). Repeating it every iteration makes
+   *  the note the newest user content, so the model re-answers whatever preceded it. */
+  private takePlanContext(): ChatMessage[] {
+    const note = this.planNote();
+    if (!note || note.sig === this._injectedPlanSig) return [];
+    this._injectedPlanSig = note.sig;
+    return [note.message];
+  }
+
+  /** The next request, plan note included when this turn is still due one — the single
+   *  expression of "build with a fresh injection decision", so callers and tests can
+   *  never disagree about how the note is settled. */
+  private nextRequest(): ChatMessage[] {
+    return this.buildMessages(this.takePlanContext());
+  }
+
+  /** Pure build: the caller settles `planContext` (see nextRequest) so one build can
+   *  never consume another's injection. */
+  private buildMessages(planContext: readonly ChatMessage[]): ChatMessage[] {
+    const healedMessages = this.healActiveLogBeforeSend();
     // Send-time image retention (window default = KEEP_LAST_IMAGES): the log
     // keeps every image so transcripts and reloads stay complete, but only the
     // newest image parts are sent. Otherwise screenshots accumulate across a
@@ -977,11 +1019,16 @@ export class CacheFirstLoop {
     // The prefix is never folded: a durable compaction folds the log only, and
     // the request-only fold below must match that or the system prompt would be
     // summarized away from the outgoing turn.
-    return pruneOldImageParts([
-      ...this.prefix.toMessages(),
-      ...this.foldRequestForRefusal(healedMessages),
-      ...planContext,
-    ]);
+    const history = [...this.prefix.toMessages(), ...this.foldRequestForRefusal(healedMessages)];
+    // A tail user message (the turn's own query, or a steer/nudge still unanswered)
+    // has to stay last: putting the note after it makes the note the newest user
+    // content, and the model answers whatever preceded it all over again.
+    const tail = history.at(-1);
+    const ordered =
+      planContext.length > 0 && tail?.role === "user"
+        ? [...history.slice(0, -1), ...planContext, tail]
+        : [...history, ...planContext];
+    return pruneOldImageParts(ordered);
   }
 
   /** Fold a copy of `messages` down to `targetTokens`, or null when folding
@@ -1464,6 +1511,7 @@ export class CacheFirstLoop {
   ): AsyncGenerator<LoopEvent> {
     // Reset per-turn flags.
     this._steerConsumed = false;
+    this._injectedPlanSig = null;
     this._turnImages = toTurnImages(images);
 
     this._turn++;
@@ -1759,8 +1807,8 @@ export class CacheFirstLoop {
           statusCode: "tool-upload",
         };
       }
-      let messages = this.buildMessages();
-
+      // Consume a queued steer BEFORE building, so an iteration makes one request
+      // instead of building twice to fold the steer in.
       if (this._steerQueue.length > 0) {
         const steer = this._steerQueue.shift()!;
         this._steerConsumed = this._steerQueue.length === 0;
@@ -1769,13 +1817,13 @@ export class CacheFirstLoop {
           content: formatSteerUserMessage(steer),
           synthetic: true,
         });
-        messages = this.buildMessages();
         yield {
           turn: this._turn,
           role: "steer",
           content: steer,
         };
       }
+      const messages = this.nextRequest();
 
       let assistantContent = "";
       let reasoningContent = "";

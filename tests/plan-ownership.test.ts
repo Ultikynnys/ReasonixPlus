@@ -16,6 +16,11 @@ import { registerPlanTool } from "../src/tools/plan.js";
 import type { ChatMessage } from "../src/types.js";
 import { makeFakeClient } from "./support/fake-client.js";
 
+/** Exactly the request the loop would send right now — production's own nextRequest. */
+function requestMessages(loop: CacheFirstLoop): ChatMessage[] {
+  return (loop as unknown as { nextRequest(): ChatMessage[] }).nextRequest();
+}
+
 let home: string;
 let previous: [string | undefined, string | undefined];
 
@@ -436,7 +441,7 @@ it("injects nothing when the plan store is unreadable instead of failing the tur
     hookCwd: workspace,
     stream: false,
   });
-  const context = (loop as unknown as { buildMessages(): ChatMessage[] }).buildMessages();
+  const context = requestMessages(loop);
   expect(context.some((message) => String(message.content).includes(plan.id))).toBe(false);
 });
 
@@ -457,7 +462,7 @@ it("injects only the plan the loop's own session owns", () => {
       hookCwd: workspace,
       stream: false,
     });
-    const context = (loop as unknown as { buildMessages(): ChatMessage[] }).buildMessages();
+    const context = requestMessages(loop);
     return context.map((message) => String(message.content)).join("\n");
   };
 

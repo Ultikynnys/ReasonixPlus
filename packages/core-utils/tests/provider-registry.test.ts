@@ -1,0 +1,409 @@
+import { describe, expect, it } from "vitest";
+import {
+  ANTIGRAVITY_MODELS,
+  DEFAULT_MODEL,
+  KNOWN_MODELS,
+  MIMO_SPEECH_MODELS,
+  OPENCODE_GO_MODELS,
+  OPENCODE_VISION_MODELS,
+  SUPPORTED_OFFICIAL_MODELS,
+  ZAI_MODELS,
+  modelAcceptsImages,
+} from "../src/models.js";
+import {
+  PROVIDER_IDS,
+  PROVIDER_MODEL_PRECEDENCE,
+  PROVIDER_REASONING_EFFORTS,
+  PROVIDER_SPECS,
+  type ProviderCredentialContext,
+  type ProviderID,
+  type ProviderSpec,
+  ROUTABLE_PROVIDER_SPECS,
+  parseProviderRegistry,
+  providerCountsAsConfigured,
+  providerSettingSpec,
+  providerSpec,
+  providerUsable,
+  providerVisionSpec,
+  requireProviderSpec,
+  resolveProviderEndpoint,
+  specForProvider,
+} from "../src/provider-registry.js";
+import { REASONING_EFFORT_ORDER } from "../src/reasoning-efforts.js";
+
+function ctxFor(
+  env: Record<string, string> = {},
+  config: Record<string, string> = {},
+): ProviderCredentialContext {
+  return {
+    env: (name) => env[name],
+    configField: (field) => config[field],
+  };
+}
+
+function endpointFor(
+  id: string,
+  env: Record<string, string> = {},
+  config: Record<string, string> = {},
+  tier?: string,
+) {
+  return resolveProviderEndpoint(requireProviderSpec(id), { ...ctxFor(env, config), tier });
+}
+
+/** A catalog-only provider described entirely in JSON — the shape a new
+ *  embedded provider takes when it never routes a bare model id. */
+const ACME = {
+  id: "acme",
+  providerId: null,
+  label: "Acme",
+  groupLabelKey: "settings.typesafeSection",
+  order: 20,
+  setupGate: ["apiKey"],
+  precedence: null,
+  defaultModel: "acme-1",
+  knownCatalog: false,
+  models: ["acme-1"],
+  goModels: [],
+  speechModels: [],
+  vision: { patterns: ["^acme-"] },
+  modelFilter: null,
+  reasoningEfforts: ["high"],
+  endpoint: { strategy: "standard", default: "https://api.acme.test/v1", tiers: {} },
+  settings: [
+    {
+      key: "apiKey",
+      kind: "secret",
+      env: ["ACME_API_KEY"],
+      configKey: "acmeApiKey",
+      labelKey: "settings.providerApiKey",
+    },
+    {
+      key: "baseUrl",
+      kind: "url",
+      env: ["ACME_BASE_URL"],
+      configKey: "acmeBaseUrl",
+      labelKey: "settings.providerBaseUrl",
+    },
+  ],
+  credentials: {
+    publicKey: null,
+    oauthConfig: null,
+  },
+  usable: { apiKey: true, keylessLocal: false, always: false },
+  discovery: {
+    strategy: "models-endpoint",
+    listField: "assets",
+    idField: "slug",
+    excludeSpeech: false,
+  },
+  client: { auth: "api-key", transport: null, allowMissingKey: false },
+};
+
+describe("providers.json", () => {
+  it("lists exactly the routable ProviderID union", () => {
+    const declared = ROUTABLE_PROVIDER_SPECS.map((spec) => spec.providerId).sort();
+    expect(declared).toEqual([...PROVIDER_IDS].sort());
+  });
+
+  it("keeps catalog ids unique and descriptive", () => {
+    expect(new Set(PROVIDER_SPECS.map((spec) => spec.id)).size).toBe(PROVIDER_SPECS.length);
+    for (const spec of PROVIDER_SPECS) {
+      expect(spec.label.length).toBeGreaterThan(0);
+      expect(spec.groupLabelKey).toContain(".");
+      expect(Number.isFinite(spec.order)).toBe(true);
+    }
+  });
+
+  it("orders bare-id precedence exactly as declared", () => {
+    expect(PROVIDER_MODEL_PRECEDENCE).toEqual([
+      "gemini",
+      "deepseek",
+      "openai",
+      "zai",
+      "mimo",
+      "opencode",
+      "experiential",
+      "synthetic",
+    ]);
+    expect(requireProviderSpec("ollama").precedence).toBeNull();
+  });
+
+  it("declares canonical effort ladders once per routable provider", () => {
+    expect(Object.keys(PROVIDER_REASONING_EFFORTS).sort()).toEqual([...PROVIDER_IDS].sort());
+    for (const levels of Object.values(PROVIDER_REASONING_EFFORTS)) {
+      for (const level of levels) expect(REASONING_EFFORT_ORDER).toContain(level);
+    }
+    expect(PROVIDER_REASONING_EFFORTS.mimo).toEqual([]);
+    expect(PROVIDER_REASONING_EFFORTS.experiential).toEqual([]);
+  });
+
+  it("feeds every exported catalog", () => {
+    expect(SUPPORTED_OFFICIAL_MODELS).toEqual(requireProviderSpec("deepseek").models);
+    expect(ZAI_MODELS).toEqual(requireProviderSpec("zai").models);
+    expect(OPENCODE_GO_MODELS).toEqual(requireProviderSpec("opencode").goModels);
+    expect([...MIMO_SPEECH_MODELS]).toEqual(requireProviderSpec("mimo").speechModels);
+    expect(ANTIGRAVITY_MODELS).toEqual(requireProviderSpec("gemini").models);
+    expect([...OPENCODE_VISION_MODELS]).toEqual(
+      requireProviderSpec("opencode").vision.models ?? [],
+    );
+  });
+
+  it("builds KNOWN_MODELS from the knownCatalog entries in display order", () => {
+    const expected = ROUTABLE_PROVIDER_SPECS.filter((spec) => spec.knownCatalog).flatMap(
+      (spec) => spec.models,
+    );
+    expect(KNOWN_MODELS).toEqual(expected);
+    expect(KNOWN_MODELS).not.toContain(requireProviderSpec("experiential").models[0]);
+  });
+
+  it("pins the install default model to DeepSeek's declared default", () => {
+    expect(DEFAULT_MODEL).toBe(requireProviderSpec("deepseek").defaultModel);
+  });
+});
+
+describe("resolveProviderEndpoint", () => {
+  it("keeps a custom base URL's own key", () => {
+    expect(
+      endpointFor(
+        "zai",
+        { ZAI_API_KEY: "env-key" },
+        { zaiBaseUrl: "https://proxy/v1", zaiApiKey: "cfg" },
+      ),
+    ).toEqual({ baseUrl: "https://proxy/v1", apiKey: "cfg" });
+  });
+
+  it("lets an env base URL own the env key", () => {
+    expect(
+      endpointFor(
+        "zai",
+        { ZAI_BASE_URL: "https://env/v1", ZAI_API_KEY: "env-key" },
+        { zaiBaseUrl: "https://proxy/v1", zaiApiKey: "cfg" },
+      ),
+    ).toEqual({ baseUrl: "https://env/v1", apiKey: "env-key" });
+  });
+
+  it("falls back to the declared default endpoint and the resolved key", () => {
+    expect(endpointFor("mimo", {}, { mimoApiKey: "cfg" })).toEqual({
+      baseUrl: "https://api.xiaomimimo.com/v1",
+      apiKey: "cfg",
+    });
+  });
+
+  it("declares no default for a provider that requires configuration", () => {
+    expect(endpointFor("deepseek")).toEqual({ baseUrl: undefined, apiKey: undefined });
+  });
+
+  it("resolves Ollama's key through config even on an env base URL", () => {
+    expect(
+      endpointFor(
+        "ollama",
+        { OLLAMA_BASE_URL: "http://localhost:11434/v1" },
+        { ollamaApiKey: "cfg" },
+      ),
+    ).toEqual({ baseUrl: "http://localhost:11434/v1", apiKey: "cfg" });
+  });
+
+  it("switches OpenCode to its declared Go tier and keeps the public key", () => {
+    expect(endpointFor("opencode", {}, {}, "go")).toEqual({
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      apiKey: "public",
+    });
+    expect(endpointFor("opencode")).toEqual({
+      baseUrl: "https://opencode.ai/zen/v1",
+      apiKey: "public",
+    });
+  });
+
+  it("keeps Gemini on its fixed endpoint with no static key", () => {
+    expect(endpointFor("gemini", { GEMINI_BASE_URL: "https://ignored" })).toEqual({
+      baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+      apiKey: undefined,
+    });
+  });
+});
+
+describe("providerUsable", () => {
+  const usable = (
+    spec: ProviderSpec,
+    context: ProviderCredentialContext,
+    endpoint: {
+      baseUrl: string | undefined;
+      apiKey: string | undefined;
+    },
+  ) => providerUsable(spec, { ...context, endpoint });
+
+  it("counts a keyless localhost daemon as runnable", () => {
+    const spec = requireProviderSpec("ollama");
+    expect(
+      usable(spec, ctxFor(), { baseUrl: "http://localhost:11434/v1", apiKey: undefined }),
+    ).toBe(true);
+    expect(usable(spec, ctxFor(), { baseUrl: "https://ollama.com/v1", apiKey: undefined })).toBe(
+      false,
+    );
+  });
+
+  it("requires the sign-in for a quota-only provider", () => {
+    const spec = requireProviderSpec("gemini");
+    expect(usable(spec, ctxFor(), { baseUrl: "https://x", apiKey: undefined })).toBe(false);
+    expect(
+      usable(
+        spec,
+        { ...ctxFor(), oauthToken: () => "token" },
+        {
+          baseUrl: "https://x",
+          apiKey: undefined,
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts either a key or a sign-in for OpenAI", () => {
+    const spec = requireProviderSpec("openai");
+    expect(usable(spec, ctxFor(), { baseUrl: "https://api.openai.com/v1", apiKey: "sk" })).toBe(
+      true,
+    );
+    expect(
+      usable(
+        spec,
+        { ...ctxFor(), oauthToken: () => "token" },
+        {
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: undefined,
+        },
+      ),
+    ).toBe(true);
+    expect(
+      usable(spec, ctxFor(), { baseUrl: "https://api.openai.com/v1", apiKey: undefined }),
+    ).toBe(false);
+  });
+
+  it("treats a public-key provider as always runnable", () => {
+    expect(
+      usable(requireProviderSpec("opencode"), ctxFor(), {
+        baseUrl: "https://opencode.ai/zen/v1",
+        apiKey: undefined,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("providerCountsAsConfigured", () => {
+  it("counts only the sources each provider gates setup on", () => {
+    expect(
+      providerCountsAsConfigured(
+        requireProviderSpec("mimo"),
+        ctxFor({}, { mimoBaseUrl: "https://x" }),
+      ),
+    ).toBe(true);
+    expect(
+      providerCountsAsConfigured(
+        requireProviderSpec("zai"),
+        ctxFor({}, { zaiBaseUrl: "https://x" }),
+      ),
+    ).toBe(false);
+    expect(
+      providerCountsAsConfigured(
+        requireProviderSpec("deepseek"),
+        ctxFor({ DEEPSEEK_API_KEY: "sk" }),
+      ),
+    ).toBe(true);
+    expect(
+      providerCountsAsConfigured(requireProviderSpec("gemini"), {
+        ...ctxFor(),
+        oauthToken: () => "token",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("vision rules", () => {
+  it("inherits the DeepSeek catalog for Ollama tags", () => {
+    const rule = providerVisionSpec("ollama");
+    expect(rule.models).toEqual(requireProviderSpec("deepseek").vision.models);
+    expect(rule.stripSchemeAndTag).toBe(true);
+    expect(modelAcceptsImages("ollama/deepseek-v4.1-flash:cloud")).toBe(true);
+  });
+
+  it("matches declared patterns and rejects unknown ids", () => {
+    expect(modelAcceptsImages("gpt-6-luna")).toBe(true);
+    expect(modelAcceptsImages("glm-4.6v")).toBe(true);
+    expect(modelAcceptsImages("some-unlisted-model")).toBe(false);
+  });
+});
+
+describe("adding a provider", () => {
+  it("needs only a providers.json entry for a catalog-only provider", () => {
+    const parsed = parseProviderRegistry({ providers: [ACME] });
+    expect(parsed).toHaveLength(1);
+    const spec = parsed[0]!;
+    expect(spec.providerId).toBeNull();
+    expect(spec.discovery).toMatchObject({ listField: "assets", idField: "slug" });
+    // Credentials are derived from the declared settings, never repeated.
+    expect(spec.credentials).toEqual({
+      baseUrlEnv: ["ACME_BASE_URL"],
+      apiKeyEnv: ["ACME_API_KEY"],
+      baseUrlConfig: "acmeBaseUrl",
+      apiKeyConfig: "acmeApiKey",
+      publicKey: null,
+      oauthConfig: null,
+    });
+    expect(providerSettingSpec(spec, "apiKey")?.env).toEqual(["ACME_API_KEY"]);
+    expect(resolveProviderEndpoint(spec, ctxFor())).toEqual({
+      baseUrl: "https://api.acme.test/v1",
+      apiKey: undefined,
+    });
+    expect(
+      resolveProviderEndpoint(
+        spec,
+        ctxFor({ ACME_BASE_URL: "https://acme-proxy/v1", ACME_API_KEY: "k" }),
+      ),
+    ).toEqual({ baseUrl: "https://acme-proxy/v1", apiKey: "k" });
+    expect(providerCountsAsConfigured(spec, ctxFor({}, { acmeApiKey: "k" }))).toBe(true);
+    expect(providerCountsAsConfigured(spec, ctxFor())).toBe(false);
+  });
+
+  it("rejects an undeclared endpoint strategy with the entry in the message", () => {
+    const broken = { ...ACME, endpoint: { ...ACME.endpoint, strategy: "carrier-pigeon" } };
+    expect(() => parseProviderRegistry({ providers: [broken] })).toThrow(
+      /endpoint\.strategy: unsupported value "carrier-pigeon"/,
+    );
+  });
+
+  it("rejects duplicate ids", () => {
+    expect(() => parseProviderRegistry({ providers: [ACME, ACME] })).toThrow(/duplicate id/);
+  });
+
+  it("maps every routable provider to its own entry", () => {
+    for (const id of PROVIDER_IDS) expect(specForProvider(id).providerId).toBe(id);
+  });
+});
+
+describe("declared dispatches", () => {
+  it("marks exactly one vision catalog as runtime-refreshable", () => {
+    const refreshable = ROUTABLE_PROVIDER_SPECS.filter(
+      (spec) => providerVisionSpec(spec.providerId as ProviderID).refreshable === true,
+    );
+    expect(refreshable.map((spec) => spec.providerId)).toEqual(["opencode"]);
+  });
+
+  it("replaces a refreshable catalog instead of merging it", () => {
+    // `mimo-v2.5-free` is in the static OpenCode vision catalog.
+    expect(modelAcceptsImages("mimo-v2.5-free")).toBe(true);
+    expect(modelAcceptsImages("mimo-v2.5-free", null, new Set())).toBe(false);
+    expect(modelAcceptsImages("mimo-v2.5-free", null, new Set(["mimo-v2.5-free"]))).toBe(true);
+  });
+
+  it("declares a picker group only when it differs from the provider id", () => {
+    for (const spec of PROVIDER_SPECS) {
+      if (spec.pickerGroup !== null) expect(spec.pickerGroup).not.toBe(spec.id);
+    }
+    expect(requireProviderSpec("gemini").pickerGroup).toBe("antigravity");
+  });
+
+  it("answers an unknown id without throwing where absence is allowed", () => {
+    expect(providerSpec("nope")).toBeUndefined();
+    expect(providerVisionSpec("nope" as ProviderID)).toEqual({});
+    expect(() => requireProviderSpec("nope")).toThrow(/no entry for "nope"/);
+    expect(() => specForProvider("nope" as ProviderID)).toThrow(/no routable entry for "nope"/);
+  });
+});

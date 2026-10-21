@@ -82,8 +82,8 @@ export function McpSetupDialog({
           </button>
         </div>
         <p className="mcp-setup-hint" style={{ margin: "0 0 12px", opacity: 0.75 }}>
-          Choose what this chat starts with. Both choices are locked for the session, even
-          after a restart.
+          Choose what this chat starts with. Both choices are locked for the session, even after a
+          restart.
         </p>
         <ul className="mcp-setup-list" style={{ listStyle: "none", margin: 0, padding: 0 }}>
           <SetupRow name="Subagents" on={spawn} onToggle={() => setSpawn((on) => !on)} />

@@ -1126,6 +1126,8 @@ export class DeepSeekClient {
         return "MiMo";
       case "experiential":
         return "Experiential";
+      case "synthetic":
+        return "Synthetic";
     }
   }
 

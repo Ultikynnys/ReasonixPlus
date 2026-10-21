@@ -394,6 +394,10 @@ export function billingContextForModel(model: string, path?: string): BillingCon
       // the harness prices from token tables, so set `pricingOverride` for a
       // model with no built-in rate row.
       return { kind: "usd", provider };
+    case "synthetic":
+      // Per-token USD: the gateway publishes a price per model, so token
+      // accounting is the native unit (its plan quota is a limit, not the unit).
+      return { kind: "usd", provider };
   }
 }
 

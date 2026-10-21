@@ -552,7 +552,6 @@ function buildSessionTree(files: SessionFile[]): TreeNode[] {
   return out;
 }
 
-
 /** A side-panel block whose header collapses its body. */
 function CtxCollapsible({
   title,

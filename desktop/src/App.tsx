@@ -723,6 +723,7 @@ export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
     opencodeBaseUrl,
     mimoBaseUrl,
     experientialBaseUrl,
+    syntheticBaseUrl,
     ...rest
   } = patch;
   const sanitized: Partial<Settings> = { ...rest };
@@ -740,6 +741,9 @@ export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
   }
   if (experientialBaseUrl !== undefined) {
     sanitized.experientialBaseUrl = experientialBaseUrl ?? undefined;
+  }
+  if (syntheticBaseUrl !== undefined) {
+    sanitized.syntheticBaseUrl = syntheticBaseUrl ?? undefined;
   }
   return sanitized;
 }
@@ -2743,6 +2747,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           opencodeBaseUrl: ev.opencodeBaseUrl,
           mimoBaseUrl: ev.mimoBaseUrl,
           experientialBaseUrl: ev.experientialBaseUrl,
+          syntheticBaseUrl: ev.syntheticBaseUrl,
           subagentModel: ev.subagentModel,
           ollamaGeneration: ev.ollamaGeneration,
           ollamaGenerationOverrides: ev.ollamaGenerationOverrides,
@@ -7476,24 +7481,27 @@ export function App() {
 
   // Tracks each tab's running-agent flag so the tab dot can show how many
   // agents are active in it. Every mounted TabRuntime reports its own busy.
-  const reportTabBusy = useCallback((tabId: string, busy: boolean) => {
-    // A tab that stopped running has no live stream — drop its tracker so the
-    // next turn can't read a stale window, and with it the per-run subagent
-    // totals that fed that window.
-    if (!busy) {
-      streamRatesRef.current.delete(tabId);
-      subagentRatesRef.current.delete(tabId);
-    }
-    setTabs((prev) => {
-      let changed = false;
-      const next = prev.map((t) => {
-        if (t.id !== tabId || t.busy === busy) return t;
-        changed = true;
-        return { ...t, busy };
+  const reportTabBusy = useCallback(
+    (tabId: string, busy: boolean) => {
+      // A tab that stopped running has no live stream — drop its tracker so the
+      // next turn can't read a stale window, and with it the per-run subagent
+      // totals that fed that window.
+      if (!busy) {
+        streamRatesRef.current.delete(tabId);
+        subagentRatesRef.current.delete(tabId);
+      }
+      setTabs((prev) => {
+        let changed = false;
+        const next = prev.map((t) => {
+          if (t.id !== tabId || t.busy === busy) return t;
+          changed = true;
+          return { ...t, busy };
+        });
+        return changed ? next : prev;
       });
-      return changed ? next : prev;
-    });
-  }, [setTabs]);
+    },
+    [setTabs],
+  );
 
   // Snapshot the per-tab rate trackers into `sessionRates` (keyed by session
   // name) while any agent is running. Throttled to ~4Hz so the sidebar

@@ -16,6 +16,11 @@ import {
   OPENAI_MODELS,
   OPENCODE_MODELS,
   PROVIDER_IDS,
+  PROVIDER_SPECS,
+  type ProviderCredentialContext,
+  type ProviderModelFilter,
+  type ProviderSpec,
+  ROUTABLE_PROVIDER_SPECS,
   SUPPORTED_OFFICIAL_MODELS,
   WEB_SEARCH_ENGINE_NAMES,
   type WebSearchEngineName,
@@ -24,7 +29,15 @@ import {
   isQuickSend,
   isUsableAntigravityModel,
   parseModelRef,
+  providerApiKeyValue,
+  providerCountsAsConfigured,
+  providerDefaultEndpoint,
+  providerSpec,
+  providerUsable,
+  requireProviderSpec,
+  resolveProviderEndpoint,
   ruleRegexError,
+  specForProvider,
   stripProviderQualifier,
 } from "@reasonix/core-utils";
 import { z } from "zod";
@@ -37,7 +50,7 @@ import {
   isOpencodeGoModel,
   reasoningEffortsForModel,
 } from "./opencode-models.js";
-import { discoveredProviderModels } from "./provider-models.js";
+import { discoveredProviderModels, isCatalogProvider } from "./provider-models.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS } from "./telemetry/stats.js";
 import { type ThemeName, isThemeName, resolveThemeName } from "./theme/tokens.js";
@@ -76,14 +89,44 @@ export function isModelProvider(value: unknown): value is ModelProvider {
 }
 
 /** Catalog membership sets — exact-id matching, never prefix inference. */
-const CATALOG_PROVIDERS: ReadonlyArray<{ ids: ReadonlySet<string>; provider: ModelProvider }> = [
-  { ids: new Set(SUPPORTED_OFFICIAL_MODELS), provider: "deepseek" },
-  { ids: new Set(OPENAI_MODELS), provider: "openai" },
-  { ids: new Set(ZAI_MODELS), provider: "zai" },
-  { ids: new Set(MIMO_MODELS), provider: "mimo" },
-  { ids: new Set(OPENCODE_MODELS), provider: "opencode" },
-  { ids: new Set(ANTIGRAVITY_MODELS), provider: "gemini" },
-];
+const ROUTABLE_SPECS: readonly ProviderSpec[] = ROUTABLE_PROVIDER_SPECS;
+
+/** Providers whose static catalog claims a bare id, in display order. */
+const STATIC_CATALOG_SPECS: ReadonlyArray<{ provider: ModelProvider; ids: ReadonlySet<string> }> =
+  ROUTABLE_SPECS.filter((spec) => spec.routing.staticCatalog && !spec.routing.checkedLast).map(
+    (spec) => ({ provider: spec.providerId as ModelProvider, ids: new Set(spec.models) }),
+  );
+
+/** Providers whose discovery cache may claim a bare id the static pass left alone. */
+const DISCOVERY_CATALOG_SPECS: readonly ProviderSpec[] = ROUTABLE_SPECS.filter(
+  (spec) => spec.routing.discoveredCatalog,
+);
+
+/** Resold gateways, consulted only after every native provider declined. */
+const LAST_CHANCE_SPECS: readonly ProviderSpec[] = ROUTABLE_SPECS.filter(
+  (spec) => spec.routing.checkedLast,
+);
+
+/** Model-id prefixes that always route here (`ollama/` keeps legacy any-id). */
+const MODEL_SCHEME_SPECS: readonly ProviderSpec[] = ROUTABLE_SPECS.filter(
+  (spec) => spec.routing.modelScheme !== null,
+);
+
+/** Discovery strategies that place a bare id, keyed by the strategy declared in
+ *  providers.json. A new strategy needs one predicate, not a new if-branch. */
+const DISCOVERY_ROUTERS: Readonly<Record<string, (id: string) => boolean>> = {
+  "models.dev": (id) => isDiscoveredOpencodeModel(id),
+};
+
+/** Providers whose models.dev sync places ids no static catalog claims. */
+const MODELS_DEV_SPECS: readonly ProviderSpec[] = ROUTABLE_SPECS.filter(
+  (spec) => spec.discovery.strategy === "models.dev",
+);
+
+/** The only provider family whose ids a signed-in account discovers by quota. */
+const OAUTH_QUOTA_SPEC: ProviderSpec | undefined = ROUTABLE_SPECS.find(
+  (spec) => spec.discovery.strategy === "oauth-quota",
+);
 
 interface ModelAdmission {
   accepted: boolean;
@@ -91,71 +134,145 @@ interface ModelAdmission {
   discoveredAntigravity: boolean;
 }
 
+const ADMITTED = (provider: ModelProvider): ModelAdmission => ({
+  accepted: true,
+  provider,
+  discoveredAntigravity: false,
+});
+const NOT_ADMITTED: ModelAdmission = {
+  accepted: false,
+  provider: "deepseek",
+  discoveredAntigravity: false,
+};
+
+/** Look up an id in a provider's discovery cache; providers without a cached
+ *  catalog (Ollama, Gemini) never consult one. */
+function discoveredCatalogIds(
+  catalogId: string,
+  endpoint: ResolvedEndpoint,
+): readonly string[] | undefined {
+  if (!isCatalogProvider(catalogId)) return undefined;
+  return discoveredProviderModels(catalogId, endpoint.baseUrl!, endpoint.apiKey);
+}
+
+/** Id filters a provider declares for its own catalog (`modelFilter` in JSON). */
+const MODEL_FILTERS: Readonly<Record<ProviderModelFilter, (id: string) => boolean>> = {
+  antigravity: isUsableAntigravityModel,
+};
+
+/** Models a signed-in account reported, read from the config field the registry names. */
+function oauthCatalogModels(cfg: ReasonixConfig, field: string): readonly string[] | undefined {
+  const creds = cfg[field as keyof ReasonixConfig] as { models?: readonly string[] } | undefined;
+  return creds?.models;
+}
+
 /** Resolve model admission and routing from positive evidence in one place. */
-function resolveModelAdmission(model: string, path: string): ModelAdmission {
+function resolveModelAdmission(model: string, path: string, cfg: ReasonixConfig): ModelAdmission {
   const id = model.trim();
-  if (!id) return { accepted: false, provider: "deepseek", discoveredAntigravity: false };
+  if (!id) return NOT_ADMITTED;
 
-  const cfg = readConfig(path);
   const mapped = cfg.models?.[id]?.provider;
-  if (isModelProvider(mapped)) {
-    return { accepted: true, provider: mapped, discoveredAntigravity: false };
-  }
+  if (isModelProvider(mapped)) return ADMITTED(mapped);
 
-  const discoveredAntigravity = Boolean(
-    isUsableAntigravityModel(id) && cfg.antigravityOAuth?.models?.includes(id),
-  );
-  if (discoveredAntigravity) {
-    return { accepted: true, provider: "gemini", discoveredAntigravity: true };
+  // A signed-in account is the only evidence for a quota-discovered catalog.
+  const quota = OAUTH_QUOTA_SPEC;
+  const quotaMatches =
+    quota === undefined || quota.modelFilter === null || MODEL_FILTERS[quota.modelFilter](id);
+  const quotaModels = quota?.credentials.oauthConfig
+    ? oauthCatalogModels(cfg, quota.credentials.oauthConfig)
+    : undefined;
+  if (quota?.providerId && quotaMatches && quotaModels?.includes(id)) {
+    return { accepted: true, provider: quota.providerId, discoveredAntigravity: true };
   }
   // An explicit `<provider>/<id>` qualifier pins routing over catalog precedence:
   // an id served by two providers must resolve per picker row. The suffix must be
-  // a known id (a typo can't mint a routable model); `ollama/` keeps legacy any-id.
+  // a known id (a typo can't mint a routable model), and a declared model scheme
+  // (`ollama/`) keeps its legacy any-id behaviour.
+  const scheme = MODEL_SCHEME_SPECS.find((spec) =>
+    id.startsWith(spec.routing.modelScheme ?? "\u0000"),
+  );
   const ref = parseModelRef(id);
-  if (ref.provider && ref.provider !== "ollama" && ref.id) {
-    if (resolveModelAdmission(ref.id, path).accepted) {
-      return { accepted: true, provider: ref.provider, discoveredAntigravity: false };
+  if (ref.provider && !scheme && ref.id) {
+    if (resolveModelAdmission(ref.id, path, cfg).accepted) return ADMITTED(ref.provider);
+  }
+  // Explicit catalogs win over discovery: OpenCode Zen/Go and the Experiential
+  // gateway resell ids that other providers serve natively (gpt-6-luna, glm-5.3,
+  // deepseek-v4-pro), and those must keep their native endpoint unless the user
+  // pins them in the `models` config map.
+  for (const catalog of STATIC_CATALOG_SPECS) {
+    if (catalog.ids.has(id)) return ADMITTED(catalog.provider);
+  }
+  for (const spec of MODELS_DEV_SPECS) {
+    if (!spec.providerId) continue;
+    if (DISCOVERY_ROUTERS[spec.discovery.strategy]?.(id)) return ADMITTED(spec.providerId);
+  }
+  if (scheme?.providerId) return ADMITTED(scheme.providerId);
+  for (const spec of DISCOVERY_CATALOG_SPECS) {
+    const provider = spec.providerId;
+    if (!provider) continue;
+    const endpoint = endpointFor(provider, "", cfg);
+    if (discoveredCatalogIds(spec.id, endpoint)?.includes(id)) return ADMITTED(provider);
+  }
+  // Resold gateways are checked LAST: a bare overlap keeps its native provider
+  // and must be pinned with a qualifier or a `models` config mapping. Their
+  // static list covers an offline start so the group's rows still route.
+  for (const spec of LAST_CHANCE_SPECS) {
+    const provider = spec.providerId;
+    if (!provider) continue;
+    const endpoint = endpointFor(provider, "", cfg);
+    if (spec.models.includes(id) || discoveredCatalogIds(spec.id, endpoint)?.includes(id)) {
+      return ADMITTED(provider);
     }
   }
-  // Explicit provider catalogs win over OpenCode discovery: OpenCode Zen/Go
-  // resell models that other providers also serve natively (gpt-6-luna,
-  // glm-5.3, deepseek-v4-pro, …), and those ids must keep routing to their
-  // native endpoint unless the user pins them in the `models` config map.
-  for (const catalog of CATALOG_PROVIDERS) {
-    if (catalog.ids.has(id)) {
-      return { accepted: true, provider: catalog.provider, discoveredAntigravity: false };
-    }
+  return NOT_ADMITTED;
+}
+
+/** Registry context over the persisted config — provider field names come from
+ *  providers.json, so adding one needs no new accessor. */
+function providerContext(cfg: ReasonixConfig): ProviderCredentialContext {
+  return {
+    configField: (field) => {
+      const value = cfg[field as keyof ReasonixConfig];
+      return typeof value === "string" ? value : undefined;
+    },
+    oauthToken: (field) => {
+      const value = cfg[field as keyof ReasonixConfig] as { accessToken?: string } | undefined;
+      return value?.accessToken;
+    },
+  };
+}
+
+/** Model predicates keyed by endpoint tier name (OpenCode Go is the only split). */
+const TIER_PREDICATES: Readonly<Record<string, (model: string) => boolean>> = {
+  go: isOpencodeGoModel,
+};
+
+/** The endpoint tier a model belongs to, when its provider splits its catalog. */
+function endpointTierFor(spec: ProviderSpec, model: string): string | null {
+  if (spec.endpoint.strategy !== "tiered") return null;
+  for (const tier of Object.keys(spec.endpoint.tiers)) {
+    if (TIER_PREDICATES[tier]?.(model)) return tier;
   }
-  if (isDiscoveredOpencodeModel(id)) {
-    return { accepted: true, provider: "opencode", discoveredAntigravity: false };
-  }
-  if (id.startsWith("ollama/")) {
-    return { accepted: true, provider: "ollama", discoveredAntigravity: false };
-  }
-  for (const provider of ["deepseek", "openai", "zai"] as const) {
-    const anchor = CATALOG_PROVIDERS.find((catalog) => catalog.provider === provider)!
-      .ids.values()
-      .next().value!;
-    const endpoint = loadEndpointForModel(anchor, path);
-    if (discoveredProviderModels(provider, endpoint.baseUrl!, endpoint.apiKey)?.includes(id)) {
-      return { accepted: true, provider, discoveredAntigravity: false };
-    }
-  }
-  // The Experiential Labs gateway resells ids that native catalogs and the
-  // OpenCode sync also serve (gpt-5.6-luna, glm-5.2, …), so it is checked LAST:
-  // a bare overlap keeps its native provider and must be pinned with an
-  // `experiential/` qualifier or a `models` config mapping. The static fallback
-  // list covers an offline/no-discovery start so the group's rows still route.
-  const experiential = loadExperientialEndpoint(path);
-  if (
-    EXPERIENTIAL_MODELS.includes(id) ||
-    discoveredProviderModels("experiential", experiential.baseUrl!, experiential.apiKey)?.includes(
-      id,
-    )
-  ) {
-    return { accepted: true, provider: "experiential", discoveredAntigravity: false };
-  }
-  return { accepted: false, provider: "deepseek", discoveredAntigravity: false };
+  return null;
+}
+
+/** Resolved (baseUrl, apiKey) for a provider's model, straight from providers.json. */
+function endpointFor(
+  provider: ModelProvider,
+  model: string,
+  cfg: ReasonixConfig,
+): ResolvedEndpoint {
+  const spec = specForProvider(provider);
+  return resolveProviderEndpoint(spec, {
+    ...providerContext(cfg),
+    tier: endpointTierFor(spec, model),
+  });
+}
+
+/** A provider's declared default endpoint (optionally a named tier). A provider
+ *  whose JSON was removed yields "", so removal never breaks module load. */
+function defaultEndpointOf(provider: ModelProvider, tier?: string): string {
+  return providerDefaultEndpoint(provider, tier) ?? "";
 }
 
 export function providerForModel(
@@ -163,7 +280,7 @@ export function providerForModel(
   path: string = defaultConfigPath(),
 ): ModelProvider {
   if (typeof model !== "string") return "deepseek";
-  return resolveModelAdmission(model, path).provider;
+  return resolveModelAdmission(model, path, readConfig(path)).provider;
 }
 
 /** Reasoning-effort levels the model's endpoint accepts: the per-model values
@@ -194,47 +311,26 @@ export function effectiveReasoningEffort(
  *  discovery, a catalog entry, or the `ollama/` scheme — a name shape alone
  *  proves nothing. */
 export function isKnownModelId(model: string, path: string = defaultConfigPath()): boolean {
-  return resolveModelAdmission(model, path).accepted;
+  return resolveModelAdmission(model, path, readConfig(path)).accepted;
 }
 
 /** Model ids that accept image attachments in user messages — shared with the
  *  desktop UI so both sides agree on which models get the image affordance. */
 export { modelAcceptsImages } from "@reasonix/core-utils";
 
-/** OpenAI-compatible base URL for a provider's model id. The Ollama chat
- *  endpoint is keyless when local (the daemon ignores Authorization), but the
- *  cloud service requires OLLAMA_API_KEY — so the key is resolved but optional. */
-export const DEFAULT_OLLAMA_CHAT_URL = "https://ollama.com/v1";
-
-/** Antigravity daily gateway used for gemini-* models. */
-export const DEFAULT_GEMINI_CHAT_URL = "https://daily-cloudcode-pa.googleapis.com";
-
-/** Z.AI Developer endpoint (pay-per-token) used for glm-* models. */
-export const DEFAULT_ZAI_CHAT_URL = "https://api.z.ai/api/paas/v4";
-
-/** Z.AI GLM Coding Plan endpoint. Coding Plan keys authenticate ONLY here (and
- *  return 401 against the Developer endpoint); Developer keys the reverse. */
-export const DEFAULT_ZAI_CODING_CHAT_URL = "https://api.z.ai/api/coding/paas/v4";
-
-/** Z.AI Responses endpoint. GLM Coding Plan keys are served here in the
- *  Responses wire format — the chat-completions paths 401 them. */
-export const DEFAULT_ZAI_RESPONSES_URL = "https://api.z.ai/api/v1";
-
-/** OpenCode Zen OpenAI-compatible endpoint used for free/paid OpenCode models. */
-export const DEFAULT_OPENCODE_CHAT_URL = "https://opencode.ai/zen/v1";
-
-/** OpenCode Go OpenAI-compatible endpoint — the subscription tier. Go model ids
- *  route here; everything else stays on the Zen endpoint. */
-export const DEFAULT_OPENCODE_GO_CHAT_URL = "https://opencode.ai/zen/go/v1";
-
-/** Xiaomi MiMo pay-as-you-go chat endpoint. Token Plan (`tp-`) keys use a
- *  regional host (token-plan-{cn,sgp,ams}.xiaomimimo.com); the browser flow may
- *  return its own base URL. Override via `mimoBaseUrl` or MIMO_BASE_URL. */
-export const DEFAULT_MIMO_CHAT_URL = "https://api.xiaomimimo.com/v1";
-
-/** Experiential Labs OpenAI-compatible gateway. Point any OpenAI client at
- *  `.../v1`; keys start `xpl_`. Override via EXPERIENTIAL_BASE_URL / `experientialBaseUrl`. */
-export const DEFAULT_EXPERIENTIAL_CHAT_URL = "https://api.experientiallabs.ai/v1";
+/** Every default endpoint is declared in providers.json; tiers are named there too. */
+export const DEFAULT_OLLAMA_CHAT_URL = defaultEndpointOf("ollama");
+export const DEFAULT_GEMINI_CHAT_URL = defaultEndpointOf("gemini");
+export const DEFAULT_ZAI_CHAT_URL = defaultEndpointOf("zai");
+/** GLM Coding Plan endpoint — Coding Plan keys authenticate only here. */
+export const DEFAULT_ZAI_CODING_CHAT_URL = defaultEndpointOf("zai", "coding");
+/** GLM Coding Plan Responses endpoint — the chat-completions paths 401 them. */
+export const DEFAULT_ZAI_RESPONSES_URL = defaultEndpointOf("zai", "responses");
+export const DEFAULT_OPENCODE_CHAT_URL = defaultEndpointOf("opencode");
+/** Go subscription tier; Go model ids route here, everything else stays on Zen. */
+export const DEFAULT_OPENCODE_GO_CHAT_URL = defaultEndpointOf("opencode", "go");
+export const DEFAULT_MIMO_CHAT_URL = defaultEndpointOf("mimo");
+export const DEFAULT_EXPERIENTIAL_CHAT_URL = defaultEndpointOf("experiential");
 
 /** Positive endpoint evidence that an Ollama provider request targets Ollama Cloud. */
 export function isOllamaCloudEndpoint(baseUrl: string | undefined): boolean {
@@ -262,16 +358,10 @@ export function deriveNativeOllamaOrigin(baseUrl: string): string {
   }
 }
 
-/** (baseUrl, apiKey) tuple for the Ollama provider — baseUrl from
- *  OLLAMA_BASE_URL env > `ollamaBaseUrl` config > local daemon default; the
- *  apiKey is the Ollama cloud key (undefined for a keyless local daemon). */
+/** (baseUrl, apiKey) tuple for the Ollama provider — OLLAMA_BASE_URL env >
+ *  `ollamaBaseUrl` config > cloud default; the key is optional for a local daemon. */
 export function loadOllamaEndpoint(path: string = defaultConfigPath()): ResolvedEndpoint {
-  const envBaseUrl = process.env.OLLAMA_BASE_URL?.trim();
-  if (envBaseUrl) return { baseUrl: envBaseUrl, apiKey: loadOllamaApiKey(path) };
-  const cfg = readConfig(path);
-  const cfgBaseUrl = cfg.ollamaBaseUrl?.trim();
-  if (cfgBaseUrl) return { baseUrl: cfgBaseUrl, apiKey: loadOllamaApiKey(path) };
-  return { baseUrl: DEFAULT_OLLAMA_CHAT_URL, apiKey: loadOllamaApiKey(path) };
+  return endpointFor("ollama", "", readConfig(path));
 }
 
 import {
@@ -430,6 +520,11 @@ export interface ReasonixConfig {
   /** Experiential Labs OpenAI-compatible endpoint override. Falls back to
    *  EXPERIENTIAL_BASE_URL, then https://api.experientiallabs.ai/v1. */
   experientialBaseUrl?: string;
+  /** Synthetic API key (OpenAI-compatible gateway). Falls back to SYNTHETIC_API_KEY. */
+  syntheticApiKey?: string;
+  /** Synthetic OpenAI-compatible endpoint override. Falls back to
+   *  SYNTHETIC_BASE_URL, then https://api.synthetic.new/openai/v1. */
+  syntheticBaseUrl?: string;
   /** Stable MiMo sign-in key label — generated once so re-authorizing reuses
    *  the account's existing key instead of provisioning a new one each time. */
   mimoKeyName?: string;
@@ -752,47 +847,43 @@ export function loadExaApiKey(path: string = defaultConfigPath()): string | unde
   return resolveApiKey(["EXA_API_KEY"], "exaApiKey", path);
 }
 
+/** The API key a provider declares in providers.json: env > config > undefined. */
+function providerApiKey(provider: ModelProvider, path: string): string | undefined {
+  return providerApiKeyValue(specForProvider(provider), providerContext(readConfig(path)));
+}
+
 /** Z.AI API key shared by glm-* chat and Z.AI web search: env > config > undefined. */
 export function loadZaiApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["ZAI_API_KEY"], "zaiApiKey", path);
+  return providerApiKey("zai", path);
 }
 
 /** TypeSafe API key for Jev System One evaluations: env > config > undefined. */
 export function loadTypesafeApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["TYPESAFE_API_KEY"], "typesafeApiKey", path);
+  const spec = providerSpec("typesafe");
+  return spec ? providerApiKeyValue(spec, providerContext(readConfig(path))) : undefined;
 }
 
-/** OpenCode API key: env > config > undefined. Defaults to "public" for free models when unconfigured. */
+/** OpenCode API key: env > config > undefined; the client falls back to `public`
+ *  for free models when unconfigured. */
 export function loadOpencodeApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["OPENCODE_API_KEY"], "opencodeApiKey", path);
+  return providerApiKey("opencode", path);
 }
 
 /** Xiaomi MiMo API key: env > config > undefined. */
 export function loadMimoApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["MIMO_API_KEY"], "mimoApiKey", path);
+  return providerApiKey("mimo", path);
 }
 
 /** Experiential Labs gateway API key: env > config > undefined. Accepts the
  *  vendor's own `EXPLABS_API_KEY` spelling as an alias for the primary env var. */
 export function loadExperientialApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["EXPERIENTIAL_API_KEY", "EXPLABS_API_KEY"], "experientialApiKey", path);
+  return providerApiKey("experiential", path);
 }
 
-/** (baseUrl, apiKey) tuple for the Experiential Labs gateway: EXPERIENTIAL_BASE_URL
- *  env > `experientialBaseUrl` config > default endpoint. A custom baseUrl owns its key. */
+/** (baseUrl, apiKey) tuple for the Experiential Labs gateway; a custom baseUrl
+ *  owns its key, so a stale env key never bleeds into a gateway override. */
 export function loadExperientialEndpoint(path: string = defaultConfigPath()): ResolvedEndpoint {
-  const envBaseUrl = process.env.EXPERIENTIAL_BASE_URL?.trim();
-  if (envBaseUrl) {
-    return {
-      baseUrl: envBaseUrl,
-      apiKey: process.env.EXPERIENTIAL_API_KEY ?? process.env.EXPLABS_API_KEY,
-    };
-  }
-  const cfg = readConfig(path);
-  if (cfg.experientialBaseUrl?.trim()) {
-    return { baseUrl: cfg.experientialBaseUrl.trim(), apiKey: cfg.experientialApiKey };
-  }
-  return { baseUrl: DEFAULT_EXPERIENTIAL_CHAT_URL, apiKey: loadExperientialApiKey(path) };
+  return endpointFor("experiential", "", readConfig(path));
 }
 
 /** Stable MiMo sign-in key label — generated once and persisted, so repeated
@@ -829,9 +920,9 @@ export function hasOpencodeCredential(path: string = defaultConfigPath()): boole
   return Boolean(readConfig(path).opencodeOAuth?.accessToken);
 }
 
-/** Ollama cloud API key — env > config > undefined. */
+/** Ollama cloud API key: env > config > undefined. */
 export function loadOllamaApiKey(path: string = defaultConfigPath()): string | undefined {
-  return resolveApiKey(["OLLAMA_API_KEY", "ollamaApiKey"], "ollamaApiKey", path);
+  return providerApiKey("ollama", path);
 }
 
 const DEFAULT_OLLAMA_GENERATION = {
@@ -1383,15 +1474,7 @@ export function resolveBaseUrlEnv(): string | undefined {
 // (baseUrl, apiKey) is a tuple: whichever source defines baseUrl owns apiKey too,
 // so a stale env DEEPSEEK_API_KEY doesn't bleed into a custom config baseUrl (#1631).
 export function loadEndpoint(path: string = defaultConfigPath()): ResolvedEndpoint {
-  const envBaseUrl = resolveBaseUrlEnv();
-  if (envBaseUrl) {
-    return { baseUrl: envBaseUrl, apiKey: process.env.DEEPSEEK_API_KEY };
-  }
-  const cfg = readConfig(path);
-  if (cfg.baseUrl) {
-    return { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey };
-  }
-  return { baseUrl: undefined, apiKey: process.env.DEEPSEEK_API_KEY ?? cfg.apiKey };
+  return endpointFor("deepseek", "", readConfig(path));
 }
 
 /** Resolve provider and deployment metadata alongside its endpoint tuple. */
@@ -1401,93 +1484,56 @@ export function loadResolvedModelEndpoint(
 ): ResolvedModelEndpoint {
   const provider = providerForModel(model, path);
   const endpoint = loadEndpointForModel(model, path);
-  const deployment =
-    provider === "ollama"
-      ? isOllamaCloudEndpoint(endpoint.baseUrl)
-        ? "cloud"
-        : endpoint.apiKey
-          ? "custom"
-          : "local"
-      : "custom";
+  // Only a provider with a keyless local mode distinguishes cloud/local/custom.
+  const deployment = specForProvider(provider).usable.keylessLocal
+    ? isOllamaCloudEndpoint(endpoint.baseUrl)
+      ? "cloud"
+      : endpoint.apiKey
+        ? "custom"
+        : "local"
+    : "custom";
   return { ...endpoint, provider, deployment };
 }
 
-/** Endpoint tuple per model. Provider routing is resolved from positive config/catalog evidence. */
+/** Endpoint tuple per model, resolved from the provider's registry entry: env
+ *  override, then config override, then the declared default. */
 export function loadEndpointForModel(
   model: string,
   path: string = defaultConfigPath(),
 ): ResolvedEndpoint {
-  if (providerForModel(model, path) === "openai") {
-    const envBaseUrl = process.env.OPENAI_BASE_URL?.trim();
-    if (envBaseUrl) return { baseUrl: envBaseUrl, apiKey: process.env.OPENAI_API_KEY };
-    const cfg = readConfig(path);
-    // Tuple rule mirrors loadEndpoint (#1631): a custom config baseUrl owns its
-    // key — a stale OPENAI_API_KEY env must not bleed into a custom gateway.
-    // cfg.apiKey is the DeepSeek key — never hand it to OpenAI endpoints.
-    if (cfg.baseUrl) return { baseUrl: cfg.baseUrl, apiKey: cfg.openaiApiKey };
-    // OAuth tokens are audience-locked to api.openai.com — never snapshot one
-    // here: the client's async resolver refreshes it per request
-    // (src/oauth.ts resolveOpenAIToken).
-    return {
-      baseUrl: "https://api.openai.com/v1",
-      apiKey: process.env.OPENAI_API_KEY ?? cfg.openaiApiKey,
-    };
-  }
-  if (providerForModel(model, path) === "ollama") {
-    return loadOllamaEndpoint(path);
-  }
-  if (providerForModel(model, path) === "gemini") {
-    // Gemini models always hit the Cloud Code API; auth is the Google OAuth
-    // token (resolved per request), never a static key. baseUrl is fixed.
-    return { baseUrl: DEFAULT_GEMINI_CHAT_URL, apiKey: undefined };
-  }
-  if (providerForModel(model, path) === "zai") {
-    const envBaseUrl = process.env.ZAI_BASE_URL?.trim();
-    if (envBaseUrl) return { baseUrl: envBaseUrl, apiKey: process.env.ZAI_API_KEY };
-    const cfg = readConfig(path);
-    if (cfg.zaiBaseUrl?.trim()) {
-      return { baseUrl: cfg.zaiBaseUrl.trim(), apiKey: cfg.zaiApiKey };
-    }
-    return { baseUrl: DEFAULT_ZAI_CHAT_URL, apiKey: loadZaiApiKey(path) };
-  }
-  if (providerForModel(model, path) === "mimo") {
-    const envBaseUrl = process.env.MIMO_BASE_URL?.trim();
-    if (envBaseUrl) return { baseUrl: envBaseUrl, apiKey: process.env.MIMO_API_KEY };
-    const cfg = readConfig(path);
-    if (cfg.mimoBaseUrl?.trim()) {
-      return { baseUrl: cfg.mimoBaseUrl.trim(), apiKey: cfg.mimoApiKey };
-    }
-    return { baseUrl: DEFAULT_MIMO_CHAT_URL, apiKey: loadMimoApiKey(path) };
-  }
-  if (providerForModel(model, path) === "experiential") {
-    return loadExperientialEndpoint(path);
-  }
-  if (providerForModel(model, path) === "opencode") {
-    const envBaseUrl = process.env.OPENCODE_BASE_URL?.trim();
-    if (envBaseUrl) {
-      return { baseUrl: envBaseUrl, apiKey: process.env.OPENCODE_API_KEY ?? "public" };
-    }
-    const cfg = readConfig(path);
-    if (cfg.opencodeBaseUrl?.trim()) {
-      return { baseUrl: cfg.opencodeBaseUrl.trim(), apiKey: cfg.opencodeApiKey ?? "public" };
-    }
-    // Go subscription ids live on their own endpoint. An explicit base URL
-    // override above intentionally owns every OpenCode model (custom gateway).
-    // Go membership is judged on the wire id — `isOpencodeGoModel` strips a
-    // `opencode/<id>` routing qualifier the server never sees.
-    return {
-      baseUrl: isOpencodeGoModel(model) ? DEFAULT_OPENCODE_GO_CHAT_URL : DEFAULT_OPENCODE_CHAT_URL,
-      apiKey: loadOpencodeApiKey(path) ?? "public",
-    };
-  }
-  return loadEndpoint(path);
+  const cfg = readConfig(path);
+  return endpointFor(resolveModelAdmission(model, path, cfg).provider, model, cfg);
 }
 
-// True when an OpenAI model hits the standard api.openai.com (not a proxy),
-// meaning OAuth + Codex backend transport is applicable.
+/** True when an OpenAI model hits the provider's declared default endpoint (not a
+ *  proxy), so OAuth + the Codex backend transport are applicable. */
 export function isOpenAIStandardEndpoint(model: string, path?: string): boolean {
   if (providerForModel(model, path) !== "openai") return false;
-  return loadEndpointForModel(model, path).baseUrl === "https://api.openai.com/v1";
+  return loadEndpointForModel(model, path).baseUrl === providerDefaultEndpoint("openai");
+}
+
+/** Endpoint tuple for any catalog entry, routable or catalog-only — discovery
+ *  uses it so a new provider needs no new special case. */
+export function loadCatalogEndpoint(
+  catalogId: string,
+  path: string = defaultConfigPath(),
+): ResolvedEndpoint {
+  const spec = requireProviderSpec(catalogId);
+  return resolveProviderEndpoint(spec, providerContext(readConfig(path)));
+}
+
+/** Every provider's resolved API key, keyed by catalog id. Settings display and
+ *  diagnostics read this instead of one loader per provider. */
+export function loadProviderApiKeys(
+  path: string = defaultConfigPath(),
+): Record<string, string | undefined> {
+  const context = providerContext(readConfig(path));
+  const out: Record<string, string | undefined> = {};
+  for (const spec of PROVIDER_SPECS) {
+    if (!spec.credentials.apiKeyConfig) continue;
+    out[spec.id] = providerApiKeyValue(spec, context) ?? undefined;
+  }
+  return out;
 }
 
 export function loadApiKey(path: string = defaultConfigPath()): string | undefined {
@@ -1498,58 +1544,20 @@ export function loadApiKey(path: string = defaultConfigPath()): string | undefin
  *  explicit Ollama) — used by the desktop setup gate so a ChatGPT/Ollama-only
  *  install isn't soft-locked behind a DeepSeek key. */
 export function anyProviderConfigured(path: string = defaultConfigPath()): boolean {
-  if (loadApiKey(path)) return true; // DeepSeek
-  const cfg = readConfig(path);
-  if (process.env.OPENAI_API_KEY || cfg.openaiApiKey || cfg.openaiOAuth?.accessToken) return true;
-  if (process.env.OLLAMA_API_KEY || cfg.ollamaApiKey) return true;
-  if (process.env.ZAI_API_KEY || cfg.zaiApiKey) return true;
-  if (process.env.MIMO_API_KEY || cfg.mimoApiKey || cfg.mimoBaseUrl) return true;
-  if (
-    process.env.EXPERIENTIAL_API_KEY ||
-    process.env.EXPLABS_API_KEY ||
-    cfg.experientialApiKey ||
-    cfg.experientialBaseUrl
-  ) {
-    return true;
-  }
-  if (process.env.OPENCODE_API_KEY || cfg.opencodeApiKey || cfg.opencodeBaseUrl) return true;
-  if (cfg.opencodeOAuth?.accessToken) return true;
-  if (cfg.antigravityOAuth?.accessToken) return true;
-  return !!process.env.OLLAMA_BASE_URL || !!cfg.ollamaBaseUrl;
-}
-
-/** True for the keyless local Ollama daemon (localhost / 127.0.0.1 / ::1);
- *  cloud endpoints are NOT keyless. An unresolved endpoint counts as local. */
-function isLocalOllamaEndpoint(baseUrl: string | undefined): boolean {
-  if (!baseUrl) return true;
-  try {
-    const host = new URL(baseUrl).hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "::1";
-  } catch {
-    return false;
-  }
+  const context = providerContext(readConfig(path));
+  return ROUTABLE_PROVIDER_SPECS.some((spec) => providerCountsAsConfigured(spec, context));
 }
 
 /** Whether `model` can run right now: its provider has a credential in config/env,
- *  or it is a keyless local Ollama daemon. Shared by the desktop's per-turn gate
- *  and every quota-failover path, so none can disagree about a backup. */
+ *  or it is a keyless local daemon. Shared by the desktop's per-turn gate and
+ *  every quota-failover path, so none can disagree about a backup. */
 export function modelUsableFor(model: string, path: string = defaultConfigPath()): boolean {
   const provider = providerForModel(model, path);
-  if (provider === "openai") {
-    if (loadEndpointForModel(model, path).apiKey) return true;
-    return !!readConfig(path).openaiOAuth?.accessToken;
-  }
-  if (provider === "ollama") {
-    const ep = loadOllamaEndpoint(path);
-    if (ep.apiKey) return true;
-    return isLocalOllamaEndpoint(ep.baseUrl);
-  }
-  if (provider === "gemini") return !!readConfig(path).antigravityOAuth?.accessToken;
-  if (provider === "zai") return !!loadZaiApiKey(path);
-  if (provider === "mimo") return !!loadMimoApiKey(path);
-  if (provider === "experiential") return !!loadExperientialApiKey(path);
-  if (provider === "opencode") return true;
-  return !!loadApiKey(path);
+  const cfg = readConfig(path);
+  return providerUsable(specForProvider(provider), {
+    ...providerContext(cfg),
+    endpoint: endpointFor(provider, model, cfg),
+  });
 }
 
 export function loadBaseUrl(path: string = defaultConfigPath()): string | undefined {
@@ -2978,7 +2986,7 @@ export function loadModel(path: string = defaultConfigPath()): string {
   // Custom-endpoint owners pick their own model namespace; trust them.
   const customEndpoint = cfg.baseUrl?.trim() || resolveBaseUrlEnv();
   if (customEndpoint) return trimmed;
-  return resolveModelAdmission(trimmed, path).accepted ? trimmed : DEFAULT_MODEL;
+  return resolveModelAdmission(trimmed, path, cfg).accepted ? trimmed : DEFAULT_MODEL;
 }
 
 export function saveModel(model: string, path: string = defaultConfigPath()): void {
@@ -2988,7 +2996,7 @@ export function saveModel(model: string, path: string = defaultConfigPath()): vo
   // Custom-endpoint owners set their own namespace — validation is on them.
   const cfg = readConfig(path);
   const customEndpoint = cfg.baseUrl?.trim() || resolveBaseUrlEnv();
-  const admission = resolveModelAdmission(trimmed, path);
+  const admission = resolveModelAdmission(trimmed, path, cfg);
   if (!customEndpoint && !admission.accepted) {
     throw new Error(
       `Unsupported model "${trimmed}". Official endpoints only accept: ${SUPPORTED_MODELS.join(", ")}. Set a custom baseUrl to use other models.`,

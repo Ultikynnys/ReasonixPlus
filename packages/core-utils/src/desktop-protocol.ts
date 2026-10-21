@@ -6,6 +6,7 @@
 import type { ApprovalPrompt } from "./approval-prompt.js";
 import type { ChangelogRelease } from "./changelog.js";
 import type { ChoiceOption, PlanStep, ReasoningEffort } from "./permission-types.js";
+import type { ProviderID } from "./provider-registry.js";
 
 /** Trust dial: 3 settings, not 4.
  *  - `read-only`  : no writes, no shell (registry plan-mode blocks mutating tools).
@@ -1151,12 +1152,15 @@ export interface SettingsEvent {
     experiential?: string;
     mimo?: string;
     openai?: string;
+    synthetic?: string;
   };
   opencodeBaseUrl?: string;
   /** Xiaomi MiMo OpenAI-compatible endpoint override. */
   mimoBaseUrl?: string;
   /** Experiential Labs OpenAI-compatible endpoint override. */
   experientialBaseUrl?: string;
+  /** Synthetic OpenAI-compatible endpoint override. */
+  syntheticBaseUrl?: string;
   /** Per-tab subagent model — the default model used when a subagent skill has no explicit `model:` frontmatter override. Absent = deepseek-v4-flash. */
   subagentModel?: string;
   /** Per-field visibility toggles for the bottom status row. Absent = all default to true. */
@@ -1236,15 +1240,7 @@ export type SettingsPayload = Omit<SettingsEvent, "type" | "quickSends"> &
 /** Endpoint + auth state for the tab's CURRENT model — the status bar's API
  *  chip is per tab and flips between DeepSeek, OpenAI, Ollama and Gemini with the model. */
 export interface ModelEndpointInfo {
-  provider:
-    | "deepseek"
-    | "openai"
-    | "ollama"
-    | "gemini"
-    | "zai"
-    | "opencode"
-    | "mimo"
-    | "experiential";
+  provider: ProviderID;
   baseUrl: string;
   /** Reasoning-effort levels this model accepts, resolved by the daemon (native
    *  providers from a static set; OpenCode from the model's models.dev
@@ -1610,6 +1606,8 @@ export interface SettingsPatch {
   mimoBaseUrl?: string | null;
   experientialApiKey?: string | null;
   experientialBaseUrl?: string | null;
+  syntheticApiKey?: string | null;
+  syntheticBaseUrl?: string | null;
 }
 
 /** An image to attach to a user message. Clipboard paste flows ship the

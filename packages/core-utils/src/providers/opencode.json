@@ -1,0 +1,139 @@
+{
+  "id": "opencode",
+  "providerId": "opencode",
+  "label": "OpenCode",
+  "order": 5,
+  "setupGate": ["apiKey", "baseUrl", "oauth"],
+  "routing": {
+    "staticCatalog": true,
+    "discoveredCatalog": false,
+    "checkedLast": false,
+    "modelScheme": null
+  },
+  "groupLabelKey": "composer.modelOpencodeGroup",
+  "precedence": 6,
+  "defaultModel": "big-pickle",
+  "knownCatalog": true,
+  "models": [
+    "big-pickle",
+    "nemotron-3-ultra-free",
+    "nemotron-3.5-lightning-free",
+    "mimo-v2.5-free",
+    "muse-spark-1.3-contributor-free",
+    "muse-spark-1.2-contributor-free",
+    "ling-3.0-flash-fin-free",
+    "deepseek-v4-flash-free",
+    "glm-4.7-free",
+    "glm-5-free",
+    "minimax-m2.5-free",
+    "minimax-m3-free",
+    "qwen3.6-plus-free",
+    "mimo-v2-flash-free",
+    "mimo-v2-pro-free",
+    "mimo-v2-omni-free",
+    "kimi-k2.5-free",
+    "grok-code",
+    "hy3-free",
+    "ring-2.6-1t-free",
+    "longcat-2.0-free",
+    "laguna-s-2.1-free",
+    "nemotron-3-super-free",
+    "ling-3.0-flash-free",
+    "ling-3.0-tiny-free",
+    "ling-2.6-flash-free",
+    "north-mini-code-free",
+    "minimax-m2.1-free",
+    "hy3-preview-free",
+    "x-preview-f-free",
+    "trinity-large-preview-free"
+  ],
+  "goModels": [
+    "mimo-v2.6-pro",
+    "mimo-v2.5",
+    "grok-4.7",
+    "longcat-2.5-preview-free",
+    "glm-5.3-flash",
+    "qwen3.8-max",
+    "kimi-k3",
+    "deepseek-v4.1-flash",
+    "deepseek-v4-flash-vision-exp",
+    "longcat-2.0",
+    "space-bunny",
+    "minimax-m2.7",
+    "mimo-v2.5-pro",
+    "mimo-v2.6-flash",
+    "minimax-m3",
+    "gpt-5.6-luna",
+    "qwen3.8-flash",
+    "glm-5.2",
+    "hy3",
+    "muse-spark-1.2-contributor",
+    "claude-haiku-5-5",
+    "gpt-6-luna",
+    "deepseek-v4-pro",
+    "hy4-preview",
+    "muse-spark-1.3-contributor",
+    "step-5-preview-free",
+    "glm-5.3",
+    "kimi-k2.7-code",
+    "grok-4.6",
+    "qwen3.7-plus",
+    "deepseek-v4-flash"
+  ],
+  "speechModels": [],
+  "vision": {
+    "refreshable": true,
+    "models": [
+      "mimo-v2.5-free",
+      "muse-spark-1.3-contributor-free",
+      "muse-spark-1.2-contributor-free",
+      "qwen3.6-plus-free",
+      "mimo-v2-omni-free",
+      "mimo-v2-pro-free",
+      "kimi-k2.5-free",
+      "x-preview-f-free"
+    ]
+  },
+  "modelFilter": null,
+  "reasoningEfforts": ["low", "medium", "high"],
+  "endpoint": {
+    "strategy": "tiered",
+    "default": "https://opencode.ai/zen/v1",
+    "tiers": { "go": "https://opencode.ai/zen/go/v1" }
+  },
+  "settingsPanel": "opencode-auth",
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["OPENCODE_API_KEY"],
+      "configKey": "opencodeApiKey",
+      "labelKey": "settings.webSearchApiKey.opencode",
+      "signupUrl": "https://opencode.ai/auth"
+    },
+    {
+      "key": "baseUrl",
+      "kind": "url",
+      "env": ["OPENCODE_BASE_URL"],
+      "configKey": "opencodeBaseUrl",
+      "labelKey": "settings.opencodeBaseUrl",
+      "hintKey": "settings.opencodeBaseUrlHint"
+    }
+  ],
+  "credentials": {
+    "publicKey": "public",
+    "oauthConfig": "opencodeOAuth"
+  },
+  "usable": { "apiKey": false, "keylessLocal": false, "always": true },
+  "discovery": {
+    "strategy": "models.dev",
+    "listField": null,
+    "idField": "id",
+    "excludeSpeech": false
+  },
+  "client": {
+    "auth": "opencode",
+    "transport": "opencode-muse-responses",
+    "allowMissingKey": true
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "id": "deepseek",
+  "providerId": "deepseek",
+  "label": "DeepSeek",
+  "order": 1,
+  "setupGate": ["apiKey"],
+  "routing": {
+    "staticCatalog": true,
+    "discoveredCatalog": true,
+    "checkedLast": false,
+    "foreignCatalog": true,
+    "modelScheme": null
+  },
+  "modelsDev": "deepseek",
+  "groupLabelKey": "composer.modelDeepSeekGroup",
+  "precedence": 2,
+  "defaultModel": "deepseek-flash",
+  "knownCatalog": true,
+  "models": [
+    "deepseek-flash",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash-vision-exp"
+  ],
+  "goModels": [],
+  "speechModels": [],
+  "vision": {
+    "models": [
+      "deepseek-flash",
+      "deepseek-v4-flash",
+      "deepseek-v4-flash-vision-exp",
+      "deepseek-v4.1-flash"
+    ]
+  },
+  "modelFilter": null,
+  "reasoningEfforts": ["low", "high", "max"],
+  "endpoint": {
+    "strategy": "standard",
+    "default": null,
+    "tiers": {}
+  },
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["DEEPSEEK_API_KEY"],
+      "configKey": "apiKey",
+      "labelKey": "settings.apiKey",
+      "signupUrl": "https://platform.deepseek.com/api_keys"
+    },
+    {
+      "key": "baseUrl",
+      "kind": "url",
+      "env": ["DEEPSEEK_BASE_URL", "DEEPSEEK_API_BASE_URL"],
+      "configKey": "baseUrl",
+      "labelKey": "settings.baseUrl",
+      "hintKey": "settings.baseUrlHint",
+      "placeholder": "https://api.deepseek.com"
+    }
+  ],
+  "credentials": {
+    "publicKey": null,
+    "oauthConfig": null
+  },
+  "usable": { "apiKey": true, "keylessLocal": false, "always": false },
+  "discovery": {
+    "strategy": "models-endpoint",
+    "listField": "data",
+    "idField": "id",
+    "excludeSpeech": false
+  },
+  "client": {
+    "auth": "api-key",
+    "transport": null,
+    "allowMissingKey": false
+  }
+}

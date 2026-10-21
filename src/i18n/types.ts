@@ -397,6 +397,15 @@ export interface TranslationSchema {
     experientialTimeout: string;
     experientialRate: string;
     experientialServer: string;
+    syntheticAuth: string;
+    syntheticCredits: string;
+    syntheticPermission: string;
+    syntheticNotFound: string;
+    syntheticRequest: string;
+    syntheticContext: string;
+    syntheticTimeout: string;
+    syntheticRate: string;
+    syntheticServer: string;
     customAuth: string;
     customCredits: string;
     customPermission: string;

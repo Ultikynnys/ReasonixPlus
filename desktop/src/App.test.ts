@@ -3138,8 +3138,6 @@ describe("Desktop App session sorting", () => {
     expect(sorted.map((s) => s.name)).toEqual([newest.name, legacy.name, oldButActive.name]);
   });
 
-
-
   it("maps each in-flight session mutation to one wording", () => {
     expect(sessionMutationLabel({ kind: "create" }, 0)).toBe("Creating session…");
     expect(sessionMutationLabel({ kind: "delete" }, 0)).toBe("Deleting session…");

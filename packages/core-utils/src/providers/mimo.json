@@ -1,0 +1,76 @@
+{
+  "id": "mimo",
+  "providerId": "mimo",
+  "label": "Xiaomi MiMo",
+  "order": 4,
+  "setupGate": ["apiKey", "baseUrl"],
+  "routing": {
+    "staticCatalog": true,
+    "discoveredCatalog": false,
+    "checkedLast": false,
+    "modelScheme": null
+  },
+  "groupLabelKey": "composer.modelMimoGroup",
+  "precedence": 5,
+  "defaultModel": "mimo-v2.6-pro",
+  "knownCatalog": true,
+  "models": [
+    "mimo-v2.6-pro",
+    "mimo-v2.6-flash",
+    "mimo-v2.6-pro-ultraspeed",
+    "mimo-v2.5-pro",
+    "mimo-v2.5"
+  ],
+  "goModels": [],
+  "speechModels": [
+    "mimo-v2.5-asr",
+    "mimo-v2.5-tts",
+    "mimo-v2.5-tts-voiceclone",
+    "mimo-v2.5-tts-voicedesign"
+  ],
+  "vision": {
+    "models": ["mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed"]
+  },
+  "modelFilter": null,
+  "reasoningEfforts": [],
+  "endpoint": {
+    "strategy": "standard",
+    "default": "https://api.xiaomimimo.com/v1",
+    "tiers": {}
+  },
+  "settingsPanel": "mimo-auth",
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["MIMO_API_KEY"],
+      "configKey": "mimoApiKey",
+      "labelKey": "settings.mimoApiKey",
+      "hintKey": "settings.mimoApiKeyHint"
+    },
+    {
+      "key": "baseUrl",
+      "kind": "url",
+      "env": ["MIMO_BASE_URL"],
+      "configKey": "mimoBaseUrl",
+      "labelKey": "settings.mimoBaseUrl",
+      "hintKey": "settings.mimoBaseUrlHint"
+    }
+  ],
+  "credentials": {
+    "publicKey": null,
+    "oauthConfig": null
+  },
+  "usable": { "apiKey": true, "keylessLocal": false, "always": false },
+  "discovery": {
+    "strategy": "models-endpoint",
+    "listField": "data",
+    "idField": "id",
+    "excludeSpeech": true
+  },
+  "client": {
+    "auth": "api-key",
+    "transport": "mimo-responses",
+    "allowMissingKey": false
+  }
+}

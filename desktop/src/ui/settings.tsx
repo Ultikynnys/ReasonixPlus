@@ -1397,7 +1397,8 @@ export function ProviderApiKeyRow({
     | "zai"
     | "opencode"
     | "typesafe"
-    | "experiential";
+    | "experiential"
+    | "synthetic";
   patchKey:
     | "metasoApiKey"
     | "baiduApiKey"
@@ -1409,7 +1410,8 @@ export function ProviderApiKeyRow({
     | "zaiApiKey"
     | "opencodeApiKey"
     | "typesafeApiKey"
-    | "experientialApiKey";
+    | "experientialApiKey"
+    | "syntheticApiKey";
   signupUrl: string;
   prefix?: string;
   onSave: (patch: SettingsPatch) => void;
@@ -1968,7 +1970,13 @@ function ProviderBaseUrlRow({
   hint: string;
   placeholder: string;
   value?: string;
-  patchKey: "baseUrl" | "opencodeBaseUrl" | "ollamaBaseUrl" | "mimoBaseUrl" | "experientialBaseUrl";
+  patchKey:
+    | "baseUrl"
+    | "opencodeBaseUrl"
+    | "ollamaBaseUrl"
+    | "mimoBaseUrl"
+    | "experientialBaseUrl"
+    | "syntheticBaseUrl";
   onSave: (patch: SettingsPatch) => void;
 }) {
   const [draft, setDraft] = useState(value ?? "");
@@ -2288,6 +2296,31 @@ function PageModels({
               placeholder="https://api.experientiallabs.ai/v1"
               value={settings.experientialBaseUrl}
               patchKey="experientialBaseUrl"
+              onSave={onSave}
+            />
+          </>
+        }
+      />
+
+      <ProviderCard
+        title={t(MODEL_CATALOG_GROUP_LABELS.synthetic)}
+        defaultOpen={false}
+        models={modelColumn(groupModels("synthetic"))}
+        settings={
+          <>
+            <ProviderApiKeyRow
+              engine="synthetic"
+              patchKey="syntheticApiKey"
+              signupUrl="https://synthetic.new/billing/"
+              prefix={settings.webSearchApiKeys?.synthetic}
+              onSave={onSave}
+            />
+            <ProviderBaseUrlRow
+              label={t("settings.syntheticBaseUrl")}
+              hint={t("settings.syntheticBaseUrlHint")}
+              placeholder="https://api.synthetic.new/openai/v1"
+              value={settings.syntheticBaseUrl}
+              patchKey="syntheticBaseUrl"
               onSave={onSave}
             />
           </>

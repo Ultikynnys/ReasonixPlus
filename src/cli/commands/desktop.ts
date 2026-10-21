@@ -109,7 +109,6 @@ import { codeSystemPrompt } from "../../code/prompt.js";
 import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
 import { fetchCodexQuotaViaOAuth } from "../../codex-backend.js";
 import {
-  DEFAULT_EXPERIENTIAL_CHAT_URL,
   DEFAULT_GEMINI_CHAT_URL,
   DEFAULT_MIMO_CHAT_URL,
   DEFAULT_MODEL,
@@ -117,9 +116,8 @@ import {
   DEFAULT_OPENCODE_CHAT_URL,
   DEFAULT_ZAI_CHAT_URL,
   type EditMode,
-  MIMO_MODELS,
-  MIMO_SPEECH_MODELS,
   type McpServerConfig,
+  type ModelProvider,
   OPENCODE_MODELS,
   type ReasonixConfig,
   SUPPORTED_MODELS,
@@ -134,7 +132,6 @@ import {
   copyWorkspaceRules,
   deriveNativeOllamaOrigin,
   hasOpencodeCredential,
-  isOllamaCloudEndpoint,
   isOpenAIStandardEndpoint,
   isPlausibleKey,
   isReasoningEffort,
@@ -144,6 +141,7 @@ import {
   loadApiKey,
   loadAutoCompact,
   loadBraveApiKey,
+  loadCatalogEndpoint,
   loadContextTokens,
   loadCustomQuickSends,
   loadDesktopOpenTabs,
@@ -156,7 +154,6 @@ import {
   loadEndpoint,
   loadEndpointForModel,
   loadExaApiKey,
-  loadExperientialApiKey,
   loadFallbackModels,
   loadFeedbackCues,
   loadGlobalPathAllowed,
@@ -164,10 +161,8 @@ import {
   loadMaxIterPerTurn,
   loadMaxOutputTokens,
   loadMetasoApiKey,
-  loadMimoApiKey,
   loadMimoKeyName,
   loadModel,
-  loadOllamaApiKey,
   loadOllamaEndpoint,
   loadOllamaGenerationOverrides,
   loadOllamaGenerationSettings,
@@ -175,16 +170,17 @@ import {
   loadPerplexityApiKey,
   loadProjectPathAllowed,
   loadProjectShellAllowed,
+  loadProviderApiKeys,
   loadQuestionTimerEnabled,
   loadQuickSendId,
   loadReasoningEffort,
   loadRecentWorkspaces,
   loadRepetitionGuardEnabled,
+  loadResolvedModelEndpoint,
   loadResolvedSkillPaths,
   loadRules,
   loadSubagentModels,
   loadTavilyApiKey,
-  loadTypesafeApiKey,
   loadWorkspaceDir,
   loadZaiApiKey,
   mergeMcpServerEntry,
@@ -279,12 +275,7 @@ import { validateTypesafeApiKeyCached } from "../../tools/jev.js";
 import { BUILTIN_ALLOWLIST } from "../../tools/shell/parse.js";
 import { coveredRuleScopes } from "../../tools/shell/rule-scope.js";
 
-import {
-  EXPERIENTIAL_MODELS,
-  OPENAI_MODELS,
-  SUPPORTED_OFFICIAL_MODELS,
-  ZAI_MODELS,
-} from "@reasonix/core-utils";
+import { PROVIDER_SPECS, providerDefaultEndpoint } from "@reasonix/core-utils";
 import {
   ANTIGRAVITY_OAUTH_CLIENT_ID,
   antigravityAccount,
@@ -1610,20 +1601,23 @@ function collectWebSearchApiKeyPrefixes(): {
   mimo?: string;
   experiential?: string;
   openai?: string;
+  synthetic?: string;
 } {
+  const providerKeys = loadProviderApiKeys();
   return {
     metaso: maskApiKey(loadMetasoApiKey()),
     tavily: maskApiKey(loadTavilyApiKey()),
     perplexity: maskApiKey(loadPerplexityApiKey()),
     exa: maskApiKey(loadExaApiKey()),
-    ollama: maskApiKey(loadOllamaApiKey()),
+    ollama: maskApiKey(providerKeys.ollama),
     brave: maskApiKey(loadBraveApiKey()),
-    zai: maskApiKey(loadZaiApiKey()),
-    opencode: maskApiKey(loadOpencodeApiKey()),
-    typesafe: maskApiKey(loadTypesafeApiKey()),
-    mimo: maskApiKey(loadMimoApiKey()),
-    experiential: maskApiKey(loadExperientialApiKey()),
-    openai: maskApiKey(process.env.OPENAI_API_KEY ?? readConfig().openaiApiKey),
+    zai: maskApiKey(providerKeys.zai),
+    opencode: maskApiKey(providerKeys.opencode),
+    typesafe: maskApiKey(providerKeys.typesafe),
+    mimo: maskApiKey(providerKeys.mimo),
+    experiential: maskApiKey(providerKeys.experiential),
+    openai: maskApiKey(providerKeys.openai),
+    synthetic: maskApiKey(providerKeys.synthetic),
   };
 }
 
@@ -1674,66 +1668,48 @@ async function refreshAntigravityModels(tab: Tab): Promise<void> {
   }
 }
 
+/** Host shown when neither the config nor providers.json names one; DeepSeek
+ *  defers to the client's own last resort (src/client.ts). */
+const UNCONFIGURED_BASE_URL: Partial<Record<ModelProvider, string>> = {
+  deepseek: "https://api.deepseek.com",
+};
+
 /** Endpoint + auth state for a model id — drives the status bar's API chip.
  *  The provider comes from the resolver (config > discovery > catalogs), never
  *  from the id's name shape. Exported for tests. */
 export function modelEndpointFor(model: string, path?: string): ModelEndpointInfo {
-  const provider = providerForModel(model, path);
-  const billing = billingContextForModel(model, path);
+  const resolved = loadResolvedModelEndpoint(model, path);
+  const provider = resolved.provider;
   const reasoningEfforts = supportedReasoningEfforts(model, path);
+  // One fallback rule for every provider: what it resolved, else the endpoint
+  // its JSON declares, else the host the client itself would fall back to.
+  const baseUrl =
+    resolved.baseUrl ?? providerDefaultEndpoint(provider) ?? UNCONFIGURED_BASE_URL[provider] ?? "";
   if (provider === "ollama") {
-    const oep = loadOllamaEndpoint(path);
-    const baseUrl = oep.baseUrl ?? DEFAULT_OLLAMA_CHAT_URL;
     return {
-      provider: "ollama",
+      provider,
       baseUrl,
       reasoningEfforts,
-      billingKind: billing.kind,
-      deployment: isOllamaCloudEndpoint(baseUrl) ? "cloud" : oep.apiKey ? "custom" : "local",
+      billingKind: billingContextForModel(model, path).kind,
+      deployment: resolved.deployment,
     };
   }
   if (provider === "gemini") {
-    const oep = loadEndpointForModel(model, path);
     const oauth = readConfig(path).antigravityOAuth;
     return {
-      provider: "gemini",
-      baseUrl: oep.baseUrl ?? DEFAULT_GEMINI_CHAT_URL,
+      provider,
+      baseUrl,
       reasoningEfforts,
       antigravityAuth: oauth?.accessToken ? "oauth" : "none",
       antigravityAccount: oauth?.account,
     };
   }
-  if (provider === "zai") {
-    const ep = loadEndpointForModel(model, path);
-    return {
-      provider: "zai",
-      baseUrl: ep.baseUrl ?? DEFAULT_ZAI_CHAT_URL,
-      reasoningEfforts,
-    };
-  }
-  if (provider === "mimo") {
-    const ep = loadEndpointForModel(model, path);
-    return {
-      provider: "mimo",
-      baseUrl: ep.baseUrl ?? DEFAULT_MIMO_CHAT_URL,
-      reasoningEfforts,
-    };
-  }
-  if (provider === "experiential") {
-    const ep = loadEndpointForModel(model, path);
-    return {
-      provider: "experiential",
-      baseUrl: ep.baseUrl ?? DEFAULT_EXPERIENTIAL_CHAT_URL,
-      reasoningEfforts,
-    };
-  }
   if (provider === "opencode") {
-    const ep = loadEndpointForModel(model, path);
     const oauth = readConfig(path).opencodeOAuth;
     const key = loadOpencodeApiKey(path);
     return {
-      provider: "opencode",
-      baseUrl: ep.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL,
+      provider,
+      baseUrl,
       reasoningEfforts,
       opencodeAuth: oauth?.accessToken ? "oauth" : key && key !== "public" ? "apiKey" : "none",
       opencodeAccount: oauth?.account,
@@ -1743,24 +1719,18 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
       opencodePlan: opencodeUsagePlan(model, path),
     };
   }
-  if (provider !== "openai") {
+  if (provider === "openai") {
+    const oauth = readConfig(path).openaiOAuth;
     return {
-      provider: "deepseek",
-      // Mirrors the client's default (src/client.ts) when nothing is configured.
-      baseUrl: loadEndpoint(path).baseUrl ?? "https://api.deepseek.com",
+      provider,
+      baseUrl,
       reasoningEfforts,
+      billingKind: billingContextForModel(model, path).kind,
+      openaiAuth: oauth?.accessToken ? "oauth" : resolved.apiKey ? "apiKey" : "none",
+      oauthAccount: oauth?.account,
     };
   }
-  const oep = loadEndpointForModel(model, path);
-  const oauth = readConfig(path).openaiOAuth;
-  return {
-    provider: "openai",
-    baseUrl: oep.baseUrl ?? "https://api.openai.com/v1",
-    reasoningEfforts,
-    billingKind: billing.kind,
-    openaiAuth: oauth?.accessToken ? "oauth" : oep.apiKey ? "apiKey" : "none",
-    oauthAccount: oauth?.account,
-  };
+  return { provider, baseUrl, reasoningEfforts };
 }
 
 function emitSettings(tab: Tab): void {
@@ -1819,6 +1789,7 @@ function emitSettings(tab: Tab): void {
       opencodeBaseUrl: config.opencodeBaseUrl,
       mimoBaseUrl: config.mimoBaseUrl,
       experientialBaseUrl: config.experientialBaseUrl,
+      syntheticBaseUrl: config.syntheticBaseUrl,
       webSearchEngine: readWebSearchEngine(),
       webSearchEndpoint: readConfig().webSearchEndpoint,
       webSearchApiKeys: collectWebSearchApiKeyPrefixes(),
@@ -2166,42 +2137,28 @@ function emitOpencodeCatalog(snap: {
 
 const providerCatalogs: Partial<Record<CatalogProvider, ProviderCatalog>> = {};
 async function refreshProviderCatalogs(force = false, provider?: CatalogProvider): Promise<void> {
-  const definitions = [
-    {
-      provider: "deepseek" as const,
-      model: SUPPORTED_OFFICIAL_MODELS[0]!,
-      fallback: SUPPORTED_OFFICIAL_MODELS,
-    },
-    { provider: "openai" as const, model: OPENAI_MODELS[0]!, fallback: OPENAI_MODELS },
-    { provider: "zai" as const, model: ZAI_MODELS[0]!, fallback: ZAI_MODELS },
-    { provider: "mimo" as const, model: MIMO_MODELS[0]!, fallback: MIMO_MODELS },
-    {
-      provider: "experiential" as const,
-      model: EXPERIENTIAL_MODELS[0]!,
-      fallback: EXPERIENTIAL_MODELS,
-    },
-    { provider: "typesafe" as const, model: "jev-latest", fallback: ["jev-latest"] },
-  ];
+  // Every provider that publishes a discovery endpoint is declared in
+  // providers.json; its fallback catalog and exclusions come from the same entry.
+  const definitions = PROVIDER_SPECS.filter(
+    (spec) => spec.discovery.strategy === "models-endpoint",
+  );
   await Promise.all(
     definitions
-      .filter((entry) => !provider || entry.provider === provider)
-      .map(async (entry) => {
-        const endpoint =
-          entry.provider === "typesafe"
-            ? { baseUrl: "https://api.typesafe.ai/v1", apiKey: loadTypesafeApiKey() }
-            : loadEndpointForModel(entry.model);
-        providerCatalogs[entry.provider] = endpoint.baseUrl
+      .filter((spec) => !provider || spec.id === provider)
+      .map(async (spec) => {
+        const catalogId = spec.id as CatalogProvider;
+        const endpoint = loadCatalogEndpoint(spec.id);
+        providerCatalogs[catalogId] = endpoint.baseUrl
           ? await fetchProviderModels({
-              provider: entry.provider,
+              provider: catalogId,
               baseUrl: endpoint.baseUrl,
               apiKey: endpoint.apiKey,
-              fallback: entry.fallback,
-              exclude: entry.provider === "mimo" ? MIMO_SPEECH_MODELS : undefined,
+              fallback: spec.models,
               force,
             })
           : {
-              provider: entry.provider,
-              models: [...entry.fallback],
+              provider: catalogId,
+              models: [...spec.models],
               source: "fallback" as const,
               error: "No endpoint configured",
             };
@@ -9581,7 +9538,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           msg.mimoApiKey !== undefined ||
           msg.mimoBaseUrl !== undefined ||
           msg.experientialApiKey !== undefined ||
-          msg.experientialBaseUrl !== undefined
+          msg.experientialBaseUrl !== undefined ||
+          msg.syntheticApiKey !== undefined ||
+          msg.syntheticBaseUrl !== undefined
         ) {
           const cfg = readConfig();
           if (msg.webSearchEngine !== undefined) cfg.webSearchEngine = msg.webSearchEngine;
@@ -9630,6 +9589,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           if (msg.experientialBaseUrl !== undefined) {
             cfg.experientialBaseUrl = msg.experientialBaseUrl?.trim() || undefined;
           }
+          if (msg.syntheticApiKey !== undefined) {
+            cfg.syntheticApiKey = msg.syntheticApiKey?.trim() || undefined;
+          }
+          if (msg.syntheticBaseUrl !== undefined) {
+            cfg.syntheticBaseUrl = msg.syntheticBaseUrl?.trim() || undefined;
+          }
           writeConfig(cfg);
           // The endpoint + credential are snapshotted into the runtime at build
           // time, and a send is refused while it is null, so rebuild now-usable
@@ -9642,7 +9607,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             msg.ollamaApiKey !== undefined ||
             msg.zaiApiKey !== undefined ||
             msg.experientialApiKey !== undefined ||
-            msg.experientialBaseUrl !== undefined
+            msg.experientialBaseUrl !== undefined ||
+            msg.syntheticApiKey !== undefined ||
+            msg.syntheticBaseUrl !== undefined
           ) {
             rebuildCredentialedTabs();
           }

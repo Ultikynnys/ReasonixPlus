@@ -267,9 +267,7 @@ export function Sidebar({
                 }}
                 role="button"
                 tabIndex={0}
-                title={
-                  running ? t("sidebarPanel.runningSessionRow", { name: s.name }) : s.name
-                }
+                title={running ? t("sidebarPanel.runningSessionRow", { name: s.name }) : s.name}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && s.name !== activeName) onLoadSession(s.name);
                 }}

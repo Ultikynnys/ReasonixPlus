@@ -1,9 +1,29 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { providerSpec, providerSpecsInOrder } from "@reasonix/core-utils";
 import { readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
 import { reasonixHome } from "./reasonix-home.js";
 
-export type CatalogProvider = "deepseek" | "openai" | "zai" | "mimo" | "typesafe" | "experiential";
+export type CatalogProvider =
+  | "deepseek"
+  | "openai"
+  | "zai"
+  | "mimo"
+  | "typesafe"
+  | "experiential"
+  | "synthetic";
+
+/** Providers that publish a discovery catalog, read from their declared
+ *  `discovery.strategy` so a new provider needs no second list. */
+export const CATALOG_PROVIDER_IDS: readonly CatalogProvider[] = providerSpecsInOrder()
+  .filter((spec) => spec.discovery.strategy === "models-endpoint")
+  .map((spec) => spec.id as CatalogProvider);
+
+const CATALOG_PROVIDER_SET: ReadonlySet<string> = new Set(CATALOG_PROVIDER_IDS);
+
+export function isCatalogProvider(value: string): value is CatalogProvider {
+  return CATALOG_PROVIDER_SET.has(value);
+}
 export interface ProviderCatalog {
   provider: CatalogProvider;
   models: string[];
@@ -48,8 +68,8 @@ export async function fetchProviderModels(options: {
   baseUrl: string;
   apiKey?: string;
   fallback: readonly string[];
-  /** Model ids to drop from the discovered catalog (e.g. speech-only models
-   *  that must never be offered as chat). Applied before caching. */
+  /** Model ids to drop from the discovered catalog. `discovery.excludeSpeech`
+   *  adds the provider's speech-only ids automatically. */
   exclude?: ReadonlySet<string>;
   force?: boolean;
   homeDir?: string;
@@ -76,20 +96,27 @@ export async function fetchProviderModels(options: {
       });
       if (!response.ok) throw new Error(`Model discovery returned HTTP ${response.status}`);
       const body = (await response.json()) as { data?: unknown; models?: unknown };
-      const entries = provider === "typesafe" ? body.models : body.data;
+      const spec = providerSpec(provider);
+      const listField = spec?.discovery.listField ?? "data";
+      const idField = spec?.discovery.idField ?? "id";
+      const entries = (body as Record<string, unknown>)[listField];
       if (!Array.isArray(entries)) throw new Error("Provider returned a malformed model catalog");
+      const excluded = new Set<string>([
+        ...(options.exclude ?? []),
+        ...(spec?.discovery.excludeSpeech ? spec.speechModels : []),
+      ]);
       const models = [
         ...new Set(
           entries.map((entry: unknown) => {
-            const model = entry as { id?: unknown; name?: unknown } | null;
-            const id = provider === "typesafe" ? model?.name : model?.id;
+            const model = entry as Record<string, unknown> | null;
+            const id = model?.[idField];
             if (typeof id !== "string" || !id.trim())
               throw new Error("Provider returned a malformed model id");
             return id.trim();
           }),
         ),
       ]
-        .filter((id) => !options.exclude?.has(id))
+        .filter((id) => !excluded.has(id))
         .sort();
       writeJsonFileSilently(path, { models, checkedAt: Date.now() });
       return { provider, models, source: "live" };

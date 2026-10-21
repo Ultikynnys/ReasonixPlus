@@ -10,6 +10,7 @@ describe("deriveModelCatalog", () => {
       "mimo",
       "openai",
       "opencode",
+      "synthetic",
       "typesafe",
       "zai",
     ]);

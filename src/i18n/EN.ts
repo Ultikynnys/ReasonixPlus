@@ -741,6 +741,21 @@ export const EN: TranslationSchema = {
     experientialRate:
       "Experiential Labs rate limit hit (429): {inner}. Wait and retry, or review the key's requests/minute and spend caps.",
     experientialServer: "Experiential Labs service failure ({status}): {inner}. Retry later.",
+    syntheticAuth:
+      "Synthetic authentication failed (401): {inner}. Check SYNTHETIC_API_KEY or the settings API key field.",
+    syntheticCredits:
+      "Synthetic reports exhausted credits or plan quota: {inner}. Add credits or check your subscription plan.",
+    syntheticPermission:
+      "Synthetic denied this request (403): {inner}. Check the key's scope and the model's availability on your plan.",
+    syntheticNotFound:
+      "Synthetic could not find the requested model (404): {inner}. Check the model alias or ID, or use a syn: alias.",
+    syntheticRequest: "Synthetic rejected the request: {inner}. Check parameters and tool schema.",
+    syntheticContext:
+      "Synthetic context overflow: session history is {requested}. Start a new conversation or reduce content.",
+    syntheticTimeout: "Synthetic request timed out: {inner}. Check the endpoint and retry.",
+    syntheticRate:
+      "Synthetic rate limit hit (429): {inner}. Wait and retry, or check your plan's rate limits.",
+    syntheticServer: "Synthetic service failure ({status}): {inner}. Retry later.",
     customAuth:
       "Authentication failed (custom model endpoint 401): {inner}. Check that endpoint's configured API key.",
     customCredits:
