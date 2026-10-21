@@ -27,13 +27,18 @@ let sent: Array<Record<string, unknown>> = [];
 /** What the host reports for `rpc_spawn`: true = this app just created the daemon. */
 let spawnedFresh: unknown = true;
 
-async function feed(ev: Record<string, unknown>, tabId?: string) {
-  const h = handlers.get("rpc:event");
-  if (!h) throw new Error("rpc:event handler not registered yet");
-  const line = JSON.stringify(tabId ? { ...ev, tabId } : ev);
+async function feedBatch(events: Record<string, unknown>[]) {
+  const handler = handlers.get("rpc:event");
+  if (!handler) throw new Error("rpc:event handler not registered yet");
   await act(async () => {
-    h({ payload: { data: line } });
+    for (const event of events) {
+      handler({ payload: { data: JSON.stringify(event) } });
+    }
   });
+}
+
+async function feed(ev: Record<string, unknown>, tabId?: string) {
+  await feedBatch([tabId ? { ...ev, tabId } : ev]);
 }
 
 const settle = (ms = 40) =>
@@ -170,6 +175,55 @@ describe("desktop boot — resync and splash gating", () => {
     }
     expect(splash()).toBeTruthy();
   }
+
+  it.each([
+    { source: "open", multiple: false, closeFirst: false },
+    { source: "open", multiple: true, closeFirst: false },
+    { source: "open", multiple: false, closeFirst: true },
+    { source: "open", multiple: true, closeFirst: true },
+    { source: "snapshot", multiple: false, closeFirst: false },
+    { source: "snapshot", multiple: true, closeFirst: false },
+  ])(
+    "preserves the visible shell through batched $source/close events (multiple: $multiple, closeFirst: $closeFirst)",
+    async ({ source, multiple, closeFirst }) => {
+      await bootTwoTabs();
+      await feed({ type: "$workspace_initialized", revision: 1 }, "t1");
+      const opened = {
+        type: "$tab_opened",
+        tabId: "t3",
+        workspaceDir: "",
+        active: true,
+        groupId: "g3",
+      };
+      const updated =
+        source === "open"
+          ? opened
+          : {
+              type: "$tabs_snapshot",
+              tabs: [
+                { id: "t1", workspaceDir: WS, active: true, groupId: "g1", activeSession: "A" },
+                { id: "t2", workspaceDir: WS, active: false, groupId: "g1", activeSession: "B" },
+                { id: "t3", workspaceDir: "", active: false, groupId: "g3" },
+              ],
+            };
+      const closed = [
+        { type: "$tab_closed", tabId: "t2" },
+        ...(multiple ? [{ type: "$tab_closed", tabId: "t1" }] : []),
+      ];
+      await feedBatch(closeFirst ? [...closed, updated] : [updated, ...closed]);
+      const shells = Array.from(document.querySelectorAll<HTMLElement>(".app"));
+      expect(shells).toHaveLength(multiple ? 1 : 2);
+      const visible = shells.filter((shell) => shell.style.display !== "none");
+      expect(visible).toHaveLength(1);
+      const expectedLabel = source === "snapshot" && !multiple ? "ws" : "No workspace";
+      expect(visible[0]?.querySelector('.tab[data-active="true"]')?.textContent).toContain(
+        expectedLabel,
+      );
+      await feed({ ...settings(), workspaceDir: "" }, "t3");
+      expect(document.querySelectorAll(".app")).toHaveLength(multiple ? 1 : 2);
+      expect(document.querySelector(".pending-workspace")).toBeTruthy();
+    },
+  );
 
   it("lifts the splash on the focused tab while background tabs keep loading", async () => {
     await bootTwoTabs();

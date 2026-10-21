@@ -6597,7 +6597,7 @@ export function App() {
   useEffect(() => {
     primeFeedbackSounds();
   }, []);
-  const [tabs, setTabs] = useState<TabMeta[]>([]);
+  const [tabs, setTabsState] = useState<TabMeta[]>([]);
   const [backendConnected, setBackendConnected] = useState(false);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
   const timingTrackerRef = useRef<StartupTimingTracker>(new StartupTimingTracker());
@@ -6645,9 +6645,12 @@ export function App() {
   const rafScheduledRef = useRef(false);
   const startupStderrRef = useRef<string[]>([]);
   const tabsRef = useRef<TabMeta[]>([]);
-  useEffect(() => {
-    tabsRef.current = tabs;
-  }, [tabs]);
+  // Wire events can share a React batch; the next event must see every prior update.
+  const setTabs = useCallback((update: TabMeta[] | ((prev: TabMeta[]) => TabMeta[])) => {
+    const next = typeof update === "function" ? update(tabsRef.current) : update;
+    tabsRef.current = next;
+    setTabsState(next);
+  }, []);
 
   // ONE session list per workspace, shared by every channel on it: a channel never
   // owns rows, so two channels can never disagree about the same directory.
@@ -7132,11 +7135,6 @@ export function App() {
             if (ev.type === "$tab_closed" && tabId) {
               tracker.mark("tab_closed", { tabId });
               const remaining = tabsRef.current.filter((t) => t.id !== tabId);
-              // Update the mirror synchronously: closing one visual workspace
-              // emits one event per child channel, often in a single React
-              // batch. A stale ref could otherwise re-focus an already-closed
-              // sibling between those events.
-              tabsRef.current = remaining;
               setTabs(remaining);
               setActiveTabId((prev) => (prev === tabId ? (remaining[0]?.id ?? "") : prev));
               setTabThemes((prev) => {
@@ -7492,7 +7490,7 @@ export function App() {
       });
       return changed ? next : prev;
     });
-  }, []);
+  }, [setTabs]);
 
   // Snapshot the per-tab rate trackers into `sessionRates` (keyed by session
   // name) while any agent is running. Throttled to ~4Hz so the sidebar
