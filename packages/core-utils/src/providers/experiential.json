@@ -34,7 +34,7 @@
       "env": ["EXPERIENTIAL_API_KEY", "EXPLABS_API_KEY"],
       "configKey": "experientialApiKey",
       "label": "Experiential Labs API key",
-      "signupUrl": "https://platform.experientiallabs.ai/settings/keys"
+      "signupUrl": "https://platform.experientiallabs.ai/settings/api-keys"
     },
     {
       "key": "baseUrl",

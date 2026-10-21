@@ -130,6 +130,27 @@ describe("providers.json", () => {
     expect(providerShortLabel("no-such-provider")).toBe("");
   });
 
+  it("points every sign-up link at the provider's own host", () => {
+    // A "get a key" link is data, so it goes stale silently. Pinning the host (not
+    // the path) catches a wrong or copy-pasted vendor URL without freezing routes.
+    for (const spec of PROVIDER_SPECS) {
+      for (const setting of spec.settings) {
+        if (setting.signupUrl === null) continue;
+        const link = new URL(setting.signupUrl);
+        expect(link.protocol).toBe("https:");
+        expect(
+          spec.errors.hosts.some(
+            (suffix) => link.hostname === suffix || link.hostname.endsWith(`.${suffix}`),
+          ),
+        ).toBe(true);
+      }
+    }
+    // The experienced bug: a path no longer served for this provider.
+    expect(providerSettingSpec(requireProviderSpec("experiential"), "apiKey")?.signupUrl).toBe(
+      "https://platform.experientiallabs.ai/settings/api-keys",
+    );
+  });
+
   it("declares a balance endpoint only where one exists", () => {
     // The ribbon reads this to decide whether a wallet chip can ever be filled;
     // a provider without one shows measured cost instead of an empty chip.
