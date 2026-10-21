@@ -23,6 +23,8 @@ import {
   isSubagentTaskPreview,
   isSubagentTool,
   parseEditResult,
+  parseSubagentResult,
+  subagentTools,
 } from "./cards";
 import { formatDuration } from "./format";
 import { requestAnchorExpansion } from "./transcript-jump";
@@ -576,7 +578,7 @@ describe("SubagentCard — model visibility", () => {
         runs={[{ ...run, task: `${task.slice(0, 30)}…` }]}
       />,
     );
-    const row = container.querySelector(".sub-row");
+    const row = container.querySelector(".sub-instruction");
     // The whole instruction, verbatim: nothing trimmed, nothing elided.
     expect(row?.textContent).toContain(task);
     expect(row?.textContent).not.toContain("…");
@@ -584,7 +586,9 @@ describe("SubagentCard — model visibility", () => {
 
   it("falls back to the run's own task when the card has no args", () => {
     const { container } = render(<SubagentCard name="explore" runs={[run]} />);
-    expect(container.querySelector(".sub-row")?.textContent).toContain("Inspect quota rendering");
+    expect(container.querySelector(".sub-instruction")?.textContent).toContain(
+      "Inspect quota rendering",
+    );
   });
 
   it("carries the spawn's anchor so the Events tab can land on the card", () => {
@@ -602,7 +606,7 @@ describe("SubagentCard — model visibility", () => {
         runs={[{ ...run, task: "Inspect quota rendering" }]}
       />,
     );
-    const text = container.querySelector(".sub-row")?.textContent ?? "";
+    const text = container.querySelector(".sub-instruction")?.textContent ?? "";
     expect(text).toContain("Inspect quota rendering");
     expect(text).not.toContain("Investigate the parser");
   });
@@ -1248,6 +1252,169 @@ describe("ShellCard — command line sanitization", () => {
   });
 });
 
+describe("SubagentCard — task, progress and result sections", () => {
+  const run = {
+    runId: "run-sections",
+    task: "Inspect quota rendering",
+    skillName: "explore",
+    model: "deepseek-v4-flash",
+    status: "done" as const,
+    contextTokens: 12_345,
+    contextMax: 300_000,
+    costUsd: 0.0012,
+    tools: [],
+  };
+
+  const envelope = (fields: Record<string, unknown>): string => JSON.stringify(fields);
+
+  it("shows the answer from the result envelope, never the envelope itself", () => {
+    // The tool result is JSON; printing it raw is what made the card unreadable and
+    // is why the answer looked missing.
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        runs={[run]}
+        result={envelope({
+          success: true,
+          output: "Found 3 references in `src/index.ts`.",
+          turns: 2,
+          tool_iters: 5,
+          elapsed_ms: 2500,
+          cost_usd: 0.0012,
+        })}
+      />,
+    );
+    const result = container.querySelector(".subagent-result")!;
+    expect(result.textContent).toContain("Found 3 references in src/index.ts.");
+    expect(result.textContent).not.toContain('"success"');
+    expect(result.textContent).not.toContain("tool_iters");
+    expect(result.querySelector(".sub-result-state")?.textContent).toBe("Done");
+    expect(result.textContent).toContain("2 turns");
+    expect(result.textContent).toContain("5 tools");
+  });
+
+  it("marks a failed run and surfaces its error text", () => {
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        runs={[{ ...run, status: "failed" }]}
+        ok={false}
+        result={envelope({
+          success: false,
+          error: "DeepSeek 402: Insufficient Balance",
+          turns: 0,
+          tool_iters: 0,
+        })}
+      />,
+    );
+    const result = container.querySelector(".subagent-result")!;
+    expect(result.querySelector(".sub-result-state")?.textContent).toBe("Failed");
+    expect(result.querySelector(".sub-result-error")?.textContent).toContain(
+      "Insufficient Balance",
+    );
+  });
+
+  it("marks a force-summarized run Partial and keeps its findings plus the note", () => {
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        runs={[run]}
+        result={envelope({
+          success: false,
+          partial: true,
+          output: "two of four consumers verified",
+          turns: 3,
+          note: "Subagent stopped at its enforced work budget.",
+        })}
+      />,
+    );
+    const result = container.querySelector(".subagent-result")!;
+    expect(result.querySelector(".sub-result-state")?.textContent).toBe("Partial");
+    expect(result.textContent).toContain("two of four consumers verified");
+    expect(result.querySelector(".sub-result-note")?.textContent).toContain("enforced work budget");
+  });
+
+  it("never leaves a dangling separator when one meter field is missing", () => {
+    // The pre-join version prefixed each fragment with " · ", so a run without a
+    // context cap rendered " · 3 turns". Empty fragments must drop out entirely.
+    const { container } = render(
+      <SubagentCard name="explore" runs={[{ ...run, contextMax: undefined, turns: 3 }]} />,
+    );
+    const meter = [...container.querySelectorAll(".sub-row .role")].find((el) =>
+      el.textContent?.includes("turns"),
+    );
+    expect(meter?.textContent).toContain("3 turns");
+    // No fragment, no separator: the line starts with the first real field.
+    expect(meter?.textContent).not.toMatch(/^\s*·/);
+  });
+
+  it("labels the three sections it divides the card into", () => {
+    const { container } = render(<SubagentCard name="explore" runs={[run]} result="done" />);
+    const titles = Array.from(container.querySelectorAll(".sub-section-title")).map(
+      (el) => el.textContent,
+    );
+    expect(titles).toEqual(["Task", "Tools", "Progress", "Result"]);
+  });
+
+  it("lists the tools the spawn was given, and says when it inherited them all", () => {
+    const { container } = render(
+      <SubagentCard
+        name="explore"
+        args={JSON.stringify({ task: "look", tools: ["read_file", "search_content"] })}
+        runs={[run]}
+      />,
+    );
+    expect(container.querySelector(".sub-tools-list")?.textContent).toBe(
+      "read_file, search_content",
+    );
+
+    cleanup();
+    const inherited = render(<SubagentCard name="explore" runs={[run]} />);
+    expect(inherited.container.querySelector(".sub-tools-list")?.textContent).toBe(
+      "all parent tools",
+    );
+  });
+});
+
+describe("parseSubagentResult", () => {
+  it("splits the envelope into answer, note and stats", () => {
+    expect(
+      parseSubagentResult(
+        JSON.stringify({
+          success: true,
+          output: "answer",
+          turns: 4,
+          tool_iters: 9,
+          elapsed_ms: 1200,
+          cost_usd: 0.5,
+          model: "m",
+        }),
+      ),
+    ).toMatchObject({ structured: true, success: true, partial: false, output: "answer" });
+  });
+
+  it("passes anything that is not a subagent envelope through verbatim", () => {
+    // A hosted/foreign payload must not be reinterpreted as an answer.
+    const foreign = JSON.stringify({ results: [1, 2, 3] });
+    expect(parseSubagentResult(foreign)).toMatchObject({
+      structured: false,
+      output: foreign,
+    });
+    expect(parseSubagentResult("plain sentence")).toMatchObject({
+      structured: false,
+      output: "plain sentence",
+    });
+    expect(parseSubagentResult(undefined)).toMatchObject({ structured: false, output: "" });
+  });
+
+  it("reads the tools whitelist and ignores a malformed one", () => {
+    expect(subagentTools(JSON.stringify({ tools: ["a", " ", "b"] }))).toEqual(["a", "b"]);
+    expect(subagentTools(JSON.stringify({ task: "no tools" }))).toEqual([]);
+    expect(subagentTools("not json")).toEqual([]);
+    expect(subagentTools(undefined)).toEqual([]);
+  });
+});
+
 // Every long card body shares one bounded box (`.row-scroll`): the same window
 // the thinking and shell streams use, so nothing is truncated and nothing runs
 // the full transcript height.
@@ -1275,11 +1442,14 @@ describe("long card bodies share the row window", () => {
     expect(box?.classList.contains("row-scroll")).toBe(true);
   });
 
-  it("windows a subagent's run rows and result", () => {
+  it("windows the run rows but keeps the answer outside the window", () => {
     const { container } = render(wrap(<SubagentCard name="explore" runs={[run]} result="done" />));
     const box = container.querySelector(".sub-card");
     expect(box?.classList.contains("row-scroll")).toBe(true);
-    expect(box?.querySelector(".subagent-result")?.textContent).toBe("done");
+    // The answer must never sit inside the 6-row box: a settled card has to show it
+    // without scrolling past the activity log.
+    expect(box?.querySelector(".subagent-result")).toBeNull();
+    expect(container.querySelector(".subagent-result")?.textContent).toContain("done");
   });
 
   it("keeps every run row mounted so the box scrolls instead of truncating", () => {

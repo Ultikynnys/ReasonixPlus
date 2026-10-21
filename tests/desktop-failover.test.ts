@@ -1,10 +1,13 @@
 /** Backup-model failover: which model takes over after a quota wall, plus the
  *  structural guarantees the daemon keeps while it switches. */
 
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { subagentPinFollowsFailover } from "../src/cli/commands/desktop.js";
 import { pickFallbackModel } from "../src/config.js";
+import { t } from "../src/i18n/index.js";
 
 const allUsable = () => true;
 
@@ -70,11 +73,26 @@ describe("failover wiring — structural invariants in the daemon", () => {
   it("restores the previous model when the backup cannot build a runtime", () => {
     // applyTabModel nulls the runtime for an unusable model instead of throwing;
     // leaving the tab like that would reject every later send.
-    expect(body).toContain("applyTabModel(tab, failedModel, { persistDefault: false })");
+    expect(body).toContain("applyTabModel(tab, failedModel, { persistDefault: false");
   });
 
   it("scopes the automatic switch to the conversation, never the global default", () => {
-    expect(body).toContain("applyTabModel(tab, next, { persistDefault: false })");
+    // Partial match: the call also carries `followSubagentPin`, and a new option must
+    // not silently break the scope guarantee this pins.
+    expect(body).toContain("applyTabModel(tab, next, { persistDefault: false");
+  });
+
+  it("moves the session's subagent pin with the chat when its provider ran dry", () => {
+    // Both composer pills and the session meta have to follow, or the subagent pill
+    // keeps naming a dead model and every spawn spends an attempt hitting the wall.
+    expect(body).toContain("followSubagentPin: true");
+    // The policy lives in the one function that moves a tab's model, so an explicit
+    // pick can never drag the pin along: it never passes the flag.
+    expect(src).toContain(
+      "if (opts.followSubagentPin && subagentPinFollowsFailover(prevSubagent, prevModel))",
+    );
+    // A rolled-back switch puts the pin back with the model.
+    expect(src).toContain("tab.currentSubagentModel = prevSubagent;");
   });
 
   it("re-emits settings only after the turn is settled", () => {
@@ -89,5 +107,85 @@ describe("failover wiring — structural invariants in the daemon", () => {
   it("keeps the failover inside the single turn lifecycle", () => {
     expect(body.match(/type: "\$turn_started"/g)?.length).toBe(1);
     expect(body).not.toContain('type: "$turn_complete"');
+  });
+
+  it("walks the configured order top-down, one model at a time", () => {
+    // The chain seeds the model that failed first and records each pick, so the
+    // next pick can only be further down the list — never the same model twice.
+    expect(body).toContain("const primaryModel = tab.currentModel;");
+    expect(body).toContain("const triedModels = new Set([primaryModel]);");
+    expect(body).toContain("triedModels.add(next);");
+  });
+
+  it("gives up with an explanation for each of the three end states", () => {
+    // No backups at all, backups that cannot run here, and backups that were tried
+    // and failed — each needs its own sentence, never a bare provider error card.
+    expect(body).toContain('t("loop.failoverNoBackup"');
+    expect(body).toContain('t("loop.failoverNoneUsable"');
+    expect(body).toContain('t("loop.failoverAllExhausted"');
+    // And a rewind that cannot be replayed must say so instead of going quiet.
+    expect(body).toContain('t("loop.failoverPromptUnavailable"');
+  });
+});
+
+describe("subagentPinFollowsFailover", () => {
+  const FAILED = "deepseek-v4-flash";
+  let dir: string;
+  let configPath: string;
+
+  // Provider identity is read from config + discovery, so pin it to an empty temp
+  // config: the assertions must not depend on the machine's real ~/.reasonix.
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "reasonix-failover-pin-"));
+    configPath = join(dir, "config.json");
+    writeFileSync(configPath, JSON.stringify({ apiKey: "sk-test" }), "utf8");
+    vi.stubEnv("REASONIX_CONFIG", configPath);
+    vi.stubEnv("OPENAI_API_KEY", "");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("leaves an unpinned session alone: subagents already follow the main model", () => {
+    expect(subagentPinFollowsFailover(undefined, FAILED)).toBe(false);
+  });
+
+  it("moves a pin on the provider that ran dry, whatever its model id", () => {
+    expect(subagentPinFollowsFailover(FAILED, FAILED)).toBe(true);
+    // Same account, different model: the pin cannot work either.
+    expect(subagentPinFollowsFailover("deepseek-v4-pro", FAILED)).toBe(true);
+  });
+
+  it("keeps a pin on another provider, which still has quota", () => {
+    expect(subagentPinFollowsFailover("gpt-5.6-sol", FAILED)).toBe(false);
+  });
+});
+
+describe("failover stop messages", () => {
+  const PRIMARY = "deepseek-v4-flash";
+
+  it("names every backup that was tried when the chain is spent", () => {
+    const msg = t("loop.failoverAllExhausted", { failed: PRIMARY, models: "glm-4.6, gpt-5.6-sol" });
+    expect(msg).toContain(PRIMARY);
+    expect(msg).toContain("glm-4.6, gpt-5.6-sol");
+    expect(msg).not.toContain("{models}");
+  });
+
+  it("keeps the three end states verbally distinct", () => {
+    const noBackup = t("loop.failoverNoBackup", { failed: PRIMARY });
+    const noneUsable = t("loop.failoverNoneUsable", { failed: PRIMARY });
+    const allTried = t("loop.failoverAllExhausted", { failed: PRIMARY, models: "x" });
+    expect(new Set([noBackup, noneUsable, allTried]).size).toBe(3);
+    expect(noBackup).toContain("no backup model is configured");
+    expect(noneUsable).toContain("no configured backup model can run here");
+    expect(allTried).toContain("every backup model was tried");
+  });
+
+  it("explains an unreplayable prompt rather than stopping silently", () => {
+    const msg = t("loop.failoverPromptUnavailable", { next: "glm-4.6" });
+    expect(msg).toContain("glm-4.6");
+    expect(msg).not.toContain("{next}");
   });
 });

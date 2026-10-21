@@ -4110,11 +4110,91 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .sub-card {
   padding: 10px 12px;
 }
+
+/* Three labelled sections: the task it was given, the run's live state, then the
+   answer. Each one starts with its own title so the card reads as a report
+   instead of a block of run-on meta lines. */
+.sub-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0;
+}
+.sub-section + .sub-section {
+  border-top: 1px solid var(--border);
+}
+.sub-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sub-section-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.sub-section-note {
+  font-size: 11px;
+  color: var(--muted);
+}
+.sub-instruction {
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg-2);
+}
+.sub-tools {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.sub-tools-list {
+  font-size: 11px;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+
 .sub-row {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+}
+.sub-row + .sub-row {
+  border-top: 1px dashed var(--border);
+}
+.sub-run-head {
+  display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 0;
+  gap: 8px;
+  min-width: 0;
+}
+.sub-run-state {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.sub-run-state.running {
+  color: var(--accent);
+}
+.sub-run-state.done {
+  color: var(--success);
+}
+.sub-run-state.failed {
+  color: var(--danger);
+}
+.sub-run-stats {
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .sub-row .av {
   width: 22px;
@@ -4128,20 +4208,54 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   font-family: inherit;
   font-size: 14px;
   font-weight: 600;
-}
-.sub-row .what {
-  font-size: 14px;
-  flex: 1;
-  min-width: 0;
-}
-.sub-row .what .role {
-  color: var(--muted);
-  font-family: inherit;
-  font-size: 14px;
+  flex-shrink: 0;
 }
 .sub-row .prog {
+  margin-left: auto;
   font-family: inherit;
   font-size: 14px;
+  color: var(--muted);
+}
+
+/* The answer sits outside the row window: a settled card must show it without
+   scrolling past the activity log. Long answers scroll in their own box. */
+.subagent-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+.sub-result-state {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sub-result-state.done {
+  color: var(--success);
+}
+.sub-result-state.partial {
+  color: var(--warning);
+}
+.sub-result-state.failed {
+  color: var(--danger);
+}
+.sub-result-body {
+  max-height: 320px;
+  overflow: auto;
+}
+.sub-result-error {
+  font-family: "Geist Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--danger);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sub-result-note {
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--muted);
 }
 
@@ -5881,6 +5995,33 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .rule .pat.deny {
   color: var(--danger);
+}
+
+/* Backup-model rows: index, picker and reorder buttons share ONE line, so a list of
+   backups reads as a compact table instead of one stacked card per entry. */
+.rule.fallback-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+.fallback-row .fallback-index {
+  flex: 0 0 auto;
+  min-width: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.fallback-row .fallback-select {
+  /* `.field` carries a fixed 200px width; the picker takes the free width instead. */
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+.fallback-row .fallback-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .rule .sw,
 .rule-composer .sw {

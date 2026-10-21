@@ -2613,9 +2613,11 @@ function PageFallbacks({
     opencodeVisionModels,
   });
   const ollamaList = (ollamaModels ?? []).map((id) => `ollama/${id}`);
-  // One option group per provider: a backup from ANY reachable provider is the
-  // whole point of the list, so every catalog contributes rows.
-  const groups: ReadonlyArray<{ key: string; label: string; models: readonly string[] }> = [
+  // Backups are chosen from the ENABLED models — the same allow-list every picker
+  // offers (Settings → Models). The whole catalog would offer models the user
+  // deliberately turned off.
+  const enabled = new Set(settings.enabledModels ?? []);
+  const catalogGroups: ReadonlyArray<{ key: string; label: string; models: readonly string[] }> = [
     ...catalog.groups.map((group) => ({
       key: group.key as string,
       label: t(MODEL_CATALOG_GROUP_LABELS[group.key]),
@@ -2625,11 +2627,23 @@ function PageFallbacks({
       ? [{ key: "ollama", label: t("settings.ollamaSection"), models: ollamaList }]
       : []),
   ];
-  const known = new Set(groups.flatMap((group) => [...group.models]));
+  // Provider grouping survives the filter, so a backup list can still span providers.
+  const groups = catalogGroups
+    .map((group) => ({ ...group, models: group.models.filter((model) => enabled.has(model)) }))
+    .filter((group) => group.models.length > 0);
+  // An enabled id that no catalog places (a hand-edited config, a retired discovery
+  // entry) must stay reachable, or it would be enabled yet unpickable.
+  const grouped = new Set(catalogGroups.flatMap((group) => [...group.models]));
+  const ungrouped = [...enabled].filter((id) => !grouped.has(id));
+  const options =
+    ungrouped.length > 0
+      ? [...groups, { key: "other", label: t("settings.fallbacksOtherGroup"), models: ungrouped }]
+      : groups;
+  const known = new Set(options.flatMap((group) => [...group.models]));
   const list = settings.fallbackModels ?? [];
   const save = (next: string[]): void => onSave({ fallbackModels: next });
   const move = (from: number, to: number): void => save(moveInList(list, from, to));
-  const firstUnused = groups
+  const firstUnused = options
     .flatMap((group) => [...group.models])
     .find((model) => !list.includes(model));
 
@@ -2642,60 +2656,33 @@ function PageFallbacks({
 
       {list.length === 0 && (
         <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
-          {t("settings.fallbacksEmpty")}
+          {enabled.size === 0
+            ? t("settings.fallbacksNeedsEnabledModels")
+            : t("settings.fallbacksEmpty")}
         </div>
       )}
 
       {list.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
           {list.map((id, i) => (
-            <div className="rule" key={`${i}-${id}`}>
-              <div className="top">
-                <span className="pat">{i + 1}</span>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <button
-                    type="button"
-                    className="mini-btn"
-                    disabled={i === 0}
-                    title={t("settings.fallbackMoveUp")}
-                    aria-label={t("settings.fallbackMoveUpAria", { model: id })}
-                    onClick={() => move(i, i - 1)}
-                  >
-                    <I.arrowUp size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    className="mini-btn"
-                    disabled={i === list.length - 1}
-                    title={t("settings.fallbackMoveDown")}
-                    aria-label={t("settings.fallbackMoveDownAria", { model: id })}
-                    onClick={() => move(i, i + 1)}
-                  >
-                    <I.arrowDown size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    className="mini-btn"
-                    title={t("settings.fallbackRemove")}
-                    aria-label={t("settings.fallbackRemoveAria", { model: id })}
-                    onClick={() => save(list.filter((_, idx) => idx !== i))}
-                  >
-                    <I.trash size={12} />
-                  </button>
-                </div>
-              </div>
+            <div className="rule fallback-row" key={`${i}-${id}`}>
+              <span className="pat fallback-index">{i + 1}</span>
               <select
-                className="field"
+                className="field fallback-select"
                 aria-label={t("settings.fallbackRowLabel", { index: i + 1 })}
                 value={id}
                 onChange={(e) =>
                   save(list.map((value, idx) => (idx === i ? e.target.value : value)))
                 }
               >
-                {/* A saved id the catalogs no longer offer still renders, so the
-                    row never shows a blank select and the user can keep it. */}
-                {known.has(id) ? null : <option value={id}>{modelDisplayName(id)}</option>}
-                {groups.map((group) => (
+                {/* A saved id outside the enabled list still renders, so the row never
+                    shows a blank select — labelled, because it is no longer offered. */}
+                {known.has(id) ? null : (
+                  <option value={id}>
+                    {`${modelDisplayName(id)}${t("settings.fallbackNotEnabledSuffix")}`}
+                  </option>
+                )}
+                {options.map((group) => (
                   <optgroup key={group.key} label={group.label}>
                     {group.models.map((model) => (
                       <option
@@ -2709,6 +2696,37 @@ function PageFallbacks({
                   </optgroup>
                 ))}
               </select>
+              <div className="fallback-actions">
+                <button
+                  type="button"
+                  className="mini-btn"
+                  disabled={i === 0}
+                  title={t("settings.fallbackMoveUp")}
+                  aria-label={t("settings.fallbackMoveUpAria", { model: id })}
+                  onClick={() => move(i, i - 1)}
+                >
+                  <I.arrowUp size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="mini-btn"
+                  disabled={i === list.length - 1}
+                  title={t("settings.fallbackMoveDown")}
+                  aria-label={t("settings.fallbackMoveDownAria", { model: id })}
+                  onClick={() => move(i, i + 1)}
+                >
+                  <I.arrowDown size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="mini-btn"
+                  title={t("settings.fallbackRemove")}
+                  aria-label={t("settings.fallbackRemoveAria", { model: id })}
+                  onClick={() => save(list.filter((_, idx) => idx !== i))}
+                >
+                  <I.trash size={12} />
+                </button>
+              </div>
             </div>
           ))}
         </div>

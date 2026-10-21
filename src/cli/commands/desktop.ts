@@ -5103,13 +5103,24 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
   return { loop, eventizer, ctx };
 }
 
-/** Switch a tab's model in place (prompt + runtime, rolled back if the rebuild
- *  throws) and never aborts a turn. `persistDefault` also writes the global
- *  default, so an automatic failover stays scoped to this conversation. */
-function applyTabModel(tab: Tab, next: string, opts: { persistDefault: boolean }): void {
+/** Switch a tab's model in place, rolling everything back if the rebuild throws; never
+ *  aborts a turn. `persistDefault` writes the global default too, and `followSubagentPin`
+ *  (failover only) moves the session's subagent pin with the chat. */
+function applyTabModel(
+  tab: Tab,
+  next: string,
+  opts: { persistDefault: boolean; followSubagentPin?: boolean },
+): void {
   const prevModel = tab.currentModel;
+  const prevSubagent = tab.currentSubagentModel;
   const prevSystem = tab.system;
   tab.currentModel = next;
+  // Only a failover drags the subagent pin along, and only when that pin sits on the
+  // provider being left: an unset pin already follows, and a healthier one must not be
+  // rewritten. The rollback below restores it, so the two stay in step either way.
+  if (opts.followSubagentPin && subagentPinFollowsFailover(prevSubagent, prevModel)) {
+    tab.currentSubagentModel = next;
+  }
   try {
     if (opts.persistDefault) saveModel(next);
     persistSessionModelPrefs(tab);
@@ -5123,6 +5134,7 @@ function applyTabModel(tab: Tab, next: string, opts: { persistDefault: boolean }
     }
   } catch (err) {
     tab.currentModel = prevModel;
+    tab.currentSubagentModel = prevSubagent;
     if (opts.persistDefault) {
       try {
         saveModel(prevModel);
@@ -5144,6 +5156,17 @@ function applyTabModel(tab: Tab, next: string, opts: { persistDefault: boolean }
     }
     throw err;
   }
+}
+
+/** Whether the session's pinned subagent model must follow a failover: only when it
+ *  resolves to the provider that just ran dry. An unset pin already follows the main
+ *  model, and a pin on another provider is still healthy — neither may be rewritten. */
+export function subagentPinFollowsFailover(
+  pinned: string | undefined,
+  failedModel: string,
+): boolean {
+  if (!pinned) return false;
+  return providerForModel(pinned) === providerForModel(failedModel);
 }
 
 const TS_EXPORT_RE =
@@ -6407,8 +6430,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // unattended (overnight) run idle until someone wakes up to switch models.
       // Each backup is switched to, then the prompt is replayed exactly like the
       // desktop's Retry, until an attempt answers or the chain runs out.
+      // The model that actually hit the wall: a chain moves tab.currentModel, so every
+      // stop message has to name this one, not wherever the chain ended up.
+      const primaryModel = tab.currentModel;
       const configuredFallbacks = loadFallbackModels();
-      const triedModels = new Set([tab.currentModel]);
+      const triedModels = new Set([primaryModel]);
       let failedOverTo: string | null = null;
       let failoverBroken = false;
       while (attempt.quotaExhausted && !attempt.aborted && !attempt.producedAnswer) {
@@ -6418,8 +6444,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         const failedModel = tab.currentModel;
         try {
           // Session-scoped: an automatic switch must never rewrite the user's
-          // global default model behind their back.
-          applyTabModel(tab, next, { persistDefault: false });
+          // global default model behind their back. The subagent pin follows this
+          // conversation's model too when it sits on the provider that ran dry.
+          applyTabModel(tab, next, { persistDefault: false, followSubagentPin: true });
         } catch (err) {
           notify(`Backup model switch to ${next} failed: ${messageOf(err)}`, "error");
           failoverBroken = true;
@@ -6430,7 +6457,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           // between the screening check and the rebuild). Put the model the turn
           // was running on back, so the tab is never stranded without a runtime.
           try {
-            applyTabModel(tab, failedModel, { persistDefault: false });
+            applyTabModel(tab, failedModel, { persistDefault: false, followSubagentPin: true });
           } catch (rollbackErr) {
             process.stderr.write(
               `reasonix: backup-model rollback to ${failedModel} failed — ${messageOf(rollbackErr)}\n`,
@@ -6452,9 +6479,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // from the log whenever the switch itself failed.
         const before = rt.loop.log.length;
         if (rt.loop.retryLastUser() !== text) {
-          // The prompt is no longer the log's last real user turn (compaction
-          // folded it away, or it carried attachments), so replaying would send a
-          // different request. Keep the switch and report the failure honestly.
+          // The prompt is no longer the log's last real user turn (compaction folded
+          // it away, or it carried attachments), so replaying would send a different
+          // request. Keep the switch and hand the user an actionable stop message
+          // instead of ending the turn on a bare provider error.
+          notify(t("loop.failoverPromptUnavailable", { next }));
           failoverBroken = true;
           break;
         }
@@ -6479,13 +6508,19 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         !attempt.producedAnswer &&
         !failoverBroken
       ) {
-        // Nothing left to try: point at the setting that fixes it rather than
-        // letting the turn die with only a provider error card. An empty list and
-        // a list nothing could be taken from need different advice.
+        // Nothing left to try. Name the situation the run ended in, so the stop is
+        // explained instead of left to the provider's raw error card: no backups at
+        // all, backups that cannot run here, or backups that were tried and failed.
+        const triedBackups = [...triedModels].filter((model) => model !== primaryModel);
         notify(
           configuredFallbacks.length === 0
-            ? t("loop.failoverNoBackup", { failed: tab.currentModel })
-            : t("loop.failoverAllExhausted", { failed: tab.currentModel }),
+            ? t("loop.failoverNoBackup", { failed: primaryModel })
+            : triedBackups.length === 0
+              ? t("loop.failoverNoneUsable", { failed: primaryModel })
+              : t("loop.failoverAllExhausted", {
+                  failed: primaryModel,
+                  models: triedBackups.join(", "),
+                }),
         );
       }
       tab.aborter = null;

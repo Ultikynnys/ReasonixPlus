@@ -1040,6 +1040,24 @@ function runInstruction(preview: string, instruction: string): string {
   return isSubagentTaskPreview(preview, instruction) ? instruction : preview;
 }
 
+/** One state → label table for every place a subagent card names a state (header
+ *  chip, run head, result head), so a wording change lands in one place. */
+type SubagentState = "running" | "done" | "failed" | "partial";
+function subagentStateLabel(state: SubagentState): string {
+  if (state === "done") return t("cards.subagentDone");
+  if (state === "failed") return t("cards.subagentFailed");
+  if (state === "partial") return t("cards.subagentPartial");
+  return t("cards.subagentRunning");
+}
+
+/** Join meta fragments with the card's " · " separator. Empty fragments drop out —
+ *  a missing one must not leave a dangling separator at either end. */
+function dotJoin(parts: ReadonlyArray<string | number | null | undefined>): string {
+  return parts
+    .filter((part): part is string | number => part !== null && part !== undefined && part !== "")
+    .join(" · ");
+}
+
 export type SubagentResultMeta = {
   costUsd?: number;
   billingKind?: "usd" | "quota" | "none";
@@ -1074,6 +1092,71 @@ export function extractSubagentResultMeta(result?: string): SubagentResultMeta {
   } catch {
     return {};
   }
+}
+
+/** The tools a spawn was given, in the order the call listed them. Empty = the child
+ *  inherited every parent tool except delegation and plan tools. */
+export function subagentTools(args?: string): string[] {
+  if (!args) return [];
+  try {
+    const parsed = JSON.parse(args) as Record<string, unknown>;
+    if (!Array.isArray(parsed.tools)) return [];
+    return parsed.tools.filter(
+      (name): name is string => typeof name === "string" && name.trim() !== "",
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** A subagent's tool result is a JSON envelope (`success`, `output`, `note`, stats),
+ *  so a card that printed it raw read as a blob of keys instead of an answer. This
+ *  splits it into what a reader needs. A non-envelope result — plain text, or an
+ *  older/hosted shape — passes through as the output verbatim. */
+export type SubagentResultView = {
+  /** True when the result WAS the subagent envelope, false for passed-through text. */
+  structured: boolean;
+  success: boolean;
+  /** Stopped before finishing: budget, iteration cap, or a guard force-summarized it. */
+  partial: boolean;
+  output: string;
+  error?: string;
+  note?: string;
+  turns?: number;
+  toolIters?: number;
+  elapsedMs?: number;
+};
+
+export function parseSubagentResult(result?: string): SubagentResultView {
+  const plain: SubagentResultView = {
+    structured: false,
+    success: true,
+    partial: false,
+    output: result ?? "",
+  };
+  if (!result) return { ...plain, output: "" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return plain;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return plain;
+  const obj = parsed as Record<string, unknown>;
+  // Only the subagent envelope carries a boolean `success`; anything else is data
+  // some other tool returned and must be shown as it came.
+  if (typeof obj.success !== "boolean") return plain;
+  return {
+    structured: true,
+    success: obj.success,
+    partial: obj.partial === true,
+    output: typeof obj.output === "string" ? obj.output : "",
+    ...(typeof obj.error === "string" ? { error: obj.error } : {}),
+    ...(typeof obj.note === "string" ? { note: obj.note } : {}),
+    ...(typeof obj.turns === "number" ? { turns: obj.turns } : {}),
+    ...(typeof obj.tool_iters === "number" ? { toolIters: obj.tool_iters } : {}),
+    ...(typeof obj.elapsed_ms === "number" ? { elapsedMs: obj.elapsed_ms } : {}),
+  };
 }
 
 function SubagentActivityRows({ run }: { run: import("../App").SubagentRunProgress }) {
@@ -1157,13 +1240,35 @@ export function SubagentCard({
       : settledCostUsd !== null && settledCostUsd > 0
         ? `$${settledCostUsd.toFixed(4)}`
         : null;
+  // The envelope is parsed once: echoing the raw JSON is what made the card
+  // unreadable, so the answer / partial / error split is derived here instead.
+  const view = useMemo(() => parseSubagentResult(result), [result]);
+  const tools = useMemo(() => subagentTools(args), [args]);
+  // The call's own instruction wins when it IS this run's instruction; a foreign one
+  // (progress events can carry a sibling segment's args) never replaces it.
+  const taskText = runs[0] ? runInstruction(runs[0].task, instruction) : instruction;
+  const resultState: "done" | "partial" | "failed" = !view.structured
+    ? ok === false
+      ? "failed"
+      : "done"
+    : view.partial
+      ? "partial"
+      : view.success
+        ? "done"
+        : "failed";
+  const resultStats = dotJoin([
+    view.turns !== undefined ? `${view.turns} turns` : null,
+    view.toolIters !== undefined ? `${view.toolIters} tools` : null,
+    view.elapsedMs !== undefined ? formatDuration(view.elapsedMs) : null,
+  ]);
+
   return (
     <Card
       tone={status === "failed" ? "danger" : "violet"}
       icon={<I.bot size={12} />}
       kind="subagent"
       name={name}
-      copyText={result ?? ""}
+      copyText={view.output || (result ?? "")}
       anchor={anchor}
       meta={
         <>
@@ -1175,38 +1280,70 @@ export function SubagentCard({
           <span>
             {done} / {runs.length} {t("cards.subagentDoneProgress")}
           </span>
-          {status === "done" ? (
-            <StatusIcon state="done" label={t("cards.subagentDone")} />
-          ) : status === "failed" ? (
-            <StatusIcon state="failed" label={t("cards.subagentFailed")} />
-          ) : (
-            <StatusIcon state="running" label={t("cards.subagentRunning")} />
-          )}
+          <StatusIcon state={status} label={subagentStateLabel(status)} />
           {settled && durationMs !== undefined ? (
             <span className="meta-dur">{formatDuration(durationMs)}</span>
           ) : null}
         </>
       }
     >
-      {/* Windowed like every long card body: follows the live edge while the child
-          runs, opens at the top once the run has settled. */}
+      {/* Input and progress are the volatile parts, so they keep the shared row
+          window; the answer renders below it, where a settled card always shows it. */}
       <RowScroll className="sub-card" follow={!settled} followKey={status}>
-        {runs.map((run) => (
-          <div className="sub-row" key={run.runId}>
-            <span className="av">AI</span>
-            <div className="what">
-              <div>{sanitizeTerminalText(runInstruction(run.task, instruction))}</div>
-              <div className="role">
-                {run.skillName ?? "subagent"}
-                {run.model ? ` · ${run.model}` : ""}
-                {run.phase ? ` · ${run.phase}` : ""}
-                {run.elapsedMs !== undefined ? ` · ${(run.elapsedMs / 1000).toFixed(1)}s` : ""}
-                {run.iter !== undefined ? ` · ${run.iter} tools` : ""}
-                {run.maxToolIters !== undefined ? ` / ${run.maxToolIters}` : ""}
-                {run.maxElapsedMs !== undefined
-                  ? ` · ${(run.maxElapsedMs / 1000).toFixed(0)}s limit`
-                  : ""}
+        <section className="sub-section" aria-label={t("cards.subagentSectionTask")}>
+          <header className="sub-section-head">
+            <span className="sub-section-title">{t("cards.subagentSectionTask")}</span>
+          </header>
+          <div className="sub-instruction" title={sanitizeTerminalText(taskText)}>
+            {sanitizeTerminalText(taskText)}
+          </div>
+          <div className="sub-tools">
+            <span className="sub-section-title">{t("cards.subagentToolsLabel")}</span>
+            <span className="sub-tools-list">
+              {tools.length > 0 ? tools.join(", ") : t("cards.subagentAllTools")}
+            </span>
+          </div>
+        </section>
+
+        <section className="sub-section" aria-label={t("cards.subagentSectionProgress")}>
+          <header className="sub-section-head">
+            <span className="sub-section-title">{t("cards.subagentSectionProgress")}</span>
+          </header>
+          {runs.map((run) => (
+            <div className="sub-row" key={run.runId}>
+              <div className="sub-run-head">
+                <span className="av">AI</span>
+                <span className={`sub-run-state ${run.status}`}>
+                  {subagentStateLabel(run.status)}
+                </span>
+                <span className="role sub-run-stats">
+                  {dotJoin([
+                    run.model,
+                    run.phase,
+                    run.iter !== undefined
+                      ? `${run.iter} tools${run.maxToolIters !== undefined ? ` / ${run.maxToolIters}` : ""}`
+                      : null,
+                    run.elapsedMs !== undefined ? formatDuration(run.elapsedMs) : null,
+                    run.maxElapsedMs !== undefined
+                      ? `${formatDuration(run.maxElapsedMs)} limit`
+                      : null,
+                  ])}
+                </span>
+                <span className="prog">
+                  {run.status === "done" ? (
+                    <I.check size={12} style={{ color: "var(--success)" }} />
+                  ) : run.status === "failed" ? (
+                    <I.x size={12} style={{ color: "var(--danger)" }} />
+                  ) : (
+                    <span className="spin" />
+                  )}
+                </span>
               </div>
+              {runInstruction(run.task, taskText) !== taskText ? (
+                <div className="role">
+                  {sanitizeTerminalText(runInstruction(run.task, taskText))}
+                </div>
+              ) : null}
               {run.status === "running" ? (
                 <SubagentActivityRows run={run} />
               ) : (
@@ -1219,17 +1356,19 @@ export function SubagentCard({
                 ))
               )}
               <div className="role">
-                {run.contextTokens !== undefined && run.contextMax !== undefined
-                  ? `ctx ${tokenLabel(run.contextTokens)} / ${tokenLabel(run.contextMax)}`
-                  : ""}
-                {run.outputChars !== undefined
-                  ? ` · ${run.outputChars.toLocaleString()} output chars`
-                  : ""}
-                {run.reasoningChars !== undefined
-                  ? ` · ${run.reasoningChars.toLocaleString()} reasoning chars`
-                  : ""}
-                {run.turns !== undefined ? ` · ${run.turns} turns` : ""}
-                {run.costUsd !== undefined ? ` · $${run.costUsd.toFixed(4)}` : ""}
+                {dotJoin([
+                  run.contextTokens !== undefined && run.contextMax !== undefined
+                    ? `ctx ${tokenLabel(run.contextTokens)} / ${tokenLabel(run.contextMax)}`
+                    : null,
+                  run.outputChars !== undefined
+                    ? `${run.outputChars.toLocaleString()} output chars`
+                    : null,
+                  run.reasoningChars !== undefined
+                    ? `${run.reasoningChars.toLocaleString()} reasoning chars`
+                    : null,
+                  run.turns !== undefined ? `${run.turns} turns` : null,
+                  run.costUsd !== undefined ? `$${run.costUsd.toFixed(4)}` : null,
+                ])}
               </div>
               {run.budgetExhausted ? (
                 <div className="role">
@@ -1238,30 +1377,31 @@ export function SubagentCard({
               ) : null}
               {run.error ? <div className="role">{sanitizeTerminalText(run.error)}</div> : null}
             </div>
-            <span className="prog">
-              {run.status === "done" ? (
-                <I.check size={12} style={{ color: "var(--success)" }} />
-              ) : run.status === "failed" ? (
-                <I.x size={12} style={{ color: "var(--danger)" }} />
-              ) : (
-                <span className="spin" />
-              )}
-            </span>
-          </div>
-        ))}
-        {result ? (
-          <div
-            className="subagent-result"
-            style={{
-              marginTop: "8px",
-              paddingTop: "8px",
-              borderTop: "1px solid var(--border)",
-            }}
-          >
-            <Markdown source={result} />
-          </div>
-        ) : null}
+          ))}
+        </section>
       </RowScroll>
+
+      {result !== undefined ? (
+        <section className="subagent-result" aria-label={t("cards.subagentSectionResult")}>
+          <header className="sub-section-head">
+            <span className="sub-section-title">{t("cards.subagentSectionResult")}</span>
+            <span className={`sub-result-state ${resultState}`}>
+              {subagentStateLabel(resultState)}
+            </span>
+            {resultStats ? <span className="sub-section-note">{resultStats}</span> : null}
+          </header>
+          {view.output ? (
+            <div className="sub-result-body">
+              <Markdown source={view.output} />
+            </div>
+          ) : view.error ? (
+            <div className="sub-result-error">{sanitizeTerminalText(view.error)}</div>
+          ) : (
+            <div className="sub-result-note">{t("cards.subagentNoAnswer")}</div>
+          )}
+          {view.note ? <div className="sub-result-note">{view.note}</div> : null}
+        </section>
+      ) : null}
     </Card>
   );
 }

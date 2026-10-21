@@ -282,7 +282,9 @@ export interface TranslationSchema {
     providerServerErrorRetry: string;
     failoverSwitching: string;
     failoverNoBackup: string;
+    failoverNoneUsable: string;
     failoverAllExhausted: string;
+    failoverPromptUnavailable: string;
     imagePayloadShrunk: string;
     upstreamRefusalRetry: string;
     upstreamRefusalTrimming: string;

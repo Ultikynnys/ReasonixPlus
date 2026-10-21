@@ -17,6 +17,9 @@ const baseSettings: Settings = {
   workspaceDir: "/test",
   recentWorkspaces: [],
   model: "deepseek-v4-flash",
+  // Backups are picked from the ENABLED allow-list, so the fixture must enable the
+  // models the rows use — an empty list here would (correctly) offer nothing.
+  enabledModels: ["deepseek-v4-flash", "deepseek-v4-pro"],
   fallbackModels: ["deepseek-v4-flash", RETIRED],
 };
 
@@ -90,8 +93,11 @@ describe("PageFallbacks — backup-model list", () => {
     const first = screen.getByLabelText("Backup model 1") as HTMLSelectElement;
     const second = screen.getByLabelText("Backup model 2") as HTMLSelectElement;
     expect(first.value).toBe("deepseek-v4-flash");
-    // A saved id the catalogs no longer serve keeps its row instead of blanking.
+    // A saved id outside the enabled list keeps its row instead of blanking, and says
+    // so — it is no longer one of the offered choices.
     expect(second.value).toBe(RETIRED);
+    const saved = Array.from(second.options).find((option) => option.value === RETIRED);
+    expect(saved?.textContent).toBe(`${RETIRED} (not enabled)`);
   });
 
   it("is reachable as its own settings category", () => {
@@ -105,15 +111,12 @@ describe("PageFallbacks — backup-model list", () => {
     expect(screen.queryByLabelText("Backup model 1")).toBeNull();
   });
 
-  it("adds the first unused catalog model", () => {
+  it("adds the first unused enabled model", () => {
     const onSave = vi.fn();
     renderPage(baseSettings, onSave);
     fireEvent.click(screen.getByRole("button", { name: "Add a backup model" }));
     const patch = onSave.mock.calls[0]?.[0] as { fallbackModels: string[] };
-    expect(patch.fallbackModels).toHaveLength(3);
-    expect(patch.fallbackModels.slice(0, 2)).toEqual(["deepseek-v4-flash", RETIRED]);
-    expect(patch.fallbackModels[2]).toBeTruthy();
-    expect(patch.fallbackModels[2]).not.toBe(RETIRED);
+    expect(patch.fallbackModels).toEqual(["deepseek-v4-flash", RETIRED, "deepseek-v4-pro"]);
   });
 
   it("removes a row", () => {
@@ -159,6 +162,46 @@ describe("PageFallbacks — backup-model list", () => {
     expect(onSave).toHaveBeenCalledWith({
       fallbackModels: [target!.value, RETIRED],
     });
+  });
+
+  it("offers only the ENABLED models, never the whole catalog", () => {
+    renderPage(baseSettings, vi.fn());
+    const first = screen.getByLabelText("Backup model 1") as HTMLSelectElement;
+    const values = Array.from(first.options).map((option) => option.value);
+    expect(values).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+    // In the catalog, but switched off in Settings → Models, so not offered here.
+    expect(values).not.toContain("deepseek-flash");
+  });
+
+  it("keeps an enabled model that no catalog places reachable under its own group", () => {
+    renderPage(
+      { ...baseSettings, enabledModels: [...baseSettings.enabledModels!, "hand-picked-model"] },
+      vi.fn(),
+    );
+    const first = screen.getByLabelText("Backup model 1") as HTMLSelectElement;
+    const labels = Array.from(first.querySelectorAll("optgroup")).map((group) => group.label);
+    expect(labels).toContain("Other enabled models");
+    expect(Array.from(first.options).map((option) => option.value)).toContain("hand-picked-model");
+  });
+
+  it("asks for enabled models first when none are switched on", () => {
+    renderPage({ ...baseSettings, enabledModels: [], fallbackModels: [] }, vi.fn());
+    expect(screen.getByText(/No models are enabled yet/)).toBeTruthy();
+    expect(screen.queryByText(/No backup models yet/)).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "Add a backup model" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("keeps each backup on a single row: index, picker, then the buttons", () => {
+    const { container } = renderPage(baseSettings, vi.fn());
+    const row = container.querySelector(".fallback-row")!;
+    // One line means the index and the controls live beside the picker, not above it.
+    expect(row.querySelector(".fallback-index")?.textContent).toBe("1");
+    const children = Array.from(row.children).map((el) => el.tagName.toLowerCase());
+    expect(children).toEqual(["span", "select", "div"]);
+    expect(row.querySelector("select.fallback-select")).toBeTruthy();
+    expect(row.querySelectorAll(".fallback-actions button")).toHaveLength(3);
   });
 
   it("disables a model that is already used by another row", () => {

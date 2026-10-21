@@ -532,8 +532,12 @@ export const EN: TranslationSchema = {
       "{failed} has no quota left: continuing this turn on the backup model {next}.",
     failoverNoBackup:
       "{failed} ran out of quota and no backup model is configured. Add backup models in Settings → Backup models so an overnight or queued run keeps going after a provider runs dry.",
+    failoverNoneUsable:
+      "{failed} ran out of quota, and no configured backup model can run here: their providers have no credential yet. Add a key for one of them in Settings → Models, or add a backup model from a provider that is already set up.",
     failoverAllExhausted:
-      "{failed} ran out of quota and no backup model could take over. Top up a provider, or add a backup model whose provider has a credential (Settings → Backup models).",
+      "{failed} ran out of quota, and every backup model was tried and failed too: {models}. Top up a provider, or add another backup model in Settings → Backup models.",
+    failoverPromptUnavailable:
+      "This turn cannot be replayed on {next}: its prompt is no longer the last message in the conversation, because it was compacted away or carried attachments. Send it again to run it on that model.",
     imagePayloadShrunk:
       "The model provider rejected the request because the attached image(s) made it too large. The images in context were {fate}; the turn is retrying. If you need image detail, load or produce a smaller or cropped image instead of a full-size one.",
     upstreamRefusalRetry:
