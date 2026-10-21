@@ -9,14 +9,17 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 let resolveTranscribe: ((res: { text: string }) => void) | null = null;
 
 vi.mock("../voice/audio-recorder", () => {
-  return {
-    AudioRecorder: vi.fn().mockImplementation(() => ({
-        recording: true,
-        start: vi.fn().mockResolvedValue(undefined),
-        stop: vi.fn().mockResolvedValue({ audioData: new Float32Array(100), durationSeconds: 1 }),
-        cancel: vi.fn(),
-      })),
-  };
+  // A class mock must be implemented with `function`, not an arrow: the composer
+  // constructs it with `new`, and vitest cannot construct an arrow implementation.
+  const AudioRecorder = vi.fn(function () {
+    return {
+      recording: true,
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue({ audioData: new Float32Array(100), durationSeconds: 1 }),
+      cancel: vi.fn(),
+    };
+  });
+  return { AudioRecorder };
 });
 
 vi.mock("../voice/transcriber", () => {
@@ -83,14 +86,14 @@ describe("Composer Voice Input Button", () => {
 
   it("reports microphone startup failures through the durable chat callback", async () => {
     const onVoiceError = vi.fn();
-    vi.mocked(AudioRecorder).mockImplementationOnce(
-      () => ({
-          recording: false,
-          start: vi.fn().mockRejectedValue(new Error("name=NotAllowedError, message=Blocked")),
-          stop: vi.fn(),
-          cancel: vi.fn(),
-        }) as unknown as AudioRecorder,
-    );
+    vi.mocked(AudioRecorder).mockImplementationOnce(function () {
+      return {
+        recording: false,
+        start: vi.fn().mockRejectedValue(new Error("name=NotAllowedError, message=Blocked")),
+        stop: vi.fn(),
+        cancel: vi.fn(),
+      } as unknown as AudioRecorder;
+    });
     render(<Composer {...baseProps} onVoiceError={onVoiceError} />);
 
     await act(async () => {

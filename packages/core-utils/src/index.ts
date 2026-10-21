@@ -151,6 +151,7 @@ export {
   providerSettingSpec,
   providerSpec,
   providerSpecsInOrder,
+  providerString,
   providerUsable,
   providerVisionSpec,
   requireProviderSpec,

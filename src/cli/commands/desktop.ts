@@ -289,6 +289,7 @@ import {
   parseSearchSettingsPatch,
   providerDefaultEndpoint,
   providerSpec,
+  providerString,
   searchEngineSpec,
   searchSettingSpec,
   searchSharedCredential,
@@ -4867,31 +4868,14 @@ function bindSessionSubagents(tab: Tab, enabled: boolean): void {
 }
 
 /** Provider-specific "not configured yet" message for a model id — keeps a
- *  gemini tab from being told to paste a DeepSeek key. Shared by the
- *  user_input and skill_run setup gates (deepseek is the fallback provider). */
+ *  gemini tab from being told to paste a DeepSeek key. The copy is the provider's
+ *  own declaration; the fallback names whichever provider the model resolves to. */
 function notConfiguredMessage(model: string): string {
-  switch (providerForModel(model)) {
-    case "openai":
-      return "Not configured yet — add an OpenAI key or sign in with ChatGPT (Settings → OpenAI) first.";
-    case "ollama":
-      return "Not configured yet — set an Ollama base URL / key and pick an Ollama model (Settings → Models).";
-    case "gemini":
-      return "Not configured yet — sign in to Google Antigravity (Settings → Google) to use Gemini models.";
-    case "zai":
-      return "Not configured yet — add a Z.AI API key in Settings → General to use GLM models.";
-    case "mimo":
-      return "Not configured yet — add a Xiaomi MiMo API key in Settings → Models to use MiMo models.";
-    case "opencode":
-      return "Not configured yet — OpenCode endpoint is unavailable.";
-    case "experiential":
-      return "Not configured yet — add an Experiential Labs gateway key in Settings → Models to use gateway models.";
-    default: {
-      // Name whichever provider the model resolves to, so a new declaration gets
-      // its own wording without an edit here.
-      const label = providerSpec(providerForModel(model))?.label ?? "provider";
-      return `Not configured yet — paste your ${label} API key first.`;
-    }
-  }
+  const provider = providerForModel(model);
+  return (
+    providerString(provider, "notConfigured") ??
+    `Not configured yet — paste your ${providerSpec(provider)?.label ?? "provider"} API key first.`
+  );
 }
 
 /** One pre-flight rejection of a turn start; `reason` is the terminal-card text,
@@ -4929,19 +4913,8 @@ export function turnStartRejection(
       };
     }
     const reason =
-      provider === "openai"
-        ? `No OpenAI credential for ${model} — add an OpenAI key or sign in with ChatGPT (Settings → OpenAI).`
-        : provider === "ollama"
-          ? `No Ollama endpoint configured for ${model} — set a base URL / key (Settings → Models → Ollama).`
-          : provider === "gemini"
-            ? "Not signed in to Google Antigravity — sign in from Settings to use Gemini models."
-            : provider === "zai"
-              ? `No Z.AI credential for ${model} — add a Z.AI key in Settings → Models.`
-              : provider === "mimo"
-                ? `No Xiaomi MiMo credential for ${model} — add a MiMo key in Settings → Models.`
-                : provider === "opencode"
-                  ? `No OpenCode configuration for ${model}.`
-                  : `No API key configured — paste your ${providerSpec(provider)?.label ?? "provider"} API key first.`;
+      providerString(provider, "noCredential", { model }) ??
+      `No API key configured — paste your ${providerSpec(provider)?.label ?? "provider"} API key first.`;
     return { kind: "credential-unavailable", outcome: "stopped", reason };
   }
   // Only vision-capable models accept image content parts — DeepSeek 400s

@@ -298,6 +298,7 @@ export interface ProviderSpec {
   billing: ProviderBillingSpec;
   wire: ProviderWireSpec;
   usage: ProviderUsageSpec;
+  strings: ProviderStringsSpec;
 }
 
 /** How a provider reports a plan-window percentage, if it reports one at all. */
@@ -322,6 +323,10 @@ export interface ProviderUsageSpec {
   /** Quota probe this provider exposes, or null when it publishes no plan window. */
   probe: ProviderProbeStrategy | null;
 }
+
+/** Provider-specific UI copy. Every key is optional: a missing key falls back to the
+ *  generic i18n string, so a declaration carries only the copy that names it. */
+export type ProviderStringsSpec = Record<string, string>;
 
 /** Environment and persisted-config accessors the endpoint/credential resolvers need. */
 export interface ProviderCredentialContext {
@@ -593,6 +598,13 @@ function parseUsage(value: unknown, where: string): ProviderUsageSpec {
   };
 }
 
+function parseStrings(value: unknown, where: string): ProviderStringsSpec {
+  const raw = record(value ?? {}, where);
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(raw)) out[key] = text(entry, `${where}.${key}`);
+  return out;
+}
+
 function parseWire(value: unknown, where: string): ProviderWireSpec {
   const raw = record(value ?? {}, where);
   return {
@@ -763,6 +775,7 @@ function parseProvider(value: unknown, source: string): ProviderSpec {
     billing: parseBilling(raw.billing, `${scope}: billing`),
     wire: parseWire(raw.wire, `${scope}: wire`),
     usage: parseUsage(raw.usage, `${scope}: usage`),
+    strings: parseStrings(raw.strings, `${scope}: strings`),
   };
 }
 
@@ -853,6 +866,19 @@ export const MODELS_DEV_SPECS: readonly ProviderSpec[] = PROVIDER_SPECS.filter(
 /** Catalog entry by its catalog id (e.g. `opencode`), or undefined when unknown. */
 export function providerSpec(id: string): ProviderSpec | undefined {
   return SPEC_BY_ID.get(id);
+}
+
+/** Declared UI copy with `{name}` placeholders filled from `vars`; an unmatched
+ *  placeholder stays literal. Undefined when the provider or key is undeclared, or
+ *  the declared value is empty, so the caller keeps its own generic wording. */
+export function providerString(
+  provider: string | ProviderSpec | undefined,
+  key: string,
+  vars: Record<string, string> = {},
+): string | undefined {
+  const raw = (typeof provider === "string" ? providerSpec(provider) : provider)?.strings[key];
+  if (!raw) return undefined;
+  return raw.replace(/\{(\w+)\}/g, (match, name: string) => vars[name] ?? match);
 }
 
 /** True when a provider declares this id: the tolerant membership check, without

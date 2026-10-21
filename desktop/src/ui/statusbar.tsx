@@ -10,6 +10,7 @@ import {
   ollamaUsageView,
   opencodeUsageView,
   providerSpec,
+  providerString,
   quotaWindowsSummary,
   zaiUsageView,
 } from "@reasonix/core-utils";
@@ -224,7 +225,6 @@ export function StatusBar({
   const mimoTab = spec?.wire.thinking === "mimo-top-level";
   const opencodeTab = auth === "opencode";
   const deepseekTab = spec?.errors.serverReport === "balance-probe";
-  const experientialTab = spec?.routing.checkedLast === true;
   const openaiTokenBilling = openaiTab && ep?.billingKind === "usd";
   const openaiQuotaBilling = openaiTab && !openaiTokenBilling;
   const ollamaTokenBilling = ollamaTab && ep?.billingKind === "usd";
@@ -264,24 +264,23 @@ export function StatusBar({
         : openaiAuth === "none"
           ? t("statusbar.authNone")
           : null;
+  // Declared copy with {name} placeholders filled; the two chips below both read it.
+  const specCopy = (key: string, vars?: Record<string, string>) => providerString(spec, key, vars);
+  const apiVars = { baseUrl: ep?.baseUrl ?? "", account: ep?.oauthAccount ?? "" };
   let apiTitle =
-    openaiAuth === "oauth"
-      ? t("statusbar.apiOpenaiOauth", {
-          baseUrl: ep?.baseUrl ?? "",
-          account: ep?.oauthAccount ?? "",
-        })
-      : openaiAuth === "apiKey"
-        ? t("statusbar.apiOpenaiKey", { baseUrl: ep?.baseUrl ?? "" })
-        : openaiAuth === "none"
-          ? t("statusbar.apiOpenaiNone", { baseUrl: ep?.baseUrl ?? "" })
-          : ollamaTab
-            ? t("statusbar.apiOllama", { baseUrl: ep?.baseUrl ?? "" })
-            : opencodeTab
-              ? `OpenCode · ${ep?.baseUrl ?? ""}`
-              : experientialTab
-                ? `Experiential · ${ep?.baseUrl ?? ""}`
-                : `API · ${settings?.baseUrl ?? "api.deepseek.com"}`;
-  if (authFailed) apiTitle += `\n${t("statusbar.oauthFailed", { message: oauthFlowError })}`;
+    specCopy(
+      openaiAuth === "oauth"
+        ? "apiOauth"
+        : openaiAuth === "apiKey"
+          ? "apiKey"
+          : openaiAuth === "none"
+            ? "apiNone"
+            : "apiBare",
+      apiVars,
+    ) ?? `API · ${settings?.baseUrl ?? "api.deepseek.com"}`;
+  if (authFailed) {
+    apiTitle += `\n${specCopy("oauthFailed", { message: oauthFlowError ?? "" }) ?? ""}`;
+  }
   const dotDanger = connState === "off" || authFailed;
   const dotWarn = !dotDanger && openaiAuth === "none";
   // OpenAI tabs swap the balance / $ display for the API-reported weekly
@@ -307,17 +306,21 @@ export function StatusBar({
   const ollamaKeyMissing = ollamaQuotaReason === "ollama-no-api-key";
   const ollamaQuotaTitle =
     ollamaQuotaData && ollamaWeekly
-      ? t("statusbar.ollamaQuotaTitle", {
-          left: Math.round(ollamaWeekly.remainingPct),
-          weeklyResets: ollamaWeekly.resetsAt ? formatReset(new Date(ollamaWeekly.resetsAt)) : "-",
-          session: ollamaSession ? Math.round(ollamaSession.remainingPct) : "-",
+      ? (specCopy("quotaTitle", {
+          left: String(Math.round(ollamaWeekly.remainingPct)),
+          weeklyResets: ollamaWeekly.resetsAt
+            ? formatReset(new Date(ollamaWeekly.resetsAt))
+            : "-",
+          session: ollamaSession ? String(Math.round(ollamaSession.remainingPct)) : "-",
           sessionResets: ollamaSession?.resetsAt
             ? formatReset(new Date(ollamaSession.resetsAt))
             : "-",
-        })
+        }) ?? t("statusbar.quotaTitle"))
       : ollamaQuotaData || (ollamaQuotaReason && !ollamaKeyMissing)
-        ? t("statusbar.ollamaNoDataUnavailable")
-        : t("statusbar.ollamaNoData");
+        ? (specCopy("quotaNoDataUnavailable") ??
+          specCopy("quotaNoData") ??
+          t("statusbar.quotaNoData"))
+        : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
   // Antigravity (Gemini Code Assist): plan + the active model's used fraction.
   // Rate-period visibility follows daemon-resolved provider/deployment metadata.
   // Model matching only selects a price row after Ollama has already been resolved.
@@ -342,13 +345,16 @@ export function StatusBar({
     agActive && agActive.usedFraction < 1 ? Math.round((1 - agActive.usedFraction) * 100) : null;
   const antigravityQuotaTitle =
     antigravityQuotaData && agActive
-      ? t("statusbar.antigravityQuotaTitle", {
-          left: agRemainingPct ?? 0,
+      ? (specCopy("quotaTitle", {
+          left: String(agRemainingPct ?? 0),
           plan:
-            antigravityQuotaData.plan?.name ?? antigravityQuotaData.plan?.tierId ?? "Antigravity",
+            antigravityQuotaData.plan?.name ??
+            antigravityQuotaData.plan?.tierId ??
+            specCopy("quotaPlanName") ??
+            "",
           resets: agActive.resetTime ? formatReset(new Date(agActive.resetTime)) : "-",
-        })
-      : t("statusbar.antigravityNoData");
+        }) ?? t("statusbar.quotaTitle"))
+      : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
   const antigravityQuotaTitleWithReason =
     !antigravityQuotaData && antigravityQuotaReason
       ? `${antigravityQuotaTitle}\n${t("statusbar.codexReason", { reason: antigravityQuotaReason })}`
@@ -359,20 +365,21 @@ export function StatusBar({
   const zaiFiveHour = zaiQuotaData?.fiveHour ?? null;
   const zaiWeekly = zaiQuotaData?.weekly ?? null;
   const zaiWindow = zaiFiveHour ?? zaiWeekly ?? null;
+  const zaiPlanName = zaiQuotaData?.plan ?? specCopy("quotaPlanName") ?? "";
   const zaiQuotaTitle =
     zaiQuotaData && (zaiFiveHour || zaiWeekly)
       ? zaiFiveHour && zaiWeekly
-        ? t("statusbar.zaiQuotaDualTitle", {
-            fiveHour: Math.round(zaiFiveHour.remainingPct),
-            weekly: Math.round(zaiWeekly.remainingPct),
+        ? (specCopy("quotaDualTitle", {
+            fiveHour: String(Math.round(zaiFiveHour.remainingPct)),
+            weekly: String(Math.round(zaiWeekly.remainingPct)),
             resets: zaiWeekly.resetsAt ? new Date(zaiWeekly.resetsAt).toLocaleString() : "-",
-            plan: zaiQuotaData.plan ?? "GLM Coding Plan",
-          })
-        : t("statusbar.zaiQuotaTitle", {
-            left: Math.round(zaiWindow!.remainingPct),
-            plan: zaiQuotaData.plan ?? "GLM Coding Plan",
-          })
-      : t("statusbar.zaiNoData");
+            plan: zaiPlanName,
+          }) ?? t("statusbar.quotaTitle"))
+        : (specCopy("quotaTitle", {
+            left: String(Math.round(zaiWindow!.remainingPct)),
+            plan: zaiPlanName,
+          }) ?? t("statusbar.quotaTitle"))
+      : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
   const zaiQuotaTitleWithReason =
     !zaiQuotaData && zaiQuotaReason
       ? `${zaiQuotaTitle}\n${t("statusbar.codexReason", { reason: zaiQuotaReason })}`
@@ -387,12 +394,12 @@ export function StatusBar({
   const opencodePrimaryWindow = opencodeRolling ?? opencodeWeekly ?? opencodeMonthly ?? null;
   const opencodeQuotaTitle =
     opencodeQuotaData && opencodePrimaryWindow
-      ? t("statusbar.opencodeQuotaTitle", {
-          rolling: opencodeRolling ? Math.round(opencodeRolling.remainingPct) : "-",
-          weekly: opencodeWeekly ? Math.round(opencodeWeekly.remainingPct) : "-",
-          monthly: opencodeMonthly ? Math.round(opencodeMonthly.remainingPct) : "-",
-        })
-      : t("statusbar.opencodeNoData");
+      ? (specCopy("quotaTitle", {
+          rolling: opencodeRolling ? String(Math.round(opencodeRolling.remainingPct)) : "-",
+          weekly: opencodeWeekly ? String(Math.round(opencodeWeekly.remainingPct)) : "-",
+          monthly: opencodeMonthly ? String(Math.round(opencodeMonthly.remainingPct)) : "-",
+        }) ?? t("statusbar.quotaTitle"))
+      : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
   const opencodeQuotaTitleWithReason =
     !opencodeQuotaData && opencodeQuotaReason
       ? `${opencodeQuotaTitle}\n${t("statusbar.codexReason", { reason: opencodeQuotaReason })}`
@@ -404,15 +411,19 @@ export function StatusBar({
       ? `${ollamaQuotaTitle}\n${t("statusbar.codexReason", { reason: ollamaQuotaReason })}`
       : ollamaQuotaTitle;
   const quotaTitle = quotaWeekly
-    ? t("statusbar.codexQuotaTitle", {
-        left: quotaLeftPct,
+    ? (specCopy("quotaTitle", {
+        left: String(quotaLeftPct),
         resets: quotaWeekly.resetsAt ? new Date(quotaWeekly.resetsAt).toLocaleString() : "-",
-        plan: quota?.plan ?? "ChatGPT",
-      }) +
+        plan: quota?.plan ?? specCopy("quotaPlanName") ?? "",
+      }) ?? t("statusbar.quotaTitle")) +
       (quotaFiveHour
-        ? `\n${t("statusbar.codexFiveHourTitle", { left: Math.round(quotaFiveHour.remainingPercent) })}`
+        ? `\n${
+            specCopy("quotaFiveHourTitle", {
+              left: String(Math.round(quotaFiveHour.remainingPercent)),
+            }) ?? ""
+          }`
         : "")
-    : t("statusbar.codexNoData");
+    : (specCopy("quotaNoData") ?? t("statusbar.quotaNoData"));
   // A failed fetch stays diagnosable: append the app-server reason to the tooltip.
   const quotaTitleWithReason =
     !showQuota && codexQuotaReason
@@ -442,7 +453,7 @@ export function StatusBar({
               ? opencodeUsageView(opencodeQuotaData)
               : null
             : mimoQuotaBilling
-              ? mimoUsageView(settings?.mimoQuota, t("statusbar.mimoPlan"))
+              ? mimoUsageView(settings?.mimoQuota, specCopy("quotaPlanFallback") ?? "")
               : null;
   const quotaBilling =
     openaiQuotaBilling ||
@@ -451,17 +462,9 @@ export function StatusBar({
     zaiQuotaBilling ||
     opencodeQuotaBilling ||
     mimoQuotaBilling;
-  const quotaChipLabel = openaiQuotaBilling
-    ? t("statusbar.codexQuota")
-    : ollamaQuotaBilling
-      ? t("statusbar.ollamaQuota")
-      : geminiTab
-        ? t("statusbar.antigravityQuota")
-        : zaiQuotaBilling
-          ? t("statusbar.zaiQuota")
-          : mimoQuotaBilling
-            ? t("statusbar.mimoQuota")
-            : t("statusbar.opencodeQuota");
+  // One chip serves every quota-billed provider, so its label, title and plan
+  // fallback are keyed on the declaration rather than on which tab is active.
+  const quotaChipLabel = specCopy("quotaLabel") ?? t("statusbar.quotaLabel");
   const quotaChipTitle = openaiQuotaBilling
     ? quotaTitleWithReason
     : ollamaQuotaBilling
@@ -471,7 +474,7 @@ export function StatusBar({
         : zaiQuotaBilling
           ? zaiQuotaTitleWithReason
           : mimoQuotaBilling
-            ? t("statusbar.mimoQuotaTitle")
+            ? (specCopy("quotaTitle") ?? t("statusbar.quotaTitle"))
             : opencodeQuotaTitleWithReason;
   const quotaChipRefreshing = openaiQuotaBilling
     ? codexQuotaRefreshing
@@ -495,17 +498,14 @@ export function StatusBar({
           : mimoQuotaBilling
             ? undefined
             : onRefreshOpencodeQuota;
+  const declaredPlanFallback = specCopy("quotaPlanFallback") ?? "";
   const quotaChipPlanFallback = openaiQuotaBilling
-    ? (quota?.plan ?? "ChatGPT")
+    ? (quota?.plan ?? declaredPlanFallback)
     : ollamaQuotaBilling
-      ? (ollamaPlan ?? "free")
-      : geminiTab
-        ? "Antigravity"
-        : zaiQuotaBilling
-          ? (zaiQuotaData?.plan ?? "GLM")
-          : mimoQuotaBilling
-            ? t("statusbar.mimoPlan")
-            : "Go";
+      ? (ollamaPlan ?? declaredPlanFallback)
+      : zaiQuotaBilling
+        ? (zaiQuotaData?.plan ?? declaredPlanFallback)
+        : declaredPlanFallback;
   // Rate-period timing uses the same shared schedule engine as telemetry billing.
   const [rateNow, setRateNow] = useState(() => new Date());
   useEffect(() => {
@@ -523,17 +523,11 @@ export function StatusBar({
       : rateMins >= 60
         ? `${Math.floor(rateMins / 60)}h ${rateMins % 60}m`
         : `${rateMins}m`;
-  const rateTitle = ollamaPeakPricing
-    ? offPeak
-      ? t("statusbar.ollamaOffPeakTitle", { when })
-      : t("statusbar.ollamaPeakTitle", { when })
-    : zaiTab
-      ? offPeak
-        ? t("statusbar.zaiOffPeakTitle", { when })
-        : t("statusbar.zaiPeakTitle", { when })
-      : offPeak
-        ? t("statusbar.offPeakTitle", { when })
-        : t("statusbar.peakTitle", { when });
+  // Each rate-scheduled provider declares its own peak and off-peak wording;
+  // the generic pair stays for a provider that declares neither.
+  const rateTitle =
+    (offPeak ? specCopy("offPeakTitle", { when }) : specCopy("peakTitle", { when })) ??
+    (offPeak ? t("statusbar.offPeakTitle", { when }) : t("statusbar.peakTitle", { when }));
   const [themeOpen, setThemeOpen] = useState(false);
   const themePopRef = useRef<HTMLDivElement | null>(null);
   const themeButtonRef = useRef<HTMLSpanElement | null>(null);
@@ -603,18 +597,8 @@ export function StatusBar({
           className="seg"
           title={
             activeQuotaView?.turnUsedPct != null
-              ? t(
-                  openaiQuotaBilling
-                    ? "statusbar.thisTurnQuotaTitle"
-                    : ollamaQuotaBilling
-                      ? "statusbar.ollamaTurnQuotaTitle"
-                      : geminiTab
-                        ? "statusbar.antigravityTurnQuotaTitle"
-                        : zaiQuotaBilling
-                          ? "statusbar.zaiTurnQuotaTitle"
-                          : "statusbar.opencodeTurnQuotaTitle",
-                  { pct: activeQuotaView.turnUsedPct.toFixed(1) },
-                )
+              ? (specCopy("quotaTurnTitle", { pct: activeQuotaView.turnUsedPct.toFixed(1) }) ??
+                t("statusbar.quotaTurnTitle", { pct: activeQuotaView.turnUsedPct.toFixed(1) }))
               : undefined
           }
         >
@@ -726,11 +710,11 @@ export function StatusBar({
           <span
             className="seg"
             style={{ cursor: "default" }}
-            title={t("statusbar.opencodeFreeTitle")}
+            title={specCopy("freeTitle") ?? t("statusbar.quotaTitle")}
           >
             <I.coin size={11} style={{ color: "var(--accent)" }} />
-            <span>{t("statusbar.opencodeFree")}</span>
-            <span className="v ok">{t("statusbar.opencodeFreeTier")}</span>
+            <span>{specCopy("freeLabel") ?? t("statusbar.quotaLabel")}</span>
+            <span className="v ok">{specCopy("freeTier") ?? ""}</span>
           </span>
         ) : (
           <span

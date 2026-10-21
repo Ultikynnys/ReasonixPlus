@@ -23,8 +23,8 @@ describe("generated id unions", () => {
   it("match their own id tuple", () => {
     expect(providerIdIsExact).toBe(true);
     expect(engineIdIsExact).toBe(true);
-    // The shipped tree declares both sets; the empty case is proven by the drill,
-    // which typechecks this file with the barrels rendered empty.
+    // The shipped tree declares both sets; with every barrel empty the Exact
+    // aliases above require `string` instead, which covers the empty case.
     expect(PROVIDER_IDS.length).toBeGreaterThan(0);
     expect(SEARCH_ENGINE_NAMES.length).toBeGreaterThan(0);
   });

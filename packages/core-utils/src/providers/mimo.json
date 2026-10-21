@@ -78,6 +78,22 @@
   "wire": { "thinking": "mimo-top-level", "reasoningEffort": false },
   "billing": { "kind": "quota" },
   "usage": { "probe": "mimo-console" },
+  "strings": {
+    "notConfigured": "Not configured yet — add a Xiaomi MiMo API key in Settings → Models to use MiMo models.",
+    "noCredential": "No Xiaomi MiMo credential for {model} — add a MiMo key in Settings → Models.",
+    "quotaLabel": "MiMo plan",
+    "quotaTitle": "Xiaomi MiMo subscription plan. MiMo bills through your plan; per-token usage isn't reported.",
+    "quotaPlanFallback": "Token Plan",
+    "panelSignInTitle": "Sign in with Xiaomi",
+    "panelSignIn": "Sign in",
+    "panelSignInHint": "Authorize Reasonix+ in your browser to provision a MiMo inference key automatically.",
+    "panelWaiting": "Waiting for authorization in the browser…",
+    "panelSignedIn": "Signed in to Xiaomi MiMo",
+    "panelKeyStored": "A MiMo inference key is stored",
+    "panelSignOut": "Sign out",
+    "panelCancel": "Cancel",
+    "panelFlowFailed": "MiMo sign-in failed"
+  },
   "errors": {
     "i18nPrefix": "mimo",
     "brands": ["MiMo"],

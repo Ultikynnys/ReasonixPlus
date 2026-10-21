@@ -56,6 +56,10 @@
     "excludeSpeech": false
   },
   "billing": { "kind": "usd" },
+  "strings": {
+    "notConfigured": "Not configured yet — add an Experiential Labs gateway key in Settings → Models to use gateway models.",
+    "apiBare": "Experiential · {baseUrl}"
+  },
   "errors": {
     "i18nPrefix": "experiential",
     "brands": ["Experiential"],

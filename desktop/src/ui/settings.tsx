@@ -7,6 +7,7 @@ import {
   messageOf,
   modelDisplayName,
   providerSpec,
+  providerString,
   searchSharedCredential,
 } from "@reasonix/core-utils";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -1420,6 +1421,17 @@ function ApiKeyRow({
   );
 }
 
+/** One provider's declared OAuth panel copy. Undefined unless the provider is
+ *  declared and declares a sign-in title, which is how deleting its JSON drops the
+ *  panel instead of rendering empty buttons. */
+function panelText(
+  providerId: string,
+): ((key: string, vars?: Record<string, string>) => string) | undefined {
+  const spec = providerSpec(providerId);
+  if (!providerString(spec, "panelSignInTitle")) return undefined;
+  return (key, vars) => providerString(spec, key, vars) ?? "";
+}
+
 export function OpenAISection({
   signedIn,
   account,
@@ -1438,36 +1450,38 @@ export function OpenAISection({
   onCancel: () => void;
   onSignOut: () => void;
 }) {
+  const copy = panelText("openai");
+  if (!copy) return null;
   return (
     <>
       {signedIn ? (
         <div className="setting-row">
           <div className="l">
-            <div className="n">{t("settings.openaiSignedIn")}</div>
+            <div className="n">{copy("panelSignedIn")}</div>
             <div className="h">
-              {account ? t("settings.openaiAccount", { account }) : t("settings.openaiTokenSet")}
+              {account ? copy("panelAccount", { account }) : copy("panelTokenSet")}
             </div>
           </div>
           <button type="button" className="btn" onClick={onSignOut} disabled={waiting}>
-            {t("settings.openaiSignOut")}
+            {copy("panelSignOut")}
           </button>
         </div>
       ) : (
         <div className="setting-row">
           <div className="l">
-            <div className="n">{t("settings.openaiSignInTitle")}</div>
+            <div className="n">{copy("panelSignInTitle")}</div>
             <div className="h">
-              {waiting ? t("settings.openaiWaiting") : t("settings.openaiSignInHint")}
+              {waiting ? copy("panelWaiting") : copy("panelSignInHint")}
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {waiting && (
               <button type="button" className="btn" onClick={onCancel}>
-                {t("settings.openaiCancel")}
+                {copy("panelCancel")}
               </button>
             )}
             <button type="button" className="btn primary" onClick={onBegin} disabled={waiting}>
-              {t("settings.openaiSignIn")}
+              {copy("panelSignIn")}
             </button>
           </div>
         </div>
@@ -1475,7 +1489,7 @@ export function OpenAISection({
       {flowError ? (
         <div className="setting-row" style={{ borderColor: "var(--danger)" }}>
           <div className="l">
-            <div className="n">{t("settings.openaiFlowFailed")}</div>
+            <div className="n">{copy("panelFlowFailed")}</div>
             <div className="h" style={{ color: "var(--danger)" }}>
               {flowError}
             </div>
@@ -1504,38 +1518,40 @@ export function AntigravitySection({
   onCancel: () => void;
   onSignOut: () => void;
 }) {
+  const copy = panelText("gemini");
+  if (!copy) return null;
   return (
     <>
       {signedIn ? (
         <div className="setting-row">
           <div className="l">
-            <div className="n">{t("settings.antigravitySignedIn")}</div>
+            <div className="n">{copy("panelSignedIn")}</div>
             <div className="h">
               {account
-                ? t("settings.antigravityAccount", { account })
-                : t("settings.antigravityTokenSet")}
+                ? copy("panelAccount", { account })
+                : copy("panelTokenSet")}
             </div>
           </div>
           <button type="button" className="btn" onClick={onSignOut} disabled={waiting}>
-            {t("settings.antigravitySignOut")}
+            {copy("panelSignOut")}
           </button>
         </div>
       ) : (
         <div className="setting-row">
           <div className="l">
-            <div className="n">{t("settings.antigravitySignInTitle")}</div>
+            <div className="n">{copy("panelSignInTitle")}</div>
             <div className="h">
-              {waiting ? t("settings.antigravityWaiting") : t("settings.antigravitySignInHint")}
+              {waiting ? copy("panelWaiting") : copy("panelSignInHint")}
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {waiting && (
               <button type="button" className="btn" onClick={onCancel}>
-                {t("settings.antigravityCancel")}
+                {copy("panelCancel")}
               </button>
             )}
             <button type="button" className="btn primary" onClick={onBegin} disabled={waiting}>
-              {t("settings.antigravitySignIn")}
+              {copy("panelSignIn")}
             </button>
           </div>
         </div>
@@ -1543,7 +1559,7 @@ export function AntigravitySection({
       {flowError ? (
         <div className="setting-row" style={{ borderColor: "var(--danger)" }}>
           <div className="l">
-            <div className="n">{t("settings.antigravityFlowFailed")}</div>
+            <div className="n">{copy("panelFlowFailed")}</div>
             <div className="h" style={{ color: "var(--danger)" }}>
               {flowError}
             </div>
@@ -1569,34 +1585,36 @@ export function MiMoSection({
   onCancel: () => void;
   onSignOut: () => void;
 }) {
+  const copy = panelText("mimo");
+  if (!copy) return null;
   return (
     <>
       {signedIn ? (
         <div className="setting-row">
           <div className="l">
-            <div className="n">{t("settings.mimoSignedIn")}</div>
-            <div className="h">{t("settings.mimoKeyStored")}</div>
+            <div className="n">{copy("panelSignedIn")}</div>
+            <div className="h">{copy("panelKeyStored")}</div>
           </div>
           <button type="button" className="btn" onClick={onSignOut} disabled={waiting}>
-            {t("settings.mimoSignOut")}
+            {copy("panelSignOut")}
           </button>
         </div>
       ) : (
         <div className="setting-row">
           <div className="l">
-            <div className="n">{t("settings.mimoSignInTitle")}</div>
+            <div className="n">{copy("panelSignInTitle")}</div>
             <div className="h">
-              {waiting ? t("settings.mimoWaiting") : t("settings.mimoSignInHint")}
+              {waiting ? copy("panelWaiting") : copy("panelSignInHint")}
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {waiting && (
               <button type="button" className="btn" onClick={onCancel}>
-                {t("settings.mimoCancel")}
+                {copy("panelCancel")}
               </button>
             )}
             <button type="button" className="btn primary" onClick={onBegin} disabled={waiting}>
-              {t("settings.mimoSignIn")}
+              {copy("panelSignIn")}
             </button>
           </div>
         </div>
@@ -1604,7 +1622,7 @@ export function MiMoSection({
       {flowError ? (
         <div className="setting-row" style={{ borderColor: "var(--danger)" }}>
           <div className="l">
-            <div className="n">{t("settings.mimoFlowFailed")}</div>
+            <div className="n">{copy("panelFlowFailed")}</div>
             <div className="h" style={{ color: "var(--danger)" }}>
               {flowError}
             </div>
@@ -1636,40 +1654,42 @@ export function OpencodeSection({
   onCancel: () => void;
   onSignOut: () => void;
 }) {
+  const copy = panelText("opencode");
+  if (!copy) return null;
   return (
     <>
       {signedIn ? (
         <div className="setting-row">
           <div className="l">
-            <div className="n">{t("settings.opencodeSignedIn")}</div>
+            <div className="n">{copy("panelSignedIn")}</div>
             <div className="h">
               {account
                 ? orgName
-                  ? t("settings.opencodeAccountOrg", { account, org: orgName })
-                  : t("settings.opencodeAccount", { account })
-                : t("settings.opencodeTokenSet")}
+                  ? copy("panelAccountOrg", { account, org: orgName })
+                  : copy("panelAccount", { account })
+                : copy("panelTokenSet")}
             </div>
           </div>
           <button type="button" className="btn" onClick={onSignOut} disabled={waiting}>
-            {t("settings.opencodeSignOut")}
+            {copy("panelSignOut")}
           </button>
         </div>
       ) : (
         <div className="setting-row">
           <div className="l">
-            <div className="n">{t("settings.opencodeSignInTitle")}</div>
+            <div className="n">{copy("panelSignInTitle")}</div>
             <div className="h">
-              {waiting ? t("settings.opencodeWaiting") : t("settings.opencodeSignInHint")}
+              {waiting ? copy("panelWaiting") : copy("panelSignInHint")}
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {waiting && (
               <button type="button" className="btn" onClick={onCancel}>
-                {t("settings.opencodeCancel")}
+                {copy("panelCancel")}
               </button>
             )}
             <button type="button" className="btn primary" onClick={onBegin} disabled={waiting}>
-              {t("settings.opencodeSignIn")}
+              {copy("panelSignIn")}
             </button>
           </div>
         </div>
@@ -1677,7 +1697,7 @@ export function OpencodeSection({
       {flowError ? (
         <div className="setting-row" style={{ borderColor: "var(--danger)" }}>
           <div className="l">
-            <div className="n">{t("settings.opencodeFlowFailed")}</div>
+            <div className="n">{copy("panelFlowFailed")}</div>
             <div className="h" style={{ color: "var(--danger)" }}>
               {flowError}
             </div>
@@ -2284,11 +2304,12 @@ function PageModels({
               onSignOut={onOpencodeSignOut}
             />
             <ProviderRefreshRow
-              label={t("settings.opencodeModels")}
+              label={providerString("opencode", "modelsLabel") ?? ""}
               hint={
                 opencodeModelsError
-                  ? t("composer.modelOpencodeError", { error: opencodeModelsError })
-                  : t("settings.opencodeModelsHint")
+                  ? (providerString("opencode", "modelsError", { error: opencodeModelsError }) ??
+                    t("composer.modelError", { error: opencodeModelsError }))
+                  : (providerString("opencode", "modelsHint") ?? "")
               }
               onRefresh={onRefreshOpencodeModels}
             />
@@ -2311,7 +2332,8 @@ function PageModels({
               label={t("settings.ollamaModels")}
               hint={
                 ollamaModelsError
-                  ? t("settings.ollamaModelsError", { error: ollamaModelsError })
+                  ? (providerString("ollama", "modelsError", { error: ollamaModelsError }) ??
+                    t("composer.modelError", { error: ollamaModelsError }))
                   : t("settings.ollamaModelsHint")
               }
               onRefresh={onRefreshOllamaModels}

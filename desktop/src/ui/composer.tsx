@@ -3,6 +3,7 @@ import {
   clampReasoningEffort,
   messageOf,
   modelDisplayName,
+  providerString,
 } from "@reasonix/core-utils";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -1083,7 +1084,8 @@ export function ModelList({
               refresh: onRefreshOpencodeModels ? () => onRefreshOpencodeModels(true) : undefined,
               refreshTitle: t("settings.modelsRefresh"),
               error: opencodeModelsError
-                ? t("composer.modelOpencodeError", { error: opencodeModelsError })
+                ? (providerString("opencode", "modelsError", { error: opencodeModelsError }) ??
+                  t("composer.modelError", { error: opencodeModelsError }))
                 : undefined,
             }
           : {}),
@@ -1092,7 +1094,8 @@ export function ModelList({
               refresh: onRefreshAntigravityModels,
               refreshTitle: t("settings.modelsRefresh"),
               error: antigravityModelsError
-                ? t("composer.modelAntigravityError", { error: antigravityModelsError })
+                ? (providerString("gemini", "modelsError", { error: antigravityModelsError }) ??
+                  t("composer.modelError", { error: antigravityModelsError }))
                 : undefined,
             }
           : {}),
@@ -1106,7 +1109,9 @@ export function ModelList({
             models: [],
             refresh: onRefreshAntigravityModels,
             refreshTitle: t("settings.modelsRefresh"),
-            error: t("composer.modelAntigravityError", { error: antigravityModelsError }),
+            error:
+              providerString("gemini", "modelsError", { error: antigravityModelsError }) ??
+              t("composer.modelError", { error: antigravityModelsError }),
           },
         ]
       : []),
@@ -1121,7 +1126,8 @@ export function ModelList({
             refreshTitle: t("settings.modelsRefresh"),
             error:
               ollamaModelsError && !ollamaGroup && activeModel.startsWith("ollama/")
-                ? t("composer.modelOllamaError", { error: ollamaModelsError })
+                ? (providerString("ollama", "modelsError", { error: ollamaModelsError }) ??
+                  t("composer.modelError", { error: ollamaModelsError }))
                 : undefined,
             note:
               ollamaHiddenCount && ollamaHiddenCount > 0

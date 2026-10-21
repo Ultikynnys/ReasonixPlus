@@ -88,6 +88,10 @@
       "deepseek-reasoner": { "inputCacheHit": 0.003, "inputCacheMiss": 0.15, "output": 0.6 }
     }
   },
+  "strings": {
+    "offPeakTitle": "Off-peak: half of peak rates · Peak hours 01:00–04:00 & 06:00–10:00 UTC (weekdays), off-peak all day on weekends · changes in {when}",
+    "peakTitle": "Peak: double the off-peak rate · Peak hours 01:00–04:00 & 06:00–10:00 UTC (weekdays), off-peak all day on weekends · changes in {when}"
+  },
   "errors": {
     "i18nPrefix": "deepseek",
     "brands": ["DeepSeek"],

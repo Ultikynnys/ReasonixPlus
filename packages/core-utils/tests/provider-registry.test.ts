@@ -24,6 +24,7 @@ import {
   providerReasoningEfforts,
   providerSettingSpec,
   providerSpec,
+  providerString,
   providerUsable,
   providerVisionSpec,
   requireProviderSpec,
@@ -402,5 +403,33 @@ describe("declared dispatches", () => {
     expect(providerVisionSpec("nope" as ProviderID)).toEqual({});
     expect(() => requireProviderSpec("nope")).toThrow(/no entry for "nope"/);
     expect(() => specForProvider("nope" as ProviderID)).toThrow(/no routable entry for "nope"/);
+  });
+});
+
+describe("providerString", () => {
+  const spec = { strings: { greeting: "Hi {name}", blank: "" } } as unknown as ProviderSpec;
+
+  it("fills declared placeholders", () => {
+    expect(providerString(spec, "greeting", { name: "Sam" })).toBe("Hi Sam");
+    expect(providerString("zai", "quotaLabel")).toBe("GLM usage");
+  });
+
+  it("keeps an unmatched placeholder literal instead of printing undefined", () => {
+    expect(providerString(spec, "greeting", { other: "x" })).toBe("Hi {name}");
+  });
+
+  it("treats an undeclared provider, key or empty value as absent", () => {
+    expect(providerString(spec, "missing")).toBeUndefined();
+    expect(providerString(spec, "blank")).toBeUndefined();
+    expect(providerString("no-such-provider", "greeting")).toBeUndefined();
+    expect(providerString(undefined, "greeting")).toBeUndefined();
+  });
+
+  it("resolves an id and an already-resolved spec to the same copy", () => {
+    const vars = { when: "3h" };
+    expect(providerString("deepseek", "offPeakTitle", vars)).toBe(
+      providerString(providerSpec("deepseek"), "offPeakTitle", vars),
+    );
+    expect(providerString("deepseek", "offPeakTitle", vars)).toContain("changes in 3h");
   });
 });

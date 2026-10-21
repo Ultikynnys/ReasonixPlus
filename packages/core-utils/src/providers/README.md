@@ -5,8 +5,8 @@ One JSON file per model provider. The file name must equal the provider's `id`
 and the test suite.
 
 Nothing about a provider is hardcoded elsewhere: catalogs, endpoints, credential
-names, setup gating, routing precedence, discovery and client transport all come
-from these files.
+names, setup gating, routing precedence, discovery, client transport and the copy
+that names the provider all come from these files.
 
 ## Adding a provider
 
@@ -14,7 +14,9 @@ from these files.
 2. Run `npm run providers:sync`.
 3. Run `npm test`.
 
-That is the whole flow. `providers:sync` rewrites
+That is the whole flow, with one rule: copy that names the provider goes in the
+declaration's `strings` map, never into `en.json` (see Provider copy below).
+`providers:sync` rewrites
 `../providers.generated.ts`, which imports every file in this directory and
 derives the `ProviderID` union from each document's `providerId`. A provider with
 `"providerId": null` is catalog-only (it appears in pickers but never routes a
@@ -26,10 +28,70 @@ If you skip step 2, `tests/provider-files.test.ts` fails and tells you to run it
 
 1. Delete `providers/<id>.json`.
 2. Run `npm run providers:sync`.
-3. Run `npm test` and fix whatever referenced the removed router.
+3. Run `npm test`.
 
-Its id leaves the union with the file, so any code that still branches on the
-removed provider fails to compile instead of silently going dead.
+The file is the whole provider: catalog, endpoint, credentials, settings fields and
+copy leave with it, and its card, sign-in panel and status-bar chips disappear
+because each renders from a declaration it can no longer find. Nothing needs
+pruning from `en.json`, because provider copy never lived there.
+
+Its id also leaves the `ProviderID` union, so daemon code that still compares
+against the removed id fails to compile. Treat that failure as the instruction:
+ask the declaration (auth strategy, wire format, declared endpoint) instead of
+comparing ids, and the code stops caring which providers exist.
+
+## Declarations are optional
+
+Nothing at module load requires a file to exist: `providerSpec` returns
+`undefined` for an unknown id, `providerDefaultEndpoint` returns `undefined`, and
+the generated barrels fall back to `string` when a directory is empty (the
+`extends [never]` aliases). Parking every JSON file and re-running
+`providers:sync` therefore still typechecks core, the daemon and the desktop:
+every provider card, sign-in panel and status-bar chip is gated on a resolved
+spec rather than on a hardcoded list.
+
+## Provider copy
+
+Every user-visible sentence that names a provider lives in that provider's
+`strings` map. The test is mechanical: if the sentence would have to change when a
+different provider is active, it belongs in the declaration; if it reads the same
+for everyone ("Cancel", "Couldn't fetch models: {error}"), it stays in `en.json`
+as the generic fallback.
+
+```json
+"strings": {
+  "notConfigured": "Not configured yet — add a Z.AI API key in Settings → General to use GLM models.",
+  "noCredential": "No Z.AI credential for {model} — add a Z.AI key in Settings → Models.",
+  "quotaLabel": "GLM usage",
+  "quotaTitle": "GLM Coding Plan {plan} · {left}% left · click to refresh"
+}
+```
+
+Values are plain strings with optional `{placeholder}` slots, filled at the call
+site: `{model}`, `{error}`, `{baseUrl}`, `{account}`, `{org}`, `{message}`,
+`{when}`, `{left}`, `{resets}`, `{weeklyResets}`, `{session}`, `{sessionResets}`,
+`{plan}`, `{fiveHour}`, `{weekly}`, `{rolling}`, `{monthly}` and `{pct}`. An
+unmatched placeholder stays literal. Every key is optional: an undeclared key
+returns `undefined`, so the call site keeps its generic wording and a new provider
+can adopt one sentence at a time.
+
+| Key family | Where it renders |
+| --- | --- |
+| `notConfigured`, `noCredential` | Setup gate and turn-start rejection |
+| `apiOauth`, `apiKey`, `apiNone`, `apiBare`, `oauthFailed` | Status-bar API chip |
+| `quotaLabel`, `quotaTitle`, `quotaDualTitle`, `quotaFiveHourTitle`, `quotaNoData`, `quotaNoDataUnavailable`, `quotaTurnTitle`, `quotaPlanName`, `quotaPlanFallback` | Status-bar quota chip |
+| `offPeakTitle`, `peakTitle` | Rate-period chip tooltip |
+| `freeLabel`, `freeTier`, `freeTitle` | OpenCode free-tier chip |
+| `panelSignInTitle`, `panelSignIn`, `panelSignInHint`, `panelWaiting`, `panelSignedIn`, `panelAccount`, `panelAccountOrg`, `panelTokenSet`, `panelKeyStored`, `panelSignOut`, `panelCancel`, `panelFlowFailed` | OAuth sign-in panel |
+| `modelsLabel`, `modelsHint`, `modelsError` | Model-refresh row and its error line |
+
+The single reader is `providerString` in `provider-registry.ts`: it takes a
+provider id or an already-resolved spec, fills the placeholders, and returns
+`undefined` when the provider, the key or the value is missing. The status bar
+binds it to the spec it already resolved, the daemon calls it with an id, and
+`panelText` in `settings.tsx` wraps it to gate the sign-in panel. Settings fields
+carry their own `label`, `hint` and `placeholder` (see Settings); this map is for
+everything that is not a form field.
 
 ## Why a generated file at all
 
@@ -65,11 +127,11 @@ or a provider never means editing TypeScript.
 ```json
 "settings": [
   { "key": "apiKey", "kind": "secret", "env": ["SYNTHETIC_API_KEY"],
-    "configKey": "syntheticApiKey", "labelKey": "settings.webSearchApiKey.synthetic",
+    "configKey": "syntheticApiKey", "label": "Synthetic API key",
     "signupUrl": "https://synthetic.new/billing/" },
   { "key": "baseUrl", "kind": "url", "env": ["SYNTHETIC_BASE_URL"],
-    "configKey": "syntheticBaseUrl", "labelKey": "settings.syntheticBaseUrl",
-    "hintKey": "settings.syntheticBaseUrlHint" }
+    "configKey": "syntheticBaseUrl", "label": "Synthetic base URL",
+    "hint": "OpenAI-compatible endpoint override. Empty uses the declared default." }
 ]
 ```
 
@@ -79,7 +141,7 @@ or a provider never means editing TypeScript.
 | `kind` | `secret` renders a key field; `url` is an environment-only override and is never a form field |
 | `env` | Environment variables that override the value, highest priority first |
 | `configKey` | Config field the value persists to; null means environment only |
-| `labelKey`, `hintKey` | i18n keys for the field label and hint |
+| `label`, `hint` | Field label and hint text, inline in the declaration |
 | `placeholder` | Placeholder text; omit to use the provider's default endpoint |
 | `signupUrl` | Where to obtain a key, rendered as a link |
 
@@ -125,6 +187,7 @@ Objects:
 | `routing` | `staticCatalog`, `discoveredCatalog`, `checkedLast`, `foreignCatalog`, `modelScheme` | How a bare model id reaches this provider |
 | `discovery` | `strategy`, `listField`, `idField`, `excludeSpeech` | Where the live catalog comes from and how to read it |
 | `client` | `auth`, `transport`, `allowMissingKey` | Per-request credentials and wire format |
+| `strings` | map of strings | Provider-named UI copy, keys listed under Provider copy |
 | `vision` | `models`, `patterns`, `predicate`, `fromProvider`, `stripSchemeAndTag`, `refreshable` | Id list, regexes, inherited catalog, or a catalog a sync may replace |
 
 Values are validated at load: an unknown strategy, a malformed URL table, a bad

@@ -69,6 +69,20 @@
     }
   },
   "usage": { "probe": "ollama-balance" },
+  "strings": {
+    "notConfigured": "Not configured yet — set an Ollama base URL / key and pick an Ollama model (Settings → Models).",
+    "noCredential": "No Ollama endpoint configured for {model} — set a base URL / key (Settings → Models → Ollama).",
+    "apiBare": "Ollama · {baseUrl}",
+    "quotaLabel": "plan usage",
+    "quotaTitle": "Weekly plan usage {left}% left (resets in {weeklyResets}) · session {session}% left (resets in {sessionResets}) · click to refresh",
+    "quotaNoData": "Ollama usage · no data: set an API key in Settings → Models to see plan usage · click to retry",
+    "quotaNoDataUnavailable": "Ollama usage · no data: an API key is set · click to retry",
+    "quotaTurnTitle": "This turn used {pct}% of the session usage",
+    "quotaPlanFallback": "free",
+    "offPeakTitle": "Ollama Cloud off-peak: half of peak rates · Peak hours 12:00–18:00 UTC (weekdays), off-peak all day on weekends · changes in {when}",
+    "peakTitle": "Ollama Cloud peak: double the off-peak rate · Peak hours 12:00–18:00 UTC (weekdays), off-peak all day on weekends · changes in {when}",
+    "modelsError": "Couldn't fetch Ollama models: {error}"
+  },
   "errors": {
     "i18nPrefix": "ollama",
     "brands": ["Ollama"],
