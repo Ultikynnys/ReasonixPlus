@@ -136,6 +136,7 @@ export type { ProviderID } from "./reasoning-efforts.js";
 export {
   FOREIGN_CATALOG_SPECS,
   MODELS_DEV_SPECS,
+  PROVIDER_BALANCE_SHAPES,
   PROVIDER_SPECS,
   ROUTABLE_PROVIDER_SPECS,
   isLocalBaseUrl,
@@ -165,6 +166,8 @@ export {
 } from "./provider-registry.js";
 export type {
   ProviderAuthStrategy,
+  ProviderBalanceShape,
+  ProviderBalanceSpec,
   ProviderBillingKind,
   ProviderBillingSpec,
   ProviderClientSpec,

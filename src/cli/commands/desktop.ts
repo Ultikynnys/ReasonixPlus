@@ -2470,19 +2470,21 @@ async function emitBalance(tab: Tab): Promise<void> {
   }
   // Only a provider that declares a balance endpoint has one to read; every other
   // tab shows the measured $ cost instead of a chip that would sit empty.
-  const balancePath = providerSpec(providerForModel(tab.currentModel))?.billing.balancePath ?? null;
-  if (!balancePath) {
+  const balance = providerSpec(providerForModel(tab.currentModel))?.billing.balance ?? null;
+  if (!balance) {
     emitTabDiagnostic(tab, "balance.skipped", { reason: "no-balance-endpoint" });
     return;
   }
   emitTabDiagnostic(tab, "balance.fetch.started");
-  const bal = await tab.runtime.loop.client.getBalance({ path: balancePath }).catch((err) => {
-    emitDiagnosticError("balance.fetch.failed", err, {
-      tabId: tab.id,
-      details: tabDiagnosticState(tab),
+  const bal = await tab.runtime.loop.client
+    .getBalance({ url: balance.url, shape: balance.shape })
+    .catch((err) => {
+      emitDiagnosticError("balance.fetch.failed", err, {
+        tabId: tab.id,
+        details: tabDiagnosticState(tab),
+      });
+      return null;
     });
-    return null;
-  });
   if (!bal) return;
   const primary = pickPrimaryBalance(bal.balance_infos);
   if (!primary) {

@@ -354,29 +354,64 @@ describe("DeepSeekClient ollama provider (keyless + prefix strip)", () => {
 });
 
 describe("DeepSeekClient.getBalance", () => {
-  it("reads the path the provider declares, and DeepSeek's by default", async () => {
-    const urls: string[] = [];
+  function balanceClient(payloads: unknown[], urls: string[]) {
+    let call = 0;
     const fetch = vi.fn(async (input) => {
       urls.push(String(input));
-      return new Response(JSON.stringify({ is_available: true, balance_infos: [] }), {
+      return new Response(JSON.stringify(payloads[Math.min(call++, payloads.length - 1)]), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
     }) as unknown as typeof fetch;
-    const client = new DeepSeekClient({
-      baseUrl: "https://api.experientiallabs.ai/v1",
-      apiKey: "sk-test",
-      fetch,
-    });
+    return new DeepSeekClient({ baseUrl: "https://api.deepseek.com", apiKey: "sk-test", fetch });
+  }
 
-    // A gateway that publishes its wallet elsewhere declares the path; the client
-    // appends it to the endpoint instead of assuming DeepSeek's route.
-    expect(await client.getBalance({ path: "/wallet/balance" })).toEqual({
+  it("reads a declared path off the endpoint, and DeepSeek's by default", async () => {
+    const urls: string[] = [];
+    const client = balanceClient([{ is_available: true, balance_infos: [] }], urls);
+
+    expect(await client.getBalance({ url: "/wallet/balance" })).toEqual({
       is_available: true,
       balance_infos: [],
     });
-    expect(urls[0]).toBe("https://api.experientiallabs.ai/v1/wallet/balance");
+    expect(urls[0]).toBe("https://api.deepseek.com/wallet/balance");
     await client.getBalance();
-    expect(urls[1]).toBe("https://api.experientiallabs.ai/v1/user/balance");
+    expect(urls[1]).toBe("https://api.deepseek.com/user/balance");
+  });
+
+  it("uses an absolute URL when the wallet lives on another route", async () => {
+    const urls: string[] = [];
+    const client = balanceClient([{ data: { total_credits: 25, total_usage: 4.5 } }], urls);
+
+    const balance = await client.getBalance({
+      url: "https://api.experientiallabs.ai/api/v1/credits",
+      shape: "credits-usage",
+    });
+    // Not appended to the /v1 endpoint: the route is on the bare host.
+    expect(urls[0]).toBe("https://api.experientiallabs.ai/api/v1/credits");
+    // A credits ledger reports what was granted and what was spent; the balance is
+    // the difference, presented as the one wallet shape every caller already reads.
+    expect(balance).toEqual({
+      is_available: true,
+      balance_infos: [{ currency: "USD", total_balance: "20.5" }],
+    });
+  });
+
+  it("reports an exhausted credits ledger as unavailable", async () => {
+    const client = balanceClient([{ data: { total_credits: 5, total_usage: 5 } }], []);
+    expect(
+      await client.getBalance({
+        url: "https://api.experientiallabs.ai/api/v1/credits",
+        shape: "credits-usage",
+      }),
+    ).toEqual({ is_available: false, balance_infos: [{ currency: "USD", total_balance: "0" }] });
+  });
+
+  it("returns null for a reply that does not match the declared shape", async () => {
+    const urls: string[] = [];
+    const malformed = balanceClient([{ is_available: true, balance_infos: [] }], urls);
+    expect(await malformed.getBalance({ url: "/x", shape: "credits-usage" })).toBeNull();
+    const missing = balanceClient([{ data: {} }], urls);
+    expect(await missing.getBalance({ url: "/x", shape: "credits-usage" })).toBeNull();
   });
 });

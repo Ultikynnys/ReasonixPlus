@@ -154,9 +154,19 @@ describe("providers.json", () => {
   it("declares a balance endpoint only where one exists", () => {
     // The ribbon reads this to decide whether a wallet chip can ever be filled;
     // a provider without one shows measured cost instead of an empty chip.
-    expect(requireProviderSpec("deepseek").billing.balancePath).toBe("/user/balance");
-    expect(requireProviderSpec("experiential").billing.balancePath).toBeNull();
-    expect(PROVIDER_SPECS.filter((spec) => spec.billing.balancePath !== null)).toHaveLength(1);
+    expect(requireProviderSpec("deepseek").billing.balance).toEqual({
+      url: "/user/balance",
+      shape: "balance-infos",
+    });
+    // The gateway's credits ledger lives on another route of its host, so the
+    // declaration carries an absolute URL and the shape that reply speaks.
+    expect(requireProviderSpec("experiential").billing.balance).toEqual({
+      url: "https://api.experientiallabs.ai/api/v1/credits",
+      shape: "credits-usage",
+    });
+    expect(requireProviderSpec("synthetic").billing.balance).toBeNull();
+    const declared = PROVIDER_SPECS.filter((spec) => spec.billing.balance !== null);
+    expect(declared.map((spec) => spec.id).sort()).toEqual(["deepseek", "experiential"]);
   });
 
   it("orders bare-id precedence exactly as declared", () => {

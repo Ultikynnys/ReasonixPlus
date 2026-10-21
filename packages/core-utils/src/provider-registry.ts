@@ -198,15 +198,32 @@ export interface ProviderModelRate {
   output: number;
 }
 
+/** Response shapes an account-balance endpoint speaks. `balance-infos` is DeepSeek's
+ *  `{balance_infos: [...]}`; `credits-usage` is a `{data: {total_credits,
+ *  total_usage}}` credits ledger, whose balance is the difference. */
+export type ProviderBalanceShape = "balance-infos" | "credits-usage";
+
+export const PROVIDER_BALANCE_SHAPES: ReadonlySet<string> = new Set([
+  "balance-infos",
+  "credits-usage",
+]);
+
+/** Where a provider publishes the account balance, and how to read the reply. */
+export interface ProviderBalanceSpec {
+  /** Path relative to the provider endpoint, or an absolute URL when the wallet
+   *  lives on another route of the same host (`/api/v1/credits` vs `/v1`). */
+  url: string;
+  shape: ProviderBalanceShape;
+}
+
 /** How a provider prices and reports usage, all declared rather than inferred. */
 export interface ProviderBillingSpec {
   kind: ProviderBillingKind;
   /** Published peak/off-peak windows; null when the rate never changes. */
   schedule: RateSchedule | null;
-  /** Path, relative to the endpoint, that publishes the account balance. Null
-   *  means it publishes none, so the ribbon shows measured cost only instead of
-   *  a chip it could never fill. */
-  balancePath: string | null;
+  /** Where the account balance is published; null means nowhere, so the ribbon
+   *  shows measured cost only instead of a chip it could never fill. */
+  balance: ProviderBalanceSpec | null;
   /** USD per 1M tokens at the base rate, keyed by wire model id. */
   pricing: Readonly<Record<string, ProviderModelRate>>;
 }
@@ -674,9 +691,21 @@ function parseBilling(value: unknown, where: string): ProviderBillingSpec {
   return {
     kind: choice<ProviderBillingKind>(raw.kind ?? "quota", PROVIDER_BILLING_KINDS, `${where}.kind`),
     schedule: parseRateSchedule(raw.schedule, `${where}.schedule`),
-    balancePath: nullableText(raw.balancePath, `${where}.balancePath`),
+    balance: parseBalance(raw.balance, `${where}.balance`),
     pricing: parsePricing(raw.pricing, `${where}.pricing`),
   };
+}
+
+function parseBalance(value: unknown, where: string): ProviderBalanceSpec | null {
+  if (value === undefined || value === null) return null;
+  const raw = record(value, where);
+  const url = text(raw.url, `${where}.url`);
+  // A relative path rides the endpoint; an absolute URL must stay on https, since
+  // the wallet is fetched with the provider's bearer key.
+  if (!url.startsWith("/") && !/^https:\/\//.test(url)) {
+    fail(`${where}.url`, "expected a /path or an https URL");
+  }
+  return { url, shape: choice<ProviderBalanceShape>(raw.shape, PROVIDER_BALANCE_SHAPES, `${where}.shape`) };
 }
 
 function parseClient(value: unknown, where: string): ProviderClientSpec {

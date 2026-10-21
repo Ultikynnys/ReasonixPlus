@@ -67,7 +67,7 @@ describe("resolveRibbonFunds", () => {
 
   it("shows the wallet only when the provider publishes a balance", () => {
     const priced = { "future-1": { inputCacheHit: 0.1, inputCacheMiss: 0.2, output: 0.3 } };
-    const wallet = specOf({ billing: { kind: "usd", balancePath: "/wallet", pricing: priced } });
+    const wallet = specOf({ billing: { kind: "usd", balance: { url: "/wallet", shape: "balance-infos" }, pricing: priced } });
     expect(resolveRibbonFunds(wallet, { billingKind: "usd" })).toEqual({
       chip: "wallet",
       costFigures: true,

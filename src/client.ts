@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   DEFAULT_PROVIDER_WIRE,
+  type ProviderBalanceShape,
   messageOf,
   providerSpec,
   sleep,
@@ -458,6 +459,30 @@ export interface BalanceInfo {
 export interface UserBalance {
   is_available: boolean;
   balance_infos: BalanceInfo[];
+}
+
+/** Reads a provider's balance reply in the shape it declares. A `credits-usage`
+ *  ledger carries what was granted and what was spent, so its balance is the
+ *  difference — reported as one USD wallet so every caller sees one model. */
+export function normalizeBalance(
+  payload: unknown,
+  shape: ProviderBalanceShape,
+): UserBalance | null {
+  const body = payload as Record<string, unknown> | null;
+  if (!body) return null;
+  if (shape === "balance-infos") {
+    if (!Array.isArray(body.balance_infos)) return null;
+    return body as unknown as UserBalance;
+  }
+  const data = body.data as Record<string, unknown> | undefined;
+  const granted = Number(data?.total_credits);
+  const spent = Number(data?.total_usage ?? 0);
+  if (!Number.isFinite(granted) || !Number.isFinite(spent)) return null;
+  const total = granted - spent;
+  return {
+    is_available: total > 0,
+    balance_infos: [{ currency: "USD", total_balance: String(total) }],
+  };
 }
 
 /** Largest `total_balance` wins — the wallet the user actually paid for and expects to see ticking down. */
@@ -1115,18 +1140,18 @@ export class DeepSeekClient {
 
   /** Returns null on failure so callers can degrade — session must keep working without balance UI. */
   async getBalance(
-    opts: { signal?: AbortSignal; path?: string } = {},
+    opts: { signal?: AbortSignal; url?: string; shape?: ProviderBalanceShape } = {},
   ): Promise<UserBalance | null> {
     try {
-      const resp = await this._fetch(`${this.baseUrl}${opts.path ?? "/user/balance"}`, {
+      const declared = opts.url ?? "/user/balance";
+      const target = /^https?:\/\//.test(declared) ? declared : `${this.baseUrl}${declared}`;
+      const resp = await this._fetch(target, {
         method: "GET",
         headers: await this.authHeaders(),
         signal: opts.signal,
       });
       if (!resp.ok) return null;
-      const data = (await resp.json()) as UserBalance;
-      if (!data || !Array.isArray(data.balance_infos)) return null;
-      return data;
+      return normalizeBalance(await resp.json(), opts.shape ?? "balance-infos");
     } catch {
       return null;
     }

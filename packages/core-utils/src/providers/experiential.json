@@ -56,7 +56,13 @@
     "idField": "id",
     "excludeSpeech": false
   },
-  "billing": { "kind": "usd" },
+  "billing": {
+    "kind": "usd",
+    "balance": {
+      "url": "https://api.experientiallabs.ai/api/v1/credits",
+      "shape": "credits-usage"
+    }
+  },
   "strings": {
     "notConfigured": "Not configured yet — add an Experiential Labs gateway key in Settings → Models to use gateway models.",
     "apiBare": "Experiential · {baseUrl}"

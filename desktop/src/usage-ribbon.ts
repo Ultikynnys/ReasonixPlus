@@ -43,7 +43,7 @@ export function resolveRibbonFunds(
   // Turn/session cost is only a real figure when the provider publishes rates.
   const priced = Object.keys(spec?.billing.pricing ?? {}).length > 0;
   const tokenPriced: RibbonFunds = {
-    chip: spec?.billing.balancePath ? "wallet" : "none",
+    chip: spec?.billing.balance ? "wallet" : "none",
     costFigures: priced,
     probe: null,
   };

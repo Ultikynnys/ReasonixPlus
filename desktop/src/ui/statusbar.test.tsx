@@ -139,6 +139,25 @@ describe("StatusBar quota display", () => {
   it("drops the wallet chip on a provider that publishes no balance endpoint", () => {
     renderBar({
       settings: {
+        model: "syn:large:text",
+        modelEndpoint: {
+          provider: "synthetic",
+          baseUrl: "https://api.synthetic.new/v1",
+          billingKind: "usd",
+        },
+      } as Settings,
+      usage: { totalCostUsd: 0.5, lastCallCostUsd: 0.02 } as unknown as UsageStats,
+    });
+    // Nothing declared to read and no rate table: the ribbon claims neither a
+    // wallet nor a dollar figure instead of showing a dash or an invented $0.0000.
+    expect(screen.queryByText("balance")).toBeNull();
+    expect(screen.queryByText("this turn")).toBeNull();
+    expect(screen.queryByText(/This session cost/)).toBeNull();
+  });
+
+  it("shows the credits-based wallet on an Experiential Labs tab", () => {
+    renderBar({
+      settings: {
         model: "qwen3.8-27b",
         modelEndpoint: {
           provider: "experiential",
@@ -146,14 +165,17 @@ describe("StatusBar quota display", () => {
           billingKind: "usd",
         },
       } as Settings,
-      usage: { totalCostUsd: 0.5, lastCallCostUsd: 0.02 } as unknown as UsageStats,
+      // The daemon reads the declared /api/v1/credits ledger and reports the
+      // difference as one USD wallet, so the chip has a real figure.
+      balance: {
+        currency: "USD",
+        total: 20.5,
+        isAvailable: true,
+        infos: [{ currency: "USD", total: 20.5 }],
+      },
     });
-    // No declared endpoint and no declared rates: neither a wallet nor a dollar
-    // figure can be measured, so the ribbon claims neither instead of showing a
-    // dash or an invented $0.0000.
-    expect(screen.queryByText("balance")).toBeNull();
-    expect(screen.queryByText("this turn")).toBeNull();
-    expect(screen.queryByText(/This session cost/)).toBeNull();
+    expect(screen.getByText("balance")).toBeTruthy();
+    expect(screen.getByText("$ 20.50")).toBeTruthy();
   });
 
   it("keeps the balance and $ turn cost for DeepSeek tabs", () => {
