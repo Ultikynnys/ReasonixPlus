@@ -203,6 +203,10 @@ export interface ProviderBillingSpec {
   kind: ProviderBillingKind;
   /** Published peak/off-peak windows; null when the rate never changes. */
   schedule: RateSchedule | null;
+  /** Path, relative to the endpoint, that publishes the account balance. Null
+   *  means it publishes none, so the ribbon shows measured cost only instead of
+   *  a chip it could never fill. */
+  balancePath: string | null;
   /** USD per 1M tokens at the base rate, keyed by wire model id. */
   pricing: Readonly<Record<string, ProviderModelRate>>;
 }
@@ -670,6 +674,7 @@ function parseBilling(value: unknown, where: string): ProviderBillingSpec {
   return {
     kind: choice<ProviderBillingKind>(raw.kind ?? "quota", PROVIDER_BILLING_KINDS, `${where}.kind`),
     schedule: parseRateSchedule(raw.schedule, `${where}.schedule`),
+    balancePath: nullableText(raw.balancePath, `${where}.balancePath`),
     pricing: parsePricing(raw.pricing, `${where}.pricing`),
   };
 }

@@ -130,6 +130,14 @@ describe("providers.json", () => {
     expect(providerShortLabel("no-such-provider")).toBe("");
   });
 
+  it("declares a balance endpoint only where one exists", () => {
+    // The ribbon reads this to decide whether a wallet chip can ever be filled;
+    // a provider without one shows measured cost instead of an empty chip.
+    expect(requireProviderSpec("deepseek").billing.balancePath).toBe("/user/balance");
+    expect(requireProviderSpec("experiential").billing.balancePath).toBeNull();
+    expect(PROVIDER_SPECS.filter((spec) => spec.billing.balancePath !== null)).toHaveLength(1);
+  });
+
   it("orders bare-id precedence exactly as declared", () => {
     // Derived, so deleting a provider file shrinks the order instead of failing.
     const declared = PROVIDER_SPECS.filter((spec) => spec.precedence !== null)

@@ -2463,8 +2463,15 @@ async function emitBalance(tab: Tab): Promise<void> {
     emitTabDiagnostic(tab, "balance.skipped", { reason: "runtime-not-ready" });
     return;
   }
+  // Only a provider that declares a balance endpoint has one to read; every other
+  // tab shows the measured $ cost instead of a chip that would sit empty.
+  const balancePath = providerSpec(providerForModel(tab.currentModel))?.billing.balancePath ?? null;
+  if (!balancePath) {
+    emitTabDiagnostic(tab, "balance.skipped", { reason: "no-balance-endpoint" });
+    return;
+  }
   emitTabDiagnostic(tab, "balance.fetch.started");
-  const bal = await tab.runtime.loop.client.getBalance().catch((err) => {
+  const bal = await tab.runtime.loop.client.getBalance({ path: balancePath }).catch((err) => {
     emitDiagnosticError("balance.fetch.failed", err, {
       tabId: tab.id,
       details: tabDiagnosticState(tab),

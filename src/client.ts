@@ -1114,9 +1114,11 @@ export class DeepSeekClient {
   }
 
   /** Returns null on failure so callers can degrade — session must keep working without balance UI. */
-  async getBalance(opts: { signal?: AbortSignal } = {}): Promise<UserBalance | null> {
+  async getBalance(
+    opts: { signal?: AbortSignal; path?: string } = {},
+  ): Promise<UserBalance | null> {
     try {
-      const resp = await this._fetch(`${this.baseUrl}/user/balance`, {
+      const resp = await this._fetch(`${this.baseUrl}${opts.path ?? "/user/balance"}`, {
         method: "GET",
         headers: await this.authHeaders(),
         signal: opts.signal,

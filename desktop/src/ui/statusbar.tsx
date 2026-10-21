@@ -222,6 +222,9 @@ export function StatusBar({
   const mimoTab = spec?.wire.thinking === "mimo-top-level";
   const opencodeTab = auth === "opencode";
   const deepseekTab = spec?.errors.serverReport === "balance-probe";
+  // A wallet chip needs an endpoint to read. Only a provider that declares one gets
+  // it; everywhere else the measured $ cost is the money view.
+  const hasBalance = !!spec?.billing.balancePath;
   const openaiTokenBilling = openaiTab && ep?.billingKind === "usd";
   const openaiQuotaBilling = openaiTab && !openaiTokenBilling;
   const ollamaTokenBilling = ollamaTab && ep?.billingKind === "usd";
@@ -683,7 +686,7 @@ export function StatusBar({
           <span className="v">{settings.workspaceDir.split(/[\\/]/).pop() || "ws"}</span>
         </span>
       ) : null}
-      {showBalance ? (
+      {showBalance && (quotaBilling || opencodeFreeBilling || hasBalance) ? (
         quotaBilling ? (
           <QuotaChip
             label={quotaChipLabel}

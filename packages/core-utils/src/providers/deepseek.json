@@ -74,6 +74,7 @@
   "wire": { "stampMessageIds": true, "thinking": "extra-body" },
   "billing": {
     "kind": "usd",
+    "balancePath": "/user/balance",
     "schedule": {
       "peakWindowsUtc": [
         { "startMinute": 60, "endMinute": 240 },

@@ -352,3 +352,31 @@ describe("DeepSeekClient ollama provider (keyless + prefix strip)", () => {
     expect(body.think).toBe(true);
   });
 });
+
+describe("DeepSeekClient.getBalance", () => {
+  it("reads the path the provider declares, and DeepSeek's by default", async () => {
+    const urls: string[] = [];
+    const fetch = vi.fn(async (input) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({ is_available: true, balance_infos: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = new DeepSeekClient({
+      baseUrl: "https://api.experientiallabs.ai/v1",
+      apiKey: "sk-test",
+      fetch,
+    });
+
+    // A gateway that publishes its wallet elsewhere declares the path; the client
+    // appends it to the endpoint instead of assuming DeepSeek's route.
+    expect(await client.getBalance({ path: "/wallet/balance" })).toEqual({
+      is_available: true,
+      balance_infos: [],
+    });
+    expect(urls[0]).toBe("https://api.experientiallabs.ai/v1/wallet/balance");
+    await client.getBalance();
+    expect(urls[1]).toBe("https://api.experientiallabs.ai/v1/user/balance");
+  });
+});

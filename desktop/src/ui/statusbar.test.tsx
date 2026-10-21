@@ -128,6 +128,24 @@ describe("StatusBar quota display", () => {
     expect(screen.getByText("balance")).toBeTruthy();
   });
 
+  it("drops the wallet chip on a provider that publishes no balance endpoint", () => {
+    renderBar({
+      settings: {
+        model: "qwen3.8-27b",
+        modelEndpoint: {
+          provider: "experiential",
+          baseUrl: "https://api.experientiallabs.ai/v1",
+          billingKind: "usd",
+        },
+      } as Settings,
+      usage: { totalCostUsd: 0.5, lastCallCostUsd: 0.02 } as unknown as UsageStats,
+    });
+    // No declared endpoint means no wallet to read: the chip would sit on a dash
+    // forever, so the measured $ cost is the money view instead.
+    expect(screen.queryByText("balance")).toBeNull();
+    expect(screen.getByText("this turn")).toBeTruthy();
+  });
+
   it("keeps the balance and $ turn cost for DeepSeek tabs", () => {
     renderBar({
       usage: { totalCostUsd: 1.5, lastCallCostUsd: 0.25 } as unknown as UsageStats,
