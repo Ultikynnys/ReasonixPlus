@@ -924,7 +924,9 @@ describe("spawnSubagent allowedTools", () => {
       parentRegistry: parent,
       system: "test",
       task: "test",
-      model: "deepseek-v4.1-flash-free",
+      // `glm-5-free` sits in OpenCode's static catalog, so routing does not
+      // depend on the machine's config file.
+      model: "glm-5-free",
       allowedTools: ["read_file"],
     });
 
@@ -993,7 +995,7 @@ describe("spawnSubagent allowedTools", () => {
       parentRegistry: parent,
       system: "test",
       task: "test",
-      model: "deepseek-v4.1-flash-free",
+      model: "glm-5-free",
       allowedTools: ["run_command"],
     });
 

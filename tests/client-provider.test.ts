@@ -1,6 +1,9 @@
 // Consolidated from 8 per-module test files; each source keeps its own
 // describe() wrapper so its helpers stay file-scoped. Test bodies are unchanged.
 
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { providerDeclared } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DeepSeekClient, Usage } from "../src/client.js";
@@ -2635,6 +2638,35 @@ describe("client-models", () => {
 });
 
 describe("client-opencode-session", () => {
+  // Provider routing comes from the persisted config, so pin it here: an
+  // uncatalogued free-tier id would otherwise fall back to the DeepSeek default
+  // on a clean machine and never reach OpenCode at all.
+  let configRoot: string;
+  const previousConfig = process.env.REASONIX_CONFIG;
+
+  beforeEach(() => {
+    configRoot = mkdtempSync(join(tmpdir(), "reasonix-opencode-route-"));
+    const configPath = join(configRoot, "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        models: {
+          "deepseek-v4.1-flash-free": { provider: "opencode" },
+          "glm-5-free": { provider: "opencode" },
+        },
+      }),
+      "utf8",
+    );
+    process.env.REASONIX_CONFIG = configPath;
+  });
+
+  afterEach(() => {
+    // biome-ignore lint/performance/noDelete: an undefined assignment would leave the string "undefined" as the config path
+    if (previousConfig === undefined) delete process.env.REASONIX_CONFIG;
+    else process.env.REASONIX_CONFIG = previousConfig;
+    rmSync(configRoot, { recursive: true, force: true });
+  });
+
   /** Captures request headers and bodies per call, answering SSE when the
    *  request streams (opencode `chat` always does) and JSON otherwise. */
   function headerCapturingFetch(): {
