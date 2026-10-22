@@ -142,7 +142,7 @@ describe("client-experiential", () => {
       expect(response.content).toBe("ok");
     });
 
-    it("still sends extra_body for the same model id routed to its native provider", async () => {
+    it("still sends the thinking toggle for the same model id routed to its native provider", async () => {
       let init: RequestInit | undefined;
       const fetch = vi.fn(async (_input, requestInit) => {
         init = requestInit as RequestInit;
@@ -161,7 +161,7 @@ describe("client-experiential", () => {
       });
 
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      expect(body.extra_body).toEqual({ thinking: { type: "enabled" } });
+      expect(body.thinking).toEqual({ type: "enabled" });
     });
   });
 });
@@ -1826,7 +1826,7 @@ describe("client-gpt56", () => {
       ).rejects.toThrow(/^DeepSeek 401:/);
     });
 
-    it("never sends extra_body.thinking for gpt models, still sends it for deepseek", async () => {
+    it("never sends a thinking toggle for gpt models, still sends it for deepseek", async () => {
       const spy = vi.fn(
         async () =>
           new Response(JSON.stringify({ choices: [{ message: { content: "x" } }] }), {
@@ -1864,7 +1864,7 @@ describe("client-gpt56", () => {
       });
       const [, init2] = spy.mock.calls[1]!;
       const body2 = JSON.parse(String(init2!.body)) as Record<string, unknown>;
-      expect(body2.extra_body).toEqual({ thinking: { type: "enabled" } });
+      expect(body2.thinking).toEqual({ type: "enabled" });
     });
 
     it("sends parallel_tool_calls:false for gpt models, never for deepseek", async () => {

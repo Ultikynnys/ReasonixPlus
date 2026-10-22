@@ -73,10 +73,10 @@ describe("client-wire", () => {
   }
 
   describe("declared wire quirks", () => {
-    it("deepseek stamps message ids and nests the toggle under extra_body", async () => {
+    it("deepseek stamps message ids and sends the toggle top-level", async () => {
       const { body } = await capture({ model: "deepseek-flash", thinking: "enabled" });
-      expect(body.extra_body).toEqual({ thinking: { type: "enabled" } });
-      expect(body.thinking).toBeUndefined();
+      expect(body.thinking).toEqual({ type: "enabled" });
+      expect(body.extra_body).toBeUndefined();
       const messages = body.messages as { role: string; id?: string }[];
       // Only assistant/tool turns are stamped; a user turn is left untouched.
       expect(messages[0]?.id).toBeUndefined();
@@ -699,7 +699,7 @@ describe("client-responses", () => {
       const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
       expect(body.input).toBeUndefined();
       expect(body.messages).toEqual([{ role: "user", content: "hi" }]);
-      expect(body.extra_body).toEqual({ thinking: { type: "enabled" } });
+      expect(body.thinking).toEqual({ type: "enabled" });
     });
   });
 

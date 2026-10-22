@@ -250,6 +250,7 @@ export async function* streamModelResponse(
             toolCallArgsChars: (cur.function.arguments ?? "").length,
             toolCallIndex: d.index,
             toolCallReadyCount: readyIndices.size,
+            ...(cur.id ? { toolCallId: cur.id } : {}),
           };
         }
 

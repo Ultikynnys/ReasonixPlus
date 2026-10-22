@@ -31,14 +31,10 @@ describe("reasoning-effort resolution", () => {
       "xhigh",
       "max",
     ]);
-    expect(supportedReasoningEfforts("glm-5.2")).toEqual(["low", "high", "max"]);
-    expect(supportedReasoningEfforts("big-pickle")).toEqual(["low", "medium", "high"]);
-    expect(supportedReasoningEfforts("ollama/llama3.1:latest")).toEqual([
-      "low",
-      "medium",
-      "high",
-      "max",
-    ]);
+    expect(supportedReasoningEfforts("glm-5.2")).toEqual(["high", "max"]);
+    expect(supportedReasoningEfforts("big-pickle")).toEqual([]);
+    expect(supportedReasoningEfforts("ollama/llama3.1:latest")).toEqual([]);
+    expect(supportedReasoningEfforts("ollama/gpt-oss:120b")).toEqual(["low", "medium", "high"]);
   });
 
   it("prefers the synced per-model values (any provider) over the static set", () => {

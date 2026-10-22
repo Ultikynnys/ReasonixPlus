@@ -21,7 +21,11 @@
   "speechModels": [],
   "vision": { "fromProvider": "deepseek", "stripSchemeAndTag": true },
   "modelFilter": null,
-  "reasoningEfforts": ["low", "medium", "high", "max"],
+  "reasoningEfforts": [],
+  "reasoningRules": [
+    { "pattern": "^gpt-oss(?:$|[-:])", "efforts": ["low", "medium", "high"] },
+    { "pattern": "^deepseek-(?:v[4-9]|flash)", "efforts": ["low", "high", "max"], "aliases": { "medium": "high", "xhigh": "high" } }
+  ],
   "endpoint": {
     "strategy": "standard",
     "default": "https://ollama.com/v1",

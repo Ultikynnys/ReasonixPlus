@@ -240,7 +240,7 @@ export interface ProviderBillingSpec {
 export type ProviderWireFormat = "chat-completions" | "ollama-native";
 
 /** Where a provider expects its thinking toggle; null when it refuses the field. */
-export type ProviderThinkingStyle = "extra-body" | "zai-top-level" | "mimo-top-level";
+export type ProviderThinkingStyle = "top-level" | "zai-top-level" | "mimo-top-level";
 
 /** Per-provider request quirks, so the client never branches on a provider id. */
 export interface ProviderWireSpec {
@@ -271,10 +271,21 @@ export const DEFAULT_PROVIDER_WIRE: ProviderWireSpec = {
 
 const WIRE_FORMATS: ReadonlySet<string> = new Set(["chat-completions", "ollama-native"]);
 const THINKING_STYLES: ReadonlySet<string> = new Set([
-  "extra-body",
+  "top-level",
   "zai-top-level",
   "mimo-top-level",
 ]);
+
+export type ProviderReasoningControl = "effort" | "gemini-level" | "gemini-budget" | "cloudcode-budget" | "none";
+
+export interface ProviderReasoningRule {
+  pattern: string;
+  efforts: readonly ReasoningEffort[];
+  aliases: Readonly<Partial<Record<ReasoningEffort, ReasoningEffort>>>;
+  control: ProviderReasoningControl;
+  forcedThinking: boolean;
+  budgets: Readonly<Partial<Record<ReasoningEffort, number>>>;
+}
 
 export interface ProviderClientSpec {
   auth: ProviderAuthStrategy;
@@ -310,6 +321,8 @@ export interface ProviderSpec {
   vision: ProviderVisionSpec;
   modelFilter: ProviderModelFilter | null;
   reasoningEfforts: readonly ReasoningEffort[];
+  reasoningAliases: Readonly<Partial<Record<ReasoningEffort, ReasoningEffort>>>;
+  reasoningRules: readonly ProviderReasoningRule[];
   endpoint: ProviderEndpointSpec;
   credentials: ProviderCredentialsSpec;
   /** Persisted settings this provider declares, in card order. */
@@ -874,6 +887,45 @@ function parseModelId(value: unknown, where: string): ProviderModelIdSpec {
   };
 }
 
+const REASONING_LEVELS: ReadonlySet<string> = new Set(["low", "medium", "high", "xhigh", "max"]);
+const REASONING_CONTROLS: ReadonlySet<string> = new Set([
+  "effort", "gemini-level", "gemini-budget", "cloudcode-budget", "none",
+]);
+
+function parseReasoningAliases(value: unknown, where: string): Partial<Record<ReasoningEffort, ReasoningEffort>> {
+  const out: Partial<Record<ReasoningEffort, ReasoningEffort>> = {};
+  for (const [key, mapped] of Object.entries(record(value ?? {}, where))) {
+    out[choice<ReasoningEffort>(key, REASONING_LEVELS, where)] = choice<ReasoningEffort>(mapped, REASONING_LEVELS, `${where}.${key}`);
+  }
+  return out;
+}
+
+function parseReasoningRules(value: unknown, where: string): ProviderReasoningRule[] {
+  if (!Array.isArray(value)) fail(where, "expected an array");
+  return value.map((entry, index) => {
+    const at = `${where}[${index}]`;
+    const raw = record(entry, at);
+    const pattern = text(raw.pattern, `${at}.pattern`);
+    try { new RegExp(pattern); } catch { fail(at, "invalid regular expression"); }
+    const efforts = subset<ReasoningEffort>(raw.efforts, REASONING_LEVELS, `${at}.efforts`);
+    if (new Set(efforts).size !== efforts.length) fail(at, "duplicate effort");
+    const budgets: Partial<Record<ReasoningEffort, number>> = {};
+    for (const [key, value] of Object.entries(record(raw.budgets ?? {}, `${at}.budgets`))) {
+      const level = choice<ReasoningEffort>(key, REASONING_LEVELS, at);
+      const budget = number(value, at);
+      if (!efforts.includes(level) || !Number.isInteger(budget) || budget < 1) fail(at, "invalid thinking budget");
+      budgets[level] = budget;
+    }
+    const control = choice<ProviderReasoningControl>(raw.control ?? "effort", REASONING_CONTROLS, `${at}.control`);
+    if ((control === "gemini-budget" || control === "cloudcode-budget") && efforts.some((level) => budgets[level] === undefined)) fail(at, "missing thinking budget");
+    if (control === "none" && efforts.length) fail(at, "disabled control has efforts");
+    return { pattern, efforts, budgets, control,
+      aliases: parseReasoningAliases(raw.aliases, `${at}.aliases`),
+      forcedThinking: flag(raw.forcedThinking ?? false, `${at}.forcedThinking`),
+    };
+  });
+}
+
 function parseProvider(value: unknown, source: string): ProviderSpec {
   const raw = record(value, source);
   const id = text(raw.id, `${source}: id`);
@@ -902,10 +954,9 @@ function parseProvider(value: unknown, source: string): ProviderSpec {
       MODEL_FILTERS,
       `${scope}: modelFilter`,
     ),
-    reasoningEfforts: texts(
-      raw.reasoningEfforts ?? [],
-      `${scope}: reasoningEfforts`,
-    ) as ReasoningEffort[],
+    reasoningEfforts: subset<ReasoningEffort>(raw.reasoningEfforts ?? [], REASONING_LEVELS, `${scope}: reasoningEfforts`),
+    reasoningAliases: parseReasoningAliases(raw.reasoningAliases, `${scope}: reasoningAliases`),
+    reasoningRules: parseReasoningRules(raw.reasoningRules ?? [], `${scope}: reasoningRules`),
     endpoint: parseEndpoint(raw.endpoint, `${scope}: endpoint`),
     credentials: parseCredentials(raw.credentials, `${scope}: credentials`, settings, id),
     settings,

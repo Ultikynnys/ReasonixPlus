@@ -409,11 +409,12 @@ import {
   setVerdict,
   showPayloadContextLength,
   showPayloadParameters,
+  showPayloadThinking,
   verdictFor,
   visionModelsFor,
 } from "../../ollama-model-map.js";
 import { loadOllamaModelsCache, saveOllamaModelsCache } from "../../ollama-models-cache.js";
-import { fetchOpencodeModels, opencodeUsagePlan } from "../../opencode-models.js";
+import { recordOllamaThinking } from "../../ollama-thinking.js";import { fetchOpencodeModels, opencodeUsagePlan } from "../../opencode-models.js";
 import {
   type OpencodeDeviceFlow,
   beginOpencodeDeviceFlow,
@@ -2071,6 +2072,8 @@ export async function fetchOllamaShowInfo(
       const contextTokens = showPayloadContextLength(data);
       const parameters = showPayloadParameters(data);
       const vision = showPayloadVisionCapability(data);
+      // Picker renders from this shared store, so a probe anywhere teaches it.
+      recordOllamaThinking(model, showPayloadThinking(data));
       if (vision !== undefined) {
         return {
           vision,

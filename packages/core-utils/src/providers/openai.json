@@ -31,6 +31,14 @@
   "vision": { "patterns": ["^gpt-"] },
   "modelFilter": null,
   "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
+  "reasoningRules": [
+    { "pattern": "^(?:gpt-(?:4|3)|chatgpt-4)", "efforts": [], "control": "none" },
+    { "pattern": "^o1-pro(?:$|-)", "efforts": [], "control": "none" },
+    { "pattern": "^(?:o[134]|gpt-oss)(?:$|-)", "efforts": ["low", "medium", "high"] },
+    { "pattern": "^gpt-5\\.[2345].*-pro(?:$|-)", "efforts": ["medium", "high", "xhigh"] },
+    { "pattern": "^gpt-5\\.[2345](?:$|-)", "efforts": ["low", "medium", "high", "xhigh"] },
+    { "pattern": "^gpt-5(?:$|\\.1(?:$|-)|-)", "efforts": ["low", "medium", "high"] }
+  ],
   "endpoint": {
     "strategy": "standard",
     "default": "https://api.openai.com/v1",

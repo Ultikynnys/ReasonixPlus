@@ -21,7 +21,7 @@
   "speechModels": [],
   "vision": {},
   "modelFilter": null,
-  "reasoningEfforts": [],
+  "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
   "endpoint": {
     "strategy": "standard",
     "default": "https://api.experientiallabs.ai/v1",

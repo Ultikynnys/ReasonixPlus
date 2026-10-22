@@ -3,6 +3,8 @@ import {
   PROVIDER_IDS,
   PROVIDER_REASONING_EFFORTS,
   providerReasoningEfforts,
+  providerSpec,
+  type ProviderReasoningRule,
 } from "./provider-registry.js";
 
 /** Provider ids and their effort ladders come from providers.json via the registry. */
@@ -20,6 +22,42 @@ export const REASONING_EFFORT_ORDER: readonly ReasoningEffort[] = [
 ];
 
 const EFFORT_SET: ReadonlySet<string> = new Set(REASONING_EFFORT_ORDER);
+
+export function modelReasoningContract(provider: string, model: string): ProviderReasoningRule {
+  const spec = providerSpec(provider);
+  const rule = spec?.reasoningRules.find((rule) => new RegExp(rule.pattern, "i").test(model));
+  return rule ?? {
+    pattern: ".*",
+    efforts: spec?.reasoningEfforts ?? [],
+    aliases: spec?.reasoningAliases ?? {},
+    control: "effort",
+    forcedThinking: false,
+    budgets: {},
+  };
+}
+
+export function modelReasoningEfforts(
+  provider: string,
+  model: string,
+  discovered?: readonly string[] | null,
+): readonly ReasoningEffort[] {
+  const contract = modelReasoningContract(provider, model);
+  if (contract.control === "none") return [];
+  if (contract.control !== "effort") return contract.efforts;
+  return discovered == null ? contract.efforts : reasoningEffortsFor(provider, discovered);
+}
+
+export function resolveReasoningEffort(
+  provider: string,
+  model: string,
+  requested: ReasoningEffort,
+  supported: readonly ReasoningEffort[],
+): ReasoningEffort | null {
+  const spec = providerSpec(provider);
+  const contract = modelReasoningContract(provider, model);
+  const mapped = contract.aliases[requested] ?? spec?.reasoningAliases[requested] ?? requested;
+  return clampReasoningEffort(supported, mapped);
+}
 
 /**
  * Levels a provider(model) actually accepts.

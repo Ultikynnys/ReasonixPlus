@@ -133,6 +133,9 @@ export {
   PROVIDER_IDS,
   PROVIDER_REASONING_EFFORTS,
   reasoningEffortsFor,
+  modelReasoningContract,
+  modelReasoningEfforts,
+  resolveReasoningEffort,
   clampReasoningEffort,
 } from "./reasoning-efforts.js";
 export type { ProviderID } from "./reasoning-efforts.js";
@@ -188,6 +191,8 @@ export type {
   ProviderModelFilter,
   ProviderModelIdSpec,
   ProviderProbeStrategy,
+  ProviderReasoningControl,
+  ProviderReasoningRule,
   ProviderServerReport,
   ProviderThinkingStyle,
   ProviderWireFormat,

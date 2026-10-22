@@ -33,7 +33,9 @@
     "models": ["mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed"]
   },
   "modelFilter": null,
+  "modelsDev": "xiaomi",
   "reasoningEfforts": [],
+  "reasoningRules": [{ "pattern": ".*", "efforts": [], "control": "none" }],
   "endpoint": {
     "strategy": "standard",
     "default": "https://api.xiaomimimo.com/v1",

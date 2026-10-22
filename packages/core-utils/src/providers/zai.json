@@ -45,7 +45,11 @@
     "patterns": ["^glm-\\d+(?:\\.\\d+)?v(?:-|$)"]
   },
   "modelFilter": null,
-  "reasoningEfforts": ["low", "high", "max"],
+  "reasoningEfforts": [],
+  "reasoningRules": [
+    { "pattern": "^glm-5\\.3(?:$|[-:])", "efforts": ["low", "high", "max"], "forcedThinking": true, "aliases": { "medium": "high", "xhigh": "max" } },
+    { "pattern": "^glm-5\\.2(?:$|[-:])", "efforts": ["high", "max"], "aliases": { "low": "high", "medium": "high", "xhigh": "max" } }
+  ],
   "endpoint": {
     "strategy": "standard",
     "default": "https://api.z.ai/api/paas/v4",

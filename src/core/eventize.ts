@@ -35,9 +35,19 @@ export interface EventizeContext {
 export class Eventizer {
   private nextId = 0;
   private lastTurn = -1;
+  /** Wire ids are per-INSTANCE: a rebuilt runtime (model switch / failover) restarts
+   *  the sequence at 1, so an id can repeat and the desktop keys cards by turn too.
+   *  Instance-scoped because a replay must project byte-identical messages. */
   private nextToolSeq = 0;
-  /** Tool calls announced via tool_call_delta but not yet dispatched. FIFO upgraded by tool_start. */
-  private preparingCallIds: string[] = [];
+  /** True once an iteration's stream ended: the next delta starts a NEW
+   *  iteration, whose tool-call indices restart at 0. */
+  private iterationEnded = false;
+  /** Announced cards, keyed by the provider's own call id, awaiting the call that
+   *  owns them. Exact pairing, so a call the repair pass drops cannot hand its card on. */
+  private announcedCardByCallId = new Map<string, string>();
+  /** Announced cards whose delta carried NO call id: only these are paired
+   *  positionally, in announce order, as a fallback for id-less providers. */
+  private unboundPreparingCallIds: string[] = [];
   /** Tool calls dispatched but not yet finished. Results prefer their explicit
    * loop call ID; the FIFO arrays remain a compatibility fallback for older
    * loop events that omitted it. */
@@ -45,7 +55,8 @@ export class Eventizer {
   private inflightToolStartedAt: number[] = [];
   /** Results already consumed; duplicate loop events must not consume another call. */
   private completedLoopCallIds = new Set<string>();
-  /** Per-turn dedupe so each toolCallIndex emits exactly one tool.preparing. */
+  /** Per-iteration dedupe so each toolCallIndex emits exactly one tool.preparing
+   *  (a call's name streams on every arguments chunk). */
   private announcedToolIdx = new Set<string>();
   /** Maps loop-internal call IDs (e.g. API call ids or inflight IDs) to wire tool call IDs (`tc-N`). */
   private loopCallIdToWireCallId = new Map<string, string>();
@@ -54,7 +65,7 @@ export class Eventizer {
     const out: Event[] = [];
     if (ev.turn !== this.lastTurn) {
       this.lastTurn = ev.turn;
-      this.announcedToolIdx.clear();
+      this.startIteration();
       out.push(this.turnStartedEvent(ev.turn, ctx));
     }
     switch (ev.role) {
@@ -66,19 +77,28 @@ export class Eventizer {
         const idx = ev.toolCallIndex;
         const name = ev.toolName;
         if (idx === undefined || !name) break;
+        if (this.iterationEnded) this.startIteration();
         const key = `${ev.turn}:${idx}`;
         if (this.announcedToolIdx.has(key)) break;
         this.announcedToolIdx.add(key);
         const callId = `tc-${++this.nextToolSeq}`;
-        this.preparingCallIds.push(callId);
+        // Bind the card to the call that will claim it, so a call the repair pass
+        // drops (storm breaker, fused fragments) cannot hand its card to the next
+        // dispatch. A provider that names no calls keeps the positional fallback.
+        if (ev.toolCallId) this.announcedCardByCallId.set(ev.toolCallId, callId);
+        else this.unboundPreparingCallIds.push(callId);
         out.push(this.toolPreparingEvent(ev.turn, callId, name));
         break;
       }
       case "assistant_final":
+        this.iterationEnded = true;
         out.push(this.finalEvent(ev));
         break;
       case "tool_start": {
-        const callId = this.preparingCallIds.shift() ?? `tc-${++this.nextToolSeq}`;
+        const callId =
+          this.claimAnnouncedCard(ev.callId) ??
+          this.unboundPreparingCallIds.shift() ??
+          `tc-${++this.nextToolSeq}`;
         this.inflightCallIds.push(callId);
         this.inflightToolStartedAt.push(performance.now());
         if (ev.callId) {
@@ -210,6 +230,25 @@ export class Eventizer {
     trigger: "manual" | "auto" | "overflow",
   ): CompactionStartedEvent {
     return this.compactionStartedEvent(turn, trigger);
+  }
+
+  /** A turn streams several iterations, each restarting tool-call indices at 0.
+   *  An announcement, and the id it claimed, dies with its own iteration: a call
+   *  it never dispatched must not leave an id for the next iteration to inherit. */
+  private startIteration(): void {
+    this.announcedToolIdx.clear();
+    this.announcedCardByCallId.clear();
+    this.unboundPreparingCallIds.length = 0;
+    this.iterationEnded = false;
+  }
+
+  /** The card an earlier delta announced for this call, consumed exactly once. */
+  private claimAnnouncedCard(loopCallId: string | undefined): string | undefined {
+    if (loopCallId === undefined) return undefined;
+    const wireId = this.announcedCardByCallId.get(loopCallId);
+    if (wireId === undefined) return undefined;
+    this.announcedCardByCallId.delete(loopCallId);
+    return wireId;
   }
 
   private sessionRetractedEvent(

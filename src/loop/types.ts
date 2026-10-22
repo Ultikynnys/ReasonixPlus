@@ -69,6 +69,10 @@ export interface LoopEvent {
   toolCallArgsChars?: number;
   /** Zero-based index of the tool call this delta belongs to (multi-tool progress). */
   toolCallIndex?: number;
+  /** Provider-assigned id of the call this delta belongs to. Binds the card the
+   *  delta announces to the call that will later be dispatched for it, so a
+   *  dropped call cannot hand its card to the next one. */
+  toolCallId?: string;
   /** Count of tool calls whose args have parsed as valid JSON (UI progress, not dispatch gate). */
   toolCallReadyCount?: number;
   /** Stable id for tool_start / tool pairs — also the inflight-set key. UI uses this as the card id so it can derive `running` from `loop.inflight.has(callId)` instead of trusting end-event delivery. */

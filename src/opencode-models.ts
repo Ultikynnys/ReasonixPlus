@@ -56,7 +56,8 @@ export interface OpencodeModelsSnapshot {
  *  `[]` = options exist but none is an effort ladder (toggle/budget-only). */
 function modelReasoningEfforts(m: Record<string, unknown>): string[] | undefined {
   const opts = m.reasoning_options;
-  if (!Array.isArray(opts) || opts.length === 0) return undefined;
+  if (m.reasoning === false) return [];
+  if (!Array.isArray(opts)) return undefined;
   const effort = opts.find(
     (o) => o && typeof o === "object" && (o as { type?: unknown }).type === "effort",
   ) as { values?: unknown } | undefined;
@@ -260,8 +261,8 @@ export async function fetchOpencodeModels(
     const reasoningEfforts: ReasoningEffortMap = {};
     collect(zen, modelsSet, freeSet, visionSet);
     collect(go, modelsSet, freeSet, visionSet);
-    captureReasoning(zen, "opencode", reasoningEfforts);
     captureReasoning(go, "opencode", reasoningEfforts);
+    captureReasoning(zen, "opencode", reasoningEfforts);
     for (const { key, provider } of NATIVE_REASONING_PROVIDERS) {
       captureReasoning(
         root[key] as Record<string, unknown> | undefined,

@@ -36,6 +36,8 @@
   },
   "modelFilter": null,
   "reasoningEfforts": ["low", "high", "max"],
+  "reasoningAliases": { "medium": "high", "xhigh": "high" },
+  "reasoningRules": [{ "pattern": "^deepseek-(?:chat|reasoner|r1)(?:$|[-:])", "efforts": [], "control": "none" }],
   "endpoint": {
     "strategy": "standard",
     "default": null,
@@ -71,7 +73,7 @@
     "idField": "id",
     "excludeSpeech": false
   },
-  "wire": { "stampMessageIds": true, "thinking": "extra-body" },
+  "wire": { "stampMessageIds": true, "thinking": "top-level" },
   "billing": {
     "kind": "usd",
     "balance": { "url": "/user/balance", "shape": "balance-infos" },

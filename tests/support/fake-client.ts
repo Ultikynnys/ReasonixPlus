@@ -25,7 +25,6 @@ export interface CapturedRequest {
   tools: ToolSpec[] | undefined;
   thinking: string | undefined;
   reasoning_effort: string | undefined;
-  extra_body: Record<string, unknown> | undefined;
   body: Record<string, unknown>;
 }
 
@@ -69,14 +68,12 @@ export function makeFakeClient(
   const fetchMock = vi.fn(async (_url: unknown, init: { body?: string } | undefined) => {
     const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
     const messages = (body.messages ?? []) as ChatMessage[];
-    const extra = body.extra_body as { thinking?: { type?: string } } | undefined;
-    const req: CapturedRequest = {
+    const toggle = body.thinking as { type?: string } | undefined;    const req: CapturedRequest = {
       model: (body.model as string | undefined) ?? "",
       messages,
       tools: body.tools as ToolSpec[] | undefined,
-      thinking: extra?.thinking?.type,
+      thinking: toggle?.type,
       reasoning_effort: body.reasoning_effort as string | undefined,
-      extra_body: body.extra_body as Record<string, unknown> | undefined,
       body,
     };
     captured.push(req);

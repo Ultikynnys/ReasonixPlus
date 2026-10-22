@@ -251,7 +251,7 @@ describe("providers.json", () => {
       for (const level of levels) expect(REASONING_EFFORT_ORDER).toContain(level);
     }
     expect(providerReasoningEfforts("mimo")).toEqual([]);
-    expect(providerReasoningEfforts("experiential")).toEqual([]);
+    expect(providerReasoningEfforts("experiential")).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
   it("feeds every exported catalog", () => {

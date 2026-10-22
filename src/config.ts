@@ -56,6 +56,7 @@ import {
   reasoningEffortsForModel,
 } from "./opencode-models.js";
 import { discoveredProviderModels, isCatalogProvider } from "./provider-models.js";
+import { ollamaThinkingFor } from "./ollama-thinking.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS } from "./telemetry/stats.js";
 import { type ThemeName, isThemeName, resolveThemeName } from "./theme/tokens.js";
@@ -540,9 +541,14 @@ export function supportedReasoningEfforts(
   path: string = defaultConfigPath(),
 ): readonly ReasoningEffort[] {
   const provider = providerForModel(model, path);
-  return reasoningEffortsFor(
+  const id = stripProviderQualifier(model);
+  // Native Ollama advertises the ladder its server accepts; until a probe lands,
+  // the declared family rules answer and an unknown tag declares none.
+  const ollama = provider === "ollama" ? ollamaThinkingFor(id) : undefined;
+  return modelReasoningEfforts(
     provider,
-    reasoningEffortsForModel(provider, stripProviderQualifier(model)),
+    id,
+    ollama ? ollama.levels : reasoningEffortsForModel(provider, id),
   );
 }
 
@@ -553,7 +559,14 @@ export function effectiveReasoningEffort(
   requested: ReasoningEffort | undefined,
 ): ReasoningEffort | undefined {
   if (!requested) return undefined;
-  return clampReasoningEffort(supportedReasoningEfforts(model), requested) ?? undefined;
+  return (
+    resolveReasoningEffort(
+      providerForModel(model),
+      stripProviderQualifier(model),
+      requested,
+      supportedReasoningEfforts(model),
+    ) ?? undefined
+  );
 }
 
 /** True when positive evidence places a model id: a `models` mapping, server
@@ -615,8 +628,8 @@ export function loadOllamaEndpoint(path: string = defaultConfigPath()): Resolved
 
 import {
   REASONING_EFFORT_ORDER,
-  clampReasoningEffort,
-  reasoningEffortsFor,
+  modelReasoningEfforts,
+  resolveReasoningEffort,
 } from "@reasonix/core-utils";
 import type {
   EditMode,

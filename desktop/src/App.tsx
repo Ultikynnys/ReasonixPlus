@@ -530,6 +530,12 @@ export type QueuedSend = {
   images?: { id: string; thumbnail: string; wire?: UserImageAttachment }[];
 };
 
+/** What one dispatch attempt did: "sent" handed the turn to the daemon, "blocked"
+ *  means the session cannot take it right now (so the caller keeps or queues it),
+ *  "empty" means there was nothing to send. The queue drain only drops a message
+ *  it got a definitive answer for, so a blocked send can never be silently lost. */
+export type SendOutcome = "sent" | "blocked" | "empty";
+
 type State = {
   ready: boolean;
   needsSetup: boolean;
@@ -1446,6 +1452,9 @@ export function reduceAction(state: State, action: Action): State {
             ? { text: action.send }
             : action.send
           : { text: action.text ?? "" };
+      // A blank item would sit at the head forever: the drain has nothing to
+      // send and the queue never advances. Refuse it at the door.
+      if (!item.text.trim() && !(item.images && item.images.length > 0)) return state;
       return { ...state, queuedSends: [...state.queuedSends, item] };
     }
     case "dequeue_send":
@@ -2097,6 +2106,21 @@ export function settleTurnMessages(messages: ChatMessage[]): ChatMessage[] {
   );
 }
 
+/** Index of the NEWEST tool card in `segments` still running under `callId`, or
+ *  -1. A wire callId is unique only inside one eventizer instance — a rebuilt
+ *  runtime (model switch / failover) restarts the sequence — so the card an
+ *  incoming event means is the newest one still open, never an older settled
+ *  card that legitimately owns the same id. */
+function runningToolIndex(segments: readonly AssistantSegment[], callId: string): number {
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    const segment = segments[i];
+    if (segment?.kind === "tool" && segment.callId === callId && segment.result === undefined) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 function turnHasTerminalExplanation(messages: ChatMessage[], turn: number | undefined): boolean {
   return messages.some(
     (m) =>
@@ -2358,8 +2382,14 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // A fold leaves turn-busy false while the daemon is still working — adopt
       // its compacting state and never mistake that for a lost terminal.
       if (compacting) return { ...state, compacting };
-      // Not busy and not folding: only a real held-turn drift earns the notice.
-      if (!state.busy && !state.awaitingAck) return { ...state, compacting: false };
+      // Daemon idle while the UI is not running a turn. An optimistic send the
+      // daemon has not picked up yet is NOT a lost turn: the user_input can sit
+      // behind an image mention or the MCP bridge while this probe is answered.
+      // Releasing it here would drop the ack gate the queue drain waits on, and
+      // the next queued message would be pushed into the turn that is only now
+      // starting. The watchdog's stale-ack timer owns releasing a send that
+      // truly never started.
+      if (!state.busy) return { ...state, compacting: false };
       // Daemon idle while the UI held a turn: a terminal event was lost.
       // Release exactly like $turn_complete would, plus a warning notice so
       // the correction is visible.
@@ -2971,7 +3001,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turnStatusTool: ev.name,
         turnLastEventMs: Date.now(),
         messages: mapActiveAssistant(state.messages, ev.turn, (m) => {
-          if (m.segments.some((s) => s.kind === "tool" && s.callId === ev.callId)) return m;
+          // A settled card keeps its id: this call needs a card of its own.
+          if (runningToolIndex(m.segments, ev.callId) >= 0) return m;
           return {
             ...m,
             segments: [
@@ -3003,12 +3034,15 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         sessionFiles: mergeSessionFiles(state.sessionFiles, adds),
         sessionEvents,
         messages: mapActiveAssistant(state.messages, ev.turn, (m) => {
-          const idx = m.segments.findIndex((s) => s.kind === "tool" && s.callId === ev.callId);
+          const idx = runningToolIndex(m.segments, ev.callId);
           if (idx >= 0) {
             const segs = [...m.segments];
             const seg = segs[idx];
             if (seg?.kind === "tool") {
-              segs[idx] = { ...seg, args: ev.args };
+              // The dispatched name is authoritative: a streamed name can arrive
+              // truncated (announced on its first fragment) or from a rewritten
+              // call, and this card has to read as the tool that actually ran.
+              segs[idx] = { ...seg, name: ev.name || seg.name, args: ev.args };
             }
             return { ...m, segments: segs };
           }
@@ -3099,21 +3133,18 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         // other tool, since the row id is derived from THIS call id.
         sessionEvents: settleSubagentEvent(state, ev.callId, ev.ok, ev.output),
         messages: state.messages.map((m) => {
-          if (m.kind !== "assistant") return m;
-          let mutated = false;
-          const segs = m.segments.map((s) => {
-            if (s.kind === "tool" && s.callId === ev.callId && s.result === undefined) {
-              mutated = true;
-              return {
-                ...s,
-                result: ev.output,
-                ok: ev.ok,
-                durationMs: Date.now() - s.startedAt,
-              };
-            }
-            return s;
-          });
-          return mutated ? { ...m, segments: segs } : m;
+          if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
+          const at = runningToolIndex(m.segments, ev.callId);
+          const hit = at < 0 ? undefined : m.segments[at];
+          if (!hit || hit.kind !== "tool") return m;
+          const segs = [...m.segments];
+          segs[at] = {
+            ...hit,
+            result: ev.output,
+            ok: ev.ok,
+            durationMs: Date.now() - hit.startedAt,
+          };
+          return { ...m, segments: segs };
         }),
       };
     }
@@ -3129,13 +3160,12 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         turnLastEventMs: Date.now(),
         messages: state.messages.map((m) => {
           if (m.kind !== "assistant" || m.turn !== ev.turn) return m;
-          let mutated = false;
-          const segs = m.segments.map((s) => {
-            if (s.kind !== "tool" || s.callId !== ev.callId || s.result !== undefined) return s;
-            mutated = true;
-            return { ...s, liveOutput: (s.liveOutput ?? "") + ev.text };
-          });
-          return mutated ? { ...m, segments: segs } : m;
+          const at = runningToolIndex(m.segments, ev.callId);
+          const hit = at < 0 ? undefined : m.segments[at];
+          if (!hit || hit.kind !== "tool") return m;
+          const segs = [...m.segments];
+          segs[at] = { ...hit, liveOutput: (hit.liveOutput ?? "") + ev.text };
+          return { ...m, segments: segs };
         }),
       };
     }
@@ -4130,8 +4160,14 @@ const TabRuntime = memo(function TabRuntime({
   // it settles: the draft stays in the composer, so nothing is lost.
   const sessionListSettled = sessionsMutation === null;
 
+  // Optimistic client ids must be unique for the whole tab: the daemon echoes
+  // one back per accepted user_input and the transcript renumbers the bubble it
+  // matches. Two sends in the same millisecond would otherwise share an id, and
+  // the second bubble would never be matched — a message that "never clears".
+  const sendSeqRef = useRef(0);
+
   const send = useCallback(
-    (override?: string | QueuedSend) => {
+    (override?: string | QueuedSend): SendOutcome => {
       let text = draftStore.getSnapshot().trim();
       let sendImages: UserImageAttachment[] = pendingImages.map((im) => im.wire);
       let sendImageUrls: string[] = pendingImages.map((im) => im.thumbnail);
@@ -4153,10 +4189,11 @@ const TabRuntime = memo(function TabRuntime({
         }
       }
 
-      if ((!text && sendImages.length === 0) || !state.ready || engaged || !sessionListSettled)
-        return;
+      if (!text && sendImages.length === 0) return "empty";
+      if (!state.ready || engaged || !sessionListSettled) return "blocked";
 
-      const clientId = `c-${Date.now()}`;
+      sendSeqRef.current += 1;
+      const clientId = `c-${Date.now()}-${sendSeqRef.current}`;
       // ChatGPT models: typed `@path` image mentions get an optimistic echo —
       // stripped tokens + asset-protocol icons — while the daemon still
       // receives the original text and does the real conversion server-side.
@@ -4180,6 +4217,7 @@ const TabRuntime = memo(function TabRuntime({
         setPendingImages([]);
         setDraft("");
       }
+      return "sent";
     },
     [
       draftStore,
@@ -4193,6 +4231,44 @@ const TabRuntime = memo(function TabRuntime({
       sendRpc,
       recordAbortDraft,
     ],
+  );
+
+  /** The queue's only writer: parks a message (text and/or attachments) and
+   *  clears the composer, so a send the session cannot take yet is never lost
+   *  and never lingers as a draft the user thinks was thrown away. */
+  const queueSend = useCallback(
+    (sendOrText?: string | QueuedSend, images?: QueuedSend["images"]) => {
+      const attached = images && images.length > 0 ? images : undefined;
+      const item: QueuedSend =
+        sendOrText === undefined
+          ? {
+              text: draftStore.getSnapshot(),
+              ...(pendingImages.length > 0 ? { images: pendingImages } : {}),
+            }
+          : typeof sendOrText === "string"
+            ? { text: sendOrText, ...(attached ? { images: attached } : {}) }
+            : { ...sendOrText, ...(attached ? { images: attached } : {}) };
+      if (!item.text.trim() && !(item.images && item.images.length > 0)) return;
+      dispatch({ t: "enqueue_send", send: item });
+      setDraft("");
+      setPendingImages([]);
+    },
+    [draftStore, setDraft, pendingImages],
+  );
+
+  /** Every composer submit funnels through here. Idle sends go out now; anything
+   *  the session cannot take (a turn, a fold, an unacknowledged send, a session
+   *  mutation in flight) is queued instead of being dropped on the floor, which
+   *  is how a typed message used to disappear with the composer uncleared. */
+  const submitSend = useCallback(
+    (sendOrText?: string | QueuedSend) => {
+      if (engaged || !sessionListSettled) {
+        queueSend(sendOrText);
+        return;
+      }
+      if (send(sendOrText) === "blocked") queueSend(sendOrText);
+    },
+    [engaged, sessionListSettled, queueSend, send],
   );
 
   const abort = useCallback(() => {
@@ -4237,13 +4313,18 @@ const TabRuntime = memo(function TabRuntime({
   }, [state.retryNonce]);
 
   useEffect(() => {
-    // Hold the drain through a fold too: the queued message must land AFTER the
-    // compaction settles, not race it.
-    if (engaged || !state.ready || !sessionListSettled || state.queuedSends.length === 0) return;
+    // The queue's only drain: ONE message per idle edge, strictly FIFO, and only
+    // once the session is genuinely idle — a turn OR a fold OR an unacknowledged
+    // send keeps it parked. The head leaves the queue only after the dispatcher
+    // gave a definitive answer, so a blocked send is retried on the next idle
+    // edge instead of vanishing, and the rest of the queue waits for this
+    // message's turn to finish rather than racing it.
+    if (engaged || !state.ready || !sessionListSettled) return;
     const next = state.queuedSends[0];
     if (!next) return;
-    dispatch({ t: "shift_queued_send" });
-    send(next);
+    const outcome = send(next);
+    if (outcome === "sent") dispatch({ t: "shift_queued_send" });
+    else if (outcome === "empty") dispatch({ t: "dequeue_send", index: 0 });
   }, [engaged, sessionListSettled, state.ready, state.queuedSends, send]);
 
   useEffect(() => {
@@ -5125,7 +5206,7 @@ const TabRuntime = memo(function TabRuntime({
                         ) : null}
                         {view.messages.length === 0 ? (
                           <EmptyState
-                            onPick={(text) => send(text)}
+                            onPick={(text) => submitSend(text)}
                             workspaceDir={state.settings?.workspaceDir}
                           />
                         ) : null}
@@ -5255,7 +5336,7 @@ const TabRuntime = memo(function TabRuntime({
 
               <Composer
                 draftStore={draftStore}
-                onSend={(text) => send(text)}
+                onSend={(text) => submitSend(text)}
                 quickSends={allQuickSends(state.settings?.quickSends ?? [])}
                 activeQuickSendId={activeQuickSend.id}
                 onPickQuickSend={(id) => saveSettings({ quickSendId: id })}
@@ -5314,15 +5395,7 @@ const TabRuntime = memo(function TabRuntime({
                 onEditModeChange={applyEditMode}
                 workspaceDir={state.settings?.workspaceDir}
                 queuedSends={state.queuedSends}
-                onQueueWhileBusy={(sendOrText, images) => {
-                  const send: QueuedSend =
-                    typeof sendOrText === "string"
-                      ? { text: sendOrText, images }
-                      : { ...sendOrText, ...(images ? { images } : {}) };
-                  dispatch({ t: "enqueue_send", send });
-                  setDraft("");
-                  setPendingImages([]);
-                }}
+                onQueueWhileBusy={(sendOrText, images) => queueSend(sendOrText, images)}
                 onDequeueSend={(index) => dispatch({ t: "dequeue_send", index })}
                 onEditQueuedSend={(index) => {
                   const item = state.queuedSends[index];

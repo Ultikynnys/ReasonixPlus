@@ -24,20 +24,19 @@ describe("PROVIDER_REASONING_EFFORTS", () => {
 
   it("matches each endpoint's contract", () => {
     expect(providerReasoningEfforts("deepseek")).toEqual(["low", "high", "max"]);
-    expect(providerReasoningEfforts("zai")).toEqual(["low", "high", "max"]);
-    expect(providerReasoningEfforts("opencode")).toEqual(["low", "medium", "high"]);
+    expect(providerReasoningEfforts("zai")).toEqual([]);
+    expect(providerReasoningEfforts("opencode")).toEqual([]);
     expect(providerReasoningEfforts("openai")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     // MiMo differentiates reasoning only on/off (its `thinking` toggle) → no ladder.
     expect(providerReasoningEfforts("mimo")).toEqual([]);
 
-    // The gateway 400s an unsupported reasoning_effort, so nothing is ever sent.
-    expect(providerReasoningEfforts("experiential")).toEqual([]);
+    expect(providerReasoningEfforts("experiential")).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 });
 
 describe("reasoningEffortsFor", () => {
   it("falls back to the static set when the model declares no options", () => {
-    expect(reasoningEffortsFor("zai")).toEqual(["low", "high", "max"]);
+    expect(reasoningEffortsFor("zai")).toEqual([]);
     expect(reasoningEffortsFor("openai", undefined)).toEqual([
       "low",
       "medium",
@@ -59,8 +58,8 @@ describe("reasoningEffortsFor", () => {
   });
 
   it("falls back to the opencode default when the model declares none", () => {
-    expect(reasoningEffortsFor("opencode", undefined)).toEqual(["low", "medium", "high"]);
-    expect(reasoningEffortsFor("opencode", null)).toEqual(["low", "medium", "high"]);
+    expect(reasoningEffortsFor("opencode", undefined)).toEqual([]);
+    expect(reasoningEffortsFor("opencode", null)).toEqual([]);
   });
 
   it("treats an empty list as no effort control", () => {

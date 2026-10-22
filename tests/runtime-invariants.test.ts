@@ -278,6 +278,34 @@ describe("eventize", () => {
     ({ turn: 1, role: "status", content: "", ...partial }) as LoopEvent;
 
   describe("Eventizer.consume", () => {
+    /** One streamed tool-call delta, as the provider emits it. */
+    const streamDelta = (e: Eventizer, turn: number, name: string, idx: number, callId?: string) =>
+      e.consume(
+        lev({
+          turn,
+          role: "tool_call_delta",
+          toolName: name,
+          toolCallIndex: idx,
+          ...(callId === undefined ? {} : { toolCallId: callId }),
+        }),
+        ctx,
+      );
+    /** The card a delta announced, if it announced one. */
+    const cardOf = (out: Event[]) =>
+      out.find((ev) => ev.type === "tool.preparing") as
+        | { callId: string; name: string }
+        | undefined;
+    /** Dispatch a call and return the wire id its card claimed. */
+    const dispatchWireId = (e: Eventizer, turn: number, callId: string, name: string) =>
+      (
+        e
+          .consume(lev({ turn, role: "tool_start", callId, toolName: name, toolArgs: "{}" }), ctx)
+          .find((ev) => ev.type === "tool.intent") as { callId: string }
+      ).callId;
+    /** Close one iteration the way the loop does, so the next delta starts a new one. */
+    const endIteration = (e: Eventizer, turn: number) =>
+      e.consume(lev({ turn, role: "assistant_final", content: "…" }), ctx);
+
     it("synthesizes model.turn.started on first event of a new turn", () => {
       const e = new Eventizer();
       const out = e.consume(lev({ turn: 1, role: "status", content: "thinking" }), ctx);
@@ -477,6 +505,47 @@ describe("eventize", () => {
           .consume(lev({ turn: 1, role: "tool", callId: "loop-b", content: "B" }), ctx)
           .find((ev) => ev.type === "tool.result"),
       ).toMatchObject({ callId: secondWireId, output: "B" });
+    });
+
+    it("restarts wire callIds per instance, so cards are keyed by turn as well", () => {
+      // A model switch / failover rebuilds the runtime over the same tab, which
+      // restarts the sequence: an id alone cannot identify a card, so the desktop
+      // settles a result by (turn, callId). See the tool.result reducer.
+      expect(dispatchWireId(new Eventizer(), 3, "call-b", "search_content")).toBe(
+        dispatchWireId(new Eventizer(), 1, "call-a", "web_search"),
+      );
+    });
+
+    it("announces each iteration's calls even when their indices restart at 0", () => {
+      const e = new Eventizer();
+      const first = cardOf(streamDelta(e, 1, "web_search", 0));
+      endIteration(e, 1);
+      const second = cardOf(streamDelta(e, 1, "search_content", 0));
+      expect([first?.name, second?.name]).toEqual(["web_search", "search_content"]);
+      expect(second?.callId).not.toBe(first?.callId);
+    });
+
+    it("pairs a second iteration's calls with the cards their own indices announced", () => {
+      const e = new Eventizer();
+      // Iteration 1 announces a call the repair pass then drops (no dispatch).
+      cardOf(streamDelta(e, 1, "read_file", 0));
+      endIteration(e, 1);
+      // Iteration 2 fans out; its indices restart at 0.
+      const names = ["web_search", "web_fetch", "search_content"];
+      const cards = names.map((name, idx) => cardOf(streamDelta(e, 1, name, idx)));
+      expect(cards.map((card) => card?.name)).toEqual(names);
+      const wired = names.map((name, idx) => dispatchWireId(e, 1, `loop-${idx}`, name));
+      expect(wired).toEqual(cards.map((card) => card?.callId));
+    });
+
+    it("keeps a dropped call's announced card off the next dispatched call", () => {
+      const e = new Eventizer();
+      const dropped = cardOf(streamDelta(e, 1, "web_search", 0, "call-dropped"));
+      endIteration(e, 1);
+      // This provider names no calls, so pairing falls back to announce order.
+      const live = cardOf(streamDelta(e, 1, "search_content", 0));
+      expect(dispatchWireId(e, 1, "call-live", "search_content")).toBe(live?.callId);
+      expect(live?.callId).not.toBe(dropped?.callId);
     });
 
     it("classifies error-shaped tool results as ok=false", () => {

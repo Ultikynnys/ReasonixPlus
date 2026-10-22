@@ -6,6 +6,7 @@ import {
   type ProviderBalanceShape,
   messageOf,
   providerSpec,
+  reasoningEffortsFor,
   sleep,
   stripProviderQualifier,
 } from "@reasonix/core-utils";
@@ -15,19 +16,21 @@ import {
   DEFAULT_ZAI_CHAT_URL,
   DEFAULT_ZAI_CODING_CHAT_URL,
   deriveNativeOllamaOrigin,
-  effectiveReasoningEffort,
   loadMimoDisableThinkingWithTools,
   loadOllamaGenerationSettings,
   loadOllamaNumCtx,
   loadRateLimit,
   providerForModel,
   resolveBaseUrlEnv,
+  supportedReasoningEfforts,
 } from "./config.js";
 import { tryParseJson } from "./core/parse-json.js";
 import { recordDiagnostic } from "./diagnostics.js";
 import { createLogger } from "./logging.js";
 import { messageText } from "./loop/messages.js";
-import { showPayloadContextLength } from "./ollama-model-map.js";
+import { showPayloadContextLength, showPayloadThinking } from "./ollama-model-map.js";
+import { type OllamaThinkingCapability, recordOllamaThinking } from "./ollama-thinking.js";
+import { type ReasoningControl, reasoningControl } from "./reasoning-control.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { buildResponsesPayload } from "./responses-api.js";
 import { type RetryOptions, fetchWithRetryProgress } from "./retry.js";
@@ -41,6 +44,15 @@ const log = createLogger("client");
 /** How long a learned Ollama context window is trusted before re-probing
  *  `/api/show` (model registry changes are rare; 10 min keeps it fresh). */
 const OLLAMA_SHOW_PROBE_TTL_MS = 10 * 60_000;
+
+/** `/api/show` facts one Ollama request needs: the context window, plus the
+ *  thinking controls the server reports for that model. */
+interface OllamaShow {
+  at: number;
+  numCtx?: number;
+  contextTokens?: number;
+  thinking?: OllamaThinkingCapability;
+}
 
 /** Cache-hit (cache-read) tokens under whatever spelling the provider used: the
  *  single owner of that normalization. Returns undefined when no spelling is
@@ -320,22 +332,44 @@ function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Map reasoningEffort / thinking to Ollama's `think` field — mirrors Ollama's
- *  own thinkFromReasoningEffort ladder (none→false, minimal→low, xhigh/ultra→max). */
-function ollamaThinkValue(opts: ChatRequestOptions): boolean | string | undefined {
-  if (opts.thinking === "enabled") return true;
-  if (opts.thinking === "disabled") return false;
-  switch (opts.reasoningEffort) {
-    case "low":
-    case "medium":
-    case "high":
-      return opts.reasoningEffort;
-    case "xhigh":
-    case "max":
-      return "max";
-    default:
-      return undefined;
+/** Cloud Code thinkingConfig for one Antigravity model. Gemini models take
+ *  camelCase levels or budgets; the Claude thinking builds served on the same
+ *  transport take snake_case budget keys. `include_thoughts` only asks for the
+ *  summary back, so it never stands in for depth. */
+function antigravityThinkingConfig(
+  control: ReasoningControl,
+): Record<string, unknown> | undefined {
+  const { contract } = control;
+  if (contract.control === "none") return undefined;
+  const on = control.thinking !== "disabled";
+  if (contract.control === "gemini-level") {
+    return { includeThoughts: on, ...(control.effort ? { thinkingLevel: control.effort } : {}) };
   }
+  if (contract.control === "gemini-budget") {
+    if (control.budget === undefined) return undefined;
+    // 0 is Google's documented "no thinking" value on the Flash builds.
+    return { includeThoughts: on, thinkingBudget: on ? control.budget : 0 };
+  }
+  // A Claude thinking build cannot switch thinking off here, so a disabled
+  // request just omits the budget and keeps the model's own default.
+  return control.budget === undefined
+    ? { include_thoughts: on }
+    : { include_thoughts: on, thinking_budget: control.budget };
+}
+
+/** A selected level outranks a
+ *  bare "enabled" toggle because Ollama treats `true` as the model default and
+ *  silently falls back to that default for a name the model never advertised. */
+function ollamaThinkValue(
+  control: ReasoningControl,
+  capability?: OllamaThinkingCapability,
+): boolean | string | undefined {
+  // `values: [false]` means the model cannot think; any `think` value is invalid.
+  if (capability && !capability.allowsOn) return undefined;
+  if (control.thinking === "disabled") return false;
+  if (control.effort) return control.effort;
+  if (control.thinking === "enabled") return true;
+  return undefined;
 }
 
 export interface ChatResponse {
@@ -630,8 +664,8 @@ export class DeepSeekClient {
     { messages: readonly ChatMessage[]; toolsKey: string }
   >();
 
-  /** Learned context windows per Ollama model (from `/api/show`), with timestamps. */
-  private readonly ollamaContextCache = new Map<string, { at: number; contextTokens?: number }>();
+  /** Facts learned from Ollama `/api/show` per model, with timestamps. */
+  private readonly ollamaShowCache = new Map<string, OllamaShow>();
 
   constructor(opts: DeepSeekClientOptions = {}) {
     // Keyless endpoints (local Ollama, Antigravity Gemini) must NOT fall back
@@ -827,11 +861,11 @@ export class DeepSeekClient {
       (isOllama
         ? `${deriveNativeOllamaOrigin(this.baseUrl)}/api/chat`
         : `${this.zaiResolvedBase ?? this.baseUrl}/chat/completions`);
-    const ollamaNumCtx = isOllama ? await this.resolveOllamaNumCtx(opts) : undefined;
+    const ollamaShow = isOllama ? await this.resolveOllamaShow(opts) : undefined;
     const init: RequestInit = {
       method: "POST",
       headers,
-      body: stringifyJsonTransport(this.buildPayload(opts, stream, transport, ollamaNumCtx)),
+      body: stringifyJsonTransport(this.buildPayload(opts, stream, transport, ollamaShow)),
       signal,
     };
     try {
@@ -871,7 +905,7 @@ export class DeepSeekClient {
           `${this.baseUrl}/chat/completions`,
           {
             ...init,
-            body: stringifyJsonTransport(this.buildPayload(opts, stream, null, ollamaNumCtx)),
+            body: stringifyJsonTransport(this.buildPayload(opts, stream, null, ollamaShow)),
           },
           { ...this.retry, signal },
         );
@@ -982,31 +1016,43 @@ export class DeepSeekClient {
     opts: ChatRequestOptions,
     stream: boolean,
     transport: ResolvedTransport | null,
-    ollamaNumCtx?: number,
+    ollamaShow?: OllamaShow,
   ) {
-    // Clamp once, up front: the effort a provider(model) accepts, or undefined
-    // when the model has no effort ladder (toggle/budget-only) so both payload
-    // builders omit the field instead of sending an invalid value.
-    const reasoningEffort = effectiveReasoningEffort(opts.model, opts.reasoningEffort);
-    // The ChatGPT Codex backend speaks the Responses API — chat-completions
-    // fields (messages, stream_options, max_tokens, ...) are rejected with a
-    // 400, so the whole payload is converted.
-    if (transport?.api === "responses") {
-      return buildResponsesPayload(
-        { ...opts, reasoningEffort },
-        stream,
-        providerForModel(opts.model),
-      );
-    }
     const provider = providerForModel(opts.model);
     // Request quirks are declared per provider (`wire`), so adding or deleting a
     // provider file never needs a branch here.
     const wire = providerSpec(provider)?.wire ?? DEFAULT_PROVIDER_WIRE;
+    // Xiaomi documents reasoning text interfering with tool-call extraction, so
+    // the stored preference can force thinking off on tool requests. Shared by
+    // both transports: it is a product decision, not a wire quirk.
+    const thinking =
+      provider === "mimo" && opts.tools?.length && loadMimoDisableThinkingWithTools()
+        ? ("disabled" as const)
+        : opts.thinking;
+    // Ollama's ladder is whatever the model advertised in `/api/show`. Without a
+    // probe the declared family rules stand in, and an unknown tag declares none.
+    const supported =
+      wire.format === "ollama-native" && ollamaShow?.thinking
+        ? reasoningEffortsFor("ollama", ollamaShow.thinking.levels)
+        : supportedReasoningEfforts(opts.model);
+    const control = reasoningControl({
+      provider,
+      model: opts.model,
+      reasoningEffort: opts.reasoningEffort,
+      thinking,
+      supported,
+    });
+    // The ChatGPT Codex backend speaks the Responses API — chat-completions
+    // fields (messages, stream_options, max_tokens, ...) are rejected with a
+    // 400, so the whole payload is converted.
+    if (transport?.api === "responses") {
+      return buildResponsesPayload(opts, stream, provider, control);
+    }
     // Ollama speaks its native `/api/chat` wire format — `options.num_ctx`,
     // `keep_alive` and `think` are all silently dropped by the OpenAI-compat
     // endpoint, so this branch never reaches the chat-completions payload below.
     if (wire.format === "ollama-native") {
-      return this.buildOllamaPayload(opts, stream, ollamaNumCtx);
+      return this.buildOllamaPayload(opts, stream, control, ollamaShow);
     }
     const payload: Record<string, unknown> = {
       // `ollama/<id>` and `<provider>/<id>` namespacing is client-side routing —
@@ -1036,28 +1082,28 @@ export class DeepSeekClient {
     // provider that declares no style never receives the field.
     switch (wire.thinking) {
       case "zai-top-level":
-        if (opts.thinking) payload.thinking = { type: "enabled", clear_thinking: false };
+        // GLM-5.3 cannot disable thinking and reasoning_effort only applies while
+        // thinking is on, so a forced model always reports "enabled" here.
+        if (control.thinking) {
+          payload.thinking = { type: control.thinking, clear_thinking: false };
+        }
         if (wire.toolStream && stream && opts.tools?.length) payload.tool_stream = true;
         break;
-      case "mimo-top-level": {
-        // Xiaomi documents reasoning text interfering with tool-call extraction,
-        // so the stored preference can force it off on tool requests.
-        const thinking =
-          opts.tools?.length && loadMimoDisableThinkingWithTools() ? "disabled" : opts.thinking;
-        if (thinking) payload.thinking = { type: thinking };
+      case "mimo-top-level":
+        if (control.thinking) payload.thinking = { type: control.thinking };
         break;
-      }
-      case "extra-body":
-        // Azure serves DeepSeek but 400s `extra_body`, so this style also checks it.
-        if (opts.thinking && !this._isAzureEndpoint()) {
-          payload.extra_body = { thinking: { type: opts.thinking } };
+      case "top-level":
+        // Azure serves DeepSeek but rejects its thinking field (400), so the
+        // guard lives here rather than in the declaration.
+        if (control.thinking && !this._isAzureEndpoint()) {
+          payload.thinking = { type: control.thinking };
         }
         break;
       case null:
         break;
     }
-    if (reasoningEffort && wire.reasoningEffort) {
-      payload.reasoning_effort = reasoningEffort;
+    if (control.effort && wire.reasoningEffort) {
+      payload.reasoning_effort = control.effort;
     }
     return payload;
   }
@@ -1067,7 +1113,8 @@ export class DeepSeekClient {
   private buildOllamaPayload(
     opts: ChatRequestOptions,
     stream: boolean,
-    ollamaNumCtx?: number,
+    control: ReasoningControl,
+    ollamaShow?: OllamaShow,
   ): Record<string, unknown> {
     const resolved = loadOllamaGenerationSettings();
     const options: Record<string, unknown> = {};
@@ -1080,7 +1127,7 @@ export class DeepSeekClient {
     if (minP !== undefined) options.min_p = minP;
     const seed = opts.ollama?.seed ?? resolved.seed;
     if (seed !== undefined) options.seed = seed;
-    if (ollamaNumCtx !== undefined) options.num_ctx = ollamaNumCtx;
+    if (ollamaShow?.numCtx !== undefined) options.num_ctx = ollamaShow.numCtx;
     // Request values override centralized environment/config/default resolution.
     const repeatPenalty = opts.ollama?.repeatPenalty ?? resolved.repeatPenalty;
     if (repeatPenalty !== undefined) options.repeat_penalty = repeatPenalty;
@@ -1115,14 +1162,14 @@ export class DeepSeekClient {
     payload.keep_alive = opts.ollama?.keepAlive ?? resolved.keepAlive;
     if (opts.tools?.length) payload.tools = opts.tools;
     if (opts.responseFormat?.type === "json_object") payload.format = "json";
-    const think = ollamaThinkValue(opts);
+    const think = ollamaThinkValue(control, ollamaShow?.thinking);
     if (think !== undefined) payload.think = think;
     return payload;
   }
 
   /** Azure OpenAI-compatible endpoints do not accept DeepSeek's proprietary
-   *  `extra_body.thinking` field (they reject the request with 400).  We still
-   *  send `reasoning_effort`, which Azure *does* support. */
+   *  `thinking` field (they reject the request with 400). We still send
+   *  `reasoning_effort`, which Azure *does* support. */
   private _isAzureEndpoint(): boolean {
     try {
       const host = new URL(this.baseUrl).hostname;
@@ -1744,9 +1791,15 @@ export class DeepSeekClient {
       ...(opts.maxTokens !== undefined ? { maxOutputTokens: opts.maxTokens } : {}),
     };
     const wireModel = stripProviderQualifier(opts.model);
-    if (wireModel.startsWith("gemini-") && opts.thinking !== undefined) {
-      generationConfig.thinkingConfig = { includeThoughts: opts.thinking === "enabled" };
-    }
+    const control = reasoningControl({
+      provider: "gemini",
+      model: wireModel,
+      reasoningEffort: opts.reasoningEffort,
+      thinking: opts.thinking,
+      supported: supportedReasoningEfforts(opts.model),
+    });
+    const thinkingConfig = antigravityThinkingConfig(control);
+    if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
     if (Object.keys(generationConfig).length > 0) request.generationConfig = generationConfig;
     if (systemInstruction) {
       request.systemInstruction = { role: "user", parts: [{ text: systemInstruction }] };
@@ -1980,36 +2033,46 @@ export class DeepSeekClient {
     }
   }
 
-  /** num_ctx for an Ollama request: explicit option > config/env > a lazy
-   *  `/api/show` probe (cached, fail-soft) > DEFAULT_CONTEXT_TOKENS (128K) — so
-   *  server and the client agree on the default context window. */
-  private async resolveOllamaNumCtx(opts: ChatRequestOptions): Promise<number> {
-    if (opts.ollama?.numCtx !== undefined) return opts.ollama.numCtx;
+  /** `/api/show` facts for a request: the context window plus the model's
+   *  thinking controls, cached until the probe TTL expires. Fail-soft: a failed
+   *  probe leaves the documented defaults in place. */
+  private async resolveOllamaShow(opts: ChatRequestOptions): Promise<OllamaShow> {
+    const cached = this.ollamaShowCache.get(opts.model);
+    const probe =
+      cached && Date.now() - cached.at < OLLAMA_SHOW_PROBE_TTL_MS
+        ? cached
+        : await this.probeOllamaShow(opts.model);
+    if (probe !== cached) this.ollamaShowCache.set(opts.model, probe);
     const configured = loadOllamaNumCtx();
-    if (configured !== undefined) return configured;
-    const cached = this.ollamaContextCache.get(opts.model);
-    if (cached && Date.now() - cached.at < OLLAMA_SHOW_PROBE_TTL_MS) {
-      return cached.contextTokens ?? DEFAULT_CONTEXT_TOKENS;
-    }
-    const contextTokens = await this.probeOllamaContextLength(opts.model);
-    this.ollamaContextCache.set(opts.model, { at: Date.now(), contextTokens });
-    return contextTokens ?? DEFAULT_CONTEXT_TOKENS;
+    return {
+      ...probe,
+      numCtx: opts.ollama?.numCtx ?? configured ?? probe.contextTokens ?? DEFAULT_CONTEXT_TOKENS,
+    };
   }
 
-  /** GET {origin}/api/show — the model's max context length, not the runner's
-   *  current num_ctx. Fail-soft: unknown means the caller sends no num_ctx. */
-  private async probeOllamaContextLength(model: string): Promise<number | undefined> {
+  /** GET {origin}/api/show — the model's max context length and its `thinking`
+   *  controls. Fail-soft: an unknown fact is simply absent. */
+  private async probeOllamaShow(model: string): Promise<OllamaShow> {
+    const at = Date.now();
     try {
+      const wireModel = stripProviderQualifier(model);
       const resp = await this._fetch(
-        `${deriveNativeOllamaOrigin(this.baseUrl)}/api/show?model=${encodeURIComponent(
-          stripProviderQualifier(model),
-        )}`,
+        `${deriveNativeOllamaOrigin(this.baseUrl)}/api/show?model=${encodeURIComponent(wireModel)}`,
         { headers: await this.authHeaders(), signal: AbortSignal.timeout(10_000) },
       );
-      if (!resp.ok) return undefined;
-      return showPayloadContextLength(await resp.json().catch(() => undefined));
+      if (!resp.ok) return { at };
+      const data = await resp.json().catch(() => undefined);
+      const contextTokens = showPayloadContextLength(data);
+      const thinking = showPayloadThinking(data);
+      // Persisted so the desktop picker offers the ladder this server reported.
+      recordOllamaThinking(wireModel, thinking);
+      return {
+        at,
+        ...(contextTokens !== undefined ? { contextTokens } : {}),
+        ...(thinking !== undefined ? { thinking } : {}),
+      };
     } catch {
-      return undefined;
+      return { at };
     }
   }
 

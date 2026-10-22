@@ -33,7 +33,15 @@
   "speechModels": [],
   "vision": { "predicate": "antigravity" },
   "modelFilter": "antigravity",
-  "reasoningEfforts": ["low", "medium", "high"],
+  "reasoningEfforts": [],
+  "reasoningRules": [
+    { "pattern": "^gemini-3-pro(?:$|-)", "efforts": ["low", "high"], "control": "gemini-level" },
+    { "pattern": "^gemini-[3-9](?:$|[.-])", "efforts": ["low", "medium", "high"], "control": "gemini-level" },
+    { "pattern": "^gemini-2\\.5-pro(?:$|-)", "efforts": ["low", "medium", "high"], "control": "gemini-budget", "forcedThinking": true, "budgets": { "low": 1024, "medium": 8192, "high": 32768 } },
+    { "pattern": "^gemini-2\\.5-flash", "efforts": ["low", "medium", "high"], "control": "gemini-budget", "budgets": { "low": 1024, "medium": 8192, "high": 24576 } },
+    { "pattern": "^claude-.*-thinking(?:$|-)", "efforts": ["low", "medium", "high"], "control": "cloudcode-budget", "budgets": { "low": 8192, "medium": 16384, "high": 32768 } },
+    { "pattern": ".*", "efforts": [], "control": "none" }
+  ],
   "endpoint": {
     "strategy": "fixed",
     "default": "https://daily-cloudcode-pa.googleapis.com",

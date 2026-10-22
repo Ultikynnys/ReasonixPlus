@@ -385,7 +385,7 @@ describe("loop-r1-reasoning", () => {
         /* drain */
       }
       expect(
-        (bodies[0]!.extra_body as { thinking?: { type?: string } } | undefined)?.thinking?.type,
+        (bodies[0]!.thinking as { type?: string } | undefined)?.type,
       ).toBe("enabled");
       expect(bodies[0]!.reasoning_effort).toBe("max");
     });
@@ -403,9 +403,9 @@ describe("loop-r1-reasoning", () => {
         /* drain */
       }
       expect(
-        (bodies[0]!.extra_body as { thinking?: { type?: string } } | undefined)?.thinking?.type,
+        (bodies[0]!.thinking as { type?: string } | undefined)?.type,
       ).toBe("disabled");
-      expect(bodies[0]!.reasoning_effort).toBe("high");
+      expect(bodies[0]!.reasoning_effort).toBeUndefined();
     });
 
     it("omits thinking entirely for unknown models (let the server decide)", async () => {
@@ -420,11 +420,11 @@ describe("loop-r1-reasoning", () => {
       for await (const _ev of loop.step("hello")) {
         /* drain */
       }
-      expect(bodies[0]!.extra_body).toBeUndefined();
+      expect(bodies[0]!.thinking).toBeUndefined();
       expect(bodies[0]!.reasoning_effort).toBe("high");
     });
 
-    it("skips extra_body for Azure endpoints (issue #1299)", async () => {
+    it("skips the thinking toggle for Azure endpoints (issue #1299)", async () => {
       const { fetch: fakeFetch, bodies } = capturingFetch([{ content: "done" }]);
       const client = new DeepSeekClient({
         apiKey: "sk-test",
@@ -440,7 +440,7 @@ describe("loop-r1-reasoning", () => {
       for await (const _ev of loop.step("hello")) {
         /* drain */
       }
-      expect(bodies[0]!.extra_body).toBeUndefined();
+      expect(bodies[0]!.thinking).toBeUndefined();
       expect(bodies[0]!.reasoning_effort).toBe("high");
     });
   });

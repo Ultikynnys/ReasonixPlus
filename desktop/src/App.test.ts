@@ -739,6 +739,55 @@ describe("Desktop App reducer — usage", () => {
     expect(next.messages).toEqual([]);
   });
 
+  it("settles a tool result on its own turn when a rebuilt runtime repeats the callId", () => {
+    const inc = (state: ReturnType<typeof initialState>, event: Record<string, unknown>) =>
+      reduce(state, { t: "incoming", event } as unknown as Parameters<typeof reduce>[1]);
+    const tool = (state: ReturnType<typeof initialState>, turn: number) => {
+      const card = state.messages.find((m) => m.kind === "assistant" && m.turn === turn);
+      return card?.kind === "assistant"
+        ? card.segments.find((seg) => seg.kind === "tool")
+        : undefined;
+    };
+
+    // Turn 1 announces a call that never settles (the tab is rebuilt mid-flight).
+    let s = inc(initialState(), {
+      type: "tool.preparing",
+      id: 1,
+      ts: "t",
+      turn: 1,
+      callId: "tc-1",
+      name: "search_content",
+    });
+    // The rebuilt runtime restarts wire ids, so turn 2 opens ANOTHER tc-1 card —
+    // a web search, whose output carries the engine header.
+    s = inc(s, {
+      type: "tool.preparing",
+      id: 2,
+      ts: "t",
+      turn: 2,
+      callId: "tc-1",
+      name: "web_search",
+    });
+    s = inc(s, {
+      type: "tool.result",
+      id: 3,
+      ts: "t",
+      turn: 2,
+      callId: "tc-1",
+      ok: true,
+      output: "engine: playwright-webkit\n\nquery: x",
+    });
+
+    // The engine header belongs to the web_search card it was produced for; the
+    // stale search_content card keeps its own name and waits for the turn settle.
+    expect(tool(s, 1)).toMatchObject({ name: "search_content" });
+    expect((tool(s, 1) as { result?: string } | undefined)?.result).toBeUndefined();
+    expect(tool(s, 2)).toMatchObject({
+      name: "web_search",
+      result: "engine: playwright-webkit\n\nquery: x",
+    });
+  });
+
   it("keeps older streaming cards before newly created notices", () => {
     let s = initialState();
     const act = (action: Parameters<typeof reduce>[1]) => {
@@ -5105,5 +5154,40 @@ describe("Desktop App reducer — queued sends", () => {
     const state = queued();
 
     expect(reduce(state, { t: "clear_queued_sends" })).toBe(state);
+  });
+
+  it("holds an unacknowledged send through an idle probe instead of releasing the turn", () => {
+    // The daemon answers $tab_status before it has picked the user_input up (an
+    // image mention or the MCP bridge parks the turn). Treating that quiet probe
+    // as a lost terminal cleared awaitingAck, and the drain then pushed the next
+    // queued message into a turn that was only just starting.
+    const sending = {
+      ...queued("next"),
+      busy: false,
+      awaitingAck: true,
+      messages: [{ kind: "user" as const, text: "first", clientId: "c-1", turn: 1, ts: 1 }],
+    };
+
+    const probed = reduce(sending, {
+      t: "incoming",
+      event: { type: "$tab_status", busy: false, queued: 0, compacting: false, switching: false },
+    });
+
+    expect(probed.awaitingAck).toBe(true);
+    expect(probed.queuedSends).toHaveLength(1);
+    expect(probed.messages.some((m) => m.kind === "notice")).toBe(false);
+  });
+
+  it("refuses a blank item that would otherwise wedge the head of the queue", () => {
+    const state = queued("first");
+
+    expect(reduce(state, { t: "enqueue_send", send: { text: "   " } })).toBe(state);
+    // An attachments-only send has no text but is still a real message.
+    expect(
+      reduce(state, {
+        t: "enqueue_send",
+        send: { text: " ", images: [{ id: "i1", thumbnail: "data:," }] },
+      }).queuedSends,
+    ).toHaveLength(2);
   });
 });

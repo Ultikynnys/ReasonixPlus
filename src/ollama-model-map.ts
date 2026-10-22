@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicWriteSync, tmpSiblingPath } from "./core/atomic-write";
 import { readJsonFileSilently } from "./core/json-file";
+import type { OllamaThinkingCapability } from "./ollama-thinking";
 import { reasonixHome } from "./reasonix-home";
 
 /** Learned tier verdict for one Ollama model under one account plan. */
@@ -227,6 +228,22 @@ export function showPayloadParameters(
     }
   }
   return Object.keys(params).length > 0 ? params : undefined;
+}
+
+/** Thinking controls from a native `/api/show` payload. `undefined` = the server
+ *  reports no thinking metadata; otherwise the named levels plus whether thinking
+ *  can be switched on at all (`values: [false]` cannot).
+ *  https://docs.ollama.com/capabilities/thinking */
+export function showPayloadThinking(data: unknown): OllamaThinkingCapability | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const raw = (data as Record<string, unknown>).thinking;
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const values = (raw as { values?: unknown }).values;
+  if (!Array.isArray(values)) return { levels: [], allowsOn: true };
+  return {
+    levels: values.filter((v): v is string => typeof v === "string"),
+    allowsOn: values.some((v) => v !== false),
+  };
 }
 
 /** Context window in tokens from a native `/api/show` payload — the

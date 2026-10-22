@@ -48,7 +48,8 @@
     "patterns": ["^(?:syn|infinite):.*:vision$"]
   },
   "modelFilter": null,
-  "reasoningEfforts": [],
+  "modelsDev": "synthetic",
+  "reasoningEfforts": ["low", "medium", "high"],
   "endpoint": {
     "strategy": "standard",
     "default": "https://api.synthetic.new/openai/v1",

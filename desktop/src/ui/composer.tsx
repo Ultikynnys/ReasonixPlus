@@ -550,6 +550,22 @@ export function Composer({
     }
   };
 
+  // One submit path for Enter and the send button, so they can never disagree:
+  // while a turn is engaged the message is handed to the queue (the app clears
+  // the draft and attachments), idle it goes out now.
+  const submitDraft = () => {
+    if (disabled) return;
+    const text = draft.trim();
+    const images = pendingImages && pendingImages.length > 0 ? [...pendingImages] : undefined;
+    if (!text && !images) return;
+    rememberInHistory(draft);
+    if (busy) {
+      onQueueWhileBusy?.(text, images);
+      return;
+    }
+    onSend();
+  };
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     const ta = textareaRef.current;
     if (e.key === "ArrowUp" && ta && ta.selectionStart === 0) {
@@ -570,16 +586,7 @@ export function Composer({
     if (composingRef.current || Date.now() - compositionEndedAtRef.current < 50) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (busy) {
-        const text = draft.trim();
-        const hasPendingImages = pendingImages && pendingImages.length > 0;
-        if ((text || hasPendingImages) && onQueueWhileBusy) {
-          onQueueWhileBusy(text, hasPendingImages ? [...pendingImages] : undefined);
-        }
-      } else if (!disabled && (draft.trim() || (pendingImages && pendingImages.length > 0))) {
-        rememberInHistory(draft);
-        onSend();
-      }
+      submitDraft();
     }
   };
 
@@ -993,12 +1000,7 @@ export function Composer({
                 type="button"
                 className="send-btn"
                 disabled={disabled || !draft.trim()}
-                onClick={() => {
-                  if (!disabled && draft.trim()) {
-                    rememberInHistory(draft);
-                    onSend();
-                  }
-                }}
+                onClick={submitDraft}
               >
                 <I.send size={14} />
               </button>

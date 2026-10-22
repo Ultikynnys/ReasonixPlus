@@ -2,6 +2,7 @@
  *  backend, which 400-rejects chat-completions payloads. */
 
 import { stripProviderQualifier } from "@reasonix/core-utils";
+import type { ReasoningControl } from "./reasoning-control.js";
 import { sanitizeWireToolName } from "./tool-name.js";
 import type { ChatMessage, ChatRequestOptions } from "./types.js";
 
@@ -103,6 +104,7 @@ export function buildResponsesPayload(
   opts: ChatRequestOptions,
   stream: boolean,
   provider?: string,
+  control?: ReasoningControl,
 ): Record<string, unknown> {
   const { instructions, items } = splitMessages(opts.messages);
   // MiMo's Responses implementation rejects unknown fields, so the Codex-only
@@ -128,13 +130,13 @@ export function buildResponsesPayload(
       ...(mimo ? {} : { parallel_tool_calls: false }),
     }));
   }
-  if (opts.reasoningEffort) {
+  if (control?.effort) {
     // Responses nests effort under `reasoning`; `summary: "concise"` mirrors
     // the Codex CLI so reasoning summaries stream back to the UI.
     payload.reasoning = mimo
-      ? { effort: opts.reasoningEffort }
-      : { effort: opts.reasoningEffort, summary: "concise" };
-  } else if (mimo && opts.thinking === "disabled") {
+      ? { effort: control.effort }
+      : { effort: control.effort, summary: "concise" };
+  } else if (mimo && control?.thinking === "disabled") {
     // MiMo's Responses effort enum differentiates only on/off: `none` disables
     // reasoning; omitting `reasoning` leaves MiMo's default (enabled).
     payload.reasoning = { effort: "none" };

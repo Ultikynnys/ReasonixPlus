@@ -96,7 +96,16 @@
     ]
   },
   "modelFilter": null,
-  "reasoningEfforts": ["low", "medium", "high"],
+  "reasoningEfforts": [],
+  "reasoningRules": [
+    { "pattern": "^deepseek-", "efforts": ["low", "high", "max"], "aliases": { "medium": "high", "xhigh": "high" } },
+    { "pattern": "^glm-5\\.3", "efforts": ["low", "high", "max"], "forcedThinking": true },
+    { "pattern": "^glm-5\\.2", "efforts": ["high", "max"], "aliases": { "low": "high", "medium": "high", "xhigh": "max" } },
+    { "pattern": "^gpt-(?:6|5\\.6)", "efforts": ["low", "medium", "high", "xhigh", "max"] },
+    { "pattern": "^gpt-5\\.[2345]", "efforts": ["low", "medium", "high", "xhigh"] },
+    { "pattern": "^(?:gpt-5|gpt-oss|o[134])", "efforts": ["low", "medium", "high"] },
+    { "pattern": "^mimo-", "efforts": [], "control": "none" }
+  ],
   "endpoint": {
     "strategy": "tiered",
     "default": "https://opencode.ai/zen/v1",
