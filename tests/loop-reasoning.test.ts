@@ -197,9 +197,8 @@ describe("loop-r1-reasoning", () => {
         (m) => m.role === "assistant" && (m.tool_calls?.length ?? 0) > 0,
       );
       expect(assistantWithCalls?.reasoning_content).toBe("mimo reasoning before the tool call");
-      // MiMo's thinking toggle rides top-level (CapturedRequest.thinking only maps
-      // the nested extra_body path), and there is no effort ladder.
-      expect((bodies[0]!.body.thinking as { type?: string } | undefined)?.type).toBe("enabled");
+      // MiMo toggles thinking top-level and has no effort ladder.
+      expect(bodies[0]!.thinking).toBe("enabled");
       expect(bodies[0]!.reasoning_effort).toBeUndefined();
     });
 
@@ -384,9 +383,7 @@ describe("loop-r1-reasoning", () => {
       for await (const _ev of loop.step("hello")) {
         /* drain */
       }
-      expect(
-        (bodies[0]!.thinking as { type?: string } | undefined)?.type,
-      ).toBe("enabled");
+      expect(bodies[0]!.thinking).toBe("enabled");
       expect(bodies[0]!.reasoning_effort).toBe("max");
     });
 
@@ -402,9 +399,7 @@ describe("loop-r1-reasoning", () => {
       for await (const _ev of loop.step("hello")) {
         /* drain */
       }
-      expect(
-        (bodies[0]!.thinking as { type?: string } | undefined)?.type,
-      ).toBe("disabled");
+      expect(bodies[0]!.thinking).toBe("disabled");
       expect(bodies[0]!.reasoning_effort).toBeUndefined();
     });
 

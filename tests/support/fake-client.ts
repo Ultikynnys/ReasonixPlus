@@ -68,7 +68,8 @@ export function makeFakeClient(
   const fetchMock = vi.fn(async (_url: unknown, init: { body?: string } | undefined) => {
     const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
     const messages = (body.messages ?? []) as ChatMessage[];
-    const toggle = body.thinking as { type?: string } | undefined;    const req: CapturedRequest = {
+    const toggle = body.thinking as { type?: string } | undefined;
+    const req: CapturedRequest = {
       model: (body.model as string | undefined) ?? "",
       messages,
       tools: body.tools as ToolSpec[] | undefined,

@@ -2,10 +2,8 @@ import { join } from "node:path";
 import { readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
 import { reasonixHome } from "./reasonix-home.js";
 
-/** How an Ollama model's `think` field can be driven, learned from `/api/show`
- *  `thinking`. `levels` holds named levels only: an empty list with `allowsOn`
- *  is a plain toggle, and `allowsOn: false` (`values: [false]`) means the model
- *  cannot think at all, so no `think` value is valid.
+/** How an Ollama model's `think` field can be driven, learned from `/api/show`.
+ *  Empty `levels` with allowsOn is a toggle; allowsOn:false cannot think at all.
  *  https://docs.ollama.com/capabilities/thinking */
 export interface OllamaThinkingCapability {
   levels: string[];

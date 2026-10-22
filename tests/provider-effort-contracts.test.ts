@@ -1,7 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROVIDER_SPECS, modelReasoningContract, modelReasoningEfforts, parseProviderRegistry, providerDeclared, resolveReasoningEffort } from "@reasonix/core-utils";
+import {
+  PROVIDER_SPECS,
+  modelReasoningContract,
+  modelReasoningEfforts,
+  parseProviderRegistry,
+  providerDeclared,
+  resolveReasoningEffort,
+} from "@reasonix/core-utils";
 import { describe, expect, it } from "vitest";
 import { fetchOpencodeModels } from "../src/opencode-models.js";
 
@@ -32,12 +39,17 @@ describe("researched effort contracts", () => {
     });
   }
   it("uses documented aliases rather than generic rank ties", () => {
-    if (providerDeclared("deepseek")) expect(resolveReasoningEffort("deepseek", "deepseek-v4-pro", "xhigh", ["low", "high", "max"])).toBe("high");
-    if (providerDeclared("zai")) expect(resolveReasoningEffort("zai", "glm-5.2", "low", ["high", "max"])).toBe("high");
+    if (providerDeclared("deepseek"))
+      expect(
+        resolveReasoningEffort("deepseek", "deepseek-v4-pro", "xhigh", ["low", "high", "max"]),
+      ).toBe("high");
+    if (providerDeclared("zai"))
+      expect(resolveReasoningEffort("zai", "glm-5.2", "low", ["high", "max"])).toBe("high");
   });
   it("honors an explicit empty discovered ladder", () => {
     for (const spec of PROVIDER_SPECS) {
-      if (modelReasoningContract(spec.id, "unknown").control === "effort") expect(modelReasoningEfforts(spec.id, "unknown", [])).toEqual([]);
+      if (modelReasoningContract(spec.id, "unknown").control === "effort")
+        expect(modelReasoningEfforts(spec.id, "unknown", [])).toEqual([]);
     }
   });
   it("validates rule fields at registry load", () => {
@@ -48,16 +60,43 @@ describe("researched effort contracts", () => {
       { pattern: ".*", efforts: ["ultra"] },
       { pattern: ".*", efforts: ["high"], control: "gemini-budget" },
       { pattern: ".*", efforts: ["high"], control: "none" },
-    ]) expect(() => parseProviderRegistry({ providers: [{ ...spec, reasoningRules: [rule] }] })).toThrow();
+    ])
+      expect(() =>
+        parseProviderRegistry({ providers: [{ ...spec, reasoningRules: [rule] }] }),
+      ).toThrow();
   });
-  it.skipIf(!providerDeclared("opencode"))("preserves explicit empty metadata and Zen precedence", async () => {
-    const home = mkdtempSync(join(tmpdir(), "effort-discovery-"));
-    try {
-      const result = await fetchOpencodeModels({ homeDir: home, force: true, fetchImpl: (async () => new Response(JSON.stringify({
-        opencode: { models: { empty: { reasoning_options: [] }, disabled: { reasoning: false }, shared: { reasoning_options: [{ type: "effort", values: ["high"] }] } } },
-        "opencode-go": { models: { shared: { reasoning_options: [{ type: "effort", values: ["low"] }] } } },
-      }))) as typeof fetch });
-      expect(result.reasoningEfforts.opencode).toMatchObject({ empty: [], disabled: [], shared: ["high"] });
-    } finally { rmSync(home, { recursive: true, force: true }); }
-  });
+  it.skipIf(!providerDeclared("opencode"))(
+    "preserves explicit empty metadata and Zen precedence",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "effort-discovery-"));
+      try {
+        const result = await fetchOpencodeModels({
+          homeDir: home,
+          force: true,
+          fetchImpl: (async () =>
+            new Response(
+              JSON.stringify({
+                opencode: {
+                  models: {
+                    empty: { reasoning_options: [] },
+                    disabled: { reasoning: false },
+                    shared: { reasoning_options: [{ type: "effort", values: ["high"] }] },
+                  },
+                },
+                "opencode-go": {
+                  models: { shared: { reasoning_options: [{ type: "effort", values: ["low"] }] } },
+                },
+              }),
+            )) as typeof fetch,
+        });
+        expect(result.reasoningEfforts.opencode).toMatchObject({
+          empty: [],
+          disabled: [],
+          shared: ["high"],
+        });
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
 });

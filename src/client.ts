@@ -332,29 +332,33 @@ function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Cloud Code thinkingConfig for one Antigravity model. Gemini models take
- *  camelCase levels or budgets; the Claude thinking builds served on the same
- *  transport take snake_case budget keys. `include_thoughts` only asks for the
- *  summary back, so it never stands in for depth. */
-function antigravityThinkingConfig(
+/** Cloud Code thinkingConfig: Gemini takes levels/budgets, the Claude thinking
+ *  builds take snake_case budgets, and include_thoughts only asks for the summary. */
+export function antigravityThinkingConfig(
   control: ReasoningControl,
 ): Record<string, unknown> | undefined {
   const { contract } = control;
   if (contract.control === "none") return undefined;
+  const toggled = control.thinking !== undefined;
   const on = control.thinking !== "disabled";
   if (contract.control === "gemini-level") {
-    return { includeThoughts: on, ...(control.effort ? { thinkingLevel: control.effort } : {}) };
+    if (!toggled && !control.effort) return undefined;
+    return {
+      ...(toggled ? { includeThoughts: on } : {}),
+      ...(control.effort ? { thinkingLevel: control.effort } : {}),
+    };
   }
   if (contract.control === "gemini-budget") {
+    // 0 is Google's documented "no thinking" value on the Flash builds, so an
+    // explicit disable does not need a level; an enabled request does.
+    if (!on) return { includeThoughts: false, thinkingBudget: 0 };
     if (control.budget === undefined) return undefined;
-    // 0 is Google's documented "no thinking" value on the Flash builds.
-    return { includeThoughts: on, thinkingBudget: on ? control.budget : 0 };
+    return { includeThoughts: true, thinkingBudget: control.budget };
   }
-  // A Claude thinking build cannot switch thinking off here, so a disabled
-  // request just omits the budget and keeps the model's own default.
-  return control.budget === undefined
-    ? { include_thoughts: on }
-    : { include_thoughts: on, thinking_budget: control.budget };
+  // A Claude thinking build cannot switch thinking off here, so a budget is the
+  // only thing worth sending; without one, leave the model's own default alone.
+  if (control.budget === undefined) return undefined;
+  return { include_thoughts: on, thinking_budget: control.budget };
 }
 
 /** A selected level outranks a
@@ -2286,14 +2290,41 @@ function stampWireMessageIds(messages: readonly ChatMessage[]): ChatMessage[] {
   });
 }
 
-/** Transcript-only bookkeeping must never reach the wire: `synthetic` marks machine
- *  records, `ts` is when the record was written, `model` which model produced it.
- *  Verbatim payload builders would hand a strict provider an unknown field. */
+/** Every ChatMessage field, classified for the wire boundary. `satisfies` is
+ *  exhaustive in both directions, so a field added to ChatMessage fails to compile
+ *  until it is classified — no bookkeeping key can reach a provider unnoticed. */
+const MESSAGE_FIELD_KIND = {
+  role: "wire",
+  content: "wire",
+  id: "wire",
+  name: "wire",
+  tool_call_id: "wire",
+  tool_calls: "wire",
+  reasoning_content: "wire",
+  synthetic: "transcript",
+  injected: "transcript",
+  ts: "transcript",
+  model: "transcript",
+} as const satisfies Record<keyof ChatMessage, "wire" | "transcript">;
+
+/** Derived, never hand-listed: one table decides what the predicate sees and what
+ *  the strip removes, so the two can never fall out of step. */
+const TRANSCRIPT_ONLY_FIELDS = Object.entries(MESSAGE_FIELD_KIND)
+  .filter(([, kind]) => kind === "transcript")
+  .map(([field]) => field as keyof ChatMessage);
+
+/** Transcript-only bookkeeping never reaches the wire: `synthetic` and `injected`
+ *  mark machine-written records, `ts` when one was written, `model` which model
+ *  produced it. Strict gateways 400 the key by name ("messages.2.injected"). */
 export function stripTranscriptMarkers(messages: readonly ChatMessage[]): ChatMessage[] {
-  if (!messages.some((m) => m.synthetic === true || m.ts !== undefined || m.model !== undefined)) {
-    return [...messages];
-  }
-  return messages.map(({ synthetic: _synthetic, ts: _ts, model: _model, ...rest }) => rest);
+  const marked = (message: ChatMessage): boolean =>
+    TRANSCRIPT_ONLY_FIELDS.some((field) => message[field] !== undefined);
+  if (!messages.some(marked)) return [...messages];
+  return messages.map((message) => {
+    const wire = { ...message };
+    for (const field of TRANSCRIPT_ONLY_FIELDS) delete (wire as Record<string, unknown>)[field];
+    return wire;
+  });
 }
 
 // Mid-stream chat-completions error frame → {message, code}. `type:

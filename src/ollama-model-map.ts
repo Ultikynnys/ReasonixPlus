@@ -230,9 +230,8 @@ export function showPayloadParameters(
   return Object.keys(params).length > 0 ? params : undefined;
 }
 
-/** Thinking controls from a native `/api/show` payload. `undefined` = the server
- *  reports no thinking metadata; otherwise the named levels plus whether thinking
- *  can be switched on at all (`values: [false]` cannot).
+/** Thinking controls from `/api/show`: undefined = no metadata, else the named
+ *  levels plus whether thinking can be switched on (`values: [false]` cannot).
  *  https://docs.ollama.com/capabilities/thinking */
 export function showPayloadThinking(data: unknown): OllamaThinkingCapability | undefined {
   if (typeof data !== "object" || data === null) return undefined;

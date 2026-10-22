@@ -31,11 +31,7 @@ export function reasoningControl(input: ReasoningControlInput): ReasoningControl
   // A forced-thinking model cannot honor "disabled": GLM-5.3 and Gemini 2.5 Pro
   // keep thinking on and would reject or ignore the off signal.
   const disabled = input.thinking === "disabled" && !contract.forcedThinking;
-  const thinking = contract.forcedThinking
-    ? "enabled"
-    : disabled
-      ? "disabled"
-      : input.thinking;
+  const thinking = contract.forcedThinking ? "enabled" : disabled ? "disabled" : input.thinking;
   const effort =
     disabled || input.reasoningEffort === undefined
       ? undefined

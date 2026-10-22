@@ -414,7 +414,8 @@ import {
   visionModelsFor,
 } from "../../ollama-model-map.js";
 import { loadOllamaModelsCache, saveOllamaModelsCache } from "../../ollama-models-cache.js";
-import { recordOllamaThinking } from "../../ollama-thinking.js";import { fetchOpencodeModels, opencodeUsagePlan } from "../../opencode-models.js";
+import { recordOllamaThinking } from "../../ollama-thinking.js";
+import { fetchOpencodeModels, opencodeUsagePlan } from "../../opencode-models.js";
 import {
   type OpencodeDeviceFlow,
   beginOpencodeDeviceFlow,

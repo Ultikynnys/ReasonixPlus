@@ -79,7 +79,7 @@ describe("client-deepseek-message-ids", () => {
 });
 
 // Experiential Labs gateway chat: it refuses unknown fields (400,
-// *  unsupported_parameter), so never send extra_body or a reasoning_effort.
+// *  unsupported_parameter), and forwards reasoning effort by its own policy.
 describe("client-experiential", () => {
   function jsonResponse(body: unknown): Response {
     return new Response(JSON.stringify(body), {
@@ -89,7 +89,7 @@ describe("client-experiential", () => {
   }
 
   describe.skipIf(!providerDeclared("experiential"))("Experiential Labs gateway chat", () => {
-    it("never sends extra_body or a thinking toggle, and strips the qualifier", async () => {
+    it("never sends a thinking toggle, strips the qualifier, and forwards a supported effort", async () => {
       let url = "";
       let init: RequestInit | undefined;
       const fetch = vi.fn(async (input, requestInit) => {
@@ -124,7 +124,8 @@ describe("client-experiential", () => {
       expect(body.model).toBe("deepseek-v4-pro");
       expect(body.extra_body).toBeUndefined();
       expect(body.thinking).toBeUndefined();
-      expect(body.reasoning_effort).toBeUndefined();
+      // The gateway forwards an effort its route supports; it never invents one.
+      expect(body.reasoning_effort).toBe("high");
       // Documented fields the gateway refuses on every route must never be sent.
       for (const refused of [
         "audio",
@@ -140,6 +141,53 @@ describe("client-experiential", () => {
         expect(body[refused], `${refused} must be omitted`).toBeUndefined();
       }
       expect(response.content).toBe("ok");
+    });
+
+    it("sends image tool feedback without the injected transcript marker", async () => {
+      let init: RequestInit | undefined;
+      const fetch = vi.fn(async (_input, requestInit) => {
+        init = requestInit as RequestInit;
+        return jsonResponse({ choices: [{ message: { content: "ok" } }] });
+      }) as unknown as typeof globalThis.fetch;
+      const client = new DeepSeekClient({
+        apiKey: "xpl-test-key",
+        baseUrl: "https://api.experientiallabs.ai/v1",
+        fetch,
+      });
+
+      // A see_image result arrives as a machine-written user record. The gateway
+      // validates the message schema strictly and 400s the key by name
+      // ("Invalid value for 'messages.2.injected'"), so it may never be sent.
+      await client.chat({
+        model: "experiential/deepseek-v4.1-flash-1017",
+        messages: [
+          { role: "user", content: "look at the screenshot" },
+          {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              { id: "c1", type: "function", function: { name: "see_image", arguments: "{}" } },
+            ],
+          },
+          { role: "tool", tool_call_id: "c1", name: "see_image", content: "[image]" },
+          {
+            role: "user",
+            injected: true,
+            content: [
+              { type: "text", text: "see_image result" },
+              { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+            ],
+          },
+        ],
+      });
+
+      const body = JSON.parse(String(init?.body)) as { messages: Array<Record<string, unknown>> };
+      expect(body.messages.some((message) => "injected" in message)).toBe(false);
+      // The pixels the record exists to deliver must survive the strip.
+      expect(body.messages.at(-1)?.content).toEqual([
+        { type: "text", text: "see_image result" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+      ]);
     });
 
     it("still sends the thinking toggle for the same model id routed to its native provider", async () => {

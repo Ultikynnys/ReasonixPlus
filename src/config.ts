@@ -50,13 +50,13 @@ import { atomicWriteSync, tmpSiblingPath } from "./core/atomic-write.js";
 import { loadDotMcpJson } from "./mcp/dot-mcp-json.js";
 import { type McpServerSpec, parseMcpSpec } from "./mcp/spec.js";
 import { BUILTIN_MEMORY_TYPES } from "./memory/builtin-types.js";
+import { ollamaThinkingFor } from "./ollama-thinking.js";
 import {
   isDiscoveredOpencodeModel,
   isOpencodeGoModel,
   reasoningEffortsForModel,
 } from "./opencode-models.js";
 import { discoveredProviderModels, isCatalogProvider } from "./provider-models.js";
-import { ollamaThinkingFor } from "./ollama-thinking.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS } from "./telemetry/stats.js";
 import { type ThemeName, isThemeName, resolveThemeName } from "./theme/tokens.js";

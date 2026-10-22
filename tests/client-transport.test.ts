@@ -1464,7 +1464,15 @@ describe("client-ollama-native", () => {
           controller.error(readErr);
         },
       });
-      const fetch = vi.fn(async () => {
+      const fetch = vi.fn(async (input: unknown) => {
+        // The client learns capabilities from `/api/show`; this double models a
+        // server that reports nothing, so only the chat body is exercised.
+        if (String(input).includes("/api/show")) {
+          return new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
         return new Response(body, {
           status: 200,
           headers: { "Content-Type": "application/x-ndjson" },
@@ -1864,6 +1872,30 @@ describe("client-synthetic-marker", () => {
         { role: "user", content: "nudge", name: "nudge-name", synthetic: true },
       ]);
       expect(out).toEqual([{ role: "user", content: "nudge", name: "nudge-name" }]);
+    });
+
+    it("strips the image-feedback marker and keeps the image it delivered", async () => {
+      const { client, captured } = makeFakeClient([{ content: "ok" }]);
+      const image = { type: "image_url" as const, image_url: { url: "data:image/png;base64,AA" } };
+      await client.chat({
+        model: "deepseek-v4-flash",
+        messages: [
+          { role: "user", content: "look at this" },
+          { role: "user", injected: true, content: [image] },
+        ],
+      });
+      expect(captured).toHaveLength(1);
+      for (const message of captured[0]!.messages) {
+        expect("injected" in message).toBe(false);
+      }
+      expect(captured[0]!.messages[1]!.content).toEqual([image]);
+    });
+
+    it("strips every transcript-only field at once, including one set to false", () => {
+      const out = stripTranscriptMarkers([
+        { role: "assistant", content: "x", synthetic: true, injected: false, ts: 1, model: "m" },
+      ]);
+      expect(out).toEqual([{ role: "assistant", content: "x" }]);
     });
   });
 });

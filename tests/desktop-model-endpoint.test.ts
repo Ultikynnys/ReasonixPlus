@@ -182,7 +182,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://ollama.com/v1",
       billingKind: "none",
       deployment: "cloud",
-      reasoningEfforts: ["low", "medium", "high", "max"],
+      reasoningEfforts: [],
     });
   });
 
@@ -193,7 +193,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://ollama.com/v1",
       billingKind: "quota",
       deployment: "cloud",
-      reasoningEfforts: ["low", "medium", "high", "max"],
+      reasoningEfforts: ["low", "high", "max"],
     });
   });
 
@@ -208,7 +208,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://ollama.com/v1",
       billingKind: "none",
       deployment: "cloud",
-      reasoningEfforts: ["low", "medium", "high", "max"],
+      reasoningEfforts: ["low", "high", "max"],
     });
   });
 
@@ -225,7 +225,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "http://localhost:11434",
       billingKind: "none",
       deployment: "local",
-      reasoningEfforts: ["low", "medium", "high", "max"],
+      reasoningEfforts: [],
     });
   });
 
@@ -236,7 +236,7 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://ollama.example.com/v1",
       billingKind: "none",
       deployment: "local",
-      reasoningEfforts: ["low", "medium", "high", "max"],
+      reasoningEfforts: [],
     });
   });
 
@@ -247,14 +247,16 @@ describe("desktop modelEndpointFor (#1529)", () => {
       baseUrl: "https://env.ollama.example.com",
       billingKind: "none",
       deployment: "local",
-      reasoningEfforts: ["low", "medium", "high", "max"],
+      reasoningEfforts: [],
     });
   });
 
-  it("opencode model with no synced options reports the provider default ladder", () => {
+  it("opencode model with no synced options reports no effort ladder", () => {
     const ep = modelEndpointFor("big-pickle", path);
     expect(ep.provider).toBe("opencode");
-    expect(ep.reasoningEfforts).toEqual(["low", "medium", "high"]);
+    // An unknown resold model declares nothing, so the picker offers no level
+    // rather than one the route may reject.
+    expect(ep.reasoningEfforts).toEqual([]);
   });
 
   it("tags a free OpenCode model with the free quota type", () => {
