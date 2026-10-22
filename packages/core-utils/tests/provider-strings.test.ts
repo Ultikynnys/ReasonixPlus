@@ -15,6 +15,7 @@ const KEYS = new Set([
   "quotaLabel",
   "quotaTitle",
   "quotaDualTitle",
+  "quotaLimitedTitle",
   "quotaFiveHourTitle",
   "quotaWeeklyTitle",
   "quotaMonthlyTitle",

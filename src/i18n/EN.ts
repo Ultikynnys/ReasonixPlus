@@ -538,6 +538,8 @@ export const EN: TranslationSchema = {
       "{failed} could not complete this turn, and no configured backup model can run here: their providers have no credential yet. Add a key for one of them in Settings → Models, or add a backup model from a provider that is already set up.",
     failoverAllExhausted:
       "{failed} could not complete this turn, and every backup model was tried and failed too: {models}. Top up a provider, or add another backup model in Settings → Backup models.",
+    failoverBackupUnusable:
+      "Backup model {next} could not be started here: moving on to the next configured backup model.",
     failoverPromptUnavailable:
       "This turn cannot be replayed on {next}: its prompt is no longer the last message in the conversation, because it was compacted away or carried attachments. Send it again to run it on that model.",
     imagePayloadShrunk:

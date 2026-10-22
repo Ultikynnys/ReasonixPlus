@@ -11,6 +11,8 @@ import { makeFakeClient } from "./support/fake-client.js";
 
 const PRIMARY = "deepseek-v4-flash";
 const BACKUP = "deepseek-v4-pro";
+/** A second DeepSeek id: usable here, so it is the next link in the chain. */
+const SECOND_BACKUP = "deepseek-chat";
 /** Accepted official id whose provider needs an OpenAI credential we never set. */
 const UNUSABLE_BACKUP = "gpt-5.6-sol";
 
@@ -141,7 +143,7 @@ describe("subagent quota failover", () => {
     expect(models).toEqual([PRIMARY]);
   });
 
-  it("keeps the primary failure when the backup's client cannot be built", async () => {
+  it("keeps the primary failure when no backup can be built", async () => {
     // A resolver that throws must not turn an honest quota failure into a bare
     // exception escaping the tool.
     const { parsed, models } = await spawn({
@@ -152,5 +154,18 @@ describe("subagent quota failover", () => {
     expect(parsed.success).toBe(false);
     expect(parsed.error).toBeTruthy();
     expect(models).toEqual([PRIMARY]);
+  });
+
+  it("walks past a backup that cannot be built to the next one", async () => {
+    // The chat's chain and this one walk ONE configured list, so a per-model spawn
+    // failure may not end the walk here either: the next backup still has quota.
+    const { parsed, models } = await spawn({
+      fallbackModels: [BACKUP, SECOND_BACKUP],
+      wall: QUOTA_WALL,
+      clientMode: { throwsFor: BACKUP },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.model).toBe(SECOND_BACKUP);
+    expect(models).toEqual([PRIMARY, SECOND_BACKUP]);
   });
 });

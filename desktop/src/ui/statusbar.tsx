@@ -68,7 +68,7 @@ function QuotaChip({
       <span>{label}</span>
       {view && view.windows.length > 0 ? (
         <>
-          <span className="v acc">
+          <span className={view.limited ? "v warn" : "v acc"}>
             {quotaWindowsSummary(view.windows)} {t("statusbar.quotaLeft")}
           </span>
           <span className="conv">{view.plan ?? planFallback}</span>
@@ -223,10 +223,18 @@ export function StatusBar({
   // the provider's declaration, and the copy is that provider's own words.
   const planFallback = specCopy("quotaPlanFallback") ?? "";
   const planName = planUsage?.plan ?? specCopy("quotaPlanName") ?? "";
+  // The provider's own verdict that requests are refused right now, whatever the
+  // percentages say. One read drives both the chip's styling and the tooltip.
+  const quotaLimited = planUsage?.limited === true;
+  const creditText = planUsage?.credit ? planUsage.credit.amount.toFixed(2) : undefined;
   // A provider that bills a plan it cannot always measure still names the plan in
   // the chip (`usage.measures: "plan"`); every other provider shows a dash.
   const chipView: ProviderUsageView | null = planUsage
-    ? { plan: planUsage.plan ?? (planFallback || null), windows: planUsage.windows }
+    ? {
+        plan: planUsage.plan ?? (planFallback || null),
+        windows: planUsage.windows,
+        limited: quotaLimited,
+      }
     : spec?.usage.measures === "plan"
       ? { plan: planFallback || null, windows: [] }
       : null;
@@ -259,7 +267,7 @@ export function StatusBar({
     planLeft: pctOf(windowBy("plan")),
     weeklyResets: formatResetAt(windowBy("wk")?.resetsAt ?? null),
     sessionResets: formatResetAt(fiveHourWindow?.resetsAt ?? null),
-    ...(planUsage?.credit ? { credit: planUsage.credit.amount.toFixed(2) } : {}),
+    ...(creditText ? { credit: creditText } : {}),
   };
   // A "not configured yet" reason is already spelled out by the copy itself, so
   // only a real failure appends its slugs to the tooltip.
@@ -276,6 +284,8 @@ export function StatusBar({
   const quotaChipTitle = !planUsage
     ? `${noDataCopy}${reasonLine}`
     : [
+        // A blocked plan says so first: its percentages alone read as availability.
+        quotaLimited ? specCopy("quotaLimitedTitle", usageVars) : undefined,
         // A provider naming both windows in one sentence declares a dual template;
         // the rest read the single-window one.
         (planUsage.windows.length > 1 ? specCopy("quotaDualTitle", usageVars) : undefined) ??
@@ -290,14 +300,11 @@ export function StatusBar({
               left: pctOf(w),
               resets: formatResetAt(w.resetsAt),
             }),
-          )
-          .filter((line): line is string => !!line),
-        ...(planUsage.credit
-          ? [specCopy("creditTitle", { credit: planUsage.credit.amount.toFixed(2) })].filter(
-              (line): line is string => !!line,
-            )
-          : []),
-      ].join("\n");
+          ),
+        creditText ? specCopy("creditTitle", { credit: creditText }) : undefined,
+      ]
+        .filter((line): line is string => !!line)
+        .join("\n");
   const quotaChip = {
     view: chipView,
     title: quotaChipTitle,

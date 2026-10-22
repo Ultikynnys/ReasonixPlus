@@ -2335,6 +2335,7 @@ export class CacheFirstLoop {
           turn: this._turn,
           role: "warning",
           severity: "high",
+          cause: "empty-response",
           content: emptyReason,
         };
         abandonThinkingOnlyTurn();
@@ -2398,6 +2399,7 @@ export class CacheFirstLoop {
               turn: this._turn,
               role: "warning",
               severity: "high",
+              cause: "thinking-only",
               content: stallReason,
             };
             abandonThinkingOnlyTurn();

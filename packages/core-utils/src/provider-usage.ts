@@ -12,7 +12,7 @@ import type { ProviderUsageWindowLabel } from "./provider-registry.js";
 
 /** A provider's plan label + normalized windows: the part of the `$usage` payload the
  *  chip renders, so the wire type stays the single definition. */
-export type ProviderUsageView = Pick<ProviderUsage, "plan" | "windows" | "credit">;
+export type ProviderUsageView = Pick<ProviderUsage, "plan" | "windows" | "limited" | "credit">;
 
 function parseIso(iso: string | null | undefined): number | null {
   if (!iso) return null;
@@ -21,51 +21,62 @@ function parseIso(iso: string | null | undefined): number | null {
 }
 
 /** One declared window, or nothing when the provider reported no such bucket. Every
- *  window a provider exposes goes through here, so a percentage is clamped to 0-100
- *  and a reset time is either finite epoch-ms or null — a payload cannot make the chip
- *  print "-4%" or "NaN/NaN". */
+ *  window every provider exposes funnels through here: % clamped to 0-100, reset as
+ *  finite epoch-ms or null, and a non-numeric % dropped rather than shown as 0%. */
 function windowOf(
   label: ProviderUsageWindowLabel,
-  from: { remainingPct: number; resetsAt: number | null; limited?: boolean } | null,
+  remaining: number | null | undefined,
+  resetsAt: number | string | null = null,
+  limited?: boolean,
 ): ProviderUsageWindow[] {
-  if (!from) return [];
-  const remainingPct = Number.isFinite(from.remainingPct)
-    ? Math.min(100, Math.max(0, from.remainingPct))
-    : 0;
-  const resetsAt =
-    typeof from.resetsAt === "number" && Number.isFinite(from.resetsAt) ? from.resetsAt : null;
-  const limited = from.limited === true ? { limited: true } : {};
-  return [{ label, remainingPct, resetsAt, ...limited }];
+  if (typeof remaining !== "number" || !Number.isFinite(remaining)) return [];
+  const remainingPct = Math.min(100, Math.max(0, remaining));
+  const resetMs = typeof resetsAt === "number" ? resetsAt : parseIso(resetsAt);
+  const rateLimited = limited === true ? { limited: true } : {};
+  return [
+    {
+      label,
+      remainingPct,
+      resetsAt: Number.isFinite(resetMs) ? resetMs : null,
+      ...rateLimited,
+    },
+  ];
 }
 
-/** Codex app-server windows (5-hour + weekly), normalized. */
+/** Codex app-server windows (5-hour + weekly), normalized. The plan-level limit flag is
+ *  the payload's own verdict: with the 5-hour window spent, the weekly percentage still
+ *  reads high, so no number here can stand in for it. */
 export function codexUsageView(quota: CodexQuota): ProviderUsageView {
-  const iso = (w: { remainingPercent: number; resetsAt: string | null } | null) =>
-    w ? { remainingPct: w.remainingPercent, resetsAt: parseIso(w.resetsAt) } : null;
   return {
     plan: quota.plan ?? null,
-    windows: [...windowOf("5h", iso(quota.fiveHour)), ...windowOf("wk", iso(quota.weekly))],
+    limited: quota.limitReached === true,
+    windows: [
+      ...windowOf("5h", quota.fiveHour?.remainingPercent, quota.fiveHour?.resetsAt),
+      ...windowOf("wk", quota.weekly?.remainingPercent, quota.weekly?.resetsAt),
+    ],
   };
 }
 
 /** Ollama Cloud windows (5-hour session + weekly). `plan` is the account tier
  *  (the payload has no plan field; the daemon passes it in). */
 export function ollamaUsageView(quota: OllamaQuota, plan: string | null = null): ProviderUsageView {
-  const plain = (w: { remainingPct: number; resetsAt?: number | null } | null) =>
-    w ? { remainingPct: w.remainingPct, resetsAt: w.resetsAt ?? null } : null;
   return {
     plan,
-    windows: [...windowOf("5h", plain(quota.session)), ...windowOf("wk", plain(quota.weekly))],
+    windows: [
+      ...windowOf("5h", quota.session?.remainingPct, quota.session?.resetsAt),
+      ...windowOf("wk", quota.weekly?.remainingPct, quota.weekly?.resetsAt),
+    ],
   };
 }
 
 /** Z.AI GLM Coding Plan windows (5-hour + weekly). */
 export function zaiUsageView(quota: Omit<ZaiQuota, "fetchedAt">): ProviderUsageView {
-  const plain = (w: { remainingPct: number; resetsAt?: number | null } | null) =>
-    w ? { remainingPct: w.remainingPct, resetsAt: w.resetsAt ?? null } : null;
   return {
     plan: quota.plan ?? null,
-    windows: [...windowOf("5h", plain(quota.fiveHour)), ...windowOf("wk", plain(quota.weekly))],
+    windows: [
+      ...windowOf("5h", quota.fiveHour?.remainingPct, quota.fiveHour?.resetsAt),
+      ...windowOf("wk", quota.weekly?.remainingPct, quota.weekly?.resetsAt),
+    ],
   };
 }
 
@@ -99,62 +110,68 @@ export function experientialUsageView(
   const bounded = typeof cap === "number" && cap > 0 && typeof spent === "number";
   return {
     plan: spend.tier,
-    windows: bounded
-      ? windowOf("day", { remainingPct: 100 - (spent / cap) * 100, resetsAt: nextUtcMidnight(now) })
-      : [],
+    windows: windowOf("day", bounded ? 100 - (spent / cap) * 100 : null, nextUtcMidnight(now)),
     credit:
       typeof spend.creditUsd === "number" ? { currency: "USD", amount: spend.creditUsd } : null,
   };
 }
 
-/** One window of Synthetic's `/v2/quotas` reply: what the plan allows, what it spent,
- *  and when it renews. Every category speaks these three fields. */
+/** One request-count bucket of Synthetic's `/v2/quotas` reply: what the plan allows,
+ *  what it spent, and when the bucket renews. These buckets reset every few hours and
+ *  are NOT the plan balance the dashboard's weekly-credit gauge draws. */
 export interface SyntheticQuotaWindow {
   limit: number;
   requests: number;
   renewsAt: string | null;
 }
 
-/** Only the subscription category is a plan balance. The reply also carries an hourly
- *  `search` bucket and a daily `freeToolCalls` bucket, which the chip's window labels
- *  (5h/wk/mo/plan) cannot describe without inventing one. */
+/** The reply's `weeklyTokenLimit`: the weekly credit pool, the only field matching the
+ *  "Remaining weekly credits" gauge. It regenerates continuously, so the share is
+ *  never `1 - spentThisWeek/limit` and cannot come from the request buckets. */
+export interface SyntheticCreditWindow {
+  /** % of the weekly pool still available (`percentRemaining`, 0-100). */
+  remainingPct: number;
+  /** Next regeneration tick (`nextRegenAt`), or null when unreported. */
+  nextRegenAt: string | null;
+}
+
 export interface SyntheticQuota {
+  /** Weekly credit pool — the plan balance. */
+  weeklyCredits: SyntheticCreditWindow | null;
+  /** Request-count bucket, kept for diagnostics only: rendering it as a percentage is
+   *  what made the chip claim 100% left while the pool was a fifth spent. */
   subscription: SyntheticQuotaWindow | null;
   fetchedAt: number;
 }
 
-/** Synthetic subscription window: the reply carries counts, not percentages, so the
- *  remaining share is computed here (`requests/limit`). */
+/** Synthetic weekly credit window. The reply states the remaining share directly, so
+ *  it is passed through untouched; a reply without `weeklyTokenLimit` (pay-as-you-go,
+ *  or a bucket we cannot read) yields no window rather than an invented 100%. */
 export function syntheticUsageView(quota: Omit<SyntheticQuota, "fetchedAt">): ProviderUsageView {
-  const window = quota.subscription;
-  const pct =
-    window && Number.isFinite(window.limit) && window.limit > 0
-      ? (window.requests / window.limit) * 100
-      : null;
   return {
     plan: null,
-    windows: windowOf(
-      "5h",
-      pct === null
-        ? null
-        : {
-            remainingPct: 100 - pct,
-            resetsAt: parseIso(window?.renewsAt),
-          },
-    ),
+    windows: windowOf("wk", quota.weeklyCredits?.remainingPct, quota.weeklyCredits?.nextRegenAt),
   };
 }
 
 /** OpenCode Go windows (5-hour rolling + weekly + monthly). */
 export function opencodeUsageView(quota: Omit<OpencodeQuota, "fetchedAt">): ProviderUsageView {
-  const iso = (w: { remainingPct: number; resetsAt: string | null; limited: boolean } | null) =>
-    w ? { remainingPct: w.remainingPct, resetsAt: parseIso(w.resetsAt), limited: w.limited } : null;
   return {
     plan: null,
     windows: [
-      ...windowOf("5h", iso(quota.rolling)),
-      ...windowOf("wk", iso(quota.weekly)),
-      ...windowOf("mo", iso(quota.monthly)),
+      ...windowOf(
+        "5h",
+        quota.rolling?.remainingPct,
+        quota.rolling?.resetsAt,
+        quota.rolling?.limited,
+      ),
+      ...windowOf("wk", quota.weekly?.remainingPct, quota.weekly?.resetsAt, quota.weekly?.limited),
+      ...windowOf(
+        "mo",
+        quota.monthly?.remainingPct,
+        quota.monthly?.resetsAt,
+        quota.monthly?.limited,
+      ),
     ],
   };
 }
@@ -172,12 +189,12 @@ export function mimoUsageView(
     plan: quota?.plan ?? plan,
     windows: windowOf(
       "plan",
-      quota?.status === "available" && typeof quota.remainingPercent === "number"
-        ? { remainingPct: quota.remainingPercent, resetsAt: parseIso(quota.resetsAt) }
-        : null,
+      quota?.status === "available" ? quota.remainingPercent : null,
+      quota?.resetsAt,
     ),
   };
 }
+
 /** Antigravity (Gemini Code Assist) per-model window, normalized. Only the
  *  active model (or the first bucket) is surfaced — one "plan" window. */
 export function antigravityUsageView(
@@ -189,20 +206,15 @@ export function antigravityUsageView(
     plan: quota.plan?.name ?? quota.plan?.tierId ?? null,
     windows: windowOf(
       "plan",
-      active
-        ? {
-            remainingPct: Math.round((1 - active.usedFraction) * 100),
-            resetsAt: parseIso(active.resetTime),
-          }
-        : null,
+      active ? Math.round((1 - active.usedFraction) * 100) : null,
+      active?.resetTime,
     ),
   };
 }
 
-/** Ribbon text for a window list: "5h 70% · wk 88%" for multiple windows,
- *  "88%" for a single window (its label is implied), "" when there are none. */
+/** Ribbon text for a window list: "5h 70% · wk 88%", "" when there are none. Each
+ *  label stays explicit: a bare percentage cannot say which bucket it describes, so a
+ *  weekly-only reading would pass for whole-plan health. */
 export function quotaWindowsSummary(windows: readonly ProviderUsageWindow[]): string {
-  if (windows.length === 0) return "";
-  if (windows.length === 1) return `${Math.round(windows[0]!.remainingPct)}%`;
   return windows.map((w) => `${w.label} ${Math.round(w.remainingPct)}%`).join(" · ");
 }

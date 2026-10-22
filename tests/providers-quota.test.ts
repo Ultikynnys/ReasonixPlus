@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { providerSpec } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type BalanceInfo, pickPrimaryBalance } from "../src/client.js";
+import { parseCodexQuotaPayload } from "../src/codex-backend.js";
 import { readConfig, saveOpencodeOAuth, writeConfig } from "../src/config.js";
 import { isQuotaExhaustedError } from "../src/loop/errors.js";
 import { beginMiMoLoginFlow, decryptMiMoCredential } from "../src/mimo-auth.js";
@@ -1469,5 +1470,111 @@ describe("proxy", () => {
     it("returns null for unparseable values", () => {
       expect(normalizeProxyUrl("http://[invalid:::")).toBeNull();
     });
+  });
+});
+
+describe("codex quota payload", () => {
+  // Captured live from `chatgpt.com/backend-api/wham/usage` for an account whose
+  // 5-hour window is spent. The weekly percentage stays high, so only the payload's
+  // own limit verdict says the plan is blocked.
+  const SPENT_FIVE_HOUR = {
+    plan_type: "plus",
+    rate_limit: {
+      allowed: false,
+      limit_reached: true,
+      primary_window: {
+        used_percent: 100,
+        limit_window_seconds: 18000,
+        reset_after_seconds: 16562,
+        reset_at: 1792655726,
+      },
+      secondary_window: {
+        used_percent: 65,
+        limit_window_seconds: 604800,
+        reset_after_seconds: 446407,
+        reset_at: 1793085571,
+      },
+    },
+    rate_limit_reached_type: { type: "rate_limit_reached", details: "default" },
+  };
+
+  it("identifies the windows by length and carries the limit verdict", () => {
+    const quota = parseCodexQuotaPayload(SPENT_FIVE_HOUR);
+    expect(quota?.plan).toBe("plus");
+    expect(quota?.fiveHour).toMatchObject({ windowMinutes: 300, remainingPercent: 0 });
+    expect(quota?.weekly).toMatchObject({ windowMinutes: 10080, remainingPercent: 35 });
+    expect(quota?.limitReached).toBe(true);
+  });
+
+  it("reads an unblocked payload as not limited", () => {
+    const quota = parseCodexQuotaPayload({
+      ...SPENT_FIVE_HOUR,
+      rate_limit: {
+        ...SPENT_FIVE_HOUR.rate_limit,
+        allowed: true,
+        limit_reached: false,
+        primary_window: { ...SPENT_FIVE_HOUR.rate_limit.primary_window, used_percent: 12 },
+      },
+      rate_limit_reached_type: undefined,
+    });
+    expect(quota?.limitReached).toBe(false);
+    expect(quota?.fiveHour?.remainingPercent).toBe(88);
+  });
+
+  it("accepts the nested envelope and the camelCase legacy window shape", () => {
+    const quota = parseCodexQuotaPayload({
+      rate_limits: {
+        plan_type: "pro",
+        rate_limit: {
+          primaryWindow: { usedPercent: 100, windowDurationMins: 300, resetsAt: 1792655726 },
+          secondaryWindow: { usedPercent: 20, windowDurationMins: 10080, resetsAt: null },
+        },
+      },
+    });
+    expect(quota?.plan).toBe("pro");
+    expect(quota?.fiveHour?.remainingPercent).toBe(0);
+    expect(quota?.weekly?.remainingPercent).toBe(80);
+    // No limit flag in this shape: absence is "not reported", never "limited".
+    expect(quota?.limitReached).toBe(false);
+  });
+
+  it("matches a bucket that reports a length a minute off its label", () => {
+    // The server reports seconds and we round to minutes, so an exact equality would
+    // drop the bucket and leave the chip with no 5-hour number at all.
+    const quota = parseCodexQuotaPayload({
+      plan_type: "plus",
+      rate_limit: {
+        primary_window: { used_percent: 100, limit_window_seconds: 17940 }, // 299 min
+        secondary_window: { used_percent: 10, limit_window_seconds: 608400 }, // 10140 min
+      },
+    });
+    expect(quota?.fiveHour?.remainingPercent).toBe(0);
+    expect(quota?.weekly?.remainingPercent).toBe(90);
+  });
+
+  it("ignores a bucket that is neither window", () => {
+    const quota = parseCodexQuotaPayload({
+      rate_limit: { primary_window: { used_percent: 50, limit_window_seconds: 3600 } },
+    });
+    expect(quota).not.toBeNull();
+    expect(quota?.fiveHour).toBeNull();
+    expect(quota?.weekly).toBeNull();
+  });
+
+  it("reads the limit marker whether the payload spells it as a string or an object", () => {
+    const window = { used_percent: 100, limit_window_seconds: 18000 };
+    const withString = parseCodexQuotaPayload({
+      rate_limit: {
+        allowed: true,
+        rate_limit_reached_type: "rate_limit_reached",
+        primary_window: window,
+      },
+    });
+    expect(withString?.limitReached).toBe(true);
+    // `allowed: false` alone still counts: the server accepted nothing.
+    const refused = parseCodexQuotaPayload({
+      rate_limit: { allowed: false, primary_window: window },
+    });
+    expect(refused?.limitReached).toBe(true);
   });
 });

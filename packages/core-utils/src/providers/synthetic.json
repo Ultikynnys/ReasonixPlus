@@ -94,11 +94,11 @@
   "usage": {
     "probe": "synthetic-quotas",
     "urls": ["https://api.synthetic.new/v2/quotas"],
-    "primaryWindow": "5h"
+    "primaryWindow": "wk"
   },
   "strings": {
     "quotaLabel": "Synthetic usage",
-    "quotaTitle": "Synthetic subscription {left}% left (resets in {resets}) · click to refresh",
+    "quotaTitle": "Synthetic weekly credits {left}% left · next regeneration in {resets} · click to refresh",
     "quotaNoData": "Synthetic usage · no data: add an API key in Settings → Models to see plan usage · click to retry"
   },
   "errors": {

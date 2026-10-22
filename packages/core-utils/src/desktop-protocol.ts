@@ -1272,6 +1272,10 @@ export interface ProviderUsage {
   plan: string | null;
   /** Ordered windows, primary first; empty when the provider reported no numbers. */
   windows: ProviderUsageWindow[];
+  /** The provider's own verdict that the plan is blocked right now (Codex
+   *  `rate_limit.limit_reached`). A spent 5-hour window leaves the weekly reading
+   *  high, so no percentage alone says whether a request will be accepted. */
+  limited?: boolean;
   /** Spendable credit the same payload reported, when it reports one. */
   credit?: { currency: string; amount: number } | null;
 }
@@ -1315,6 +1319,10 @@ export interface CodexQuota {
   fiveHour: CodexQuotaWindow | null;
   /** Weekly window — the primary ribbon value. */
   weekly: CodexQuotaWindow | null;
+  /** The payload's own limit verdict (`allowed: false` / `limit_reached: true`),
+   *  which the percentages do not imply: a spent 5-hour window leaves the weekly
+   *  budget reading high, yet no request is accepted until that window resets. */
+  limitReached: boolean;
   fetchedAt: number;
 }
 

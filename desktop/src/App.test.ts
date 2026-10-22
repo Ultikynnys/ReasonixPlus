@@ -51,6 +51,7 @@ import {
   settingsValueEqual,
   sortSessionsByCreationDescending,
   sortSessionsDescending,
+  turnEngaged,
   workspaceTabRepresentatives,
   writeStamp,
 } from "./App";
@@ -278,6 +279,15 @@ describe("Desktop App reducer — usage", () => {
     expect(resync).toBeDefined();
   });
 
+  it("busy parity: turnEngaged is the one predicate every idle check shares", () => {
+    // The composer, the queue drain, the watchdog and the transcript guard all read
+    // idleness through this function, so none of them can disagree about it.
+    expect(turnEngaged({ busy: false, awaitingAck: false, compacting: false })).toBe(false);
+    expect(turnEngaged({ busy: true, awaitingAck: false, compacting: false })).toBe(true);
+    expect(turnEngaged({ busy: false, awaitingAck: true, compacting: false })).toBe(true);
+    expect(turnEngaged({ busy: false, awaitingAck: false, compacting: true })).toBe(true);
+  });
+
   it("busy parity: $tab_status adopts daemon busy when the UI missed the start", () => {
     const next = reduce(initialState(), {
       t: "incoming",
@@ -350,6 +360,163 @@ describe("Desktop App reducer — usage", () => {
     expect(state.messages.some((m) => m.kind === "notice" && m.text.includes("Resynced"))).toBe(
       false,
     );
+  });
+
+  // The ghost-card class: a session that reads as idle while cards keep landing in
+  // its transcript. Agent output is turn output, and a turn that streams is never
+  // idle — so an idle transcript is closed to new cards, and output that proves a
+  // turn is running adopts the turn instead of painting under an idle composer.
+  describe("ghost cards — an idle chat never grows a card", () => {
+    const contentDelta = (turn: number, text: string) => ({
+      type: "model.delta" as const,
+      id: turn * 100,
+      ts: "2026-05-27T00:00:00.000Z",
+      turn,
+      channel: "content" as const,
+      text,
+    });
+
+    /** One whole turn driven through the same events the daemon sends, left
+     *  settled and idle: the state a ghost card would appear in. */
+    function settledTurn(turn = 1) {
+      let state = reduce(initialState(), {
+        t: "send_user",
+        text: "hello",
+        clientId: `c-${turn}`,
+      });
+      state = reduce(state, { t: "incoming", event: { type: "$turn_started", turn } });
+      state = reduce(state, { t: "incoming", event: contentDelta(turn, "answer") });
+      return reduce(state, {
+        t: "incoming",
+        event: { type: "$turn_complete", outcome: "success", turn },
+      });
+    }
+
+    it("drops late output for a settled turn instead of opening a card", () => {
+      const idle = settledTurn();
+      expect(idle.busy).toBe(false);
+
+      const late = reduce(idle, { t: "incoming", event: contentDelta(1, " still typing") });
+
+      expect(late).toBe(idle);
+      expect(late.messages.filter((m) => m.kind === "assistant")).toHaveLength(1);
+      expect(late.busy).toBe(false);
+    });
+
+    it("drops a tool card for a settled turn instead of opening one", () => {
+      const idle = settledTurn();
+      const cards = idle.messages.length;
+
+      const late = reduce(idle, {
+        t: "incoming",
+        event: {
+          type: "tool.preparing",
+          id: 2,
+          ts: "2026-05-27T00:00:00.000Z",
+          turn: 1,
+          callId: "tc-late",
+          name: "shell",
+        },
+      });
+
+      expect(late.messages).toHaveLength(cards);
+      expect(late.busy).toBe(false);
+    });
+
+    it("drops a batched frame for a settled turn instead of opening a card", () => {
+
+    it("adopts a batched frame for a live turn it never saw start", () => {
+      const idle = settledTurn(1);
+
+      const next = reduce(idle, {
+        t: "batch_delta",
+        items: [{ turn: 2, channel: "content", text: "second answer" }],
+      });
+
+      expect(next.busy).toBe(true);
+      expect(next.messages.at(-1)).toMatchObject({
+        kind: "assistant",
+        turn: 2,
+        pending: true,
+      });
+    });
+
+    it("cannot open a card for a late warning on an already-settled turn", () => {
+      const idle = settledTurn();
+      const cards = idle.messages.length;
+
+      const late = reduce(idle, {
+        t: "incoming",
+        event: {
+          type: "warning",
+          id: 9,
+          ts: "2026-05-27T00:00:00.000Z",
+          turn: 1,
+          text: "late warning from a turn that already ended",
+          severity: "high",
+        },
+      });
+
+      expect(late.messages).toHaveLength(cards);
+      expect(late.busy).toBe(false);
+    });
+
+    it("adopts a turn whose start it never saw instead of painting into an idle chat", () => {
+      const idle = settledTurn(1);
+
+      const next = reduce(idle, { t: "incoming", event: contentDelta(2, "second answer") });
+
+      expect(next.busy).toBe(true);
+      expect(next.awaitingAck).toBe(false);
+      expect(next.messages.at(-1)).toMatchObject({
+        kind: "assistant",
+        turn: 2,
+        pending: true,
+        segments: [{ kind: "text", text: "second answer" }],
+      });
+    });
+
+    it("still delivers a diagnostic notice to an idle chat", () => {
+      // Only turn output is gated: a notice (or an error) is a diagnostic and has
+      // to reach the user whenever it happens.
+      const idle = settledTurn();
+
+      const next = reduce(idle, {
+        t: "incoming",
+        event: { type: "$notice", text: "Sessions deleted", severity: "info" },
+      });
+
+      expect(next.messages.at(-1)).toMatchObject({ kind: "notice", text: "Sessions deleted" });
+    });
+
+    it("adopts output for a turn the transcript only ever knew as history", () => {
+      // History read from disk is CLOSED but never SETTLED — this chat has seen no
+      // terminal event for it — so the daemon may still be streaming that turn, and
+      // dropping its output would lose the answer the user is waiting for.
+      let state = reduce(initialState(), {
+        t: "incoming",
+        event: {
+          type: "$session_loaded",
+          name: "sess-1",
+          resync: false,
+          messages: [
+            { kind: "user", text: "q1" },
+            {
+              kind: "assistant",
+              turn: 1,
+              segments: [{ kind: "text", text: "logged answer" }],
+              pending: false,
+            },
+          ],
+          carryover: { cacheHitTokens: 0, cacheMissTokens: 0, totalCompletionTokens: 0 },
+        },
+      });
+
+      state = reduce(state, { t: "incoming", event: contentDelta(1, "live tail") });
+
+      expect(state.busy).toBe(true);
+      expect(state.messages.at(-1)).toMatchObject({ kind: "assistant", pending: true });
+    });
   });
 
   it("appends a late kernel error at the tail in creation order, not re-anchored to its turn", () => {

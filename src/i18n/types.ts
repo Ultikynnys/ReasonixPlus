@@ -286,6 +286,7 @@ export interface TranslationSchema {
     failoverNoBackup: string;
     failoverNoneUsable: string;
     failoverAllExhausted: string;
+    failoverBackupUnusable: string;
     failoverPromptUnavailable: string;
     imagePayloadShrunk: string;
     upstreamRefusalRetry: string;

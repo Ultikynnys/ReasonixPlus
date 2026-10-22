@@ -440,6 +440,36 @@ describe("statusbar", () => {
       expect(screen.queryByText("balance")).toBeNull();
     });
 
+    it("leads with the spent window and says the plan is out, never a healthy weekly number alone", () => {
+      // The reported bug: out of 5-hour quota, the chip still read as a healthy
+      // percentage because the weekly budget had room and nothing marked the block.
+      renderBar({
+        settings: { model: "gpt-5.6-sol" } as Settings,
+        planUsage: {
+          ...usageOf("codex-oauth", "plus", [
+            { label: "5h", remainingPct: 0, resetsAt: Date.parse("2026-10-22T08:07:21Z") },
+            { label: "wk", remainingPct: 100, resetsAt: null },
+          ]),
+          limited: true,
+        },
+      });
+      expect(screen.getByText(/5h 0% · wk 100%\s*left/)).toBeTruthy();
+      expect(screen.getByTitle(/Out of Codex messages/)).toBeTruthy();
+    });
+
+    it("labels a weekly-only reading so 100% cannot be read as plan health", () => {
+      renderBar({
+        settings: { model: "gpt-5.6-sol" } as Settings,
+        planUsage: {
+          ...usageOf("codex-oauth", null, [{ label: "wk", remainingPct: 100, resetsAt: null }]),
+          limited: true,
+        },
+      });
+      expect(screen.getByText(/wk 100%\s*left/)).toBeTruthy();
+      expect(screen.queryByText(/^100%\s*left/)).toBeNull();
+      expect(screen.getByTitle(/Out of Codex messages/)).toBeTruthy();
+    });
+
     it("shows a refresh indicator while a retry is in flight", () => {
       renderBar({
         settings: { model: "gpt-5.6-sol" } as Settings,

@@ -127,6 +127,17 @@ describe("turn lifecycle — structural single-settlement invariant", () => {
     expect(generator).toBeGreaterThan(started);
     expect(firstKernelEmit).toBeGreaterThan(started);
   });
+
+  it("Stop-hook output precedes the terminal event", () => {
+    // The turn's last cards (a hook verdict notice) must be on the wire before
+    // $turn_complete, or they land in a chat the daemon already declared idle.
+    const body = src.slice(bodyStart, bodyEnd);
+    const stopHook = body.indexOf('event: "Stop"');
+    const terminal = body.indexOf("endTurn(outcome,");
+    expect(stopHook).toBeGreaterThan(0);
+    expect(terminal).toBeGreaterThan(0);
+    expect(stopHook).toBeLessThan(terminal);
+  });
 });
 
 describe("tabBusy / tabStatus — one busy source", () => {

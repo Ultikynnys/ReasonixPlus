@@ -77,6 +77,7 @@ export {
 export type {
   ExperientialSpend,
   ProviderUsageView,
+  SyntheticCreditWindow,
   SyntheticQuota,
   SyntheticQuotaWindow,
 } from "./provider-usage.js";

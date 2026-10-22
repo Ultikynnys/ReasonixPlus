@@ -267,6 +267,10 @@ export async function generateImageViaCodex(
 
 const FIVE_HOUR_MINUTES = 300;
 const WEEKLY_MINUTES = 10080;
+/** Buckets are matched by nearest length, with slack: the server reports
+ *  `limit_window_seconds` (rounded to minutes here) and has changed what it reports
+ *  per plan before, so exact equality would silently drop a window one minute off. */
+const WINDOW_SLACK_MINUTES = { fiveHour: 30, weekly: 720 };
 
 type JsonObject = Record<string, unknown>;
 
@@ -290,14 +294,47 @@ function normalizeCodexWindow(raw: JsonObject): CodexQuotaWindow | null {
   return {
     windowMinutes,
     usedPercent,
-    remainingPercent: Math.max(0, 100 - usedPercent),
+    // A server may report over 100 (or a negative) when it clamps its own numbers; the
+    // chip's "% left" must stay a percentage either way.
+    remainingPercent: Math.min(100, Math.max(0, 100 - usedPercent)),
     resetsAt: resetsAt !== undefined ? new Date(resetsAt * 1000).toISOString() : null,
   };
 }
 
+/** The window closest to `minutes`, when one is within `slack` of it. */
+function nearestWindow(
+  windows: readonly CodexQuotaWindow[],
+  minutes: number,
+  slack: number,
+): CodexQuotaWindow | null {
+  let best: CodexQuotaWindow | null = null;
+  for (const window of windows) {
+    if (Math.abs(window.windowMinutes - minutes) > slack) continue;
+    if (
+      !best ||
+      Math.abs(window.windowMinutes - minutes) < Math.abs(best.windowMinutes - minutes)
+    ) {
+      best = window;
+    }
+  }
+  return best;
+}
+
+/** The payload's own verdict that no request will be accepted right now. A spent
+ *  5-hour window leaves the weekly percentage high, so the percentages alone cannot
+ *  answer this and the chip has to be told. */
+function limitReachedOf(rateLimit: JsonObject, data: JsonObject): boolean {
+  if (rateLimit.limit_reached === true || rateLimit.limitReached === true) return true;
+  for (const raw of [rateLimit.rate_limit_reached_type, data.rate_limit_reached_type]) {
+    if (raw === "rate_limit_reached") return true;
+    if (asRecord(raw)?.type === "rate_limit_reached") return true;
+  }
+  return rateLimit.allowed === false;
+}
+
 /** Parse `/wham/usage` — accepts both root-level `{plan_type, rate_limit}` and
  *  nested `{rate_limits: {plan_type, rate_limit}}` envelopes. */
-function parseCodexQuotaPayload(payload: unknown): CodexQuota | null {
+export function parseCodexQuotaPayload(payload: unknown): CodexQuota | null {
   const data = asRecord(payload);
   if (!data) return null;
   const envelope = asRecord(data.rate_limits) ?? data;
@@ -327,8 +364,9 @@ function parseCodexQuotaPayload(payload: unknown): CodexQuota | null {
   ].find((value): value is string => typeof value === "string" && value.length > 0);
   return {
     plan: planValue ?? null,
-    fiveHour: windows.find((window) => window.windowMinutes === FIVE_HOUR_MINUTES) ?? null,
-    weekly: windows.find((window) => window.windowMinutes === WEEKLY_MINUTES) ?? null,
+    fiveHour: nearestWindow(windows, FIVE_HOUR_MINUTES, WINDOW_SLACK_MINUTES.fiveHour),
+    weekly: nearestWindow(windows, WEEKLY_MINUTES, WINDOW_SLACK_MINUTES.weekly),
+    limitReached: limitReachedOf(rateLimit, data),
     fetchedAt: Date.now(),
   };
 }
@@ -373,7 +411,7 @@ async function fetchQuotaEndpoint(
   const detail = windows
     .map((window) => `${window.windowMinutes}m: ${window.remainingPercent}%`)
     .join(", ");
-  log.debug(`Codex usage: ${detail}`);
+  log.debug(`Codex usage: ${detail}${quota.limitReached ? " · limit reached" : ""}`);
   return { quota, reason: null };
 }
 

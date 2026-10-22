@@ -79,7 +79,7 @@ can adopt one sentence at a time.
 | --- | --- |
 | `notConfigured`, `noCredential` | Setup gate and turn-start rejection |
 | `apiOauth`, `apiKey`, `apiNone`, `apiBare`, `oauthFailed` | Status-bar API chip |
-| `quotaLabel`, `quotaTitle`, `quotaDualTitle`, `quotaFiveHourTitle`, `quotaWeeklyTitle`, `quotaMonthlyTitle`, `quotaDailyTitle`, `quotaNoData`, `quotaNoDataUnavailable`, `quotaTurnTitle`, `quotaPlanName`, `quotaPlanFallback` | Status-bar quota chip |
+| `quotaLabel`, `quotaTitle`, `quotaDualTitle`, `quotaLimitedTitle`, `quotaFiveHourTitle`, `quotaWeeklyTitle`, `quotaMonthlyTitle`, `quotaDailyTitle`, `quotaNoData`, `quotaNoDataUnavailable`, `quotaTurnTitle`, `quotaPlanName`, `quotaPlanFallback` | Status-bar quota chip |
 | `offPeakTitle`, `peakTitle` | Rate-period chip tooltip |
 | `freeLabel`, `freeTier`, `freeTitle` | OpenCode free-tier chip |
 | `panelSignInTitle`, `panelSignIn`, `panelSignInHint`, `panelWaiting`, `panelSignedIn`, `panelAccount`, `panelAccountOrg`, `panelTokenSet`, `panelKeyStored`, `panelSignOut`, `panelCancel`, `panelFlowFailed` | OAuth sign-in panel |
@@ -228,6 +228,12 @@ the primary window, `quotaDualTitle` (when declared) names several windows in on
 sentence, and a window the main sentence leaves out gets its own line from
 `quotaFiveHourTitle` / `quotaWeeklyTitle` / `quotaMonthlyTitle` / `quotaDailyTitle` / `quotaPlanTitle`.
 `creditTitle` appends the spendable credit a payload reported alongside usage.
+
+The chip's ribbon always labels each window (`5h 0% · wk 35%`), because a bare
+percentage cannot say which bucket it is describing. A reader that learns the
+provider's own limit verdict sets `limited` on the view: the ribbon then renders
+as a warning and `quotaLimitedTitle` opens the tooltip, since a spent 5-hour
+window leaves the weekly percentage reading high while every request is refused.
 
 A provider that publishes an account *wallet* instead of plan windows declares
 `billing.balance` instead: a plan measures windows, a wallet holds money, and the

@@ -82,7 +82,9 @@ import type {
   SettingsEvent,
   SkillsEvent,
   StepCompletedEvent,
+  SyntheticCreditWindow,
   SyntheticQuota,
+  SyntheticQuotaWindow,
   TabClosedEvent,
   TabOpenedEvent,
   TabStatusEvent,
@@ -3063,9 +3065,9 @@ async function readExperientialUsage(tab: Tab, options: { force?: boolean }): Pr
   );
 }
 
-/** Synthetic subscription usage: `/v2/quotas` reports the plan's limit and requests
- *  spent per category. The subscription category is the plan balance; its hourly
- *  `search` and daily `freeToolCalls` buckets have no window label to render. */
+/** Synthetic plan usage: `/v2/quotas` states the weekly credit pool as
+ *  `weeklyTokenLimit.percentRemaining`, the number synthetic.new's gauge draws. The
+ *  request buckets (`subscription`, `search`) are no plan balance. */
 export async function fetchSyntheticQuota(
   apiKey: string,
   baseUrl: string,
@@ -3077,16 +3079,39 @@ export async function fetchSyntheticQuota(
     timeoutMs,
   });
   if (!reply.ok) return undefined;
-  const raw = (reply.body as { subscription?: unknown } | undefined)?.subscription;
-  if (!raw || typeof raw !== "object") return undefined;
+  const body = (reply.body ?? {}) as {
+    subscription?: unknown;
+    weeklyTokenLimit?: unknown;
+  };
+  const subscription = toSyntheticRequestBucket(body.subscription);
+  const weeklyCredits = toSyntheticCreditWindow(body.weeklyTokenLimit);
+  // Nothing readable is "no data", never a guessed percentage.
+  if (!subscription && !weeklyCredits) return undefined;
+  return { weeklyCredits, subscription };
+}
+
+/** One request-count bucket (`{limit, requests, renewsAt}`), or null when malformed. */
+function toSyntheticRequestBucket(raw: unknown): SyntheticQuotaWindow | null {
+  if (!raw || typeof raw !== "object") return null;
   const row = raw as { limit?: unknown; requests?: unknown; renewsAt?: unknown };
-  if (typeof row.limit !== "number" || typeof row.requests !== "number") return undefined;
+  if (typeof row.limit !== "number" || typeof row.requests !== "number") return null;
   return {
-    subscription: {
-      limit: row.limit,
-      requests: row.requests,
-      renewsAt: typeof row.renewsAt === "string" ? row.renewsAt : null,
-    },
+    limit: row.limit,
+    requests: row.requests,
+    renewsAt: typeof row.renewsAt === "string" ? row.renewsAt : null,
+  };
+}
+
+/** The weekly credit pool, or null when the reply omits it or reports no share. */
+function toSyntheticCreditWindow(raw: unknown): SyntheticCreditWindow | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as { percentRemaining?: unknown; nextRegenAt?: unknown };
+  if (typeof row.percentRemaining !== "number" || !Number.isFinite(row.percentRemaining)) {
+    return null;
+  }
+  return {
+    remainingPct: row.percentRemaining,
+    nextRegenAt: typeof row.nextRegenAt === "string" ? row.nextRegenAt : null,
   };
 }
 
@@ -3126,8 +3151,9 @@ async function readSyntheticUsage(tab: Tab, options: { force?: boolean }): Promi
     fetchSyntheticQuota,
     syntheticUsageView,
     (quota, viewed) => ({
-      limit: quota.subscription?.limit ?? null,
-      requests: quota.subscription?.requests ?? null,
+      weeklyRemainingPct: quota.weeklyCredits?.remainingPct ?? null,
+      subscriptionLimit: quota.subscription?.limit ?? null,
+      subscriptionRequests: quota.subscription?.requests ?? null,
       windows: viewed.windows.length,
     }),
     options,
@@ -4509,14 +4535,47 @@ function isModelFailure(
   return !isContextOverflowError(err?.message);
 }
 
-/** Whether a finished attempt hands the turn to a backup model. Any terminal model
- *  failure qualifies; an answer, a user abort and a context overflow do not. */
+/** True once the user stopped this turn: Stop and a model pick in the composer both
+ *  abort the tab's aborter, so ONE predicate decides "the user took over" for the
+ *  failure classifier and for the failover chain alike. */
+export function turnStoppedByUser(tab: { aborter: { signal: AbortSignal } | null }): boolean {
+  return tab.aborter?.signal.aborted === true;
+}
+
+/** Whether a finished attempt hands the turn to a backup model. A terminal model
+ *  failure and a model that stalled on its own (empty response, thinking without an
+ *  answer) both qualify; an answer, a user abort and a context overflow do not. */
 export function shouldFailover(attempt: {
   aborted: boolean;
   producedAnswer: boolean;
   modelFailure: boolean;
+  /** The loop spent every in-model recovery it had for "no answer" and stopped anyway. */
+  modelStalled?: boolean;
 }): boolean {
-  return attempt.modelFailure && !attempt.aborted && !attempt.producedAnswer;
+  if (attempt.aborted || attempt.producedAnswer) return false;
+  return attempt.modelFailure || attempt.modelStalled === true;
+}
+
+/** The sentence that closes a spent failover chain: no backups configured, none that
+ *  could start here, or every one that ran also failed. Pure so the three end states
+ *  stay distinguishable without re-driving a turn to find out which one happened. */
+export function failoverStopMessage(args: {
+  failed: string;
+  configured: readonly string[];
+  attempted: readonly string[];
+  skipped: readonly string[];
+}): string {
+  if (args.configured.length === 0) return t("loop.failoverNoBackup", { failed: args.failed });
+  if (args.attempted.length === 0) return t("loop.failoverNoneUsable", { failed: args.failed });
+  // Configured order, not the order the chain happened to walk: the sentence has to
+  // read back the list the user set up.
+  const touched = args.configured
+    .map((model) => model.trim())
+    .filter((model) => model && (args.attempted.includes(model) || args.skipped.includes(model)));
+  return t("loop.failoverAllExhausted", {
+    failed: args.failed,
+    models: (touched.length > 0 ? touched : [...args.attempted, ...args.skipped]).join(", "),
+  });
 }
 
 /** One turn-generator drive's outcome: what settlement reports, plus the
@@ -4532,6 +4591,9 @@ interface TurnAttempt {
    *  spent quota, provider outage, unreachable endpoint). A context overflow is
    *  excluded: it is a property of the conversation, and the loop already folded. */
   modelFailure: boolean;
+  /** The model answered nothing and the loop's own recoveries ran out (empty
+   *  response, thinking-only stall). No further attempt on THIS model can help. */
+  modelStalled: boolean;
 }
 
 type SymbolEntry = { name: string; path: string; line: number; kind: string };
@@ -5144,6 +5206,11 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
   const ctx = { model: tab.currentModel, prefixHash: prefix.fingerprint, reasoningEffort };
   return { loop, eventizer, ctx };
 }
+
+/** Every automatic (failover) switch has this shape: session-scoped, so it can never
+ *  rewrite the user's global default model behind their back, and the subagent pin
+ *  follows the chat when it sits on the provider being left. */
+const FAILOVER_SWITCH = { persistDefault: false, followSubagentPin: true } as const;
 
 /** Switch a tab's model in place, rolling everything back if the rebuild throws; never
  *  aborts a turn. `persistDefault` writes the global default too, and `followSubagentPin`
@@ -6297,7 +6364,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     refreshPlanSummary(tab);
     tab.aborter = new AbortController();
-    if (tab.aborter.signal.aborted) {
+    if (turnStoppedByUser(tab)) {
       // The turn never started: nothing to settle beyond the busy flag, same
       // completion signal as the hook-blocked path above. A session switch
       // may have set switching while aborting us — this turn has no stale
@@ -6358,7 +6425,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // desktop's busy flag mid-turn.
         emit({ type: "$notice", text: formatHookOutcomeMessage(o), severity: "warning" }, tab.id);
       }
-      if (report.blocked || tab.aborter.signal.aborted) {
+      if (report.blocked || turnStoppedByUser(tab)) {
         tab.aborter = null;
         endTurn("failed");
         return;
@@ -6387,9 +6454,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         let sawError = false;
         let lastStopReason = "";
         let modelFailure = false;
+        let modelStalled = false;
         /** Aborted means the user stopped it: never a model failure, however the
          *  signal reached us (the tab's aborter, or a Stop that raced this attempt). */
-        const turnAborted = (): boolean => aborted || tab.aborter?.signal.aborted === true;
+        const turnAborted = (): boolean => aborted || turnStoppedByUser(tab);
         try {
           let emittedTurnContext = false;
           while (true) {
@@ -6428,6 +6496,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             }
             if (ev.role === "warning" && ev.severity === "high" && ev.content) {
               lastStopReason = ev.content;
+              // The loop already retried, nudged and escalated inside this model, so
+              // a stop tagged with these causes means the model cannot answer this
+              // turn at all — a reason to try a different model, not to stop here.
+              if (ev.cause === "empty-response" || ev.cause === "thinking-only") {
+                modelStalled = true;
+              }
             }
             for (const kev of rt.eventizer.consume(ev, rt.ctx)) emitKernelEvent(kev, tab.id);
             if (ev.role === "assistant_final" || ev.role === "tool") {
@@ -6482,14 +6556,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           sawError,
           lastStopReason,
           modelFailure,
+          modelStalled,
         };
       };
 
       let attempt = await driveAttempt(text);
       // Automatic backup-model failover: a provider that fails mid-conversation
-      // (rate limit, spent quota, outage, unreachable endpoint) would otherwise
-      // end the turn here, leaving an unattended (overnight) run idle until
-      // someone wakes up to switch models.
+      // (rate limit, spent quota, outage, unreachable endpoint) or a model that stalls
+      // without ever answering would otherwise end the turn here, leaving an
+      // unattended (overnight) run idle until someone wakes up to switch models.
       // Each backup is switched to, then the prompt is replayed exactly like the
       // desktop's Retry, until an attempt answers or the chain runs out.
       // The model that actually hit the wall: a chain moves tab.currentModel, so every
@@ -6497,44 +6572,53 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       const primaryModel = tab.currentModel;
       const configuredFallbacks = loadFallbackModels();
       const triedModels = new Set([primaryModel]);
+      // A backup that cannot even start (its credential went away between the
+      // screening probe and the rebuild, or the rebuild threw) sends the chain to the
+      // NEXT backup instead of ending it: surviving that is the whole reason to
+      // configure more than one backup.
+      const attemptedBackups: string[] = [];
+      const skippedBackups: string[] = [];
       let failedOverTo: string | null = null;
       let failoverBroken = false;
-      while (shouldFailover(attempt)) {
+      /** Put back a model the chain moved away from. Best-effort by construction: a
+       *  restore that throws must never escape the turn, and the answer says whether
+       *  the tab really ended up on `model`. */
+      const restoreModel = (model: string, why: string): boolean => {
+        if (tab.currentModel === model) return true;
+        try {
+          applyTabModel(tab, model, FAILOVER_SWITCH);
+          return true;
+        } catch (err) {
+          process.stderr.write(`reasonix: ${why} (${model}) failed — ${messageOf(err)}\n`);
+          return false;
+        }
+      };
+      // A pick (or a Stop) that lands between two attempts ends the chain BEFORE the
+      // next switch, or the daemon would overwrite the model just chosen.
+      while (shouldFailover(attempt) && !turnStoppedByUser(tab)) {
         const next = pickFallbackModel(configuredFallbacks, triedModels, modelUsableFor);
         if (!next) break;
         triedModels.add(next);
         const failedModel = tab.currentModel;
+        let started = false;
         try {
-          // Session-scoped: an automatic switch must never rewrite the user's
-          // global default model behind their back. The subagent pin follows this
-          // conversation's model too when it sits on the provider that ran dry.
-          applyTabModel(tab, next, { persistDefault: false, followSubagentPin: true });
+          applyTabModel(tab, next, FAILOVER_SWITCH);
+          // applyTabModel nulls the runtime for an unusable model instead of throwing,
+          // and leaves a stale one when the tab has no toolset yet. The runtime's ctx
+          // names the model it drives, so that is what "started" has to mean.
+          started = tab.runtime?.ctx.model === next;
         } catch (err) {
           notify(`Backup model switch to ${next} failed: ${messageOf(err)}`, "error");
-          failoverBroken = true;
-          break;
         }
-        if (!tab.runtime) {
-          // The backup has no usable runtime here (its credential went away
-          // between the screening check and the rebuild). Put the model the turn
-          // was running on back, so the tab is never stranded without a runtime.
-          try {
-            applyTabModel(tab, failedModel, { persistDefault: false, followSubagentPin: true });
-          } catch (rollbackErr) {
-            process.stderr.write(
-              `reasonix: backup-model rollback to ${failedModel} failed — ${messageOf(rollbackErr)}\n`,
-            );
-          }
-          if (!tab.runtime) {
-            notify(
-              "No usable model runtime after the quota failover — pick a model in the composer to continue.",
-              "error",
-            );
-          }
-          failoverBroken = true;
-          break;
+        if (!started) {
+          skippedBackups.push(next);
+          // Never leave the tab naming a backup that never ran.
+          restoreModel(failedModel, "backup-model rollback");
+          notify(t("loop.failoverBackupUnusable", { next }));
+          continue;
         }
-        rt = tab.runtime;
+        rt = tab.runtime!;
+        attemptedBackups.push(next);
         failedOverTo = next;
         // Rewind on the NEW runtime, never before the switch: the truncation is
         // persisted to the session file, so doing it first would drop the prompt
@@ -6564,21 +6648,24 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         notify(t("loop.failoverSwitching", { failed: failedModel, next }));
         attempt = await driveAttempt(text);
       }
-      if (shouldFailover(attempt) && !failoverBroken) {
+      if (shouldFailover(attempt) && !turnStoppedByUser(tab) && !failoverBroken) {
         // Nothing left to try. Name the situation the run ended in, so the stop is
         // explained instead of left to the provider's raw error card: no backups at
         // all, backups that cannot run here, or backups that were tried and failed.
-        const triedBackups = [...triedModels].filter((model) => model !== primaryModel);
         notify(
-          configuredFallbacks.length === 0
-            ? t("loop.failoverNoBackup", { failed: primaryModel })
-            : triedBackups.length === 0
-              ? t("loop.failoverNoneUsable", { failed: primaryModel })
-              : t("loop.failoverAllExhausted", {
-                  failed: primaryModel,
-                  models: triedBackups.join(", "),
-                }),
+          failoverStopMessage({
+            failed: primaryModel,
+            configured: configuredFallbacks,
+            attempted: attemptedBackups,
+            skipped: skippedBackups,
+          }),
         );
+        // A spent chain must not leave the tab on a backup that could not see the turn
+        // through: the composer would show a model the user never picked, and their
+        // next send would hit the same wall. Put the model the turn started on back.
+        if (restoreModel(primaryModel, "restoring the turn's own model after a spent failover")) {
+          failedOverTo = null;
+        }
       }
       tab.aborter = null;
       // If a session switch happened while this turn was running,
@@ -6589,6 +6676,32 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           // closed mid-await), so settle the still-pending assistant
           // card here — $turn_complete alone leaves it spinning.
           emitKernelEvent(rt.eventizer.emitAbortedFinal(attempt.lastTurn), tab.id);
+        }
+        // Stop hooks run BEFORE the terminal event: their verdict notices are the
+        // turn's last output, and a notice emitted after $turn_complete would land
+        // as a card in a chat the daemon already declared idle (the ghost-card
+        // state). Nothing waits longer for it — a send already parks on
+        // `tab.activeTurn`, which is held until this body returns. A hook that
+        // throws is post-turn bookkeeping: it must never reach the settlement
+        // wrapper, which would relabel the outcome the loop actually reported.
+        if (tab.hooks.some((h) => h.event === "Stop")) {
+          try {
+            const stopReport = await runHooks({
+              hooks: tab.hooks,
+              payload: {
+                event: "Stop",
+                cwd: tab.rootDir,
+                lastAssistantText,
+                turn: rt.loop.stats.summary().turns,
+              },
+            });
+            for (const o of stopReport.outcomes) {
+              if (o.decision === "pass") continue;
+              notify(formatHookOutcomeMessage(o));
+            }
+          } catch (err) {
+            process.stderr.write(`reasonix: Stop hook failed — ${messageOf(err)}\n`);
+          }
         }
         const outcome: TurnOutcome = attempt.aborted
           ? "aborted"
@@ -6611,21 +6724,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         emitTabDiagnostic(tab, "turn.complete.emitted", { planProgress: tab.planSummary }, "info");
         void emitSessions(tab);
         void refreshFunds(tab, { force: true });
-        if (tab.hooks.some((h) => h.event === "Stop")) {
-          const stopReport = await runHooks({
-            hooks: tab.hooks,
-            payload: {
-              event: "Stop",
-              cwd: tab.rootDir,
-              lastAssistantText,
-              turn: rt.loop.stats.summary().turns,
-            },
-          });
-          for (const o of stopReport.outcomes) {
-            if (o.decision === "pass") continue;
-            notify(formatHookOutcomeMessage(o));
-          }
-        }
       }
       tab.switching = false;
     });

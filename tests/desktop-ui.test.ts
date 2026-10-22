@@ -2219,17 +2219,27 @@ describe("desktop-provider-usage", () => {
   // Synthetic: `GET https://api.synthetic.new/v2/quotas`.
   describe("fetchSyntheticQuota", () => {
     const BASE = "https://api.synthetic.new/v1";
+    // Verbatim reply from the live route: the weekly credit pool the dashboard's
+    // "Remaining weekly credits" gauge draws sits in `weeklyTokenLimit`, while
+    // `subscription` counts requests against a few-hour window.
+    const LIVE = {
+      subscription: { limit: 500, requests: 0, renewsAt: "2026-10-22T09:03:31.261Z" },
+      search: { hourly: { limit: 250, requests: 0, renewsAt: "2026-10-22T05:03:31.262Z" } },
+      freeToolCalls: { limit: 0, requests: 0, renewsAt: "2026-10-23T04:03:31.265Z" },
+      weeklyTokenLimit: {
+        nextRegenAt: "2026-10-22T04:34:14.000Z",
+        percentRemaining: 70.54936685714286,
+        maxCredits: "$2.10",
+        remainingCredits: "$1.48",
+        nextRegenCredits: "$0.04",
+      },
+    };
 
     it("GETs the declared quotas route with the Bearer key", async () => {
-      fetchMock.mockResolvedValueOnce(
-        jsonResponse({
-          subscription: { limit: 1350, requests: 200, renewsAt: "2026-10-22T01:04:53Z" },
-          search: { hourly: { limit: 100, requests: 3, renewsAt: "2026-10-21T22:04:53Z" } },
-          freeToolCalls: { limit: 500, requests: 12, renewsAt: "2026-10-22T00:00:00Z" },
-        }),
-      );
+      fetchMock.mockResolvedValueOnce(jsonResponse(LIVE));
       await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toEqual({
-        subscription: { limit: 1350, requests: 200, renewsAt: "2026-10-22T01:04:53Z" },
+        weeklyCredits: { remainingPct: 70.54936685714286, nextRegenAt: "2026-10-22T04:34:14.000Z" },
+        subscription: { limit: 500, requests: 0, renewsAt: "2026-10-22T09:03:31.261Z" },
       });
       const [rawUrl, init] = fetchMock.mock.calls[0]!;
       const url = new URL(String(rawUrl));
@@ -2240,39 +2250,65 @@ describe("desktop-provider-usage", () => {
 
     it("keeps the declared absolute route even when a custom base URL is set", async () => {
       // The quotas route is not under the chat prefix, so a proxy base must not retarget it.
-      fetchMock.mockResolvedValueOnce(jsonResponse({ subscription: { limit: 1, requests: 0 } }));
+      fetchMock.mockResolvedValueOnce(jsonResponse(LIVE));
       await fetchSyntheticQuota("syn-key", "https://proxy.example/v1");
       expect(String(fetchMock.mock.calls[0]![0])).toBe("https://api.synthetic.new/v2/quotas");
     });
 
-    it("computes the remaining share, since the reply carries counts only", () => {
+    it("draws the weekly pool, not the idle request bucket that reads 100%", () => {
+      // The reported bug: an untouched `subscription` bucket (0 of 500 requests)
+      // rendered as "100% left" while the dashboard showed the pool a fifth spent.
       const view = syntheticUsageView({
-        subscription: { limit: 1350, requests: 200, renewsAt: "2026-10-22T01:04:53Z" },
+        weeklyCredits: { remainingPct: 81.36, nextRegenAt: "2026-10-22T04:34:14.000Z" },
+        subscription: { limit: 500, requests: 0, renewsAt: "2026-10-22T09:03:31.261Z" },
       });
       expect(view.windows).toHaveLength(1);
-      expect(view.windows[0]?.label).toBe("5h");
-      expect(view.windows[0]?.remainingPct).toBeCloseTo((1 - 200 / 1350) * 100, 6);
-      expect(view.windows[0]?.resetsAt).toBe(Date.parse("2026-10-22T01:04:53Z"));
+      expect(view.windows[0]?.label).toBe("wk");
+      expect(view.windows[0]?.remainingPct).toBe(81.36);
+      expect(view.windows[0]?.resetsAt).toBe(Date.parse("2026-10-22T04:34:14.000Z"));
     });
 
-    it("reports every request spent as 0% left, not a negative", () => {
-      const view = syntheticUsageView({
-        subscription: { limit: 100, requests: 100, renewsAt: null },
-      });
-      expect(view.windows[0]?.remainingPct).toBe(0);
-      expect(view.windows[0]?.resetsAt).toBeNull();
+    it("centres the weekly pool at the ends of its range", () => {
+      const at = (remainingPct: number) =>
+        syntheticUsageView({
+          weeklyCredits: { remainingPct, nextRegenAt: null },
+          subscription: null,
+        }).windows[0];
+      expect(at(0)?.remainingPct).toBe(0);
+      expect(at(100)?.remainingPct).toBe(100);
+      // A payload cannot make the chip print "-4%" or "140%".
+      expect(at(-4)?.remainingPct).toBe(0);
+      expect(at(140)?.remainingPct).toBe(100);
+      expect(at(50)?.resetsAt).toBeNull();
     });
 
-    it("reports no window when the plan states no limit", () => {
-      // Usage-based tiers answer with limit 0; a share of nothing is not 0%.
+    it("reports no window when the reply carries no weekly pool", () => {
+      // A request-count bucket is not a plan balance: no number beats a wrong 100%.
       expect(
-        syntheticUsageView({ subscription: { limit: 0, requests: 5, renewsAt: null } }).windows,
+        syntheticUsageView({
+          weeklyCredits: null,
+          subscription: { limit: 500, requests: 0, renewsAt: null },
+        }).windows,
       ).toEqual([]);
     });
 
-    it("returns undefined when the reply has no subscription category", async () => {
+    it("keeps the route readable when only a request bucket answers", async () => {
       fetchMock.mockResolvedValueOnce(
-        jsonResponse({ search: { hourly: { limit: 100, requests: 3, renewsAt: null } } }),
+        jsonResponse({ subscription: { limit: 500, requests: 0, renewsAt: null } }),
+      );
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toEqual({
+        weeklyCredits: null,
+        subscription: { limit: 500, requests: 0, renewsAt: null },
+      });
+    });
+
+    it("returns undefined when the reply has nothing readable", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ search: { hourly: { limit: 250, requests: 0, renewsAt: null } } }),
+      );
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ weeklyTokenLimit: { percentRemaining: "70.5" } }),
       );
       await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
     });

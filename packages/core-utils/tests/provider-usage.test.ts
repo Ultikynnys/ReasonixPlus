@@ -25,6 +25,7 @@ const CODEX: CodexQuota = {
     resetsAt: "2026-09-01T13:37:06Z",
   },
   weekly: { windowMinutes: 10080, usedPercent: 42, remainingPercent: 58, resetsAt: null },
+  limitReached: false,
   fetchedAt: 0,
 };
 
@@ -44,6 +45,19 @@ describe("window normalization", () => {
     });
     expect(view.windows.map((w) => w.remainingPct)).toEqual([100, 58]);
     expect(view.windows.every((w) => w.resetsAt === null)).toBe(true);
+  });
+
+  it("drops a bucket whose percentage is not a number, never rendering it as 0%", () => {
+    const view = codexUsageView({
+      ...CODEX,
+      fiveHour: {
+        windowMinutes: 300,
+        usedPercent: Number.NaN,
+        remainingPercent: Number.NaN,
+        resetsAt: null,
+      },
+    });
+    expect(view.windows.map((w) => w.label)).toEqual(["wk"]);
   });
 
   it("keeps the rate-limited flag only when the provider set it", () => {
@@ -78,6 +92,26 @@ describe("codexUsageView", () => {
     expect(codexUsageView({ ...CODEX, fiveHour: null }).windows.map((w) => w.label)).toEqual([
       "wk",
     ]);
+  });
+
+  it("marks the plan blocked without inventing a per-window verdict", () => {
+    // The captured payload of a spent 5-hour window: the weekly budget is untouched,
+    // so its percentage is the one that must NOT read as plan health.
+    const view = codexUsageView({
+      ...CODEX,
+      fiveHour: { windowMinutes: 300, usedPercent: 100, remainingPercent: 0, resetsAt: null },
+      weekly: { windowMinutes: 10080, usedPercent: 0, remainingPercent: 100, resetsAt: null },
+      limitReached: true,
+    });
+    expect(view.limited).toBe(true);
+    expect(view.windows).toEqual([
+      { label: "5h", remainingPct: 0, resetsAt: null },
+      { label: "wk", remainingPct: 100, resetsAt: null },
+    ]);
+  });
+
+  it("keeps the plan healthy-looking only when the payload does not report a limit", () => {
+    expect(codexUsageView(CODEX).limited).toBe(false);
   });
 });
 
@@ -160,8 +194,13 @@ describe("quotaWindowsSummary", () => {
     ).toBe("5h 70% · wk 88%");
   });
 
-  it("drops the label for a single window", () => {
-    expect(quotaWindowsSummary([{ label: "5h", remainingPct: 70, resetsAt: null }])).toBe("70%");
+  it("labels a single window too, so a bare percentage cannot be misread", () => {
+    expect(quotaWindowsSummary([{ label: "5h", remainingPct: 70, resetsAt: null }])).toBe("5h 70%");
+    // The reported bug: a weekly-only reading printed "100%" while the 5-hour
+    // window was spent, reading as whole-plan health.
+    expect(quotaWindowsSummary([{ label: "wk", remainingPct: 100, resetsAt: null }])).toBe(
+      "wk 100%",
+    );
   });
 
   it("renders nothing when there are no windows", () => {

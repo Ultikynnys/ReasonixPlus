@@ -906,13 +906,13 @@ export function registerSubagentTool(
         try {
           result = await runSpawn(next);
         } catch (err) {
-          // Building or running the backup threw (e.g. its provider credential
-          // vanished between the screen and the spawn). Keep the first attempt's
-          // honest quota failure rather than escalating into a bare exception.
+          // Building or running THIS backup threw (e.g. its provider credential
+          // vanished between the screen and the spawn). That is a fact about one
+          // model, not the list: keep the honest quota failure so far and fall
+          // through to the next configured backup, exactly like the chat's chain.
           process.stderr.write(
             `reasonix: subagent failover to ${next} failed — ${(err as Error).message}\n`,
           );
-          break;
         }
       }
       const formatted = formatSubagentResult(result);

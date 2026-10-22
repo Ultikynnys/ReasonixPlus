@@ -94,6 +94,8 @@
     "oauthFailed": "OpenAI sign-in failed: {message}. Re-sign in from Settings",
     "quotaLabel": "codex",
     "quotaTitle": "Codex weekly quota · {left}% left · resets {resets} · plan {plan} · click to refresh",
+    "quotaDualTitle": "Codex quota · 5h {fiveHour}% left (resets {sessionResets}) · weekly {weekly}% left (resets {weeklyResets}) · plan {plan} · click to refresh",
+    "quotaLimitedTitle": "Out of Codex messages · requests are refused until the spent window resets · 5h resets {sessionResets} · weekly {weekly}% left",
     "quotaFiveHourTitle": "5-hour window: {left}% left",
     "quotaNoData": "Codex quota · no data: sign in with ChatGPT (Settings → OpenAI) to see plan usage · click to retry",
     "quotaPlanName": "ChatGPT",

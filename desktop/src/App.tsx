@@ -358,6 +358,11 @@ export type ChatMessage =
        *  card: later streaming output opens a NEW card below the boundary rather
        *  than re-opening this one. */
       closed?: boolean;
+      /** Set when the daemon's terminal event for this turn settled the card. It is
+       *  what makes an idle transcript final: output for a turn stamped here can
+       *  never open another card (see applyIncoming). History read from disk is
+       *  closed but never settled — no terminal event of THIS chat ended it. */
+      settled?: boolean;
       ts?: number;
     }
   | {
@@ -1061,6 +1066,86 @@ function ensureAssistantTurn(state: State, ev: IncomingEvent): State {
   return { ...state, messages: appendAssistantCardBelow(state.messages, turn) };
 }
 
+/** Every event whose payload renders INTO a turn's card: the turn-start marker,
+ *  the assistant-card set, and the warning segment, which opens a card of its own
+ *  when the turn has none. Notices and `error` are deliberately absent — a
+ *  diagnostic has to be deliverable at any time, so it is never mistaken for
+ *  agent output. */
+const TURN_CARD_EVENTS: ReadonlySet<IncomingEvent["type"]> = new Set([
+  "model.turn.started",
+  ...ASSISTANT_CARD_EVENTS,
+  "warning",
+]);
+
+/** The turn a card-rendering event belongs to, or undefined for every other
+ *  event. A warning without a turn is anchored to turn 1, exactly as its handler
+ *  anchors it. */
+function turnCardTurn(ev: IncomingEvent): number | undefined {
+  if (!TURN_CARD_EVENTS.has(ev.type)) return undefined;
+  return (ev as { turn?: number }).turn ?? 1;
+}
+
+/** True while this chat owns a live turn: the daemon's busy flag, a send it has
+ *  not acknowledged yet, or a fold. The ONE definition the composer, the queue
+ *  drain, the parity watchdog and the transcript guard share — a chat that reads
+ *  as idle to any of them reads as idle to all. */
+export function turnEngaged(state: Pick<State, "busy" | "awaitingAck" | "compacting">): boolean {
+  return state.busy || state.awaitingAck || state.compacting;
+}
+
+/** Highest turn this chat has SEEN the daemon settle — read off the cards the
+ *  terminal event stamped. Kept on the transcript (not in a counter) so a reload,
+ *  a rewind or a session switch drops the knowledge with the cards it described.
+ *  Memoized on the array identity: the guard below runs per turn event while a
+ *  chat reads as idle, and the transcript can hold thousands of cards. */
+let settledScan: { messages: readonly ChatMessage[]; turn: number } | null = null;
+function settledTurn(messages: readonly ChatMessage[]): number {
+  if (settledScan?.messages === messages) return settledScan.turn;
+  let max = 0;
+  for (const m of messages) {
+    if (m.kind === "assistant" && m.settled) max = Math.max(max, m.turn);
+  }
+  settledScan = { messages, turn: max };
+  return max;
+}
+
+/** Which of `turns` may still render agent output into this chat, and the state
+ *  that output belongs to — or null when NONE of them may.
+ *
+ *  Agent output never reaches a chat that reads as idle: a session that keeps
+ *  growing cards while its composer says "waiting for you" is the ghost state, and
+ *  a turn that is streaming is never idle. So output for a turn the daemon already
+ *  settled is LATE — the card it would open never existed for the user — while
+ *  output for a live turn this chat never saw start or settle (a missed
+ *  `$turn_started`, a reloaded transcript) ADOPTS the turn: busy goes on, so the
+ *  card can never sit under an idle composer. The parity watchdog reconciles an
+ *  adopted turn against the daemon a beat later, so even a genuinely stray event
+ *  cannot wedge the composer. */
+function admitTurnOutput(
+  state: State,
+  turns: readonly number[],
+): { base: State; live: readonly number[] } | null {
+  if (turnEngaged(state)) return { base: state, live: turns };
+  const settled = settledTurn(state.messages);
+  const live = turns.filter((turn) => turn > settled);
+  return live.length === 0 ? null : { base: { ...state, busy: true, awaitingAck: false }, live };
+}
+
+/** Everything a wire event does to the transcript once it is admitted. */
+function renderEvent(state: State, ev: IncomingEvent): State {
+  return applyIncomingInner(dropStaleCompaction(ensureAssistantTurn(state, ev), ev), ev);
+}
+
+export function applyIncoming(state: State, ev: IncomingEvent): State {
+  const turn = turnCardTurn(ev);
+  if (turn === undefined) return renderEvent(state, ev);
+  const admitted = admitTurnOutput(state, [turn]);
+  // Refused output still cleans up after itself: a fold card left spinning in an
+  // idle chat is dropped here instead of waiting for a turn that is already over.
+  if (!admitted) return dropStaleCompaction(state, ev);
+  return renderEvent(admitted.base, ev);
+}
+
 /** The turn a card is anchored to. Only user/assistant cards and notice cards
  *  carry a turn; a notice without one is treated as belonging to turn 0. */
 function cardTurn(m: ChatMessage): number {
@@ -1269,9 +1354,17 @@ export function reduceAction(state: State, action: Action): State {
       // Route through the SAME open-card target every other streaming event
       // uses: a batched frame lands in the turn's open card (opening a fresh one
       // after a boundary closed the previous) instead of fanning out to every
-      // card of the turn.
-      const lastItem = collapsed[collapsed.length - 1];
-      let messages = state.messages;
+      // card of the turn. The admission guard is the single-event one, applied to
+      // the batch: a coalesced frame is still agent output (see admitTurnOutput).
+      const admitted = admitTurnOutput(state, [...byTurn.keys()]);
+      if (!admitted) return state;
+      if (admitted.live.length !== byTurn.size) {
+        const live = new Set(admitted.live);
+        for (const turn of [...byTurn.keys()]) if (!live.has(turn)) byTurn.delete(turn);
+      }
+      const base = admitted.base;
+      const lastItem = [...byTurn.values()].at(-1)?.at(-1);
+      let messages = base.messages;
       for (const [turn, items] of byTurn) {
         messages = mapActiveAssistant(messages, turn, (m) => {
           let segments = m.segments;
@@ -1280,7 +1373,7 @@ export function reduceAction(state: State, action: Action): State {
               segments,
               it.channel === "content" ? "text" : "reasoning",
               it.text,
-              state.model,
+              base.model,
             );
           }
           // A fresh stream re-opens the card: a mid-turn `model.final` settles the
@@ -1289,7 +1382,7 @@ export function reduceAction(state: State, action: Action): State {
         });
       }
       return {
-        ...state,
+        ...base,
         turnStatus: lastItem?.channel === "reasoning" ? "reasoning" : "responding",
         turnLastEventMs: Date.now(),
         messages,
@@ -2102,6 +2195,9 @@ export function settleTurnMessages(messages: ChatMessage[]): ChatMessage[] {
           ...message,
           pending: false,
           closed: true,
+          // The transcript's own record that THIS chat saw the turn end: history
+          // loaded from disk is closed but never stamped (see ChatMessage).
+          settled: true,
           segments: message.segments.map((segment) =>
             segment.kind === "tool" && segment.result === undefined
               ? {
@@ -2292,10 +2388,6 @@ function dropStaleCompaction(state: State, ev: IncomingEvent): State {
     ...state,
     messages: state.messages.filter((m) => !stale(m)),
   };
-}
-
-export function applyIncoming(state: State, ev: IncomingEvent): State {
-  return applyIncomingInner(dropStaleCompaction(ensureAssistantTurn(state, ev), ev), ev);
 }
 
 function applyIncomingInner(state: State, ev: IncomingEvent): State {
@@ -4164,8 +4256,9 @@ const TabRuntime = memo(function TabRuntime({
   // A fold is a busy stretch the daemon runs without a turn of its own. Its
   // pushed `compacting` flag is the single source of truth, so a stuck compaction
   // card can never wedge the queue. `engaged` is the one predicate the composer,
-  // the drain and send() share: a turn OR a fold is in flight, so a send QUEUES.
-  const engaged = state.busy || state.awaitingAck || state.compacting;
+  // the drain, send() and the transcript guard share (turnEngaged): a turn OR a
+  // fold is in flight, so a send QUEUES.
+  const engaged = turnEngaged(state);
   // A session mutation (create/delete/clear) is rewriting this workspace's session
   // set, and a send now could land in a session on its way out. Hold the turn until
   // it settles: the draft stays in the composer, so nothing is lost.
