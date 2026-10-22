@@ -424,6 +424,43 @@ describe("Desktop App reducer — usage", () => {
     });
 
     it("drops a batched frame for a settled turn instead of opening a card", () => {
+      // The live stream reaches the reducer as coalesced frames, not one event per
+      // token, so the batched path has to honour the same rule.
+      const idle = settledTurn();
+
+      const late = reduce(idle, {
+        t: "batch_delta",
+        items: [{ turn: 1, channel: "content", text: " still typing" }],
+      });
+
+      expect(late).toBe(idle);
+      expect(late.messages.filter((m) => m.kind === "assistant")).toHaveLength(1);
+    });
+
+    it("still clears a fold card left spinning when the frame is refused", () => {
+      // Refusing output must not skip the cleanup that used to ride along with it:
+      // a stuck compaction throbber goes even though no card is opened.
+      const idle = settledTurn();
+      const stuck = {
+        ...idle,
+        messages: [
+          ...idle.messages,
+          {
+            kind: "notice" as const,
+            id: "fold-1",
+            text: "Compacting context…",
+            severity: "info" as const,
+            running: true,
+            trigger: "auto" as const,
+          },
+        ],
+      };
+
+      const late = reduce(stuck, { t: "incoming", event: contentDelta(1, " still typing") });
+
+      expect(late.messages).toEqual(idle.messages);
+      expect(late.busy).toBe(false);
+    });
 
     it("adopts a batched frame for a live turn it never saw start", () => {
       const idle = settledTurn(1);
