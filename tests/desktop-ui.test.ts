@@ -4,6 +4,7 @@
 import {
   experientialUsageView,
   derivePrefix as fromCoreUtils,
+  openrouterKeyView,
   parseProviderRegistry,
   syntheticUsageView,
 } from "@reasonix/core-utils";
@@ -22,6 +23,7 @@ import {
   fetchExperientialSpend,
   fetchOllamaBalance,
   fetchOllamaPlan,
+  fetchOpenrouterKey,
   fetchSyntheticQuota,
   fetchZaiQuota,
   installDesktopCrashGuards,
@@ -659,6 +661,55 @@ describe("desktop-composer-autosize", () => {
       expect(overflows.overflowY).toBe("auto");
       expect(overflows.heightPx).toBe(height);
     });
+  });
+});
+
+// jsdom has no layout engine, so the composer foot's width contract is pinned on the
+// real stylesheet: a pill hugs its label, and the spacer, not a pill, owns the slack.
+describe("desktop-composer-foot-hug", () => {
+  describe("desktop composer pills hug their label", () => {
+    it("never grows a pill across the row", () => {
+      for (const rule of cssRules(".composer-foot .model-pill")) {
+        expect(rule).not.toContain("flex-grow");
+        expect(rule).not.toContain("width: 100%");
+      }
+    });
+
+    it("left-aligns the label instead of letting the button centre it", () => {
+      expect(cssRule(".composer-foot .model-pill")).toContain("text-align: left");
+    });
+
+    it("parks the row's slack in the spacer", () => {
+      expect(cssRule(".composer-foot .grow")).toContain("flex: 1");
+    });
+  });
+});
+
+// The quick-send trigger is icon-only, so its box is fixed: no label slot can
+// reappear and start competing with the pills for the row's width.
+describe("desktop-composer-quicksend", () => {
+  it("renders the trigger as a square icon button", () => {
+    const rule = cssRule(".quick-proceed-btn");
+    expect(rule).toContain("width: 30px");
+    expect(rule).toContain("height: 30px");
+    expect(rule).toContain("justify-content: center");
+    expect(cssRule(".quick-proceed-btn span"), "label slot").toBe("");
+  });
+});
+
+// Every picker pill looks alike, so a corner notch names the one it opens. jsdom has
+// no layout engine, so the notch is pinned on the stylesheet.
+describe("desktop-composer-pill-tag", () => {
+  it("draws the letter from the pill's own attribute into a corner triangle", () => {
+    const notch = cssRule(".composer-foot .model-pill[data-pill-tag]::after");
+    expect(notch).toContain("content: attr(data-pill-tag)");
+    expect(notch).toContain("top: 0");
+    expect(notch).toContain("right: 0");
+    expect(notch).toContain("clip-path: polygon(0 0, 100% 0, 100% 100%)");
+  });
+
+  it("anchors the notch to the button, which becomes its positioned parent", () => {
+    expect(cssRule(".composer-foot .model-pill[data-pill-tag]")).toContain("position: relative");
   });
 });
 
@@ -2320,6 +2371,220 @@ describe("desktop-provider-usage", () => {
       await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
       fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
       await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
+    });
+  });
+
+  // OpenRouter: `GET {endpoint}/key` — the key's governing budget, read from the
+  // verbatim reply this project's key returned.
+  describe("fetchOpenrouterKey", () => {
+    const BASE = "https://openrouter.ai/api/v1";
+
+    it("GETs the declared key route and reads a guardrail budget", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            label: "sk-or-v1-bdf...aa5",
+            limit: null,
+            limit_remaining: null,
+            budgets: [
+              {
+                scope: "workspace_default_member",
+                limit_usd: 100,
+                spend_usd: 40,
+                remaining_usd: 60,
+                reset_interval: "weekly",
+                resets_at: "2026-10-12T00:00:00.000Z",
+              },
+              {
+                scope: "member",
+                limit_usd: 50,
+                spend_usd: 40,
+                remaining_usd: 10,
+                reset_interval: "weekly",
+                resets_at: "2026-10-12T00:00:00.000Z",
+              },
+            ],
+            effective_budget: {
+              scope: "member",
+              limit_usd: 50,
+              spend_usd: 40,
+              remaining_usd: 10,
+              reset_interval: "weekly",
+              resets_at: "2026-10-12T00:00:00.000Z",
+            },
+          },
+        }),
+      );
+
+      await expect(fetchOpenrouterKey("or-key", BASE)).resolves.toEqual({
+        budget: {
+          scope: "member",
+          limitUsd: 50,
+          remainingUsd: 10,
+          resetInterval: "weekly",
+          resetsAt: "2026-10-12T00:00:00.000Z",
+        },
+        freeModels: null,
+      });
+      const [rawUrl, init] = fetchMock.mock.calls[0]!;
+      expect(String(rawUrl)).toBe("https://openrouter.ai/api/v1/key");
+      expect(init).toMatchObject({ headers: { Authorization: "Bearer or-key" } });
+    });
+
+    it("reads a plain key limit and the free-model allowance", async () => {
+      // The observed reply for this project's key: a key_limit with no reset at all.
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            limit: 50,
+            limit_remaining: 49.95997936,
+            budgets: [
+              {
+                scope: "key_limit",
+                limit_usd: 50,
+                spend_usd: 0.04002064,
+                remaining_usd: 49.95997936,
+                reset_interval: null,
+                resets_at: null,
+              },
+            ],
+            effective_budget: {
+              scope: "key_limit",
+              limit_usd: 50,
+              spend_usd: 0.04002064,
+              remaining_usd: 49.95997936,
+              reset_interval: null,
+              resets_at: null,
+            },
+            free_model_daily_requests: { used: 39, limit: 1000, remaining: 961 },
+          },
+        }),
+      );
+
+      await expect(fetchOpenrouterKey("or-key", BASE)).resolves.toEqual({
+        budget: {
+          scope: "key_limit",
+          limitUsd: 50,
+          remainingUsd: 49.95997936,
+          resetInterval: null,
+          resetsAt: null,
+        },
+        freeModels: { limit: 1000, remaining: 961 },
+      });
+    });
+
+    it("falls back to the top-level limit pair on an older reply", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ data: { limit: 20, limit_remaining: 5 } }));
+
+      await expect(fetchOpenrouterKey("or-key", BASE)).resolves.toEqual({
+        budget: {
+          scope: null,
+          limitUsd: 20,
+          remainingUsd: 5,
+          resetInterval: null,
+          resetsAt: null,
+        },
+        freeModels: null,
+      });
+    });
+
+    it("returns undefined when the reply has nothing readable", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ data: { label: "x" } }));
+      await expect(fetchOpenrouterKey("or-key", BASE)).resolves.toBeUndefined();
+      fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: "nope" } }, 401));
+      await expect(fetchOpenrouterKey("or-key", BASE)).resolves.toBeUndefined();
+    });
+  });
+
+  // OpenRouter: the key's governing budget plus today's free-model allowance. The
+  // payloads below are verbatim from the live /api/v1/key reply.
+  describe("openrouterKeyView", () => {
+    const NOW = Date.UTC(2026, 9, 22, 19, 1);
+    const NEXT_UTC_MIDNIGHT = Date.UTC(2026, 9, 23);
+    const KEY_ONLY = {
+      scope: "key_limit",
+      limitUsd: 50,
+      remainingUsd: 49.95997936,
+      resetInterval: null,
+      resetsAt: null,
+    };
+
+    it("reads a guardrail budget as the plan window with its own reset", () => {
+      const view = openrouterKeyView(
+        {
+          budget: {
+            scope: "member",
+            limitUsd: 50,
+            remainingUsd: 10,
+            resetInterval: "weekly",
+            resetsAt: "2026-10-12T00:00:00.000Z",
+          },
+          freeModels: null,
+        },
+        NOW,
+      );
+
+      expect(view.plan).toBe("member");
+      expect(view.limited).toBe(false);
+      expect(view.windows).toEqual([
+        { label: "plan", remainingPct: 20, resetsAt: Date.parse("2026-10-12T00:00:00.000Z") },
+      ]);
+    });
+
+    it("never invents a reset for a plain key limit", () => {
+      // The observed key answered with reset_interval null and resets_at null, so a
+      // countdown here would be fiction the chip would show as a real deadline.
+      const view = openrouterKeyView({ budget: KEY_ONLY, freeModels: null }, NOW);
+
+      expect(view.windows).toHaveLength(1);
+      expect(view.windows[0]?.label).toBe("plan");
+      expect(view.windows[0]?.remainingPct).toBeCloseTo(99.92, 2);
+      expect(view.windows[0]?.resetsAt).toBeNull();
+      expect(view.plan).toBe("key");
+    });
+
+    it("puts today's free-model allowance beside the budget as a day window", () => {
+      const view = openrouterKeyView(
+        { budget: KEY_ONLY, freeModels: { limit: 1000, remaining: 961 } },
+        NOW,
+      );
+
+      expect(view.windows).toHaveLength(2);
+      expect(view.windows[1]?.label).toBe("day");
+      expect(view.windows[1]?.remainingPct).toBeCloseTo(96.1, 1);
+      expect(view.windows[1]?.resetsAt).toBe(NEXT_UTC_MIDNIGHT);
+    });
+
+    it("marks a spent budget as limited instead of a bare 0%", () => {
+      const view = openrouterKeyView(
+        {
+          budget: { ...KEY_ONLY, scope: "member", remainingUsd: -0.2, resetInterval: "weekly" },
+          freeModels: null,
+        },
+        NOW,
+      );
+
+      expect(view.limited).toBe(true);
+      expect(view.windows[0]?.remainingPct).toBe(0);
+    });
+
+    it("reports no window rather than a guessed share when nothing is readable", () => {
+      expect(openrouterKeyView({ budget: null, freeModels: null }, NOW).windows).toEqual([]);
+      expect(
+        openrouterKeyView(
+          {
+            budget: {
+              scope: null,
+              limitUsd: 0,
+              remainingUsd: 12,
+              resetInterval: null,
+              resetsAt: null,
+            },
+            freeModels: { limit: 0, remaining: 3 },
+          },
+          NOW,
+        ).windows,
+      ).toEqual([]);
     });
   });
 

@@ -1373,10 +1373,15 @@ describe("composer-pill-space", () => {
   /** The pill is label + chevron. A leading glyph costs the width the label needs,
    *  so the only icon a closed pill keeps is the one that says "this opens". */
   describe("Composer pill width", () => {
-    it("gives the label the whole pill, keeping the chevron as the only glyph", () => {
-      const { container } = render(<Composer {...makeComposerBaseProps()} />);
+    /** Both agent pills plus an effort picker; each test varies one prop, so the
+     *  shared baseline lives here instead of in every body. */
+    const renderPills = (props: Parameters<typeof makeComposerBaseProps>[0] = {}) =>
+      render(<Composer {...makeComposerBaseProps({ subagentsEnabled: true, ...props })} />);
 
-      for (const selector of [".model-pill", ".effort-pill"]) {
+    it("gives the label the whole pill, keeping the chevron as the only glyph", () => {
+      const { container } = renderPills();
+
+      for (const selector of [".model-pill", ".subagent-pill", ".effort-pill"]) {
         const pill = container.querySelector(selector);
         expect(pill, selector).not.toBeNull();
         expect(pill?.querySelectorAll("svg").length, selector).toBe(1);
@@ -1384,10 +1389,47 @@ describe("composer-pill-space", () => {
       }
     });
 
+    it("hugs both agent pills against the effort picker, with the slack before them", () => {
+      // The pills are laid out at their own text width, flush against the fixed
+      // controls on the right; the spacer before them is what holds them there.
+      const { container } = renderPills();
+
+      const foot = container.querySelector(".composer-foot")!;
+      const kids = Array.from(foot.children);
+      const spacer = kids.findIndex((el) => el.classList.contains("grow"));
+      const wrapIndex = (selector: string) =>
+        kids.indexOf(container.querySelector(selector)!.parentElement!);
+
+      expect(spacer, "spacer").toBeGreaterThan(-1);
+      expect(wrapIndex(".model-pill:not(.subagent-pill)"), "main").toBeGreaterThan(spacer);
+      expect(wrapIndex(".subagent-pill"), "subagent").toBeGreaterThan(spacer);
+      // Main, then subagent, then the effort picker: no gap between the three.
+      expect(wrapIndex(".subagent-pill") - wrapIndex(".model-pill:not(.subagent-pill)")).toBe(1);
+      expect(wrapIndex(".effort-pill") - wrapIndex(".subagent-pill")).toBe(1);
+    });
+
+    it("tags each picker with its own letter, outside the label text", () => {
+      const { container } = renderPills({
+        modelLabel: "deepseek-v4-flash",
+        subagentModelLabel: "glm-5.3-flash",
+        supportedEfforts: ["low", "high"],
+      });
+
+      const main = container.querySelector(".model-pill:not(.subagent-pill):not(.effort-pill)");
+      const sub = container.querySelector(".subagent-pill");
+      const effort = container.querySelector(".effort-pill");
+      expect(main?.getAttribute("data-pill-tag")).toBe("M");
+      expect(sub?.getAttribute("data-pill-tag")).toBe("S");
+      expect(effort?.getAttribute("data-pill-tag")).toBe("E");
+      // The notch is drawn from that attribute, so it stays out of the label text.
+      expect(main?.textContent).toBe("DS · deepseek-v4-flash");
+      expect(sub?.textContent).toBe("ZAI · glm-5.3-flash");
+    });
+
     it("keeps a long model id whole as the label and as its hover title", () => {
       // FitText shrinks this label to the pill; the title is what stays readable.
       const model = "my-private-gateway-model-id";
-      const { container } = render(<Composer {...makeComposerBaseProps({ modelLabel: model })} />);
+      const { container } = renderPills({ modelLabel: model });
 
       const label = container.querySelector(".model-pill span");
       expect(label?.textContent).toBe(model);
@@ -1395,7 +1437,7 @@ describe("composer-pill-space", () => {
     });
 
     it("opens a picker as bare rows, with no glyph beside a model or an effort", () => {
-      const model = render(<Composer {...makeComposerBaseProps()} />);
+      const model = renderPills();
       fireEvent.click(model.container.querySelector(".model-pill")!);
       const modelRows = Array.from(
         model.container.querySelectorAll(".model-menu-list .popup-item"),
@@ -1403,9 +1445,7 @@ describe("composer-pill-space", () => {
       expect(modelRows.length).toBeGreaterThan(0);
       for (const row of modelRows) expect(row.querySelector("svg")).toBeNull();
 
-      const effort = render(
-        <Composer {...makeComposerBaseProps({ supportedEfforts: ["low", "high"] })} />,
-      );
+      const effort = renderPills({ supportedEfforts: ["low", "high"] });
       fireEvent.click(effort.container.querySelector(".effort-pill")!);
       const effortRows = Array.from(
         effort.container.querySelectorAll(".effort-menu-list .popup-item"),

@@ -11,6 +11,7 @@ import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./composer";
 import { makeComposerBaseProps } from "./composer-test-fixtures";
+import { menuPopLeft } from "./menu-pop";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 afterEach(() => {
@@ -241,6 +242,20 @@ describe("desktop Composer model catalog", () => {
     expect(antigravityItems.some((t) => t.includes("claude-opus-4-6-thinking"))).toBe(true);
     expect(antigravityItems.some((t) => t.includes("claude-sonnet-4-6"))).toBe(true);
     expect(antigravityItems.some((t) => t.includes("gemini-3.7-flash-tiered"))).toBe(true);
+  });
+});
+
+describe("desktop Composer picker anchor", () => {
+  it("right-aligns the popup with its trigger", () => {
+    expect(menuPopLeft({ triggerRight: 600, width: 420, viewportWidth: 1200, pad: 8 })).toBe(180);
+  });
+
+  it("slides the popup left instead of letting it leave the viewport", () => {
+    expect(menuPopLeft({ triggerRight: 1198, width: 420, viewportWidth: 1200, pad: 8 })).toBe(772);
+  });
+
+  it("holds the popup at the viewport gutter when the trigger is near its left edge", () => {
+    expect(menuPopLeft({ triggerRight: 100, width: 420, viewportWidth: 1200, pad: 8 })).toBe(8);
   });
 });
 

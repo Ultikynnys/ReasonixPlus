@@ -1290,12 +1290,12 @@ describe("config", () => {
       expect(loadDuplicateSessionTokens(path)).toBe(DEFAULT_DUPLICATE_SESSION_TOKENS);
     });
 
-    it("auto proceed defaults off and round-trips", () => {
-      expect(loadDuplicateSessionAutoProceed(path)).toBe(false);
-      saveDuplicateSessionAutoProceed(true, path);
+    it("auto proceed defaults on and round-trips an explicit opt-out", () => {
       expect(loadDuplicateSessionAutoProceed(path)).toBe(true);
       saveDuplicateSessionAutoProceed(false, path);
       expect(loadDuplicateSessionAutoProceed(path)).toBe(false);
+      saveDuplicateSessionAutoProceed(true, path);
+      expect(loadDuplicateSessionAutoProceed(path)).toBe(true);
     });
   });
 

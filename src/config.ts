@@ -800,7 +800,8 @@ export interface ReasonixConfig {
   autoCompactTrigger?: number;
   /** Token budget for a duplicated session's retained context (newest-first). Default 50 000. */
   duplicateSessionTokens?: number;
-  /** When true, a duplicated session auto-runs one continuation turn. Default false. */
+  /** When true, a duplicated session runs one continuation turn. Default true; an explicit
+   *  false parks the seeded context and waits for the user. */
   duplicateSessionAutoProceed?: boolean;
   /** Whether `run_command` may run a command elevated via Windows UAC consent.
    *  Defaults to false: even if the model requests `elevate: true`, the tool
@@ -2850,12 +2851,13 @@ export function saveDuplicateSessionTokens(
   writeConfig({ ...cfg, duplicateSessionTokens: clamped }, path);
 }
 
-/** Whether a duplicated session auto-runs one continuation turn. Defaults to false. */
+/** Whether a duplicated session runs one continuation turn. Defaults to true: a clone is
+ *  a warm continuation, so it continues by itself unless the user opted out. */
 export function loadDuplicateSessionAutoProceed(path: string = defaultConfigPath()): boolean {
-  return readConfig(path).duplicateSessionAutoProceed === true;
+  return readConfig(path).duplicateSessionAutoProceed !== false;
 }
 
-/** Persist whether a duplicated session auto-runs one continuation turn. */
+/** Persist whether a duplicated session runs one continuation turn. */
 export function saveDuplicateSessionAutoProceed(
   enabled: boolean,
   path: string = defaultConfigPath(),
@@ -3031,6 +3033,24 @@ export function pickFallbackModel(
     return id;
   }
   return null;
+}
+
+/** Walk the backup list in the user's priority order until `tryModel` accepts one: a
+ *  backup that cannot start here falls through to the next. `blocked` is the caller's
+ *  chain state and is never mutated; null means the list is spent. */
+export function walkFallbackChain(
+  configured: readonly string[],
+  blocked: ReadonlySet<string>,
+  usable: (model: string) => boolean,
+  tryModel: (model: string) => boolean,
+): string | null {
+  const spent = new Set(blocked);
+  for (;;) {
+    const next = pickFallbackModel(configured, spent, usable);
+    if (!next) return null;
+    spent.add(next);
+    if (tryModel(next)) return next;
+  }
 }
 
 /** Bytes above which `read_file` flips to outline mode. Returns `undefined` so callers can apply the registered default; non-positive / non-numeric config values fall through to the default too. */

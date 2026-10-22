@@ -77,7 +77,7 @@ import { speechTranscriber } from "../voice/transcriber";
 import { type ChangelogState, PageChangelog } from "./changelog";
 import { FitText } from "./fit-text";
 import { activationHandler, escapeHandler } from "./keyboard";
-import { Shortcut, type ShortcutKey } from "./shortcut";
+import { Shortcut, type ShortcutKey, localizeShortcutText } from "./shortcut";
 
 /** Render i18n hint strings that embed `<code>…</code>` tags as styled fragments
  *  (no dangerouslySetInnerHTML — the markup is translator-authored, but React nodes keep it static). */
@@ -743,7 +743,7 @@ function PageGeneral({
       <section className="section">
         <div className="stitle">{t("settings.quickSendSection")}</div>
         <div className="h" style={{ marginBottom: 12 }}>
-          {t("settings.quickSendHint")}
+          {localizeShortcutText(t("settings.quickSendHint"))}
         </div>
 
         {(settings.quickSends ?? []).length > 0 && (
@@ -2285,6 +2285,19 @@ function PageModels({
       />
 
       <DeclaredProviderCard
+        group="openrouter"
+        defaultOpen={false}
+        models={modelColumn(groupModels("openrouter"))}
+        settings={
+          <ProviderSettingFields
+            providerId="openrouter"
+            settings={settings.providerSettings}
+            onSave={onSave}
+          />
+        }
+      />
+
+      <DeclaredProviderCard
         group="opencode"
         defaultOpen={false}
         models={modelColumn(groupModels("opencode"))}
@@ -3264,6 +3277,8 @@ function PageShortcuts() {
     { nm: t("settings.shortcutNewTab"), keys: ["mod", "T"] },
     { nm: t("settings.shortcutCloseTab"), keys: ["mod", "W"] },
     { nm: t("settings.shortcutFocusComposer"), keys: ["mod", "L"] },
+    { nm: t("settings.shortcutQuickSend"), keys: ["mod", "Q"] },
+    { nm: t("settings.shortcutQuickSendQueue"), keys: ["mod", "1-9"] },
     { nm: t("settings.shortcutSwitchTab"), keys: ["mod", "tab"] },
     { nm: t("settings.shortcutAbort"), keys: ["esc"] },
     { nm: t("settings.shortcutSettings"), keys: ["mod", ","] },

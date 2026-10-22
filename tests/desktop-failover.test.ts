@@ -6,12 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  FAILOVER_COOLDOWN_MS,
+  failoverCooldown,
   failoverStopMessage,
   shouldFailover,
   subagentPinFollowsFailover,
   turnStoppedByUser,
 } from "../src/cli/commands/desktop.js";
-import { pickFallbackModel } from "../src/config.js";
+import { pickFallbackModel, walkFallbackChain } from "../src/config.js";
 import { t } from "../src/i18n/index.js";
 import { isContextOverflowError } from "../src/loop/errors.js";
 
@@ -52,6 +54,103 @@ describe("pickFallbackModel — failover order", () => {
   });
 });
 
+describe("walkFallbackChain — one walk over the configured order", () => {
+  const allUsable = () => true;
+  const startsAnyway = () => true;
+
+  it("takes the first candidate in the user's order", () => {
+    expect(walkFallbackChain(["a", "b"], new Set(), allUsable, startsAnyway)).toBe("a");
+  });
+
+  it("falls through a backup that cannot start here instead of ending the walk", () => {
+    // The start-of-chat case: the first backup's runtime would not build, and the
+    // whole list used to go untried because that one attempt failed.
+    const tries: string[] = [];
+    const started = walkFallbackChain(["a", "b", "c"], new Set(), allUsable, (model) => {
+      tries.push(model);
+      return model !== "a";
+    });
+    expect(started).toBe("b");
+    expect(tries).toEqual(["a", "b"]);
+  });
+
+  it("skips models that already failed — including the one that opened the chat", () => {
+    const blocked = new Set(["dead", "b"]);
+    const started = walkFallbackChain(["dead", "b", "c"], blocked, allUsable, startsAnyway);
+    expect(started).toBe("c");
+  });
+
+  it("never mutates the caller's chain state", () => {
+    const blocked = new Set(["dead"]);
+    walkFallbackChain(["a", "b"], blocked, allUsable, () => false);
+    expect([...blocked]).toEqual(["dead"]);
+  });
+
+  it("returns null once every backup was tried and none started", () => {
+    const tries: string[] = [];
+    const started = walkFallbackChain(["a", "b"], new Set(), allUsable, (model) => {
+      tries.push(model);
+      return false;
+    });
+    expect(started).toBeNull();
+    expect(tries).toEqual(["a", "b"]);
+  });
+
+  it("returns null when nothing is configured — no failover unless the user opts in", () => {
+    expect(walkFallbackChain([], new Set(), allUsable, startsAnyway)).toBeNull();
+  });
+});
+
+describe("failoverCooldown — the pause between two backup attempts", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("waits the full cooldown before the next attempt", async () => {
+    vi.useFakeTimers();
+    let done = false;
+    const pending = failoverCooldown(undefined).then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(FAILOVER_COOLDOWN_MS - 1);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(done).toBe(true);
+  });
+
+  it("holds the cooldown at five seconds", () => {
+    expect(FAILOVER_COOLDOWN_MS).toBe(5_000);
+  });
+
+  it("does not wait at all when the turn was already stopped", async () => {
+    vi.useFakeTimers();
+    const aborter = new AbortController();
+    aborter.abort();
+    let done = false;
+    void failoverCooldown(aborter.signal).then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toBe(true);
+  });
+
+  it("wakes the moment Stop lands mid-cooldown", async () => {
+    vi.useFakeTimers();
+    const aborter = new AbortController();
+    let done = false;
+    const pending = failoverCooldown(aborter.signal).then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(done).toBe(false);
+    aborter.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    await pending;
+    expect(done).toBe(true);
+  });
+});
+
 describe("failover wiring — structural invariants in the daemon", () => {
   const src = readFileSync(join(process.cwd(), "src/cli/commands/desktop.ts"), "utf8");
   const bodyStart = src.indexOf("async function runTurnInnerBody(");
@@ -73,7 +172,7 @@ describe("failover wiring — structural invariants in the daemon", () => {
   });
 
   it("switches before it rewinds, so a failed switch cannot drop the prompt", () => {
-    const switchModel = body.indexOf("applyTabModel(tab, next");
+    const switchModel = body.indexOf("switchTabModel(tab, next");
     const rewound = body.indexOf("rt.loop.retryLastUser()");
     // The LAST drive call is the one inside the failover loop ("let attempt = …"
     // contains the same substring, so the first match is the initial drive).
@@ -88,9 +187,12 @@ describe("failover wiring — structural invariants in the daemon", () => {
 
   it("restores the previous model when the backup cannot build a runtime", () => {
     // applyTabModel nulls the runtime for an unusable model instead of throwing;
-    // leaving the tab like that would reject every later send. One helper owns the
-    // restore, so a skip and a spent chain cannot drift apart.
-    expect(body).toContain('restoreModel(failedModel, "backup-model rollback")');
+    // leaving the tab like that would reject every later send. ONE helper owns every
+    // restore (a skipped backup, a startup walk that landed nowhere, a spent chain),
+    // so no two exit paths can drift apart.
+    expect(body).toContain('restoreTabModel(tab, failedModel, "backup-model rollback")');
+    expect(src).toContain('restoreTabModel(tab, from, "startup backup rollback")');
+    expect(src.match(/function restoreTabModel\(/g)?.length).toBe(1);
   });
 
   it("scopes every automatic switch to the conversation, never the global default", () => {
@@ -100,8 +202,13 @@ describe("failover wiring — structural invariants in the daemon", () => {
     expect(src).toContain(
       "const FAILOVER_SWITCH = { persistDefault: false, followSubagentPin: true } as const;",
     );
-    expect(body).toContain("applyTabModel(tab, next, FAILOVER_SWITCH)");
-    expect(body).toContain("applyTabModel(tab, model, FAILOVER_SWITCH)");
+    expect(body).toContain("switchTabModel(tab, next)");
+    // The switch itself is defined once, so every failover (mid-turn and at chat start)
+    // shares the session-scoped shape rather than spelling out its own options: the two
+    // helpers are the only applyTabModel callers that take FAILOVER_SWITCH, and the turn
+    // body cannot reach a model change any other way.
+    expect(src.match(/applyTabModel\(tab, model, FAILOVER_SWITCH\)/g)?.length).toBe(2);
+    expect(body).not.toContain("applyTabModel(");
     expect(body).not.toContain("persistDefault:");
   });
 
@@ -136,8 +243,46 @@ describe("failover wiring — structural invariants in the daemon", () => {
     // The chain seeds the model that failed first and records each pick, so the
     // next pick can only be further down the list — never the same model twice.
     expect(body).toContain("const primaryModel = tab.currentModel;");
-    expect(body).toContain("const triedModels = new Set([primaryModel]);");
+    expect(body).toContain("const triedModels = new Set([primaryModel, ...tab.failoverExcluded]);");
     expect(body).toContain("triedModels.add(next);");
+  });
+
+  it("never offers the model that opened the chat as its own backup", () => {
+    // Starting a chat on an unavailable model used to make the FIRST send dead on
+    // arrival: the pre-flight gate stopped the turn and every backup went untried.
+    expect(src).toContain("function adoptStartupBackup(");
+    expect(body).toContain("adoptStartupBackup(tab);");
+    expect(src).toContain("adoptStartupBackup(tab);\n    // A channel with no runtime");
+    // One walker decides which backup runs next, and it keeps trying the rest when
+    // one cannot build a runtime.
+    expect(src).toContain("walkFallbackChain(");
+    // A walk that lands nowhere must not leave the tab naming a backup that never ran.
+    expect(src).toContain('restoreTabModel(tab, from, "startup backup rollback")');
+    // …and it runs before the turn exists, so it may never throw into the send path.
+    expect(src).toContain("startup backup switch failed");
+  });
+
+  it("records every failed model for the whole session, not just the turn", () => {
+    // The model that triggered the chain is the one a later send must never try again,
+    // so the ONE recording point is the loop that begins by naming it, and the seed
+    // carries every earlier failure of this chat into the pick.
+    expect(body).toContain("tab.failoverExcluded.add(tab.currentModel);");
+    expect(body.match(/failoverExcluded\.add\(/g)?.length).toBe(1);
+    expect(src).toContain("failoverExcluded: Set<string>;");
+    // A conversation opened later (or another workspace) gives models a fresh chance.
+    expect(src).toContain("function resetFailoverExclusions(");
+    expect(src.match(/resetFailoverExclusions\(tab\);/g)?.length).toBe(2);
+  });
+
+  it("cools down between two backup attempts, and a Stop breaks the wait", () => {
+    expect(src).toContain("export const FAILOVER_COOLDOWN_MS = 5_000;");
+    const waited = body.indexOf("await failoverCooldown(tab.aborter?.signal);");
+    const switched = body.indexOf("switchTabModel(tab, next)");
+    // The pause lands BEFORE the switch, so a Stop during it leaves the tab on the
+    // model it was already on: nothing to unwind, nothing rewound.
+    expect(waited).toBeGreaterThan(0);
+    expect(switched).toBeGreaterThan(waited);
+    expect(body).toContain("if (turnStoppedByUser(tab)) break;");
   });
 
   it("gives up with an explanation for each of the three end states", () => {
@@ -149,6 +294,9 @@ describe("failover wiring — structural invariants in the daemon", () => {
     expect(src).toContain('t("loop.failoverNoBackup"');
     expect(src).toContain('t("loop.failoverNoneUsable"');
     expect(src).toContain('t("loop.failoverAllExhausted"');
+    // …plus a fourth for a list this chat already spent in an earlier turn.
+    expect(src).toContain('t("loop.failoverAlreadyFailed"');
+    expect(body).toContain("excluded: [...tab.failoverExcluded]");
     // And a rewind that cannot be replayed must say so instead of going quiet.
     expect(body).toContain('t("loop.failoverPromptUnavailable"');
   });
@@ -186,9 +334,7 @@ describe("failover wiring — structural invariants in the daemon", () => {
   it("puts the model the turn started on back when the chain is spent", () => {
     // Ending on the last backup would show a model the user never picked and send
     // their next message at the same wall.
-    expect(body).toContain(
-      'restoreModel(primaryModel, "restoring the turn\'s own model after a spent failover")',
-    );
+    expect(body).toContain('"restoring the turn\'s own model after a spent failover"');
     expect(body).toContain("failedOverTo = null;");
   });
 });
@@ -343,6 +489,32 @@ describe("failoverStopMessage — the sentence that closes a spent chain", () =>
     expect(msg).toContain("glm-4.6, gpt-5.6-sol");
     expect(msg).toContain("every backup model was tried");
     expect(msg).toContain(PRIMARY);
+  });
+
+  it("says the backups already failed earlier in this chat, not that they lack keys", () => {
+    // The session remembers every model that failed, so a later send can walk a list
+    // it never attempted. Reporting that as "no credential" would be false.
+    const msg = failoverStopMessage({
+      failed: PRIMARY,
+      configured: ["glm-4.6"],
+      attempted: [],
+      skipped: [],
+      excluded: [PRIMARY, "glm-4.6"],
+    });
+    expect(msg).toContain("already failed earlier in this chat");
+    expect(msg).toContain("glm-4.6");
+    expect(msg).not.toContain("no configured backup model can run here");
+  });
+
+  it("still blames the credentials when nothing had failed before", () => {
+    const msg = failoverStopMessage({
+      failed: PRIMARY,
+      configured: ["glm-4.6"],
+      attempted: [],
+      skipped: [],
+      excluded: [PRIMARY],
+    });
+    expect(msg).toContain("no configured backup model can run here");
   });
 });
 

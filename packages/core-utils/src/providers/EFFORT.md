@@ -17,6 +17,15 @@ the declared fallback. Toggle-only models must not advertise graded effort.
 | Synthetic | Chat reasoning_effort; per-model metadata refines the fallback | https://dev.synthetic.new/docs/openai/chat-completions |
 | Experiential | Effort pass-through; gateway may coerce down, never up, by policy | https://platform.experientiallabs.ai/llms.txt |
 | OpenCode | Model-specific gateway contracts, Zen owns overlapping Go ids | https://opencode.ai/docs/zen/ |
+| OpenRouter | No app-level ladder: effort is per upstream model, so requests send no effort field | https://openrouter.ai/api/v1/models |
+
+## OpenRouter variants and modality
+
+OpenRouter resells many vendors, so no single ladder applies: the declared
+fallback is empty and every request omits the effort field. Its catalogue is
+text-only by default, and `output_modalities=all` would add decisions, image,
+speech, video, embedding and rerank entries that fail on chat. A `:free` suffix
+is its own catalogue entry with its own limits, not a variant of the base id.
 
 ## Discovery and compatibility
 

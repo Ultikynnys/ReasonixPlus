@@ -378,4 +378,19 @@ describe("capability predicates on qualified references", () => {
     expect(modelAcceptsImages("ollama/llava", vision)).toBe(true);
     expect(modelAcceptsImages("ollama/llava")).toBe(false);
   });
+
+  it("takes image capability from a provider catalog's own modality field", () => {
+    // OpenRouter publishes `architecture.input_modalities`, so a resold
+    // `vendor/model` id that JSON cannot list still earns the affordance.
+    const discovered = new Set(["openai/gpt-4o", "dots-studio/dots-3-note-preview:free"]);
+    expect(modelAcceptsImages("openrouter/openai/gpt-4o", null, null, discovered)).toBe(true);
+    expect(
+      modelAcceptsImages("dots-studio/dots-3-note-preview:free", null, null, discovered),
+    ).toBe(true);
+    // Without the catalog the same qualified row is refused: OpenAI's `^gpt-`
+    // rule never sees an id that starts with a vendor segment.
+    expect(modelAcceptsImages("openrouter/openai/gpt-4o")).toBe(false);
+    expect(modelAcceptsImages("vendor/text-only:free", null, null, discovered)).toBe(false);
+    expect(modelAcceptsImages("vendor/text-only:free")).toBe(false);
+  });
 });

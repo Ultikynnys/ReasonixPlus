@@ -8,7 +8,12 @@ import {
   modelProviderHints,
   providerForModelGroup,
 } from "./model-catalog";
-import { modelOwnerProvider, providerDeclared, providerSpecsInOrder } from "@reasonix/core-utils";
+import {
+  modelOwnerProvider,
+  providerDeclared,
+  providerSpecsInOrder,
+  stripProviderQualifier,
+} from "@reasonix/core-utils";
 
 describe("deriveModelCatalog", () => {
   it("labels exactly the groups a declared provider fills", () => {
@@ -65,6 +70,25 @@ describe("deriveModelCatalog", () => {
     expect(catalog.acceptsImages("unknown-model")).toBe(false);
   });
 
+  it("takes image capability from a published catalog's own modality field", () => {
+    const catalog = deriveModelCatalog({
+      providerCatalogs: {
+        openrouter: {
+          models: ["openai/gpt-4o", "vendor/text-only"],
+          visionModels: ["openai/gpt-4o"],
+          source: "live",
+        },
+      },
+    });
+
+    // The row value is qualified, so the verdict must match the wire id the
+    // catalog reported, not the picker value.
+    expect(catalog.acceptsImages("openrouter/openai/gpt-4o")).toBe(true);
+    // An id the same catalog left as text-only stays refused.
+    expect(catalog.acceptsImages("vendor/text-only")).toBe(false);
+    expect(catalog.acceptsImages("openrouter/vendor/text-only")).toBe(false);
+  });
+
   it("qualifies opencode ids that an earlier provider catalog serves", () => {
     const catalog = deriveModelCatalog({
       // Live-synced OpenCode list including ids other providers serve natively.
@@ -81,6 +105,34 @@ describe("deriveModelCatalog", () => {
     expect(opencode).toContain("big-pickle");
     expect(opencode).not.toContain("opencode/big-pickle");
   });
+
+  it.skipIf(!providerDeclared("openrouter"))(
+    "keeps a vendor path intact when a reseller row needs a qualifier",
+    () => {
+      const catalog = deriveModelCatalog({
+        providerCatalogs: {
+          openrouter: {
+            models: [
+              "openai/gpt-6-sol",
+              "deepseek/deepseek-v4-flash",
+              "anthropic/claude-sonnet-4-6",
+            ],
+            source: "live",
+          },
+        },
+      });
+
+      const rows = catalog.groups.find((group) => group.key === "openrouter")!.models;
+      // `openai` and `deepseek` are provider ids, so the bare ids would route to
+      // those providers: the qualified row must keep the whole vendor path.
+      expect(rows).toContain("openrouter/openai/gpt-6-sol");
+      expect(rows).toContain("openrouter/deepseek/deepseek-v4-flash");
+      // The wire id is what the endpoint receives, so it must survive stripping.
+      expect(stripProviderQualifier("openrouter/openai/gpt-6-sol")).toBe("openai/gpt-6-sol");
+      // A vendor no provider claims already routes here, so it stays bare.
+      expect(rows).toContain("anthropic/claude-sonnet-4-6");
+    },
+  );
 
   it("keeps native catalog ids bare so bare and qualified rows coexist", () => {
     const catalog = deriveModelCatalog({

@@ -8,6 +8,7 @@ import mimo from "./providers/mimo.json";
 import ollama from "./providers/ollama.json";
 import openai from "./providers/openai.json";
 import opencode from "./providers/opencode.json";
+import openrouter from "./providers/openrouter.json";
 import synthetic from "./providers/synthetic.json";
 import zai from "./providers/zai.json";
 
@@ -27,6 +28,7 @@ export const PROVIDER_DOCUMENTS: readonly ProviderDocumentSource[] = [
   { file: "ollama.json", document: ollama },
   { file: "openai.json", document: openai },
   { file: "opencode.json", document: opencode },
+  { file: "openrouter.json", document: openrouter },
   { file: "synthetic.json", document: synthetic },
   { file: "zai.json", document: zai },
 ];
@@ -42,6 +44,7 @@ export const PROVIDER_IDS = [
   "gemini",
   "ollama",
   "synthetic",
+  "openrouter",
 ] as const;
 
 /** Falls back to string when no provider is declared, so an empty set still builds. */

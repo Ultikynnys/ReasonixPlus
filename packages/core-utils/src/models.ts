@@ -317,11 +317,13 @@ const MODEL_SCHEME_PREFIXES: readonly string[] = providerSpecsInOrder().flatMap(
  *  and the images hard gate.
  *
  *  `ollamaVision` holds `ollama/`-prefixed ids confirmed by runtime probing;
- *  `opencodeVision` replaces the static OpenCode set once models.dev syncs. */
+ *  `opencodeVision` replaces the static OpenCode set once models.dev syncs;
+ *  `discoveredVision` holds ids a provider's own catalogue reported as image-capable. */
 export function modelAcceptsImages(
   model: string | undefined | null,
   ollamaVision?: ReadonlySet<string> | null,
   opencodeVision?: ReadonlySet<string> | null,
+  discoveredVision?: ReadonlySet<string> | null,
 ): boolean {
   if (typeof model !== "string") return false;
   const wireId = stripProviderQualifier(model);
@@ -333,6 +335,9 @@ export function modelAcceptsImages(
     if (models.has(candidate)) return true;
     if (rule.patterns.some((pattern) => pattern.test(candidate))) return true;
   }
+  // A provider's own published catalogue is evidence too, and it is keyed on the
+  // wire id that catalogue listed: a resold `vendor/model` id arrives qualified.
+  if (discoveredVision?.has(wireId)) return true;
   // A probed catalog stores scheme-prefixed ids, so it is keyed on the raw model.
   if (
     ollamaVision?.has(model) &&

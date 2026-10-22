@@ -4842,9 +4842,10 @@ html[data-platform="macos"] .startup-loading-overlay {
 .composer-foot .cf-btn .label {
   font-family: inherit;
 }
+/* The row's slack lives here, so every pill is only as wide as its own text. */
 .composer-foot .grow {
   flex: 1;
-  min-width: 0;
+  min-width: 4px;
 }
 .composer-foot .model-pill {
   padding: 4px 8px;
@@ -4858,6 +4859,8 @@ html[data-platform="macos"] .startup-loading-overlay {
   border: 1px solid var(--border);
   color: var(--fg-2);
   font-family: inherit;
+  /* A button centres its text by default; a pill's label reads as a left-aligned select. */
+  text-align: left;
   cursor: pointer;
 }
 .composer-foot .model-pill span {
@@ -4869,8 +4872,32 @@ html[data-platform="macos"] .startup-loading-overlay {
 .composer-foot .model-pill:hover {
   background: var(--panel-2);
 }
-.composer-foot .model-pill.subagent-pill {
-  max-width: 200px;
+/* Corner notch naming each picker: "M" main agent, "S" subagent, "E" effort. The
+   letter rides `data-pill-tag`, so it never joins the button's label text or its
+   accessible name. */
+.composer-foot .model-pill[data-pill-tag] {
+  position: relative;
+  /* Room for the notch's diagonal so it never paints over the chevron. */
+  padding-right: 11px;
+}
+.composer-foot .model-pill[data-pill-tag]::after {
+  content: attr(data-pill-tag);
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  width: 18px;
+  height: 13px;
+  padding: 1px 1px 0 0;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--fg-2);
+  background: var(--border);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  pointer-events: none;
 }
 .composer-foot .model-pill.effort-pill {
   max-width: 110px;
@@ -4931,18 +4958,18 @@ html[data-platform="macos"] .startup-loading-overlay {
   opacity: 1;
 }
 
+/* Icon-only trigger: square, so its width never competes with the pills beside it. */
 .quick-proceed-btn {
+  width: 30px;
   height: 30px;
-  padding: 0 10px;
+  padding: 0;
   border-radius: 8px;
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--fg-2);
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  font-weight: 500;
+  justify-content: center;
   font-family: inherit;
   cursor: pointer;
   flex-shrink: 0;
@@ -4962,12 +4989,6 @@ html[data-platform="macos"] .startup-loading-overlay {
   color: var(--muted-2);
   cursor: not-allowed;
   opacity: 0.6;
-}
-.quick-proceed-btn span {
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .voice-btn {
@@ -5277,13 +5298,9 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--muted);
   line-height: 1.4;
 }
-.dup-label {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 4px;
-}
-.dup-panel .field {
-  width: 100%;
+.dup-caps {
+  max-height: 40vh;
+  overflow-y: auto;
 }
 .dup-actions {
   display: flex;
@@ -9466,36 +9483,21 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
    ============================================================ */
 
 .composer-foot {
-  min-width: 0;
   flex-wrap: nowrap;
 }
 .composer-foot .cf-btn {
   flex-shrink: 0;
   white-space: nowrap;
 }
-/* The pill carries no leading glyph, so its whole width is label: the cap is
-   what a long id may use before FitText starts shrinking it. */
+/* Pills never wrap: a long id ellipsizes (or FitText scales it down) instead of
+   pushing the fixed buttons on the right out of the card. */
 .composer-foot .model-pill {
   white-space: nowrap;
   flex-shrink: 1;
-  min-width: 0;
-  max-width: 280px;
   overflow: hidden;
-}
-.composer-foot .model-pill > span:not(.badge) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 .composer-foot .send-btn {
   flex-shrink: 0;
-}
-.composer-foot .quick-proceed-btn {
-  flex-shrink: 0;
-}
-.composer-foot .grow {
-  flex: 1;
-  min-width: 4px;
 }
 
 /* Hint row above composer — scroll instead of overflowing */
@@ -9524,23 +9526,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 @container composer (max-width: 520px) {
   .hint-row > span:first-child {
-    display: none;
-  }
-  .composer-foot .model-pill {
-    max-width: 170px;
-  }
-  .composer-foot .quick-proceed-btn span {
-    max-width: 90px;
-  }
-}
-@container composer (max-width: 420px) {
-  .composer-foot .model-pill {
-    max-width: 130px;
-  }
-  .composer-foot .quick-proceed-btn {
-    padding: 0 8px;
-  }
-  .composer-foot .quick-proceed-btn span {
     display: none;
   }
 }

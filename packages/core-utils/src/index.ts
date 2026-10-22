@@ -69,6 +69,7 @@ export {
   mimoUsageView,
   ollamaUsageView,
   opencodeUsageView,
+  openrouterKeyView,
   quotaWindowsSummary,
   experientialUsageView,
   syntheticUsageView,
@@ -76,6 +77,9 @@ export {
 } from "./provider-usage.js";
 export type {
   ExperientialSpend,
+  OpenrouterBudget,
+  OpenrouterFreeAllowance,
+  OpenrouterKey,
   ProviderUsageView,
   SyntheticCreditWindow,
   SyntheticQuota,

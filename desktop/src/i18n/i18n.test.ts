@@ -3,7 +3,7 @@ import en from "./en.json";
 import { t } from "./index";
 
 /** Flattened string count after the provider/engine copy moved into declarations. */
-const EXPECTED_LEAVES = 993;
+const EXPECTED_LEAVES = 995;
 
 function leaves(value: unknown): number {
   if (typeof value === "string") return 1;

@@ -41,6 +41,8 @@ const PROVIDER_ENV_KEYS = [
   "SYNTHETIC_API_KEY",
   "SYNTHETIC_BASE_URL",
   "SYN_API_KEY",
+  "OPENROUTER_API_KEY",
+  "OPENROUTER_BASE_URL",
 ];
 
 describe("provider configuration", () => {

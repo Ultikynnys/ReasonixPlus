@@ -14,7 +14,6 @@ import {
   modelAcceptsAudioVideo,
   modelAcceptsImages,
   modelDisplayLabel,
-  modelWireName,
   sanitizeFilename,
 } from "@reasonix/core-utils";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -48,7 +47,6 @@ import { t, useLang } from "./i18n";
 import { I } from "./icons";
 import { downscaleImage, fileToDataUrl, isImagePath, typedMentionImages } from "./image-attach";
 import { ratesByWorkspace, runningTabSession } from "./live-rates";
-import { MODEL_CATALOG_GROUP_LABELS, deriveModelCatalog } from "./model-catalog";
 import {
   type ApprovalSnapshot,
   type PlanFeedbackState,
@@ -159,7 +157,7 @@ import { createComposerDraft } from "./ui/composer-draft";
 import { ContextPanel } from "./ui/context-panel";
 import { JobsPop } from "./ui/jobs-pop";
 import { activationHandler } from "./ui/keyboard";
-import { McpSetupDialog } from "./ui/mcp-setup";
+import { CapabilityPicker, McpSetupDialog } from "./ui/mcp-setup";
 import { SettingsModal, type PageId as SettingsPageId } from "./ui/settings";
 import { localizeShortcutText } from "./ui/shortcut";
 import { Sidebar } from "./ui/sidebar";
@@ -3492,29 +3490,6 @@ function defaultExportFilename(session: string): string {
   return `${safe}.md`;
 }
 
-/** `<option>` / `<optgroup>` list shared by the two Duplicate-session selects.
- *  Keeps the current selection visible even when it's off the enabled allow-list. */
-function duplicateModelOptions(
-  groups: { key: string; label: string; ids: string[] }[],
-  active: string,
-): ReactNode {
-  const listed = groups.some((g) => g.ids.includes(active));
-  return (
-    <>
-      {active && !listed ? <option value={active}>{modelWireName(active)}</option> : null}
-      {groups.map((g) => (
-        <optgroup key={g.key} label={g.label}>
-          {g.ids.map((id) => (
-            <option key={id} value={id}>
-              {modelWireName(id)}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-    </>
-  );
-}
-
 type TabAction = Action;
 type TabDispatcher = (action: TabAction) => void;
 
@@ -4834,47 +4809,11 @@ const TabRuntime = memo(function TabRuntime({
     }
   }, [state.messages, session, appendNotice]);
 
-  // Enabled/visible models for the Duplicate-session picker, grouped the same
-  // way the composer groups them.
-  const dupModelGroups = useMemo(() => {
-    const enabled = new Set(state.settings?.enabledModels ?? []);
-    const visible = (id: string) => enabled.size === 0 || enabled.has(id);
-    const catalog = deriveModelCatalog({
-      providerCatalogs: state.settings?.providerCatalogs,
-      discoveredAntigravityModels: state.settings?.antigravityOAuth?.models,
-      opencodeModels,
-      includeAntigravity: Boolean(state.settings?.antigravityOAuth?.models),
-      ollamaVisionModels,
-      opencodeVisionModels,
-    });
-    const groups: { key: string; label: string; ids: string[] }[] = catalog.groups.map((g) => ({
-      key: g.key,
-      label: t(MODEL_CATALOG_GROUP_LABELS[g.key]),
-      ids: g.models.filter(visible),
-    }));
-    if (ollamaModels && ollamaModels.length > 0) {
-      groups.unshift({
-        key: "ollama",
-        label: t("composer.modelOllamaGroup"),
-        ids: ollamaModels.map((id) => `ollama/${id}`).filter(visible),
-      });
-    }
-    return groups.filter((g) => g.ids.length > 0);
-  }, [
-    state.settings?.enabledModels,
-    state.settings?.providerCatalogs,
-    state.settings?.antigravityOAuth?.models,
-    opencodeModels,
-    ollamaModels,
-    ollamaVisionModels,
-    opencodeVisionModels,
-  ]);
-
-  // Duplicate this conversation into a new trimmed session on the picked models:
-  // the daemon trims the export body to the configured token budget and opens
-  // the new session (auto-continuing only when that setting is enabled).
+  // Duplicate this conversation into a new trimmed session that starts on the SAME
+  // models and continues by itself: the popover already asked which MCP servers and
+  // whether subagents the copy may use, so the daemon seeds it with that answer.
   const duplicateSession = useCallback(
-    (mainModel: string, subagentModel: string) => {
+    (enabled: string[], subagents: boolean) => {
       // A create already in flight would stack a second session on the workspace.
       if (sessionsMutation !== null) return;
       const md = formatConversationMarkdown(state.messages, t("app.exportUserLabel"), {
@@ -4886,7 +4825,7 @@ const TabRuntime = memo(function TabRuntime({
       }
       const workspaceDir = state.settings?.workspaceDir;
       if (workspaceDir) onSessionIntent(workspaceDir, "create");
-      sendRpc({ cmd: "duplicate_session", markdown: md, model: mainModel, subagentModel });
+      sendRpc({ cmd: "duplicate_session", markdown: md, enabled, subagents });
       appendNotice(t("app.toast.duplicatedSession"), "success");
     },
     [
@@ -5284,8 +5223,8 @@ const TabRuntime = memo(function TabRuntime({
               <MainHead
                 session={session}
                 model={state.settings?.model}
-                subagentModel={state.settings?.subagentModel}
-                modelGroups={dupModelGroups}
+                capabilityRows={state.settings?.capabilityPrefill ?? []}
+                subagents={state.settings?.subagents === true}
                 workspaceDir={state.settings?.workspaceDir}
                 busy={state.busy}
                 hasMessages={state.messages.length > 0}
@@ -5472,6 +5411,7 @@ const TabRuntime = memo(function TabRuntime({
                 onPickQuickSend={(id) => saveSettings({ quickSendId: id })}
                 onAbort={abort}
                 disabled={!state.ready}
+                shortcutsActive={active}
                 busy={engaged}
                 busyLabel={
                   state.busy || state.awaitingAck
@@ -6157,11 +6097,11 @@ export function TabBar({
   );
 }
 
-function MainHead({
+export function MainHead({
   session,
   model,
-  subagentModel,
-  modelGroups,
+  capabilityRows,
+  subagents,
   workspaceDir,
   busy,
   hasMessages,
@@ -6172,14 +6112,15 @@ function MainHead({
 }: {
   session: string;
   model?: string;
-  subagentModel?: string;
-  /** Enabled/visible models for the Duplicate-session picker, grouped as the composer groups them. */
-  modelGroups: { key: string; label: string; ids: string[] }[];
+  /** Capability rows the Duplicate popover offers: this chat's own MCP set and subagent
+   *  flag, so a copy starts faithful and the toggles are how it diverges. */
+  capabilityRows: McpSetupServer[];
+  subagents: boolean;
   workspaceDir?: string;
   busy: boolean;
   hasMessages: boolean;
   onExport: () => void;
-  onDuplicate: (mainModel: string, subagentModel: string) => void;
+  onDuplicate: (enabled: string[], subagents: boolean) => void;
   onOpenWorkdir: (anchor: { top?: number; bottom?: number; left: number }) => void;
   onRename?: (title: string) => void;
 }) {
@@ -6188,8 +6129,8 @@ function MainHead({
   const [isEditing, setIsEditing] = useState(false);
   const isEditingRef = useRef(false);
   const [dupOpen, setDupOpen] = useState(false);
-  const [dupMain, setDupMain] = useState(model ?? DEFAULT_MODEL);
-  const [dupSub, setDupSub] = useState(subagentModel ?? model ?? DEFAULT_MODEL);
+  const [dupServers, setDupServers] = useState<Set<string>>(new Set());
+  const [dupSubagents, setDupSubagents] = useState(false);
   const dupWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -6305,8 +6246,10 @@ function MainHead({
                 setDupOpen(false);
                 return;
               }
-              setDupMain(model ?? DEFAULT_MODEL);
-              setDupSub(subagentModel ?? model ?? DEFAULT_MODEL);
+              // Pre-fill from what THIS chat runs with: a copy starts faithful, and the
+              // toggles are how it diverges.
+              setDupServers(new Set(capabilityRows.filter((r) => r.enabled).map((r) => r.name)));
+              setDupSubagents(subagents);
               setDupOpen(true);
             }}
           >
@@ -6326,35 +6269,29 @@ function MainHead({
               <div className="dup-panel">
                 <div className="dup-title">{t("app.titlebar.duplicateSession")}</div>
                 <div className="dup-hint">{t("app.duplicate.hint")}</div>
-                <label className="dup-label" htmlFor="duplicate-main-model">
-                  {t("app.duplicate.mainModel")}
-                </label>
-                <select
-                  id="duplicate-main-model"
-                  className="field"
-                  value={dupMain}
-                  onChange={(e) => setDupMain(e.target.value)}
-                >
-                  {duplicateModelOptions(modelGroups, dupMain)}
-                </select>
-                <label className="dup-label" htmlFor="duplicate-subagent-model">
-                  {t("app.duplicate.subagentModel")}
-                </label>
-                <select
-                  id="duplicate-subagent-model"
-                  className="field"
-                  value={dupSub}
-                  onChange={(e) => setDupSub(e.target.value)}
-                >
-                  {duplicateModelOptions(modelGroups, dupSub)}
-                </select>
+                <div className="dup-caps">
+                  <CapabilityPicker
+                    servers={capabilityRows}
+                    selected={dupServers}
+                    subagents={dupSubagents}
+                    onToggleServer={(name) =>
+                      setDupServers((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(name)) next.delete(name);
+                        else next.add(name);
+                        return next;
+                      })
+                    }
+                    onToggleSubagents={() => setDupSubagents((on) => !on)}
+                    emptyHint={t("app.duplicate.noServers")}
+                  />
+                </div>
                 <div className="dup-actions">
                   <button
                     type="button"
                     className="btn small"
-                    disabled={!dupMain || !dupSub}
                     onClick={() => {
-                      onDuplicate(dupMain, dupSub);
+                      onDuplicate([...dupServers], dupSubagents);
                       setDupOpen(false);
                     }}
                   >

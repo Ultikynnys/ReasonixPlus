@@ -635,7 +635,8 @@ export interface McpSpecsEvent {
 }
 
 /** One configured MCP server offered in the fresh-chat setup picker — `enabled`
- *  is the Settings default (pre-filled). */
+ *  is the pre-filled state: the Settings default for a new chat, or the source
+ *  session's frozen set for a duplicate. */
 export interface McpSetupServer {
   name: string;
   enabled: boolean;
@@ -643,11 +644,13 @@ export interface McpSetupServer {
 }
 
 /** Session-start setup prompt: the capabilities a fresh chat must confirm before it
- *  can run. Both the MCP set and the subagent flag are frozen by that one answer. */
+ *  can run. Both the MCP set and the subagent flag are frozen by that one answer.
+ *  A new chat and a duplicated session both get this prompt. */
 export interface McpSetupEvent {
   type: "$mcp_setup";
   servers: McpSetupServer[];
-  /** Pre-filled subagent flag (the Settings default for new chats). */
+  /** Pre-filled subagent flag: off for a new chat, inherited from the source session
+   *  when the chat was opened by duplicating one. */
   subagents: boolean;
 }
 
@@ -1091,8 +1094,14 @@ export interface SettingsEvent {
   questionTimerEnabled?: boolean;
   /** Duplicate-session context budget in tokens (default 50 000); null = default. */
   duplicateSessionTokens?: number | null;
-  /** When true, a duplicated session auto-runs one turn to continue; default off (user proceeds manually). */
+  /** When true, a duplicated session runs one continuation turn; default on (the clone
+   *  continues by itself), opt-out for anyone who wants the blob parked. */
   duplicateSessionAutoProceed?: boolean;
+  /** The capability rows a clone of THIS chat would start with: its own frozen MCP set
+   *  and subagent flag, or the Settings default when the chat has none yet. One
+   *  projection (`capabilityPrefill`), so the Duplicate popover cannot drift from what
+   *  the clone's session meta freezes. */
+  capabilityPrefill?: McpSetupServer[];
   baseUrl?: string;
   apiKeyPrefix?: string;
   workspaceDir: string;
@@ -1539,7 +1548,8 @@ export interface SettingsPatch {
   questionTimerEnabled?: boolean;
   /** Duplicate-session context budget in tokens, clamped to [1000, 1000000]; null/undefined = default (50 000). */
   duplicateSessionTokens?: number | null;
-  /** Auto-run one continuation turn in a freshly duplicated session. Default false. */
+  /** Run one continuation turn in a freshly duplicated session. Default true; an
+   *  explicit false parks the seeded context and waits for the user. */
   duplicateSessionAutoProceed?: boolean;
   baseUrl?: string;
   workspaceDir?: string;
@@ -1735,15 +1745,20 @@ export type OutgoingCommand = { tabId?: string } & (
   /** Fold/summarize the conversation to reclaim context space (manual
    *  compaction). Refused while a turn is in flight. */
   | { cmd: "context_compact" }
-  /** Duplicate the current conversation as a new truncated session opened on the
-   *  chosen models. `markdown` is the current session's export body; the daemon
-   *  trims it to the last `duplicateSessionTokens` tokens and seeds the new
-   *  session (or auto-continues, per `duplicateSessionAutoProceed`). */
+  /** Duplicate the current conversation as a new truncated session on the SAME models.
+   *  `markdown` is the current session's export body; the daemon trims it to the last
+   *  `duplicateSessionTokens` tokens and runs it as the clone's first turn (unless
+   *  `duplicateSessionAutoProceed` was turned off). `enabled` is the capability answer
+   *  the Duplicate popover collected: the clone is minted with it already frozen, so it
+   *  never re-asks. A caller that omits `enabled` falls back to the `$mcp_setup` picker,
+   *  pre-filled with this session's frozen capabilities. */
   | {
       cmd: "duplicate_session";
       markdown: string;
-      model: string;
-      subagentModel: string;
+      /** Names of the configured MCP servers the clone may use. */
+      enabled?: string[];
+      /** Whether the clone may spawn subagents. */
+      subagents?: boolean;
     }
   | { cmd: "retry" }
   | { cmd: "btw"; text: string }

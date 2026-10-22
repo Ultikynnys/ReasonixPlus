@@ -8,7 +8,6 @@ import {
   modelAcceptsImages,
   providerSpec,
   providerSpecsInOrder,
-  qualifyModelRef,
   stripProviderQualifier,
 } from "@reasonix/core-utils";
 
@@ -23,6 +22,7 @@ export type ModelCatalogGroupKey =
   | "antigravity"
   | "experiential"
   | "synthetic"
+  | "openrouter"
   // Ollama owns a settings card without being a picker group: its models come
   // from the runtime probe, so the picker never lists them.
   | "ollama";
@@ -34,10 +34,13 @@ export type ProviderCatalogKey =
   | "zai"
   | "mimo"
   | "experiential"
-  | "synthetic";
+  | "synthetic"
+  | "openrouter";
 
 export interface ProviderCatalogView {
   models: readonly string[];
+  /** Ids the provider's own catalogue declared image-capable (`visionField`). */
+  visionModels?: readonly string[];
   source: "live" | "cache" | "fallback";
   error?: string;
 }
@@ -72,6 +75,7 @@ const GROUP_KEYS: ReadonlySet<string> = new Set<ModelCatalogGroupKey>([
   "antigravity",
   "experiential",
   "synthetic",
+  "openrouter",
 ]);
 
 interface CatalogGroupEntry {
@@ -181,9 +185,14 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     const out: string[] = [];
     for (const id of modelsFor(spec)) {
       const ownsId = owner.get(stripProviderQualifier(id));
+      // Prepend rather than rewrite through parseModelRef: a `vendor/model` id's
+      // prefix reads as a provider qualifier, so rewriting would drop the vendor
+      // from a wire id the endpoint then rejects.
       const value =
         provider && ownsId !== undefined && ownsId !== provider
-          ? qualifyModelRef(provider, id)
+          ? id.startsWith(`${provider}/`)
+            ? id
+            : `${provider}/${id}`
           : id;
       if (!seen.has(value)) {
         seen.add(value);
@@ -209,8 +218,25 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     groups,
     antigravityModelIds,
     acceptsImages: (model) =>
-      modelAcceptsImages(model, options.ollamaVisionModels, options.opencodeVisionModels),
+      modelAcceptsImages(
+        model,
+        options.ollamaVisionModels,
+        options.opencodeVisionModels,
+        catalogVisionModelIds(options.providerCatalogs),
+      ),
   };
+}
+
+/** Image-capable ids every published catalog reported, unioned. Capability belongs
+ *  to a model name, so one catalog's evidence stands for the id everywhere. */
+export function catalogVisionModelIds(
+  catalogs: Partial<Record<ProviderCatalogKey, ProviderCatalogView>> | undefined,
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const view of Object.values(catalogs ?? {})) {
+    for (const id of view?.visionModels ?? []) ids.add(id);
+  }
+  return ids;
 }
 
 /** Live catalogs by provider id, for `modelDisplayLabel`: the ids a discovery

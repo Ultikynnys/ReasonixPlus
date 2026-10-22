@@ -532,12 +532,18 @@ export const EN: TranslationSchema = {
       "The model provider reported a temporary server error before producing a visible response: retrying automatically in 10 seconds.",
     failoverSwitching:
       "{failed} could not complete this turn: continuing on the backup model {next}.",
+    failoverCooldown:
+      "Waiting {seconds} seconds before trying the backup model {next}: a transient network failure often clears on its own, and a second attempt straight away usually fails the same way.",
+    failoverStartupSwitch:
+      "{failed} cannot run here yet (its provider has no usable credential): this chat continues on the backup model {next}.",
     failoverNoBackup:
       "{failed} could not complete this turn and no backup model is configured. Add backup models in Settings → Backup models so an overnight or queued run keeps going when a provider stops serving this chat.",
     failoverNoneUsable:
       "{failed} could not complete this turn, and no configured backup model can run here: their providers have no credential yet. Add a key for one of them in Settings → Models, or add a backup model from a provider that is already set up.",
     failoverAllExhausted:
       "{failed} could not complete this turn, and every backup model was tried and failed too: {models}. Top up a provider, or add another backup model in Settings → Backup models.",
+    failoverAlreadyFailed:
+      "{failed} could not complete this turn, and every configured backup model already failed earlier in this chat: {models}. Add another backup model in Settings → Backup models, or start a new chat to give them another try.",
     failoverBackupUnusable:
       "Backup model {next} could not be started here: moving on to the next configured backup model.",
     failoverPromptUnavailable:
@@ -758,6 +764,22 @@ export const EN: TranslationSchema = {
     syntheticRate:
       "Synthetic rate limit hit (429): {inner}. Wait and retry, or check your plan's rate limits.",
     syntheticServer: "Synthetic service failure ({status}): {inner}. Retry later.",
+    openrouterAuth:
+      "OpenRouter authentication failed (401): {inner}. Check OPENROUTER_API_KEY or the settings API key field.",
+    openrouterCredits:
+      "OpenRouter reports exhausted credits (402): {inner}. Add credits to the account, or give the key its own limit.",
+    openrouterPermission:
+      "OpenRouter denied this request (403): {inner}. Some models are limited to their own apps, and account endpoints need a management key.",
+    openrouterNotFound:
+      "OpenRouter could not find the model or route (404): {inner}. Check the vendor/model id and its variant: a :free entry exists only where the catalog lists one.",
+    openrouterRequest:
+      "OpenRouter rejected the request: {inner}. Check the parameters against the model's supported_parameters (decisions models are not chat models).",
+    openrouterContext:
+      "OpenRouter context overflow: session history is {requested}. Start a new conversation or reduce content.",
+    openrouterTimeout: "OpenRouter request timed out: {inner}. Check the endpoint and retry.",
+    openrouterRate:
+      "OpenRouter rate limit hit (429): {inner}. Free models are rate-limited upstream, so retry or use a funded model.",
+    openrouterServer: "OpenRouter service failure ({status}): {inner}. Retry later.",
     customAuth:
       "Authentication failed (custom model endpoint 401): {inner}. Check that endpoint's configured API key.",
     customCredits:

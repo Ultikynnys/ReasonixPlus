@@ -1,0 +1,114 @@
+{
+  "id": "openrouter",
+  "providerId": "openrouter",
+  "label": "OpenRouter",
+  "shortLabel": "OR",
+  "order": 11,
+  "setupGate": ["apiKey"],
+  "routing": {
+    "staticCatalog": false,
+    "discoveredCatalog": false,
+    "checkedLast": true,
+    "foreignCatalog": false,
+    "modelScheme": "openrouter/"
+  },
+  "groupLabelKey": "composer.modelOpenRouterGroup",
+  "precedence": 9,
+  "defaultModel": "recursive/flint-v1.0:free",
+  "knownCatalog": false,
+  "models": [
+    "recursive/flint-v1.0:free",
+    "dots-studio/dots-3-note-preview:free",
+    "poolside/laguna-s-2.1:free",
+    "poolside/laguna-xs-2.1:free",
+    "cohere/north-mini-code:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "xingchen-agi/xing4.0-29b-a4b:free"
+  ],
+  "goModels": [],
+  "speechModels": [
+    "google/lyria-3-pro-preview",
+    "google/lyria-3-clip-preview",
+    "openai/gpt-audio",
+    "openai/gpt-audio-mini"
+  ],
+  "vision": {
+    "models": [
+      "dots-studio/dots-3-note-preview:free",
+      "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "nvidia/nemotron-3.5-super-vl:free"
+    ]
+  },
+  "modelFilter": null,
+  "reasoningEfforts": [],
+  "reasoningRules": [{ "pattern": ".*", "efforts": [], "control": "none" }],
+  "endpoint": {
+    "strategy": "standard",
+    "default": "https://openrouter.ai/api/v1",
+    "tiers": {}
+  },
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["OPENROUTER_API_KEY"],
+      "configKey": null,
+      "label": "OpenRouter API key",
+      "signupUrl": "https://openrouter.ai/keys"
+    },
+    {
+      "key": "baseUrl",
+      "kind": "url",
+      "env": ["OPENROUTER_BASE_URL"],
+      "configKey": null,
+      "label": "OpenRouter base URL",
+      "hint": "OpenAI-compatible endpoint override for every OpenRouter model. Defaults to https://openrouter.ai/api/v1."
+    }
+  ],
+  "credentials": {
+    "publicKey": null,
+    "oauthConfig": null
+  },
+  "usable": { "apiKey": true, "keylessLocal": false, "always": false },
+  "discovery": {
+    "strategy": "models-endpoint",
+    "listField": "data",
+    "idField": "id",
+    "excludeSpeech": true,
+    "visionField": "architecture.input_modalities"
+  },
+  "wire": { "reasoningEffort": false },
+  "billing": { "kind": "quota-if-key", "schedule": null },
+  "usage": {
+    "probe": "openrouter-key",
+    "urls": ["/key"],
+    "urlBase": "endpoint",
+    "primaryWindow": "plan",
+    "resetsStyle": "absolute",
+    "minIntervalSeconds": 300
+  },
+  "strings": {
+    "notConfigured": "Not configured yet — add an OpenRouter API key in Settings → Models to use OpenRouter models.",
+    "noCredential": "No OpenRouter credential for {model} — add an OpenRouter key in Settings → Models.",
+    "quotaLabel": "OpenRouter",
+    "quotaTitle": "OpenRouter {plan} budget · {left}% left · resets {resets} · click to refresh",
+    "quotaDailyTitle": "Free-model allowance today: {left}% left · resets {resets}",
+    "quotaNoData": "OpenRouter usage · no data: add an API key in Settings → Models to read the key budget · click to retry",
+    "quotaPlanFallback": "key"
+  },
+  "errors": {
+    "i18nPrefix": "openrouter",
+    "brands": ["OpenRouter"],
+    "hosts": ["openrouter.ai"],
+    "serverReport": "standard"
+  },
+  "client": {
+    "auth": "api-key",
+    "transport": null,
+    "allowMissingKey": false
+  }
+}

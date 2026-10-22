@@ -61,12 +61,16 @@ describe("Composer quick send dropdown", () => {
     expect(parentRender).toHaveBeenCalledTimes(1);
   });
 
-  it("renders the quick send button labelled 'Quick send'", () => {
+  it("renders the quick send trigger as an icon-only button named 'Quick send'", () => {
     render(<Composer {...baseProps} />);
 
     const btn = screen.getByRole("button", { name: "Quick send" });
-    expect(btn).toBeTruthy();
     expect(btn.getAttribute("title")).toBe("Quick send");
+    // Icon-only: the name comes from aria-label, so the button carries one glyph
+    // and no label text eating the foot's width.
+    expect(btn.getAttribute("aria-label")).toBe("Quick send");
+    expect(btn.querySelectorAll("svg").length).toBe(1);
+    expect(btn.textContent?.trim()).toBe("");
   });
 
   it("opens the dropdown without sending when clicked", () => {

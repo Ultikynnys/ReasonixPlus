@@ -154,6 +154,66 @@ export function syntheticUsageView(quota: Omit<SyntheticQuota, "fetchedAt">): Pr
   };
 }
 
+/** A budget scope from OpenRouter's `/key` reply: what a guardrail allows and spent,
+ *  and when it resets. A plain `key_limit` carries no interval and never resets. */
+export interface OpenrouterBudget {
+  scope: string | null;
+  limitUsd: number | null;
+  remainingUsd: number | null;
+  resetInterval: string | null;
+  resetsAt: string | null;
+}
+
+/** The free-model allowance, a request count rather than money. It resets daily. */
+export interface OpenrouterFreeAllowance {
+  limit: number | null;
+  remaining: number | null;
+}
+
+/** What an OpenRouter key reports about itself: its governing budget and today's
+ *  free-model allowance. */
+export interface OpenrouterKey {
+  budget: OpenrouterBudget | null;
+  freeModels: OpenrouterFreeAllowance | null;
+}
+
+/** Guardrail scopes, as the word the chip prints. */
+const OPENROUTER_SCOPE_LABELS: Readonly<Record<string, string>> = {
+  key_limit: "key",
+  member: "member",
+  workspace_default_member: "workspace",
+};
+
+/** Budget share left plus today's free-model share. The budget is the "plan" window
+ *  because it is the key's plan-type bucket; a guardrail reports its own reset, while
+ *  a plain key limit has none, so no reset time is invented for it. */
+export function openrouterKeyView(key: OpenrouterKey, now = Date.now()): ProviderUsageView {
+  const budget = key.budget;
+  const budgetPct =
+    budget &&
+    typeof budget.limitUsd === "number" &&
+    budget.limitUsd > 0 &&
+    typeof budget.remainingUsd === "number"
+      ? (budget.remainingUsd / budget.limitUsd) * 100
+      : null;
+  const free = key.freeModels;
+  const freePct =
+    free &&
+    typeof free.limit === "number" &&
+    free.limit > 0 &&
+    typeof free.remaining === "number"
+      ? (free.remaining / free.limit) * 100
+      : null;
+  return {
+    plan: budget?.scope ? (OPENROUTER_SCOPE_LABELS[budget.scope] ?? null) : null,
+    limited: budgetPct !== null && budgetPct <= 0,
+    windows: [
+      ...windowOf("plan", budgetPct, budget?.resetInterval ? budget.resetsAt : null),
+      ...windowOf("day", freePct, nextUtcMidnight(now)),
+    ],
+  };
+}
+
 /** OpenCode Go windows (5-hour rolling + weekly + monthly). */
 export function opencodeUsageView(quota: Omit<OpencodeQuota, "fetchedAt">): ProviderUsageView {
   return {

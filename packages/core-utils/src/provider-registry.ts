@@ -119,6 +119,9 @@ export interface ProviderDiscoverySpec {
   idField: string;
   /** Drops `speechModels` from the discovered catalog. */
   excludeSpeech: boolean;
+  /** Dotted field carrying each entry's input modality list; null when the catalog
+   *  reports none, which leaves the declared vision rules as the only evidence. */
+  visionField: string | null;
 }
 
 /** How a bare model id may route to this provider. */
@@ -149,6 +152,7 @@ export type ProviderErrorI18nPrefix =
   | "mimo"
   | "experiential"
   | "synthetic"
+  | "openrouter"
   | "custom";
 
 /** How a provider names itself in thrown errors. */
@@ -172,6 +176,7 @@ export const PROVIDER_ERROR_I18N_PREFIXES: ReadonlySet<string> = new Set([
   "mimo",
   "experiential",
   "synthetic",
+  "openrouter",
   "custom",
 ]);
 
@@ -357,6 +362,7 @@ export type ProviderProbeStrategy =
   | "mimo-console"
   | "experiential-spend"
   | "synthetic-quotas"
+  | "openrouter-key"
   | "opencode-usage";
 
 export const PROVIDER_PROBE_STRATEGIES: ReadonlySet<string> = new Set<ProviderProbeStrategy>([
@@ -367,6 +373,7 @@ export const PROVIDER_PROBE_STRATEGIES: ReadonlySet<string> = new Set<ProviderPr
   "mimo-console",
   "experiential-spend",
   "synthetic-quotas",
+  "openrouter-key",
   "opencode-usage",
 ]);
 
@@ -693,6 +700,7 @@ function parseDiscovery(value: unknown, where: string): ProviderDiscoverySpec {
     listField: nullableText(raw.listField, `${where}.listField`),
     idField: text(raw.idField, `${where}.idField`),
     excludeSpeech: flag(raw.excludeSpeech, `${where}.excludeSpeech`),
+    visionField: nullableText(raw.visionField, `${where}.visionField`),
   };
 }
 

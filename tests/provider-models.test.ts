@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchProviderModels } from "../src/provider-models.js";
+import { catalogScope, fetchProviderModels } from "../src/provider-models.js";
+import { reasonixHome } from "../src/reasonix-home.js";
 const dirs: string[] = [];
 function home() {
   const dir = mkdtempSync(join(tmpdir(), "provider-models-"));
@@ -109,5 +110,92 @@ describe("provider model discovery", () => {
         fetchImpl,
       }),
     ).toMatchObject({ models: ["fable-5", "qwen3.8-27b"], source: "live" });
+  });
+
+  it("reads the declared input modality into vision ids", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "openai/gpt-4o", architecture: { input_modalities: ["text", "image"] } },
+            { id: "deepseek/deepseek-v4-flash", architecture: { input_modalities: ["text"] } },
+            { id: "no-architecture" },
+          ],
+        }),
+      ),
+    );
+
+    const result = await fetchProviderModels({
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "or-key",
+      fallback: [],
+      homeDir: home(),
+      fetchImpl,
+    });
+
+    expect(result.models).toEqual([
+      "deepseek/deepseek-v4-flash",
+      "no-architecture",
+      "openai/gpt-4o",
+    ]);
+    expect(result.visionModels).toEqual(["openai/gpt-4o"]);
+  });
+
+  it("reports no vision ids when the provider declares no modality field", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ data: [{ id: "deepseek-v4-flash" }] })));
+
+    const result = await fetchProviderModels({
+      provider: "deepseek",
+      baseUrl: "https://api.deepseek.com/v1",
+      apiKey: "ds-key",
+      fallback: [],
+      homeDir: home(),
+      fetchImpl,
+    });
+
+    expect(result).toMatchObject({ source: "live", visionModels: [] });
+  });
+
+  it("keeps vision ids across a cache read and tolerates a cache written before the field", async () => {
+    const homeDir = home();
+    const baseUrl = "https://openrouter.ai/api/v1";
+    const apiKey = "or-key";
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ id: "openai/gpt-4o", architecture: { input_modalities: ["image"] } }],
+        }),
+      ),
+    );
+    const options = {
+      provider: "openrouter" as const,
+      baseUrl,
+      apiKey,
+      fallback: [],
+      homeDir,
+      fetchImpl,
+    };
+
+    await fetchProviderModels(options);
+    expect(await fetchProviderModels(options)).toMatchObject({
+      source: "cache",
+      visionModels: ["openai/gpt-4o"],
+    });
+
+    // An older cache has no vision ids: it must still load, contributing none.
+    const path = join(
+      reasonixHome(homeDir),
+      "provider-models",
+      `${catalogScope("openrouter", baseUrl, apiKey)}.json`,
+    );
+    writeFileSync(path, JSON.stringify({ models: ["openai/gpt-4o"], checkedAt: Date.now() }));
+    expect(await fetchProviderModels(options)).toMatchObject({
+      source: "cache",
+      models: ["openai/gpt-4o"],
+      visionModels: [],
+    });
   });
 });

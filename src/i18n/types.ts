@@ -283,9 +283,12 @@ export interface TranslationSchema {
     providerErrorRetry: string;
     providerServerErrorRetry: string;
     failoverSwitching: string;
+    failoverCooldown: string;
+    failoverStartupSwitch: string;
     failoverNoBackup: string;
     failoverNoneUsable: string;
     failoverAllExhausted: string;
+    failoverAlreadyFailed: string;
     failoverBackupUnusable: string;
     failoverPromptUnavailable: string;
     imagePayloadShrunk: string;
@@ -407,6 +410,15 @@ export interface TranslationSchema {
     syntheticTimeout: string;
     syntheticRate: string;
     syntheticServer: string;
+    openrouterAuth: string;
+    openrouterCredits: string;
+    openrouterPermission: string;
+    openrouterNotFound: string;
+    openrouterRequest: string;
+    openrouterContext: string;
+    openrouterTimeout: string;
+    openrouterRate: string;
+    openrouterServer: string;
     customAuth: string;
     customCredits: string;
     customPermission: string;

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { sessionSetupMeta } from "../src/cli/commands/desktop.js";
+import { capabilityPrefill, sessionSetupMeta } from "../src/cli/commands/desktop.js";
 import {
   loadSessionMeta,
   patchSessionMeta,
@@ -11,6 +11,51 @@ import {
 } from "../src/memory/session.js";
 
 const configured = ["ghidra", "blender", "playwright"];
+
+describe("capabilityPrefill", () => {
+  const specs = [
+    { name: "ghidra", disabled: true },
+    { name: "playwright", builtin: true },
+    { name: "blender" },
+  ];
+
+  it("offers the Settings default when the chat pins no capability set (New chat)", () => {
+    expect(capabilityPrefill(specs)).toEqual([
+      { name: "ghidra", enabled: false, builtin: false },
+      { name: "playwright", enabled: true, builtin: true },
+      { name: "blender", enabled: true, builtin: false },
+    ]);
+  });
+
+  it("replays the source session's frozen set instead of the Settings default (Duplicate)", () => {
+    // ghidra is off in Settings but on in the source chat; playwright is the reverse.
+    const rows = capabilityPrefill(specs, {
+      mcp: { disabledServers: ["playwright"] },
+      subagents: true,
+    });
+    expect(rows).toEqual([
+      { name: "ghidra", enabled: true, builtin: false },
+      { name: "playwright", enabled: false, builtin: true },
+      { name: "blender", enabled: true, builtin: false },
+    ]);
+  });
+
+  it("reads an empty frozen set as every server enabled, never as the default", () => {
+    const rows = capabilityPrefill(specs, { mcp: {}, subagents: false });
+    expect(rows.map((row) => row.enabled)).toEqual([true, true, true]);
+  });
+
+  it("round-trips: confirming the pre-fill freezes the set the pre-fill came from", () => {
+    const seed = { mcp: { disabledServers: ["blender"] }, subagents: true };
+    const rows = capabilityPrefill(specs, seed);
+    const frozen = sessionSetupMeta(
+      rows.map((row) => row.name),
+      rows.filter((row) => row.enabled).map((row) => row.name),
+      seed.subagents,
+    );
+    expect(frozen).toEqual({ mcp: { disabledServers: ["blender"] }, subagents: true });
+  });
+});
 
 describe("sessionSetupMeta", () => {
   it("records every configured server the user did not enable as disabled", () => {

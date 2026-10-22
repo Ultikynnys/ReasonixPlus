@@ -13,7 +13,8 @@ export function McpSetupDialog({
   onCancel,
 }: {
   servers: McpSetupServer[];
-  /** Pre-fill for the subagent switch: the seed the session was minted with. */
+  /** Pre-fill for the subagent switch: the capability seed the chat was opened with,
+   *  so a duplicate starts with its source session's answer instead of the default. */
   subagents: boolean;
   onConfirm: (enabled: string[], subagents: boolean) => void;
   onCancel: () => void;
@@ -85,30 +86,13 @@ export function McpSetupDialog({
           Choose what this chat starts with. Both choices are locked for the session, even after a
           restart.
         </p>
-        <ul className="mcp-setup-list" style={{ listStyle: "none", margin: 0, padding: 0 }}>
-          <SetupRow name="Subagents" on={spawn} onToggle={() => setSpawn((on) => !on)} />
-        </ul>
-        <p className="mcp-setup-hint" style={{ margin: "12px 0 6px", opacity: 0.6 }}>
-          MCP servers
-        </p>
-        {servers.length > 0 ? (
-          <ul className="mcp-setup-list" style={{ listStyle: "none", margin: 0, padding: 0 }}>
-            {servers.map((s, i) => (
-              <SetupRow
-                key={s.name}
-                name={s.name}
-                badge={s.builtin ? "built-in" : undefined}
-                on={selected.has(s.name)}
-                onToggle={() => toggle(s.name)}
-                striped={i % 2 === 1}
-              />
-            ))}
-          </ul>
-        ) : (
-          <p className="mcp-setup-hint" style={{ margin: 0, opacity: 0.6 }}>
-            None configured. Add servers in Settings, then open a new chat.
-          </p>
-        )}
+        <CapabilityPicker
+          servers={servers}
+          selected={selected}
+          subagents={spawn}
+          onToggleServer={toggle}
+          onToggleSubagents={() => setSpawn((on) => !on)}
+        />{" "}
         <div
           className="mcp-setup-actions"
           style={{
@@ -135,6 +119,55 @@ export function McpSetupDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+/** The capability rows themselves — the subagent switch and one switch per configured
+ *  MCP server. Mounted by the session-start dialog AND by the Duplicate popover, so the
+ *  two places that ask the same question cannot drift apart. */
+export function CapabilityPicker({
+  servers,
+  selected,
+  subagents,
+  onToggleServer,
+  onToggleSubagents,
+  emptyHint = "None configured. Add servers in Settings, then open a new chat.",
+}: {
+  servers: McpSetupServer[];
+  /** Names of the servers currently switched on. */
+  selected: ReadonlySet<string>;
+  subagents: boolean;
+  onToggleServer: (name: string) => void;
+  onToggleSubagents: () => void;
+  emptyHint?: string;
+}) {
+  return (
+    <>
+      <ul className="mcp-setup-list" style={{ listStyle: "none", margin: 0, padding: 0 }}>
+        <SetupRow name="Subagents" on={subagents} onToggle={onToggleSubagents} />
+      </ul>
+      <p className="mcp-setup-hint" style={{ margin: "12px 0 6px", opacity: 0.6 }}>
+        MCP servers
+      </p>
+      {servers.length > 0 ? (
+        <ul className="mcp-setup-list" style={{ listStyle: "none", margin: 0, padding: 0 }}>
+          {servers.map((s, i) => (
+            <SetupRow
+              key={s.name}
+              name={s.name}
+              badge={s.builtin ? "built-in" : undefined}
+              on={selected.has(s.name)}
+              onToggle={() => onToggleServer(s.name)}
+              striped={i % 2 === 1}
+            />
+          ))}
+        </ul>
+      ) : (
+        <p className="mcp-setup-hint" style={{ margin: 0, opacity: 0.6 }}>
+          {emptyHint}
+        </p>
+      )}
+    </>
   );
 }
 

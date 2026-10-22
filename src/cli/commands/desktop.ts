@@ -50,6 +50,7 @@ import type {
   McpExtensionCheckEvent,
   McpExtensionStatus,
   McpExtensionStatusEvent,
+  McpSetupServer,
   McpSpecInfo,
   McpSpecStatus,
   McpSpecsEvent,
@@ -239,6 +240,7 @@ import {
   setSearchSetting,
   supportedReasoningEfforts,
   updateRule,
+  walkFallbackChain,
   writeConfig,
 } from "../../config.js";
 import { ConcurrencyGate } from "../../core/concurrency-gate.js";
@@ -296,6 +298,9 @@ import { BUILTIN_ALLOWLIST } from "../../tools/shell/parse.js";
 import { coveredRuleScopes } from "../../tools/shell/rule-scope.js";
 
 import {
+  type OpenrouterBudget,
+  type OpenrouterFreeAllowance,
+  type OpenrouterKey,
   PROVIDER_SPECS,
   type ProviderProbeStrategy,
   type ProviderSettingsMap,
@@ -310,6 +315,7 @@ import {
   mimoUsageView,
   ollamaUsageView,
   opencodeUsageView,
+  openrouterKeyView,
   parseProviderSettingsPatch,
   parseSearchSettingsPatch,
   providerDefaultEndpoint,
@@ -1815,6 +1821,12 @@ function emitSettings(tab: Tab): void {
       // The session's frozen capability: it is what the composer's subagent model
       // picker hides behind.
       subagents: tab.subagents,
+      // What a clone of this chat starts from: the Duplicate popover offers these rows,
+      // so the copy can run with a different set instead of guessing the source's.
+      capabilityPrefill: capabilityPrefill(
+        configuredMcpSpecs(tab.rootDir),
+        chatCapabilitySeed(tab),
+      ),
       elevationEnabled: loadElevationEnabled(),
       repetitionGuardEnabled:
         tab.runtime?.loop.repetitionGuardEnabled ?? loadRepetitionGuardEnabled(),
@@ -2202,6 +2214,7 @@ async function refreshProviderCatalogs(force = false, provider?: string): Promis
           : {
               provider: catalogId,
               models: [...spec.models],
+              visionModels: [],
               source: "fallback" as const,
               error: "No endpoint configured",
             };
@@ -2210,6 +2223,22 @@ async function refreshProviderCatalogs(force = false, provider?: string): Promis
   publishProviderCatalogs();
 }
 let publishProviderCatalogs = () => {};
+
+/** Ids the published discovery catalogs declared image-capable. Capability belongs to
+ *  a model name, so every catalog's evidence is unioned. */
+export function catalogVisionModelIds(): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const catalog of Object.values(providerCatalogs)) {
+    for (const id of catalog?.visionModels ?? []) ids.add(id);
+  }
+  return ids;
+}
+
+/** The two image gates read one verdict: declared rules, the Ollama probe, and the
+ *  adopted discovery catalogs. */
+export function modelAcceptsImageAttachments(model: string): boolean {
+  return modelAcceptsImages(model, ollamaVisionModelIds(), undefined, catalogVisionModelIds());
+}
 
 /** Fetch the repo history for the Settings changelog page. Broadcast tabId-less
  *  (like $opencode_models): it depends on no tab state, so one fetch serves every
@@ -3160,7 +3189,118 @@ async function readSyntheticUsage(tab: Tab, options: { force?: boolean }): Promi
   );
 }
 
-/** Synthetic plan usage for a tab with a configured key, coalesced on the declared floor. */ /** Reader per declared probe. Exhaustive by type: a new `usage.probe` in a provider
+/** OpenRouter's `/key` reply: the key's governing budget plus today's free-model
+ *  allowance. A guardrail reports its own reset; a plain key limit reports none. */
+export async function fetchOpenrouterKey(
+  apiKey: string,
+  baseUrl: string,
+  timeoutMs = 10_000,
+): Promise<OpenrouterKey | undefined> {
+  const reply = await fetchQuotaJson({
+    urls: usageUrls(providerSpec("openrouter"), baseUrl),
+    headers: { Authorization: `Bearer ${apiKey}` },
+    timeoutMs,
+  });
+  if (!reply.ok) return undefined;
+  const body = (reply.body ?? {}) as { data?: unknown };
+  const data = (body.data ?? {}) as {
+    limit?: unknown;
+    limit_remaining?: unknown;
+    budgets?: unknown;
+    effective_budget?: unknown;
+    free_model_daily_requests?: unknown;
+  };
+  const budget = toOpenrouterBudgetFromKey(data) ?? topLevelOpenrouterBudget(data);
+  const freeModels = toOpenrouterFreeAllowance(data.free_model_daily_requests);
+  // Nothing readable is "no data", never a guessed percentage.
+  if (!budget && !freeModels) return undefined;
+  return { budget, freeModels };
+}
+
+/** One guardrail row, or null when it carries no usable limit. `effective_budget` is
+ *  the one that governs a key whose org also sets budgets, so it is read first. */
+function toOpenrouterBudget(raw: unknown): OpenrouterBudget | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as {
+    scope?: unknown;
+    limit_usd?: unknown;
+    remaining_usd?: unknown;
+    reset_interval?: unknown;
+    resets_at?: unknown;
+  };
+  if (typeof row.limit_usd !== "number" || typeof row.remaining_usd !== "number") return null;
+  return {
+    scope: typeof row.scope === "string" ? row.scope : null,
+    limitUsd: row.limit_usd,
+    remainingUsd: row.remaining_usd,
+    resetInterval: typeof row.reset_interval === "string" ? row.reset_interval : null,
+    resetsAt: typeof row.resets_at === "string" ? row.resets_at : null,
+  };
+}
+
+/** The governing budget: `effective_budget`, else the first row of `budgets`, else the
+ *  older top-level `limit` / `limit_remaining` pair. */
+function toOpenrouterBudgetFromKey(data: {
+  budgets?: unknown;
+  effective_budget?: unknown;
+}): OpenrouterBudget | null {
+  const effective = toOpenrouterBudget(data.effective_budget);
+  if (effective) return effective;
+  if (!Array.isArray(data.budgets)) return null;
+  for (const entry of data.budgets) {
+    const budget = toOpenrouterBudget(entry);
+    if (budget) return budget;
+  }
+  return null;
+}
+
+function topLevelOpenrouterBudget(data: {
+  limit?: unknown;
+  limit_remaining?: unknown;
+}): OpenrouterBudget | null {
+  if (typeof data.limit !== "number" || typeof data.limit_remaining !== "number") return null;
+  return {
+    scope: null,
+    limitUsd: data.limit,
+    remainingUsd: data.limit_remaining,
+    resetInterval: null,
+    resetsAt: null,
+  };
+}
+
+/** The free-model daily allowance: `remaining` when stated, else limit minus used. */
+function toOpenrouterFreeAllowance(raw: unknown): OpenrouterFreeAllowance | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as { limit?: unknown; used?: unknown; remaining?: unknown };
+  if (typeof row.limit !== "number" || row.limit <= 0) return null;
+  const remaining =
+    typeof row.remaining === "number"
+      ? row.remaining
+      : typeof row.used === "number"
+        ? row.limit - row.used
+        : null;
+  return { limit: row.limit, remaining };
+}
+
+/** OpenRouter key budget and free-model allowance for a tab with a configured key. */
+async function readOpenrouterUsage(tab: Tab, options: { force?: boolean }): Promise<UsageProbe> {
+  return readDeclaredUsage(
+    tab,
+    "openrouter",
+    fetchOpenrouterKey,
+    openrouterKeyView,
+    (key, viewed) => ({
+      budgetScope: key.budget?.scope ?? null,
+      budgetRemainingUsd: key.budget?.remainingUsd ?? null,
+      budgetResetInterval: key.budget?.resetInterval ?? null,
+      freeModelsRemaining: key.freeModels?.remaining ?? null,
+      windows: viewed.windows.length,
+    }),
+    options,
+  );
+}
+
+/** Reader per declared probe. Exhaustive by type: a new `usage.probe` in a provider
  *  file fails to compile until it has a reader here, and no caller names a provider. */
 const USAGE_READERS: Record<ProviderProbeStrategy, UsageReader> = {
   "codex-oauth": readCodexUsage,
@@ -3170,6 +3310,7 @@ const USAGE_READERS: Record<ProviderProbeStrategy, UsageReader> = {
   "mimo-console": readMiMoUsage,
   "experiential-spend": readExperientialUsage,
   "synthetic-quotas": readSyntheticUsage,
+  "openrouter-key": readOpenrouterUsage,
   "opencode-usage": readOpencodeUsage,
 };
 
@@ -3316,6 +3457,9 @@ function loadSessionIntoTab(
   tab.currentSession = name;
   freezeLegacySessionMcp(tab, name);
   actions.persistOpenTabs();
+  // A conversation this channel is opening fresh has proved nothing yet about which
+  // models run here, so the failover list starts every one of them again.
+  resetFailoverExclusions(tab);
   // Rebind model + effort to the conversation's stored pair before the
   // runtime rebuild, so the loop is constructed with the right model.
   restoreSessionModelPrefs(tab, meta);
@@ -3443,6 +3587,58 @@ export function sessionSetupMeta(
   };
 }
 
+/** The capability pre-fill an unconfirmed chat offers in its setup picker. An absent
+ *  `mcp` means the Settings default (a New chat); Duplicate pins its source session's
+ *  frozen set, so a clone starts faithful and the toggles are there to diverge from it. */
+export interface ChatCapabilitySeed {
+  mcp?: SessionMcpState;
+  subagents: boolean;
+}
+
+/** The transcript a fresh chat owes its creator. Duplicate hands it the trimmed context:
+ *  written as the chat's opening user message, or, when `autoRun` is set, run as its
+ *  first turn once the channel can run. */
+export interface ChatSeedTurn {
+  content: string;
+  autoRun: boolean;
+}
+
+/** The picker's server rows for a capability seed: one row per configured server, from
+ *  the seed's absolute MCP state or, when the seed pins nothing, the Settings default.
+ *  ONE projection, so what New chat and Duplicate offer is what their confirm freezes. */
+export function capabilityPrefill(
+  configured: readonly { name: string; disabled?: boolean; builtin?: boolean }[],
+  seed?: ChatCapabilitySeed,
+): McpSetupServer[] {
+  const disabled = new Set(seed?.mcp?.disabledServers ?? []);
+  return configured.map((spec) => ({
+    name: spec.name,
+    enabled: seed?.mcp === undefined ? spec.disabled !== true : !disabled.has(spec.name),
+    builtin: spec.builtin === true,
+  }));
+}
+
+/** The configured servers in the shape `capabilityPrefill` consumes: the Settings
+ *  default enablement plus whether the server is a managed built-in. */
+function configuredMcpSpecs(
+  rootDir: string,
+): { name: string; disabled: boolean; builtin: boolean }[] {
+  return namedMcpSpecs(rootDir).map((spec) => ({
+    name: spec.name,
+    disabled: spec.disabled === true,
+    builtin: isManagedMcpSpec(spec),
+  }));
+}
+
+/** The capability state a clone of this chat starts from: the chat's own frozen set, or
+ *  the Settings default when it has answered nothing yet. */
+function chatCapabilitySeed(tab: Tab): ChatCapabilitySeed {
+  return {
+    mcp: sessionMcpState(tab.currentSession) ?? sessionMcpFromConfig(tab.rootDir),
+    subagents: tab.subagents,
+  };
+}
+
 /** The active session's stored MCP state. `undefined` = a session created before
  *  the field existed — callers fall back to the config default. */
 function sessionMcpState(name: string): SessionMcpState | undefined {
@@ -3490,13 +3686,10 @@ function effectiveMcpSpecs(tab: Tab): McpServerSpec[] {
  *  re-emits the pre-fill because a failed confirm re-arms instead of stranding the UI. */
 function armSessionGate(tab: Tab): void {
   tab.mcpSetupPending = true;
-  const servers = namedMcpSpecs(tab.rootDir).map((spec) => ({
-    name: spec.name,
-    enabled: spec.disabled !== true,
-    builtin: isManagedMcpSpec(spec),
-  }));
+  const seed = tab.capabilitySeed ?? { subagents: false };
+  const servers = capabilityPrefill(configuredMcpSpecs(tab.rootDir), seed);
   emitTabDiagnostic(tab, "tab.setup.required", { reason: "mcp-setup" }, "info");
-  emit({ type: "$mcp_setup", servers, subagents: tab.subagents }, tab.id);
+  emit({ type: "$mcp_setup", servers, subagents: seed.subagents === true }, tab.id);
 }
 
 /** Report a failed confirm and re-arm the gate. The frontend dismisses the picker only
@@ -4564,14 +4757,29 @@ export function failoverStopMessage(args: {
   configured: readonly string[];
   attempted: readonly string[];
   skipped: readonly string[];
+  /** Configured backups this session already proved dead, so the chain never re-offered
+   *  them. Optional: the turn that just spent them may have nothing to add. */
+  excluded?: readonly string[];
 }): string {
   if (args.configured.length === 0) return t("loop.failoverNoBackup", { failed: args.failed });
-  if (args.attempted.length === 0) return t("loop.failoverNoneUsable", { failed: args.failed });
   // Configured order, not the order the chain happened to walk: the sentence has to
   // read back the list the user set up.
   const touched = args.configured
     .map((model) => model.trim())
-    .filter((model) => model && (args.attempted.includes(model) || args.skipped.includes(model)));
+    .filter(
+      (model) =>
+        model &&
+        (args.attempted.includes(model) ||
+          args.skipped.includes(model) ||
+          (args.excluded ?? []).includes(model)),
+    );
+  // Nothing was attempted and nothing failed the credential screen, yet the chain is
+  // spent: every model left on the list already failed earlier in THIS chat. Saying
+  // "no credential" here would be false, and a new chat does give them another try.
+  if (args.attempted.length === 0 && args.skipped.length === 0 && touched.length > 0) {
+    return t("loop.failoverAlreadyFailed", { failed: args.failed, models: touched.join(", ") });
+  }
+  if (args.attempted.length === 0) return t("loop.failoverNoneUsable", { failed: args.failed });
   return t("loop.failoverAllExhausted", {
     failed: args.failed,
     models: (touched.length > 0 ? touched : [...args.attempted, ...args.skipped]).join(", "),
@@ -4659,11 +4867,23 @@ interface Tab {
    *  servers and its subagent flag. Withholds `$ready` (composer disabled) and defers the
    *  runtime + bridge until `mcp_session_configure`. */
   mcpSetupPending: boolean;
+  /** What that unconfirmed chat's picker is pre-filled with. Undefined = the New-chat
+   *  default (the Settings MCP set, subagents off); Duplicate seeds its source session's
+   *  frozen set so the clone starts faithful and the user can still diverge. */
+  capabilitySeed?: ChatCapabilitySeed;
+  /** Duplicate's trimmed transcript while it is still owed, tagged with the session it
+   *  belongs to: auto-proceed leaves the log empty and runs this as the first turn once
+   *  the picker is answered. Keyed so a rebound channel can never replay it elsewhere. */
+  owedTurn?: { session: string; content: string };
   /** True while a session switch is in progress — prevents stale events from the old turn. */
   switching: boolean;
   /** Plan progress for the diagnostics projection. Refreshed wherever plan state is
    *  consulted or changed; `tabDiagnosticState` must never read the store itself. */
   planSummary: { completed: number; total: number };
+  /** Models this session's failover chain already proved dead — never offered as a
+   *  backup again for the rest of THIS chat, or the chain walks back into the failure
+   *  it just left. */
+  failoverExcluded: Set<string>;
   hooks: ResolvedHook[];
 }
 
@@ -4877,8 +5097,10 @@ function mintSessionFor(
   rootDir: string,
   prefs?: ModelPrefs,
   options: {
-    mcp?: SessionMcpState;
     mcpSetup?: boolean;
+    /** Frozen MCP set for a chat whose capabilities are already answered; absent =
+     *  the Settings default. */
+    mcp?: SessionMcpState;
     /** Session-creation flag, frozen into the meta: this chat either has the spawn
      *  tool or it does not, for its whole life. */
     subagents?: boolean;
@@ -5084,7 +5306,7 @@ export function turnStartRejection(
   // Only vision-capable models accept image content parts — DeepSeek 400s
   // otherwise. The UI hides the affordance for non-vision models; this is
   // the hard gate so a stale or forged request can't reach the API.
-  if (images && images.length > 0 && !modelAcceptsImages(model, ollamaVisionModelIds())) {
+  if (images && images.length > 0 && !modelAcceptsImageAttachments(model)) {
     return {
       kind: "images-need-vision",
       outcome: "stopped",
@@ -5099,6 +5321,17 @@ export function turnStartRejection(
  *  which the quota-failover paths also screen backups with. */
 export function tabCurrentModelUsable(tab: Tab): boolean {
   return modelUsableFor(tab.currentModel);
+}
+
+/** {@link tabCurrentModelUsable} answered as a boolean: a credential lookup that throws
+ *  means "cannot run it here", never "fail the turn", so every caller that only needs a
+ *  yes/no asks this instead of repeating the guard. */
+export function currentModelRunsHere(tab: Tab): boolean {
+  try {
+    return tabCurrentModelUsable(tab);
+  } catch {
+    return false;
+  }
 }
 
 /** Setup/readiness gate: usable if the current model's provider has a
@@ -5264,6 +5497,99 @@ function applyTabModel(
       }
     }
     throw err;
+  }
+}
+
+/** Point the tab at `model` and report whether a runtime for THAT model came up: the
+ *  runtime's own ctx is the only honest "it started" signal, since applyTabModel drops it
+ *  for an unusable model instead of throwing. A thrown rebuild returns as `error`. */
+function switchTabModel(tab: Tab, model: string): { started: boolean; error: unknown | null } {
+  try {
+    applyTabModel(tab, model, FAILOVER_SWITCH);
+  } catch (err) {
+    return { started: false, error: err };
+  }
+  return { started: tab.runtime?.ctx.model === model, error: null };
+}
+
+/** Put a model the chain moved away from back. Best-effort by construction: a restore
+ *  that throws must never escape a turn, and the answer says whether the tab really ended
+ *  up on `model` (applyTabModel has already rolled itself back when it throws). */
+function restoreTabModel(tab: Tab, model: string, why: string): boolean {
+  if (tab.currentModel === model) return true;
+  try {
+    applyTabModel(tab, model, FAILOVER_SWITCH);
+    return true;
+  } catch (err) {
+    process.stderr.write(`reasonix: ${why} (${model}) failed — ${messageOf(err)}\n`);
+    return false;
+  }
+}
+
+/** Pause between two failover attempts. A transient fault (DNS, TLS, a 502 from a load
+ *  balancer) needs a moment to clear, and replaying the prompt immediately usually
+ *  fails the same way twice. */
+export const FAILOVER_COOLDOWN_MS = 5_000;
+
+/** Sleep out the failover cooldown, waking early for a desktop Stop: the user must
+ *  never wait out a delay the chain no longer needs. Exported for tests. */
+export function failoverCooldown(signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, FAILOVER_COOLDOWN_MS);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
+}
+
+/** A different conversation voids what the previous one proved: a model that could not
+ *  run here is worth another try in a chat opened later, after its key may have been
+ *  pasted. Called at every session (re)bind, never mid-conversation. */
+function resetFailoverExclusions(tab: Tab): void {
+  tab.failoverExcluded.clear();
+}
+
+/** Walk a chat off a model it cannot run at all (its provider has no usable credential)
+ *  onto the first backup that does run here, so an unusable model never ends the send
+ *  with the config list unused. It stays excluded for the rest of the session. */
+function adoptStartupBackup(tab: Tab): void {
+  // A model that runs here needs no help, and a tab without a toolset cannot build a
+  // runtime for ANY model — there is nothing a switch could fix.
+  if (currentModelRunsHere(tab) || !tab.toolset) return;
+  const from = tab.currentModel;
+  try {
+    const next = walkFallbackChain(
+      loadFallbackModels(),
+      new Set([from, ...tab.failoverExcluded]),
+      modelUsableFor,
+      (candidate) => switchTabModel(tab, candidate).started,
+    );
+    if (!next) {
+      // Nothing could run: never leave the tab naming a backup that never started.
+      restoreTabModel(tab, from, "startup backup rollback");
+      return;
+    }
+    tab.failoverExcluded.add(from);
+    emit(
+      {
+        type: "$notice",
+        text: t("loop.failoverStartupSwitch", { failed: from, next }),
+        severity: "warning",
+      },
+      tab.id,
+    );
+    emitTabDiagnostic(tab, "failover.startup.switch", { failed: from, next }, "warn");
+    emitSettings(tab);
+  } catch (err) {
+    // Best effort by construction: this runs BEFORE a turn exists, so a broken config
+    // must degrade to the plain "not configured yet" refusal instead of escaping into
+    // the send path, where nothing would settle the desktop.
+    process.stderr.write(`reasonix: startup backup switch failed — ${messageOf(err)}\n`);
+    restoreTabModel(tab, from, "startup backup rollback");
   }
 }
 
@@ -5565,6 +5891,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       model?: string;
       reasoningEffort?: import("../../config.js").ReasoningEffort;
       subagentModel?: string;
+      /** Capability pre-fill for this gated chat's picker (Duplicate seeds its source
+       *  session's frozen set); absent = the New-chat default. */
+      capabilitySeed?: ChatCapabilitySeed;
+      /** Capabilities the caller already answered (the Duplicate popover): the session
+       *  mints with them frozen, so it never shows the picker. */
+      capabilityAnswer?: ChatCapabilitySeed;
     },
     pending = false,
   ): Tab {
@@ -5590,15 +5922,17 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     const groupId = restore?.groupId ?? nextGroupId();
     const groupMatch = /^g(\d+)$/.exec(groupId);
     if (groupMatch) groupCounter = Math.max(groupCounter, Number(groupMatch[1]));
-    // A channel mints its session eagerly at creation, and every mint is gated:
-    // its capabilities are chosen at that session boundary and frozen by the
-    // answer. A restored conversation keeps the set frozen in its own meta, and a
-    // channel that comes back neutral mints nothing to gate. A PENDING channel has
-    // no workspace to mint into, so it tops out at neutral.
+    // A channel mints its session eagerly at creation, and every mint is gated: its
+    // capabilities are chosen at that session boundary and frozen by the answer, either
+    // by the picker or by the caller that already asked (a duplicated session's popover).
+    // A restored conversation keeps the set frozen in its own meta, and a channel that
+    // comes back neutral mints nothing to gate. A PENDING channel has no workspace to
+    // mint into, so it tops out at neutral.
     const skeleton = pending
       ? ({ kind: "neutral" } as const)
       : skeletonSessionFor(restore, adoptableRestoredSession(restore?.session, dir));
-    const gateSession = skeleton.kind === "mint";
+    const answer = restore?.capabilityAnswer;
+    const gateSession = skeleton.kind === "mint" && answer === undefined;
     const tab: Tab = {
       id,
       groupId,
@@ -5611,8 +5945,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       currentSubagentModel: restore?.subagentModel,
       currentReasoningEffort: restore?.reasoningEffort ?? loadReasoningEffort(),
       ctxMaxOverride: loadContextTokens(),
-      // Every new session starts without the subagent tool; the session-start picker
-      // is the only place to opt in, and a restored conversation re-reads its own meta.
+      // Every new session starts without the subagent tool unless the caller already
+      // asked for it; the session-start picker is the only other place to opt in, and a
+      // restored conversation re-reads its own meta.
       subagents: false,
       toolset: null,
       system: "",
@@ -5632,8 +5967,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       mcpStatuses: new Map(),
       mcpBridgePromise: null,
       mcpSetupPending: gateSession,
+      capabilitySeed: restore?.capabilitySeed,
       switching: false,
       planSummary: { completed: 0, total: 0 },
+      failoverExcluded: new Set<string>(),
       hooks: pending ? [] : loadHooks({ projectRoot: dir }),
     };
     // A restored session binds its real jsonl when it still exists AND this
@@ -5645,13 +5982,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // Seed the flag from the session we are about to bind, not from the creation
     // default: the skeleton is announced (and its settings emitted) before startTabInit
     // reads the meta, and a later meta failure must not leave a tab claiming a
-    // capability its session never had.
+    // capability its session never had. A clone reads back the answer the caller froze.
     if (restoredSession) {
       try {
         tab.subagents = sessionSubagentsEnabled(loadSessionMeta(restoredSession));
       } catch {
         void 0; /* unreadable meta: keep the creation default; startTabInit logs the failure */
       }
+    } else if (answer) {
+      tab.subagents = answer.subagents === true;
     }
     tab.currentSession =
       skeleton.kind === "adopt"
@@ -5664,7 +6003,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
                 reasoningEffort: tab.currentReasoningEffort,
                 subagentModel: tab.currentSubagentModel,
               },
-              { mcpSetup: gateSession, subagents: tab.subagents },
+              { mcpSetup: gateSession, mcp: answer?.mcp, subagents: tab.subagents },
             )
           : "";
     tabs.set(tab.id, tab);
@@ -6310,12 +6649,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       },
       "info",
     );
-    let modelUsable = false;
-    try {
-      modelUsable = tabCurrentModelUsable(tab);
-    } catch {
-      modelUsable = false;
-    }
+    // A conversation can open (or resume) on a model this daemon cannot run at all —
+    // no usable credential for its provider. That is the same dead-model situation the
+    // mid-turn chain exists for, so the start takes the first backup that runs here
+    // instead of bouncing off the pre-flight gate with the whole list unused. A no-op
+    // whenever the current model runs, which is the normal case.
+    adoptStartupBackup(tab);
+    const modelUsable = currentModelRunsHere(tab);
     const rejection = turnStartRejection(tab.currentModel, images, {
       pending: tab.pending,
       hasRootDir: !!tab.rootDir,
@@ -6571,7 +6911,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // stop message has to name this one, not wherever the chain ended up.
       const primaryModel = tab.currentModel;
       const configuredFallbacks = loadFallbackModels();
-      const triedModels = new Set([primaryModel]);
+      const triedModels = new Set([primaryModel, ...tab.failoverExcluded]);
       // A backup that cannot even start (its credential went away between the
       // screening probe and the rebuild, or the rebuild threw) sends the chain to the
       // NEXT backup instead of ending it: surviving that is the whole reason to
@@ -6580,40 +6920,34 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       const skippedBackups: string[] = [];
       let failedOverTo: string | null = null;
       let failoverBroken = false;
-      /** Put back a model the chain moved away from. Best-effort by construction: a
-       *  restore that throws must never escape the turn, and the answer says whether
-       *  the tab really ended up on `model`. */
-      const restoreModel = (model: string, why: string): boolean => {
-        if (tab.currentModel === model) return true;
-        try {
-          applyTabModel(tab, model, FAILOVER_SWITCH);
-          return true;
-        } catch (err) {
-          process.stderr.write(`reasonix: ${why} (${model}) failed — ${messageOf(err)}\n`);
-          return false;
-        }
-      };
       // A pick (or a Stop) that lands between two attempts ends the chain BEFORE the
       // next switch, or the daemon would overwrite the model just chosen.
       while (shouldFailover(attempt) && !turnStoppedByUser(tab)) {
+        // The model this attempt ran on could not finish the turn — the one that opened
+        // the chat included — so it is off this session's backup list for good. Recorded
+        // before the pick, or a later turn of this chat would offer it again.
+        tab.failoverExcluded.add(tab.currentModel);
+        triedModels.add(tab.currentModel);
+        const failedModel = tab.currentModel;
         const next = pickFallbackModel(configuredFallbacks, triedModels, modelUsableFor);
         if (!next) break;
         triedModels.add(next);
-        const failedModel = tab.currentModel;
-        let started = false;
-        try {
-          applyTabModel(tab, next, FAILOVER_SWITCH);
-          // applyTabModel nulls the runtime for an unusable model instead of throwing,
-          // and leaves a stale one when the tab has no toolset yet. The runtime's ctx
-          // names the model it drives, so that is what "started" has to mean.
-          started = tab.runtime?.ctx.model === next;
-        } catch (err) {
-          notify(`Backup model switch to ${next} failed: ${messageOf(err)}`, "error");
-        }
-        if (!started) {
+        // Let a transient fault clear before switching: a blip in DNS, TLS or a load
+        // balancer is the most common reason a provider "stopped answering", and two
+        // round trips back to back just fail twice. Abortable, so Stop costs nothing.
+        notify(t("loop.failoverCooldown", { next, seconds: FAILOVER_COOLDOWN_MS / 1000 }));
+        await failoverCooldown(tab.aborter?.signal);
+        // A Stop that landed during the cooldown ends the chain here, with the tab
+        // still on the model it was on — nothing was switched or rewound yet.
+        if (turnStoppedByUser(tab)) break;
+        const switched = switchTabModel(tab, next);
+        if (!switched.started) {
+          if (switched.error) {
+            notify(`Backup model switch to ${next} failed: ${messageOf(switched.error)}`, "error");
+          }
           skippedBackups.push(next);
           // Never leave the tab naming a backup that never ran.
-          restoreModel(failedModel, "backup-model rollback");
+          restoreTabModel(tab, failedModel, "backup-model rollback");
           notify(t("loop.failoverBackupUnusable", { next }));
           continue;
         }
@@ -6658,14 +6992,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             configured: configuredFallbacks,
             attempted: attemptedBackups,
             skipped: skippedBackups,
+            // Named so the stop can say "already failed earlier in this chat" instead
+            // of claiming a credential problem the user may not have.
+            excluded: [...tab.failoverExcluded],
           }),
         );
         // A spent chain must not leave the tab on a backup that could not see the turn
         // through: the composer would show a model the user never picked, and their
         // next send would hit the same wall. Put the model the turn started on back.
-        if (restoreModel(primaryModel, "restoring the turn's own model after a spent failover")) {
-          failedOverTo = null;
-        }
+        const restored = restoreTabModel(
+          tab,
+          primaryModel,
+          "restoring the turn's own model after a spent failover",
+        );
+        if (restored) failedOverTo = null;
       }
       tab.aborter = null;
       // If a session switch happened while this turn was running,
@@ -6835,6 +7175,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // every focus change) would otherwise record {dir: target, session: <old
     // workspace's>}, a crossed pair that outlives this run.
     tab.currentSession = "";
+    // Another workspace means another conversation: what failed here says nothing
+    // about the model's provider in the workspace being entered.
+    resetFailoverExclusions(tab);
     // Switch the UI to the new workspace BEFORE loading its conversation: the
     // frontend clears transcript state on a workspaceDir change, so emitting
     // settings now keeps a later $session_loaded (with the resumed messages)
@@ -7055,6 +7398,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
    *  session its message lands in first. False means it cannot run, and the refusal
    *  has been emitted. */
   function ensureTurnSession(tab: Tab): boolean {
+    // A chat whose own model cannot run here still has its backups: take the first one
+    // that can BEFORE the refusal below, so an unconfigured model never ends a send
+    // with the whole backup list unused.
+    adoptStartupBackup(tab);
     // A channel with no runtime cannot send at all, so it mints nothing: an empty
     // session would outlive the refusal below.
     if (!tab.currentSession && tab.runtime) bindSessionForSend(tab);
@@ -7650,6 +7997,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     model?: string;
     reasoningEffort?: import("../../config.js").ReasoningEffort;
     subagentModel?: string;
+    /** Capability pre-fill for a fresh channel's setup picker. Absent = the New-chat
+     *  default; Duplicate seeds its source session's frozen set. */
+    capabilitySeed?: ChatCapabilitySeed;
+    /** Capabilities this channel was already created with (a duplicated session whose
+     *  popover asked): the mint freezes them and the channel never opens a picker. */
+    capabilityAnswer?: ChatCapabilitySeed;
     /** Marks this channel as a just-minted session so the frontend shows a
      *  "Creating session…" indicator until the first `$sessions` lands. */
     creating?: boolean;
@@ -7777,6 +8130,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             );
           }
           emitCtxBreakdown(tab);
+          // A clone owes its trimmed transcript as the first turn; nothing gates it,
+          // because its capability answer came with the duplicate request.
+          runOwedSeed(tab);
           if (tab === first) settleFirstBootstrap();
         })
         .catch((err) => {
@@ -7795,15 +8151,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       await new Promise<void>((resolve) => setImmediate(resolve));
 
       // Non-gating display work — runs in parallel with the toolset build above.
-      // Reopen the conversation the tab had, if its jsonl is still readable.
+      // Reopen the session this channel is bound to, if its jsonl is readable. That is
+      // the restored one, or the session a fresh mint just created: a duplicate seeds its
+      // transcript at mint, so its opening message must reach the view even though the
+      // channel never "restored" a conversation. An empty log yields no messages and the
+      // channel lands on the blank-transcript branch below, exactly as before.
       let restoredMessages: LoadedMessage[] | undefined;
-      if (restore?.session) {
+      const displaySession = tab.currentSession;
+      if (displaySession) {
         try {
-          if (sessionExists(restore.session)) {
+          if (sessionExists(displaySession)) {
             const msgs = mergeNoticesIntoLoaded(
-              buildLoadedMessages(await loadSessionMessagesAsync(restore.session)),
-              loadSessionNotices(restore.session),
-              loadSessionMeta(restore.session).lastTurn,
+              buildLoadedMessages(await loadSessionMessagesAsync(displaySession)),
+              loadSessionNotices(displaySession),
+              loadSessionMeta(displaySession).lastTurn,
             );
             if (msgs.length > 0) restoredMessages = msgs;
           }
@@ -7811,7 +8172,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           // unreadable jsonl — fall back to the freshly minted session, but LOG
           emitDiagnosticError("session.restore.failed", err, {
             tabId: tab.id,
-            details: { requestedSession: restore.session, ...tabDiagnosticState(tab) },
+            details: { requestedSession: displaySession, ...tabDiagnosticState(tab) },
           });
           process.stderr.write(`reasonix: session load for resync failed — ${messageOf(err)}\n`);
         }
@@ -7914,6 +8275,89 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     const tab = announceTab(initialDir, restore);
     startTabInit(tab, restore);
     return tab;
+  }
+
+  /** Everything a caller hands a fresh chat at open time. New chat and Duplicate both go
+   *  through `openFreshChat`, so they differ only in the capability answer and in the
+   *  transcript they seed; neither can freeze capabilities behind the user's back. */
+  type FreshChatSpec = {
+    /** Models the mint stamps, so the chat runs on the agent the user picked instead of
+     *  the global config default. */
+    prefs: ModelPrefs;
+    /** Capabilities the caller already answered (the Duplicate popover): the mint freezes
+     *  them and the chat never gates. */
+    answer?: ChatCapabilitySeed;
+    /** Picker pre-fill for a chat that still has to ask; absent = the New-chat default. */
+    capabilities?: ChatCapabilitySeed;
+    /** Transcript this chat owes once it can run (Duplicate). */
+    seed?: ChatSeedTurn;
+    /** Diagnostic scope for a failed open. */
+    origin: "new-chat" | "duplicate";
+  };
+
+  /** Hand a just-minted chat its seed transcript: written to the log now when the user
+   *  continues by hand, or owed as its first turn when auto-proceed runs it. */
+  function seedFreshChat(tab: Tab, seed: ChatSeedTurn): void {
+    // Auto-proceed leaves the log empty on purpose: the loop appends the blob itself when
+    // it runs the turn, so writing it here too would put it in the transcript twice.
+    if (seed.autoRun) tab.owedTurn = { session: tab.currentSession, content: seed.content };
+    else appendSessionMessage(tab.currentSession, { role: "user", content: seed.content });
+  }
+
+  /** Run the trimmed transcript a clone owes its creator, now that its channel can. A tab
+   *  with no runtime (unconfigured model) keeps the blob on disk rather than dropping it. */
+  function runOwedSeed(tab: Tab): void {
+    const owed = tab.owedTurn;
+    tab.owedTurn = undefined;
+    if (!owed || owed.session !== tab.currentSession) return;
+    if (tab.runtime) void runTurn(tab, owed.content);
+    else appendSessionMessage(tab.currentSession, { role: "user", content: owed.content });
+  }
+
+  /** The ONE way a fresh chat is opened: workspace check, creation gate, announced mint,
+   *  lock handoff. It mints nothing itself (the tab skeleton does) and always hands it a
+   *  capability answer or a picker seed, so no caller can open a chat that skipped both. */
+  function openFreshChat(tab: Tab, spec: FreshChatSpec): Tab | undefined {
+    // Never drop a click in silence: the UI offers New chat here, so it owes the
+    // user a reason instead of a dead button.
+    if (tabNeedsWorkspace(tab)) {
+      emit({ type: "$error", message: NO_WORKSPACE_MESSAGE }, tab.id);
+      return undefined;
+    }
+    if (!sessionCreationGate.tryEnter(tab.rootDir)) {
+      refuseSessionMutation(SESSION_CREATION_IN_FLIGHT_MESSAGE, tab.id);
+      return undefined;
+    }
+    try {
+      const opened = bootstrapTab(tab.rootDir, {
+        active: true,
+        groupId: tab.groupId,
+        model: spec.prefs.model,
+        reasoningEffort: spec.prefs.reasoningEffort,
+        subagentModel: spec.prefs.subagentModel,
+        capabilityAnswer: spec.answer,
+        capabilitySeed: spec.capabilities,
+        // Fresh session, so the new channel shows a create indicator until its first
+        // $sessions snapshot lists the minted session.
+        creating: true,
+      });
+      // The mint is synchronous, so the channel already owns its session: seeding the
+      // transcript here lands it in the bootstrap's own session read.
+      if (opened.currentSession && spec.seed) seedFreshChat(opened, spec.seed);
+      armCreationRelease(opened);
+      lastActiveTabId = opened.id;
+      persistOpenTabs();
+      return opened;
+    } catch (err) {
+      // A bootstrap that never started must not leave the workspace locked.
+      sessionCreationGate.leave(tab.rootDir);
+      emitDiagnosticError(`session.${spec.origin}.failed`, err, {
+        tabId: tab.id,
+        details: tabDiagnosticState(tab),
+      });
+      emit({ type: "$error", message: `${spec.origin} failed: ${(err as Error).message}` }, tab.id);
+      return undefined;
+    }
   }
 
   // Restore the full tab set from the previous session — workspace dir,
@@ -8571,7 +9015,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             emit({ type: "$needs_setup", reason: "no_api_key" }, tab.id);
           }
           emitCtxBreakdown(tab);
+          // A chat opened by a caller that omitted the capability answer still owes its
+          // trimmed transcript, queued rather than written because the loop appends the
+          // blob itself. Now the answer exists, so run it.
+          runOwedSeed(tab);
+          // Nothing is owed once the chat is live. Cleared here rather than at the
+          // patch, so a re-armed gate still pre-fills from the same starting point.
+          tab.capabilitySeed = undefined;
         };
+
         if (!tab.toolset) {
           unlock();
           return;
@@ -9091,123 +9543,56 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (msg.cmd === "new_chat") {
       // New chat is additive: preserve every existing agent in this workspace
       // tab and mount a fresh independent session beside them.
-      if (tabNeedsWorkspace(tab)) {
-        // Never drop a click in silence: the UI offers New chat here, so it owes
-        // the user a reason instead of a dead button.
-        emit({ type: "$error", message: NO_WORKSPACE_MESSAGE }, tab.id);
-        return;
-      }
-      if (!sessionCreationGate.tryEnter(tab.rootDir)) {
-        refuseSessionMutation(SESSION_CREATION_IN_FLIGHT_MESSAGE, tab.id);
-        return;
-      }
-      try {
-        const opened = bootstrapTab(tab.rootDir, {
-          active: true,
-          groupId: tab.groupId,
-          // Inherit the source session's models/effort — otherwise the fresh
-          // channel falls back to the global config default and drops the
-          // per-conversation subagent override entirely.
+      openFreshChat(tab, {
+        origin: "new-chat",
+        // Inherit the source session's models/effort, otherwise the fresh channel
+        // falls back to the global config default and drops the per-conversation
+        // subagent override entirely.
+        prefs: {
           model: tab.currentModel,
           reasoningEffort: tab.currentReasoningEffort,
           subagentModel: tab.currentSubagentModel,
-          // Fresh session, so the new channel shows a create indicator until
-          // its first $sessions snapshot lists the minted session.
-          creating: true,
-        });
-        armCreationRelease(opened);
-        lastActiveTabId = opened.id;
-        persistOpenTabs();
-      } catch (err) {
-        // A bootstrap that never started must not leave the workspace locked.
-        sessionCreationGate.leave(tab.rootDir);
-        emitDiagnosticError("session.new-chat.failed", err, {
-          tabId: tab.id,
-          details: tabDiagnosticState(tab),
-        });
-        emit({ type: "$error", message: `new-chat failed: ${(err as Error).message}` }, tab.id);
-      }
+        },
+      });
       return;
     }
     if (msg.cmd === "duplicate_session") {
-      // Clone this conversation into a NEW session, trimmed to the newest
-      // `duplicateSessionTokens` tokens, opened on the user-picked models. The
-      // frontend ships the export markdown (the export format lives there); we
-      // trim it here where the accurate DeepSeek tokenizer lives.
-      if (tabNeedsWorkspace(tab)) {
-        emit({ type: "$error", message: NO_WORKSPACE_MESSAGE }, tab.id);
-        return;
-      }
+      // Clone this conversation into a NEW session on the same models, trimmed to the
+      // newest `duplicateSessionTokens` tokens. The frontend ships the export markdown
+      // (the export format lives there); we trim it here where the accurate DeepSeek
+      // tokenizer lives. The popover already asked which MCP servers and whether
+      // subagents the copy may use, so the clone mints with that answer frozen and runs
+      // the context itself: a copy is a warm continuation, not a chat to set up again.
+      // The workspace refusal is `openFreshChat`'s, so both chat kinds share it.
       const markdown = typeof msg.markdown === "string" ? msg.markdown : "";
       if (!markdown.trim()) {
         emit({ type: "$error", message: "Duplicate session: nothing to duplicate." }, tab.id);
         return;
       }
-      if (!sessionCreationGate.tryEnter(tab.rootDir)) {
-        refuseSessionMutation(SESSION_CREATION_IN_FLIGHT_MESSAGE, tab.id);
-        return;
-      }
-      const model = msg.model || tab.currentModel;
-      const subagentModel = msg.subagentModel || tab.currentSubagentModel || model;
       const context = buildDuplicateContext(markdown, loadDuplicateSessionTokens());
-      const autoProceed = loadDuplicateSessionAutoProceed();
-      try {
-        // Mint a real session for the duplicate, stamped with the chosen models
-        // so bootstrapTab restores them (resolveSessionModelPrefs reads meta).
-        const name = mintSessionFor(
-          tab.rootDir,
-          {
-            model,
-            reasoningEffort: tab.currentReasoningEffort,
-            subagentModel,
-          },
-          // Duplicate is the exception: inherit the SOURCE session's live MCP
-          // state, not the current Settings default.
-          {
-            mcp: sessionMcpState(tab.currentSession) ?? sessionMcpFromConfig(tab.rootDir),
-            // Same rule for the subagent flag: the clone behaves like its source.
-            subagents: tab.subagents,
-          },
-        );
-        // Auto-proceed off (default): seed the blob as the opening user turn and
-        // stop, so the user drives the next message. On: leave the log empty and
-        // let the runTurn below append + run it.
-        if (!autoProceed) appendSessionMessage(name, { role: "user", content: context });
-        const opened = bootstrapTab(tab.rootDir, {
-          session: name,
-          active: true,
-          groupId: tab.groupId,
-          creating: true,
-        });
-        armCreationRelease(opened);
-        lastActiveTabId = opened.id;
-        persistOpenTabs();
-        if (autoProceed) {
-          void opened.initialization
-            ?.then(() => {
-              // Runtime is built at the tail of initTabToolset; a null runtime
-              // means the chosen model isn't configured — leave it for setup.
-              if (opened.runtime) void runTurn(opened, context);
-            })
-            .catch((err) => {
-              emit(
-                { type: "$error", message: `duplicate_session failed: ${(err as Error).message}` },
-                opened.id,
-              );
-            });
-        }
-      } catch (err) {
-        // A failed mint or bootstrap must not leave the workspace locked.
-        sessionCreationGate.leave(tab.rootDir);
-        emitDiagnosticError("session.duplicate.failed", err, {
-          tabId: tab.id,
-          details: tabDiagnosticState(tab),
-        });
-        emit(
-          { type: "$error", message: `duplicate_session failed: ${(err as Error).message}` },
-          tab.id,
-        );
-      }
+      // A caller that omits `enabled` never asked, so the clone falls back to the
+      // in-chat picker — pre-filled with this session's own frozen capabilities, so a
+      // faithful copy is one confirm away and the toggles are there to diverge.
+      const frozen = Array.isArray(msg.enabled)
+        ? sessionSetupMeta(
+            namedMcpSpecs(tab.rootDir).map((spec) => spec.name),
+            msg.enabled,
+            msg.subagents === true,
+          )
+        : undefined;
+      const answer: ChatCapabilitySeed | undefined = frozen
+        ? { mcp: frozen.mcp, subagents: frozen.subagents === true }
+        : undefined;
+      openFreshChat(tab, {
+        origin: "duplicate",
+        prefs: {
+          model: tab.currentModel,
+          reasoningEffort: tab.currentReasoningEffort,
+          subagentModel: tab.currentSubagentModel,
+        },
+        ...(answer ? { answer } : { capabilities: chatCapabilitySeed(tab) }),
+        seed: { content: context, autoRun: loadDuplicateSessionAutoProceed() },
+      });
       return;
     }
     if (msg.cmd === "oauth_begin") {
@@ -9948,7 +10333,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // mentions of local images into vision attachments so typing or
         // picking an image path just works. Other models never get image
         // parts (runTurn gates).
-        if (modelAcceptsImages(tab.currentModel, ollamaVisionModelIds())) {
+        if (modelAcceptsImageAttachments(tab.currentModel)) {
           const converted = await extractImageMentions(text, tab.rootDir);
           if (converted.attachments.length > 0) {
             text = converted.text;

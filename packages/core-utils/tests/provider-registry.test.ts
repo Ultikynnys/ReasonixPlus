@@ -9,6 +9,7 @@ import {
   SUPPORTED_OFFICIAL_MODELS,
   ZAI_MODELS,
   modelAcceptsImages,
+  stripProviderQualifier,
 } from "../src/models.js";
 import {
   PROVIDER_IDS,
@@ -118,6 +119,17 @@ describe("providers.json", () => {
     }
   });
 
+  it("declares catalog ids that survive the qualifier pass", () => {
+    // The client sends `stripProviderQualifier(model)`, so an id that pass rewrites
+    // can never reach the provider: OpenRouter's own `openrouter/free` router id
+    // collapses to `free` under this provider's `openrouter/` scheme.
+    for (const spec of PROVIDER_SPECS) {
+      for (const id of spec.models) {
+        expect(stripProviderQualifier(id), `${spec.id}: ${id}`).toBe(id);
+      }
+    }
+  });
+
   it("tags every provider with a distinct short model prefix", () => {
     const tags = PROVIDER_SPECS.map((spec) => spec.shortLabel);
     for (const tag of tags) {
@@ -182,6 +194,7 @@ describe("providers.json", () => {
       "ollama",
       "openai",
       "opencode",
+      "openrouter",
       "synthetic",
       "zai",
     ]);
@@ -223,6 +236,14 @@ describe("providers.json", () => {
     expect(requireProviderSpec("experiential").billing.balance).toEqual({
       url: "https://api.experientiallabs.ai/api/v1/credits",
       shape: "credits-usage",
+    });
+    // OpenRouter's budget rides its own endpoint, so the reader appends `/key` to
+    // the configured base URL rather than composing a route of its own.
+    expect(requireProviderSpec("openrouter").usage).toMatchObject({
+      probe: "openrouter-key",
+      urls: ["/key"],
+      urlBase: "endpoint",
+      primaryWindow: "plan",
     });
   });
 

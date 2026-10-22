@@ -1558,13 +1558,15 @@ function CtxParameters({
       <CtxToggleRow
         label={t("contextPanel.duplicateSessionAutoProceed")}
         desc={
-          settings?.duplicateSessionAutoProceed === true
+          // On unless the user turned it off: the daemon's own default is on, so an
+          // unset setting must not read here as "off".
+          settings?.duplicateSessionAutoProceed !== false
             ? t("contextPanel.duplicateSessionAutoProceedOnDesc")
             : t("contextPanel.duplicateSessionAutoProceedOffDesc")
         }
         onLabel={t("contextPanel.duplicateSessionAutoProceedOn")}
         offLabel={t("contextPanel.duplicateSessionAutoProceedOff")}
-        enabled={settings?.duplicateSessionAutoProceed === true}
+        enabled={settings?.duplicateSessionAutoProceed !== false}
         onToggle={(enabled) => onSaveSettings?.({ duplicateSessionAutoProceed: enabled })}
         onAriaLabel={t("contextPanel.enableDuplicateSessionAutoProceed")}
         offAriaLabel={t("contextPanel.disableDuplicateSessionAutoProceed")}

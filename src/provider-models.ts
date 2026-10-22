@@ -4,7 +4,14 @@ import { providerSpec, providerSpecsInOrder } from "@reasonix/core-utils";
 import { readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
 import { reasonixHome } from "./reasonix-home.js";
 
-export type CatalogProvider = "deepseek" | "openai" | "zai" | "mimo" | "experiential" | "synthetic";
+export type CatalogProvider =
+  | "deepseek"
+  | "openai"
+  | "zai"
+  | "mimo"
+  | "experiential"
+  | "synthetic"
+  | "openrouter";
 
 /** Providers that publish a discovery catalog, read from their declared
  *  `discovery.strategy` so a new provider needs no second list. */
@@ -20,11 +27,15 @@ export function isCatalogProvider(value: string): value is CatalogProvider {
 export interface ProviderCatalog {
   provider: CatalogProvider;
   models: string[];
+  /** Ids whose declared `discovery.visionField` lists `image`, so a catalog the JSON
+   *  cannot enumerate still grants the vision affordance. */
+  visionModels: string[];
   source: "live" | "cache" | "fallback";
   error?: string;
 }
 interface CacheEntry {
   models: string[];
+  visionModels?: string[];
   checkedAt: number;
 }
 const pending = new Map<string, Promise<ProviderCatalog>>();
@@ -34,6 +45,9 @@ function validCache(value: unknown): value is CacheEntry {
     entry &&
       Array.isArray(entry.models) &&
       entry.models.every((id) => typeof id === "string") &&
+      (entry.visionModels === undefined ||
+        (Array.isArray(entry.visionModels) &&
+          entry.visionModels.every((id) => typeof id === "string"))) &&
       typeof entry.checkedAt === "number",
   );
 }
@@ -56,6 +70,41 @@ export function discoveredProviderModels(
     validCache,
   )?.models;
 }
+/** Reads a dotted field (`architecture.input_modalities`) off one catalog entry. */
+function fieldAt(value: unknown, dotted: string): unknown {
+  let cursor: unknown = value;
+  for (const key of dotted.split(".")) {
+    if (!cursor || typeof cursor !== "object") return undefined;
+    cursor = (cursor as Record<string, unknown>)[key];
+  }
+  return cursor;
+}
+
+/** Ids whose declared modality field lists `image`. Empty when the provider declares
+ *  no field, which leaves the JSON vision rules as the only evidence. */
+function visionIdsOf(
+  entries: readonly unknown[],
+  idField: string,
+  visionField: string | null,
+): string[] {
+  if (!visionField) return [];
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    const model = entry as Record<string, unknown> | null;
+    const id = model?.[idField];
+    const modalities = fieldAt(model, visionField);
+    if (
+      typeof id === "string" &&
+      id.trim() &&
+      Array.isArray(modalities) &&
+      modalities.includes("image")
+    ) {
+      ids.add(id.trim());
+    }
+  }
+  return [...ids];
+}
+
 export async function fetchProviderModels(options: {
   provider: CatalogProvider;
   baseUrl: string;
@@ -74,7 +123,12 @@ export async function fetchProviderModels(options: {
   const path = cachePath(scope, options.homeDir);
   const cached = readJsonFileSilently(path, validCache);
   if (!options.force && cached && Date.now() - cached.checkedAt < 3_600_000) {
-    return { provider, models: cached.models, source: "cache" };
+    return {
+      provider,
+      models: cached.models,
+      source: "cache",
+      visionModels: cached.visionModels ?? [],
+    };
   }
   const pendingKey = `${path}:${scope}`;
   const existing = pending.get(pendingKey);
@@ -111,12 +165,16 @@ export async function fetchProviderModels(options: {
       ]
         .filter((id) => !excluded.has(id))
         .sort();
-      writeJsonFileSilently(path, { models, checkedAt: Date.now() });
-      return { provider, models, source: "live" };
+      const visionModels = visionIdsOf(entries, idField, spec?.discovery.visionField ?? null)
+        .filter((id) => !excluded.has(id))
+        .sort();
+      writeJsonFileSilently(path, { models, visionModels, checkedAt: Date.now() });
+      return { provider, models, visionModels, source: "live" };
     } catch (error) {
       return {
         provider,
         models: cached?.models ?? [...options.fallback],
+        visionModels: cached?.visionModels ?? [],
         source: cached ? "cache" : "fallback",
         error: error instanceof Error ? error.message : "Model discovery failed",
       };
