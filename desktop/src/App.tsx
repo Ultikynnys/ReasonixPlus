@@ -534,7 +534,23 @@ export type QueuedSend = {
  *  means the session cannot take it right now (so the caller keeps or queues it),
  *  "empty" means there was nothing to send. The queue drain only drops a message
  *  it got a definitive answer for, so a blocked send can never be silently lost. */
-export type SendOutcome = "sent" | "blocked" | "empty";
+type SendOutcome = "sent" | "blocked" | "empty";
+
+/** A queued message must carry text or attachments. A blank one would sit at the
+ *  head forever: the drain has nothing to send and never advances past it, so
+ *  both the writer (TabRuntime) and the reducer that owns the queue refuse it. */
+function isQueuedSendable(item: QueuedSend): boolean {
+  return Boolean(item.text.trim()) || Boolean(item.images && item.images.length > 0);
+}
+
+/** The queued item a caller's handoff becomes: bare text, or a send whose own
+ *  attachments a fresh handoff replaces. */
+function queuedFrom(sendOrText: string | QueuedSend, images?: QueuedSend["images"]): QueuedSend {
+  const attached = images && images.length > 0 ? images : undefined;
+  return typeof sendOrText === "string"
+    ? { text: sendOrText, ...(attached ? { images: attached } : {}) }
+    : { ...sendOrText, ...(attached ? { images: attached } : {}) };
+}
 
 type State = {
   ready: boolean;
@@ -674,7 +690,6 @@ type Action =
   | { t: "enqueue_send"; send?: QueuedSend | string; text?: string }
   | { t: "dequeue_send"; index: number }
   | { t: "promote_queued_send"; index: number }
-  | { t: "shift_queued_send" }
   | { t: "clear_queued_sends" }
   | { t: "settings_patch"; patch: SettingsPatch }
   | { t: "workspace_recent_removed"; path: string }
@@ -1452,9 +1467,7 @@ export function reduceAction(state: State, action: Action): State {
             ? { text: action.send }
             : action.send
           : { text: action.text ?? "" };
-      // A blank item would sit at the head forever: the drain has nothing to
-      // send and the queue never advances. Refuse it at the door.
-      if (!item.text.trim() && !(item.images && item.images.length > 0)) return state;
+      if (!isQueuedSendable(item)) return state;
       return { ...state, queuedSends: [...state.queuedSends, item] };
     }
     case "dequeue_send":
@@ -1470,8 +1483,6 @@ export function reduceAction(state: State, action: Action): State {
         queuedSends: [promoted, ...state.queuedSends.filter((_, i) => i !== action.index)],
       };
     }
-    case "shift_queued_send":
-      return { ...state, queuedSends: state.queuedSends.slice(1) };
     case "clear_queued_sends": {
       // Stop ends the conversation the queue was typed into, so its sends are dropped
       // rather than drained. With a turn in flight the notice waits for its settle:
@@ -2389,7 +2400,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // the next queued message would be pushed into the turn that is only now
       // starting. The watchdog's stale-ack timer owns releasing a send that
       // truly never started.
-      if (!state.busy) return { ...state, compacting: false };
+      if (!state.busy) return state.compacting ? { ...state, compacting: false } : state;
       // Daemon idle while the UI held a turn: a terminal event was lost.
       // Release exactly like $turn_complete would, plus a warning notice so
       // the correction is visible.
@@ -4233,42 +4244,55 @@ const TabRuntime = memo(function TabRuntime({
     ],
   );
 
-  /** The queue's only writer: parks a message (text and/or attachments) and
-   *  clears the composer, so a send the session cannot take yet is never lost
-   *  and never lingers as a draft the user thinks was thrown away. */
-  const queueSend = useCallback(
-    (sendOrText?: string | QueuedSend, images?: QueuedSend["images"]) => {
-      const attached = images && images.length > 0 ? images : undefined;
-      const item: QueuedSend =
-        sendOrText === undefined
-          ? {
-              text: draftStore.getSnapshot(),
-              ...(pendingImages.length > 0 ? { images: pendingImages } : {}),
-            }
-          : typeof sendOrText === "string"
-            ? { text: sendOrText, ...(attached ? { images: attached } : {}) }
-            : { ...sendOrText, ...(attached ? { images: attached } : {}) };
-      if (!item.text.trim() && !(item.images && item.images.length > 0)) return;
-      dispatch({ t: "enqueue_send", send: item });
+  /** The item the composer currently holds: its draft and attachments. */
+  const composerItem = useCallback(
+    (): QueuedSend => ({
+      text: draftStore.getSnapshot(),
+      ...(pendingImages.length > 0 ? { images: pendingImages } : {}),
+    }),
+    [draftStore, pendingImages],
+  );
+
+  /** The queue's only writer; false when there is nothing sendable to park. */
+  const enqueueQueued = useCallback((item: QueuedSend): boolean => {
+    if (!isQueuedSendable(item)) return false;
+    dispatch({ t: "enqueue_send", send: item });
+    return true;
+  }, []);
+
+  /** Parks what the composer handed over (the box's own draft and attachments
+   *  when the call brings none) and clears both, so a send the session cannot
+   *  take yet never stays behind in the box looking unsent. */
+  const queueFromComposer = useCallback(
+    (sendOrText?: string | QueuedSend, images?: QueuedSend["images"]): boolean => {
+      const item = sendOrText === undefined ? composerItem() : queuedFrom(sendOrText, images);
+      if (!enqueueQueued(item)) return false;
       setDraft("");
       setPendingImages([]);
+      return true;
     },
-    [draftStore, setDraft, pendingImages],
+    [composerItem, enqueueQueued, setDraft],
   );
 
   /** Every composer submit funnels through here. Idle sends go out now; anything
    *  the session cannot take (a turn, a fold, an unacknowledged send, a session
    *  mutation in flight) is queued instead of being dropped on the floor, which
-   *  is how a typed message used to disappear with the composer uncleared. */
+   *  is how a typed message used to disappear with the composer uncleared. A
+   *  suggestion or retry carries its own text, so parking it leaves whatever the
+   *  user is still typing in the box alone. */
   const submitSend = useCallback(
     (sendOrText?: string | QueuedSend) => {
+      const park = () => {
+        if (sendOrText === undefined) queueFromComposer();
+        else enqueueQueued(queuedFrom(sendOrText));
+      };
       if (engaged || !sessionListSettled) {
-        queueSend(sendOrText);
+        park();
         return;
       }
-      if (send(sendOrText) === "blocked") queueSend(sendOrText);
+      if (send(sendOrText) === "blocked") park();
     },
-    [engaged, sessionListSettled, queueSend, send],
+    [engaged, sessionListSettled, queueFromComposer, enqueueQueued, send],
   );
 
   const abort = useCallback(() => {
@@ -4314,17 +4338,30 @@ const TabRuntime = memo(function TabRuntime({
 
   useEffect(() => {
     // The queue's only drain: ONE message per idle edge, strictly FIFO, and only
-    // once the session is genuinely idle — a turn OR a fold OR an unacknowledged
-    // send keeps it parked. The head leaves the queue only after the dispatcher
+    // once the session is genuinely idle (a turn OR a fold OR an unacknowledged
+    // send keeps it parked). The head leaves the queue only after the dispatcher
     // gave a definitive answer, so a blocked send is retried on the next idle
     // edge instead of vanishing, and the rest of the queue waits for this
     // message's turn to finish rather than racing it.
     if (engaged || !state.ready || !sessionListSettled) return;
     const next = state.queuedSends[0];
     if (!next) return;
-    const outcome = send(next);
-    if (outcome === "sent") dispatch({ t: "shift_queued_send" });
-    else if (outcome === "empty") dispatch({ t: "dequeue_send", index: 0 });
+    let drop = false;
+    try {
+      drop = send(next) !== "blocked";
+    } catch (err) {
+      // A throw in an effect takes the whole chat down, and retrying the same
+      // message would rethrow on every idle edge: drop the poison item and say
+      // so, so the rest of the queue keeps draining.
+      recordFrontendFailure("frontend.queued_send_failed", err);
+      dispatch({
+        t: "push_notice",
+        text: `A queued message could not be sent (${messageOf(err)}): ${next.text.slice(0, 200)}`,
+        severity: "error",
+      });
+      drop = true;
+    }
+    if (drop) dispatch({ t: "dequeue_send", index: 0 });
   }, [engaged, sessionListSettled, state.ready, state.queuedSends, send]);
 
   useEffect(() => {
@@ -5206,7 +5243,7 @@ const TabRuntime = memo(function TabRuntime({
                         ) : null}
                         {view.messages.length === 0 ? (
                           <EmptyState
-                            onPick={(text) => submitSend(text)}
+                            onPick={submitSend}
                             workspaceDir={state.settings?.workspaceDir}
                           />
                         ) : null}
@@ -5336,7 +5373,7 @@ const TabRuntime = memo(function TabRuntime({
 
               <Composer
                 draftStore={draftStore}
-                onSend={(text) => submitSend(text)}
+                onSend={submitSend}
                 quickSends={allQuickSends(state.settings?.quickSends ?? [])}
                 activeQuickSendId={activeQuickSend.id}
                 onPickQuickSend={(id) => saveSettings({ quickSendId: id })}
@@ -5395,25 +5432,16 @@ const TabRuntime = memo(function TabRuntime({
                 onEditModeChange={applyEditMode}
                 workspaceDir={state.settings?.workspaceDir}
                 queuedSends={state.queuedSends}
-                onQueueWhileBusy={(sendOrText, images) => queueSend(sendOrText, images)}
+                onQueueWhileBusy={queueFromComposer}
                 onDequeueSend={(index) => dispatch({ t: "dequeue_send", index })}
                 onEditQueuedSend={(index) => {
                   const item = state.queuedSends[index];
                   if (!item) return;
                   dispatch({ t: "dequeue_send", index });
                   // Bringing a message back to edit must not destroy an
-                  // in-progress draft: re-queue whatever the composer already
-                  // holds (text and/or attached images) before restoring.
-                  const draft = draftStore.getSnapshot();
-                  if (draft.trim() || pendingImages.length > 0) {
-                    dispatch({
-                      t: "enqueue_send",
-                      send: {
-                        text: draft,
-                        ...(pendingImages.length > 0 ? { images: pendingImages } : {}),
-                      },
-                    });
-                  }
+                  // in-progress draft: park whatever the composer already holds
+                  // (text and/or attachments) before restoring this one.
+                  enqueueQueued(composerItem());
                   setDraft(item.text);
                   setPendingImages(
                     (item.images ?? []).filter(

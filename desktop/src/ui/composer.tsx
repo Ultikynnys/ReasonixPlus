@@ -586,6 +586,9 @@ export function Composer({
     if (composingRef.current || Date.now() - compositionEndedAtRef.current < 50) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      // A held Enter repeats before the cleared draft re-renders, which would park
+      // (or send) the same message once per repeat.
+      if (e.repeat) return;
       submitDraft();
     }
   };

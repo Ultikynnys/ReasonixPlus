@@ -162,6 +162,27 @@ describe("Composer queued-sends row", () => {
     const chip = document.querySelector(".composer-queue-chip");
     expect(chip?.getAttribute("title")).toBe("commit and push all changes");
   });
+
+  it("ignores the auto-repeat of a held Enter, so one press parks one message", () => {
+    const onQueueWhileBusy = vi.fn();
+
+    render(
+      <Composer
+        {...baseProps}
+        busy={true}
+        draft="typed once"
+        onQueueWhileBusy={onQueueWhileBusy}
+      />,
+    );
+
+    const textarea = document.querySelector("textarea")!;
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    // The key keeps repeating until the cleared draft re-renders.
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false, repeat: true });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false, repeat: true });
+
+    expect(onQueueWhileBusy).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Composer queued-chip edit affordance", () => {

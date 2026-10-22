@@ -81,11 +81,12 @@ export interface ChatMessage {
   /** Must round-trip in tool-loop continuations — thinking mode 400s without it. */
   reasoning_content?: string | null;
   /** Machine-generated user record (mid-turn steer, premature-stop nudge). Persisted for
-   *  model replay, but never counted as a turn ordinal and never rendered as a user bubble. */
+   *  model replay, but never counted as a turn ordinal, never rendered as a user bubble,
+   *  and stripped at the wire boundary. */
   synthetic?: boolean;
   /** Machine-generated user record carrying a tool's image payload. It counts as a
-   *  turn ordinal like a typed prompt, but nobody wrote it, so the Events tab
-   *  lists prompts only. */
+   *  turn ordinal like a typed prompt, but nobody wrote it, so the Events tab lists
+   *  prompts only. Stripped at the wire boundary. */
   injected?: boolean;
   /** When the record was written (epoch ms). Transcript metadata for the Events
    *  tab's timeline; stripped at the wire boundary, so no provider ever sees it. */
