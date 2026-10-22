@@ -1,7 +1,7 @@
 {
   "name": "reasonix-plus-desktop",
   "private": true,
-  "version": "1.0.109",
+  "version": "1.0.110",
   "type": "module",
   "os": [
     "win32"
