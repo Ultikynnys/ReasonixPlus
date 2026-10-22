@@ -18,6 +18,7 @@ import type { WarningCause } from "../loop/types.js";
 import { applyProjectMemory } from "../memory/project.js";
 import { ImmutablePrefix } from "../memory/runtime.js";
 import { timestampSuffix } from "../memory/session.js";
+import { OPENCODE_REQUIRED_TOOL } from "../opencode-identity.js";
 import {
   NEGATIVE_CLAIM_RULE,
   TUI_FORMATTING_RULES,
@@ -366,7 +367,11 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   const childTools = opts.allowedTools
     ? forkRegistryWithAllowList(
         opts.parentRegistry,
-        new Set(opts.allowedTools),
+        new Set(
+          opts.parentRegistry.has(OPENCODE_REQUIRED_TOOL)
+            ? [...opts.allowedTools, OPENCODE_REQUIRED_TOOL]
+            : opts.allowedTools,
+        ),
         NEVER_INHERITED_TOOLS,
       )
     : forkRegistryExcluding(opts.parentRegistry, NEVER_INHERITED_TOOLS);

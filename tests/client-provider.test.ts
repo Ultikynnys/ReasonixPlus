@@ -2635,29 +2635,51 @@ describe("client-models", () => {
 });
 
 describe("client-opencode-session", () => {
-  /** 200 chat-completions response; captures the request headers per call. */
+  /** Captures request headers and bodies per call, answering SSE when the
+   *  request streams (opencode `chat` always does) and JSON otherwise. */
   function headerCapturingFetch(): {
     fetch: typeof fetch;
     headers: () => Array<Record<string, string>>;
+    bodies: () => Array<Record<string, unknown>>;
   } {
     const seen: Array<Record<string, string>> = [];
-    const fn = vi.fn(async (_url: unknown, init?: { headers?: Record<string, string> }) => {
-      seen.push({ ...(init?.headers ?? {}) });
-      return new Response(
-        JSON.stringify({
-          choices: [
-            { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
-          ],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }) as unknown as typeof fetch;
-    return { fetch: fn, headers: () => seen };
+    const bodies: Array<Record<string, unknown>> = [];
+    const fn = vi.fn(
+      async (_url: unknown, init?: { headers?: Record<string, string>; body?: unknown }) => {
+        seen.push({ ...(init?.headers ?? {}) });
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        bodies.push(body);
+        if (!body.stream) {
+          return new Response(
+            JSON.stringify({
+              choices: [
+                { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+              ],
+              usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        const frames = [
+          { choices: [{ index: 0, delta: { content: "ok" }, finish_reason: null }] },
+          { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        ]
+          .map(
+            (f) =>
+              `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", ...f })}\n\n`,
+          )
+          .join("");
+        return new Response(`${frames}data: [DONE]\n\n`, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      },
+    ) as unknown as typeof fetch;
+    return { fetch: fn, headers: () => seen, bodies: () => bodies };
   }
 
-  describe("OpenCode session headers (opencode.ai/docs/go)", () => {
-    it("sends x-opencode-session and a reasonix User-Agent on opencode requests", async () => {
+  describe("OpenCode harness identity (opencode.ai/docs/go)", () => {
+    it("stamps the whole OpenCode identity on opencode requests", async () => {
       const { fetch, headers } = headerCapturingFetch();
       const client = new DeepSeekClient({
         apiKey: "public",
@@ -2677,9 +2699,20 @@ describe("client-opencode-session", () => {
 
       expect(headers().length).toBe(2);
       for (const h of headers()) {
-        expect(h["x-opencode-session"]).toBe("desktop-17123456789012-3");
-        expect(h["User-Agent"]).toMatch(/^reasonix\//);
+        // A conversation id is hashed into the `ses_` shape rather than sent raw.
+        const session = h["x-opencode-session"];
+        expect(session).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+        expect(session).not.toContain("desktop-");
+        expect(h["x-opencode-session-id"]).toBe(session);
+        expect(h["x-session-affinity"]).toBe(session);
+        expect(h["X-Session-Id"]).toBe(session);
+        expect(h["x-opencode-client"]).toBe("cli");
+        expect(h["x-opencode-project"]).toMatch(/^[0-9a-f]{40}$/);
+        expect(h["User-Agent"]).toMatch(/^opencode\/[a-z]+\/[\d.]+\/cli$/);
       }
+      // Same conversation → same id on both requests, so provider routing and
+      // prompt caching stay pinned to it.
+      expect(headers()[0]?.["x-opencode-session"]).toBe(headers()[1]?.["x-opencode-session"]);
     });
 
     it("generates one stable session id per client when none is configured", async () => {
@@ -2700,6 +2733,171 @@ describe("client-opencode-session", () => {
       expect(first?.["x-opencode-session"]).not.toBe("desktop-17123456789012-3");
     });
 
+    it("streams even on the non-streaming path, and advertises `read` when tool-less", async () => {
+      const { fetch, bodies } = headerCapturingFetch();
+      const client = new DeepSeekClient({
+        apiKey: "public",
+        baseUrl: "https://opencode.ai/zen/v1",
+        allowMissingKey: true,
+        fetch,
+      });
+
+      // `chat()` is the non-streaming API, but the gateway refuses a non-streamed request.
+      const reply = await client.chat({
+        model: "deepseek-v4.1-flash-free",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      expect(reply.content).toBe("ok");
+      expect(bodies()[0]?.stream).toBe(true);
+      // A tool-less body is refused too, so `read` rides along on its own.
+      const tools = bodies()[0]?.tools as Array<{ function: { name: string } }>;
+      expect(tools.map((t) => t.function.name)).toEqual(["read"]);
+    });
+
+    it("adds `read` to a caller tool list that lacks the required alias", async () => {
+      const { fetch, bodies } = headerCapturingFetch();
+      const client = new DeepSeekClient({
+        apiKey: "public",
+        baseUrl: "https://opencode.ai/zen/v1",
+        allowMissingKey: true,
+        fetch,
+      });
+
+      await client.chat({
+        model: "deepseek-v4.1-flash-free",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [
+          {
+            type: "function",
+            function: { name: "read_file", description: "d", parameters: { type: "object" } },
+          },
+        ],
+      });
+
+      const tools = bodies()[0]?.tools as Array<{ function: { name: string } }>;
+      expect(tools.map((t) => t.function.name)).toEqual(["read_file", "read"]);
+    });
+
+    it("does not duplicate a supplied `read` tool", async () => {
+      const { fetch, bodies } = headerCapturingFetch();
+      const client = new DeepSeekClient({
+        apiKey: "public",
+        baseUrl: "https://opencode.ai/zen/v1",
+        allowMissingKey: true,
+        fetch,
+      });
+      const read = {
+        type: "function" as const,
+        function: { name: "read", description: "d", parameters: { type: "object" } },
+      };
+
+      await client.chat({
+        model: "deepseek-v4.1-flash-free",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [read],
+      });
+
+      expect(bodies()[0]?.tools).toEqual([read]);
+    });
+
+    it("preserves text and image content in an admitted streamed payload", async () => {
+      const { fetch, bodies } = headerCapturingFetch();
+      const client = new DeepSeekClient({
+        apiKey: "public",
+        baseUrl: "https://opencode.ai/zen/v1",
+        allowMissingKey: true,
+        fetch,
+      });
+      const image = "data:image/png;base64,iVBORw0KGgo=";
+
+      const reply = await client.chat({
+        model: "deepseek-v4.1-flash-free",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Describe this image." },
+              { type: "image_url", image_url: { url: image, detail: "low" } },
+            ],
+          },
+        ],
+      });
+
+      expect(reply.content).toBe("ok");
+      const body = bodies()[0];
+      expect(body?.stream).toBe(true);
+      expect(body?.messages).toEqual([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Describe this image." },
+            { type: "image_url", image_url: { url: image, detail: "low" } },
+          ],
+        },
+      ]);
+      const tools = body?.tools as Array<{ function: { name: string } }>;
+      expect(tools.map((tool) => tool.function.name)).toEqual(["read"]);
+    });
+
+    it("reconstructs tool calls from the OpenCode streaming collector", async () => {
+      const frames = [
+        `data: ${JSON.stringify({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call-1",
+                    type: "function",
+                    function: { name: "read", arguments: '{"path' },
+                  },
+                ],
+              },
+            },
+          ],
+        })}\n\n`,
+        `data: ${JSON.stringify({
+          choices: [
+            {
+              index: 0,
+              delta: { tool_calls: [{ index: 0, function: { arguments: '":"a.txt"}' } }] },
+              finish_reason: "tool_calls",
+            },
+          ],
+        })}\n\n`,
+        "data: [DONE]\n\n",
+      ];
+      const fetch = vi.fn(
+        async () =>
+          new Response(new TextEncoder().encode(frames.join("")), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+      ) as unknown as typeof globalThis.fetch;
+      const client = new DeepSeekClient({
+        apiKey: "public",
+        baseUrl: "https://opencode.ai/zen/v1",
+        allowMissingKey: true,
+        fetch,
+      });
+
+      const reply = await client.chat({
+        model: "deepseek-v4.1-flash-free",
+        messages: [{ role: "user", content: "read a file" }],
+      });
+
+      expect(reply.toolCalls).toEqual([
+        {
+          id: "call-1",
+          type: "function",
+          function: { name: "read", arguments: '{"path":"a.txt"}' },
+        },
+      ]);
+    });
+
     it("does not send the session header for non-opencode providers", async () => {
       const { fetch, headers } = headerCapturingFetch();
       const client = new DeepSeekClient({
@@ -2713,6 +2911,7 @@ describe("client-opencode-session", () => {
       });
 
       expect(headers()[0]?.["x-opencode-session"]).toBeUndefined();
+      expect(headers()[0]?.["x-opencode-client"]).toBeUndefined();
       expect(headers()[0]?.["User-Agent"]).toBeUndefined();
     });
 
@@ -2775,30 +2974,41 @@ describe("client-opencode-session", () => {
       });
     }
 
-    it("reads cache hits from prompt_tokens_details.cached_tokens (non-streaming)", async () => {
-      const fetch = vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              choices: [
-                { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
-              ],
-              usage: {
-                prompt_tokens: 1000,
-                completion_tokens: 20,
-                total_tokens: 1020,
-                prompt_tokens_details: { cached_tokens: 800 },
-              },
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-      ) as unknown as typeof fetch;
+    it("reads cache hits from prompt_tokens_details.cached_tokens via chat()", async () => {
+      // chat() streams under the hood for opencode (the gateway refuses otherwise),
+      // so the frame carrying usage is the last SSE event.
+      const frames = [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+        `data: ${JSON.stringify({
+          choices: [{ finish_reason: "stop", delta: {} }],
+          usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 20,
+            total_tokens: 1020,
+            prompt_tokens_details: { cached_tokens: 800 },
+          },
+        })}\n\n`,
+        "data: [DONE]\n\n",
+      ];
+      const fetch = vi.fn(async () => {
+        const stream = new ReadableStream({
+          start(controller) {
+            for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame));
+            controller.close();
+          },
+        });
+        return new Response(stream, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }) as unknown as typeof fetch;
 
       const res = await opencodeClient(fetch).chat({
         model: "glm-5-free",
         messages: [{ role: "user", content: "hi" }],
       });
 
+      expect(res.content).toBe("ok");
       expect(res.usage.promptTokens).toBe(1000);
       expect(res.usage.promptCacheHitTokens).toBe(800);
       expect(res.usage.promptCacheMissTokens).toBe(200);

@@ -58,11 +58,12 @@ import { FONT_FAMILY, FONT_SCALE, type FontFamily, type FontScale } from "../the
 import { AudioRecorder } from "../voice/audio-recorder";
 import {
   type AudioInputDevice,
+  getCachedAudioInputDevices,
   getSelectedAudioInputDeviceId,
-  hasMicrophonePermission,
   listAudioInputDevices,
   requestMicrophoneAccess,
   resolveSelectedDeviceId,
+  setCachedAudioInputDevices,
   setSelectedAudioInputDeviceId,
 } from "../voice/device";
 import {
@@ -891,49 +892,29 @@ export function VoiceInputSettings() {
  * record/playback test are shown.
  */
 function AudioInputDevicePicker() {
-  const [devices, setDevices] = useState<AudioInputDevice[]>([]);
+  const [initialState] = useState(() => {
+    const cachedDevices = getCachedAudioInputDevices();
+    return {
+      devices: cachedDevices ?? [],
+      phase: cachedDevices ? "ready" : "consent",
+    } as const;
+  });
+  const [devices, setDevices] = useState<AudioInputDevice[]>(initialState.devices);
   const [selected, setSelected] = useState<string>(() => getSelectedAudioInputDeviceId());
   const [error, setError] = useState<string | null>(null);
-  const [phase, setPhase] = useState<"consent" | "ready">("consent");
+  const [phase, setPhase] = useState<"consent" | "ready">(initialState.phase);
   const [granting, setGranting] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const list = await listAudioInputDevices();
       setDevices(list);
+      setCachedAudioInputDevices(list);
       setError(null);
     } catch (err) {
       setError(messageOf(err));
     }
   }, []);
-
-  // Promote to "ready" on mount only when permission was already granted. The
-  // Permissions API touches no media hardware, so this is safe before a gesture;
-  // the enumeration itself is deferred to the ready-phase effect below.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (await hasMicrophonePermission()) {
-        if (!cancelled) setPhase("ready");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Enumerate only once permission is granted (never on mount before consent,
-  // which in WebView2 surfaces video/webcam devices to the OS media stack and is
-  // flagged by Windows privacy tools). Re-enumerate on hotplug while ready.
-  useEffect(() => {
-    if (phase !== "ready") return;
-    void refresh();
-    if (typeof navigator !== "undefined" && navigator?.mediaDevices?.addEventListener) {
-      const onChange = () => void refresh();
-      navigator.mediaDevices.addEventListener("devicechange", onChange);
-      return () => navigator.mediaDevices.removeEventListener("devicechange", onChange);
-    }
-  }, [phase, refresh]);
 
   // Reconcile the stored selection once the live list arrives: device ids can
   // change across settings reopen in WebView2, so re-match by label and
@@ -950,6 +931,7 @@ function AudioInputDevicePicker() {
     setError(null);
     try {
       await requestMicrophoneAccess();
+      await refresh();
       setPhase("ready");
     } catch (err) {
       setError(messageOf(err));
@@ -996,6 +978,9 @@ function AudioInputDevicePicker() {
               </option>
             ))}
           </select>
+          <button type="button" className="btn small" onClick={() => void refresh()}>
+            {t("settings.voiceInputDeviceRefresh")}
+          </button>
           <AudioInputDeviceTest deviceId={selected} />
         </>
       )}

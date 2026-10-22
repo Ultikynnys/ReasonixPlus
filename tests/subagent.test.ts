@@ -891,6 +891,119 @@ describe("spawnSubagent allowedTools", () => {
     expect(parent.has("shell")).toBe(true);
   });
 
+  it("keeps `read` alongside a narrow allow-list that only names `read_file`", async () => {
+    const parent = new ToolRegistry();
+    parent.register({ name: "read_file", fn: () => "content" });
+    parent.register({ name: "read", fn: () => "content" });
+    parent.register({ name: "write", fn: () => "w" });
+
+    const seen: string[][] = [];
+    const client = new DeepSeekClient({
+      apiKey: "public",
+      baseUrl: "https://opencode.ai/zen/v1",
+      allowMissingKey: true,
+      fetch: vi.fn(async (_url: never, init: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        seen.push(
+          ((body.tools ?? []) as Array<{ function: { name: string } }>).map((t) => t.function.name),
+        );
+        const frames = [
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "fine" } }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+          "data: [DONE]\n\n",
+        ];
+        return new Response(new TextEncoder().encode(frames.join("")), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }) as never,
+    });
+
+    await spawnSubagent({
+      client,
+      parentRegistry: parent,
+      system: "test",
+      task: "test",
+      model: "deepseek-v4.1-flash-free",
+      allowedTools: ["read_file"],
+    });
+
+    expect(seen[0]).toContain("read_file");
+    expect(seen[0]).toContain("read");
+    expect(seen[0]).not.toContain("write");
+  });
+
+  it("makes the OpenCode `read` alias dispatchable from a shell-only allow-list", async () => {
+    const parent = new ToolRegistry();
+    const dispatched: string[] = [];
+    parent.register({
+      name: "read",
+      fn: (args: { path: string }) => {
+        dispatched.push(args.path);
+        return "file contents";
+      },
+    });
+    parent.register({ name: "run_command", fn: () => "shell result" });
+    parent.register({ name: "write_file", fn: () => "must stay hidden" });
+
+    const seen: string[][] = [];
+    let calls = 0;
+    const client = new DeepSeekClient({
+      apiKey: "public",
+      baseUrl: "https://opencode.ai/zen/v1",
+      allowMissingKey: true,
+      fetch: vi.fn(async (_url: never, init: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        seen.push(
+          ((body.tools ?? []) as Array<{ function: { name: string } }>).map(
+            (tool) => tool.function.name,
+          ),
+        );
+        calls += 1;
+        const frame =
+          calls === 1
+            ? {
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      tool_calls: [
+                        {
+                          index: 0,
+                          id: "read-1",
+                          type: "function",
+                          function: { name: "read", arguments: '{"path":"a.txt"}' },
+                        },
+                      ],
+                    },
+                    finish_reason: "tool_calls",
+                  },
+                ],
+              }
+            : { choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }] };
+        return new Response(
+          new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\ndata: [DONE]\n\n`),
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        );
+      }) as never,
+    });
+
+    const result = await spawnSubagent({
+      client,
+      parentRegistry: parent,
+      system: "test",
+      task: "test",
+      model: "deepseek-v4.1-flash-free",
+      allowedTools: ["run_command"],
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("done");
+    expect(dispatched).toEqual(["a.txt"]);
+    expect(seen[0]).toEqual(expect.arrayContaining(["run_command", "read"]));
+    expect(seen[0]).not.toContain("write_file");
+  });
+
   it("returns a structured error when allow-list names a tool the parent does not have", async () => {
     const parent = new ToolRegistry();
     parent.register({ name: "read", fn: () => "read result" });

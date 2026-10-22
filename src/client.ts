@@ -30,6 +30,11 @@ import { createLogger } from "./logging.js";
 import { messageText } from "./loop/messages.js";
 import { showPayloadContextLength, showPayloadThinking } from "./ollama-model-map.js";
 import { type OllamaThinkingCapability, recordOllamaThinking } from "./ollama-thinking.js";
+import {
+  opencodeIdentityHeaders,
+  opencodeSessionId,
+  withOpencodeRequiredTool,
+} from "./opencode-identity.js";
 import { type ReasoningControl, reasoningControl } from "./reasoning-control.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { buildResponsesPayload } from "./responses-api.js";
@@ -37,7 +42,6 @@ import { type RetryOptions, fetchWithRetryProgress } from "./retry.js";
 import { DEFAULT_CONTEXT_TOKENS } from "./telemetry/stats.js";
 import { estimateRequestTokens } from "./tokenizer.js";
 import type { ChatMessage, ChatRequestOptions, RawUsage, ToolCall, ToolSpec } from "./types.js";
-import { VERSION } from "./version.js";
 
 const log = createLogger("client");
 
@@ -634,7 +638,8 @@ export class DeepSeekClient {
   readonly baseUrl: string;
   readonly timeoutMs: number;
   readonly retry: RetryOptions;
-  /** Conversation identity for OpenCode's session-routing header; null → lazily generated uuid. */
+  /** Conversation identity behind the OpenCode session headers; null → a uuid.
+   *  Either way it is hashed into the `ses_…` shape the gateway expects. */
   readonly sessionId: string | null;
   private readonly _fetch: typeof fetch;
   private readonly minChatIntervalMs: number;
@@ -767,9 +772,8 @@ export class DeepSeekClient {
    *  (see prepareRequest); it stays fixed for prompt-cache routing stability. */
   private resolveOpencodeSessionId(): string {
     if (this.opencodeSessionOverride) return this.opencodeSessionOverride;
-    if (this.sessionId) return this.sessionId;
     this._generatedSessionId ??= randomUUID();
-    return this._generatedSessionId;
+    return opencodeSessionId(this.sessionId ?? this._generatedSessionId);
   }
 
   /** True for the OpenCode Go gateway's opaque session-routing 400, whose body
@@ -847,12 +851,13 @@ export class DeepSeekClient {
     } else {
       Object.assign(headers, await this.authHeaders());
     }
-    // OpenCode Go routes and prompt-caches per conversation and asks clients to
-    // identify themselves (opencode.ai/docs/go). ??= lets an explicitly
-    // configured transport header win over both defaults.
+    // OpenCode is told apart from other harnesses by request identity alone, and
+    // its keyless free tier admits only traffic that carries OpenCode's own
+    // markers — so a request for an opencode model introduces itself as one.
+    // ??= lets an explicitly configured transport header win over every default.
     if (providerForModel(opts.model) === "opencode") {
-      headers["x-opencode-session"] ??= this.resolveOpencodeSessionId();
-      headers["User-Agent"] ??= `reasonix/${VERSION}`;
+      const identity = opencodeIdentityHeaders(this.resolveOpencodeSessionId(), process.cwd());
+      for (const [name, value] of Object.entries(identity)) headers[name] ??= value;
       // A Console session token is org-scoped: without this header the gateway
       // can't resolve the org and answers 401 "Invalid API key". A static API
       // key has no org, so the resolver returns undefined and we omit it.
@@ -928,7 +933,7 @@ export class DeepSeekClient {
       if (providerForModel(opts.model) === "opencode") {
         for (let attempt = 0; attempt < 3; attempt += 1) {
           if (!(await this.isOpencodeSessionRejection(resp))) break;
-          this.opencodeSessionOverride = `reasonix-${randomUUID().replace(/-/g, "")}`;
+          this.opencodeSessionOverride = opencodeSessionId(randomUUID());
           headers["x-opencode-session"] = this.opencodeSessionOverride;
           log.verbose(
             `opencode 400 on ${endpoint} — retrying with a fresh session id (attempt ${attempt + 1})`,
@@ -1078,7 +1083,11 @@ export class DeepSeekClient {
       // stale assumptions) and wasted (serial dispatch would just queue them).
       payload.parallel_tool_calls = false;
     }
-    if (opts.tools?.length) payload.tools = opts.tools;
+    if (provider === "opencode") {
+      payload.tools = withOpencodeRequiredTool(opts.tools);
+    } else if (opts.tools?.length) {
+      payload.tools = opts.tools;
+    }
     if (opts.temperature !== undefined) payload.temperature = opts.temperature;
     if (opts.maxTokens !== undefined) payload.max_tokens = opts.maxTokens;
     if (opts.responseFormat) payload.response_format = opts.responseFormat;
@@ -1232,6 +1241,12 @@ export class DeepSeekClient {
     // collector when needed, matching what the main turn loop already does.
     const transport = await this.resolveTransport();
     if (transport?.api === "responses") {
+      return this.chatViaStream(opts);
+    }
+    // The opencode gateway only admits agent-shaped traffic and reads the tool
+    // list to decide, so a non-streamed, tool-less request would be refused —
+    // compaction and side questions go through the streaming collector instead.
+    if (providerForModel(opts.model) === "opencode") {
       return this.chatViaStream(opts);
     }
     if (providerForModel(opts.model) === "ollama") {

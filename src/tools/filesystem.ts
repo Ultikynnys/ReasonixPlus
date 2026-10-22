@@ -312,8 +312,8 @@ export function registerFilesystemTools(
     }
   }
 
-  registry.register({
-    name: "read_file",
+  /** Shared by `read_file` and its `read` alias: same schema, same handler. */
+  const readTool = {
     parallelSafe: true,
     skipTruncationSave: true,
     description: `Read a file. Relative paths resolve under the sandbox root; a true absolute path outside it requires user approval. A leading / or \\ is treated as sandbox-root-relative. Default returns FULL CONTENT for files ≤ ${Math.round(DEFAULT_OUTLINE_THRESHOLD_BYTES / 1024)} KiB. Optional scoping: head/tail (N lines), range "A-B" (1-indexed inclusive). Larger files auto-switch to outline mode (metadata + head + symbol outline for TS/JS/Python/Go/Rust/Markdown/Protobuf/text): drill in with range or search_content. Scoped reads (range/head/tail) stream a bounded window and work at any size; only an unscoped read of a file over ${Math.round(hardMaxFileBytes / (1024 * 1024))} MiB is refused, and binaries are refused. Use get_file_info for stat.`,
@@ -468,7 +468,11 @@ export function registerFilesystemTools(
         await fh.close();
       }
     },
-  });
+  };
+  registry.register({ name: "read_file", ...readTool });
+  // `read` is OpenCode's name for this tool, and the opencode.ai free tier only
+  // admits requests whose tool list carries it.
+  registry.register({ name: "read", ...readTool });
 
   registry.register({
     name: "list_directory",

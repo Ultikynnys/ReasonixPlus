@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "../App";
 import { MailProvider } from "../protocol";
 import { AudioRecorder } from "../voice/audio-recorder";
+import { setCachedAudioInputDevices } from "../voice/device";
 import { markVoiceModelDownloaded, setActiveVoiceModelId } from "../voice/models";
 import { speechTranscriber } from "../voice/transcriber";
 import { AudioInputDeviceTest, SettingsModal, VoiceInputSettings } from "./settings";
@@ -366,20 +367,93 @@ describe("VoiceInputSettings: microphone", () => {
     expect(select.value).toBe("mic-2");
   });
 
-  it("shows the list immediately when permission was already granted", async () => {
-    Object.defineProperty(navigator, "permissions", {
-      value: { query: vi.fn().mockResolvedValue({ state: "granted" }) },
+  it("persists microphone setup across an app relaunch without another WebView2 probe", async () => {
+    const enumerateDevices = vi.fn().mockResolvedValue([
+      { kind: "audioinput", deviceId: "mic-1", label: "Built-in Microphone" },
+      { kind: "audioinput", deviceId: "mic-2", label: "USB Headset" },
+    ]);
+    const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] });
+    Object.defineProperty(navigator, "mediaDevices", {
+      value: {
+        enumerateDevices,
+        getUserMedia,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
       configurable: true,
     });
-    localStorage.setItem("reasonix.voiceInputDevice", "mic-1");
+
+    const firstLaunch = render(<VoiceInputSettings />);
+    await grantConsent();
+    expect(localStorage.getItem("reasonix.voiceInputDevices")).toContain("USB Headset");
+    firstLaunch.unmount();
+    enumerateDevices.mockClear();
+    getUserMedia.mockClear();
+
     render(<VoiceInputSettings />);
 
-    const select = (await screen.findByRole("combobox")) as HTMLSelectElement;
-    await waitFor(() => {
-      expect(Array.from(select.options).map((o) => o.textContent)).toContain("Built-in Microphone");
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toContain("USB Headset");
+    expect(enumerateDevices).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("restores cached microphones when Settings reopens without probing WebView2", () => {
+    const query = vi.fn().mockResolvedValue({ state: "granted" });
+    const enumerateDevices = vi.fn().mockResolvedValue([]);
+    const getUserMedia = vi.fn();
+    setCachedAudioInputDevices([
+      { deviceId: "mic-1", label: "Built-in Microphone" },
+      { deviceId: "mic-2", label: "USB Headset" },
+    ]);
+    localStorage.setItem("reasonix.voiceInputDevice", "mic-2");
+    Object.defineProperty(navigator, "permissions", {
+      value: { query },
+      configurable: true,
     });
-    expect(select.value).toBe("mic-1");
-    expect(screen.queryByRole("button", { name: /allow microphone recording/i })).toBeNull();
+    Object.defineProperty(navigator, "mediaDevices", {
+      value: {
+        enumerateDevices,
+        getUserMedia,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+      configurable: true,
+    });
+
+    const firstVisit = render(<VoiceInputSettings />);
+    firstVisit.unmount();
+    render(<VoiceInputSettings />);
+
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toContain("USB Headset");
+    expect(select.value).toBe("mic-2");
+    expect(query).not.toHaveBeenCalled();
+    expect(enumerateDevices).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("enumerates microphones only when the user requests a refresh", async () => {
+    setCachedAudioInputDevices([{ deviceId: "old-mic", label: "Old Microphone" }]);
+    const enumerateDevices = vi.fn().mockResolvedValue([
+      { kind: "audioinput", deviceId: "fresh-mic", label: "Fresh Microphone" },
+    ]);
+    Object.defineProperty(navigator, "mediaDevices", {
+      value: {
+        enumerateDevices,
+        getUserMedia: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+      configurable: true,
+    });
+
+    render(<VoiceInputSettings />);
+    expect(enumerateDevices).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh microphone list" }));
+
+    await waitFor(() => expect(enumerateDevices).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("option", { name: "Fresh Microphone" })).toBeTruthy();
   });
 
   it("re-matches the selection by label when the device id rotates", async () => {
@@ -413,6 +487,7 @@ describe("VoiceInputSettings: microphone", () => {
       configurable: true,
     });
     render(<VoiceInputSettings />);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh microphone list" }));
     select = (await screen.findByRole("combobox")) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("rotated-2"));
     // The healed id is persisted so the composer records from the right device.

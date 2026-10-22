@@ -36,6 +36,15 @@ describe("filesystem tools (built-in, sandbox-enforced)", () => {
       expect(out).toContain("line 3");
     });
 
+    it("`read` is an alias with the same handler and flags", async () => {
+      const out = await tools.dispatch("read", JSON.stringify({ path: "hello.txt", head: 1 }));
+      expect(out).toMatch(/^line 1\n/);
+      const spec = tools.specs().find((s) => s.function.name === "read");
+      expect(spec?.function.description).toBe(tools.get("read_file")?.description);
+      expect(tools.isParallelSafe("read")).toBe(true);
+      expect(tools.get("read")?.origin).toBe(tools.get("read_file")?.origin);
+    });
+
     it("honors head=N to return only the first N lines", async () => {
       const out = await tools.dispatch("read_file", JSON.stringify({ path: "hello.txt", head: 2 }));
       // Head output now includes an "N of M lines" marker so the model

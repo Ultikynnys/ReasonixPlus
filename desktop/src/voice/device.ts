@@ -11,8 +11,15 @@ export interface AudioInputDevice {
   label: string;
 }
 
+function isAudioInputDevice(value: unknown): value is AudioInputDevice {
+  if (!value || typeof value !== "object") return false;
+  const device = value as Record<string, unknown>;
+  return typeof device.deviceId === "string" && typeof device.label === "string";
+}
+
 const STORAGE_KEY_DEVICE = "reasonix.voiceInputDevice";
 const STORAGE_KEY_DEVICE_LABEL = "reasonix.voiceInputDeviceLabel";
+const STORAGE_KEY_DISCOVERED_DEVICES = "reasonix.voiceInputDevices";
 
 /** The stored audio input device id, or "" when the OS/browser default is used. */
 export function getSelectedAudioInputDeviceId(): string {
@@ -38,6 +45,23 @@ export function setSelectedAudioInputDeviceId(deviceId: string, label = ""): voi
     localStorage.removeItem(STORAGE_KEY_DEVICE);
     localStorage.removeItem(STORAGE_KEY_DEVICE_LABEL);
   }
+}
+
+export function getCachedAudioInputDevices(): AudioInputDevice[] | null {
+  if (typeof localStorage === "undefined") return null;
+  const stored = localStorage.getItem(STORAGE_KEY_DISCOVERED_DEVICES);
+  if (!stored) return null;
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    return Array.isArray(parsed) && parsed.every(isAudioInputDevice) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setCachedAudioInputDevices(devices: AudioInputDevice[]): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(STORAGE_KEY_DISCOVERED_DEVICES, JSON.stringify(devices));
 }
 
 /** Resolve the stored selection against the live device list.

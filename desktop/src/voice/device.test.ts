@@ -2,12 +2,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  getCachedAudioInputDevices,
   getSelectedAudioInputDeviceId,
   getSelectedAudioInputDeviceLabel,
   hasMicrophonePermission,
   listAudioInputDevices,
   requestMicrophoneAccess,
   resolveSelectedDeviceId,
+  setCachedAudioInputDevices,
   setSelectedAudioInputDeviceId,
 } from "../voice/device";
 
@@ -42,6 +44,17 @@ describe("voice/device", () => {
     expect(getSelectedAudioInputDeviceLabel()).toBe("USB Headset");
     setSelectedAudioInputDeviceId("");
     expect(getSelectedAudioInputDeviceLabel()).toBe("");
+  });
+
+  it("persists discovered devices for later Settings visits", () => {
+    const devices = [{ deviceId: "mic-123", label: "USB Headset" }];
+    setCachedAudioInputDevices(devices);
+    expect(getCachedAudioInputDevices()).toEqual(devices);
+  });
+
+  it("ignores malformed cached device data", () => {
+    localStorage.setItem("reasonix.voiceInputDevices", '{"deviceId":"mic-123"}');
+    expect(getCachedAudioInputDevices()).toBeNull();
   });
 
   describe("resolveSelectedDeviceId", () => {
