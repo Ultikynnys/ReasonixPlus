@@ -1,4 +1,4 @@
-import { providerDeclared } from "@reasonix/core-utils";
+import { modelReasoningEfforts, providerDeclared, providerSpec } from "@reasonix/core-utils";
 import { describe, expect, it, vi } from "vitest";
 import { DeepSeekClient, antigravityThinkingConfig } from "../src/client.js";
 import { effectiveReasoningEffort, supportedReasoningEfforts } from "../src/config.js";
@@ -43,6 +43,9 @@ async function chatBody(
   return body;
 }
 
+/** The Cloud Code request with the ladder the declaration gives it. Deliberately
+ *  not `supportedReasoningEfforts`: that runs through model admission, which
+ *  leaves an id only a signed-in account discovered ladderless on a clean box. */
 function geminiConfig(
   model: string,
   thinking: "enabled" | "disabled" | undefined,
@@ -54,7 +57,7 @@ function geminiConfig(
       model,
       thinking,
       reasoningEffort,
-      supported: supportedReasoningEfforts(`gemini/${model}`),
+      supported: modelReasoningEfforts("gemini", model),
     }),
   );
 }
@@ -115,11 +118,25 @@ describe("effort on the Cloud Code wire", () => {
       includeThoughts: true,
       thinkingLevel: "low",
     });
+    // A non-catalog id the account may discover still gets the generic 3.x ladder.
     expect(geminiConfig("gemini-3.1-pro", "enabled", "medium")).toEqual({
       includeThoughts: true,
       thinkingLevel: "medium",
     });
   });
+
+  it.skipIf(!providerDeclared("gemini"))(
+    "takes the ladder from the declaration, not from model admission",
+    () => {
+      // Pins the trap that broke the build. gemini-3.1-pro is absent from the
+      // static catalog, so admission places it only through a discovery cache or
+      // a saved account; a clean runner fell back to another provider's ladder
+      // (deepseek has no medium, it aliases the level to high) and clamped. The
+      // declaration is what the wire answers to, and it is identical everywhere.
+      expect(providerSpec("gemini")?.models).not.toContain("gemini-3.1-pro");
+      expect(modelReasoningEfforts("gemini", "gemini-3.1-pro")).toEqual(["low", "medium", "high"]);
+    },
+  );
 
   it.skipIf(!providerDeclared("gemini"))("sends a thinkingBudget for Gemini 2.5 models", () => {
     expect(geminiConfig("gemini-2.5-flash", "enabled", "high")).toEqual({

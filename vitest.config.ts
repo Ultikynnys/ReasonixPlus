@@ -50,7 +50,11 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "html", "json-summary"],
-      include: ["src/**"],
+      // TS sources only: a bare `src/**` also matches the Markdown that lives
+      // beside them (src/mcp/README.md), and the V8 provider then tries to
+      // AST-parse it as code, logging a RollupError (code PARSE_ERROR) on every
+      // coverage run. That noise is what made this build look like a parse bug.
+      include: ["src/**/*.ts"],
       exclude: ["src/**/*.test.ts"],
     },
   },
