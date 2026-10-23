@@ -96,10 +96,14 @@ export interface McpClientHost {
   client: McpClient;
 }
 
-export const DEFAULT_MAX_RESULT_CHARS = 32_000;
-
 /** ~6% of DeepSeek V3 context. Char cap alone fails on CJK (~1 char/token). */
 export const DEFAULT_MAX_RESULT_TOKENS = 8_000;
+
+/** Chars per token assumed when a cap has to travel in characters. Paths that
+ *  count characters derive theirs from the token cap, so one tier moves both. */
+export const RESULT_CHARS_PER_TOKEN = 4;
+
+export const DEFAULT_MAX_RESULT_CHARS = DEFAULT_MAX_RESULT_TOKENS * RESULT_CHARS_PER_TOKEN;
 
 /** Default per-call wait before failing if the server is still handshaking. */
 export const DEFAULT_READY_TIMEOUT_MS = 30_000;

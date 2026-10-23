@@ -193,6 +193,28 @@ resolves the whole period with one call (`ratePeriodForSchedule`), so the chip's
 label and countdown can never disagree. There is no schedule constant
 in code to drift out of sync.
 
+## Cost tier
+
+Every provider declares how expensive its tokens are relative to the rest, because
+the same request costs very different money depending on the answer:
+
+| Tier | Meaning |
+| --- | --- |
+| `cheap` | A cache read is a rounding error, so the prefix can be resent freely |
+| `standard` | Ordinary input pricing, tuned to the built-in defaults |
+| `premium` | Every resent byte is real money, so the loop retains less |
+
+`src/cost-policy.ts` maps the tier to three numbers: the per-tool-result token cap,
+the auto-compaction trigger, and how many image parts are resent. A provider that
+needs to differ from its tier overrides any of them in the same block:
+
+```json
+"cost": { "tier": "premium", "toolResultTokens": 3000, "compactionTrigger": 0.55 }
+```
+
+Precedence is user setting, then the provider's value, then the tier default, so a
+declared number never overrides a deliberate choice the user made.
+
 ## Usage
 
 A provider that reports plan usage declares where that usage is published and how
@@ -277,11 +299,12 @@ Objects:
 | `settingsPanel` | panel name or null | Bespoke behavior panel the settings card renders above its fields |
 | `usable` | `apiKey`, `keylessLocal`, `always` | Ways the model can run right now |
 | `billing` | `kind`, `schedule`, `peakModels`, `balance` | Peak/off-peak calendar (see Peak hours) and the account-balance endpoint |
+| `cost` | `tier`, `toolResultTokens`, `compactionTrigger`, `keepImages` | Relative token cost and the retention caps it implies (see Cost tier) |
 | `usage` | `probe`, `urls`, `urlBase`, `urlGate`, `minIntervalSeconds`, `primaryWindow`, `resetsStyle` | Where plan usage is published (see Usage) |
 | `routing` | `staticCatalog`, `discoveredCatalog`, `checkedLast`, `foreignCatalog`, `modelScheme` | How a bare model id reaches this provider |
 | `discovery` | `strategy`, `listField`, `idField`, `excludeSpeech`, `visionField` | Where the live catalog comes from and how to read it |
 | `client` | `auth`, `transport`, `allowMissingKey` | Per-request credentials and wire format |
-| `wire` | `format`, `path`, `apiKeyHeader`, `stampMessageIds`, `streamOptions`, `storeFlag`, `toolStream`, `thinking`, `reasoningEffort` | Request shape: `format` is `chat-completions` (default), `ollama-native`, or `gemini-interactions`; `path` replaces the `/chat/completions` suffix; `apiKeyHeader` replaces `Authorization: Bearer` |
+| `wire` | `format`, `path`, `apiKeyHeader`, `stampMessageIds`, `streamOptions`, `storeFlag`, `maxTokensField`, `parallelToolCalls`, `promptCacheKey`, `toolStream`, `thinking`, `reasoningEffort` | Request shape: `format` is `chat-completions` (default), `ollama-native`, or `gemini-interactions`; `path` replaces the `/chat/completions` suffix; `apiKeyHeader` replaces `Authorization: Bearer` |
 | `strings` | map of strings | Provider-named UI copy, keys listed under Provider copy |
 | `vision` | `models`, `patterns`, `predicate`, `fromProvider`, `stripSchemeAndTag`, `refreshable` | Id list, regexes, inherited catalog, or a catalog a sync may replace |
 

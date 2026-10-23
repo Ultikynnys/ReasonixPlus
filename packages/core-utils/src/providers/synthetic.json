@@ -91,6 +91,7 @@
     "modelScheme": null
   },
   "billing": { "kind": "quota-if-key", "schedule": null },
+  "cost": { "tier": "standard" },
   "usage": {
     "probe": "synthetic-quotas",
     "urls": ["https://api.synthetic.new/v2/quotas"],

@@ -80,6 +80,7 @@
   },
   "wire": { "thinking": "mimo-top-level", "reasoningEffort": false },
   "billing": { "kind": "quota", "schedule": null },
+  "cost": { "tier": "standard" },
   "usage": {
     "probe": "mimo-console",
     "urls": ["/api/v1/tokenPlan/usage"],

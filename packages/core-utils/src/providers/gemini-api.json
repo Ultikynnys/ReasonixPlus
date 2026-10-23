@@ -94,6 +94,7 @@
     "reasoningEffort": false
   },
   "billing": { "kind": "usd", "schedule": null },
+  "cost": { "tier": "standard" },
   "usage": { "probe": null },
   "strings": {
     "notConfigured": "Not configured yet — add a Google Gemini API key in Settings → Gemini API to use these models.",

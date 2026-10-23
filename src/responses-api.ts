@@ -97,14 +97,24 @@ function splitMessages(messages: ChatMessage[]): {
   return { instructions: systemTexts.join("\n\n"), items };
 }
 
-/** Chat-completions → Responses payload (mirrors the Codex CLI): top-level
- *  instructions, `input` items, flat tools, reasoning.effort, store:false.
- *  Chat-completions-only fields are omitted — the endpoint 400s unknowns. */
+/** Per-request extras a caller declares. Both are omitted when unset, so a wire
+ *  that rejects them never sees one. */
+export interface ResponsesExtras {
+  /** Session-stable cache hint. */
+  cacheKey?: string;
+  /** Request-level burst gate; unset leaves the provider default. */
+  parallelToolCalls?: boolean;
+}
+
+/** Chat-completions -> Responses payload (mirrors the Codex CLI). Chat-completions-only
+ *  fields are omitted because the endpoint 400s unknowns. `extras` carries the
+ *  declared request additions; every one stays absent unless the caller sets it. */
 export function buildResponsesPayload(
   opts: ChatRequestOptions,
   stream: boolean,
   provider?: string,
   control?: ReasoningControl,
+  extras: ResponsesExtras = {},
 ): Record<string, unknown> {
   const { instructions, items } = splitMessages(opts.messages);
   // MiMo's Responses implementation rejects unknown fields, so the Codex-only
@@ -115,19 +125,22 @@ export function buildResponsesPayload(
     input: items,
     stream,
   };
-  // The Codex CLI always sends store:false to chatgpt.com.
+  // Codex always sends store:false; the declared request extras ride only when set.
   if (!mimo) payload.store = false;
+  if (extras.parallelToolCalls !== undefined) {
+    payload.parallel_tool_calls = extras.parallelToolCalls;
+  }
   if (instructions) payload.instructions = instructions;
+  // Responses spelling of the output cap. Absent stays absent: an unconfigured
+  // cap must not become a model default the user never chose.
+  if (opts.maxTokens !== undefined) payload.max_output_tokens = opts.maxTokens;
+  if (extras.cacheKey) payload.prompt_cache_key = extras.cacheKey;
   if (opts.tools?.length) {
     payload.tools = opts.tools.map((t) => ({
       type: "function",
       name: sanitizeWireToolName(t.function.name),
       description: t.function.description,
       parameters: t.function.parameters,
-      // ChatGPT models default to parallel tool-call bursts; disable so the
-      // model emits ONE call per response and the loop can feed its result
-      // back before the next round ("thinking") starts.
-      ...(mimo ? {} : { parallel_tool_calls: false }),
     }));
   }
   if (control?.effort) {

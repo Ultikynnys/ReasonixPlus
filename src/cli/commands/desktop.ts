@@ -133,6 +133,7 @@ import {
   bridgeEndpointEnv,
   clearMimoApiKey,
   copyWorkspaceRules,
+  defaultReasoningEffortForModel,
   deriveNativeOllamaOrigin,
   hasOpencodeCredential,
   isOpenAIStandardEndpoint,
@@ -143,6 +144,7 @@ import {
   loadAllShellAllowed,
   loadApiKey,
   loadAutoCompact,
+  loadAutoCompactTrigger,
   loadBraveApiKey,
   loadCatalogEndpoint,
   loadContextTokens,
@@ -247,6 +249,7 @@ import { EventType } from "../../core/events.js";
 import type { Event as KernelEvent, SubagentProgressEvent } from "../../core/events.js";
 import { pauseGate } from "../../core/pause-gate.js";
 import { autoResolveVerdict } from "../../core/pause-policy.js";
+import { costPolicyForModel } from "../../cost-policy.js";
 import { AccountQuotaCoordinator } from "../../desktop/account-quota.js";
 import { augmentProcessPath } from "../../desktop/login-shell-path.js";
 import {
@@ -5368,6 +5371,7 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
   applyPlanMode(toolset.tools, loadEditMode());
   const ep = loadEndpointForModel(tab.currentModel);
   const provider = providerForModel(tab.currentModel);
+  const costPolicy = costPolicyForModel(tab.currentModel);
   const isOpenAI = isOpenAIStandardEndpoint(tab.currentModel);
   const log = createLogger("desktop");
   if (isOpenAI) {
@@ -5420,7 +5424,12 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
     reasoningEffort,
     maxIterPerTurn: loadMaxIterPerTurn(),
     maxOutputTokens: loadMaxOutputTokens(),
+    // Retention caps come from the provider's declared cost tier; a saved
+    // trigger ratio still wins over the tier's suggestion.
+    maxResultTokens: costPolicy.maxResultTokens,
+    keepImages: costPolicy.keepImages,
     autoCompact: loadAutoCompact(),
+    autoCompactTriggerRatio: loadAutoCompactTrigger(undefined, costPolicy.compactionTrigger),
     repetitionGuardEnabled: loadRepetitionGuardEnabled(),
     // Live thunk (not a snapshot) so a mid-session Shift+Tab mode flip
     // stops the iteration cap from pausing the turn in yolo.
@@ -5936,7 +5945,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       shellMetricsSince: 0,
       currentModel: model,
       currentSubagentModel: restore?.subagentModel,
-      currentReasoningEffort: restore?.reasoningEffort ?? loadReasoningEffort(),
+      currentReasoningEffort:
+        restore?.reasoningEffort ??
+        loadReasoningEffort(undefined, defaultReasoningEffortForModel(model)),
       ctxMaxOverride: loadContextTokens(),
       // Every new session starts without the subagent tool unless the caller already
       // asked for it; the session-start picker is the only other place to opt in, and a
@@ -7627,6 +7638,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         autoCompactTriggerRatio: tab.runtime?.loop.autoCompactTriggerRatio,
         maxIterPerTurn: tab.runtime?.loop.maxIterPerTurn,
         maxOutputTokens: tab.runtime?.loop.maxOutputTokens,
+        maxResultTokens: tab.runtime?.loop.maxResultTokens,
+        keepImages: tab.runtime?.loop.keepImages,
         hooks: tab.hooks,
         hookCwd: tab.rootDir,
       }),

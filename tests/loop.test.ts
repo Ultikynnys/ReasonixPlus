@@ -1080,6 +1080,40 @@ describe("CacheFirstLoop (non-streaming)", () => {
     expect(content).toMatch(/truncated/);
   });
 
+  it("honours a tighter per-result cap handed down by the cost policy", async () => {
+    const reg = new ToolRegistry();
+    const huge = "ERROR: repeated failure with some detail\n".repeat(400);
+    reg.register({
+      name: "big",
+      description: "returns a lot",
+      parameters: { type: "object", properties: {} },
+      fn: async () => huge,
+    });
+    const responses: FakeResponseShape[] = [
+      {
+        content: "",
+        tool_calls: [{ id: "c1", type: "function", function: { name: "big", arguments: "{}" } }],
+      },
+      { content: "done." },
+    ];
+    const loop = new CacheFirstLoop({
+      client: makeClient(responses),
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
+      tools: reg,
+      stream: false,
+      maxResultTokens: 200,
+    });
+    for await (const _ev of loop.step("go")) {
+      /* drain */
+    }
+    const toolEntry = loop.log.toMessages().find((m) => m.role === "tool");
+    const content = typeof toolEntry!.content === "string" ? toolEntry!.content : "";
+    // A 200-token cap is far below the ~15k-char result: the clip still fires
+    // and the entry stays small enough to repay on every later request.
+    expect(content).toMatch(/truncated/);
+    expect(content.length).toBeLessThan(4_000);
+  });
+
   it("shrinks retained tool-call args without starving the tool dispatch", async () => {
     const reg = new ToolRegistry();
     const hugeContent = Array.from({ length: 9000 }, (_, i) => `line ${i}: payload ${i}`).join(

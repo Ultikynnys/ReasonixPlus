@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL,
   type ReasoningEffort,
   type ReasonixConfig,
+  defaultReasoningEffortForModel,
   isReasoningEffort,
   loadEffectiveMcpConfig,
   loadReasoningEffort,
@@ -32,11 +33,12 @@ export function resolveDefaults(flags: RawCliFlags): ResolvedDefaults {
   const model = flags.model?.trim() || cfg.model?.trim() || DEFAULT_MODEL;
 
   const flagEffort = flags.effort?.toLowerCase();
+  const providerEffort = defaultReasoningEffortForModel(model);
   const reasoningEffort: ReasoningEffort = isReasoningEffort(flagEffort)
     ? flagEffort
     : flags.noConfig
-      ? "high"
-      : loadReasoningEffort();
+      ? providerEffort
+      : loadReasoningEffort(undefined, providerEffort);
 
   const normalizedMcp = flags.noConfig
     ? []

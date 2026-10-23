@@ -61,6 +61,7 @@
     "excludeSpeech": false
   },
   "billing": { "kind": "quota", "schedule": null },
+  "cost": { "tier": "standard" },
   "usage": {
     "probe": "antigravity-quota",
     "urls": [],

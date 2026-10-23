@@ -56,6 +56,26 @@ describe("providers/ files", () => {
     }
   });
 
+  it("parses the declared request extras and defaults them off", () => {
+    const docs = readProviderDocuments(PROVIDERS_DIR);
+    const documentOf = (id: string): Record<string, unknown> =>
+      docs.find((entry) => entry.id === id)?.document as Record<string, unknown>;
+
+    // A provider that declares neither gets no burst gate and no cache key.
+    const [plain] = parseProviderRegistry({ providers: [documentOf("deepseek")] });
+    expect(plain?.wire.parallelToolCalls).toBeNull();
+    expect(plain?.wire.promptCacheKey).toBe(false);
+
+    // A declared gate and key survive the parse.
+    const declared = {
+      ...documentOf("deepseek"),
+      wire: { parallelToolCalls: false, promptCacheKey: true },
+    };
+    const [pinned] = parseProviderRegistry({ providers: [declared] });
+    expect(pinned?.wire.parallelToolCalls).toBe(false);
+    expect(pinned?.wire.promptCacheKey).toBe(true);
+  });
+
   it("reports the offending file when a document is not valid JSON", () => {
     const dir = mkdtempSync(join(tmpdir(), "reasonix-providers-bad-"));
     try {

@@ -12,7 +12,7 @@ import { tryParseJson } from "./core/parse-json.js";
 import type { PauseGate } from "./core/pause-gate.js";
 import { pauseGate as defaultPauseGate } from "./core/pause-gate.js";
 import { type ResolvedHook, runHooks } from "./hooks.js";
-import { DEFAULT_MAX_RESULT_CHARS, DEFAULT_MAX_RESULT_TOKENS } from "./mcp/registry.js";
+import { DEFAULT_MAX_RESULT_TOKENS, RESULT_CHARS_PER_TOKEN } from "./mcp/registry.js";
 
 import { InflightSet } from "./core/inflight.js";
 import { t } from "./i18n/index.js";
@@ -51,6 +51,7 @@ import {
 } from "./loop/healing.js";
 import { hookWarnings, safeParseToolArgs } from "./loop/hook-events.js";
 import {
+  KEEP_LAST_IMAGES,
   type ShrinkLevel,
   isPayloadTooLargeError,
   pruneOldImageParts,
@@ -215,6 +216,11 @@ export interface CacheFirstLoopOptions {
   reasoningEffort?: ReasoningEffort;
   /** Per-turn output token cap passed as `max_tokens`. Undefined = no cap (server default). */
   maxOutputTokens?: number;
+  /** Per-tool-result token cap. Defaults to DEFAULT_MAX_RESULT_TOKENS; a premium
+   *  cost tier lowers it so one result is not repaid on every later request. */
+  maxResultTokens?: number;
+  /** Image parts resent with each request. Defaults to KEEP_LAST_IMAGES. */
+  keepImages?: number;
   /** Maximum tool-call iterations per turn. Overrides config/env. Default 50. */
   maxIterPerTurn?: number;
   /** Live edit-mode getter, never-ask never pauses on the iteration cap. Thunk
@@ -336,11 +342,9 @@ function truncateReasoning(text: string): string {
   return `${trimmed.slice(0, THINKING_ONLY_REASONING_CHARS)}\n\n[reasoning truncated — answer from what is above]`;
 }
 
-function shrinkMessageForRetention(message: ChatMessage): ChatMessage {
+function shrinkMessageForRetention(message: ChatMessage, maxTokens: number): ChatMessage {
   if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) return message;
-  return (
-    shrinkOversizedToolCallArgsByTokens([message], DEFAULT_MAX_RESULT_TOKENS).messages[0] ?? message
-  );
+  return shrinkOversizedToolCallArgsByTokens([message], maxTokens).messages[0] ?? message;
 }
 
 export class CacheFirstLoop {
@@ -387,6 +391,10 @@ export class CacheFirstLoop {
   reasoningEffort: ReasoningEffort;
   /** Per-turn output token cap (max_tokens). Undefined = no cap. */
   maxOutputTokens: number | undefined;
+  /** Per-tool-result token cap, resolved once from the cost policy. */
+  readonly maxResultTokens: number;
+  /** Image parts resent with each request, resolved from the cost policy. */
+  readonly keepImages: number;
   /** Maximum tool-call iterations per turn. Config > env > default (50). */
   maxIterPerTurn: number;
   /** Context-window cap override (tokens) — mutable via configure(); undefined = per-model default. */
@@ -548,6 +556,8 @@ export class CacheFirstLoop {
     this.model = opts.model ?? "deepseek-v4-flash";
     this.reasoningEffort = opts.reasoningEffort ?? "high";
     this.maxOutputTokens = opts.maxOutputTokens;
+    this.maxResultTokens = opts.maxResultTokens ?? DEFAULT_MAX_RESULT_TOKENS;
+    this.keepImages = opts.keepImages ?? KEEP_LAST_IMAGES;
     this.maxIterPerTurn = opts.maxIterPerTurn ?? CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN;
     this._getEditMode = opts.getEditMode;
     this._unattended = opts.unattended === true;
@@ -595,7 +605,7 @@ export class CacheFirstLoop {
     }
     if (this.sessionName) {
       const prior = loadSessionMessages(this.sessionName);
-      const shrunk = healLoadedMessagesByTokens(prior, DEFAULT_MAX_RESULT_TOKENS);
+      const shrunk = healLoadedMessagesByTokens(prior, this.maxResultTokens);
       const stamped = stampMissingReasoningForThinkingMode(shrunk.messages, this.model);
       const pruned = stripDroppableReasoningContent(stamped.messages);
       const messages = pruned.messages;
@@ -653,7 +663,9 @@ export class CacheFirstLoop {
   }
 
   appendAndPersist(message: ChatMessage): void {
-    const retained = stampTranscriptMessage(shrinkMessageForRetention(message));
+    const retained = stampTranscriptMessage(
+      shrinkMessageForRetention(message, this.maxResultTokens),
+    );
     this.log.append(retained);
     if (this.sessionName) {
       try {
@@ -668,7 +680,7 @@ export class CacheFirstLoop {
 
   /** Swap the just-appended assistant entry — used by self-correction to restore the original tool_calls without dropping reasoning_content. */
   private replaceTailAssistantMessage(message: ChatMessage): void {
-    const retained = shrinkMessageForRetention(message);
+    const retained = shrinkMessageForRetention(message, this.maxResultTokens);
     const entries = this.log.entries;
     const tail = entries[entries.length - 1];
     if (!tail || tail.role !== "assistant") return;
@@ -854,7 +866,7 @@ export class CacheFirstLoop {
         callId: inflightId,
         waveSize,
         cancelSignal: cancelController.signal,
-        maxResultTokens: DEFAULT_MAX_RESULT_TOKENS,
+        maxResultTokens: this.maxResultTokens,
         confirmationGate: this.confirmationGate,
         sessionName: this.sessionName ?? undefined,
         readTracker: this.readTracker,
@@ -989,9 +1001,9 @@ export class CacheFirstLoop {
    *  never consume another's injection. */
   private buildMessages(planContext: readonly ChatMessage[]): ChatMessage[] {
     const healedMessages = this.healActiveLogBeforeSend();
-    // Send-time image retention (window default = KEEP_LAST_IMAGES): the log
-    // keeps every image so transcripts and reloads stay complete, but only the
-    // newest image parts are sent. Otherwise screenshots accumulate across a
+    // Send-time image retention (the loop's keepImages, default KEEP_LAST_IMAGES):
+    // the log keeps every image so transcripts and reloads stay complete, but only
+    // the newest image parts are sent. Otherwise screenshots accumulate across a
     // long session until the provider rejects the whole request with an
     // image-count cap ("Too many images in request: 67 > 64") no retry can fix.
     //
@@ -1007,7 +1019,7 @@ export class CacheFirstLoop {
       planContext.length > 0 && tail?.role === "user"
         ? [...history.slice(0, -1), ...planContext, tail]
         : [...history, ...planContext];
-    return pruneOldImageParts(ordered);
+    return pruneOldImageParts(ordered, this.keepImages);
   }
 
   /** Fold a copy of `messages` down to `targetTokens`, or null when folding
@@ -1035,7 +1047,10 @@ export class CacheFirstLoop {
    *  for size to be a plausible cause (recovery then only replays it). Tool
    *  schemas count: they are a fixed per-request cost the fold cannot remove. */
   private refusalFoldTarget(): number | null {
-    const request = pruneOldImageParts([...this.prefix.toMessages(), ...this.log.entries]);
+    const request = pruneOldImageParts(
+      [...this.prefix.toMessages(), ...this.log.entries],
+      this.keepImages,
+    );
     const tokens = estimateRequestTokens(request, this.prefix.tools());
     if (tokens < REFUSAL_FOLD_MIN_TOKENS) return null;
     const target = Math.max(REFUSAL_FOLD_MIN_TOKENS, Math.round(tokens * REFUSAL_FOLD_RATIO));
@@ -1094,11 +1109,8 @@ export class CacheFirstLoop {
       return this._healedCache;
     }
     const current = this.log.toMessages();
-    const healed = healLoadedMessages(current, DEFAULT_MAX_RESULT_CHARS);
-    const argsShrunk = shrinkOversizedToolCallArgsByTokens(
-      healed.messages,
-      DEFAULT_MAX_RESULT_TOKENS,
-    );
+    const healed = healLoadedMessages(current, this.maxResultTokens * RESULT_CHARS_PER_TOKEN);
+    const argsShrunk = shrinkOversizedToolCallArgsByTokens(healed.messages, this.maxResultTokens);
     // Pruning and stamping fight over the same field: prune drops stale
     // reasoning from earlier plain turns, stamp re-adds it for thinking mode.
     // Once a gateway proves it wants the field back on every turn, the prune
@@ -1305,7 +1317,10 @@ export class CacheFirstLoop {
         ? { ...m, reasoning_content: prior }
         : m;
     });
-    const healed = healLoadedMessages(carried, DEFAULT_MAX_RESULT_CHARS).messages;
+    const healed = healLoadedMessages(
+      carried,
+      this.maxResultTokens * RESULT_CHARS_PER_TOKEN,
+    ).messages;
     const stamped = stampMissingReasoningForThinkingMode(healed, this.model).messages;
     const systemChanged = this.prefix.replaceSystem(system);
     this.log.compactInPlace(stamped);
@@ -1434,7 +1449,9 @@ export class CacheFirstLoop {
         messages,
         signal,
         thinking: thinkingModeForModel(this.model),
-        reasoningEffort: this.reasoningEffort,
+        // Summarizing is mechanical: high effort here costs a working round's worth
+        // of reasoning tokens and buys nothing.
+        reasoningEffort: "low",
         maxTokens: SUMMARIZER_OUTPUT_HEADROOM,
       });
     try {
@@ -1589,7 +1606,7 @@ export class CacheFirstLoop {
     // check re-fires from the iteration loop once the threshold is crossed.
     if (this.autoCompact) {
       const estimate = estimateRequestTokens(
-        pruneOldImageParts([...this.prefix.toMessages(), ...this.log.entries]),
+        pruneOldImageParts([...this.prefix.toMessages(), ...this.log.entries], this.keepImages),
         this.prefix.tools(),
       );
       const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);
@@ -1619,7 +1636,7 @@ export class CacheFirstLoop {
       // the iteration loop. Bounded per turn (see _midTurnCompacts).
       if (this.autoCompact && iter > 0 && this._midTurnCompacts < 2) {
         const estimate = estimateRequestTokens(
-          pruneOldImageParts([...this.prefix.toMessages(), ...this.log.entries]),
+          pruneOldImageParts([...this.prefix.toMessages(), ...this.log.entries], this.keepImages),
           this.prefix.tools(),
         );
         const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);

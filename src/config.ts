@@ -2766,11 +2766,15 @@ export function clampAutoCompactTrigger(value: number): number {
   return Math.min(MAX_AUTO_COMPACT_TRIGGER, Math.max(MIN_AUTO_COMPACT_TRIGGER, value));
 }
 
-/** Fraction of the context window at which pre-turn auto-compaction fires.
- *  Defaults to 0.8 when unset; a persisted value is clamped to [0.5, 0.95]. */
-export function loadAutoCompactTrigger(path: string = defaultConfigPath()): number {
+/** Fraction of the context window at which pre-turn auto-compaction fires. An
+ *  unset value falls back to the caller's policy (0.8 by default); a persisted
+ *  value is clamped to [0.5, 0.95]. */
+export function loadAutoCompactTrigger(
+  path: string = defaultConfigPath(),
+  fallback: number = DEFAULT_AUTO_COMPACT_TRIGGER,
+): number {
   const raw = readConfig(path).autoCompactTrigger;
-  return typeof raw === "number" ? clampAutoCompactTrigger(raw) : DEFAULT_AUTO_COMPACT_TRIGGER;
+  return typeof raw === "number" ? clampAutoCompactTrigger(raw) : fallback;
 }
 
 /** Persist the auto-compaction trigger fraction. `null` clears the override. */
@@ -2939,10 +2943,26 @@ export function editModeHintShown(path: string = defaultConfigPath()): boolean {
   return readConfig(path).editModeHintShown === true;
 }
 
-/** Unknown / missing fall back to "high" — the only value every OpenAI-compatible endpoint accepts (vLLM rejects "max"). */
-export function loadReasoningEffort(path: string = defaultConfigPath()): ReasoningEffort {
+/** The safe default: the only value every OpenAI-compatible endpoint accepts (vLLM rejects "max"). */
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
+
+/** The effort a model starts at when the user never chose one: the provider's
+ *  declared default, else the safe global one. A premium provider that prices
+ *  reasoning tokens as output declares a lower one. */
+export function defaultReasoningEffortForModel(
+  model: string,
+  path: string = defaultConfigPath(),
+): ReasoningEffort {
+  return providerSpec(providerForModel(model, path))?.reasoningDefault ?? DEFAULT_REASONING_EFFORT;
+}
+
+/** Unknown / missing fall back to the caller's policy, else "high". */
+export function loadReasoningEffort(
+  path: string = defaultConfigPath(),
+  fallback: ReasoningEffort = DEFAULT_REASONING_EFFORT,
+): ReasoningEffort {
   const v = readConfig(path).reasoningEffort;
-  return isReasoningEffort(v) ? v : "high";
+  return isReasoningEffort(v) ? v : fallback;
 }
 
 export function loadTheme(path: string = defaultConfigPath()): ThemeName | "auto" | undefined {

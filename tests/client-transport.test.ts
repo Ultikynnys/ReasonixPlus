@@ -103,10 +103,10 @@ describe("client-wire", () => {
       expect(body.reasoning_effort).toBeUndefined();
     });
 
-    it("openai pins store:false with one tool call per response", async () => {
+    it("openai pins store:false and leaves the burst gate to the provider", async () => {
       const { body } = await capture({ model: "gpt-6.1-sol", thinking: "enabled" });
       expect(body.store).toBe(false);
-      expect(body.parallel_tool_calls).toBe(false);
+      expect(body.parallel_tool_calls).toBeUndefined();
       // OpenAI refuses the proprietary toggle entirely.
       expect(body.extra_body).toBeUndefined();
       expect(body.thinking).toBeUndefined();
@@ -532,12 +532,13 @@ describe("client-responses", () => {
     api: "responses",
   };
 
-  function codexClient(fetch: typeof fetch): DeepSeekClient {
+  function codexClient(fetch: typeof fetch, extra: { sessionId?: string } = {}): DeepSeekClient {
     return new DeepSeekClient({
       baseUrl: "https://api.openai.com/v1",
       fetch,
       transportResolver: async () => CODEX_TRANSPORT,
       retry: { maxAttempts: 1 },
+      ...extra,
     });
   }
 
@@ -607,21 +608,23 @@ describe("client-responses", () => {
       expect(body.messages).toBeUndefined();
       expect(body.stream_options).toBeUndefined();
       expect(body.max_tokens).toBeUndefined();
+      // The Responses spelling of the same cap is the one the wire accepts.
+      expect(body.max_output_tokens).toBe(500);
       expect(body.temperature).toBeUndefined();
       expect(body.reasoning_effort).toBeUndefined();
       expect(body.extra_body).toBeUndefined();
       expect(body.store).toBe(false);
       expect(body.instructions).toBe("you are a coding agent");
       expect(body.reasoning).toEqual({ effort: "high", summary: "concise" });
+      // The burst gate is the provider's unless a wire declares one, so a
+      // response may carry several read calls and cost one request.
+      expect(body.parallel_tool_calls).toBeUndefined();
       expect(body.tools).toEqual([
         {
           type: "function",
           name: "read_file",
           description: "Read a file",
           parameters: { type: "object", properties: {} },
-          // gpt-* models must not burst parallel tool calls — one call per
-          // response so the loop feeds each result back before the next round.
-          parallel_tool_calls: false,
         },
       ]);
       expect(body.input).toEqual([
@@ -636,6 +639,55 @@ describe("client-responses", () => {
         { type: "function_call_output", call_id: "call_1", output: "file contents" },
         { type: "message", role: "user", content: "thanks" },
       ]);
+    });
+
+    it("keeps a session's cache key stable and gives a sessionless client its own", async () => {
+      const spy = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ output: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const client = codexClient(spy as unknown as typeof fetch, { sessionId: "sess-abc" });
+      const request = {
+        model: "gpt-5.6-sol",
+        messages: [{ role: "user" as const, content: "hi" }],
+      };
+      await client.chat(request);
+      await client.chat(request);
+      const first = JSON.parse(String(spy.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+      const second = JSON.parse(String(spy.mock.calls[1]![1]!.body)) as Record<string, unknown>;
+
+      // Stable across turns of one session, and never the raw session name.
+      expect(first.prompt_cache_key).toBe(second.prompt_cache_key);
+      expect(first.prompt_cache_key).toMatch(/^reasonix-chat-[0-9a-f]{16}$/);
+      expect(JSON.stringify(first)).not.toContain("sess-abc");
+      // No configured cap means no cap field, so the provider default stands.
+      expect(first.max_output_tokens).toBeUndefined();
+
+      const anonymous = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ output: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const bare = codexClient(anonymous as unknown as typeof fetch);
+      await bare.chat(request);
+      await bare.chat(request);
+      const bareFirst = JSON.parse(String(anonymous.mock.calls[0]![1]!.body)) as Record<
+        string,
+        unknown
+      >;
+      const bareSecond = JSON.parse(String(anonymous.mock.calls[1]![1]!.body)) as Record<
+        string,
+        unknown
+      >;
+      // A client with no session name still gets one identity for all its rounds.
+      expect(bareFirst.prompt_cache_key).toBe(bareSecond.prompt_cache_key);
+      expect(typeof bareFirst.prompt_cache_key).toBe("string");
+      expect(bareFirst.prompt_cache_key).not.toBe(first.prompt_cache_key);
     });
 
     it("maps image parts to input_image with a bare URL string", async () => {
@@ -901,13 +953,17 @@ describe("client-responses", () => {
       api: "responses",
     };
 
-    function mimoResponsesClient(fetch: typeof fetch): DeepSeekClient {
+    function mimoResponsesClient(
+      fetch: typeof fetch,
+      extra: { sessionId?: string } = {},
+    ): DeepSeekClient {
       return new DeepSeekClient({
         apiKey: "mkey",
         baseUrl: "https://api.xiaomimimo.com/v1",
         fetch,
         transportResolver: async () => MIMO_TRANSPORT,
         retry: { maxAttempts: 1 },
+        ...extra,
       });
     }
 
@@ -943,6 +999,7 @@ describe("client-responses", () => {
       const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
       expect(body.messages).toBeUndefined();
       expect(body.store).toBeUndefined();
+      expect(body.parallel_tool_calls).toBeUndefined();
       expect(body.reasoning).toBeUndefined();
       expect(body.tools).toEqual([
         {
@@ -953,6 +1010,18 @@ describe("client-responses", () => {
         },
       ]);
       expect(body.input).toEqual([{ type: "message", role: "user", content: "hi" }]);
+    });
+
+    it("never sends the OpenAI cache hint, even with a session id", async () => {
+      const spy = okFetch();
+      const client = mimoResponsesClient(spy as unknown as typeof fetch, { sessionId: "sess-abc" });
+      await client.chat({
+        model: "mimo-v2.6-pro",
+        messages: [{ role: "user", content: "hi" }],
+      });
+      const [, init] = spy.mock.calls[0]!;
+      const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
+      expect(body.prompt_cache_key).toBeUndefined();
     });
 
     it("maps thinking=disabled to reasoning.effort=none", async () => {

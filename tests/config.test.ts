@@ -23,6 +23,7 @@ import {
   clearOpenAIOAuth,
   clearProjectPathAllowed,
   clearProjectShellAllowed,
+  defaultReasoningEffortForModel,
   editModeHintShown,
   isKnownModelId,
   isPlausibleKey,
@@ -1418,6 +1419,13 @@ describe("config", () => {
     expect(loadAutoCompactTrigger(path)).toBe(DEFAULT_AUTO_COMPACT_TRIGGER);
   });
 
+  it("autoCompactTrigger falls back to the caller's policy until the user saves one", () => {
+    // The loop's provider tier supplies the fallback; a saved value still wins.
+    expect(loadAutoCompactTrigger(path, 0.6)).toBe(0.6);
+    saveAutoCompactTrigger(0.9, path);
+    expect(loadAutoCompactTrigger(path, 0.6)).toBe(0.9);
+  });
+
   it("questionTimerEnabled defaults to true (every Never Ask picker auto-advances) and persists either state", () => {
     expect(loadQuestionTimerEnabled(path)).toBe(true);
 
@@ -1458,6 +1466,23 @@ describe("config", () => {
     writeConfig({ reasoningEffort: "turbo" as any }, path);
     expect(loadReasoningEffort(path)).toBe("high");
   });
+
+  it("loadReasoningEffort falls back to the caller's policy until the user saves one", () => {
+    // A provider that prices reasoning as output supplies a cheaper fallback;
+    // an explicit choice still wins over it.
+    expect(loadReasoningEffort(path, "medium")).toBe("medium");
+    saveReasoningEffort("xhigh", path);
+    expect(loadReasoningEffort(path, "medium")).toBe("xhigh");
+  });
+
+  it.skipIf(!providerDeclared("openai") || !providerDeclared("deepseek"))(
+    "defaultReasoningEffortForModel follows the provider declaration",
+    () => {
+      expect(defaultReasoningEffortForModel("gpt-5.6-sol", path)).toBe("medium");
+      // A cheap provider declares no default and keeps the safe global one.
+      expect(defaultReasoningEffortForModel("deepseek-v4-flash", path)).toBe("high");
+    },
+  );
 
   it("saveReasoningEffort doesn't clobber other persisted fields", () => {
     saveEditMode("follow", path);

@@ -95,6 +95,7 @@
       "weekendOffsetMinutes": 480
     }
   },
+  "cost": { "tier": "standard" },
   "usage": {
     "probe": "zai-monitor",
     "urls": ["/api/monitor/usage/quota/limit"],

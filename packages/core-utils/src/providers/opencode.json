@@ -142,6 +142,7 @@
     "excludeSpeech": false
   },
   "billing": { "kind": "none", "schedule": null },
+  "cost": { "tier": "standard" },
   "usage": {
     "probe": "opencode-usage",
     "urls": ["/zen/go/v1/usage"],

@@ -78,6 +78,7 @@ Complete the requested objective using the smallest sufficient sequence of opera
 - Do not silently simplify tasks, switch models, or substitute objectives.
 - Use existing context before reading files or repeating searches.
 - Prefer focused searches and bounded reads over broad exploration.
+- Issue independent read-only calls together in one response. Every extra round re-sends the whole conversation, so a batched round is materially cheaper than several serial ones.
 - Verify mutations before reporting success.
 - Continue interrupted work from the last verified state.
 - When an approach fails repeatedly, investigate an alternative instead of retrying unchanged arguments.

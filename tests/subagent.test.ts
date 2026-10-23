@@ -3,7 +3,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { DeepSeekClient, Usage } from "../src/client.js";
 import { planRepository } from "../src/code/plans.js";
 import { modelUsableFor, writeConfig } from "../src/config.js";
@@ -41,6 +41,24 @@ import { MATERIAL_REASONING_LOOP } from "./support/repetition-fixtures.js";
 function makeClient(responses: FakeResponseShape[]): DeepSeekClient {
   return makeFakeClient(responses, { echoMessages: true }).client;
 }
+
+// A child names no model, so it resolves the machine's configured one. Pin that
+// to a chat-completions model here: the fakes speak that wire, and a developer's
+// own selection (or a refreshed catalog) must not change what these tests cover.
+const savedConfigEnv = process.env.REASONIX_CONFIG;
+let configDir = "";
+beforeAll(() => {
+  configDir = mkdtempSync(join(tmpdir(), "reasonix-subagent-config-"));
+  const configPath = join(configDir, "config.json");
+  writeConfig({ model: "deepseek-v4-flash", apiKey: "sk-test" }, configPath);
+  process.env.REASONIX_CONFIG = configPath;
+});
+afterAll(() => {
+  // biome-ignore lint/performance/noDelete: the variable must be absent again, not the string "undefined"
+  if (savedConfigEnv === undefined) delete process.env.REASONIX_CONFIG;
+  else process.env.REASONIX_CONFIG = savedConfigEnv;
+  rmSync(configDir, { recursive: true, force: true });
+});
 
 /** A provider that accepts the request and never answers: stalled, not refused. */
 function silentClient(): DeepSeekClient {
@@ -1475,49 +1493,70 @@ describe("inherited loop options", () => {
     const readsNeeded = Math.max(1, Math.ceil((128_000 * 0.6 - base) / perRead));
 
     // The summariser call is the ONLY non-streaming request in a child run, so the
-    // fake can route on `stream`: text for the fold, tool calls for the turns.
+    // The summariser answer, in either wire shape: a gateway model streams it.
     let turnsLeft = readsNeeded;
     const summarised: string[] = [];
+    const answerSummariser = (): Response => {
+      const frames = [
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "CONSOLIDATED SUMMARY" } }] })}\n\n`,
+        `data: ${JSON.stringify({
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+        })}\n\n`,
+        "data: [DONE]\n\n",
+      ];
+      return new Response(frames.join(""), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    };
     const fetchMock = vi.fn(async (_url: unknown, init?: { body?: string }) => {
       const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
-      if (body.stream === true) {
-        turnsLeft--;
-        const delta =
-          turnsLeft >= 0
-            ? {
-                tool_calls: [
-                  {
-                    index: 0,
-                    id: `call_${turnsLeft}`,
-                    type: "function",
-                    function: { name: "noop", arguments: JSON.stringify({ i: turnsLeft }) },
-                  },
-                ],
-              }
-            : { content: "done" };
-        const frames = [
-          `data: ${JSON.stringify({ choices: [{ index: 0, delta }] })}\n\n`,
-          `data: ${JSON.stringify({
+      // The summariser is identified by its own instruction, never by wire shape:
+      // a gateway provider injects a required tool into every body, so even a
+      // tool-less call arrives with a tools array.
+      const raw = String(init?.body ?? "");
+      const isSummariser =
+        raw.includes("Conversation to summarize:") || raw.includes("Candidate compaction summary:");
+      if (isSummariser) {
+        summarised.push(raw.slice(0, 60));
+        if (body.stream === true) return answerSummariser();
+        return new Response(
+          JSON.stringify({
             choices: [
-              { index: 0, delta: {}, finish_reason: turnsLeft >= 0 ? "tool_calls" : "stop" },
+              { index: 0, message: { role: "assistant", content: "CONSOLIDATED SUMMARY" } },
             ],
-            usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 },
-          })}\n\n`,
-          "data: [DONE]\n\n",
-        ];
-        return new Response(frames.join(""), {
-          status: 200,
-          headers: { "Content-Type": "text/event-stream" },
-        });
+            usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
       }
-      summarised.push(String(init?.body ?? "").slice(0, 60));
-      return new Response(
-        JSON.stringify({
-          choices: [{ index: 0, message: { role: "assistant", content: "CONSOLIDATED SUMMARY" } }],
-          usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      turnsLeft--;
+      const delta =
+        turnsLeft >= 0
+          ? {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: `call_${turnsLeft}`,
+                  type: "function",
+                  function: { name: "noop", arguments: JSON.stringify({ i: turnsLeft }) },
+                },
+              ],
+            }
+          : { content: "done" };
+      const frames = [
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta }] })}\n\n`,
+        `data: ${JSON.stringify({
+          choices: [{ index: 0, delta: {}, finish_reason: turnsLeft >= 0 ? "tool_calls" : "stop" }],
+          usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 },
+        })}\n\n`,
+        "data: [DONE]\n\n",
+      ];
+      return new Response(frames.join(""), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
     });
     const { sink, events } = makeSink();
 

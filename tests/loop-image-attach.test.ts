@@ -11,6 +11,18 @@ import { makeFakeClient } from "./support/fake-client.js";
 
 const DATA_URL = "data:image/png;base64,iVBORw0KGgo=";
 
+/** Image parts the model would see in one captured request. */
+function imageParts(messages: readonly { content: unknown }[]): number {
+  let total = 0;
+  for (const m of messages) {
+    if (!Array.isArray(m.content)) continue;
+    for (const part of m.content) {
+      if ((part as { type?: string }).type === "image_url") total++;
+    }
+  }
+  return total;
+}
+
 async function consume(loop: CacheFirstLoop, text: string, images?: string[]): Promise<void> {
   for await (const ev of loop.step(text, images)) {
     if (ev.role === "done") break;
@@ -32,6 +44,22 @@ describe("CacheFirstLoop — image attachments (OpenAI vision parts)", () => {
       { type: "text", text: "what does this show?" },
       { type: "image_url", image_url: { url: DATA_URL, detail: "low" } },
     ]);
+  });
+
+  it("sends only as many images as the loop's keepImages allows", async () => {
+    const { client, captured } = makeFakeClient([{ content: "ok" }, { content: "ok" }]);
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "be brief" }),
+      stream: false,
+      keepImages: 1,
+    });
+    await consume(loop, "first", [DATA_URL]);
+    await consume(loop, "second", [DATA_URL]);
+
+    // Both turns stay in the log, but the request carries one image: the second
+    // is the newest, so the first is dropped from what the provider is billed.
+    expect(imageParts(captured[1]!.messages)).toBe(1);
   });
 
   it("keeps plain string content when no images are attached (prefix-cache stable)", async () => {

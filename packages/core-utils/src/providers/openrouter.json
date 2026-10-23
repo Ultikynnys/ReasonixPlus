@@ -83,6 +83,7 @@
   },
   "wire": { "reasoningEffort": false },
   "billing": { "kind": "quota-if-key", "schedule": null },
+  "cost": { "tier": "standard" },
   "usage": {
     "probe": "openrouter-key",
     "urls": ["/key"],

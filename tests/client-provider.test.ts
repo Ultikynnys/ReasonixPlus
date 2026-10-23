@@ -1951,7 +1951,7 @@ describe("client-gpt56", () => {
       expect(body2.thinking).toEqual({ type: "enabled" });
     });
 
-    it("sends parallel_tool_calls:false for gpt models, never for deepseek", async () => {
+    it("sets store:false for gpt models and leaves the burst gate to the provider", async () => {
       const spy = vi.fn(
         async () =>
           new Response(JSON.stringify({ choices: [{ message: { content: "x" } }] }), {
@@ -1982,7 +1982,9 @@ describe("client-gpt56", () => {
       const [, init] = spy.mock.calls[0]!;
       const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
       expect(body.store).toBe(false);
-      expect(body.parallel_tool_calls).toBe(false);
+      // One request may carry a whole read batch: the loop still dispatches a
+      // gpt batch serially, so the wire gate buys nothing and costs rounds.
+      expect(body.parallel_tool_calls).toBeUndefined();
 
       const dsClient = new DeepSeekClient({
         apiKey: "sk-test",
@@ -1998,6 +2000,47 @@ describe("client-gpt56", () => {
       const body2 = JSON.parse(String(init2!.body)) as Record<string, unknown>;
       expect(body2.store).toBeUndefined();
       expect(body2.parallel_tool_calls).toBeUndefined();
+    });
+
+    it("sends the output cap under max_completion_tokens for OpenAI only", async () => {
+      const spy = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ choices: [{ message: { content: "x" } }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const openai = new DeepSeekClient({
+        apiKey: "sk-test",
+        baseUrl: "https://api.openai.com/v1",
+        fetch: spy as unknown as typeof fetch,
+        retry: { maxAttempts: 1 },
+      });
+      await openai.chat({
+        model: "gpt-5.6-sol",
+        messages: [{ role: "user", content: "hi" }],
+        maxTokens: 512,
+      });
+      const [, init] = spy.mock.calls[0]!;
+      const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
+      expect(body.max_completion_tokens).toBe(512);
+      expect(body.max_tokens).toBeUndefined();
+
+      const deepseek = new DeepSeekClient({
+        apiKey: "sk-test",
+        baseUrl: "https://api.deepseek.com",
+        fetch: spy as unknown as typeof fetch,
+        retry: { maxAttempts: 1 },
+      });
+      await deepseek.chat({
+        model: "deepseek-v4-flash",
+        messages: [{ role: "user", content: "hi" }],
+        maxTokens: 512,
+      });
+      const [, init2] = spy.mock.calls[1]!;
+      const body2 = JSON.parse(String(init2!.body)) as Record<string, unknown>;
+      expect(body2.max_tokens).toBe(512);
+      expect(body2.max_completion_tokens).toBeUndefined();
     });
 
     it("apiKeyResolver supplies the per-request Authorization when no static key exists", async () => {

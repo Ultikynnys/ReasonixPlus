@@ -31,6 +31,7 @@
   "vision": { "patterns": ["^gpt-"] },
   "modelFilter": null,
   "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
+  "reasoningDefault": "medium",
   "reasoningRules": [
     { "pattern": "^(?:gpt-(?:4|3)|chatgpt-4)", "efforts": [], "control": "none" },
     { "pattern": "^o1-pro(?:$|-)", "efforts": [], "control": "none" },
@@ -73,8 +74,13 @@
     "idField": "id",
     "excludeSpeech": false
   },
-  "wire": { "storeFlag": true },
+  "wire": {
+    "storeFlag": true,
+    "maxTokensField": "max_completion_tokens",
+    "promptCacheKey": true
+  },
   "billing": { "kind": "usd-unless-oauth", "schedule": null },
+  "cost": { "tier": "premium" },
   "usage": {
     "probe": "codex-oauth",
     "urls": [

@@ -85,6 +85,7 @@
       "weekendOffsetMinutes": 480
     }
   },
+  "cost": { "tier": "cheap" },
   "strings": {
     "offPeakTitle": "Off-peak: half of peak rates · Peak hours 01:00–04:00 & 06:00–10:00 UTC (weekdays), off-peak all day on weekends · changes in {when}",
     "peakTitle": "Peak: double the off-peak rate · Peak hours 01:00–04:00 & 06:00–10:00 UTC (weekdays), off-peak all day on weekends · changes in {when}"

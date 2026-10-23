@@ -15,7 +15,9 @@ import {
 import type { ResolvedHook } from "../hooks.js";
 import { CacheFirstLoop } from "../loop.js";
 import { isQuotaExhaustedError } from "../loop/errors.js";
+import { KEEP_LAST_IMAGES } from "../loop/image-retry.js";
 import type { WarningCause } from "../loop/types.js";
+import { DEFAULT_MAX_RESULT_TOKENS } from "../mcp/registry.js";
 import { applyProjectMemory } from "../memory/project.js";
 import { ImmutablePrefix } from "../memory/runtime.js";
 import { timestampSuffix } from "../memory/session.js";
@@ -96,6 +98,10 @@ export interface ChildLoopConfig {
   maxIterPerTurn: number;
   /** Per-response output cap (`max_tokens`); undefined = no cap. */
   maxOutputTokens: number | undefined;
+  /** Per-tool-result token cap from the parent's cost policy. */
+  maxResultTokens: number;
+  /** Image parts resent per request, from the parent's cost policy. */
+  keepImages: number;
   /** The user's PreToolUse / PostToolUse hooks: a control the parent's calls honour, so
    *  a child calling the same tools has to honour it too. */
   hooks: ResolvedHook[] | undefined;
@@ -108,17 +114,24 @@ export interface ChildLoopConfig {
 /** What a host supplies: the inherited fields, all optional, minus the ones the child
  *  forces. Derived from ChildLoopConfig so the two can never drift apart. */
 export type SubagentLoopOptions = Partial<
-  Omit<ChildLoopConfig, "autoCompact" | "maxIterPerTurn">
-> & { maxIterPerTurn?: number };
+  Omit<ChildLoopConfig, "autoCompact" | "maxIterPerTurn" | "maxResultTokens" | "keepImages">
+> & { maxIterPerTurn?: number; maxResultTokens?: number; keepImages?: number };
 
 /** The child loop's config: an inherited value wins, config/env supplies the fallback for
  *  hosts that pass no bag, and auto-compaction is forced on. `defaults` is a parameter
  *  rather than a hidden read so the policy stays testable. */
 export function childLoopOptions(
   inherited?: SubagentLoopOptions,
-  defaults: { maxIterPerTurn: number; maxOutputTokens?: number } = {
+  defaults: {
+    maxIterPerTurn: number;
+    maxOutputTokens?: number;
+    maxResultTokens: number;
+    keepImages: number;
+  } = {
     maxIterPerTurn: loadMaxIterPerTurn(),
     maxOutputTokens: loadMaxOutputTokens(),
+    maxResultTokens: DEFAULT_MAX_RESULT_TOKENS,
+    keepImages: KEEP_LAST_IMAGES,
   },
 ): ChildLoopConfig {
   return {
@@ -126,6 +139,8 @@ export function childLoopOptions(
     autoCompactTriggerRatio: inherited?.autoCompactTriggerRatio,
     maxIterPerTurn: inherited?.maxIterPerTurn ?? defaults.maxIterPerTurn,
     maxOutputTokens: inherited?.maxOutputTokens ?? defaults.maxOutputTokens,
+    maxResultTokens: inherited?.maxResultTokens ?? defaults.maxResultTokens,
+    keepImages: inherited?.keepImages ?? defaults.keepImages,
     hooks: inherited?.hooks,
     hookCwd: inherited?.hookCwd,
     // A dead run is worse than an early fold: nobody can press compact for a child.

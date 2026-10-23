@@ -10,6 +10,8 @@ import { Eventizer } from "../src/core/eventize.js";
 import { EventType } from "../src/core/events.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { COMPACTION_SUMMARY_PREFIX, DROPPED_WORK_NOTICE_PREFIX } from "../src/loop/compaction.js";
+import { buildCompactionRequest, buildVerificationRequest } from "../src/loop/compaction.js";
+import type { CompactionPlan } from "../src/loop/compaction.js";
 import { AUTO_COMPACT_TRIGGER_RATIO } from "../src/loop/compaction.js";
 import type { LoopEvent } from "../src/loop/types.js";
 import { ImmutablePrefix } from "../src/memory/runtime.js";
@@ -432,3 +434,33 @@ describe("compaction_start eventize mapping", () => {
 });
 
 void homedir;
+
+describe("compaction request budgets", () => {
+  const planFor = (messages: ChatMessage[]): CompactionPlan => ({
+    source: messages,
+    keptIndices: [],
+    foldedIndices: messages.map((_, i) => i),
+    legacyIndices: [],
+    priorSummary: null,
+    tokensBefore: 0,
+    tokensKept: 0,
+  });
+
+  it("caps the verification probe at the same budget as the summary call", () => {
+    const messages: ChatMessage[] = Array.from({ length: 40 }, (_, i) => ({
+      role: i % 2 === 0 ? "user" : "assistant",
+      content: `entry ${i}: ${"detail ".repeat(300)}`,
+    }));
+    const plan = planFor(messages);
+    const summary = String(buildCompactionRequest(plan, 2_000)[0]!.content);
+    const probe = String(buildVerificationRequest(plan, "candidate summary", 2_000)[0]!.content);
+
+    // The raw span is an order of magnitude over the budget, so both calls trim.
+    expect(messages.reduce((n, m) => n + String(m.content).length, 0)).toBeGreaterThan(60_000);
+    expect(summary).toMatch(/older messages omitted/);
+    expect(probe).toMatch(/older messages omitted/);
+    // The probe re-reads the same capped span, never the whole folded history.
+    expect(probe).not.toContain("entry 0:");
+    expect(probe.length).toBeLessThan(summary.length + 1_000);
+  });
+});

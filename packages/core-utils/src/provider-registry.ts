@@ -241,6 +241,23 @@ export interface ProviderBillingSpec {
   balance: ProviderBalanceSpec | null;
 }
 
+/** Relative per-token cost. `cheap` treats a cache read as a rounding error,
+ *  `premium` treats every resent byte as real money. */
+export type ProviderCostTier = "cheap" | "standard" | "premium";
+
+/** A tier, plus the tuning a provider overrides on top of it. Every numeric field
+ *  is optional: absent means "use the tier's value", so a tier change moves the
+ *  whole family at once. */
+export interface ProviderCostSpec {
+  tier: ProviderCostTier;
+  /** Per-tool-result token cap. */
+  toolResultTokens?: number;
+  /** Fraction of the context window at which auto-compaction fires. */
+  compactionTrigger?: number;
+  /** Image parts re-sent with each request. */
+  keepImages?: number;
+}
+
 /** Wire format the transport speaks for this provider. `gemini-interactions` is
  *  Google's `POST /v1beta/interactions` step_list protocol: it shares nothing with
  *  chat-completions, so the client builds and parses it from scratch. */
@@ -249,6 +266,10 @@ export type ProviderWireFormat = "chat-completions" | "ollama-native" | "gemini-
 /** Where a provider expects its thinking toggle; null when it refuses the field. */
 export type ProviderThinkingStyle = "top-level" | "zai-top-level" | "mimo-top-level";
 
+/** Request field carrying the output-token cap. Newer OpenAI models reject the
+ *  chat-completions `max_tokens` spelling in favor of `max_completion_tokens`. */
+export type ProviderMaxTokensField = "max_tokens" | "max_completion_tokens";
+
 /** Per-provider request quirks, so the client never branches on a provider id. */
 export interface ProviderWireSpec {
   format: ProviderWireFormat;
@@ -256,8 +277,15 @@ export interface ProviderWireSpec {
   stampMessageIds: boolean;
   /** Send `stream_options.include_usage` on a streaming request. */
   streamOptions: boolean;
-  /** Send `store: false` and pin one tool call per response. */
+  /** Send `store: false` on a wire that requires the flag explicitly. */
   storeFlag: boolean;
+  /** Field the output-token cap travels in. */
+  maxTokensField: ProviderMaxTokensField;
+  /** Request-level parallel tool-call gate. null sends nothing, leaving the
+   *  provider's default: a burst costs one request instead of one per call. */
+  parallelToolCalls: boolean | null;
+  /** Send a session-stable `prompt_cache_key` so the provider routes on it. */
+  promptCacheKey: boolean;
   /** Send `tool_stream` when streaming with tools. */
   toolStream: boolean;
   thinking: ProviderThinkingStyle | null;
@@ -275,6 +303,9 @@ export const DEFAULT_PROVIDER_WIRE: ProviderWireSpec = {
   stampMessageIds: false,
   streamOptions: true,
   storeFlag: false,
+  maxTokensField: "max_tokens",
+  parallelToolCalls: null,
+  promptCacheKey: false,
   toolStream: false,
   thinking: null,
   reasoningEffort: true,
@@ -292,6 +323,8 @@ const THINKING_STYLES: ReadonlySet<string> = new Set([
   "zai-top-level",
   "mimo-top-level",
 ]);
+const MAX_TOKENS_FIELDS: ReadonlySet<string> = new Set(["max_tokens", "max_completion_tokens"]);
+const COST_TIERS: ReadonlySet<string> = new Set(["cheap", "standard", "premium"]);
 
 export type ProviderReasoningControl = "effort" | "gemini-level" | "gemini-budget" | "cloudcode-budget" | "none";
 
@@ -356,10 +389,13 @@ export interface ProviderSpec {
   routing: ProviderRoutingSpec;
   /** models.dev provider key whose `reasoning_options` feed this provider, when any. */
   modelsDev: string | null;
+  /** Effort this provider's models start at when the user has not chosen one. */
+  reasoningDefault: ReasoningEffort | undefined;
   discovery: ProviderDiscoverySpec;
   client: ProviderClientSpec;
   errors: ProviderErrorsSpec;
   billing: ProviderBillingSpec;
+  cost: ProviderCostSpec;
   wire: ProviderWireSpec;
   usage: ProviderUsageSpec;
   strings: ProviderStringsSpec;
@@ -535,6 +571,26 @@ function number(value: unknown, where: string): number {
 function nullableNumber(value: unknown, where: string): number | null {
   if (value === null || value === undefined) return null;
   return number(value, where);
+}
+
+/** A count: whole and positive. Token counts and image budgets are counts. */
+function positiveInteger(value: unknown, where: string): number {
+  const n = number(value, where);
+  if (!Number.isInteger(n) || n < 1) fail(where, "expected a whole number above zero");
+  return n;
+}
+
+/** A ratio the loop multiplies a window by: above zero, at most one. */
+function fractionOfWindow(value: unknown, where: string): number {
+  const n = number(value, where);
+  if (!(n > 0 && n <= 1)) fail(where, "expected a fraction above zero and at most 1");
+  return n;
+}
+
+/** A boolean, or null when the provider declares none (send the field never). */
+function nullableFlag(value: unknown, where: string): boolean | null {
+  if (value === null || value === undefined) return null;
+  return flag(value, where);
 }
 
 function texts(value: unknown, where: string): string[] {
@@ -781,6 +837,13 @@ function parseWire(value: unknown, where: string): ProviderWireSpec {
     stampMessageIds: flag(raw.stampMessageIds ?? false, `${where}.stampMessageIds`),
     streamOptions: flag(raw.streamOptions ?? true, `${where}.streamOptions`),
     storeFlag: flag(raw.storeFlag ?? false, `${where}.storeFlag`),
+    maxTokensField: choice<ProviderMaxTokensField>(
+      raw.maxTokensField ?? "max_tokens",
+      MAX_TOKENS_FIELDS,
+      `${where}.maxTokensField`,
+    ),
+    parallelToolCalls: nullableFlag(raw.parallelToolCalls, `${where}.parallelToolCalls`),
+    promptCacheKey: flag(raw.promptCacheKey ?? false, `${where}.promptCacheKey`),
     toolStream: flag(raw.toolStream ?? false, `${where}.toolStream`),
     thinking: nullableChoice<ProviderThinkingStyle>(
       raw.thinking,
@@ -852,6 +915,27 @@ function parseBalance(value: unknown, where: string): ProviderBalanceSpec | null
   return {
     url,
     shape: choice<ProviderBalanceShape>(raw.shape, PROVIDER_BALANCE_SHAPES, `${where}.shape`),
+  };
+}
+
+function parseCost(value: unknown, where: string): ProviderCostSpec {
+  const raw = record(value ?? {}, where);
+  return {
+    tier: choice<ProviderCostTier>(raw.tier ?? "standard", COST_TIERS, `${where}.tier`),
+    ...(raw.toolResultTokens === undefined
+      ? {}
+      : { toolResultTokens: positiveInteger(raw.toolResultTokens, `${where}.toolResultTokens`) }),
+    ...(raw.compactionTrigger === undefined
+      ? {}
+      : {
+          compactionTrigger: fractionOfWindow(
+            raw.compactionTrigger,
+            `${where}.compactionTrigger`,
+          ),
+        }),
+    ...(raw.keepImages === undefined
+      ? {}
+      : { keepImages: positiveInteger(raw.keepImages, `${where}.keepImages`) }),
   };
 }
 
@@ -1008,10 +1092,19 @@ function parseProvider(value: unknown, source: string): ProviderSpec {
     picker: flag(raw.picker ?? true, `${scope}: picker`),
     routing: parseRouting(raw.routing, `${scope}: routing`),
     modelsDev: nullableText(raw.modelsDev, `${scope}: modelsDev`),
+    reasoningDefault:
+      raw.reasoningDefault === undefined
+        ? undefined
+        : choice<ReasoningEffort>(
+            raw.reasoningDefault,
+            REASONING_LEVELS,
+            `${scope}: reasoningDefault`,
+          ),
     discovery: parseDiscovery(raw.discovery, `${scope}: discovery`),
     client: parseClient(raw.client, `${scope}: client`),
     errors: parseErrors(raw.errors, `${scope}: errors`, label),
     billing: parseBilling(raw.billing, `${scope}: billing`),
+    cost: parseCost(raw.cost, `${scope}: cost`),
     wire: parseWire(raw.wire, `${scope}: wire`),
     usage: parseUsage(raw.usage, `${scope}: usage`),
     strings: parseStrings(raw.strings, `${scope}: strings`),

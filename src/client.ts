@@ -39,6 +39,7 @@ import { type ReasoningControl, reasoningControl } from "./reasoning-control.js"
 import { reasonixHome } from "./reasonix-home.js";
 import { buildResponsesPayload } from "./responses-api.js";
 import { type RetryOptions, fetchWithRetryProgress } from "./retry.js";
+import { stableHash } from "./telemetry/cache-diagnostics.js";
 import { DEFAULT_CONTEXT_TOKENS } from "./telemetry/stats.js";
 import { estimateRequestTokens } from "./tokenizer.js";
 import type { ChatMessage, ChatRequestOptions, RawUsage, ToolCall, ToolSpec } from "./types.js";
@@ -1283,6 +1284,20 @@ export class DeepSeekClient {
     return waitMs;
   }
 
+  /** Per-instance identity for a client minted without a session name, so its
+   *  rounds still land in one cache partition. */
+  private instanceIdentity(): string {
+    this._generatedSessionId ??= randomUUID();
+    return this._generatedSessionId;
+  }
+
+  /** Session-stable cache hint, hashed so the identity never leaves the machine.
+   *  `store:false` keeps that backend stateless, so the hint is the only way to
+   *  steer cache routing. A wire that does not declare support is never passed one. */
+  private promptCacheKey(): string {
+    return `reasonix-chat-${stableHash(this.sessionId ?? this.instanceIdentity())}`;
+  }
+
   private buildPayload(
     opts: ChatRequestOptions,
     stream: boolean,
@@ -1321,7 +1336,10 @@ export class DeepSeekClient {
     // fields (messages, stream_options, max_tokens, ...) are rejected with a
     // 400, so the whole payload is converted.
     if (transport?.api === "responses") {
-      return buildResponsesPayload(opts, stream, provider, control);
+      return buildResponsesPayload(opts, stream, provider, control, {
+        cacheKey: wire.promptCacheKey ? this.promptCacheKey() : undefined,
+        parallelToolCalls: wire.parallelToolCalls ?? undefined,
+      });
     }
     // Ollama speaks its native `/api/chat` wire format — `options.num_ctx`,
     // `keep_alive` and `think` are all silently dropped by the OpenAI-compat
@@ -1346,21 +1364,17 @@ export class DeepSeekClient {
     if (stream && wire.streamOptions) payload.stream_options = { include_usage: true };
     // OpenAI now requires explicit `store: false` — omitting it returns
     // 400 {"detail":"Store must be set to false"}.  DeepSeek ignores it.
-    if (wire.storeFlag) {
-      payload.store = false;
-      // ChatGPT models default to parallel tool-call bursts in one response.
-      // Pin them to one call per response: the loop feeds each result back
-      // before the next model round, so a burst is both unsafe (calls run on
-      // stale assumptions) and wasted (serial dispatch would just queue them).
-      payload.parallel_tool_calls = false;
-    }
+    if (wire.storeFlag) payload.store = false;
+    // Declared only by a provider that must not receive bursts. Unset leaves the
+    // provider default, so one response can carry a whole read batch.
+    if (wire.parallelToolCalls !== null) payload.parallel_tool_calls = wire.parallelToolCalls;
     if (provider === "opencode") {
       payload.tools = withOpencodeRequiredTool(opts.tools);
     } else if (opts.tools?.length) {
       payload.tools = opts.tools;
     }
     if (opts.temperature !== undefined) payload.temperature = opts.temperature;
-    if (opts.maxTokens !== undefined) payload.max_tokens = opts.maxTokens;
+    if (opts.maxTokens !== undefined) payload[wire.maxTokensField] = opts.maxTokens;
     if (opts.responseFormat) payload.response_format = opts.responseFormat;
     // Thinking-toggle placement is declared per provider (`wire.thinking`); a
     // provider that declares no style never receives the field.

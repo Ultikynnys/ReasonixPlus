@@ -234,6 +234,8 @@ export type {
   TurnStats,
   SessionSummary,
 } from "./telemetry/stats.js";
+export { costPolicyForModel } from "./cost-policy.js";
+export type { CostPolicy } from "./cost-policy.js";
 
 export {
   ToolCallRepair,

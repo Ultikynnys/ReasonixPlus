@@ -500,11 +500,12 @@ function withPriorSummaryAnchor(instruction: string, priorSummary: string | null
   return `${instruction}\n\nA previous compaction summary exists. You MUST integrate all still-relevant information from it, updating it with the more recent events. Do not lose established constraints or critical knowledge.\n\nPrevious summary:\n${priorSummary}`;
 }
 
-/** One user message for the summarizer call: instruction + token-capped transcript. */
-export function buildCompactionRequest(
+/** The newest messages of the folded span that fit the budget, and how many older
+ *  ones were dropped. Shared so the probe can never re-send more than the summary. */
+function cappedSpan(
   plan: CompactionPlan,
-  maxInputTokens: number = SUMMARIZER_INPUT_MAX_TOKENS,
-): ChatMessage[] {
+  maxInputTokens: number,
+): { messages: ChatMessage[]; omitted: number } {
   const span = plan.foldedIndices.map((i) => plan.source[i]!);
   const budget = Math.max(2_000, maxInputTokens);
   const kept: ChatMessage[] = [];
@@ -521,15 +522,27 @@ export function buildCompactionRequest(
     kept.push(m);
   }
   kept.reverse();
-  const transcript = renderTranscript(kept);
-  const body =
-    omitted > 0
-      ? `${transcript}\n\n(${omitted} older messages omitted from this compaction input)`
-      : transcript;
+  return { messages: kept, omitted };
+}
+
+/** Rendered transcript of the capped span, with an omission marker when trimmed. */
+function cappedTranscript(plan: CompactionPlan, maxInputTokens: number): string {
+  const { messages, omitted } = cappedSpan(plan, maxInputTokens);
+  const transcript = renderTranscript(messages);
+  return omitted > 0
+    ? `${transcript}\n\n(${omitted} older messages omitted from this compaction input)`
+    : transcript;
+}
+
+/** One user message for the summarizer call: instruction + token-capped transcript. */
+export function buildCompactionRequest(
+  plan: CompactionPlan,
+  maxInputTokens: number = SUMMARIZER_INPUT_MAX_TOKENS,
+): ChatMessage[] {
   return [
     {
       role: "user",
-      content: `${withPriorSummaryAnchor(SUMMARIZATION_INSTRUCTION, plan.priorSummary)}\n\nConversation to summarize:\n${body}`,
+      content: `${withPriorSummaryAnchor(SUMMARIZATION_INSTRUCTION, plan.priorSummary)}\n\nConversation to summarize:\n${cappedTranscript(plan, maxInputTokens)}`,
     },
   ];
 }
@@ -540,13 +553,17 @@ If anything is missing or could be more precise, write a FINAL improved summary.
 Otherwise repeat the exact same summary again.
 Write the summary only, with no preamble or commentary.`;
 
-/** Gemini-style verification probe: second cheap call that self-corrects the summary. */
-export function buildVerificationRequest(plan: CompactionPlan, summaryText: string): ChatMessage[] {
-  const transcript = renderTranscript(plan.foldedIndices.map((i) => plan.source[i]!));
+/** Gemini-style verification probe: the second call self-corrects the summary. It
+ *  reads the same capped span as the first, so the probe costs no more than it. */
+export function buildVerificationRequest(
+  plan: CompactionPlan,
+  summaryText: string,
+  maxInputTokens: number = SUMMARIZER_INPUT_MAX_TOKENS,
+): ChatMessage[] {
   return [
     {
       role: "user",
-      content: `Candidate compaction summary:\n${summaryText.trim()}\n\n${VERIFICATION_INSTRUCTION}\n\nConversation:\n${transcript}`,
+      content: `Candidate compaction summary:\n${summaryText.trim()}\n\n${VERIFICATION_INSTRUCTION}\n\nConversation:\n${cappedTranscript(plan, maxInputTokens)}`,
     },
   ];
 }
