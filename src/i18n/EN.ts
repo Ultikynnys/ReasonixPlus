@@ -1161,39 +1161,6 @@ export const EN: TranslationSchema = {
       existsPinned: "  pinned into the system prompt every launch as-is.",
       info: "▸ the model will scan the project and synthesize REASONIX.md.\n  The result lands as a pending edit.",
     },
-
-    skill: {
-      listEmpty: "no skills found. Reasonix+ reads skills from:",
-      listProjectScope:
-        "  · <project>/.reasonix/skills/<name>/SKILL.md  (or <name>.md)  — project scope",
-      listGlobalScope: "  · ~/.reasonix/skills/<name>/SKILL.md  (or <name>.md)  — global scope",
-      listProjectOnly: "  (project scope is only active in code mode)",
-      listFrontmatter: "Each file's frontmatter needs at least `name` and `description`.",
-      listInvoke: "Invoke a skill by name from the skills panel.",
-      listHeader: "User skills ({count}):",
-      listFooter: "View or run skills from the skills panel.",
-      listEmptyNewHint:
-        "There's no remote registry yet — author skills directly as SKILL.md files (project scope).",
-      showUsage: "show a skill by name",
-      showNotFound: "no skill found: {name}",
-      runNotFound: "no skill found: {name}",
-      runInfo: "▸ running skill: {name}{args}",
-      newUsage: "scaffold a skill: <name> [--global]",
-      newCreated: "▸ created skill: {name}\n  {path}\n  edit it, then run it",
-      newError: "▲ skill scaffold failed: {reason}",
-      pathsHeader: "Skill paths (priority order):",
-      pathsPriority:
-        "Priority: project > custom paths in config order > global > builtin. Changes affect the system prompt on the next new session.",
-      pathsUsage: "List custom skills paths, add one, or remove one.",
-      pathsAddUsage: "add a custom skills path",
-      pathsRemoveUsage: "remove a custom skills path by path or index",
-      pathsAdded: "▸ added custom skills path: {path}",
-      pathsAlready: "▸ custom skills path already configured: {path}",
-      pathsRemoved: "▸ removed custom skills path: {path}",
-      pathsRemoveNotFound: "▸ no custom skills path matches: {target}",
-      pathsRestartHint:
-        "The current session's system prompt is unchanged; start a new session to refresh the skills index.",
-    },
   },
   statusBar: {
     turn: "turn",

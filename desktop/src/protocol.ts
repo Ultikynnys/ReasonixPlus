@@ -104,9 +104,6 @@ import type {
   SettingsPatch,
   SettingsPayload,
   KernelErrorEvent as SharedKernelErrorEvent,
-  SkillInfo,
-  SkillScope,
-  SkillsEvent,
   StepCompletedEvent,
   TabClosedEvent,
   TabOpenedEvent,
@@ -215,9 +212,6 @@ export type {
   SettingsEvent,
   SettingsPatch,
   SettingsPayload,
-  SkillInfo,
-  SkillsEvent,
-  SkillScope,
   StepCompletedEvent,
   TabClosedEvent,
   TabOpenedEvent,
@@ -297,7 +291,6 @@ export type IncomingEvent = { tabId?: string } & (
   | McpExtensionCheckEvent
   | MailAuthEvent
   | PlaywrightBrowserInstallEvent
-  | SkillsEvent
   | CtxBreakdownEvent
   | MemoryEvent
   | MemoryDetailEvent

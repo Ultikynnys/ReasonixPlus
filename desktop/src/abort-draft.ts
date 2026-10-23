@@ -1,4 +1,4 @@
-export type AbortDraftSource = "user_input" | "skill_run" | "btw";
+export type AbortDraftSource = "user_input" | "btw";
 
 export type AbortDraftAction =
   | { type: "record"; source: AbortDraftSource; text: string }

@@ -14,7 +14,6 @@ import type {
   PendingCheckpoint,
   PendingConfirm,
   PendingRevision,
-  SkillOrigin,
 } from "../App";
 import { InlineMarkdown, Markdown } from "../Markdown";
 import { t, useLang } from "../i18n";
@@ -393,12 +392,10 @@ export const UserMsg = memo(function UserMsg({
   text,
   images,
   time,
-  skill,
 }: {
   text: string;
   images?: string[];
   time?: string;
-  skill?: SkillOrigin;
 }) {
   useLang();
   const [copied, setCopied] = useState(false);
@@ -417,11 +414,6 @@ export const UserMsg = memo(function UserMsg({
       <div className="body">
         <div className="who">
           <span className="name">{t("thread.you")}</span>
-          {skill ? (
-            <span className="skill-chip" title={`skill · ${skill.name}`}>
-              <I.zap size={10} /> /{skill.name}
-            </span>
-          ) : null}
           {time ? <span className="time">{time}</span> : null}
         </div>
         {images && images.length > 0 ? (

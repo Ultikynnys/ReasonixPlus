@@ -9,7 +9,6 @@ import {
 
 function input(overrides: Partial<BusyStatusInput> = {}): BusyStatusInput {
   return {
-    activeSkill: null,
     pendingChoices: [],
     pendingPlans: [],
     pendingCheckpoints: [],
@@ -84,13 +83,8 @@ describe("busyStatusLabel", () => {
 
   it("lets a waiting prompt outrank the turn phase", () => {
     expect(
-      busyStatusLabel(
-        input({ turnStatus: "waiting_model", pendingChoices: [{ id: 1 }], activeSkill: null }),
-      ),
+      busyStatusLabel(input({ turnStatus: "waiting_model", pendingChoices: [{ id: 1 }] })),
     ).toBe("Waiting for your choice…");
-    expect(
-      busyStatusLabel(input({ turnStatus: "waiting_model", activeSkill: { name: "deploy" } })),
-    ).toBe("Skill · deploy");
   });
 });
 

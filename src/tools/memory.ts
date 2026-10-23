@@ -132,7 +132,7 @@ export function registerMemoryTools(
           `✓ REMEMBERED (${args.scope}/${key}): ${args.description}`,
           "",
           "TREAT THIS AS ESTABLISHED FACT for the rest of this session.",
-          "The user just told you: don't re-explore the filesystem to re-derive it.",
+          "Do not re-derive user preferences or constraints by re-exploring; claims about current code behavior still need source evidence.",
           `(Saved to ${path}; pins into the system prompt on the next new session or launch.)`,
         ].join("\n");
       } catch (err) {

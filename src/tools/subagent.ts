@@ -8,6 +8,7 @@ import {
   loadFallbackModels,
   loadMaxIterPerTurn,
   loadMaxOutputTokens,
+  loadModel,
   modelUsableFor,
   pickFallbackModel,
 } from "../config.js";
@@ -138,6 +139,9 @@ export interface SpawnSubagentOptions {
   system: string;
   task: string;
   model?: string;
+  /** Config file the model and backup list resolve against; a spawn never reads the
+   *  real user config when the caller pins this. */
+  configPath?: string;
   /** Thinking budget for this run. Omitted → the constrained subagent default. */
   effort?: ReasoningEffort;
   maxResultChars?: number;
@@ -151,7 +155,7 @@ export interface SpawnSubagentOptions {
   waveSize?: number;
   /** Scopes the child registry to these names, MCP tools included; an entry ending in
    *  `*` grants a name prefix (`ghidra_*`), so one list can span several servers.
-   *  NEVER_INHERITED still wins. Driven by the skill's `allowed-tools` frontmatter. */
+   *  NEVER_INHERITED still wins. */
   allowedTools?: readonly string[];
   /** Enforced count of real child tool dispatches. */
   maxToolIters?: number;
@@ -229,11 +233,22 @@ ${NEGATIVE_CLAIM_RULE}
 ${TUI_FORMATTING_RULES}`;
 
 const DEFAULT_MAX_RESULT_CHARS = 8000;
-// Subagents default to flash: most work is read-and-synthesize
-// (explore, research), which doesn't need the pro tier. Skill
-// frontmatter `model: deepseek-v4-pro` is the opt-in override for
-// skills that empirically benefit from the stronger model.
-export const DEFAULT_SUBAGENT_MODEL = "deepseek-flash";
+
+/** The model a child runs: the caller's choice, or the main agent's configured model,
+ *  screened by the same usability check and backup list the main chat fails over with.
+ *  A subagent never invents a model of its own. */
+export function resolveSubagentModel(primary?: string, configPath?: string): string {
+  const intended = primary?.trim() || loadModel(configPath);
+  const usable = (model: string): boolean => {
+    try {
+      return modelUsableFor(model, configPath);
+    } catch {
+      return false;
+    }
+  };
+  if (usable(intended)) return intended;
+  return pickFallbackModel(loadFallbackModels(configPath), new Set([intended]), usable) ?? intended;
+}
 /** Fallback only: hosts pass the session's effort through `effort`, so a child
  *  reasons at the same depth as the chat that spawned it. */
 const DEFAULT_SUBAGENT_EFFORT: ReasoningEffort = "high";
@@ -292,7 +307,7 @@ function isRepetitionGuardStop(cause: WarningCause | undefined): boolean {
 
 /** Errors captured in the result shape, never thrown — caller decides how to surface. */
 export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<SubagentResult> {
-  const model = opts.model ?? DEFAULT_SUBAGENT_MODEL;
+  const model = resolveSubagentModel(opts.model, opts.configPath);
   // The child inherits the parent's configured cap, so its enforced limit and the
   // denominator the UI's ctx meter displays are the same number the tab runs on.
   const contextMax = resolveContextTokens(model, opts.inherited?.ctxMaxOverride);
@@ -337,7 +352,7 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
       (entry) => !registered.some((name) => allowEntryCovers(entry, name)),
     );
     if (missing.length > 0) {
-      const errorMessage = `subagent allow-list names tool(s) the parent does not register: ${missing.join(", ")}. Fix the skill's \`allowed-tools\` frontmatter or check spelling. An entry ending in "*" matches by name prefix.`;
+      const errorMessage = `subagent allow-list names tool(s) the parent does not register: ${missing.join(", ")}. Check the spelling, or use an entry ending in "*" to match by name prefix.`;
       emit({
         kind: "end",
         runId,
@@ -797,10 +812,14 @@ export function registerSubagentTool(
   const defaultSystemBase = opts.projectRoot
     ? applyProjectMemory(baseSystem, opts.projectRoot)
     : baseSystem;
-  /** Read per spawn, so a model switch mid-session applies to the next child. */
+  /** Read per spawn, so a model switch mid-session applies to the next child. The
+   *  host's choice goes through the same screening and backup list as the main agent,
+   *  so a spawn never starts on a model this machine cannot run. */
   const resolveModel = (): string =>
-    (typeof opts.defaultModel === "function" ? opts.defaultModel() : opts.defaultModel) ??
-    DEFAULT_SUBAGENT_MODEL;
+    resolveSubagentModel(
+      typeof opts.defaultModel === "function" ? opts.defaultModel() : opts.defaultModel,
+      opts.configPath,
+    );
   /** Read per spawn: the child thinks on the session's current effort. Undefined
    *  leaves `spawnSubagent` to apply the constrained default, so that default lives
    *  in exactly one place. */
@@ -818,7 +837,7 @@ export function registerSubagentTool(
     name: SUBAGENT_TOOL_NAME,
     parallelSafe: true,
     description:
-      "Run one subtask in an isolated subagent and get back only its final answer. It shares your sandbox, safety rules, model and limits, but has none of your conversation: put everything it needs in 'task', including what to check and what the answer must contain. **Prefer direct tools**; spawn for parallel fan-out (2+ independent tasks issued in one batch) or when the work needs more than 10 reads whose trail you do not want to keep. Issue a fan-out as consecutive calls: a write, shell or MCP call between two spawns splits them into separate waves, and the later ones then start only after the earlier ones finish.",
+      "Run one subtask in an isolated subagent and get back only its final answer. It shares your sandbox, safety rules and limits, but has none of your conversation: put everything it needs in 'task', including what to check and what the answer must contain. **Prefer direct tools**; spawn for parallel fan-out (2+ independent tasks issued in one batch) or when the work needs more than 10 reads whose trail you do not want to keep. Issue a fan-out as consecutive calls: a write, shell or MCP call between two spawns splits them into separate waves, and the later ones then start only after the earlier ones finish.",
     parameters: {
       type: "object",
       properties: {

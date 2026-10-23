@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildCodeToolset } from "../src/code/setup.js";
 import { MCP_CATALOG } from "../src/mcp/catalog.js";
-import { SkillStore } from "../src/skills.js";
 
 const EM_DASH = "\u2014";
 const EN_DASH = "\u2013";
@@ -66,18 +65,6 @@ describe("agent-facing text is free of em/en dashes", () => {
     } finally {
       await toolset.jobs.shutdown();
     }
-  });
-
-  it("built-in skill bodies and descriptions are dash-free", () => {
-    const store = new SkillStore({ homeDir: home, projectRoot });
-    const builtins = store.list().filter((s) => s.scope === "builtin");
-    expect(builtins.length).toBeGreaterThan(0);
-    const offenders: string[] = [];
-    for (const skill of builtins) {
-      if (firstDash(skill.body)) offenders.push(`${skill.name}.body`);
-      if (firstDash(skill.description)) offenders.push(`${skill.name}.description`);
-    }
-    expect(offenders).toEqual([]);
   });
 
   it("the built-in MCP catalog summaries and notes are dash-free", () => {

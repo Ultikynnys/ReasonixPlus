@@ -33,7 +33,7 @@ export type ImageQuality = (typeof QUALITIES)[number];
 export type ImageBackground = (typeof BACKGROUNDS)[number];
 
 const DESCRIPTION =
-  "Generate an image from a text prompt and save it as a PNG. Relative output paths resolve under the workspace; absolute paths are accepted. If omitted, save under .reasonix/generated-images/<slug>-<timestamp>.png. Runs on the user's signed-in OpenAI/ChatGPT account (draws on plan quota, not billed against an OpenAI API key), so it is available only when an OpenAI OAuth session is configured. Returns the saved path plus the pixels so you can see the result. Use it for icons, illustrations, textures, banners, or any visual asset the task needs.";
+  "Generate an image from a text prompt and save it as a PNG. Relative output paths resolve under the workspace; absolute paths are accepted. If omitted, save under .reasonix/generated-images/<slug>-<timestamp>.png. Runs on the user's signed-in OpenAI/ChatGPT account (draws on plan quota, not billed against an OpenAI API key), so it is available only when an OpenAI OAuth session is configured. Returns the saved path, plus the pixels when your model accepts images. Use it for icons, illustrations, textures, banners, or any visual asset the task needs.";
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
   return typeof value === "string" && (allowed as readonly string[]).includes(value)

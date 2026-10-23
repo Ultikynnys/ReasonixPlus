@@ -1,6 +1,5 @@
 import type { DeepSeekClient } from "../client.js";
 import {
-  DEFAULT_MODEL,
   type EditMode,
   type ReasoningEffort,
   isNeverAskMode,
@@ -9,7 +8,6 @@ import {
   loadElevationEnabled,
   loadFilesystemOutlineThresholdBytes,
   loadProjectShellAllowed,
-  loadSubagentModels,
   loadToolRateLimit,
   readConfig,
   regexRulePatterns,
@@ -186,7 +184,7 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
       client: subagentClientFor,
       configPath: opts.configPath,
       projectRoot: opts.rootDir,
-      defaultModel: () => opts.subagentModel?.() ?? DEFAULT_MODEL,
+      defaultModel: opts.subagentModel,
       effort: opts.subagentEffort,
       inherited: opts.subagentLoopOptions,
       // Late-bound: the TUI's `useSubagent` writes the live callback into

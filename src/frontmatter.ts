@@ -1,4 +1,4 @@
-/** Tiny YAML-frontmatter parser shared by skills / memory loaders. Single source so BOM + folded + quoted handling stay consistent. */
+/** Tiny YAML-frontmatter parser shared by the memory loaders. Single source so BOM + folded + quoted handling stay consistent. */
 
 const KEY_RE = /^([a-zA-Z_][a-zA-Z0-9_-]*):\s*(.*)$/;
 /** Bracket-write guard — regex permits these as identifiers, but writing them would mutate Object.prototype. */

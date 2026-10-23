@@ -33,7 +33,7 @@ export interface UsageRecord {
   kind?: "turn" | "subagent";
   /** Present when `kind === "subagent"`. Attribution metadata for the stats roll-up. */
   subagent?: {
-    /** Skill that spawned it, when the spawn came from a `runAs: subagent` skill. */
+    /** Caller-supplied run label; absent on a raw spawn. */
     skillName?: string;
     /** First ~60 chars of the task prompt — enough context to recognize a run, never the full text. */
     taskPreview: string;
@@ -217,7 +217,7 @@ export interface UsageAggregate {
 export interface SubagentAggregate {
   total: number;
   totalDurationMs: number;
-  /** Per-skill breakdown. Records without `skillName` (raw spawn_subagent calls) group under `"(adhoc)"`. */
+  /** Per-label breakdown. Records without a label group under `"(adhoc)"`. */
   bySkill: Array<{ skillName: string; count: number; durationMs: number }>;
 }
 

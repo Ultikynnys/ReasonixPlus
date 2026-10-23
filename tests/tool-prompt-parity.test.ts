@@ -18,7 +18,6 @@ const PROMPT_SILENT_TOOLS = [
   "delete_directory",
   "delete_file",
   "directory_tree",
-  "edit_file",
   "find_in_code",
   "forget",
   "forget_rule",

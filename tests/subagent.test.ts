@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { DeepSeekClient, Usage } from "../src/client.js";
 import { planRepository } from "../src/code/plans.js";
+import { modelUsableFor, writeConfig } from "../src/config.js";
 import { PauseGate } from "../src/core/pause-gate.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { bridgeMcpTools } from "../src/mcp/registry.js";
@@ -25,6 +26,7 @@ import {
   forkRegistryWithAllowList,
   formatSubagentResult,
   registerSubagentTool,
+  resolveSubagentModel,
   spawnSubagent,
   subagentBudgetHint,
 } from "../src/tools/subagent.js";
@@ -414,7 +416,7 @@ describe("registerSubagentTool", () => {
     expect(childTools).not.toContain("submit_plan");
   });
 
-  it("falls back to the default model when the model arg is invalid", async () => {
+  it("runs the child on the resolved model instead of a subagent-specific constant", async () => {
     const seenModels: string[] = [];
     const client = new DeepSeekClient({
       apiKey: "sk-test",
@@ -432,15 +434,71 @@ describe("registerSubagentTool", () => {
         );
       }) as any,
     });
-    const parent = new ToolRegistry();
-    registerSubagentTool(parent, { client });
-    // Only known model namespaces (deepseek-*, gpt-*) pass the args guard —
-    // an id from neither must fall back to the default.
-    await parent.dispatch("spawn_subagent", JSON.stringify({ task: "go", model: "claude-sonnet" }));
-    // Subagent default was pro pre-0.6; now flash to keep explore/research
-    // cheap. Skill frontmatter `model:` is the opt-in override for skills
-    // that empirically benefit from pro.
-    expect(seenModels[0]).toBe("deepseek-flash");
+    const dir = mkdtempSync(join(tmpdir(), "reasonix-subagent-model-"));
+    const configPath = join(dir, "config.json");
+    writeConfig({ model: "deepseek-v4-pro", apiKey: "sk-test" }, configPath);
+    try {
+      const parent = new ToolRegistry();
+      registerSubagentTool(parent, { client, configPath });
+      // `model` is outside the tool schema, so an id there cannot decide the child's
+      // model: the spawn resolves it the same way the main agent does.
+      await parent.dispatch(
+        "spawn_subagent",
+        JSON.stringify({ task: "go", model: "claude-sonnet" }),
+      );
+      expect(seenModels[0]).toBe("deepseek-v4-pro");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe("resolveSubagentModel", () => {
+    function withConfig(
+      cfg: Parameters<typeof writeConfig>[0],
+      run: (configPath: string) => void,
+    ): void {
+      const dir = mkdtempSync(join(tmpdir(), "reasonix-subagent-resolve-"));
+      const configPath = join(dir, "config.json");
+      writeConfig(cfg, configPath);
+      try {
+        run(configPath);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it("uses the main agent's configured model when the caller names none", () => {
+      withConfig({ model: "deepseek-v4-pro", apiKey: "sk-test" }, (configPath) => {
+        expect(resolveSubagentModel(undefined, configPath)).toBe("deepseek-v4-pro");
+        // A caller-proposed model that runs here is kept as-is.
+        expect(resolveSubagentModel("deepseek-v4-flash", configPath)).toBe("deepseek-v4-flash");
+      });
+    });
+
+    it("takes the first usable configured backup when the primary cannot run here", () => {
+      const saved = process.env.OPENAI_API_KEY;
+      // biome-ignore lint/performance/noDelete: an OpenAI model with no credential needs the key absent
+      delete process.env.OPENAI_API_KEY;
+      try {
+        withConfig(
+          { apiKey: "sk-test", fallbackModels: ["gpt-5.6-sol", "deepseek-v4-pro"] },
+          (configPath) => {
+            expect(modelUsableFor("gpt-5.6-sol", configPath)).toBe(false);
+            expect(resolveSubagentModel("gpt-5.6-sol", configPath)).toBe("deepseek-v4-pro");
+          },
+        );
+      } finally {
+        if (saved !== undefined) process.env.OPENAI_API_KEY = saved;
+      }
+    });
+
+    it("returns the requested model when no fallback can run here", () => {
+      withConfig({}, (configPath) => {
+        expect(resolveSubagentModel("no-such-provider/model", configPath)).toBe(
+          "no-such-provider/model",
+        );
+      });
+    });
   });
 
   it("aborts the child when the parent's tool ctx signal fires", async () => {

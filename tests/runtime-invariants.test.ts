@@ -2040,11 +2040,20 @@ describe("prompt-fragments", () => {
     });
 
     it("does not contain em dashes or non-ASCII pictographs in its own prose", () => {
-      // The rules must not model the very characters they ban. Arrows and the
-      // box-drawing examples (in the forbidden list) are the only allowed
-      // non-ASCII; every em dash everywhere is disallowed.
+      // Non-ASCII examples belong only in the forbidden box-drawing list.
       expect(TUI_FORMATTING_RULES).not.toContain("\u2014"); // em dash
     });
+  });
+
+  it("uses ASCII for diagram instructions", () => {
+    const diagram = TUI_FORMATTING_RULES.split("\n").find((line) => line.startsWith("- Diagrams:"));
+    expect(diagram).toContain("ASCII `->`");
+    expect(diagram).toMatch(/^[ -~]+$/);
+  });
+
+  it("keeps evidence citations inline instead of fenced", () => {
+    expect(TUI_FORMATTING_RULES).toContain("A `path:line` evidence citation stays inline");
+    expect(TUI_FORMATTING_RULES).not.toContain("paths with line ranges");
   });
 
   describe("escalationContract", () => {

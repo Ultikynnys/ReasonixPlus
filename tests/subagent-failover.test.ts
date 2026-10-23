@@ -72,8 +72,8 @@ describe("subagent quota failover", () => {
                 return fake.client;
               },
       configPath,
-      // Pinned: without it the tool falls back to DEFAULT_SUBAGENT_MODEL, whose id
-      // the wall never matches.
+      // Pinned: without it the tool resolves the model from config, whose id the wall
+      // never matches.
       defaultModel: PRIMARY,
     });
     const out = await parent.dispatch(

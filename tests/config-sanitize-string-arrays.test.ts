@@ -55,12 +55,6 @@ describe("readConfig — string[] field sanitization", () => {
     expect(cfg.recentWorkspaces).toEqual(["/a", "/b"]);
   });
 
-  it("sanitizes nested skills.paths[]", () => {
-    writeFileSync(path, JSON.stringify({ skills: { paths: ["/x", null, "/y", { p: "z" }] } }));
-    const cfg = readConfig(path);
-    expect(cfg.skills?.paths).toEqual(["/x", "/y"]);
-  });
-
   it("leaves all-string arrays untouched", () => {
     writeFileSync(
       path,
@@ -68,14 +62,12 @@ describe("readConfig — string[] field sanitization", () => {
         mcp: ["a=b", "c=d"],
         mcpDisabled: ["a"],
         recentWorkspaces: ["/a"],
-        skills: { paths: ["/x"] },
       }),
     );
     const cfg = readConfig(path);
     expect(cfg.mcp).toEqual(["a=b", "c=d"]);
     expect(cfg.mcpDisabled).toEqual(["a"]);
     expect(cfg.recentWorkspaces).toEqual(["/a"]);
-    expect(cfg.skills?.paths).toEqual(["/x"]);
   });
 
   it("returns empty config when top-level is not an object", () => {

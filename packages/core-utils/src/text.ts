@@ -83,8 +83,8 @@ export function clipText(text: string, max: number, ellipsis = "…"): string {
 }
 
 /** Clip a one-line index description to fit beside a name, reserving room for the
- *  name and an optional suffix (e.g. a subagent tag). Shared by the skills and
- *  memory index lines, which used to reimplement the same budget math. */
+ *  name and an optional suffix (e.g. a subagent tag). Shared by the memory index lines,
+ *  which used to reimplement the same budget math. */
 export function clipIndexDescription(
   description: string,
   name: string,

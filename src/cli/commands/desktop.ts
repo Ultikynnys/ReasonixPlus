@@ -81,7 +81,6 @@ import type {
   SessionRetractedEvent,
   SessionsEvent,
   SettingsEvent,
-  SkillsEvent,
   StepCompletedEvent,
   SyntheticCreditWindow,
   SyntheticQuota,
@@ -181,11 +180,9 @@ import {
   loadRecentWorkspaces,
   loadRepetitionGuardEnabled,
   loadResolvedModelEndpoint,
-  loadResolvedSkillPaths,
   loadRules,
   loadSearchApiKeys,
   loadSearchSetting,
-  loadSubagentModels,
   loadSyntheticApiKey,
   loadTavilyApiKey,
   loadWorkspaceDir,
@@ -438,7 +435,6 @@ import {
 } from "../../provider-models.js";
 import type { SubagentEvent } from "../../tools/subagent.js";
 
-import { SkillStore } from "../../skills.js";
 import {
   commandOutputTelemetryPath,
   summarizeCommandOutputMetrics,
@@ -607,7 +603,6 @@ export type EmittableEvent =
   | McpExtensionCheckEvent
   | MailAuthEvent
   | PlaywrightBrowserInstallEvent
-  | SkillsEvent
   | CtxBreakdownEvent
   | MemoryEvent
   | MemoryDetailEvent
@@ -4683,29 +4678,6 @@ export async function runManualCompact(
   }
 }
 
-function emitSkills(tab: Tab): void {
-  try {
-    const store = new SkillStore({
-      projectRoot: tab.rootDir,
-      customSkillPaths: loadResolvedSkillPaths(tab.rootDir),
-    });
-    const items = store.list().map((s) => ({
-      name: s.name,
-      description: s.description,
-      scope: s.scope,
-      path: s.path,
-    }));
-    emit({ type: "$skills", items }, tab.id);
-    emitTabDiagnostic(tab, "skills.list.completed", { count: items.length });
-  } catch (err) {
-    emitDiagnosticError("skills.list.failed", err, {
-      tabId: tab.id,
-      details: tabDiagnosticState(tab),
-    });
-    emit({ type: "$error", message: `skills_get failed: ${(err as Error).message}` }, tab.id);
-  }
-}
-
 interface RuntimeState {
   loop: CacheFirstLoop;
   eventizer: Eventizer;
@@ -5898,7 +5870,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
   }
 
-  /** Synchronous tab construction — no I/O. All cheap, disk-only events (`$settings`, `$sessions`, `$memory`, `$skills`, `$mcp_specs`) can fire against this immediately. The heavy bits (`buildCodeToolset`, MCP probes, runtime construction) happen in `initTabToolset` so the UI shell paints without waiting for them. */
+  /** Synchronous tab construction — no I/O. All cheap, disk-only events (`$settings`, `$sessions`, `$memory`, `$mcp_specs`) can fire against this immediately. The heavy bits (`buildCodeToolset`, MCP probes, runtime construction) happen in `initTabToolset` so the UI shell paints without waiting for them. */
   function createTabSkeleton(
     initialDir?: string,
     restoreId?: string,
@@ -7254,7 +7226,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     emitSessionsForWorkspace(target);
     emitSettings(tab);
-    emitSkills(tab);
     persistOpenTabs();
     // Let the frontend regroup: the tab's workspace (and now groupId) changed.
     emit(
@@ -8062,7 +8033,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     return tab;
   }
 
-  /** Starts an announced tab's deferred work: settings/MCP/skills projections,
+  /** Starts an announced tab's deferred work: settings/MCP projections,
    *  the session restore and the toolset build. It yields before touching disk so
    *  a caller's announce burst is never blocked by one tab's I/O. */
   function startTabInit(tab: Tab, restore?: TabRestore): void {
@@ -8073,7 +8044,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       await new Promise<void>((resolve) => setImmediate(resolve));
       emitSettings(tab);
       emitMcpSpecs(tab);
-      emitSkills(tab);
       // Restore the conversation's stored model/effort FIRST — it's a cheap
       // meta.json read, but the runtime (built inside initTabToolset) reads
       // `tab.currentModel` / `tab.currentSession` at build time, so it must
@@ -8698,7 +8668,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // cheap tab state first. Disk scans are deferred until startup settles.
       emit({ type: "$connected" });
       // Publish the authoritative tab set FIRST: the frontend needs it to know
-      // which workspaces to expect, and the per-tab settings/MCP/skills
+      // which workspaces to expect, and the per-tab settings/MCP
       // re-emission below is synchronous and non-trivial for large tab sets —
       // doing it before the snapshot delayed the frontend's startup bookkeeping.
       publishTabsSnapshot();
@@ -8706,8 +8676,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         refreshLaunchCatalogs();
         return;
       }
-      // Replay per-tab state in yielding batches. Emitting $settings + MCP +
-      // skills for every tab in one synchronous loop froze the event loop long
+      // Replay per-tab state in yielding batches. Emitting $settings + MCP
+      // for every tab in one synchronous loop froze the event loop long
       // enough to starve tab creation and the toolset gate — the bulk of the
       // "Loading workspaces" delay. Yielding every few tabs keeps the loop live.
       void (async () => {
@@ -8717,7 +8687,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           emitSettings(t);
           if (!t.pending) {
             emitMcpSpecs(t);
-            emitSkills(t);
             if (!tabHasCredential(t)) emitNeedsSetup(t);
             else if (t.toolset) emit({ type: "$ready" }, t.id);
           }
@@ -9275,34 +9244,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         emitSettingsToAllTabs();
       } catch (err) {
         emit({ type: "$error", message: `rule_remove: ${(err as Error).message}` }, tab.id);
-      }
-      return;
-    }
-    if (msg.cmd === "skills_get") {
-      emitSkills(tab);
-      return;
-    }
-    if (msg.cmd === "skill_run") {
-      try {
-        const store = new SkillStore({
-          projectRoot: tab.rootDir,
-          customSkillPaths: loadResolvedSkillPaths(tab.rootDir),
-        });
-        const found = store.read(msg.name);
-        if (!found) {
-          emitTurnEnded(tab, "stopped", { reason: `skill not found: ${msg.name}` });
-          return;
-        }
-        // A skill that resolved is a real turn: a neutral channel creates the session
-        // it lands in. Resolving first keeps a stale skill from minting an empty one.
-        if (!ensureTurnSession(tab)) return;
-        const extra = msg.args?.trim() ?? "";
-        const header = `# Skill: ${found.name}${found.description ? `\n> ${found.description}` : ""}`;
-        const argsLine = extra ? `\n\nArguments: ${extra}` : "";
-        const payload = `${header}\n\n${found.body}${argsLine}`;
-        void runTurn(tab, payload);
-      } catch (err) {
-        emitTurnEnded(tab, "stopped", { reason: `skill_run: ${(err as Error).message}` });
       }
       return;
     }
@@ -10129,7 +10070,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         }
         if (msg.subagentModel !== undefined) {
           const next = msg.subagentModel.trim();
-          if (next) {
+          // Re-picking the pinned model must not rewrite the session file.
+          if (next && next !== tab.currentSubagentModel) {
             tab.currentSubagentModel = next;
             // Resolved lazily at spawn time (setup reads `() => tab.currentSubagentModel`),
             // so no toolset rebuild is needed — the next subagent spawn picks it up.

@@ -35,6 +35,10 @@ describe("memory tools", () => {
       });
       expect(out).toMatch(/REMEMBERED \(global\/pref_one\)/);
       expect(out).toMatch(/User prefers tabs/);
+      // Established fact for preferences, but code claims still need evidence.
+      expect(out).toContain("TREAT THIS AS ESTABLISHED FACT");
+      expect(out).toContain("claims about current code behavior still need source evidence");
+      expect(out).not.toContain("don't re-explore the filesystem");
       // Verify the store actually has it.
       const store = new MemoryStore({ homeDir: home });
       const listed = store.list();

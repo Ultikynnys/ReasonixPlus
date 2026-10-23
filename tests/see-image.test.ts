@@ -37,6 +37,15 @@ describe("see_image", () => {
     expect(out).toContain("visible to you directly");
   });
 
+  it("does not assert vision on a model that may be text-only", () => {
+    const spec = registry()
+      .specs()
+      .find((s) => s.function.name === "see_image")!;
+    expect(spec.function.description).toContain("When your model is vision-capable");
+    expect(spec.function.description).not.toContain("You are vision-capable");
+    expect(spec.function.description).toContain("say the pixels were not delivered");
+  });
+
   it("counts multiple attached images", async () => {
     const out = await registry().dispatch("see_image", "{}", {
       images: [DATA_URL, DATA_URL],

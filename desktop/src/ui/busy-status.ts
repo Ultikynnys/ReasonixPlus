@@ -51,7 +51,6 @@ function waitSec(wait: StatusWait): number {
 /** Everything the status row reads. Structural on purpose: the reducer's state
  *  satisfies it, so there is no second copy of these fields to keep in sync. */
 export interface BusyStatusInput {
-  activeSkill: { name: string } | null;
   pendingChoices: readonly unknown[];
   pendingPlans: readonly unknown[];
   pendingCheckpoints: readonly unknown[];
@@ -66,7 +65,6 @@ export interface BusyStatusInput {
 /** The status row above the composer. A waiting prompt always outranks the turn
  *  phase: the agent is blocked on the user, not on the model. */
 export function busyStatusLabel(state: BusyStatusInput): string {
-  if (state.activeSkill) return `Skill · ${state.activeSkill.name}`;
   if (state.pendingChoices.length > 0) return t("app.status.waitingChoice");
   if (state.pendingPlans.length > 0) return t("app.status.waitingPlan");
   if (state.pendingCheckpoints.length > 0) return t("app.status.waitingCheckpoint");

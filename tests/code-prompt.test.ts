@@ -99,6 +99,97 @@ describe("codeSystemPrompt", () => {
     expect(CODE_SYSTEM_PROMPT).toMatch(/Use relative paths and explicit input paths/);
   });
 
+  it("continues authorized work after decision tools return", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain("Both decision tools wait internally");
+    expect(CODE_SYSTEM_PROMPT).toContain("Do not act on an unresolved decision");
+    expect(CODE_SYSTEM_PROMPT).toContain('without requiring another "proceed"');
+    expect(CODE_SYSTEM_PROMPT).toContain("Honor cancellations and requested refinements");
+  });
+
+  it("requires new approval for material plan changes", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "Use `revise_plan` only for checkpoint adjustments that preserve requirements",
+    );
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "Material changes to scope, requirements, or blockers need a new `submit_plan` approval",
+    );
+    expect(CODE_SYSTEM_PROMPT).toContain("Use `abandon_plan` with user approval");
+  });
+
+  it("allows background execution for commands with a required working directory", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "commands requiring a working directory other than the project root",
+    );
+  });
+
+  it("sends file creation through write_file instead of an empty search", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain("Create a file with `write_file`");
+    expect(CODE_SYSTEM_PROMPT).toContain("reject an empty SEARCH");
+    expect(CODE_SYSTEM_PROMPT).not.toContain("Use an empty SEARCH block to create a file");
+    expect(CODE_SYSTEM_PROMPT).not.toContain("Reserve `write_file`");
+  });
+
+  it("keeps evidence citations inline rather than fenced", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain("inline Markdown source link");
+    expect(CODE_SYSTEM_PROMPT).toContain("never inside a fenced block");
+  });
+
+  it("describes the .gitignore behavior the search tools actually implement", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain("Treat the pinned .gitignore as a denylist");
+    expect(CODE_SYSTEM_PROMPT).toContain("only `search_content` filters by .gitignore");
+    expect(CODE_SYSTEM_PROMPT).not.toContain("Respect the project .gitignore");
+  });
+
+  it("does not promise a subagent runs on the parent model unconditionally", () => {
+    // The section only renders for a session minted with the tool.
+    const out = codeSystemPrompt(root, { subagentsEnabled: true });
+    expect(out).toContain("screened through the same backup list the main chat falls back to");
+  });
+
+  it("prefers completion signals for processes and asynchronous code", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain("Wait for the event, not the clock");
+    expect(CODE_SYSTEM_PROMPT).toContain("shell commands, subprocesses, and asynchronous code");
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "completion callbacks, exit notifications, promises, futures, event listeners, or blocking waits",
+    );
+    expect(CODE_SYSTEM_PROMPT).toContain("instead of repeated status calls");
+    expect(CODE_SYSTEM_PROMPT).toContain("Prefer exit waits for one-shot jobs");
+    expect(CODE_SYSTEM_PROMPT).toContain("output waits are for reacting to progress or readiness");
+  });
+
+  it("uses timeouts as bounds and proceeds as soon as completion is confirmed", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "timeouts as safety boundaries, not synchronization mechanisms",
+    );
+    expect(CODE_SYSTEM_PROMPT).toContain("Proceed immediately when completion is confirmed");
+    expect(CODE_SYSTEM_PROMPT).toContain("minimizing latency, CPU use, and unnecessary tool calls");
+  });
+
+  it("starts short observation timeouts only when completion signals are impossible", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "Only when reacting to shell-command completion is truly impossible",
+    );
+    expect(CODE_SYSTEM_PROMPT).toContain("start with a short observation timeout");
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "increase it only after it expires without confirming completion",
+    );
+    expect(CODE_SYSTEM_PROMPT).toContain("Do not assume a long duration");
+    expect(CODE_SYSTEM_PROMPT).toContain("An observation timeout is not command failure");
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "check the existing process rather than rerunning side effects",
+    );
+    expect(CODE_SYSTEM_PROMPT).toContain("retry a terminated command only when safe");
+  });
+
+  it("reserves clock waits for genuine pauses and backs off unavoidable polling", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain("adaptive intervals or exponential backoff");
+    expect(CODE_SYSTEM_PROMPT).toContain("not frequent fixed-interval checks");
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "only for a genuine time-based pause with no reliable completion signal",
+    );
+    expect(CODE_SYSTEM_PROMPT).toContain("Never emulate waiting through shell sleep commands");
+  });
+
   it("keeps comments minimal, honest, and free of narration", () => {
     expect(CODE_SYSTEM_PROMPT).toMatch(/\n# Comments\n/);
     expect(CODE_SYSTEM_PROMPT).toMatch(/Default to no comments/);
@@ -207,20 +298,6 @@ describe("codeSystemPrompt", () => {
       expect(off).toMatch(/token savings\.\n\nYou are running on/);
       expect(off).not.toContain("__SUBAGENT_SECTION__");
     });
-
-    it("never injects a skills index", () => {
-      const skillDir = join(root, ".reasonix", "skills", "my-audit");
-      mkdirSync(skillDir, { recursive: true });
-      writeFileSync(
-        join(skillDir, "SKILL.md"),
-        "---\nname: my-audit\ndescription: Run a custom audit\n---\n\nAudit body.\n",
-        "utf8",
-      );
-      const out = codeSystemPrompt(root, { configPath: cfgPath });
-      // The model has no skill entry point, so on-disk skills cost no prefix tokens.
-      expect(out).not.toContain("# Skills");
-      expect(out).not.toContain("my-audit");
-    });
   });
 
   describe("system append", () => {
@@ -312,10 +389,21 @@ describe("codeSystemPrompt", () => {
       }
     });
 
+    it("preserves protected confirmations in Never Ask", () => {
+      const out = codeSystemPrompt(root, { editMode: "never-ask", homeDir: root });
+      const tail = out.slice(out.indexOf("# Permissions (live)"));
+      expect(tail).toContain("including elevated commands and Outlook sends");
+      expect(tail).toContain("explicit ask rules still require confirmation");
+      expect(tail).toContain("plan and choice cards auto-advance on a countdown");
+    });
+
     it("states the block is authoritative and tracks mid-session flips", () => {
       const out = codeSystemPrompt(root, { editMode: "follow" });
-      expect(out).toMatch(/authoritative permission state/);
-      expect(out).toMatch(/this block changes with it/i);
+      expect(out).toMatch(/Authoritative for the edit gate: rebuilt from the current selection/);
+      expect(out).toContain("overriding earlier permission statements, including memories");
+      expect(out).toContain(
+        "It does not override user prohibitions or protected-action confirmations",
+      );
     });
   });
 

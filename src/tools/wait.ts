@@ -55,7 +55,7 @@ export function registerWaitTool(registry: ToolRegistry, opts: WaitToolOptions =
   registry.register({
     name: "wait",
     description:
-      "Pause mid-turn for N milliseconds (max 300000), then get a full time report: requested vs actual wait, elapsed, and the wall-clock time (UTC + local) before and after. Costs one tool call and no shell process.\n\nUse this whenever you need time to pass: waiting out an editor save, a file lock, a debounce, or a short backoff. This is the ONLY sanctioned way to pause: do NOT fake a sleep with shell commands (`ping -n`, `timeout /t`, `Start-Sleep`, `sleep N`); they gate on user confirmation, burn a process, and report no time information.\n\nFor waiting on a PROCESS instead of the clock, use `wait_for_job`: that wakes on exit/output, which is always better than a fixed sleep.",
+      "Pause mid-turn for N milliseconds (max 300000), then get a full time report: requested vs actual wait, elapsed, and the wall-clock time (UTC + local) before and after. Costs one tool call and no shell process.\n\nUse this only for a genuine time-based pause with no completion signal to wait on: an editor save, a file lock, a debounce, or a backoff between retries, with intervals that grow rather than repeat. This is the ONLY sanctioned way to pause: do NOT fake a sleep with shell commands (`ping -n`, `timeout /t`, `Start-Sleep`, `sleep N`); they gate on user confirmation, burn a process, and report no time information.\n\nFor waiting on a PROCESS instead of the clock, use `wait_for_job`: that wakes on exit/output, which is always better than a fixed sleep.",
     readOnly: true,
     parameters: {
       type: "object",

@@ -991,16 +991,16 @@ export function WarningCard({
 
 export const SUBAGENT_TOOLS = new Set(["spawn_subagent"]);
 
-/** The one tool that spawns a child. Skills are playbooks now, so nothing else delegates. */
+/** The one tool that spawns a child. */
 export function isSubagentTool(name: string): boolean {
   return SUBAGENT_TOOLS.has(name);
 }
 
-/** What a run's first activity row announces: the skill it runs, or "subagent"
- *  when that name is only the spawn tool's — an argless spawn has no skill, and
+/** What a run's first activity row announces: the label it carries, or "subagent"
+ *  when that label is only the spawn tool's — an argless spawn names nothing, and
  *  naming the tool reads as an event rather than work in progress. */
-export function subagentStartLabel(skillName?: string): string {
-  return skillName && !isSubagentTool(skillName) ? skillName : "subagent";
+export function subagentStartLabel(label?: string): string {
+  return label && !isSubagentTool(label) ? label : "subagent";
 }
 
 /** How a card was dispatched, from the wave sizes its runs recorded. Null when no run

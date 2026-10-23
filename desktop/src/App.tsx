@@ -87,7 +87,6 @@ import {
   type SessionEventRecord,
   type SettingsPatch,
   type SettingsPayload,
-  type SkillInfo,
   type SubagentProgressEvent,
   type TurnOutcome,
   type UserImageAttachment,
@@ -330,17 +329,12 @@ export type AssistantSegment =
   | { kind: "warning"; id: string; text: string; severity?: "low" | "high" }
   | { kind: "image"; dataUrl: string; mimeType: string };
 
-export type SkillOrigin = {
-  name: string;
-};
-
 export type ChatMessage =
   | {
       kind: "user";
       text: string;
       clientId: string;
       turn: number;
-      skill?: SkillOrigin;
       images?: string[];
       /** Machine-written record (image tool feedback): not a prompt, so no Events row. */
       injected?: true;
@@ -620,7 +614,6 @@ type State = {
   mcpExtensionCheck: McpExtensionCheck | null;
   mailAuth: MailAuthState | null;
   playwrightBrowserInstall: PlaywrightBrowserInstall | null;
-  skills: SkillInfo[];
   /** Files the agent has read or modified this session — paths as the tool args provided them. */
   sessionFiles: SessionFile[];
   /** Plan/choice/fold verdicts recorded for the Events tab. Turns are not here:
@@ -631,8 +624,6 @@ type State = {
   /** Outcome of the last memory write/delete/import RPC — shown as a transient banner in the memory panel. */
   memoryResult: { ok: boolean; message: string } | null;
   jobs: JobInfo[];
-  /** Live "skill running" indicator — set when a `skill_run` RPC dispatches, cleared on `$turn_complete`. */
-  activeSkill: SkillOrigin | null;
   /** Terminal outcome of the most recent turn — gates success feedback and stop cards. */
   lastTurnOutcome: TurnOutcome | null;
   /** Messages typed while busy=true — auto-sent FIFO once the current turn completes. Cleared on `clear`, `rpc_exit`, `session_loaded`, and on Stop (discarded, never drained). */
@@ -679,7 +670,6 @@ type DeltaBatchItem = {
 
 type Action =
   | { t: "send_user"; text: string; clientId: string; images?: string[] }
-  | { t: "start_skill"; skill: SkillOrigin; args?: string; clientId: string }
   | { t: "incoming"; event: IncomingEvent }
   | { t: "batch_delta"; items: DeltaBatchItem[] }
   | { t: "rpc_exit"; code: number | null }
@@ -1260,25 +1250,6 @@ export function reduceAction(state: State, action: Action): State {
         ],
       };
     }
-    case "start_skill": {
-      const argsLine = action.args ? ` ${action.args}` : "";
-      return {
-        ...state,
-        awaitingAck: true,
-        activeSkill: action.skill,
-        messages: [
-          ...state.messages,
-          {
-            kind: "user",
-            text: `/${action.skill.name}${argsLine}`,
-            clientId: action.clientId,
-            turn: nextMessageTurn(state.messages),
-            ts: writeStamp(),
-            skill: action.skill,
-          },
-        ],
-      };
-    }
     case "rpc_exit":
       return {
         ...state,
@@ -1286,7 +1257,6 @@ export function reduceAction(state: State, action: Action): State {
         busy: false,
         awaitingAck: false,
         compacting: false,
-        activeSkill: null,
         ...clearedQueue(),
         messages: insertNotice(
           state.messages,
@@ -1411,7 +1381,6 @@ export function reduceAction(state: State, action: Action): State {
         usage: zeroUsage(),
         sessionFiles: [],
         sessionEvents: [],
-        activeSkill: null,
         ...clearedQueue(),
         retryNonce: 0,
       };
@@ -2487,7 +2456,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         awaitingAck: false,
         lastTurnOutcome: outcome,
         ...queueDiscardPatch(state, explain),
-        activeSkill: null,
         turnStatus: null,
         turnStatusTool: null,
         pendingConfirms: [],
@@ -2535,7 +2503,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         awaitingAck: false,
         compacting: false,
         ...queueDiscardPatch(state, released),
-        activeSkill: null,
         turnStatus: null,
         turnStatusTool: null,
         pendingConfirms: [],
@@ -2745,8 +2712,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return { ...state, mailAuth: ev.state };
     case "$playwright_browser_install":
       return { ...state, playwrightBrowserInstall: ev.install };
-    case "$skills":
-      return { ...state, skills: ev.items };
     case "$ctx_breakdown": {
       const next: UsageStats = { ...state.usage, reservedTokens: ev.reservedTokens };
       if (typeof ev.logTokens === "number") {
@@ -2954,7 +2919,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         },
         sessionFiles,
         sessionEvents: ev.events ?? [],
-        activeSkill: null,
         ...clearedQueue(),
         retryNonce: 0,
       };
@@ -3717,14 +3681,12 @@ const TabRuntime = memo(function TabRuntime({
     mcpExtensionCheck: null,
     mailAuth: null,
     playwrightBrowserInstall: null,
-    skills: [],
     sessionFiles: [],
     sessionEvents: [],
     memory: [],
     memoryDetail: null,
     memoryResult: null,
     jobs: [],
-    activeSkill: null,
     lastTurnOutcome: null,
     ...clearedQueue(),
     retryNonce: 0,
@@ -4958,7 +4920,7 @@ const TabRuntime = memo(function TabRuntime({
       return (
         <div key={`u-${m.turn}`} data-turn={m.turn} className="thread-row">
           {needsDivider ? <TurnDivider label={dividerLabel} /> : null}
-          <UserMsg text={m.text} images={m.images} skill={m.skill} />
+          <UserMsg text={m.text} images={m.images} />
         </div>
       );
     }
@@ -5452,7 +5414,7 @@ const TabRuntime = memo(function TabRuntime({
                       : undefined
                 }
                 stuckLabel={
-                  state.busy && state.turnLastEventMs && !state.activeSkill
+                  state.busy && state.turnLastEventMs
                     ? {
                         sinceMs: state.turnLastEventMs,
                         render: (sec: number) => stuckStatusLabel(state, sec),

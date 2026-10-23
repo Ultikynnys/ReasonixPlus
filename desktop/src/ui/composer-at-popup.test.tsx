@@ -101,6 +101,36 @@ describe("desktop Composer model catalog", () => {
     expect(onModelChange).not.toHaveBeenCalled();
   });
 
+  it("routes each pill's pick to its own model, never the other", () => {
+    const onModelChange = vi.fn();
+    const onSubagentModelChange = vi.fn();
+    const { container } = renderComposer({
+      modelLabel: "deepseek-v4-flash",
+      subagentModelLabel: "deepseek-v4-flash",
+      enabledModels: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      onModelChange,
+      onSubagentModelChange,
+    });
+
+    const pick = (trigger: string) => {
+      fireEvent.click(container.querySelector(trigger)!);
+      const row = Array.from(container.querySelectorAll(".model-menu-list .popup-item")).find(
+        (el) => el.textContent?.includes("deepseek-v4-pro"),
+      );
+      fireEvent.click(row!);
+    };
+
+    // The main pill switches the chat's own model and leaves the subagent pin alone.
+    pick(".model-pill:not(.subagent-pill)");
+    expect(onModelChange).toHaveBeenCalledWith("deepseek-v4-pro");
+    expect(onSubagentModelChange).not.toHaveBeenCalled();
+
+    // The subagent pill switches only the child model.
+    pick(".subagent-pill");
+    expect(onSubagentModelChange).toHaveBeenCalledWith("deepseek-v4-pro");
+    expect(onModelChange).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves an existing uncatalogued active model without a Custom entry control", () => {
     const { container } = renderComposer({ modelLabel: "legacy-gateway-model" });
     fireEvent.click(container.querySelector(".model-pill")!);

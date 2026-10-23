@@ -303,6 +303,13 @@ describe("list_mcp_bridges", () => {
     expect(r.bridges[0].disabled).toBe(true);
   });
 
+  it("stays available in Read only because it only reads", async () => {
+    s.reg.setPlanMode(true);
+    const r = await call(s.reg, "list_mcp_bridges", {});
+    expect(r.error).toBeUndefined();
+    expect(typeof r.count).toBe("number");
+  });
+
   it("filters by exact bridge name", async () => {
     writeConfig(
       {

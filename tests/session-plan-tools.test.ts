@@ -28,6 +28,14 @@ function gate(type: string, optionId?: string): PauseGate {
   return gate;
 }
 
+it("says list_plans spans the workspace, not just this session", () => {
+  const tools = registerPlanTool(new ToolRegistry());
+  const spec = tools.specs().find((s) => s.function.name === "list_plans")!;
+  expect(spec.function.description).toContain("every persisted plan in this workspace");
+  expect(spec.function.description).toContain("another live session holds");
+  expect(spec.function.description).not.toContain("this session's persisted plan attempts");
+});
+
 it("plan name sets cover every registered plan tool, so a new one cannot leak to a child", () => {
   const tools = registerPlanTool(new ToolRegistry());
   const all = tools.specs().map((spec) => spec.function.name);

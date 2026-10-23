@@ -135,6 +135,7 @@ export function registerScaffoldTools(
     name: "list_mcp_bridges",
     description:
       "List all configured MCP servers and bridges, their transport type, status, and tools currently bridged into the session.",
+    readOnly: true,
     parameters: {
       type: "object",
       properties: {

@@ -14,7 +14,7 @@ export interface SeeImageToolOptions {
 }
 
 const DESCRIPTION =
-  "Confirm and inspect images. You are vision-capable (multimodal): when the user attaches an image to their message, it is visible to you directly inside that user message; you can see and describe it without calling any tool. Call this tool when the user asks you to look at an image and you want to confirm the attachment, or pass `path` to load a specific local image file (PNG/JPEG/WebP) or data: URL into your context so you can see and describe it. Loading an image via `path` delivers its pixels to you as an image attachment (a large image, such as a full-page screenshot, is split into tiles automatically so the whole image reaches you). Never claim you cannot see an image you loaded or the user attached; if you are unsure whether an image is present, call this tool.";
+  "Confirm and inspect images. When your model is vision-capable, an image attached to the user's message is already visible to you inside that message and no tool call is needed. Call this tool when the user asks you to look at an image and you want to confirm the attachment, or pass `path` to load a specific local image file (PNG/JPEG/WebP) or data: URL into your context. Loading an image via `path` delivers its pixels as an image attachment (a large image, such as a full-page screenshot, is split into tiles automatically). If the provider rejects images or reports the model as text-only, say the pixels were not delivered instead of describing an image you cannot see. Never claim to be unable to see an image whose pixels this tool did deliver.";
 
 /** Resolve a data URL or image file path; bytes are sniffed (not extension-trusted). */
 async function resolveImageRef(

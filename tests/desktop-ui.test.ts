@@ -102,16 +102,6 @@ describe("desktop-abort-draft", () => {
       ).toBe("rewrite everything");
     });
 
-    it("records the typed text for skill runs", () => {
-      expect(
-        nextAbortDraftCandidate(null, {
-          type: "record",
-          source: "skill_run",
-          text: "review src/App.tsx",
-        }),
-      ).toBe("review src/App.tsx");
-    });
-
     it("does not record btw side questions as abort draft candidates", () => {
       expect(
         nextAbortDraftCandidate("stale", {

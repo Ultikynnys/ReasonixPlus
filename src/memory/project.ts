@@ -102,6 +102,6 @@ export function applyProjectMemory(basePrompt: string, rootDir: string): string 
     basePrompt,
     () => mem,
     `# Project memory (${filename})`,
-    "The user pinned these notes about this project; treat them as authoritative context for every turn:",
+    "Authoritative notes the user pinned for this project:",
   )}\n`;
 }

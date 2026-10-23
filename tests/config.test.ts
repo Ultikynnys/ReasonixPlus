@@ -62,7 +62,6 @@ import {
   loadReasoningEffort,
   loadRecentWorkspaces,
   loadResolvedModelEndpoint,
-  loadSubagentModels,
   loadTheme,
   loadToolRateLimit,
   loadZaiApiKey,
@@ -95,7 +94,6 @@ import {
   saveOpenAIOAuth,
   saveQuestionTimerEnabled,
   saveReasoningEffort,
-  saveSubagentModels,
   saveTheme,
   searchEnabled,
   webSearchEngine,
@@ -1907,33 +1905,6 @@ describe("config", () => {
       writeConfig({}, path);
       expect(isKnownModelId("opencode/big-pickle", path)).toBe(true);
       expect(providerForModel("opencode/big-pickle", path)).toBe("opencode");
-    });
-  });
-
-  describe("subagentModels", () => {
-    it("round-trips flash/pro entries", () => {
-      saveSubagentModels({ explore: "pro", review: "flash" }, path);
-      expect(loadSubagentModels(path)).toEqual({ explore: "pro", review: "flash" });
-    });
-
-    it("drops unknown values without touching valid entries", () => {
-      writeConfig(
-        {
-          subagentModels: {
-            explore: "pro",
-            bogus: "fast" as any,
-          },
-        },
-        path,
-      );
-      expect(loadSubagentModels(path)).toEqual({ explore: "pro" });
-    });
-
-    it("clearing all entries removes the field from config", () => {
-      saveSubagentModels({ explore: "pro" }, path);
-      saveSubagentModels({}, path);
-      expect(loadSubagentModels(path)).toEqual({});
-      expect(readConfig(path).subagentModels).toBeUndefined();
     });
   });
 

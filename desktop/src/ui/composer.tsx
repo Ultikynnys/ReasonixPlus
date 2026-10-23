@@ -256,7 +256,7 @@ export function Composer({
    *  live composer mounted, so an inactive one must stay mute. */
   shortcutsActive?: boolean;
   busy?: boolean;
-  /** Drives the status row above the hint row while the agent is running — typically "Reasoning" or "Skill · <name>". */
+  /** Drives the status row above the hint row while the agent is running — typically "Reasoning" or "Calling tool: <name>". */
   busyLabel?: string;
   /** Renders the "stuck Ns" hint once the turn has been silent this long. The 1s
    *  poll lives inside StuckLabel so the conversation never re-renders per second. */

@@ -22,6 +22,7 @@ import {
   tokenizeCommand,
 } from "../src/tools/shell.js";
 import { normalizeWindowsEnvVars } from "../src/tools/shell/exec.js";
+import { registerWaitTool } from "../src/tools/wait.js";
 
 /** A PauseGate that records call args and denies — denial keeps the spawn from actually running. */
 class SpyGate extends PauseGate {
@@ -888,6 +889,37 @@ describe("registerShellTools — dispatch integration", () => {
     registerShellTools(registry, { rootDir: tmp });
     const out = await registry.dispatch("list_jobs", "{}");
     expect(out).toContain("no background jobs");
+  });
+
+  it("documents the fixed foreground cwd and the background cwd alternative", () => {
+    const registry = new ToolRegistry();
+    registerShellTools(registry, { rootDir: tmp });
+    const foreground = registry.specs().find((spec) => spec.function.name === "run_command")!;
+    const background = registry.specs().find((spec) => spec.function.name === "run_background")!;
+    expect(foreground.function.description).toContain(
+      "working directory is fixed to the project root",
+    );
+    expect(foreground.function.description).toContain("pass input/data paths explicitly");
+    expect(foreground.function.description).toContain(
+      "use run_background with `cwd`, then wait_for_job, even for a short command",
+    );
+    expect(foreground.function.parameters.properties).not.toHaveProperty("cwd");
+    expect(background.function.parameters.properties).toHaveProperty("cwd");
+  });
+
+  it("advises short, growing wait timeouts and narrows the wait tool", () => {
+    const registry = new ToolRegistry();
+    registerShellTools(registry, { rootDir: tmp });
+    const jobWait = registry.specs().find((spec) => spec.function.name === "wait_for_job")!;
+    expect(jobWait.function.description).toContain("Start with a short `timeoutMs`");
+    expect(jobWait.function.description).toContain("An expired wait is not a failed command");
+    expect(jobWait.function.description).not.toContain("slowest reasonable");
+
+    const waiting = new ToolRegistry();
+    registerWaitTool(waiting);
+    const clockWait = waiting.specs().find((spec) => spec.function.name === "wait")!;
+    expect(clockWait.function.description).toContain("no completion signal to wait on");
+    expect(clockWait.function.description).not.toContain("Use this whenever you need time to pass");
   });
 
   it("run_background dispatch rejects a cwd that escapes the workspace root", async () => {

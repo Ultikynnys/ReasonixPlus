@@ -641,8 +641,6 @@ import type {
   ReasoningEffort,
   StatusBarToggles,
 } from "@reasonix/core-utils";
-import { expandTilde } from "@reasonix/core-utils/expand-tilde";
-
 /** Single trust dial: read-only blocks every non-readonly tool (write_file / edit_file / multi_edit / run_command) at dispatch; follow auto-approves reads and allowlisted shell but asks for every write and non-allowlisted command; ignore auto-approves everything. */
 export type { EditMode, OllamaGenerationPatch, OllamaGenerationSettings, ReasoningEffort };
 
@@ -932,11 +930,6 @@ export interface ReasonixConfig {
     /** Glob-style filename patterns (matched against basename, case-insensitive). */
     patterns?: string[];
   };
-  skills?: {
-    paths?: string[];
-  };
-  /** Per-skill model override for `runAs: subagent` skills, keyed by skill name. Empty / missing entry → spawn site's default. */
-  subagentModels?: Record<string, "flash" | "pro">;
   /** User-declared extensions to the built-in memory types (#709). Unknown types round-trip even without a declaration; declaring one lets you attach a default priority + lifecycle. */
   memory?: {
     customTypes?: CustomMemoryTypeConfig[];
@@ -1321,7 +1314,6 @@ const STRING_ARRAY_FIELDS: Array<readonly string[]> = [
   ["enabledModels"],
   ["fallbackModels"],
   ["recentWorkspaces"],
-  ["skills", "paths"],
 ];
 
 const stringArraySchema = z.array(z.string());
@@ -1832,155 +1824,6 @@ export function loadToolRateLimit(
 
 export function saveBaseUrl(url: string, path: string = defaultConfigPath()): void {
   saveProviderSetting("deepseek", "baseUrl", url, path);
-}
-
-export interface SkillPathEntry {
-  raw: string;
-  resolved: string;
-}
-
-export function resolveSkillPath(raw: string, baseDir: string): string {
-  const homeExpanded = expandCurrentUserHome(raw.trim());
-  return resolve(isAbsolute(homeExpanded) ? homeExpanded : join(baseDir, homeExpanded));
-}
-
-export function normalizeSkillPathEntries(
-  paths: readonly unknown[],
-  baseDir: string,
-): SkillPathEntry[] {
-  const out: SkillPathEntry[] = [];
-  const seen = new Set<string>();
-  for (const value of paths) {
-    if (typeof value !== "string") continue;
-    const raw = value.trim();
-    if (!raw) continue;
-    const resolved = resolveSkillPath(raw, baseDir);
-    const key = skillPathKey(resolved);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ raw, resolved });
-  }
-  return out;
-}
-
-export function normalizeSkillPaths(paths: readonly unknown[], baseDir: string): string[] {
-  return normalizeSkillPathEntries(paths, baseDir).map((entry) => entry.raw);
-}
-
-export function resolveSkillPaths(paths: readonly unknown[], baseDir: string): string[] {
-  return normalizeSkillPathEntries(paths, baseDir).map((entry) => entry.resolved);
-}
-
-function skillPathKey(path: string): string {
-  return process.platform === "win32" ? path.toLowerCase() : path;
-}
-
-function expandCurrentUserHome(path: string): string {
-  return expandTilde(path);
-}
-
-export function loadSkillPaths(
-  baseDir: string = process.cwd(),
-  path: string = defaultConfigPath(),
-): string[] {
-  const raw = readConfig(path).skills?.paths;
-  return Array.isArray(raw) ? normalizeSkillPaths(raw, baseDir) : [];
-}
-
-export function loadResolvedSkillPaths(
-  baseDir: string = process.cwd(),
-  path: string = defaultConfigPath(),
-): string[] {
-  const raw = readConfig(path).skills?.paths;
-  return Array.isArray(raw) ? resolveSkillPaths(raw, baseDir) : [];
-}
-
-export function saveSkillPaths(
-  paths: readonly unknown[],
-  baseDir: string = process.cwd(),
-  path: string = defaultConfigPath(),
-): string[] {
-  const cfg = readConfig(path);
-  const normalized = normalizeSkillPaths(paths, baseDir);
-  cfg.skills = { ...(cfg.skills ?? {}), paths: normalized };
-  writeConfig(cfg, path);
-  return normalized;
-}
-
-export function loadSubagentModels(
-  path: string = defaultConfigPath(),
-): Record<string, "flash" | "pro"> {
-  const raw = readConfig(path).subagentModels;
-  if (!raw || typeof raw !== "object") return {};
-  const out: Record<string, "flash" | "pro"> = {};
-  for (const [name, value] of Object.entries(raw)) {
-    if (value === "flash" || value === "pro") out[name] = value;
-  }
-  return out;
-}
-
-export function saveSubagentModels(
-  map: Record<string, "flash" | "pro">,
-  path: string = defaultConfigPath(),
-): void {
-  const cfg = readConfig(path);
-  const out: Record<string, "flash" | "pro"> = {};
-  for (const [name, value] of Object.entries(map)) {
-    if (value === "flash" || value === "pro") out[name] = value;
-  }
-  cfg.subagentModels = Object.keys(out).length > 0 ? out : undefined;
-  writeConfig(cfg, path);
-}
-
-export function addSkillPath(
-  skillPath: string,
-  baseDir: string = process.cwd(),
-  path: string = defaultConfigPath(),
-): { added: boolean; path: string; resolved: string; paths: string[] } | { error: string } {
-  const entry = normalizeSkillPathEntries([skillPath], baseDir)[0];
-  if (!entry) return { error: "skill path is empty" };
-  const existing = loadSkillPaths(baseDir, path);
-  const seen = new Set(resolveSkillPaths(existing, baseDir).map(skillPathKey));
-  const key = skillPathKey(entry.resolved);
-  if (seen.has(key))
-    return { added: false, path: entry.raw, resolved: entry.resolved, paths: existing };
-  const paths = saveSkillPaths([...existing, entry.raw], baseDir, path);
-  return { added: true, path: entry.raw, resolved: entry.resolved, paths };
-}
-
-export function removeSkillPath(
-  target: string,
-  baseDir: string = process.cwd(),
-  path: string = defaultConfigPath(),
-): { removed: boolean; path?: string; resolved?: string; paths: string[] } {
-  const existing = loadSkillPaths(baseDir, path);
-  const trimmed = target.trim();
-  if (!trimmed) return { removed: false, paths: existing };
-  const existingEntries = normalizeSkillPathEntries(existing, baseDir);
-  const idx = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) - 1 : -1;
-  let removeAt = idx >= 0 && idx < existing.length ? idx : -1;
-  if (removeAt < 0) {
-    const targetEntry = normalizeSkillPathEntries([trimmed], baseDir)[0];
-    const targetKey = targetEntry ? skillPathKey(targetEntry.resolved) : undefined;
-    removeAt = existingEntries.findIndex(
-      (entry) =>
-        entry.raw === trimmed ||
-        (targetKey !== undefined && skillPathKey(entry.resolved) === targetKey),
-    );
-  }
-  if (removeAt < 0) return { removed: false, paths: existing };
-  const removed = existingEntries[removeAt];
-  const paths = saveSkillPaths(
-    existing.filter((_, i) => i !== removeAt),
-    baseDir,
-    path,
-  );
-  return {
-    removed: true,
-    path: removed?.raw ?? existing[removeAt],
-    resolved: removed?.resolved,
-    paths,
-  };
 }
 
 export function searchEnabled(path: string = defaultConfigPath()): boolean {

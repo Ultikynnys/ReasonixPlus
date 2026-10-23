@@ -757,20 +757,6 @@ export interface PlaywrightBrowserInstallEvent {
   install: PlaywrightBrowserInstall;
 }
 
-export type SkillScope = "project" | "custom" | "global" | "builtin";
-
-export interface SkillInfo {
-  name: string;
-  description: string;
-  scope: SkillScope;
-  path: string;
-}
-
-export interface SkillsEvent {
-  type: "$skills";
-  items: SkillInfo[];
-}
-
 export interface CtxBreakdownEvent {
   type: "$ctx_breakdown";
   reservedTokens: number;
@@ -1145,7 +1131,7 @@ export interface SettingsEvent {
    *  masked preview, and an engine that reuses a model provider's key is absent here
    *  because the Models tab owns that field. */
   searchSettings?: SearchSettingsMap;
-  /** Per-tab subagent model — the default model used when a subagent skill has no explicit `model:` frontmatter override. Absent = deepseek-v4-flash. */
+  /** Per-tab subagent model. Absent = the tab's own model, screened through the configured backup list. */
   subagentModel?: string;
   /** Per-field visibility toggles for the bottom status row. Absent = all default to true. */
   statusBar?: StatusBarToggles;
@@ -1567,7 +1553,7 @@ export interface SettingsPatch {
   /** Ordered backup models for automatic quota failover. Replaces the whole
    *  persisted `fallbackModels` list; empty array turns failover off. */
   fallbackModels?: string[];
-  /** Per-tab subagent model — default for subagent skills without an explicit `model:` frontmatter. */
+  /** Per-tab subagent model to persist. Absent leaves the existing value. */
   subagentModel?: string;
   /** Persisted provider settings to write, keyed like
    *  `SettingsPayload.providerSettings`. Only keys a provider declares are applied;
@@ -1737,8 +1723,6 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "rule_update"; from: RuleRecord; to: RuleRecord }
   | { cmd: "workspace_rules_copy"; from: string }
   | { cmd: "rule_remove"; rule: RuleRecord }
-  | { cmd: "skills_get" }
-  | { cmd: "skill_run"; name: string; args?: string }
   | { cmd: "jobs_list" }
   /** Stops one background job. `tabId` names the owning tab: per-tab registries
    *  restart job ids at 1, so `jobId` alone can match a different tab's job. */

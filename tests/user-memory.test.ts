@@ -285,6 +285,29 @@ describe("user-memory", () => {
       expect(out).toContain("# User memory: global");
       expect(out).not.toContain("# User memory: this project");
       expect(out).toContain("pref_one");
+      expect(out).toContain("TREAT AS AUTHORITATIVE for user preferences and constraints");
+      expect(out).toContain("do not re-derive them");
+      expect(out).toContain("Verify current code behavior against source");
+      expect(out).toContain("including searches before absence claims");
+    });
+
+    it("bounds high-priority authority without changing the memory body", () => {
+      const store = new MemoryStore({ homeDir: home, projectRoot });
+      const body = "Do not capture the desktop without an explicit request.";
+      store.write({
+        name: "desktop-safety",
+        type: "feedback",
+        scope: "project",
+        description: "Require permission for desktop capture",
+        body,
+        priority: "high",
+      });
+      const out = applyUserMemory(BASE, { homeDir: home, projectRoot });
+      expect(out).toContain("override conflicting memory or project guidance");
+      expect(out).toContain("not harness safety rules or live permissions");
+      expect(out).toContain("User prohibitions still apply");
+      expect(out).toContain(body);
+      expect(store.read("project", "desktop-safety").body).toBe(body);
     });
 
     it("appends both blocks when both scopes populated", () => {

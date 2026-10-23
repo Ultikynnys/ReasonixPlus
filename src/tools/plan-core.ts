@@ -437,7 +437,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
       name,
       description:
         name === "list_plans"
-          ? "List this session's persisted plan attempts with IDs, statuses, creation/finish dates and progress."
+          ? "List every persisted plan in this workspace, including plans another live session holds, with IDs, statuses, creation/finish dates and progress. Only the plan this session holds is yours to advance."
           : name === "open_plan"
             ? "Open a session plan by ID: full body, steps, accepted results/evidence, revisions and disposition."
             : isAbandon

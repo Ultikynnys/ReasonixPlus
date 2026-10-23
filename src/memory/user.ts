@@ -317,7 +317,7 @@ export function applyGlobalReasonixMemory(basePrompt: string, homeDir?: string):
     basePrompt,
     () => readGlobalReasonixMemory(dir),
     "# Global memory (~/.reasonix/REASONIX.md)",
-    "Cross-project notes the user pinned via the `#g` prompt prefix. Treat as authoritative, same level of trust as project memory.",
+    "Cross-project notes the user pinned via `#g`. Authoritative, same trust as project memory.",
   );
 }
 
@@ -332,7 +332,7 @@ export function applyGlobalClaudeMemory(basePrompt: string, homeDir?: string): s
     basePrompt,
     () => readGlobalClaudeMemory(homeDir),
     "# Global memory (~/.claude/CLAUDE.md)",
-    "Cross-project notes from your Claude Code configuration. Treat as authoritative, same level of trust as project memory.",
+    "Cross-project notes from the user's Claude Code config. Authoritative, same trust level as project memory.",
   );
 }
 
@@ -351,7 +351,7 @@ function highPriorityBlock(entries: MemoryEntry[], cfg?: ReasonixConfig): string
   const lines: string[] = [
     "# HIGH PRIORITY constraints (must observe)",
     "",
-    "These memories were declared `priority: high` (via config.memory.customTypes or the memory file itself). Treat them as hard rules, and violations override any other guidance below.",
+    "Declared `priority: high`. These constraints override conflicting memory or project guidance, not harness safety rules or live permissions. User prohibitions still apply.",
     "",
   ];
   for (const e of high) {
@@ -381,7 +381,7 @@ export function applyUserMemory(
     out = applyMemoryBlock(
       out,
       "# User memory: global (~/.reasonix/memory/global/MEMORY.md)",
-      "Cross-project facts and preferences the user has told you in prior sessions. TREAT AS AUTHORITATIVE, so don't re-verify via filesystem or web. One-liners index detail files; call `recall_memory` for full bodies only when the one-liner isn't enough.",
+      "Cross-project facts and preferences from prior sessions. TREAT AS AUTHORITATIVE for user preferences and constraints; do not re-derive them. Verify current code behavior against source, including searches before absence claims. One-liners index detail files; call `recall_memory` for a full body only when the one-liner is not enough.",
       global.content,
     );
   }
@@ -389,7 +389,7 @@ export function applyUserMemory(
     out = applyMemoryBlock(
       out,
       "# User memory: this project",
-      "Per-project facts the user established in prior sessions (not committed to the repo). TREAT AS AUTHORITATIVE. Same recall pattern as global memory.",
+      "Per-project facts from prior sessions, not in the repo. TREAT AS AUTHORITATIVE. Same recall pattern as global memory.",
       project.content,
     );
   }
