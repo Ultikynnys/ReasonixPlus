@@ -155,6 +155,13 @@ describe("search engine registry", () => {
       for (const key of required[spec.strategy] ?? keyed) {
         expect(Object.keys(spec.errors), `${spec.id} declares ${key}`).toContain(key);
       }
+      // A rendered fetch can fail to reach the page, but it has no API key to reject.
+      if (spec.fetchStrategy === "playwright") {
+        expect(Object.keys(spec.errors), `${spec.id} declares cannotReach`).toContain(
+          "cannotReach",
+        );
+        continue;
+      }
       if (spec.fetchStrategy === "http") continue;
       for (const key of fetchKeys) {
         expect(Object.keys(spec.errors), `${spec.id} declares ${key}`).toContain(key);
@@ -195,6 +202,28 @@ describe("search engine registry", () => {
         ],
       }),
     ).toThrow(/browser: only the playwright strategy drives a browser/);
+  });
+
+  it("requires a browser for an engine that renders its web_fetch", () => {
+    // `playwright` fetch means "render in the managed browser", which is undefined without one.
+    expect(() =>
+      parseSearchRegistry({
+        engines: [
+          {
+            id: "pw",
+            label: "PW",
+            order: 1,
+            kind: "keyless",
+            strategy: "bing-html",
+            fetchStrategy: "playwright",
+          },
+        ],
+      }),
+    ).toThrow(/fetchStrategy: playwright rendering requires a browser/);
+    const webkit = SEARCH_ENGINE_SPECS.find((spec) => spec.browser === "webkit");
+    if (!webkit) return;
+    // The engine that drives WebKit renders through it rather than reading over HTTP.
+    expect(webkit.fetchStrategy).toBe("playwright");
   });
 
   it("declares display copy for every engine", () => {

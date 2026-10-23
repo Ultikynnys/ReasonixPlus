@@ -9,7 +9,7 @@ import { baseAppState } from "../../../tests/support/app-state.js";
 import { TabBar, reduce } from "../App";
 import type { IncomingEvent } from "../protocol";
 import { ZoomableImage } from "./image-preview";
-import { McpSetupDialog } from "./mcp-setup";
+import { CapabilityDialog } from "./mcp-setup";
 import { TabMenu, getTabsToClear } from "./tab-menu";
 import {
   EXPAND_EVENT,
@@ -719,9 +719,14 @@ describe("mcp-setup", () => {
     const onConfirm = vi.fn();
     const onCancel = vi.fn();
     render(
-      <McpSetupDialog
+      <CapabilityDialog
+        title="Set up this chat"
+        hint="Choose what this chat starts with. Both choices are locked for the session, even after a restart."
         servers={list}
         subagents={subagents}
+        confirmLabel="Confirm and start"
+        busyLabel="Starting session"
+        dismissLabel="Cancel"
         onConfirm={onConfirm}
         onCancel={onCancel}
       />,
@@ -729,7 +734,7 @@ describe("mcp-setup", () => {
     return { onConfirm, onCancel };
   }
 
-  describe("McpSetupDialog", () => {
+  describe("CapabilityDialog", () => {
     it("invokes onCancel from the top-right X", () => {
       const { onCancel } = renderDialog();
       fireEvent.click(screen.getByLabelText("Cancel"));

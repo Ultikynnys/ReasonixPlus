@@ -15,6 +15,7 @@ import type { ActivePlan, SessionFile, SessionInfo, Settings, UsageStats } from 
 import { t, useLang } from "../i18n";
 import type { TKey } from "../i18n";
 import { I } from "../icons";
+import { planIdForSession } from "../plan-labels";
 import type {
   McpSpecInfo,
   MemoryDetail,
@@ -272,7 +273,6 @@ export function ContextPanel({
           )}
           {tab === "plan" ? (
             <CtxPlanHistory
-              key={planSession}
               currentSession={planSession}
               sessions={sessions}
               history={planHistory ?? []}
@@ -322,9 +322,13 @@ function CtxPlanHistory({
   currentSession?: string;
   sessions?: readonly SessionInfo[];
 }) {
-  const [selection, setSelection] = useState("");
+  // The plan this session works is the dropdown's default: the history is
+  // workspace-wide, so the first active plan may belong to another session.
+  const ownedId = planIdForSession(history, currentSession);
+  const [selection, setSelection] = useState(ownedId ?? "");
   const selectedPlan =
     history.find((p) => p.id === selection) ??
+    history.find((p) => p.id === ownedId) ??
     history.find((p) => p.status === "active") ??
     history[0];
   const selected = selectedPlan?.id;
@@ -360,6 +364,11 @@ function CtxPlanHistory({
   useEffect(() => {
     readPlans.current?.();
   }, []);
+  // Follow the session's own plan across a switch. A session that owns no plan has
+  // nothing to select, so the current choice stands.
+  useEffect(() => {
+    if (ownedId) setSelection(ownedId);
+  }, [ownedId]);
   useEffect(() => {
     if (selected && !detail) readPlan.current?.(selected);
   }, [selected, detail]);

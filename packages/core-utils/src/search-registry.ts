@@ -26,8 +26,9 @@ export type SearchEngineStrategy =
 export type SearchSettingKind = "secret" | "url";
 
 /** The transport that performs a `web_fetch` for this engine. `http` is the generic
- *  page fetch; the others go through the engine's own fetch API. */
-export type SearchEngineFetchStrategy = "http" | "ollama" | "deepseek";
+ *  page fetch, `playwright` renders it in the engine's managed browser, and the rest
+ *  go through the engine's own fetch API. */
+export type SearchEngineFetchStrategy = "http" | "ollama" | "deepseek" | "playwright";
 
 export { BROWSER_SEARCH_ENGINES, type SearchEngineBrowser } from "./playwright-browsers.js";
 /** One persisted setting an engine declares for itself. */
@@ -104,7 +105,7 @@ const STRATEGIES: ReadonlySet<string> = new Set([
   "playwright",
 ]);
 const SETTING_KINDS: ReadonlySet<string> = new Set(["secret", "url"]);
-const FETCH_STRATEGIES: ReadonlySet<string> = new Set(["http", "ollama", "deepseek"]);
+const FETCH_STRATEGIES: ReadonlySet<string> = new Set(["http", "ollama", "deepseek", "playwright"]);
 const BROWSERS: ReadonlySet<string> = new Set(BROWSER_SEARCH_ENGINES);
 function fail(where: string, message: string): never {
   throw new Error(`search-engines: ${where}: ${message}`);
@@ -221,6 +222,9 @@ export function parseSearchEngine(value: unknown, source: string): SearchEngineS
   }
   if (strategy !== "playwright" && raw.browser !== undefined) {
     fail(`${scope}: browser`, "only the playwright strategy drives a browser");
+  }
+  if (raw.fetchStrategy === "playwright" && raw.browser === undefined) {
+    fail(`${scope}: fetchStrategy`, "playwright rendering requires a browser");
   }
   const copyFrom = nullableText(raw.extends, `${scope}: extends`);
   if (copyFrom === id) fail(`${scope}: extends`, "an engine cannot extend itself");

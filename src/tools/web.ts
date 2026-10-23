@@ -1,15 +1,21 @@
-/** web_search uses Bing (cn.bing.com — works from CN without proxy); web_fetch sniffs HTML to text. */
+/** web_search drives whichever engine the declaration names (scraped SERP, API, or a
+ *  managed browser); web_fetch sniffs HTML to text. */
 
 import { lookup } from "node:dns/promises";
+import { writeFileSync } from "node:fs";
 import { isIP } from "node:net";
+import { join } from "node:path";
 import {
+  BROWSER_SEARCH_ENGINES,
   SEARCH_ENGINE_SPECS,
+  type SearchEngineBrowser,
   type SearchEngineFetchStrategy,
   type SearchEngineSpec,
   type SearchEngineStrategy,
   WEB_SEARCH_ENGINE_NAMES,
   type WebSearchEngineName,
   flattenText,
+  messageOf,
   requireSearchEngineError,
   searchEngineSpec,
   sliceAlignedToCodepoint,
@@ -30,7 +36,14 @@ import {
 } from "../config.js";
 import { interpolate, t } from "../i18n/index.js";
 import type { ToolRegistry } from "../tools.js";
-import { type EngineCopy, searchWithBrowser } from "./browser-search.js";
+import {
+  type EngineCopy,
+  RenderUnavailableError,
+  renderManagedPage,
+  searchWithBrowser,
+} from "./browser-search.js";
+import { mergeSignals } from "./jobs.js";
+import { pruneScreenshots, screenshotDir } from "./screenshot-dir.js";
 
 export interface SearchResult {
   title: string;
@@ -46,6 +59,10 @@ export interface PageContent {
   text: string;
   /** True when the extracted text was clipped to fit the cap. */
   truncated: boolean;
+  /** A screenshot of the rendered page, for the desktop card to display. */
+  previewPath?: string;
+  /** Something the reader should know about how this page was obtained. */
+  note?: string;
 }
 
 export interface WebFetchOptions {
@@ -55,6 +72,8 @@ export interface WebFetchOptions {
   timeoutMs?: number;
   /** Config path for provider-specific keys. Defaults to ~/.reasonix/config.json. */
   configPath?: string;
+  /** Workspace root, so a rendered page preview lands where the desktop can show it. */
+  rootDir?: string;
   signal?: AbortSignal;
 }
 
@@ -129,6 +148,20 @@ function fetchStatusError(status: number, url: string): string {
   if (status === 403) return t("webErrors.fetchForbidden403", { url });
   if (status >= 500 && status <= 599) return t("webErrors.fetchServerError5xx", { status, url });
   return t("webErrors.fetchStatus", { status, url });
+}
+
+/** Statuses a bot-gated host uses to refuse a plain read. A real browser usually passes. */
+const BLOCKED_FETCH_STATUSES: ReadonlySet<number> = new Set([403, 406, 429, 503]);
+
+/** A plain read was refused by a host that gates bots, so a render may still succeed. */
+export class FetchBlockedError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    // The refusal keeps the plain Error name, so a caller that reports it reads the same
+    // sentence it did before the browser fallback existed.
+    this.status = status;
+  }
 }
 
 // Shared fetch helpers for JSON search APIs.
@@ -968,7 +1001,7 @@ async function searchPlaywright(
   return searchWithBrowser(query, {
     browser,
     copy: copyFor(opts),
-    parse: parseBingResults,
+    parsers: { duckduckgo: parseDuckDuckGoResults, bing: parseBingResults },
     topK,
     signal: opts.signal,
   });
@@ -1050,6 +1083,14 @@ function capText(text: string, maxChars: number): { text: string; truncated: boo
     : { text, truncated: false };
 }
 
+/** Clip to the cap and mark the cut in the text itself, so a reader knows it was cut. */
+function finishPageText(text: string, maxChars: number): { text: string; truncated: boolean } {
+  const capped = capText(text, maxChars);
+  return capped.truncated
+    ? { text: `${capped.text}\n\n[… truncated ${text.length - maxChars} chars …]`, truncated: true }
+    : capped;
+}
+
 async function fetchEnginePage(
   url: string,
   request: EngineFetchRequest,
@@ -1128,15 +1169,103 @@ type FetchTransport = (
   url: string,
   opts: WebFetchOptions,
   copy: EngineCopy,
+  spec: SearchEngineSpec,
 ) => Promise<PageContent & { links?: string[] }>;
+
+/** Persist a rendered page's screenshot where the desktop card can display it. */
+function savePagePreview(png: Buffer, rootDir: string | undefined): string | undefined {
+  try {
+    const dir = screenshotDir(rootDir);
+    const path = join(dir, `page-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+    writeFileSync(path, png);
+    pruneScreenshots(dir, "page-");
+    return path;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Render `url` in the engine's managed browser and shape it as a fetch result. */
+async function renderPage(
+  browser: SearchEngineBrowser,
+  url: string,
+  opts: WebFetchOptions,
+  copy: EngineCopy,
+): Promise<PageContent> {
+  const rendered = await renderManagedPage(browser, copy, url, { signal: opts.signal });
+  // A redirect must not turn a public fetch into a local one.
+  const finalUrl = await assertPublicHttpUrl(rendered.url);
+  return {
+    url: finalUrl.toString(),
+    title: rendered.title || extractTitle(rendered.html),
+    ...finishPageText(htmlToText(rendered.html), opts.maxChars ?? DEFAULT_FETCH_MAX_CHARS),
+    previewPath: rendered.preview ? savePagePreview(rendered.preview, opts.rootDir) : undefined,
+  };
+}
+
+/** Error copy for a browser-driven render, taken from the engine that owns that browser so
+ *  the wording is the one its declaration authored. */
+function browserRenderCopy(browser: SearchEngineBrowser): EngineCopy {
+  const owner = SEARCH_ENGINE_SPECS.find((spec) => spec.browser === browser);
+  return owner ? copyFor({ engine: owner.id as WebSearchEngineName }) : (key: string) => key;
+}
+
+/** `http` engines read the page directly, but a host that gates bots refuses a plain
+ *  client while rendering for a real one, so those refusals retry in the managed browser. */
+async function webFetchDirect(
+  url: string,
+  opts: WebFetchOptions,
+): Promise<PageContent & { links?: string[] }> {
+  try {
+    return await webFetch(url, opts);
+  } catch (err) {
+    if (!(err instanceof FetchBlockedError)) throw err;
+    for (const browser of BROWSER_SEARCH_ENGINES) {
+      try {
+        const page = await renderPage(browser, url, opts, browserRenderCopy(browser));
+        return {
+          ...page,
+          note: `render: plain read refused (${err.status}); page rendered in the managed browser`,
+        };
+      } catch {
+        // This build cannot render right now, so the refusal stands as the answer.
+      }
+    }
+    throw err;
+  }
+}
+
+/** Render the page in the engine's managed browser: text a plain read cannot see, plus a
+ *  screenshot of the page as the card's preview. */
+async function webFetchPlaywright(
+  url: string,
+  opts: WebFetchOptions,
+  copy: EngineCopy,
+  spec: SearchEngineSpec,
+): Promise<PageContent & { links?: string[] }> {
+  const browser = spec.browser;
+  if (!browser) {
+    throw new Error(`web_fetch: engine "${spec.id}" declares rendering with no browser`);
+  }
+  try {
+    return await renderPage(browser, url, opts, copy);
+  } catch (err) {
+    if (!(err instanceof RenderUnavailableError)) throw err;
+    // No usable managed browser: a plain read still answers the question, and the note
+    // says the text may be missing script-rendered content.
+    const page = await webFetch(url, opts);
+    return { ...page, note: `render: unavailable (${messageOf(err)})` };
+  }
+}
 
 const FETCH_TRANSPORTS: ReadonlyMap<SearchEngineFetchStrategy, FetchTransport> = new Map<
   SearchEngineFetchStrategy,
   FetchTransport
 >([
-  ["http", (url: string, opts: WebFetchOptions) => webFetch(url, opts)],
+  ["http", (url: string, opts: WebFetchOptions) => webFetchDirect(url, opts)],
   ["ollama", (url, opts, copy) => webFetchOllama(url, opts, copy)],
   ["deepseek", (url, opts, copy) => webFetchDeepseek(url, opts, copy)],
+  ["playwright", (url, opts, copy, spec) => webFetchPlaywright(url, opts, copy, spec)],
 ]);
 /** Parse SearXNG HTML search results using node-html-parser. */
 export function parseSearxngHtmlResults(html: string): SearchResult[] {
@@ -1201,6 +1330,19 @@ function unwrapBingUrl(href: string): string {
   return href;
 }
 
+/** DuckDuckGo's HTML SERP wraps some destinations in `/l/?uddg=<encoded target>`; the
+ *  wrapper is click bookkeeping, never a destination. */
+function unwrapDuckDuckGoUrl(href: string): string {
+  if (!/(?:^|\/\/)duckduckgo\.com\/l\//i.test(href)) return href;
+  try {
+    const target = new URL(href, "https://duckduckgo.com").searchParams.get("uddg");
+    if (target && /^https?:\/\//i.test(target)) return target;
+  } catch {
+    // Fall through to the raw href rather than losing the hit.
+  }
+  return href;
+}
+
 /** Hosts that are the SERP's own shell (privacy, feedback, account), never a destination
  *  worth navigating to or citing. A real microsoft.com/learn docs hit is still kept. */
 const SERP_NOISE_HOSTS = /(?:^|\.)bing\.com$|^go\.microsoft\.com$|^account\.microsoft\.com$/i;
@@ -1232,7 +1374,7 @@ const SERP_TITLE_MAX = 200;
 /** A navigable, de-tracked URL, or null when the anchor is not a destination at all. */ function cleanResultUrl(
   href: string,
 ): string | null {
-  const unwrapped = unwrapBingUrl(href);
+  const unwrapped = unwrapDuckDuckGoUrl(unwrapBingUrl(href));
   let url: URL;
   try {
     url = new URL(unwrapped);
@@ -1357,12 +1499,12 @@ function serpSnippet(block: ReturnType<typeof parseHtml>, title: string): string
   return (blockText.startsWith(title) ? blockText.slice(title.length) : blockText).trim();
 }
 
-/** Organic SERP hits only: ads, tracking redirects, Bing's own chrome, duplicate targets
- *  and unreadable blocks are dropped so the caller gets destinations it can use. */
-export function parseBingResults(html: string): SearchResult[] {
-  // DOM walk rather than regex — `<li[^>]*\bclass\b[^>]*>` triggers
-  // polynomial backtracking on adversarial input (CodeQL js/polynomial-redos).
-  const root = parseHtml(html);
+/** Organic SERP hits only: ads, tracking redirects, the SERP's own chrome, duplicate
+ *  targets and unreadable blocks are dropped so the caller gets usable destinations. */
+function createSerpCollector(): {
+  results: SearchResult[];
+  add: (title: string, href: string, snippet: string) => void;
+} {
   const results: SearchResult[] = [];
   const seen = new Set<string>();
   const add = (title: string, href: string, snippet: string) => {
@@ -1376,6 +1518,16 @@ export function parseBingResults(html: string): SearchResult[] {
       snippet: flattenText(snippet),
     });
   };
+  return { results, add };
+}
+
+/** Bing's organic hits. Ads, tracking redirects, Bing's own chrome, duplicate targets
+ *  and unreadable blocks are dropped so the caller gets destinations it can use. */
+export function parseBingResults(html: string): SearchResult[] {
+  // DOM walk rather than regex — `<li[^>]*\bclass\b[^>]*>` triggers
+  // polynomial backtracking on adversarial input (CodeQL js/polynomial-redos).
+  const root = parseHtml(html);
+  const { results, add } = createSerpCollector();
 
   for (const block of root.querySelectorAll("li.b_algo")) {
     if (isPromotedBlock(block)) continue;
@@ -1395,6 +1547,30 @@ export function parseBingResults(html: string): SearchResult[] {
     if (title.length < 3) continue;
     const block = anchor.parentNode?.parentNode ?? anchor.parentNode;
     add(title, anchor.getAttribute("href") ?? "", block ? snippetText(readableText(block)) : "");
+  }
+  return results;
+}
+
+/** DuckDuckGo's no-JS SERP: each hit is a `.result` block whose `a.result__a` carries the
+ *  title and destination, with its own `.result__snippet`. Sponsored blocks are marked
+ *  `result--ad`, and DDG wraps some destinations in a `/l/?uddg=` redirect. */
+export function parseDuckDuckGoResults(html: string): SearchResult[] {
+  const root = parseHtml(html);
+  const { results, add } = createSerpCollector();
+  for (const block of root.querySelectorAll(".result")) {
+    const classes = block.getAttribute("class") ?? "";
+    if (/(?:^|\s)result--ad(?:\s|$)/.test(classes)) continue;
+    const anchor = block.querySelector("a.result__a[href]");
+    if (!anchor) continue;
+    const title = flattenText(readableText(anchor));
+    const snippet = block.querySelector(".result__snippet");
+    add(
+      title,
+      anchor.getAttribute("href") ?? "",
+      snippet
+        ? snippetText(readableText(snippet))
+        : snippetText(readableText(block).replace(title, "")),
+    );
   }
   return results;
 }
@@ -1440,7 +1616,12 @@ export async function webFetch(url: string, opts: WebFetchOptions = {}): Promise
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", cancel);
   }
-  if (!resp.ok) throw new Error(fetchStatusError(resp.status, url));
+  if (!resp.ok) {
+    const message = fetchStatusError(resp.status, url);
+    throw BLOCKED_FETCH_STATUSES.has(resp.status)
+      ? new FetchBlockedError(message, resp.status)
+      : new Error(message);
+  }
   const contentType = resp.headers.get("content-type") ?? "";
   // Pre-check Content-Length when the server provides it. Cheaper to
   // refuse upfront than to start streaming a 1GB ISO.
@@ -1451,11 +1632,7 @@ export async function webFetch(url: string, opts: WebFetchOptions = {}): Promise
   const raw = await readBodyCapped(resp, FETCH_MAX_BYTES);
   const title = extractTitle(raw);
   const text = contentType.includes("text/html") ? htmlToText(raw) : raw;
-  const capped = capText(text, maxChars);
-  const finalText = capped.truncated
-    ? `${capped.text}\n\n[… truncated ${text.length - maxChars} chars …]`
-    : capped.text;
-  return { url: currentUrl, title, text: finalText, truncated: capped.truncated };
+  return { url: currentUrl, title, ...finishPageText(text, maxChars) };
 }
 
 /** Streams + caps so chunked responses (or servers lying about Content-Length) can't balloon the heap. */
@@ -1542,7 +1719,9 @@ interface WalkableNode {
 function walkExtract(node: WalkableNode, out: string[]): void {
   // nodeType 3 = TEXT_NODE; 1 = ELEMENT_NODE per node-html-parser.
   if (node.nodeType === 3) {
-    out.push(node.rawText ?? node.text ?? "");
+    const text = node.rawText ?? node.text ?? "";
+    // The parser reports a doctype as a text node; that is markup, not page content.
+    if (!/^\s*<[!?]/.test(text)) out.push(text);
     return;
   }
   const tag = node.rawTagName?.toLowerCase();
@@ -1589,6 +1768,8 @@ export interface WebToolsOptions {
   maxFetchChars?: number;
   /** Config path to read at tool-call time. Defaults to ~/.reasonix/config.json. */
   configPath?: string;
+  /** Workspace root fallback for rendered page previews when the call has none. */
+  rootDir?: string;
 }
 
 export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions = {}): ToolRegistry {
@@ -1619,7 +1800,9 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
       const endpoint = loadWebSearchEndpoint(opts.configPath);
       const results = await webSearch(args.query, {
         topK: args.topK ?? defaultTopK,
-        signal: ctx?.signal,
+        // A managed browser takes seconds to launch and load, so the per-call Stop has
+        // to reach it too, not only the turn's Esc.
+        signal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
         engine,
         endpoint,
         configPath: opts.configPath,
@@ -1668,12 +1851,21 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
       }
       const page = await transport(
         args.url,
-        { maxChars: maxFetchChars, signal: ctx?.signal, configPath: opts.configPath },
+        {
+          maxChars: maxFetchChars,
+          signal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
+          configPath: opts.configPath,
+          rootDir: ctx?.rootDir ?? opts.rootDir,
+        },
         copyFor({ engine: spec.id as WebSearchEngineName }),
+        spec,
       );
+      const head = [`engine: ${engine}`];
+      if (page.previewPath) head.push(`preview: ${page.previewPath}`);
       const header = page.title ? `${page.title}\n${page.url}` : page.url;
       const links = page.links?.length ? `\n\nlinks:\n${page.links.join("\n")}` : "";
-      return `engine: ${engine}\n\n${header}\n\n${page.text}${links}`;
+      const note = page.note ? `\n\n[${page.note}]` : "";
+      return `${head.join("\n")}\n\n${header}\n\n${page.text}${links}${note}`;
     },
   });
 

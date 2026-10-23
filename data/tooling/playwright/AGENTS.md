@@ -1,5 +1,5 @@
 <!-- platform:begin — this section is auto-managed by Reasonix+ (overwritten on playwright-tooling-version bumps). Your additions go below the platform:end marker and survive upgrades. -->
-<!-- playwright-tooling-version: 4 -->
+<!-- playwright-tooling-version: 5 -->
 
 # Playwright driver: persistent cross-browser control
 
@@ -55,6 +55,18 @@ The local HTTP server is intentionally localhost-only. State lives in `.server.j
 next to this file. Stale state self-heals on the next invocation. Use
 `DRIVER_TIMEOUT_MS` and `DRIVER_PORT` only for explicit operational needs, not as
 silent recovery mechanisms.
+
+## Rendered pages and lazy content
+
+`web_fetch` cannot run scripts, so a JS-rendered site returns page chrome only: YouTube,
+social feeds, and most single-page apps need this browser. Prefer the site's own search
+URL (`browser_navigate`), then read the snapshot or `browser_find`.
+
+Sections below the fold mount only after scrolling: press `End` (or
+`browser_mouse_wheel`) and re-read, repeating until the section appears. YouTube comments
+measured at 5-20 threads in 6-12 s after one to three presses, about ten more per press;
+roughly one attempt in three never mounts them, so retry once and then report that the
+section did not load rather than that it is empty.
 <!-- platform:end -->
 
 ## Agent notes (append below — the platform refreshes only the section above)

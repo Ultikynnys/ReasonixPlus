@@ -396,6 +396,7 @@ export type {
   UserImageAttachment,
   QuickSend,
   PickerWindow,
+  PlaywrightManagedBrowserInstallState,
   RuleRecord,
   StatusBarToggles,
 } from "./desktop-protocol.js";

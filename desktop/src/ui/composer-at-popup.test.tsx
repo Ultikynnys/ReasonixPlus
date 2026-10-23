@@ -70,6 +70,31 @@ describe("desktop Composer model catalog", () => {
     expect(onRefreshAntigravityModels).toHaveBeenCalledOnce();
   });
 
+  it("re-queries the queried catalogs when the picker opens, with no button for it", () => {
+    const onRefreshOllamaModels = vi.fn();
+    const onRefreshOpencodeModels = vi.fn();
+    const onRefreshProviderCatalogs = vi.fn();
+    const { container } = renderComposer({
+      ollamaModels: ["llama3.1:latest"],
+      enabledModels: ["ollama/llama3.1:latest", "deepseek-v4-flash"],
+      onRefreshOllamaModels,
+      onRefreshOpencodeModels,
+      onRefreshProviderCatalogs,
+    });
+    // Nothing is fetched for a picker nobody opened; opening it is the refresh trigger.
+    expect(onRefreshProviderCatalogs).not.toHaveBeenCalled();
+    fireEvent.click(container.querySelector(".model-pill")!);
+    expect(onRefreshOllamaModels).toHaveBeenCalledTimes(1);
+    expect(onRefreshOpencodeModels).toHaveBeenCalledTimes(1);
+    expect(onRefreshProviderCatalogs).toHaveBeenCalledTimes(1);
+
+    // A queried catalog carries no manual refresh control: the list is always current.
+    const groups = Array.from(container.querySelectorAll(".model-menu-group"));
+    const ollamaGroup = groups.find((group) => group.textContent?.includes("Ollama"));
+    expect(ollamaGroup).toBeTruthy();
+    expect(ollamaGroup?.querySelector('button[title="Refresh"]')).toBeNull();
+  });
+
   it("renders a subagent model menu that shares the main-agent catalog (DRY)", () => {
     const onModelChange = vi.fn();
     const onSubagentModelChange = vi.fn();

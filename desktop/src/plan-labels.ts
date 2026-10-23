@@ -11,21 +11,41 @@ export type SessionPlanLabel = {
   summary?: string;
 };
 
-/** Maps a session name to the plan it is working, for the sidebar's badge. The
- *  history is workspace-wide and newest-first, so the first entry seen for a
- *  session is its newest in-flight plan. A finished plan is skipped: it belongs
- *  to nobody, and claiming otherwise would label a session that has no plan.
- *  The map covers every session of the workspace, so it stays valid whichever
- *  session the tab is currently showing. */
+/** The working plan of every owner, keyed by session. The history is workspace-wide
+ *  and newest-first, so the first entry seen for a session is its newest in-flight
+ *  plan. A finished plan belongs to nobody, and claiming otherwise would attribute
+ *  it to a session that no longer works it. */
+function ownedPlans(
+  history: readonly PlanHistoryItem[],
+): Map<string, { index: number; plan: PlanHistoryItem }> {
+  const owned = new Map<string, { index: number; plan: PlanHistoryItem }>();
+  history.forEach((plan, position) => {
+    const owner = plan.ownerSession;
+    if (!owner || !isWorkingPlanStatus(plan.status) || owned.has(owner)) return;
+    owned.set(owner, { index: position + 1, plan });
+  });
+  return owned;
+}
+
+/** Maps a session name to the plan it is working, for the sidebar's badge. The map
+ *  covers every session of the workspace, so it stays valid whichever session the
+ *  tab is currently showing. */
 export function planLabelsBySession(
   history: readonly PlanHistoryItem[],
 ): Map<string, SessionPlanLabel> {
-  const labels = new Map<string, SessionPlanLabel>();
-  history.forEach((plan, position) => {
-    const owner = plan.ownerSession;
-    if (!owner || !isWorkingPlanStatus(plan.status)) return;
-    if (labels.has(owner)) return;
-    labels.set(owner, { index: position + 1, status: plan.status, summary: plan.summary });
-  });
-  return labels;
+  return new Map(
+    [...ownedPlans(history)].map(([owner, { index, plan }]) => [
+      owner,
+      { index, status: plan.status, summary: plan.summary },
+    ]),
+  );
+}
+
+/** The id of the plan `session` is working, or undefined when it owns none — the
+ *  plan the plan section opens on, so a session never shows another session's plan. */
+export function planIdForSession(
+  history: readonly PlanHistoryItem[],
+  session: string | undefined,
+): string | undefined {
+  return session ? ownedPlans(history).get(session)?.plan.id : undefined;
 }

@@ -5,7 +5,10 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+  convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}`,
+}));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), openUrl: vi.fn() }));
 
 import { WorkspaceProvider } from "../Markdown";
@@ -345,6 +348,83 @@ describe("ToolCard — show-in-explorer button", () => {
     expect(header.textContent).toContain("ollama");
   });
 
+  it("shows the rendered page preview inside the card while collapsed", () => {
+    const { container } = render(
+      wrap(
+        <ToolCard
+          name="web_fetch"
+          args={JSON.stringify({ url: "https://example.com/" })}
+          result={
+            "engine: playwright-webkit\npreview: C:/work/.reasonix/screenshots/page.png\nExample\nhttps://example.com/\n\nRendered text"
+          }
+          ok
+        />,
+      ),
+    );
+    const image = container.querySelector("img.tool-preview-shot") as HTMLImageElement | null;
+    expect(image).toBeTruthy();
+    expect(image?.getAttribute("src")).toContain(
+      encodeURIComponent("C:/work/.reasonix/screenshots/page.png"),
+    );
+    // The host tells the reader which site the page came from.
+    expect(container.querySelector(".tool-preview-host")?.textContent).toBe("example.com");
+    // The body stays collapsed; the preview does not depend on expanding the card.
+    expect(container.querySelector(".tool-call")).toBeNull();
+  });
+
+  it("opens the full preview image on click without collapsing the card", () => {
+    const { container } = render(
+      wrap(
+        <ToolCard
+          name="web_fetch"
+          args={JSON.stringify({ url: "https://example.com/" })}
+          result={
+            "engine: playwright-webkit\npreview: /shots/page.png\nExample\nhttps://www.example.com/\n\nRendered"
+          }
+          ok
+        />,
+      ),
+    );
+    const open = container.querySelector(".tool-preview-open") as HTMLButtonElement;
+    fireEvent.click(open);
+    expect(openPath).toHaveBeenCalledWith("/shots/page.png");
+    // www. is dropped so the host reads as the site, and the click did not toggle the card.
+    expect(container.querySelector(".tool-preview-host")?.textContent).toBe("example.com");
+    expect(container.querySelector(".tool-call")).toBeNull();
+  });
+
+  it("keeps the host when the preview image cannot load", () => {
+    const { container } = render(
+      wrap(
+        <ToolCard
+          name="web_fetch"
+          args={JSON.stringify({ url: "https://example.com/" })}
+          result={
+            "engine: playwright-webkit\npreview: /shots/page.png\nExample\nhttps://example.com/\n\nRendered"
+          }
+          ok
+        />,
+      ),
+    );
+    fireEvent.error(container.querySelector("img.tool-preview-shot")!);
+    expect(container.querySelector("img.tool-preview-shot")).toBeNull();
+    expect(container.querySelector(".tool-preview-host")?.textContent).toBe("example.com");
+  });
+
+  it("renders no preview for a plain fetch result", () => {
+    const { container } = render(
+      wrap(
+        <ToolCard
+          name="web_fetch"
+          args={JSON.stringify({ url: "https://example.com/" })}
+          result={"engine: bing\n\nExample\nhttps://example.com/\n\ncontent"}
+          ok
+        />,
+      ),
+    );
+    expect(container.querySelector("img.tool-preview-shot")).toBeNull();
+  });
+
   it("shows no engine pill when the result has no engine line", () => {
     const { container } = render(
       wrap(
@@ -481,10 +561,7 @@ describe("SubagentCard — model visibility", () => {
 
   it("updates context while running and settles after completion", () => {
     const { rerender } = render(
-      <SubagentCard
-        name="explore"
-        runs={[{ ...run, status: "running", contextTokens: 8_000 }]}
-      />,
+      <SubagentCard name="explore" runs={[{ ...run, status: "running", contextTokens: 8_000 }]} />,
     );
 
     let header = screen.getByRole("button", { name: /explore/ });

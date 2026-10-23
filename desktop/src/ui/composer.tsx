@@ -219,6 +219,7 @@ export function Composer({
   opencodeModelsError,
   opencodeVisionModels,
   onRefreshOpencodeModels,
+  onRefreshProviderCatalogs,
   enabledModels,
   providerCatalogs,
   textareaRef,
@@ -285,8 +286,9 @@ export function Composer({
   ollamaModelsError?: string;
   /** Models hidden because the account's plan doesn't cover them. */
   ollamaHiddenCount?: number;
-  /** Re-fetch the Ollama model list (`force` bypasses the backend's cache). */
-  onRefreshOllamaModels?: (force?: boolean) => void;
+  /** Re-query the Ollama model list. The picker calls this when it opens, so the
+   *  list is current without a refresh button. */
+  onRefreshOllamaModels?: () => void;
   /** Prefixed vision-capable Ollama ids (`ollama/llava`) — shown as a badge. */
   ollamaVisionModels?: ReadonlySet<string>;
   /** Exact model ids returned by the signed-in Antigravity account. */
@@ -298,7 +300,10 @@ export function Composer({
   opencodeModels?: string[];
   opencodeModelsError?: string;
   opencodeVisionModels?: ReadonlySet<string>;
-  onRefreshOpencodeModels?: (force?: boolean) => void;
+  /** Re-query the models.dev catalog when the picker opens (see `onRefreshOllamaModels`). */
+  onRefreshOpencodeModels?: () => void;
+  /** Re-query every provider's discovery catalog (models-endpoint providers). */
+  onRefreshProviderCatalogs?: () => void;
   providerCatalogs?: Partial<Record<ProviderCatalogKey, ProviderCatalogView>>;
   /** Model ids offered by every picker (opt-in allow-list — unlisted models
    *  are hidden). Global persistent setting (`enabledModels` in config.json),
@@ -361,6 +366,15 @@ export function Composer({
   const menuWraps = useRef<Partial<Record<MenuId, HTMLDivElement | null>>>({});
   const toggleMenu = (id: MenuId) => setOpenMenu((cur) => (cur === id ? null : id));
   const closeMenu = () => setOpenMenu(null);
+  // Every model list the picker shows comes from an endpoint we query, so opening the
+  // picker re-queries them: the lists are current without a refresh button. Each source
+  // keeps its own cache window in the backend, so reopening inside that window is free.
+  useEffect(() => {
+    if (openMenu !== "model" && openMenu !== "subagent") return;
+    onRefreshOllamaModels?.();
+    onRefreshOpencodeModels?.();
+    onRefreshProviderCatalogs?.();
+  }, [openMenu, onRefreshOllamaModels, onRefreshOpencodeModels, onRefreshProviderCatalogs]);
   // A pill's wrapper doubles as its menu's outside-click boundary, so the ref that
   // registers it is the only thing each wrapper needs to declare.
   const anchor = (id: MenuId) => (el: HTMLDivElement | null) => {
@@ -722,9 +736,7 @@ export function Composer({
     enabledModels,
     providerCatalogs,
     providerHints,
-    onRefreshOllamaModels,
     onRefreshAntigravityModels,
-    onRefreshOpencodeModels,
   };
 
   return (
@@ -1100,9 +1112,7 @@ export function ModelList({
   enabledModels,
   providerCatalogs,
   providerHints,
-  onRefreshOllamaModels,
   onRefreshAntigravityModels,
-  onRefreshOpencodeModels,
 }: {
   activeModel: string;
   onPick: (model: string) => void;
@@ -1122,9 +1132,7 @@ export function ModelList({
   /** Model ids offered by the picker (opt-in allow-list). The active model
    *  always stays visible so a running tab can never strand itself. */
   enabledModels?: string[];
-  onRefreshOllamaModels?: (force?: boolean) => void;
   onRefreshAntigravityModels?: () => void;
-  onRefreshOpencodeModels?: (force?: boolean) => void;
 }) {
   const catalog = deriveModelCatalog({
     providerCatalogs,
@@ -1159,8 +1167,6 @@ export function ModelList({
         title: t(MODEL_CATALOG_GROUP_LABELS[group.key]),
         ...(group.key === "opencode"
           ? {
-              refresh: onRefreshOpencodeModels ? () => onRefreshOpencodeModels(true) : undefined,
-              refreshTitle: t("settings.modelsRefresh"),
               error: opencodeModelsError
                 ? (providerString("opencode", "modelsError", { error: opencodeModelsError }) ??
                   t("composer.modelError", { error: opencodeModelsError }))
@@ -1199,8 +1205,6 @@ export function ModelList({
             key: "ollama",
             title: t("composer.modelOllamaGroup"),
             models: (ollamaModels ?? []).map((id) => `ollama/${id}`),
-            refresh: () => onRefreshOllamaModels?.(true),
-            refreshTitle: t("settings.modelsRefresh"),
             error:
               ollamaModelsError && !ollamaGroup && activeModel.startsWith("ollama/")
                 ? (providerString("ollama", "modelsError", { error: ollamaModelsError }) ??

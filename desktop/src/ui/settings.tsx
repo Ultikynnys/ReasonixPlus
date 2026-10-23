@@ -44,6 +44,7 @@ import type {
   PlaywrightBrowserInstall,
   PlaywrightExtensionBrowser,
   PlaywrightManagedBrowser,
+  PlaywrightManagedBrowserInstallState,
   PlaywrightMcpConnectionMode,
   SettingsPatch,
 } from "../protocol";
@@ -127,6 +128,7 @@ function moveInList<T>(list: readonly T[], from: number, to: number): T[] {
 
 export type PageId =
   | "general"
+  | "quickSend"
   | "models"
   | "search"
   | "fallbacks"
@@ -136,6 +138,7 @@ export type PageId =
 
 export const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
   { id: "general", icon: "cog" },
+  { id: "quickSend", icon: "zap" },
   { id: "models", icon: "brain" },
   { id: "search", icon: "search" },
   { id: "fallbacks", icon: "layers" },
@@ -183,6 +186,7 @@ export function SettingsModal({
   opencodeModelsError,
   opencodeVisionModels,
   onRefreshOpencodeModels,
+  onRefreshProviderCatalogs,
   onAddMcpSpec,
   onRemoveMcpSpec,
   onToggleMcpServer,
@@ -226,14 +230,17 @@ export function SettingsModal({
   ollamaPlan?: string;
   /** Models hidden because the account's plan doesn't cover them. */
   ollamaHiddenCount?: number;
-  /** Re-fetch the Ollama model catalog (`force` bypasses the backend's cache). */
-  onRefreshOllamaModels?: (force?: boolean) => void;
+  /** Re-query the Ollama catalog. Opening the Models page calls this, so the list is
+   *  current without a refresh button. */
+  onRefreshOllamaModels?: () => void;
   /** Prefixed vision-capable Ollama ids (`ollama/llava`) — shown as a badge. */
   ollamaVisionModels?: ReadonlySet<string>;
   opencodeModels?: string[];
   opencodeModelsError?: string;
   opencodeVisionModels?: ReadonlySet<string>;
-  onRefreshOpencodeModels?: (force?: boolean) => void;
+  onRefreshOpencodeModels?: () => void;
+  /** Re-query every provider's discovery catalog (models-endpoint providers). */
+  onRefreshProviderCatalogs?: () => void;
   oauthWaiting: boolean;
   onOAuthBegin: () => void;
   onOAuthCancel: () => void;
@@ -280,6 +287,20 @@ export function SettingsModal({
   onRefreshChangelog: (force?: boolean) => void;
 }) {
   const [page, setPage] = useState<PageId>(initialPage ?? "general");
+  // Both the MCP card and the Search page gate on managed-build state, so it is
+  // requested for either entry point rather than only when the MCP page opens.
+  useEffect(() => {
+    onRequestMcpExtensionStatus();
+  }, [onRequestMcpExtensionStatus]);
+  // The Models page lists live catalogs, so opening it re-queries every source instead
+  // of offering a refresh button. Each source keeps its own cache window in the backend,
+  // so a revisit inside that window costs nothing.
+  useEffect(() => {
+    if (page !== "models") return;
+    onRefreshOllamaModels?.();
+    onRefreshOpencodeModels?.();
+    onRefreshProviderCatalogs?.();
+  }, [page, onRefreshOllamaModels, onRefreshOpencodeModels, onRefreshProviderCatalogs]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -350,7 +371,14 @@ export function SettingsModal({
                 onSave={onSave}
               />
             )}
-            {page === "search" && <PageSearch settings={settings} onSave={onSave} />}
+            {page === "quickSend" && <PageQuickSend settings={settings} onSave={onSave} />}
+            {page === "search" && (
+              <PageSearch
+                settings={settings}
+                onSave={onSave}
+                browserInstalls={mcpExtensionStatus?.installs ?? null}
+              />
+            )}
             {page === "models" && (
               <PageModels
                 settings={settings}
@@ -360,11 +388,9 @@ export function SettingsModal({
                 ollamaPlan={ollamaPlan}
                 ollamaHiddenCount={ollamaHiddenCount}
                 ollamaVisionModels={ollamaVisionModels}
-                onRefreshOllamaModels={onRefreshOllamaModels}
                 opencodeModels={opencodeModels}
                 opencodeModelsError={opencodeModelsError}
                 opencodeVisionModels={opencodeVisionModels}
-                onRefreshOpencodeModels={onRefreshOpencodeModels}
                 oauthSignedIn={settings.openaiOAuth?.signedIn ?? false}
                 oauthAccount={settings.openaiOAuth?.account}
                 oauthFlowError={settings.openaiOAuth?.flowError}
@@ -502,6 +528,49 @@ function SearchEngineSettingRow({
   );
 }
 
+/** Picker copy for every connection mode, shared by the MCP card and the Search page. */
+const MODE_LABEL_KEYS: Record<PlaywrightMcpConnectionMode, TKey> = {
+  chromium: "settings.mcpModeChrome",
+  firefox: "settings.mcpModeFirefox",
+  webkit: "settings.mcpModeWebkit",
+  msedge: "settings.mcpModeEdge",
+  extension: "settings.mcpModeExtension",
+  cdp: "settings.mcpModeCdp",
+};
+
+function modeLabel(mode: PlaywrightMcpConnectionMode): string {
+  return t(MODE_LABEL_KEYS[mode]);
+}
+
+/** Copy for each install state a managed build can report. */
+const BUILD_STATE_LABEL_KEYS: Record<PlaywrightManagedBrowserInstallState["state"], TKey> = {
+  installed: "settings.mcpBuildInstalled",
+  missing: "settings.mcpBuildMissing",
+  system: "settings.mcpBuildSystem",
+};
+
+/** The recorded install state of one managed build, or undefined while it is unknown. */
+function buildStateOf(
+  installs: readonly PlaywrightManagedBrowserInstallState[] | null | undefined,
+  browser: PlaywrightManagedBrowser,
+): PlaywrightManagedBrowserInstallState["state"] | undefined {
+  return installs?.find((entry) => entry.browser === browser)?.state;
+}
+
+/** A build is present unless the daemon reports it missing: an unknown state is not
+ *  evidence of absence, so it never locks a picker. */
+function buildPresent(state: PlaywrightManagedBrowserInstallState["state"] | undefined): boolean {
+  return state === undefined || state === "installed" || state === "system";
+}
+
+/** True only when the daemon says this build is absent, so a picker can gray it out. */
+function isBuildMissing(
+  installs: readonly PlaywrightManagedBrowserInstallState[] | null | undefined,
+  browser: PlaywrightManagedBrowser,
+): boolean {
+  return buildStateOf(installs, browser) === "missing";
+}
+
 /** One engine card on the Search page: the engine's own declared fields live inside,
  *  and its header carries the Active marker or the button that makes it the engine
  *  `web_search` uses. A shared engine names the Models-tab field that owns the key
@@ -512,15 +581,18 @@ function SearchEngineCard({
   onSelect,
   settings,
   onSave,
+  browserInstalls,
 }: {
   spec: SearchEngineSpec;
   active: boolean;
   onSelect: () => void;
   settings: SettingsType;
   onSave: (patch: SettingsPatch) => void;
+  browserInstalls: readonly PlaywrightManagedBrowserInstallState[] | null;
 }) {
   const shared = searchSharedCredential(spec);
-  const ready = engineReady(spec, settings);
+  const buildState = spec.browser ? buildStateOf(browserInstalls, spec.browser) : undefined;
+  const ready = engineReady(spec, settings) && buildPresent(buildState);
   const owner = shared ? (providerSpec(shared.provider)?.label ?? shared.provider) : null;
   return (
     <HeadActionCard
@@ -534,7 +606,15 @@ function SearchEngineCard({
             type="button"
             className="btn small"
             disabled={!ready}
-            title={ready ? undefined : t("settings.searchEngineNeedsKey")}
+            title={
+              ready
+                ? undefined
+                : buildPresent(buildState)
+                  ? t("settings.searchEngineNeedsKey")
+                  : t("settings.searchEngineNeedsBrowser", {
+                      browser: spec.browser ? modeLabel(spec.browser) : "",
+                    })
+            }
             onClick={onSelect}
           >
             {t("settings.searchEngineUse")}
@@ -582,9 +662,11 @@ function engineReady(spec: SearchEngineSpec, settings: SettingsType): boolean {
 function PageSearch({
   settings,
   onSave,
+  browserInstalls,
 }: {
   settings: SettingsType;
   onSave: (patch: SettingsPatch) => void;
+  browserInstalls: readonly PlaywrightManagedBrowserInstallState[] | null;
 }) {
   const activeId = settings.webSearchEngine ?? "bing";
   return (
@@ -605,6 +687,7 @@ function PageSearch({
           }
           settings={settings}
           onSave={onSave}
+          browserInstalls={browserInstalls}
         />
       ))}
     </section>
@@ -634,8 +717,6 @@ function PageGeneral({
   useEffect(() => {
     setCustomFontDraft(customFontFamily);
   }, [customFontFamily]);
-  const [quickSendShorthand, setQuickSendShorthand] = useState("");
-  const [quickSendMessage, setQuickSendMessage] = useState("");
   const commitCustomFont = (value: string) => {
     const next = value.trim();
     setCustomFontDraft(next);
@@ -740,123 +821,136 @@ function PageGeneral({
         <FeedbackCuesSection settings={settings} onSave={onSave} />
       </section>
 
-      <section className="section">
-        <div className="stitle">{t("settings.quickSendSection")}</div>
-        <div className="h" style={{ marginBottom: 12 }}>
-          {localizeShortcutText(t("settings.quickSendHint"))}
-        </div>
-
-        {(settings.quickSends ?? []).length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
-            {(settings.quickSends ?? []).map((q, i, list) => (
-              <div className="rule" key={q.id}>
-                <div className="top">
-                  <span className="pat">{q.shorthand}</span>
-                  <div style={{ display: "flex", gap: 4 }}>
-                    {(
-                      [
-                        {
-                          dir: -1,
-                          kind: "up",
-                          icon: <I.arrowUp size={12} />,
-                          title: t("settings.quickSendMoveUp"),
-                          aria: "settings.quickSendMoveUpAria",
-                        },
-                        {
-                          dir: 1,
-                          kind: "down",
-                          icon: <I.arrowDown size={12} />,
-                          title: t("settings.quickSendMoveDown"),
-                          aria: "settings.quickSendMoveDownAria",
-                        },
-                      ] as const
-                    ).map(({ dir, kind, icon, title, aria }) => (
-                      <button
-                        key={kind}
-                        type="button"
-                        className="mini-btn"
-                        disabled={dir < 0 ? i === 0 : i === list.length - 1}
-                        title={title}
-                        aria-label={t(aria, { shorthand: q.shorthand })}
-                        onClick={() => onSave({ quickSends: moveInList(list, i, i + dir) })}
-                      >
-                        {icon}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      className="mini-btn"
-                      title={t("settings.quickSendRemove")}
-                      aria-label={t("settings.quickSendRemoveAria", { shorthand: q.shorthand })}
-                      onClick={() => onSave({ quickSends: list.filter((x) => x.id !== q.id) })}
-                    >
-                      <I.trash size={12} />
-                    </button>
-                  </div>
-                </div>
-                <div className="desc">{q.message}</div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {(settings.quickSends ?? []).length === 0 && (
-          <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
-            {t("settings.quickSendNoCustom")}
-          </div>
-        )}
-
-        <form
-          className="rule-composer"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const shorthand = enforceQuickSendShorthand(quickSendShorthand.trim());
-            const message = quickSendMessage.trim();
-            if (!message || !shorthand) return;
-            onSave({
-              quickSends: [
-                ...(settings.quickSends ?? []),
-                { id: createQuickSendId(settings.quickSends ?? []), message, shorthand },
-              ],
-            });
-            setQuickSendShorthand("");
-            setQuickSendMessage("");
-          }}
-        >
-          <div className="rule-composer-row">
-            <input
-              type="text"
-              className="rule-input"
-              placeholder={t("settings.quickSendShorthandPlaceholder")}
-              value={quickSendShorthand}
-              maxLength={QUICK_SEND_SHORTHAND_MAX_LENGTH}
-              onChange={(e) => setQuickSendShorthand(e.target.value)}
-              aria-label={t("settings.quickSendShorthand")}
-            />
-            <input
-              type="text"
-              className="rule-input"
-              placeholder={t("settings.quickSendMessagePlaceholder")}
-              value={quickSendMessage}
-              onChange={(e) => setQuickSendMessage(e.target.value)}
-              aria-label={t("settings.quickSendMessage")}
-            />
-            <button
-              type="submit"
-              className="btn small"
-              disabled={!quickSendShorthand.trim() || !quickSendMessage.trim()}
-              title={t("settings.quickSendAdd")}
-              aria-label={t("settings.quickSendAdd")}
-            >
-              <I.plus size={12} />
-              <span style={{ marginLeft: 4 }}>{t("settings.quickSendAdd")}</span>
-            </button>
-          </div>
-        </form>
-      </section>
-
       <VoiceInputSettings />
     </div>
+  );
+}
+
+/** Composer quick actions: the ordered shorthand to message list behind the Ctrl+Q
+ *  dropdown and the Ctrl+1-9 hotkeys. */
+function PageQuickSend({
+  settings,
+  onSave,
+}: {
+  settings: SettingsType;
+  onSave: (patch: SettingsPatch) => void;
+}) {
+  const [quickSendShorthand, setQuickSendShorthand] = useState("");
+  const [quickSendMessage, setQuickSendMessage] = useState("");
+  return (
+    <section className="section">
+      <div className="section-hint" style={{ marginBottom: 12 }}>
+        {localizeShortcutText(t("settings.quickSendHint"))}
+      </div>
+
+      {(settings.quickSends ?? []).length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+          {(settings.quickSends ?? []).map((q, i, list) => (
+            <div className="rule" key={q.id}>
+              <div className="top">
+                <span className="pat">{q.shorthand}</span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {(
+                    [
+                      {
+                        dir: -1,
+                        kind: "up",
+                        icon: <I.arrowUp size={12} />,
+                        title: t("settings.quickSendMoveUp"),
+                        aria: "settings.quickSendMoveUpAria",
+                      },
+                      {
+                        dir: 1,
+                        kind: "down",
+                        icon: <I.arrowDown size={12} />,
+                        title: t("settings.quickSendMoveDown"),
+                        aria: "settings.quickSendMoveDownAria",
+                      },
+                    ] as const
+                  ).map(({ dir, kind, icon, title, aria }) => (
+                    <button
+                      key={kind}
+                      type="button"
+                      className="mini-btn"
+                      disabled={dir < 0 ? i === 0 : i === list.length - 1}
+                      title={title}
+                      aria-label={t(aria, { shorthand: q.shorthand })}
+                      onClick={() => onSave({ quickSends: moveInList(list, i, i + dir) })}
+                    >
+                      {icon}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    title={t("settings.quickSendRemove")}
+                    aria-label={t("settings.quickSendRemoveAria", { shorthand: q.shorthand })}
+                    onClick={() => onSave({ quickSends: list.filter((x) => x.id !== q.id) })}
+                  >
+                    <I.trash size={12} />
+                  </button>
+                </div>
+              </div>
+              <div className="desc">{q.message}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(settings.quickSends ?? []).length === 0 && (
+        <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
+          {t("settings.quickSendNoCustom")}
+        </div>
+      )}
+
+      <form
+        className="rule-composer"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const shorthand = enforceQuickSendShorthand(quickSendShorthand.trim());
+          const message = quickSendMessage.trim();
+          if (!message || !shorthand) return;
+          onSave({
+            quickSends: [
+              ...(settings.quickSends ?? []),
+              { id: createQuickSendId(settings.quickSends ?? []), message, shorthand },
+            ],
+          });
+          setQuickSendShorthand("");
+          setQuickSendMessage("");
+        }}
+      >
+        <div className="rule-composer-row">
+          <input
+            type="text"
+            className="rule-input"
+            placeholder={t("settings.quickSendShorthandPlaceholder")}
+            value={quickSendShorthand}
+            maxLength={QUICK_SEND_SHORTHAND_MAX_LENGTH}
+            onChange={(e) => setQuickSendShorthand(e.target.value)}
+            aria-label={t("settings.quickSendShorthand")}
+          />
+          <input
+            type="text"
+            className="rule-input"
+            placeholder={t("settings.quickSendMessagePlaceholder")}
+            value={quickSendMessage}
+            onChange={(e) => setQuickSendMessage(e.target.value)}
+            aria-label={t("settings.quickSendMessage")}
+          />
+          <button
+            type="submit"
+            className="btn small"
+            disabled={!quickSendShorthand.trim() || !quickSendMessage.trim()}
+            title={t("settings.quickSendAdd")}
+            aria-label={t("settings.quickSendAdd")}
+          >
+            <I.plus size={12} />
+            <span style={{ marginLeft: 4 }}>{t("settings.quickSendAdd")}</span>
+          </button>
+        </div>
+      </form>
+    </section>
   );
 }
 
@@ -1793,6 +1887,15 @@ function HeadActionCard({
   );
 }
 
+/** Rows a model list measures up front. Beyond it the labels are fitted as they scroll
+ *  into view, which is what keeps a live catalog (OpenRouter ~470 ids, the Experiential
+ *  gateway ~320) from laying every row out when its card opens. */
+const LAZY_FIT_ROWS = 40;
+
+/** Rows inside the scroll box's own height, plus a row of slack: they are on screen the
+ *  moment the card opens, so they fit straight away instead of clipping for a frame. */
+const EAGER_FIT_ROWS = 8;
+
 /** The left column of a provider card: a scrollable list of that provider's
  *  models, each toggleable in/out of `enabledModels` via the corner button.
  *  `onSelect` (chat models only) makes a card clickable to set the default
@@ -1823,6 +1926,10 @@ function ModelList({
           modelWireName(id).toLowerCase().includes(needle) || id.toLowerCase().includes(needle),
       )
     : models;
+  // A live catalog can arrive with hundreds of ids. Past this many rows the list stops
+  // pre-measuring labels and fits each row as it scrolls in, so the browser can keep
+  // skipping off-screen rows; a short list fits immediately and never flashes.
+  const deferFit = shown.length > LAZY_FIT_ROWS;
   return (
     <>
       {onToggle ? (
@@ -1862,7 +1969,7 @@ function ModelList({
         </div>
       ) : null}
       <div className="provider-models-scroll">
-        {shown.map((id) => {
+        {shown.map((id, index) => {
           const enabled = enabledSet.has(id);
           // The card header already names the provider, so the id drops its prefix.
           const displayName = modelWireName(id);
@@ -1880,7 +1987,12 @@ function ModelList({
               tabIndex={onSelect ? 0 : undefined}
             >
               <div className="nm">
-                <FitText text={displayName} className="model-name" title={id} />
+                <FitText
+                  text={displayName}
+                  className="model-name"
+                  title={id}
+                  deferUntilVisible={deferFit && index >= EAGER_FIT_ROWS}
+                />
                 {acceptsImages(id) ? <span className="badge">vision</span> : null}
               </div>
               {onToggle ? (
@@ -1982,24 +2094,16 @@ export function ProviderSettingFields({
   );
 }
 
-function ProviderRefreshRow({
-  label,
-  hint,
-  onRefresh,
-}: {
-  label: string;
-  hint: ReactNode;
-  onRefresh?: (force?: boolean) => void;
-}) {
+/** A card's live model list: what it is, and why the last fetch failed. The list
+ *  refreshes itself (opening this page re-queries every source), so there is no
+ *  refresh control to remember. */
+function ProviderCatalogRow({ label, hint }: { label: string; hint: ReactNode }) {
   return (
     <div className="setting-row">
       <div className="l">
         <div className="n">{label}</div>
         <div className="h">{hint}</div>
       </div>
-      <button type="button" className="btn" onClick={() => onRefresh?.(true)}>
-        {t("settings.modelsRefresh")}
-      </button>
     </div>
   );
 }
@@ -2025,11 +2129,9 @@ function PageModels({
   ollamaPlan,
   ollamaHiddenCount,
   ollamaVisionModels,
-  onRefreshOllamaModels,
   opencodeModels,
   opencodeModelsError,
   opencodeVisionModels,
-  onRefreshOpencodeModels,
   oauthSignedIn,
   oauthAccount,
   oauthFlowError,
@@ -2069,12 +2171,9 @@ function PageModels({
   ollamaHiddenCount?: number;
   /** Prefixed vision-capable Ollama ids (`ollama/llava`) — shown as a badge. */
   ollamaVisionModels?: ReadonlySet<string>;
-  /** Re-fetch the Ollama model catalog (`force` bypasses the backend's cache). */
-  onRefreshOllamaModels?: (force?: boolean) => void;
   opencodeModels?: string[];
   opencodeModelsError?: string;
   opencodeVisionModels?: ReadonlySet<string>;
-  onRefreshOpencodeModels?: (force?: boolean) => void;
   oauthSignedIn: boolean;
   oauthAccount?: string;
   oauthFlowError?: string;
@@ -2331,7 +2430,7 @@ function PageModels({
               onCancel={onOpencodeCancel}
               onSignOut={onOpencodeSignOut}
             />
-            <ProviderRefreshRow
+            <ProviderCatalogRow
               label={providerString("opencode", "modelsLabel") ?? ""}
               hint={
                 opencodeModelsError
@@ -2339,7 +2438,6 @@ function PageModels({
                     t("composer.modelError", { error: opencodeModelsError }))
                   : (providerString("opencode", "modelsHint") ?? "")
               }
-              onRefresh={onRefreshOpencodeModels}
             />
           </>
         }
@@ -2356,7 +2454,7 @@ function PageModels({
               settings={settings.providerSettings}
               onSave={onSave}
             />
-            <ProviderRefreshRow
+            <ProviderCatalogRow
               label={t("settings.ollamaModels")}
               hint={
                 ollamaModelsError
@@ -2364,7 +2462,6 @@ function PageModels({
                     t("composer.modelError", { error: ollamaModelsError }))
                   : t("settings.ollamaModelsHint")
               }
-              onRefresh={onRefreshOllamaModels}
             />
             {ollamaHiddenCount && ollamaHiddenCount > 0 ? (
               <div className="h" style={{ marginTop: 4 }}>
@@ -2797,18 +2894,10 @@ export function PageMCP({
     setDraft("");
   };
   const configuredMode = extensionStatus?.server.mode;
-  const modeLabels: Record<PlaywrightMcpConnectionMode, string> = {
-    chromium: t("settings.mcpModeChrome"),
-    firefox: t("settings.mcpModeFirefox"),
-    webkit: t("settings.mcpModeWebkit"),
-    msedge: t("settings.mcpModeEdge"),
-    extension: t("settings.mcpModeExtension"),
-    cdp: t("settings.mcpModeCdp"),
-  };
+  const builds = extensionStatus?.installs ?? null;
   const extensionMode = mode === "extension";
-  const managedMode = mode !== "extension" && mode !== "cdp";
-  const installRunning =
-    managedMode && browserInstall?.phase === "running" && browserInstall.browser === mode;
+  const installRunning = browserInstall?.phase === "running";
+  const installingBrowser = installRunning ? browserInstall.browser : null;
   const playwrightSpec = specs.find((s) => s.name === "playwright");
   let connection: { text: string; color: string } | null = null;
   if (playwrightSpec) {
@@ -2843,8 +2932,8 @@ export function PageMCP({
           onChange={(event) => setMode(event.target.value as PlaywrightMcpConnectionMode)}
         >
           {PLAYWRIGHT_MANAGED_BROWSERS.map((browser) => (
-            <option key={browser} value={browser}>
-              {modeLabels[browser]}
+            <option key={browser} value={browser} disabled={isBuildMissing(builds, browser)}>
+              {modeLabel(browser)}
             </option>
           ))}
           <option value="extension">{t("settings.mcpModeExtension")}</option>
@@ -2918,32 +3007,51 @@ export function PageMCP({
             {t("settings.mcpTestConn")}
           </button>
         ) : null}
-        {managedMode ? (
-          installRunning ? (
-            <button
-              type="button"
-              className="btn danger"
-              onClick={() => onCancelBrowserInstall(mode)}
-            >
-              {t("settings.mcpBrowserInstallCancel")}
-            </button>
-          ) : (
-            <button type="button" className="btn primary" onClick={() => onInstallBrowser(mode)}>
-              {t("settings.mcpBrowserInstall", { browser: modeLabels[mode] })}
-            </button>
-          )
-        ) : null}
       </div>
       <div style={{ marginTop: 8, fontSize: 11, color: "var(--muted)" }}>
         {extensionStatus
           ? extensionStatus.server.configured
-            ? `✓ ${t("settings.mcpConfiguredMode", { mode: configuredMode ? modeLabels[configuredMode] : "…" })}${
+            ? `✓ ${t("settings.mcpConfiguredMode", { mode: configuredMode ? modeLabel(configuredMode) : "…" })}${
                 extensionMode && extensionStatus.server.tokenPrefix
                   ? ` · ${t("settings.mcpTokenSaved")}`
                   : ""
               }`
             : t("settings.mcpConfiguredNo")
           : "…"}
+      </div>
+      <div className="mcp-builds">
+        <div className="mcp-builds-head">{t("settings.mcpBuildStateLabel")}</div>
+        {PLAYWRIGHT_MANAGED_BROWSERS.map((browser) => {
+          const state = buildStateOf(builds, browser);
+          const missing = state === "missing";
+          return (
+            <div key={browser} className="mcp-build-row" data-missing={missing}>
+              <span className="mcp-build-name">{modeLabel(browser)}</span>
+              <span className="mcp-build-side">
+                <span className="mcp-build-state">
+                  {state ? t(BUILD_STATE_LABEL_KEYS[state]) : t("settings.mcpBuildUnknown")}
+                </span>
+                {installingBrowser === browser ? (
+                  <button
+                    type="button"
+                    className="btn danger"
+                    onClick={() => onCancelBrowserInstall(browser)}
+                  >
+                    {t("settings.mcpBrowserInstallCancel")}
+                  </button>
+                ) : missing ? (
+                  <button
+                    type="button"
+                    className="btn primary"
+                    onClick={() => onInstallBrowser(browser)}
+                  >
+                    {t("settings.mcpBrowserInstall", { browser: modeLabel(browser) })}
+                  </button>
+                ) : null}
+              </span>
+            </div>
+          );
+        })}
       </div>
       {connection ? (
         <div style={{ marginTop: 4, fontSize: 11, color: connection.color }}>
@@ -2965,9 +3073,12 @@ export function PageMCP({
       {installRunning ? (
         <div className="playwright-download-box">
           <output style={{ marginBottom: 4, fontSize: 11, color: "var(--muted)" }}>
-            {browserInstall.source === "backup"
-              ? t("settings.mcpBrowserDownloadBackup")
-              : t("settings.mcpBrowserDownloadOfficial")}
+            {t("settings.mcpBrowserInstalling", { browser: modeLabel(browserInstall.browser) })} ·{" "}
+            <span>
+              {browserInstall.source === "backup"
+                ? t("settings.mcpBrowserDownloadBackup")
+                : t("settings.mcpBrowserDownloadOfficial")}
+            </span>
           </output>
           <div className="playwright-download-meta">
             <span>
@@ -3010,7 +3121,7 @@ export function PageMCP({
           </div>
         </div>
       ) : null}
-      {managedMode && browserInstall?.phase === "done" && browserInstall.browser === mode ? (
+      {browserInstall?.phase === "done" ? (
         <div
           style={{
             marginTop: 4,
@@ -3019,7 +3130,7 @@ export function PageMCP({
           }}
         >
           {browserInstall.ok
-            ? t("settings.mcpBrowserInstallOk", { browser: modeLabels[mode] })
+            ? t("settings.mcpBrowserInstallOk", { browser: modeLabel(browserInstall.browser) })
             : `✗ ${browserInstall.reason ?? t("settings.mcpBrowserInstallFailed")}`}
         </div>
       ) : null}
@@ -3040,15 +3151,11 @@ export function PageMCP({
             : `✗ ${extensionCheck.reason ?? t("settings.mcpTestFailed")}`}
         </div>
       ) : null}
-      <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
-        {t(
-          extensionMode
-            ? "settings.mcpTokenHint"
-            : mode === "cdp"
-              ? "settings.mcpCdpHint"
-              : "settings.mcpManagedHint",
-        )}
-      </div>
+      {extensionMode || mode === "cdp" ? (
+        <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+          {t(extensionMode ? "settings.mcpTokenHint" : "settings.mcpCdpHint")}
+        </div>
+      ) : null}
     </div>
   );
   const mailSettings = (

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { McpExtensionStatus, McpSpecInfo } from "../protocol";
 import { MailProvider, PLAYWRIGHT_MANAGED_BROWSERS } from "../protocol";
@@ -36,7 +36,21 @@ function extensionStatus(): McpExtensionStatus {
       tokenPrefix: undefined,
       args: ["-y", "@playwright/mcp", "--extension"],
     },
+    installs: PLAYWRIGHT_MANAGED_BROWSERS.map((browser) => ({
+      browser,
+      state: browser === "msedge" ? "system" : "installed",
+    })),
   };
+}
+
+/** The same status with the named managed builds reported absent. */
+function withMissing(
+  ...missing: (typeof PLAYWRIGHT_MANAGED_BROWSERS)[number][]
+): McpExtensionStatus["installs"] {
+  return PLAYWRIGHT_MANAGED_BROWSERS.map((browser) => ({
+    browser,
+    state: browser === "msedge" ? "system" : missing.includes(browser) ? "missing" : "installed",
+  }));
 }
 
 function renderCard(
@@ -280,10 +294,56 @@ describe("PageMCP — playwright connection status", () => {
     const status = extensionStatus();
     status.server.mode = "firefox";
     status.server.hasExtensionArg = false;
+    status.installs = withMissing("firefox");
     const onInstall = vi.fn();
     renderCard([spec()], status, null, vi.fn(), onInstall);
     fireEvent.click(screen.getByRole("button", { name: "Install Managed Firefox" }));
     expect(onInstall).toHaveBeenCalledWith("firefox");
+  });
+
+  it("grays out a managed mode until its build is installed", () => {
+    const status = extensionStatus();
+    status.installs = withMissing("webkit");
+    renderCard([spec()], status);
+    const select = screen.getByLabelText("Browser connection") as HTMLSelectElement;
+    const webkit = Array.from(select.options).find((option) => option.value === "webkit")!;
+    expect(webkit.disabled).toBe(true);
+    const chromium = Array.from(select.options).find((option) => option.value === "chromium")!;
+    expect(chromium.disabled).toBe(false);
+  });
+
+  it("reports the install state of every managed build", () => {
+    const status = extensionStatus();
+    status.installs = withMissing("firefox", "webkit");
+    renderCard([spec()], status);
+    const row = (name: string) =>
+      within(document.querySelector(".mcp-builds") as HTMLElement)
+        .getByText(name)
+        .closest(".mcp-build-row") as HTMLElement;
+    expect(screen.getByText("Managed builds")).toBeTruthy();
+    expect(within(row("Managed Chrome")).getByText("installed")).toBeTruthy();
+    expect(within(row("Managed Firefox")).getByText("not installed")).toBeTruthy();
+    expect(within(row("Managed WebKit")).getByText("not installed")).toBeTruthy();
+    expect(
+      within(row("Managed Microsoft Edge")).getByText("installed with the vendor browser"),
+    ).toBeTruthy();
+  });
+
+  it("offers the installer on the build row that is absent", () => {
+    const status = extensionStatus();
+    status.installs = withMissing("chromium", "webkit");
+    const onInstall = vi.fn();
+    renderCard([spec()], status, null, vi.fn(), onInstall);
+    fireEvent.click(screen.getByRole("button", { name: "Install Managed WebKit" }));
+    expect(onInstall).toHaveBeenCalledWith("webkit");
+  });
+
+  it("offers no installer for a build that is already installed", () => {
+    const status = extensionStatus();
+    status.server.mode = "chromium";
+    status.server.hasExtensionArg = false;
+    renderCard([spec()], status);
+    expect(screen.queryByRole("button", { name: "Install Managed Chrome" })).toBeNull();
   });
 
   it("dispatches managed-browser installation cancellation", () => {

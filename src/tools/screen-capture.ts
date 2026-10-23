@@ -2,13 +2,13 @@
  *  and directly feeds the capture to the see_image tool for vision analysis. */
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { messageOf } from "@reasonix/core-utils";
 import type { ToolCallContext, ToolRegistry } from "../tools.js";
 import type { UserContentPart } from "../types.js";
+import { pruneScreenshots, screenshotDir } from "./screenshot-dir.js";
 import {
   PS_WIN_FOCUS_TYPE,
   psMatchWindowStatements,
@@ -599,42 +599,6 @@ export function calculateCaptureArea(
   };
 }
 
-/** Prune old temporary screenshot files to keep scratch storage bounded. */
-function pruneOldScreenshots(dir: string, maxFiles = 30, maxAgeMs = 3 * 86400 * 1000): void {
-  try {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    const now = Date.now();
-    const files: Array<{ path: string; mtime: number }> = [];
-
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.startsWith("capture-") && entry.name.endsWith(".png")) {
-        const fullPath = join(dir, entry.name);
-        try {
-          const st = statSync(fullPath);
-          files.push({ path: fullPath, mtime: st.mtimeMs });
-        } catch {
-          // Ignore transient stat errors
-        }
-      }
-    }
-
-    files.sort((a, b) => b.mtime - a.mtime);
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]!;
-      if (i >= maxFiles || now - file.mtime > maxAgeMs) {
-        try {
-          unlinkSync(file.path);
-        } catch {
-          // Ignore deletion error
-        }
-      }
-    }
-  } catch {
-    // Non-fatal if directory cannot be read
-  }
-}
-
 /** Resolve target destination path for capture output, creating parent directory. */
 export function resolveOutputPath(
   customPath: string | undefined,
@@ -650,20 +614,8 @@ export function resolveOutputPath(
         : customPath;
   } else {
     const filename = `capture-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-    let baseDir = rootDir ? join(rootDir, ".reasonix", "screenshots") : undefined;
-    if (baseDir) {
-      try {
-        mkdirSync(baseDir, { recursive: true });
-        pruneOldScreenshots(baseDir);
-      } catch {
-        baseDir = undefined;
-      }
-    }
-    if (!baseDir) {
-      baseDir = join(tmpdir(), "reasonix-screenshots");
-      mkdirSync(baseDir, { recursive: true });
-      pruneOldScreenshots(baseDir);
-    }
+    const baseDir = screenshotDir(rootDir);
+    pruneScreenshots(baseDir, "capture-");
     targetPath = join(baseDir, filename);
   }
 

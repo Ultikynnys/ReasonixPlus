@@ -1858,6 +1858,31 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
     expect(noOverride.settings?.subagentModel).toBeUndefined();
   });
 
+  it("carries the capability rows the Duplicate popover offers from $settings", () => {
+    // The popover renders state.settings.capabilityPrefill; a $settings frame that
+    // drops it makes a chat with servers configured read as having none.
+    const rows = [
+      { name: "playwright", enabled: true, builtin: true },
+      { name: "ghidra", enabled: false, builtin: false },
+    ];
+    const next = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$settings",
+        reasoningEffort: "high",
+        editMode: "follow",
+        quickSendId: "proceed",
+        quickSends: [],
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "deepseek-v4-pro",
+        capabilityPrefill: rows,
+        version: "0.50.1",
+      },
+    });
+    expect(next.settings?.capabilityPrefill).toEqual(rows);
+  });
+
   it("stores the session's frozen subagent capability from $settings", () => {
     // The composer's subagent model picker keys off this, and the capability is
     // frozen at chat creation.

@@ -3,29 +3,48 @@ import { I } from "../icons";
 import type { McpSetupServer } from "../protocol";
 import { Throbber } from "./throbber";
 
-/** Fresh-chat capability picker. The chat cannot run until the user confirms what it
- *  starts with — its MCP servers and whether it may spawn subagents — and both are
- *  frozen for the session, even after a restart. */
-export function McpSetupDialog({
+/** The servers a capability dialog starts with switched on: the rows the daemon marked
+ *  enabled, so a duplicate opens on the same set New chat would. */
+function enabledServerNames(servers: readonly McpSetupServer[]): Set<string> {
+  return new Set(servers.filter((s) => s.enabled).map((s) => s.name));
+}
+
+/** The capability question, asked in one dialog wherever it is asked: the session-start
+ *  gate ("what may this chat run with?") and the Duplicate confirm ("what may the copy
+ *  run with?"). A caller supplies the copy and the answer handler and nothing else, so
+ *  the two questions cannot drift apart. */
+export function CapabilityDialog({
+  title,
+  hint,
   servers,
   subagents,
+  emptyHint,
+  confirmLabel,
+  busyLabel,
+  dismissLabel,
   onConfirm,
   onCancel,
 }: {
+  title: string;
+  hint: string;
   servers: McpSetupServer[];
-  /** Pre-fill for the subagent switch: the capability seed the chat was opened with,
-   *  so a duplicate starts with its source session's answer instead of the default. */
+  /** Which switches start on: the capability seed the caller opened with. */
   subagents: boolean;
+  emptyHint?: string;
+  confirmLabel: string;
+  /** Copy the confirm shows while the answer is being applied. Absent means the caller
+   *  dismisses on click, so there is no wait to report. */
+  busyLabel?: string;
+  dismissLabel: string;
   onConfirm: (enabled: string[], subagents: boolean) => void;
   onCancel: () => void;
 }) {
-  const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(servers.filter((s) => s.enabled).map((s) => s.name)),
-  );
+  const [selected, setSelected] = useState<Set<string>>(() => enabledServerNames(servers));
   const [spawn, setSpawn] = useState(subagents);
-  // Bridging the confirmed servers takes seconds and the dialog stays up until
-  // $ready, so the confirm click must read as "working", not as a dead button.
-  const [starting, setStarting] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // Bridging the confirmed servers takes seconds and the gate stays up until $ready, so
+  // the confirm click must read as "working", not as a dead button.
+  const confirming = busy && busyLabel !== undefined;
   const toggle = (name: string): void => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -39,7 +58,7 @@ export function McpSetupDialog({
       className="mcp-setup-overlay"
       role="dialog"
       aria-modal="true"
-      aria-label="Set up this chat"
+      aria-label={title}
       style={{
         position: "fixed",
         inset: 0,
@@ -71,33 +90,37 @@ export function McpSetupDialog({
             gap: 8,
           }}
         >
-          <h2 style={{ margin: "0 0 6px" }}>Set up this chat</h2>
+          <h2 style={{ margin: "0 0 6px", fontSize: 13, fontWeight: 600 }}>{title}</h2>
           <button
             type="button"
             className="mini-btn"
-            aria-label="Cancel"
-            title="Cancel"
+            aria-label={dismissLabel}
+            title={dismissLabel}
             onClick={onCancel}
           >
             <I.x size={14} />
           </button>
         </div>
         <p className="mcp-setup-hint" style={{ margin: "0 0 12px", opacity: 0.75 }}>
-          Choose what this chat starts with. Both choices are locked for the session, even after a
-          restart.
+          {hint}
         </p>
-        <CapabilityPicker
-          servers={servers}
-          selected={selected}
-          subagents={spawn}
-          onToggleServer={toggle}
-          onToggleSubagents={() => setSpawn((on) => !on)}
-        />{" "}
+        <div className="mcp-setup-caps" style={{ maxHeight: "40vh", overflowY: "auto" }}>
+          <CapabilityPicker
+            servers={servers}
+            selected={selected}
+            subagents={spawn}
+            onToggleServer={toggle}
+            onToggleSubagents={() => setSpawn((on) => !on)}
+            emptyHint={emptyHint}
+          />
+        </div>
         <div
           className="mcp-setup-actions"
           style={{
             display: "flex",
+            alignItems: "center",
             justifyContent: "flex-end",
+            gap: 8,
             marginTop: 16,
             paddingTop: 12,
             borderTop: "1px solid var(--border)",
@@ -106,15 +129,15 @@ export function McpSetupDialog({
           <button
             type="button"
             className="btn primary"
-            disabled={starting}
-            aria-busy={starting}
+            disabled={confirming}
+            aria-busy={confirming}
             onClick={() => {
-              setStarting(true);
+              setBusy(true);
               onConfirm([...selected], spawn);
             }}
           >
-            {starting ? <Throbber label="Starting session" /> : null}
-            Confirm and start
+            {confirming && busyLabel ? <Throbber label={busyLabel} /> : null}
+            {confirmLabel}
           </button>
         </div>
       </div>
@@ -122,10 +145,9 @@ export function McpSetupDialog({
   );
 }
 
-/** The capability rows themselves — the subagent switch and one switch per configured
- *  MCP server. Mounted by the session-start dialog AND by the Duplicate popover, so the
- *  two places that ask the same question cannot drift apart. */
-export function CapabilityPicker({
+/** The capability rows themselves: the subagent switch and one switch per configured
+ *  MCP server. */
+function CapabilityPicker({
   servers,
   selected,
   subagents,

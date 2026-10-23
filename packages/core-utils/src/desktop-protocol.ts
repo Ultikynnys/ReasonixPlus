@@ -679,9 +679,18 @@ export interface McpExtensionServerState {
   args: string[];
 }
 
+/** Install state of one managed browser mode: a completed Playwright download, an
+ *  absent one, or a vendor-installed channel that is never downloaded by us. */
+export interface PlaywrightManagedBrowserInstallState {
+  browser: PlaywrightManagedBrowser;
+  state: "installed" | "missing" | "system";
+}
+
 export interface McpExtensionStatus {
   storeUrl: string;
   server: McpExtensionServerState;
+  /** Every managed mode with its install state, so a picker can gate unselectable modes. */
+  installs: PlaywrightManagedBrowserInstallState[];
 }
 
 export interface McpExtensionStatusEvent {

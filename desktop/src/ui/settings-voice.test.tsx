@@ -194,7 +194,7 @@ describe("VoiceInputSettings: models", () => {
     expect(screen.queryByText("Audio input device")).toBeNull();
   });
 
-  it("reorders custom quick sends from the general settings list", () => {
+  it("reorders custom quick sends from the quick send settings page", () => {
     const onSave = vi.fn();
     const settings: Settings = {
       ...mockSettings,
@@ -204,7 +204,7 @@ describe("VoiceInputSettings: models", () => {
       ],
     };
     render(
-      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="general" />,
+      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="quickSend" />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Move quick send down: alpha" }));
@@ -216,7 +216,7 @@ describe("VoiceInputSettings: models", () => {
     });
   });
 
-  it("deletes a custom quick send from the general settings list", () => {
+  it("deletes a custom quick send from the quick send settings page", () => {
     const onSave = vi.fn();
     const settings: Settings = {
       ...mockSettings,
@@ -226,7 +226,7 @@ describe("VoiceInputSettings: models", () => {
       ],
     };
     render(
-      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="general" />,
+      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="quickSend" />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Remove quick send: alpha" }));
@@ -235,9 +235,9 @@ describe("VoiceInputSettings: models", () => {
     });
   });
 
-  it("adds a custom quick send from the general settings form", () => {
+  it("adds a custom quick send from the quick send settings form", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="general" />);
+    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="quickSend" />);
 
     fireEvent.change(screen.getByPlaceholderText("Shorthand (dropdown label, max 20 chars)"), {
       target: { value: "Deploy" },
@@ -260,7 +260,7 @@ describe("VoiceInputSettings: models", () => {
 
   it("enforces max length on explicit shorthand in custom quick send", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="general" />);
+    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="quickSend" />);
 
     fireEvent.change(screen.getByPlaceholderText("Shorthand (dropdown label, max 20 chars)"), {
       target: { value: "Deploy to production immediately" },

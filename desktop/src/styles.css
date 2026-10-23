@@ -2206,22 +2206,6 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   align-items: center;
   gap: 10px;
 }
-.main-head .sub .pill {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  padding: 1px 6px;
-  border-radius: 999px;
-  color: var(--fg-2);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.main-head .sub .pill .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--success);
-}
 .main-head .grow {
   flex: 1;
 }
@@ -4009,6 +3993,44 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   font-family: "Geist Mono", monospace;
   font-size: 12.5px;
 }
+/* Rendered-page screenshot a web tool reported: visible while the card is collapsed. */
+.card-preview {
+  padding: 0 14px 10px;
+}
+.tool-preview {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+.tool-preview-open {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+  line-height: 0;
+}
+.tool-preview-shot {
+  display: block;
+  max-width: 100%;
+  max-height: 220px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  object-fit: cover;
+  object-position: top;
+  background: var(--bg-soft, transparent);
+}
+.tool-preview-meta {
+  display: flex;
+  gap: 8px;
+  font-family: "Geist Mono", monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tool-preview-host {
+  color: var(--fg);
+}
 .tool-call .row {
   display: grid;
   grid-template-columns: 90px 1fr;
@@ -5279,34 +5301,6 @@ html[data-platform="macos"] .startup-loading-overlay {
 }
 html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] {
   min-width: 24px;
-}
-
-/* Duplicate-session picker — a popover anchored to the thread-header button. */
-.dup-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px 12px;
-}
-.dup-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg);
-}
-.dup-hint {
-  font-size: 11px;
-  color: var(--muted);
-  line-height: 1.4;
-}
-.dup-caps {
-  max-height: 40vh;
-  overflow-y: auto;
-}
-.dup-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 6px;
 }
 
 /* ---------- CONTEXT PANEL ---------- */
@@ -7823,6 +7817,14 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .provider-models-scroll .mcard[data-static="true"] {
   cursor: default;
+}
+/* A live catalog can list hundreds of ids (OpenRouter ~470, the Experiential gateway
+ * ~320), and the scroll box above shows roughly five of them. Skipping layout and
+ * paint for the rest keeps opening a card proportional to what is visible instead of
+ * to the whole catalog; the intrinsic size stands in for a row until it renders. */
+.provider-models-scroll > .mcard {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 47px;
 }
 .provider-models-empty {
   color: var(--muted);
@@ -10818,6 +10820,63 @@ html[data-platform="macos"] .splash {
   to {
     transform: translateX(300%);
   }
+}
+
+/* One row per managed Playwright build, so the install state and its installer
+   read as a list instead of a wrapped line of labels. */
+.mcp-builds {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.mcp-builds-head {
+  padding: 5px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--bg-hover, rgba(255, 255, 255, 0.04));
+}
+
+.mcp-build-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+}
+
+.mcp-build-row + .mcp-build-row {
+  border-top: 1px solid var(--border);
+}
+
+.mcp-build-name {
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.mcp-build-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-build-state {
+  font-size: 11px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.mcp-build-row[data-missing="true"] .mcp-build-state {
+  color: var(--muted);
+}
+
+.mcp-build-row .btn {
+  padding: 3px 8px;
+  font-size: 11px;
 }
 
 .voice-progress-meta {

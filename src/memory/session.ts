@@ -483,7 +483,9 @@ export function appendSessionMessage(name: string, message: ChatMessage): void {
   }
   book.count += 1;
   stampSessionMetaSoon(name, book);
-  sessionDirectoryIndex.invalidate();
+  // Only this session's record changed, so the index re-reads one folder instead of
+  // walking the whole store on the next listing.
+  sessionDirectoryIndex.markStale(name);
 }
 
 /** Durable pre-mutation snapshot of the live transcript (e.g. compaction
@@ -901,6 +903,15 @@ export function listSessionsForWorkspaceAsync(workspace: string): {
   };
 }
 
+/** One workspace's list rebuilt from the records this process already indexed, with
+ *  pending single-session edits folded in and no directory walk. A create or delete
+ *  publishes its own edit instead of rescanning every session folder. */
+export async function listSessionsForWorkspaceCurrent(workspace: string): Promise<SessionInfo[]> {
+  const want = normalizeWorkspace(workspace);
+  const legacyPrefix = legacySessionPrefixForWorkspace(workspace);
+  return toWorkspaceSessions(await sessionDirectoryIndex.currentList(), want, legacyPrefix);
+}
+
 export function legacySessionPrefixForWorkspace(workspace: string): string {
   const normalized = normalizeWorkspace(workspace);
   const base =
@@ -949,7 +960,7 @@ export function patchSessionMeta(name: string, patch: Partial<SessionMeta>): Ses
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(next), "utf8");
   chmodPrivate(p);
-  sessionDirectoryIndex.invalidate();
+  sessionDirectoryIndex.markStale(name);
   return next;
 }
 
@@ -1174,7 +1185,7 @@ export function rewriteSession(name: string, messages: ChatMessage[]): void {
     messagesBytes: statSync(path).size,
     messageCount: messages.length,
   });
-  sessionDirectoryIndex.invalidate();
+  sessionDirectoryIndex.markStale(name);
 }
 
 /** Rotate the live session folder to `<name>__archive_<ts>` so a new session doesn't destroy history. Returns the archive name, or null if there was nothing to archive. */
@@ -1245,7 +1256,7 @@ function migrateSingleLegacySession(name: string): string | null {
         }
       }
     }
-    sessionDirectoryIndex.invalidate();
+    sessionDirectoryIndex.markStale(name);
     return dir;
   } catch (err) {
     process.stderr.write(`reasonix: session migration failed for "${name}" — ${messageOf(err)}\n`);

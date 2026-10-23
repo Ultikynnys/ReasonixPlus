@@ -35,6 +35,14 @@ export interface SessionDirectoryRecord<M> {
 
 export type SessionIndexCache = "hit" | "refresh" | "inflight";
 
+/** A single-session edit the walk has not reported yet: the folder's record is stale,
+ *  or the folder is gone. Sequenced so a walk retires only the edits it observed, so
+ *  one recorded mid-walk is not undone by a publish whose scan predates it. */
+interface PendingEdit {
+  seq: number;
+  drop: boolean;
+}
+
 function identity(stats: BigIntStats): SessionFileIdentity {
   return {
     dev: String(stats.dev),
@@ -170,6 +178,11 @@ export class SessionDirectoryIndex<M> {
   private seedRequest: Promise<boolean> | null = null;
   /** Sync twin of `seedRequest`, memoized by cache signature (see `cachedRecords`). */
   private syncSeed: { signature: string; records: SessionDirectoryRecord<M>[] } | null = null;
+  /** Per-session edits not yet folded into `records`, keyed by session name. */
+  private pending = new Map<string, PendingEdit>();
+  private editSeq = 0;
+  private settling: Promise<readonly SessionDirectoryRecord<M>[]> | null = null;
+  private persistQueued = false;
 
   constructor(
     private readonly directory: () => string,
@@ -197,7 +210,9 @@ export class SessionDirectoryIndex<M> {
 
   load(): { value: Promise<readonly SessionDirectoryRecord<M>[]>; cache: SessionIndexCache } {
     if (this.loaded && this.refreshedAt + this.ttlMs > this.now()) {
-      return { value: Promise.resolve([...this.records.values()]), cache: "hit" };
+      // Pending single-session edits are folded in one folder at a time. Only an
+      // expired window makes a caller wait for the whole directory to be walked.
+      return { value: this.settle(), cache: "hit" };
     }
     if (this.inflight?.generation === this.generation) {
       return { value: this.inflight.value, cache: "inflight" };
@@ -216,34 +231,128 @@ export class SessionDirectoryIndex<M> {
   async snapshot(): Promise<readonly SessionDirectoryRecord<M>[] | null> {
     if (this.loaded) return [...this.records.values()];
     if (!(await this.seedFromCache())) return null;
+    // The cache can predate a delete this process already made.
+    this.applyDrops();
     return [...this.records.values()];
+  }
+
+  /** The list this process already knows, with pending single-session edits folded
+   *  in and no directory walk. A create or delete publishes its own effect through
+   *  this; revalidation stays a separate, TTL-driven concern. */
+  async currentList(): Promise<readonly SessionDirectoryRecord<M>[]> {
+    if (!this.loaded) return this.load().value;
+    return this.settle();
+  }
+
+  /** Notes that one session's folder changed on disk (a meta write, an append, a
+   *  rewrite). The next answer re-reads that folder only. */
+  markStale(name: string): void {
+    this.noteEdit(name, false);
   }
 
   invalidate(): void {
     this.generation += 1;
     this.refreshedAt = 0;
   }
+
   remove(name: string): void {
-    this.records.delete(join(this.directory(), name, SESSION_MESSAGES_FILENAME));
-    this.invalidate();
-    // Persist only once materialized: before the first load `records` is empty,
-    // so writing it would clobber the warm cache with an empty index.
-    if (this.loaded && this.cacheFilePath() !== undefined) void this.persistIndex(this.records);
+    this.noteEdit(name, true);
+    this.records.delete(this.messagesPath(name));
+    this.schedulePersist();
   }
 
-  /** Batch form of `remove`: drop every name, invalidate once, persist once.
-   *  A clear-all otherwise rewrote the whole index file once per session. */
+  /** Batch form of `remove`: one pending pass and one cache write for the whole set. */
   removeMany(names: readonly string[]): void {
     if (names.length === 0) return;
-    const dir = this.directory();
     for (const name of names) {
-      this.records.delete(join(dir, name, SESSION_MESSAGES_FILENAME));
+      this.noteEdit(name, true);
+      this.records.delete(this.messagesPath(name));
     }
-    this.invalidate();
-    if (this.loaded && this.cacheFilePath() !== undefined) void this.persistIndex(this.records);
+    this.schedulePersist();
+  }
+
+  private messagesPath(name: string): string {
+    return join(this.directory(), name, SESSION_MESSAGES_FILENAME);
+  }
+
+  private noteEdit(name: string, drop: boolean): void {
+    this.editSeq += 1;
+    this.pending.set(name, { seq: this.editSeq, drop });
+  }
+
+  /** Forgets pending edits a walk already answered: it read those folders after the
+   *  edits were recorded, so its records are the newer truth. */
+  private retireEdits(through: number): void {
+    for (const [name, edit] of this.pending) {
+      if (edit.seq <= through) this.pending.delete(name);
+    }
+  }
+
+  private applyDrops(): void {
+    for (const [name, edit] of this.pending) {
+      if (edit.drop) this.records.delete(this.messagesPath(name));
+    }
+  }
+
+  /** Folds every pending single-session edit into the records: one folder read per
+   *  touched session, never a directory walk. Single-flighted so callers sharing a
+   *  tick share one pass. */
+  private settle(): Promise<readonly SessionDirectoryRecord<M>[]> {
+    if (this.settling) return this.settling;
+    if (this.pending.size === 0) return Promise.resolve([...this.records.values()]);
+    const work = this.foldEdits([...this.pending], this.editSeq);
+    this.settling = work.finally(() => {
+      this.settling = null;
+    });
+    return this.settling;
+  }
+
+  private async foldEdits(
+    edits: ReadonlyArray<[string, PendingEdit]>,
+    through: number,
+  ): Promise<readonly SessionDirectoryRecord<M>[]> {
+    const reread: string[] = [];
+    for (const [name, edit] of edits) {
+      if (edit.drop) this.records.delete(this.messagesPath(name));
+      else reread.push(name);
+    }
+    await Promise.all(
+      reread.map(async (name) => {
+        const path = this.messagesPath(name);
+        try {
+          this.records.set(path, await this.readRecord(path, name, this.records.get(path)));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") this.records.delete(path);
+          // One unreadable session must not fail the listing the caller asked for:
+          // its previous record already describes it as well as the walk would.
+          else {
+            process.stderr.write(
+              `reasonix: session index update skipped for "${name}": ${messageOf(error)}\n`,
+            );
+          }
+        }
+      }),
+    );
+    // Edits recorded while this pass ran stay pending for the next one.
+    this.retireEdits(through);
+    this.schedulePersist();
+    return [...this.records.values()];
+  }
+
+  /** Coalesced, deferred cache write: a create or delete answers its caller before a
+   *  multi-megabyte index write lands, and a burst of them writes once. */
+  private schedulePersist(): void {
+    if (this.persistQueued || !this.loaded || this.cacheFilePath() === undefined) return;
+    this.persistQueued = true;
+    setImmediate(() => {
+      this.persistQueued = false;
+      void this.persistIndex(this.records);
+    });
   }
 
   private async refresh(generation: number): Promise<readonly SessionDirectoryRecord<M>[]> {
+    // Every edit recorded before this walk started is answered by the walk itself.
+    const walkedThrough = this.editSeq;
     await this.seedFromCache();
     let files: string[];
     try {
@@ -292,10 +401,16 @@ export class SessionDirectoryIndex<M> {
     }
     if (next.size !== this.records.size) changed = true;
     this.publish(generation, next);
-    if (changed && generation === this.generation && this.cacheFilePath() !== undefined) {
-      await this.persistIndex(next);
+    if (generation === this.generation) {
+      // Anything recorded after the walk started still has to be folded in, or a
+      // delete landing mid-walk would come back with the scan's stale map.
+      this.retireEdits(walkedThrough);
+      this.applyDrops();
+      if (changed && this.cacheFilePath() !== undefined) {
+        await this.persistIndex(this.records);
+      }
     }
-    return [...next.values()];
+    return this.settle();
   }
 
   /** Seeds `records` from the persisted cache, once per instance. Reports whether a

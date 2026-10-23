@@ -7,9 +7,36 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "../App";
 import { t } from "../i18n";
 import { MailProvider } from "../protocol";
+import type {
+  McpExtensionStatus,
+  PlaywrightManagedBrowser,
+  PlaywrightManagedBrowserInstallState,
+} from "../protocol";
+import { PLAYWRIGHT_MANAGED_BROWSERS } from "../protocol";
 import { SettingsModal } from "./settings";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
+
+/** Extension status carrying one managed build's install state, for the gated picker. */
+function extensionStatusWith(
+  browser: PlaywrightManagedBrowser,
+  state: PlaywrightManagedBrowserInstallState["state"],
+): McpExtensionStatus {
+  return {
+    storeUrl: "https://chromewebstore.google.com/detail/playwright-extension",
+    server: {
+      configured: false,
+      mode: "chromium",
+      hasExtensionArg: false,
+      tokenPrefix: undefined,
+      args: [],
+    },
+    installs: PLAYWRIGHT_MANAGED_BROWSERS.map((entry) => ({
+      browser: entry,
+      state: entry === browser ? state : entry === "msedge" ? "system" : "installed",
+    })),
+  };
+}
 
 /** A model card is identified by the value it toggles, not by its label: the
  *  label drops the provider prefix its card already names. */
@@ -99,10 +126,11 @@ describe("PageModels default-model enum", () => {
     expect(container.querySelectorAll(".setting-row-entry")).toHaveLength(declaredKeys);
   });
 
-  it("uses stacked Save-only API key entries and shared refresh wording", () => {
+  it("uses stacked Save-only API key entries and refreshes catalogs without a button", () => {
     const onSave = vi.fn();
     const onRefreshOpencodeModels = vi.fn();
     const onRefreshOllamaModels = vi.fn();
+    const onRefreshProviderCatalogs = vi.fn();
     const { container } = render(
       <SettingsModal
         {...baseProps}
@@ -110,6 +138,7 @@ describe("PageModels default-model enum", () => {
         onSave={onSave}
         onRefreshOpencodeModels={onRefreshOpencodeModels}
         onRefreshOllamaModels={onRefreshOllamaModels}
+        onRefreshProviderCatalogs={onRefreshProviderCatalogs}
       />,
     );
     container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
@@ -129,11 +158,11 @@ describe("PageModels default-model enum", () => {
       ];
       expect(Object.values(patch.providerSettings ?? {})).toEqual([{ apiKey: "" }]);
     }
-    const refresh = screen.getAllByRole("button", { name: "Refresh" });
-    expect(refresh).toHaveLength(2);
-    refresh.forEach((button) => fireEvent.click(button));
-    expect(onRefreshOpencodeModels).toHaveBeenCalledWith(true);
-    expect(onRefreshOllamaModels).toHaveBeenCalledWith(true);
+    // Opening the page re-queries every live catalog, so no card needs a button for it.
+    expect(onRefreshOpencodeModels).toHaveBeenCalledTimes(1);
+    expect(onRefreshOllamaModels).toHaveBeenCalledTimes(1);
+    expect(onRefreshProviderCatalogs).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Sync models" })).toBeNull();
   });
 
@@ -270,6 +299,35 @@ describe("PageModels default-model enum", () => {
     fireEvent.change(search as HTMLInputElement, { target: { value: "zzz-no-such-model" } });
     expect(col.querySelectorAll(".mcard")).toHaveLength(0);
     expect(within(col).getByText("No models match your search.")).toBeTruthy();
+  });
+
+  it("renders a whole live catalog without dropping rows", () => {
+    // A discovery sync can list hundreds of ids (OpenRouter, the Experiential gateway).
+    // Every one of them stays toggleable: the list only defers measuring labels.
+    const catalog = Array.from({ length: 300 }, (_, index) => `gateway-model-${index}`);
+    const { container } = render(
+      <SettingsModal
+        {...baseProps}
+        settings={
+          {
+            ...baseSettings,
+            enabledModels: catalog,
+            providerCatalogs: { experiential: { models: catalog, source: "live" } },
+          } as Settings
+        }
+        initialPage="models"
+      />,
+    );
+    const head = Array.from(container.querySelectorAll<HTMLButtonElement>(".provider-head")).find(
+      (button) => button.textContent?.includes("Experiential Labs"),
+    );
+    fireEvent.click(head!);
+    const column = head?.closest(".provider-card")?.querySelector(".provider-col");
+    // The card also keeps the provider's declared ids, so the live list is a floor.
+    expect(column?.querySelectorAll(".mcard").length).toBeGreaterThanOrEqual(catalog.length);
+    for (const id of ["gateway-model-0", "gateway-model-299"]) {
+      expect(column?.querySelector(`.mcard[data-model="${id}"]`)).toBeTruthy();
+    }
   });
 
   it("lists a provider's models without repeating the provider in each row", () => {
@@ -537,6 +595,34 @@ describe("Search tab", () => {
       />,
     );
     const ready = within(cardFor(keyed.container, "tavily")).getByRole("button", {
+      name: "Use this engine",
+    });
+    expect((ready as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("keeps a browser-driven engine unselectable until its managed build exists", () => {
+    const missing = render(
+      <SettingsModal
+        {...baseProps}
+        mcpExtensionStatus={extensionStatusWith("webkit", "missing")}
+        initialPage="search"
+      />,
+    );
+    const blocked = within(cardFor(missing.container, "playwright-webkit")).getByRole("button", {
+      name: "Use this engine",
+    });
+    expect((blocked as HTMLButtonElement).disabled).toBe(true);
+    expect(blocked.getAttribute("title")).toBe("Install Managed WebKit on the MCP page first");
+    cleanup();
+
+    const installed = render(
+      <SettingsModal
+        {...baseProps}
+        mcpExtensionStatus={extensionStatusWith("webkit", "installed")}
+        initialPage="search"
+      />,
+    );
+    const ready = within(cardFor(installed.container, "playwright-webkit")).getByRole("button", {
       name: "Use this engine",
     });
     expect((ready as HTMLButtonElement).disabled).toBe(false);

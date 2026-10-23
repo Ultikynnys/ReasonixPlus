@@ -1,6 +1,6 @@
 import type { PlanHistoryItem } from "@reasonix/core-utils";
 import { describe, expect, it } from "vitest";
-import { planLabelsBySession } from "./plan-labels";
+import { planIdForSession, planLabelsBySession } from "./plan-labels";
 
 function plan(
   id: string,
@@ -86,5 +86,20 @@ describe("planLabelsBySession", () => {
       plan("theirs", "proposed", "session-b"),
     ]);
     expect([...labels.keys()]).toEqual(["session-a", "session-b"]);
+  });
+});
+
+describe("planIdForSession", () => {
+  it("names the plan the session owns, not the newest active one in the workspace", () => {
+    const history = [plan("theirs", "active", "session-b"), plan("mine", "active", "session-a")];
+    expect(planIdForSession(history, "session-a")).toBe("mine");
+    expect(planIdForSession(history, "session-b")).toBe("theirs");
+  });
+
+  it("has nothing to select for a session without a plan", () => {
+    const history = [plan("theirs", "active", "session-b"), plan("done", "completed", "session-a")];
+    expect(planIdForSession(history, "session-a")).toBeUndefined();
+    expect(planIdForSession(history, "unknown-session")).toBeUndefined();
+    expect(planIdForSession(history, undefined)).toBeUndefined();
   });
 });

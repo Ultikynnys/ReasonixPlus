@@ -218,14 +218,15 @@ describe("Session plan history", () => {
     expect(finished.textContent).not.toContain("owning");
 
     const ownerName = () => container.querySelector(".ctx-plan-owner .name")?.textContent;
-    // Default selection is the active plan, which belongs to another session. The
-    // label uses that session's own title, matching its sidebar row.
-    expect(ownerName()).toBe("Their chat");
-    expect(container.querySelector(".ctx-plan-owner")?.getAttribute("data-owned")).toBe("other");
-
-    fireEvent.change(select, { target: { value: "mine-plan" } });
+    // The dropdown opens on the plan THIS session owns, even though a newer active
+    // plan in the same workspace belongs to another session.
+    expect((select as HTMLSelectElement).value).toBe("mine-plan");
     expect(ownerName()).toBe("My chat · this session");
     expect(container.querySelector(".ctx-plan-owner")?.getAttribute("data-owned")).toBe("this");
+
+    fireEvent.change(select, { target: { value: "theirs-plan" } });
+    expect(ownerName()).toBe("Their chat");
+    expect(container.querySelector(".ctx-plan-owner")?.getAttribute("data-owned")).toBe("other");
 
     fireEvent.change(select, { target: { value: "orphan-plan" } });
     expect(ownerName()).toBe("No owning session");
@@ -234,6 +235,60 @@ describe("Session plan history", () => {
     // Finishing a plan ends its ownership: the owner line disappears entirely.
     fireEvent.change(select, { target: { value: "done-plan" } });
     expect(container.querySelector(".ctx-plan-owner")).toBeNull();
+  });
+
+  it("selects the plan of the session it switched to, and keeps the choice when it has none", () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const base = {
+      createdAt: now,
+      updatedAt: now,
+      finishedAt: null,
+      totalSteps: 1,
+      completedSteps: 0,
+    };
+    const history = [
+      { ...base, id: "a-plan", summary: "Work in A", status: "active", ownerSession: "a" },
+      { ...base, id: "b-plan", summary: "Work in B", status: "active", ownerSession: "b" },
+      { ...base, id: "c-plan", summary: "Work in C", status: "active", ownerSession: "c" },
+    ];
+    const panel = (planSession: string, items: typeof history) => (
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onDismissMemoryResult={() => {}}
+        planSession={planSession}
+        planHistory={items}
+        planDetails={{}}
+      />
+    );
+    const picker = () =>
+      screen.getByRole("combobox", { name: "Session plan history" }) as HTMLSelectElement;
+    const { rerender } = render(panel("b", history));
+    fireEvent.click(screen.getByText("Plan"));
+    // Opening on B selects B's plan, not the newest active plan in the workspace.
+    expect(picker().value).toBe("b-plan");
+
+    rerender(panel("a", history));
+    expect(picker().value).toBe("a-plan");
+
+    // A session that owns no plan has nothing to select, so the choice stands.
+    rerender(panel("planless", history));
+    expect(picker().value).toBe("a-plan");
+
+    // The plan of a session is selected once its history arrives, not only at mount.
+    rerender(panel("c", []));
+    expect(screen.queryByRole("combobox", { name: "Session plan history" })).toBeNull();
+    rerender(panel("c", history));
+    expect(picker().value).toBe("c-plan");
   });
 
   function renderRemovablePlan(onRemovePlan: (id: string) => void) {

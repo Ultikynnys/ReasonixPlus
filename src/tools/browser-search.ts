@@ -24,17 +24,26 @@ interface PwResponse {
 interface PwPage {
   goto(
     url: string,
-    opts: { waitUntil: "domcontentloaded"; timeout: number },
+    opts: { waitUntil: "domcontentloaded" | "load"; timeout: number },
   ): Promise<PwResponse | null>;
   waitForSelector(selector: string, opts: { timeout: number }): Promise<unknown>;
+  waitForLoadState(state: "networkidle", opts?: { timeout: number }): Promise<void>;
   content(): Promise<string>;
+  title(): Promise<string>;
+  url(): string;
+  screenshot(opts?: { type?: "png" }): Promise<Buffer>;
+}
+interface PwContextOptions {
+  userAgent: string;
+  locale: string;
+  viewport?: { width: number; height: number };
 }
 interface PwContext {
   newPage(): Promise<PwPage>;
   close(): Promise<void>;
 }
 interface PwBrowser {
-  newContext(opts: { userAgent: string; locale: string }): Promise<PwContext>;
+  newContext(opts: PwContextOptions): Promise<PwContext>;
   close(): Promise<void>;
 }
 interface PwBrowserType {
@@ -46,25 +55,68 @@ type PwCore = Record<SearchEngineBrowser, PwBrowserType>;
 export interface BrowserSearchOptions {
   browser: SearchEngineBrowser;
   copy: EngineCopy;
-  parse: (html: string) => BrowserSearchResult[];
+  /** One parser per SERP, so each page is read from the markup that produced it. */
+  parsers: Record<SerpID, SerpParser>;
   topK: number;
   signal?: AbortSignal;
+  /** Whole-search ceiling in ms, shared by every backend. Defaults to 60s. */
+  budgetMs?: number;
 }
 
-/** Bing is the only SERP that serves parseable DOM to every managed browser: DDG and
- *  Mojeek answer 403 to the harness. Do NOT add setlang/cc here — those switch Bing to
- *  a script-rendered variant whose DOM carries no result nodes at domcontentloaded. */
-const SERP_URL = "https://www.bing.com/search";
-/** A real empty SERP, as opposed to one whose results never rendered. */
-const EMPTY_SERP = /no results found|did not match any documents/i;
-/** The result *node*, not the container: `#b_results` exists before any result renders,
- *  so waiting on it returns immediately and reads a mid-render DOM. The container is
- *  still where a drifted layout is harvested from, but only after this wait gives up. */
-const RESULT_SELECTOR = "li.b_algo";
-const NAV_TIMEOUT_MS = 25_000;
-const RESULT_WAIT_MS = 8_000;
+export type SerpParser = (html: string) => BrowserSearchResult[];
+
+/** The search-result pages a managed browser may drive, in attempt order. */
+export type SerpID = "duckduckgo" | "bing";
+
+interface Serp {
+  id: SerpID;
+  /** Display name templated into the engine's copy, so a failure names its backend. */
+  label: string;
+  url: (query: string) => string;
+  /** The result *node*, not the container: a container exists before any result
+   *  renders, so waiting on it returns immediately and reads a mid-render DOM. */
+  resultSelector: string;
+  /** Text a real empty-results page carries, as opposed to one that never rendered. */
+  empty: RegExp;
+}
+
+/** Attempt order. DuckDuckGo's no-JS endpoint answers a real browser in about a second
+ *  with a server-rendered list; Bing is the fallback, since it intermittently serves an
+ *  anti-bot interstitial or a reduced cluster but is reachable behind most networks. */
+const SERPS: readonly Serp[] = [
+  {
+    id: "duckduckgo",
+    label: "DuckDuckGo",
+    url: (query) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+    resultSelector: "a.result__a",
+    empty: /no results/i,
+  },
+  {
+    id: "bing",
+    label: "Bing",
+    // Do NOT add setlang/cc here — those switch Bing to a script-rendered variant
+    // whose DOM carries no result nodes at domcontentloaded.
+    url: (query) => `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
+    resultSelector: "li.b_algo",
+    empty: /no results found|did not match any documents/i,
+  },
+];
+
+/** Generous enough for a slow link: a 250 KB SERP needs 40s at 6 KB/s, and the
+ *  result-node wait covers a page whose render scripts are still arriving. */
+const NAV_TIMEOUT_MS = 40_000;
+const RESULT_WAIT_MS = 20_000;
+/** Whole-search ceiling across every backend, so a slow link gets real time without
+ *  letting the fallback SERP run for minutes. */
+const SEARCH_BUDGET_MS = 60_000;
+/** Floor for one phase: a cold browser launch inside the budget must not leave the
+ *  navigation behind it with no time at all. */
+const MIN_PHASE_MS = 5_000;
 /** A browser is expensive to launch and cheap to keep; drop it once searches stop. */
 const IDLE_CLOSE_MS = 60_000;
+/** Wall pages are not slowness: waiting out the full result window on one only delays
+ *  the next backend. */
+const SERP_WALL = /captcha|verify you are human|access denied|unusual traffic|anomaly|not a robot/i;
 /** Display name of the one searchable managed build. Templated into the engine's copy so
  *  the wording lives in its JSON, not here. */
 const BROWSER_LABEL = "WebKit";
@@ -74,6 +126,11 @@ const BROWSER_LABEL = "WebKit";
 function copyForBrowser(browser: SearchEngineBrowser, copy: EngineCopy): EngineCopy {
   const bound = { browser, Browser: BROWSER_LABEL, alternative: copy("alternative") };
   return (key, params) => copy(key, { ...bound, ...params });
+}
+
+/** Bind one SERP's name too, so a failure says which backend answered nothing. */
+function copyForSerp(copy: EngineCopy, serp: Serp): EngineCopy {
+  return (key, params) => copy(key, { ...params, Serp: serp.label });
 }
 
 /** Headless Chromium advertises "HeadlessChrome" and Bing answers it with a page that
@@ -297,16 +354,20 @@ const CANCELLED = "search cancelled";
 /** Same shape for the first try and the post-replacement retry. */
 const CONTEXT_OPTIONS = { userAgent: USER_AGENT, locale: "en-US" } as const;
 
-async function openContext(browser: SearchEngineBrowser, copy: EngineCopy): Promise<PwContext> {
+async function openContext(
+  browser: SearchEngineBrowser,
+  copy: EngineCopy,
+  options: PwContextOptions = CONTEXT_OPTIONS,
+): Promise<PwContext> {
   const instance = await browserFor(browser, copy);
   try {
-    return await instance.newContext(CONTEXT_OPTIONS);
+    return await instance.newContext(options);
   } catch (err) {
     // A dead or wedged browser is replaced once rather than failing every later search.
     await closeBrowser(browser);
     const replacement = await browserFor(browser, copy);
     try {
-      return await replacement.newContext(CONTEXT_OPTIONS);
+      return await replacement.newContext(options);
     } catch {
       throw new Error(copy("launchFailed", { message: messageOf(err) }));
     }
@@ -329,21 +390,111 @@ export async function withManagedPage<T>(
   }
 }
 
-/** One navigation + parse. Each attempt gets its own context so a retry looks like a
- *  brand-new visitor rather than a reload. */
+/** A rendered page, as a transient window sees it. */
+export interface RenderedPage {
+  /** Final URL after redirects; the caller re-validates it before trusting it. */
+  url: string;
+  title: string;
+  /** Rendered markup, for the caller's own text extraction. */
+  html: string;
+  /** PNG of the small viewport; absent when the capture itself failed. */
+  preview?: Buffer;
+}
+
+export interface RenderOptions {
+  /** Whole-render ceiling in ms. Defaults to 30s. */
+  budgetMs?: number;
+  signal?: AbortSignal;
+}
+
+/** Whole-render ceiling: a page fetch must not outlive its caller's patience. */
+const RENDER_BUDGET_MS = 30_000;
+/** The transient "small window": wide enough for a real layout, short enough to read. */
+const RENDER_VIEWPORT = { width: 900, height: 1200 };
+/** A page with pollers never goes quiet, so settling is best-effort and bounded. */
+const RENDER_SETTLE_MS = 5_000;
+
+/** A render that failed before the page was opened: a caller with another way to read
+ *  the page can fall back from this, where a navigation failure is the page's fault. */
+export class RenderUnavailableError extends Error {}
+
+/** Render `url` in a transient small window of the managed browser: its own context,
+ *  closed before this returns, so nothing accumulates between fetches. */
+export async function renderManagedPage(
+  browser: SearchEngineBrowser,
+  copy: EngineCopy,
+  url: string,
+  opts: RenderOptions = {},
+): Promise<RenderedPage> {
+  const bound = copyForBrowser(browser, copy);
+  if (opts.signal?.aborted) {
+    throw new Error(bound("cannotReach", { message: ABORTED }));
+  }
+  const deadline = Date.now() + (opts.budgetMs ?? RENDER_BUDGET_MS);
+  const context = await openContext(browser, bound, {
+    ...CONTEXT_OPTIONS,
+    viewport: RENDER_VIEWPORT,
+  }).catch((err: unknown) => {
+    throw new RenderUnavailableError(messageOf(err));
+  });
+  try {
+    const page = await context.newPage();
+    try {
+      await abortable(
+        page.goto(url, { waitUntil: "load", timeout: phaseTimeout(deadline, NAV_TIMEOUT_MS) }),
+        opts.signal,
+      );
+    } catch (err) {
+      if (messageOf(err) === ABORTED) throw new Error(bound("cannotReach", { message: ABORTED }));
+      throw new Error(bound("cannotReach", { message: messageOf(err) }));
+    }
+    // Best effort: a page that never idles still has a usable document, and waiting on a
+    // poller would burn the budget for nothing.
+    await abortable(
+      page.waitForLoadState("networkidle", { timeout: phaseTimeout(deadline, RENDER_SETTLE_MS) }),
+      opts.signal,
+    ).catch(() => undefined);
+    const html = await page.content();
+    const title = (await page.title().catch(() => "")).trim();
+    const preview = await abortable(page.screenshot({ type: "png" }), opts.signal).catch(
+      () => undefined,
+    );
+    return { url: page.url(), title, html, preview };
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
+
+/** One navigation + parse, in its own context so a retry looks like a brand-new
+ *  visitor rather than a reload. */
 interface SerpAttempt {
+  serp: Serp;
   results: BrowserSearchResult[];
   html: string;
   status: number;
+  /** The result node appeared, so an empty page is a real empty page. */
   settled: boolean;
+  /** Engine copy for a navigation the browser could not complete. */
+  error?: string;
+  /** The navigation itself ran out of time, which points at the link, not the backend. */
+  navTimedOut?: boolean;
+  /** The window the result wait actually got, so the failure copy names it. */
+  waitMs: number;
+}
+
+/** Time one phase may take: the ceiling, the floor, and whatever the search has left. */
+function phaseTimeout(deadline: number, ceiling: number): number {
+  return Math.max(MIN_PHASE_MS, Math.min(ceiling, deadline - Date.now()));
 }
 
 async function runSerp(
   browser: SearchEngineBrowser,
   copy: EngineCopy,
-  url: string,
+  serp: Serp,
+  query: string,
   signal: AbortSignal | undefined,
-  parse: (html: string) => BrowserSearchResult[],
+  parse: SerpParser,
+  deadline: number,
 ): Promise<SerpAttempt> {
   const context = await openContext(browser, copy);
   try {
@@ -351,23 +502,46 @@ async function runSerp(
     let status = 0;
     try {
       const response = await abortable(
-        page.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }),
+        page.goto(serp.url(query), {
+          waitUntil: "domcontentloaded",
+          timeout: phaseTimeout(deadline, NAV_TIMEOUT_MS),
+        }),
         signal,
       );
       status = response?.status() ?? 0;
     } catch (err) {
-      throw new Error(copy("cannotReach", { message: messageOf(err) }));
+      // A caller's Stop is final; an unreachable SERP leaves the next one to try.
+      if (messageOf(err) === ABORTED) throw new Error(copy("cannotReach", { message: ABORTED }));
+      const message = messageOf(err);
+      return {
+        serp,
+        results: [],
+        html: "",
+        status,
+        settled: false,
+        error: copy("cannotReach", { message }),
+        navTimedOut: /timeout|timed out/i.test(message),
+        waitMs: 0,
+      };
     }
+    // What the document already carries decides whether waiting can help: a rendered
+    // SERP answers now, and a wall or a real empty page will not improve with time.
+    const first = await page.content();
+    const arrived = parse(first);
+    if (arrived.length > 0 || serp.empty.test(first) || SERP_WALL.test(first)) {
+      return { serp, results: arrived, html: first, status, settled: true, waitMs: 0 };
+    }
+    const waitMs = phaseTimeout(deadline, RESULT_WAIT_MS);
     let settled = true;
     try {
-      await abortable(page.waitForSelector(RESULT_SELECTOR, { timeout: RESULT_WAIT_MS }), signal);
+      await abortable(page.waitForSelector(serp.resultSelector, { timeout: waitMs }), signal);
     } catch (err) {
       // The caller giving up is not a withheld SERP; report it as the cancellation it is.
       if (messageOf(err) === ABORTED) throw new Error(copy("cannotReach", { message: ABORTED }));
       settled = false;
     }
     const html = await page.content();
-    return { results: parse(html), html, status, settled };
+    return { serp, results: parse(html), html, status, settled, waitMs };
   } finally {
     await context.close().catch(() => undefined);
   }
@@ -390,15 +564,34 @@ const QUERY_STOPWORDS: ReadonlySet<string> = new Set([
   "can",
 ]);
 
+/** Search operators are request syntax, not topics: `site:` appears in no result, so
+ *  counting it would make every site-scoped query unable to answer. */
+const QUERY_OPERATOR = /\b(?:site|filetype|inurl|intitle|related)\s*:\s*/gi;
+/** The host's own suffix is not a topic word either. */
+const URL_NOISE_WORD = /^(?:www|com|org|net|html?)$/;
+
 /** Topic words worth matching. CJK has no word boundaries, so a query with no ASCII
  *  tokens yields none and the guard stays out of its way instead of misfiring. */
 function queryTokens(query: string): string[] {
-  const tokens = query.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [];
-  return [...new Set(tokens.filter((token) => !QUERY_STOPWORDS.has(token)))];
+  const text = query.replace(QUERY_OPERATOR, " ");
+  const tokens = text.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [];
+  return [
+    ...new Set(
+      tokens.filter((token) => !QUERY_STOPWORDS.has(token) && !URL_NOISE_WORD.test(token)),
+    ),
+  ];
 }
 
-/** A reduced SERP answers some other query. When not one topic word of the request
- *  appears anywhere in the hits, reporting them would be worse than failing. */
+/** A mistyped query word is still that word: a five-character-or-longer token also counts
+ *  when a hit carries its first four characters, so a typo never reads as an alien topic. */
+function tokenPresent(token: string, haystack: string): boolean {
+  if (haystack.includes(token)) return true;
+  return token.length >= 5 && haystack.includes(token.slice(0, 4));
+}
+
+/** A reduced SERP answers some other query, so one stray hit repeating a single topic word
+ *  must not pass the page off as an answer: a query of three words or fewer must match all
+ *  of them across the hits, and a longer one tolerates a single miss. */
 function serpAnswersQuery(
   results: readonly BrowserSearchResult[],
   tokens: readonly string[],
@@ -407,43 +600,68 @@ function serpAnswersQuery(
   const haystack = results
     .map((result) => `${result.title} ${result.url} ${result.snippet}`.toLowerCase())
     .join(" ");
-  return tokens.some((token) => haystack.includes(token));
+  const found = tokens.filter((token) => tokenPresent(token, haystack)).length;
+  return found >= tokens.length - (tokens.length > 3 ? 1 : 0);
 }
 
-/** One browser-backed search: navigate the SERP, reject a reduced page, hand the HTML to
- *  the engine's parser. A failed launch or an unparseable page throws engine copy. */
+/** One browser-backed search: try each SERP in turn, reject a reduced page, and hand the
+ *  HTML to that SERP's parser. A failed launch or an unanswerable page throws engine copy. */
 export async function searchWithBrowser(
   query: string,
   opts: BrowserSearchOptions,
 ): Promise<BrowserSearchResult[]> {
-  const { browser, parse, topK, signal } = opts;
+  const { browser, parsers, topK, signal } = opts;
   const copy = copyForBrowser(browser, opts.copy);
   if (signal?.aborted) throw new Error(copy("cannotReach", { message: ABORTED }));
-  const url = `${SERP_URL}?q=${encodeURIComponent(query)}`;
   const tokens = queryTokens(query);
+  // One deadline for the whole search, so a slow link has room per phase without the
+  // fallback backend stretching the call for minutes.
+  const deadline = Date.now() + (opts.budgetMs ?? SEARCH_BUDGET_MS);
 
   /** The hits to return, `[]` for a page that legitimately has none, or null when the page
    *  did not answer this query (reduced, withheld, or read before it rendered). */
-  const answerOf = (serp: SerpAttempt): BrowserSearchResult[] | null => {
-    if (serp.results.length === 0) return EMPTY_SERP.test(serp.html) ? [] : null;
-    if (!serpAnswersQuery(serp.results, tokens)) return null;
-    return serp.results.slice(0, topK);
+  const answerOf = (attempt: SerpAttempt): BrowserSearchResult[] | null => {
+    if (attempt.results.length === 0) return attempt.serp.empty.test(attempt.html) ? [] : null;
+    if (!serpAnswersQuery(attempt.results, tokens)) return null;
+    return attempt.results.slice(0, topK);
   };
 
-  let serp = await runSerp(browser, copy, url, signal, parse);
-  let answer = answerOf(serp);
-  if (!answer) {
-    // A fresh context is usually not served the reduced variant.
-    serp = await runSerp(browser, copy, url, signal, parse);
-    answer = answerOf(serp);
+  let last: SerpAttempt | undefined;
+  /** A page that answered some other query: the most informative thing to report. */
+  let reduced: SerpAttempt | undefined;
+  for (const serp of SERPS) {
+    // The first backend always runs; a later one only gets what the budget has left.
+    if (last && Date.now() >= deadline) break;
+    const attempt = await runSerp(
+      browser,
+      copyForSerp(copy, serp),
+      serp,
+      query,
+      signal,
+      parsers[serp.id],
+      deadline,
+    );
+    const answer = answerOf(attempt);
+    if (answer) return answer;
+    last = attempt;
+    if (attempt.results.length > 0) reduced ??= attempt;
+    // A navigation that ran out of time is the link, not this backend: the next SERP is
+    // a bigger download, so waiting on it would only repeat the same failure.
+    if (attempt.navTimedOut) break;
   }
-  if (answer) return answer;
-  if (serp.results.length > 0) {
-    throw new Error(copy("mismatched", { first: serp.results[0]?.title ?? "" }));
+
+  if (reduced) {
+    throw new Error(
+      copyForSerp(copy, reduced.serp)("mismatched", { first: reduced.results[0]?.title ?? "" }),
+    );
   }
+  // SERPS is never empty, so an attempt ran and its failure is the reason to report.
+  const failed = last!;
+  const failedCopy = copyForSerp(copy, failed.serp);
+  if (failed.error) throw new Error(failed.error);
   throw new Error(
-    serp.settled
-      ? copy("blocked", { chars: serp.html.length })
-      : copy("timeout", { ms: RESULT_WAIT_MS, status: serp.status }),
+    failed.settled
+      ? failedCopy("blocked", { chars: failed.html.length })
+      : failedCopy("timeout", { ms: failed.waitMs, status: failed.status }),
   );
 }

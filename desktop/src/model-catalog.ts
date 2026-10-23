@@ -217,6 +217,9 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
     key: entry.key,
     models: distinctModels(entry.spec),
   }));
+  // Built once: a provider card asks `acceptsImages` for every row it renders, and
+  // OpenRouter's catalog alone is several hundred ids.
+  const visionModelIds = catalogVisionModelIds(options.providerCatalogs);
 
   return {
     groups,
@@ -226,7 +229,7 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
         model,
         options.ollamaVisionModels,
         options.opencodeVisionModels,
-        catalogVisionModelIds(options.providerCatalogs),
+        visionModelIds,
       ),
   };
 }

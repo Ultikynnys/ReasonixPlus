@@ -301,6 +301,7 @@ import {
   type OpenrouterBudget,
   type OpenrouterFreeAllowance,
   type OpenrouterKey,
+  PLAYWRIGHT_MANAGED_BROWSERS,
   PROVIDER_SPECS,
   type ProviderProbeStrategy,
   type ProviderSettingsMap,
@@ -380,6 +381,7 @@ import {
   firstFreeSessionName,
   listSessionNamesForWorkspaceAsync,
   listSessionsForWorkspaceAsync,
+  listSessionsForWorkspaceCurrent,
   loadSessionEvents,
   loadSessionMessages,
   loadSessionMessagesAsync,
@@ -1100,17 +1102,18 @@ export function restorePlanForTab(
   };
 }
 
-/** Emit the plan history, then the active-plan hydrate — or a clear when the session
- *  has past plans but none is in flight. The repository is the single source. */
+/** Hydrate this session's plan, then project the workspace history — hydrating can adopt
+ *  a vacant plan and claim it, so the projection must run after it to name that owner.
+ *  Falls back to a clear when the session has past plans but none in flight. */
 function emitRestoredPlan(tab: Tab, hasPriorMessages: boolean): void {
+  const event = restorePlanForTab(tab, hasPriorMessages);
   emitPlanHistory(tab);
   refreshPlanSummary(tab);
-  if (!hasPriorMessages || !tab.rootDir) return;
-  const event = restorePlanForTab(tab, true);
   if (event) {
     emit(event, tab.id);
     return;
   }
+  if (!hasPriorMessages || !tab.rootDir) return;
   let hasHistory = false;
   try {
     hasHistory = planRepository(tab.rootDir).list().length > 0;
@@ -3363,14 +3366,24 @@ async function refreshFunds(tab: Tab, options: { force?: boolean } = {}): Promis
 async function emitSessions(
   tab: Tab,
   settledDeletes?: SessionsEvent["settledDeletes"],
-  options: { primeFromCache?: boolean } = {},
+  options: { primeFromCache?: boolean; revalidate?: boolean } = {},
 ): Promise<void> {
   const startedAt = performance.now();
   // Stamped before the first await so a slow scan can never publish under a newer
   // revision than a fast one. A settle emit re-stamps at send (see below).
   const epoch = DESKTOP_SESSIONS_EPOCH;
   const requestRevision = nextSessionsRevision(tab.rootDir);
-  const source = listSessionsForWorkspaceAsync(tab.rootDir);
+  // A snapshot that answers a mutation the user just made reports that mutation and
+  // nothing else: the edit is already folded into the index, and re-walking every
+  // session folder on top of it is what made a create or a delete take seconds.
+  const revalidate = options.revalidate ?? settledDeletes === undefined;
+  const source = revalidate
+    ? listSessionsForWorkspaceAsync(tab.rootDir)
+    : {
+        cache: "hit" as const,
+        value: listSessionsForWorkspaceCurrent(tab.rootDir),
+        cached: Promise.resolve(null),
+      };
   const request = {
     cache: source.cache,
     value: source.value.then(toSessionListItems),
@@ -3616,6 +3629,12 @@ export function capabilityPrefill(
   }));
 }
 
+/** Every configured server name — the list a capability confirm freezes enablement
+ *  against, so New chat's picker and the Duplicate popover answer the same question. */
+function configuredServerNames(rootDir: string): string[] {
+  return namedMcpSpecs(rootDir).map((spec) => spec.name);
+}
+
 /** The configured servers in the shape `capabilityPrefill` consumes: the Settings
  *  default enablement plus whether the server is a managed built-in. */
 function configuredMcpSpecs(
@@ -3737,7 +3756,10 @@ function emitMcpSpecs(tab: Tab): void {
 }
 
 /** Extension-integration state for the Settings card — pure so tests can pin it. */
-export function computeMcpExtensionStatus(cfg: ReasonixConfig): McpExtensionStatus {
+export function computeMcpExtensionStatus(
+  cfg: ReasonixConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): McpExtensionStatus {
   const entry = cfg.mcpServers?.playwright;
   const args = entry?.args ?? [];
   const token = entry?.env?.[PLAYWRIGHT_EXTENSION_TOKEN_ENV];
@@ -3751,6 +3773,14 @@ export function computeMcpExtensionStatus(cfg: ReasonixConfig): McpExtensionStat
       tokenPrefix: token ? `${token.slice(0, 6)}…${token.slice(-3)}` : undefined,
       args,
     },
+    installs: PLAYWRIGHT_MANAGED_BROWSERS.map((browser) => ({
+      browser,
+      state: !isPlaywrightDownloadableBrowser(browser)
+        ? "system"
+        : isPlaywrightBrowserInstalled(browser, env)
+          ? "installed"
+          : "missing",
+    })),
   };
 }
 
@@ -4288,6 +4318,7 @@ async function installPlaywrightBrowser(
       },
       tab.id,
     );
+    emitMcpExtensionStatus(tab);
     if (installResult.ok) onInstalled();
   } catch (error) {
     emit(
@@ -4297,6 +4328,7 @@ async function installPlaywrightBrowser(
       },
       tab.id,
     );
+    emitMcpExtensionStatus(tab);
   } finally {
     installController.abort();
     playwrightBrowserInstalls.delete(browser);
@@ -5871,11 +5903,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   function emitSessionsForWorkspace(
     workspaceDir: string,
     settledDeletes?: SessionsEvent["settledDeletes"],
-    options: { exceptTabId?: string } = {},
+    options: { exceptTabId?: string; revalidate?: boolean } = {},
   ): void {
     for (const t of tabsInWorkspace(workspaceDir)) {
       if (t.id === options.exceptTabId) continue;
-      void emitSessions(t, settledDeletes);
+      void emitSessions(t, settledDeletes, { revalidate: options.revalidate });
     }
   }
 
@@ -7602,6 +7634,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     for (const t of tabs.values()) emitSettings(t);
   }
 
+  /** Refresh both projections an MCP config write feeds: the Settings server list and
+   *  the capability pre-fill the Duplicate popover offers. */
+  function emitMcpConfigChanged(tab: Tab): void {
+    emitMcpSpecs(tab);
+    emitSettings(tab);
+  }
+
   /** Build (or rebuild) every now-credentialed tab so a fresh sign-in or saved
    *  key takes effect without a model flip. A tab that booted un-credentialed has
    *  a null runtime — it must be built here, not just rebuilt. */
@@ -7662,7 +7701,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   /** Persist a mutated playwright MCP entry and refresh the desktop UI. */
   function commitPlaywrightMcpEntry(cfg: ReasonixConfig, tab: Tab): void {
     writeConfig(cfg);
-    emitMcpSpecs(tab);
+    emitMcpConfigChanged(tab);
     emitMcpExtensionStatus(tab);
   }
 
@@ -8193,10 +8232,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // stampSessionWorkspace) so a restored ghost lists on the emitSessions below.
         stampSessionWorkspace(tab.currentSession, tab.rootDir);
       }
-      const sessionsInitialized = emitSessions(tab, undefined, { primeFromCache: true });
+      // A freshly minted channel reports the session it just minted; its listing must
+      // not also revalidate every folder in the store.
+      const sessionsInitialized = emitSessions(tab, undefined, {
+        primeFromCache: true,
+        revalidate: restore?.creating !== true,
+      });
       // A freshly minted session must reach every channel on the workspace at once,
       // the way a delete already does; a restored tab broadcasts nothing.
-      if (!restore) emitSessionsForWorkspace(tab.rootDir, undefined, { exceptTabId: tab.id });
+      if (!restore) {
+        emitSessionsForWorkspace(tab.rootDir, undefined, {
+          exceptTabId: tab.id,
+          revalidate: false,
+        });
+      }
       if (restore?.creating) {
         // The minted session is on the wire now, so every channel can see it and
         // the workspace accepts another creation. Both outcomes release: a failed
@@ -8901,7 +8950,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           cfg.mcp = [...list, spec];
           writeConfig(cfg);
         }
-        emitMcpSpecs(tab);
+        emitMcpConfigChanged(tab);
         void bridgeTabMcp(tab);
       } catch (err) {
         emitDiagnosticError("mcp.spec.add.failed", err, {
@@ -8948,7 +8997,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         if (changed) writeConfig(cfg);
         tab.mcpStatuses.delete(msg.spec);
         if (parsedName) tab.mcpStatuses.delete(parsedName);
-        emitMcpSpecs(tab);
+        emitMcpConfigChanged(tab);
         void bridgeTabMcp(tab);
       } catch (err) {
         emitDiagnosticError("mcp.spec.remove.failed", err, {
@@ -8974,7 +9023,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           return;
         }
         writeConfig(cfg);
-        emitMcpSpecs(tab);
+        emitMcpConfigChanged(tab);
       } catch (err) {
         emitDiagnosticError("mcp.spec.toggle.failed", err, {
           tabId: tab.id,
@@ -8993,11 +9042,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // Immutable from here on.
         const subagents = msg.subagents === true;
         patchSessionMeta(tab.currentSession, {
-          ...sessionSetupMeta(
-            namedMcpSpecs(tab.rootDir).map((spec) => spec.name),
-            msg.enabled,
-            subagents,
-          ),
+          ...sessionSetupMeta(configuredServerNames(tab.rootDir), msg.enabled, subagents),
           // An explicit `undefined` is dropped on write, clearing the pending marker.
           mcpPending: undefined,
         });
@@ -9108,7 +9153,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         } else {
           configureOutlookMailServer();
         }
-        emitMcpSpecs(tab);
+        emitMcpConfigChanged(tab);
         emitMailAuth(tab, msg.provider, { configured: true, phase: "disconnected" });
         void bridgeTabMcp(tab).then(() => refreshMailAuth(tab, msg.provider, bridgeTabMcp));
       } catch (error) {
@@ -9556,11 +9601,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // in-chat picker — pre-filled with this session's own frozen capabilities, so a
       // faithful copy is one confirm away and the toggles are there to diverge.
       const frozen = Array.isArray(msg.enabled)
-        ? sessionSetupMeta(
-            namedMcpSpecs(tab.rootDir).map((spec) => spec.name),
-            msg.enabled,
-            msg.subagents === true,
-          )
+        ? sessionSetupMeta(configuredServerNames(tab.rootDir), msg.enabled, msg.subagents === true)
         : undefined;
       const answer: ChatCapabilitySeed | undefined = frozen
         ? { mcp: frozen.mcp, subagents: frozen.subagents === true }
@@ -9869,9 +9910,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "ollama_models_list") {
-      // `force` (manual refresh button) refetches; plain calls reuse the
-      // app-global cache within its TTL so tab effects don't hammer the
-      // endpoint. The broadcast is tabId-less — every tab shares the result.
+      // The frontend asks for this whenever a model surface opens: plain calls reuse the
+      // app-global cache within its TTL, and `force` refetches past it. The broadcast is
+      // tabId-less — every tab shares the result.
       void refreshOllamaModels(!!msg.force, tab);
       return;
     }

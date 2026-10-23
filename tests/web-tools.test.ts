@@ -1,8 +1,15 @@
 import { lookup } from "node:dns/promises";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { searchEngineDeclared } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadBaiduApiKey, loadMetasoApiKey, writeConfig } from "../src/config.js";
 import { ToolRegistry } from "../src/tools.js";
+import {
+  __setBrowserCoreLoaderForTests,
+  closeBrowserSearches,
+} from "../src/tools/browser-search.js";
 import {
   formatSearchResults,
   htmlToText,
@@ -37,6 +44,12 @@ describe("htmlToText", () => {
     expect(out).not.toContain("fine print");
     expect(out).not.toContain("color:red");
     expect(out).toMatch(/Hello world\.\n\nSecond paragraph\./);
+  });
+
+  it("drops the doctype the parser reports as text", () => {
+    // A rendered document starts with the declaration; it must not lead the extracted text.
+    const out = htmlToText("<!DOCTYPE html><html><body><p>Body copy</p></body></html>");
+    expect(out).toBe("Body copy");
   });
 
   it("decodes the common entities", () => {
@@ -1959,9 +1972,345 @@ describe("registerWebTools", () => {
   });
 });
 
+/** The keyless engine end to end at tool level: config to engine to managed browser. */
+describe("web_search through the managed browser engine", () => {
+  const declared = searchEngineDeclared("playwright-webkit");
+  const configDir = mkdtempSync(join(tmpdir(), "reasonix-web-search-browser-"));
+  const configPath = join(configDir, "config.json");
+  const DDG_HTML = `
+    <div class="result results_links web-result">
+      <a class="result__a" href="https://example.com/docs">Deepseek balance docs</a>
+      <a class="result__snippet" href="https://example.com/docs">alpha snippet</a>
+    </div>
+    <div class="result results_links web-result">
+      <a class="result__a" href="https://example.com/api">Deepseek balance API</a>
+      <a class="result__snippet" href="https://example.com/api">beta snippet</a>
+    </div>`;
+
+  beforeEach(() => {
+    writeConfig({ webSearchEngine: "playwright-webkit" }, configPath);
+  });
+
+  afterEach(async () => {
+    await closeBrowserSearches();
+    __setBrowserCoreLoaderForTests(null);
+  });
+
+  /** A playwright-core stand-in whose DuckDuckGo page is already rendered. */
+  function fakeCore(html = DDG_HTML) {
+    return {
+      kind: "ok" as const,
+      core: {
+        webkit: {
+          executablePath: () => "/fake/chrome",
+          launch: async () => ({
+            newContext: async () => ({
+              newPage: async () => ({
+                goto: async () => ({ status: () => 200 }),
+                waitForSelector: async () => ({}),
+                content: async () => html,
+              }),
+              close: async () => undefined,
+            }),
+            close: async () => undefined,
+          }),
+        },
+      } as never,
+      executablePath: "/fake/chrome",
+    };
+  }
+
+  it.skipIf(!declared)("dispatches the configured engine and formats its hits", async () => {
+    __setBrowserCoreLoaderForTests(() => fakeCore());
+    const registry = new ToolRegistry();
+    registerWebTools(registry, { configPath });
+    const out = await registry.dispatch(
+      "web_search",
+      JSON.stringify({ query: "deepseek balance", topK: 2 }),
+    );
+    expect(out).toContain("query: deepseek balance");
+    expect(out).toContain("engine: playwright-webkit");
+    expect(out).toContain("https://example.com/docs");
+    expect(out).toContain("alpha snippet");
+  });
+
+  it.skipIf(!declared)(
+    "surfaces the install guidance when the browser build is absent",
+    async () => {
+      __setBrowserCoreLoaderForTests(() => ({ kind: "notInstalled" }));
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath });
+      const out = await registry.dispatch(
+        "web_search",
+        JSON.stringify({ query: "deepseek balance" }),
+      );
+      expect(out).toContain("npx playwright install webkit");
+    },
+  );
+
+  it.skipIf(!declared)("lets a per-call Stop cancel a browser search", async () => {
+    let resolutions = 0;
+    __setBrowserCoreLoaderForTests(() => {
+      resolutions += 1;
+      return fakeCore();
+    });
+    const registry = new ToolRegistry();
+    registerWebTools(registry, { configPath });
+    const controller = new AbortController();
+    controller.abort();
+    const out = await registry.dispatch(
+      "web_search",
+      JSON.stringify({ query: "deepseek balance" }),
+      { cancelSignal: controller.signal },
+    );
+    expect(out).toContain("cancelledByUser");
+    // The search aborted before touching the browser install.
+    expect(resolutions).toBe(0);
+  });
+});
+
+/** Rendering a page in the managed browser: the text a plain read cannot see, plus the
+ *  screenshot the card shows. */
+describe("web_fetch through the managed browser engine", () => {
+  const declared = searchEngineDeclared("playwright-webkit");
+  const configDir = mkdtempSync(join(tmpdir(), "reasonix-web-fetch-browser-"));
+  const configPath = join(configDir, "config.json");
+  const rootDir = mkdtempSync(join(tmpdir(), "reasonix-web-fetch-root-"));
+  const PAGE_HTML =
+    "<html><head><title>Rendered Page</title></head><body><p>script-rendered body text</p></body></html>";
+
+  let contexts: Array<{ viewport?: { width: number; height: number } }> = [];
+
+  beforeEach(() => {
+    contexts = [];
+    writeConfig({ webSearchEngine: "playwright-webkit" }, configPath);
+  });
+
+  afterEach(async () => {
+    await closeBrowserSearches();
+    __setBrowserCoreLoaderForTests(null);
+  });
+
+  /** A playwright-core stand-in that renders a page and captures it. */
+  function renderingCore(overrides: { screenshotError?: Error } = {}) {
+    return {
+      kind: "ok" as const,
+      core: {
+        webkit: {
+          executablePath: () => "/fake/chrome",
+          launch: async () => ({
+            newContext: async (contextOpts: unknown) => {
+              contexts.push(contextOpts);
+              return {
+                newPage: async () => ({
+                  goto: async () => ({ status: () => 200 }),
+                  waitForLoadState: async () => undefined,
+                  content: async () => PAGE_HTML,
+                  title: async () => "Rendered Page",
+                  url: () => "https://example.com/final",
+                  screenshot: async () => {
+                    if (overrides.screenshotError) throw overrides.screenshotError;
+                    return Buffer.from("page-png");
+                  },
+                }),
+                close: async () => undefined,
+              };
+            },
+            close: async () => undefined,
+          }),
+        },
+      } as never,
+      executablePath: "/fake/chrome",
+    };
+  }
+
+  it.skipIf(!declared)("renders the page and reports its preview for the card", async () => {
+    __setBrowserCoreLoaderForTests(() => renderingCore());
+    const registry = new ToolRegistry();
+    registerWebTools(registry, { configPath });
+    const out = (await registry.dispatch(
+      "web_fetch",
+      JSON.stringify({ url: "https://example.com/page" }),
+      { rootDir },
+    )) as string;
+
+    expect(out).toContain("engine: playwright-webkit");
+    expect(out).toContain("script-rendered body text");
+    expect(out).toContain("https://example.com/final");
+    // The card finds the preview through this line, so it names a real PNG on disk.
+    const preview = /^preview: (.+)$/m.exec(out)?.[1];
+    expect(preview).toBeTruthy();
+    expect(existsSync(preview!)).toBe(true);
+    expect(preview).toContain(".reasonix");
+    expect(readFileSync(preview!).toString()).toBe("page-png");
+    // A render is a small transient window, not the SERP viewport.
+    expect(contexts[0]?.viewport).toEqual({ width: 900, height: 1200 });
+  });
+
+  it.skipIf(!declared)("keeps the rendered text when the capture fails", async () => {
+    __setBrowserCoreLoaderForTests(() =>
+      renderingCore({ screenshotError: new Error("no capture") }),
+    );
+    const registry = new ToolRegistry();
+    registerWebTools(registry, { configPath });
+    const out = (await registry.dispatch(
+      "web_fetch",
+      JSON.stringify({ url: "https://example.com/page" }),
+      { rootDir },
+    )) as string;
+
+    expect(out).toContain("script-rendered body text");
+    expect(out).not.toContain("preview:");
+  });
+
+  it.skipIf(!declared)("falls back to a plain read when the browser is missing", async () => {
+    __setBrowserCoreLoaderForTests(() => ({ kind: "notInstalled" }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response("<html><head><title>Plain</title></head><body>plain body</body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+    ) as unknown as typeof fetch;
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath });
+      const out = (await registry.dispatch(
+        "web_fetch",
+        JSON.stringify({ url: "https://example.com/page" }),
+        { rootDir },
+      )) as string;
+
+      expect(out).toContain("plain body");
+      // The reader is told the text came from a plain read, not a render.
+      expect(out).toContain("render: unavailable");
+      expect(out).not.toContain("preview:");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+/** A host that refuses a plain client but renders for a real browser: the refusal must
+ *  not end the fetch when a managed build is available. */
+describe("web_fetch through a bot-blocking host", () => {
+  const declared = searchEngineDeclared("playwright-webkit");
+  const configDir = mkdtempSync(join(tmpdir(), "reasonix-web-fetch-blocked-"));
+  const configPath = join(configDir, "config.json");
+  const rootDir = mkdtempSync(join(tmpdir(), "reasonix-web-fetch-blocked-root-"));
+  const RENDERED_HTML =
+    "<html><head><title>Blocked page rendered</title></head><body><p>gag listing text</p></body></html>";
+
+  beforeEach(() => {
+    // A direct-read engine: this is the case the browser covers as a fallback.
+    writeConfig({ webSearchEngine: "bing" }, configPath);
+  });
+
+  afterEach(async () => {
+    await closeBrowserSearches();
+    __setBrowserCoreLoaderForTests(null);
+  });
+
+  function renderedCore() {
+    return {
+      kind: "ok" as const,
+      core: {
+        webkit: {
+          executablePath: () => "/fake/chrome",
+          launch: async () => ({
+            newContext: async () => ({
+              newPage: async () => ({
+                goto: async () => ({ status: () => 403 }),
+                waitForLoadState: async () => undefined,
+                content: async () => RENDERED_HTML,
+                title: async () => "Blocked page rendered",
+                url: () => "https://9gag.com/tag/rick-roll",
+                screenshot: async () => Buffer.from("blocked-png"),
+              }),
+              close: async () => undefined,
+            }),
+            close: async () => undefined,
+          }),
+        },
+      } as never,
+      executablePath: "/fake/chrome",
+    };
+  }
+
+  function answeringFetch(status: number) {
+    return vi.fn(
+      async () =>
+        new Response("<html><body>plain</body></html>", {
+          status,
+          headers: { "content-type": "text/html" },
+        }),
+    ) as unknown as typeof fetch;
+  }
+
+  it.skipIf(!declared)("renders the page when the plain read is refused with 403", async () => {
+    __setBrowserCoreLoaderForTests(() => renderedCore());
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = answeringFetch(403);
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath });
+      const out = (await registry.dispatch(
+        "web_fetch",
+        JSON.stringify({ url: "https://9gag.com/tag/rick-roll" }),
+        { rootDir },
+      )) as string;
+
+      expect(out).toContain("gag listing text");
+      expect(out).toMatch(/^preview: /m);
+      // The reader is told the plain read was refused rather than silently swapped.
+      expect(out).toContain("render: plain read refused (403)");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.skipIf(!declared)("reports the refusal when no managed build can render", async () => {
+    __setBrowserCoreLoaderForTests(() => ({ kind: "notInstalled" }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = answeringFetch(403);
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath });
+      const out = (await registry.dispatch(
+        "web_fetch",
+        JSON.stringify({ url: "https://9gag.com/tag/rick-roll" }),
+        { rootDir },
+      )) as string;
+      // No build to render with, so the refusal itself is the answer, unchanged.
+      expect(out).toContain("403");
+      expect(out).not.toContain("preview:");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("leaves other statuses on the direct path", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = answeringFetch(404);
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath });
+      const out = (await registry.dispatch(
+        "web_fetch",
+        JSON.stringify({ url: "https://example.com/gone" }),
+        { rootDir },
+      )) as string;
+      // Only bot-gate statuses reach for the browser; a real 404 stays a 404.
+      expect(out).toContain("404");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe("webFetch", () => {
   const mockedLookup = vi.mocked(lookup);
-
   beforeEach(() => {
     mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
   });

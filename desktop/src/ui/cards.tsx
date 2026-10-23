@@ -1,4 +1,6 @@
 import { modelDisplayLabel, sanitizeTerminalText } from "@reasonix/core-utils";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { type CSSProperties, type ReactNode, memo, useContext, useMemo, useState } from "react";
 import { Markdown, WorkspaceContext, resolveAgainstWorkspace, revealInExplorer } from "../Markdown";
 import { t, useLang } from "../i18n";
@@ -149,6 +151,7 @@ export function Card({
   headRight,
   copyText,
   anchor,
+  preview,
 }: {
   tone?: Tone;
   icon: ReactNode;
@@ -166,6 +169,8 @@ export function Card({
   /** Stable jump target for the Events tab (`call:<id>` / `notice:<id>`), so a
    *  recorded event lands on THIS card instead of its turn's prompt bubble. */
   anchor?: string;
+  /** Content under the head that stays visible while the body is collapsed. */
+  preview?: ReactNode;
 }) {
   const { open, toggle } = useJumpOpen(anchor, defaultOpen);
   return (
@@ -175,6 +180,7 @@ export function Card({
           <CardHead icon={icon} kind={kind} name={name} meta={meta} open={open} onToggle={toggle} />
           {headRight}
         </div>
+        {preview ? <div className="card-preview">{preview}</div> : null}
         {open ? <div className="card-body">{children}</div> : null}
       </div>
       {copyText ? <CopyButton text={copyText} /> : null}
@@ -625,6 +631,56 @@ function formatArgs(args: string): string {
   return args;
 }
 
+/** The page a `web_fetch` result describes: its preview image, and the host it came from. */
+export function toolPagePreview(result?: string): { path: string; host?: string } | null {
+  if (!result) return null;
+  const path = /^preview:\s*(\S.*)$/m.exec(result)?.[1]?.trim();
+  if (!path || !/\.(?:avif|bmp|gif|jpe?g|png|webp)$/i.test(path)) return null;
+  const url = /^https?:\/\/\S+$/m.exec(result)?.[0];
+  let host: string | undefined;
+  try {
+    host = url ? new URL(url).host.replace(/^www\./, "") : undefined;
+  } catch {
+    host = undefined;
+  }
+  return { path, ...(host ? { host } : {}) };
+}
+
+/** The rendered page a web tool saw, as a thumbnail that opens the full image. */
+function ToolPagePreview({ path, host, name }: { path: string; host?: string; name: string }) {
+  const ws = useContext(WorkspaceContext);
+  const [failed, setFailed] = useState(false);
+  const abs = resolveAgainstWorkspace(path, ws.dir);
+  return (
+    <figure className="tool-preview">
+      {failed ? null : (
+        <button
+          type="button"
+          className="tool-preview-open"
+          title={path}
+          onClick={(e) => {
+            // The thumbnail sits inside the card head's click target.
+            e.stopPropagation();
+            void openPath(abs).catch(() => undefined);
+          }}
+        >
+          <img
+            className="tool-preview-shot"
+            src={convertFileSrc(abs)}
+            alt={name}
+            loading="lazy"
+            onError={() => setFailed(true)}
+          />
+        </button>
+      )}
+      <figcaption className="tool-preview-meta">
+        {host ? <span className="tool-preview-host">{host}</span> : null}
+        <span className="tool-preview-note">{failed ? path : "rendered"}</span>
+      </figcaption>
+    </figure>
+  );
+}
+
 export function ToolCard({
   name,
   args,
@@ -643,6 +699,7 @@ export function ToolCard({
   useLang();
   const fileRef = useMemo(() => extractToolFileRef(args), [args]);
   const formattedArgs = useMemo(() => (args ? formatArgs(args) : ""), [args]);
+  const previewPage = useMemo(() => toolPagePreview(result), [result]);
   const running = result === undefined;
   const tone: Tone = running
     ? waiting
@@ -688,6 +745,11 @@ export function ToolCard({
       }
       headRight={fileRef ? <OpenFileButton path={fileRef.path} label={fileRef.path} /> : undefined}
       copyText={[formattedArgs, result].filter(Boolean).join("\n\n")}
+      preview={
+        previewPage ? (
+          <ToolPagePreview path={previewPage.path} host={previewPage.host} name={name} />
+        ) : undefined
+      }
     >
       <div className="tool-call">
         {args ? (

@@ -5,6 +5,7 @@
   "order": 12,
   "kind": "keyless",
   "strategy": "playwright",
+  "fetchStrategy": "playwright",
   "browser": "webkit",
   "errors": {
     "alternative": "another engine",
@@ -12,9 +13,9 @@
     "notInstalled": "web_search: the managed {Browser} build is not installed — run `npx playwright install {browser}`, then retry.",
     "launchFailed": "web_search: the managed {Browser} browser failed to launch ({message}) — try again, or pick {alternative} in Settings (General page).",
     "cannotReach": "web_search: {Browser} could not reach the search page ({message}) — check your network or proxy, then retry.",
-    "timeout": "web_search: {Browser} timed out after {ms}ms waiting for search results — retry, or pick {alternative} in Settings (General page).",
-    "blocked": "web_search: {Browser} reached the search page but it yielded no parseable results ({chars} chars) — retry, or pick {alternative} in Settings (General page).",
-    "mismatched": "web_search: {Browser} returned a search page that answers a different query (top hit: \"{first}\") — retry, or pick {alternative} in Settings (General page)."
+    "timeout": "web_search: {Browser} timed out after {ms}ms waiting for {Serp} search results — retry, or pick {alternative} in Settings (General page).",
+    "blocked": "web_search: {Browser} reached {Serp} but it yielded no parseable results ({chars} chars) — retry, or pick {alternative} in Settings (General page).",
+    "mismatched": "web_search: {Serp} returned a search page that answers a different query (top hit: \"{first}\") — retry, or pick {alternative} in Settings (General page)."
   },
   "settings": []
 }

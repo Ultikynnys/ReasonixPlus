@@ -1,4 +1,4 @@
-// playwright-tooling-version: 4
+// playwright-tooling-version: 5
 // Reasonix+ playwright driver: drives the configured @playwright/mcp browser
 // connection with no repo or npm dependencies.
 //

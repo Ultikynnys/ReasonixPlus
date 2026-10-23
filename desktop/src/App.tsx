@@ -156,7 +156,7 @@ import { createComposerDraft } from "./ui/composer-draft";
 import { ContextPanel } from "./ui/context-panel";
 import { JobsPop } from "./ui/jobs-pop";
 import { activationHandler } from "./ui/keyboard";
-import { CapabilityPicker, McpSetupDialog } from "./ui/mcp-setup";
+import { CapabilityDialog } from "./ui/mcp-setup";
 import { SettingsModal, type PageId as SettingsPageId } from "./ui/settings";
 import { localizeShortcutText } from "./ui/shortcut";
 import { Sidebar } from "./ui/sidebar";
@@ -2811,6 +2811,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           // Frozen per session, and absent reads as off: a daemon that predates the
           // field minted nothing with the tool, so there is no picker to keep.
           subagents: ev.subagents ?? false,
+          // The Duplicate popover's rows: the daemon's one projection of what a copy of
+          // this chat may run with. Dropping it here reads as "no server configured".
+          capabilityPrefill: ev.capabilityPrefill,
           elevationEnabled: ev.elevationEnabled ?? false,
           repetitionGuardEnabled: ev.repetitionGuardEnabled ?? false,
           autoCompact: ev.autoCompact ?? true,
@@ -3556,15 +3559,18 @@ interface TabRuntimeProps {
   /** Prefixed vision-capable Ollama model ids (`ollama/llava`) confirmed by the
    *  daemon — lets image-capable Ollama models accept attachments. */
   ollamaVisionModels: ReadonlySet<string>;
-  /** Re-fetch the app-global Ollama catalog (`force` bypasses the cache). */
-  onRefreshOllamaModels: (force?: boolean) => void;
+  /** Re-query the app-global Ollama catalog. Both model surfaces call it when they
+   *  open, so the list is current without a refresh button. */
+  onRefreshOllamaModels: () => void;
   /** Re-fetch the signed-in account's Antigravity quota model ids. */
   onRefreshAntigravityModels: () => void;
   /** App-global OpenCode free model catalog. */
   opencodeModels: string[];
   opencodeModelsError: string | null;
   opencodeVisionModels: ReadonlySet<string>;
-  onRefreshOpencodeModels: (force?: boolean) => void;
+  onRefreshOpencodeModels: () => void;
+  /** Re-query every provider's discovery catalog (models-endpoint providers). */
+  onRefreshProviderCatalogs: () => void;
   /** Repo commit history grouped per release, plus a forced-refetch trigger. */
   changelog: ChangelogState;
   onRefreshChangelog: (force?: boolean) => void;
@@ -3638,6 +3644,7 @@ const TabRuntime = memo(function TabRuntime({
   opencodeModelsError,
   opencodeVisionModels,
   onRefreshOpencodeModels,
+  onRefreshProviderCatalogs,
   changelog,
   onRefreshChangelog,
   tabsList,
@@ -3732,6 +3739,10 @@ const TabRuntime = memo(function TabRuntime({
   const [voiceAvailable, setVoiceAvailable] = useState(false);
   const [jobsOpen, setJobsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  // The header's Duplicate button asks this tab's ONE capability dialog, the same one the
+  // session-start gate raises; `$mcpSetup` outranks it because a gated chat has no
+  // messages, so the two never compete for the screen.
+  const [duplicateAsk, setDuplicateAsk] = useState(false);
   const previousApprovalSnapshotRef = useRef<ApprovalSnapshot>({
     confirms: [],
     pathAccess: [],
@@ -5215,14 +5226,11 @@ const TabRuntime = memo(function TabRuntime({
             <>
               <MainHead
                 session={session}
-                model={state.settings?.model}
-                capabilityRows={state.settings?.capabilityPrefill ?? []}
-                subagents={state.settings?.subagents === true}
                 workspaceDir={state.settings?.workspaceDir}
                 busy={state.busy}
                 hasMessages={state.messages.length > 0}
                 onExport={exportConversation}
-                onDuplicate={duplicateSession}
+                onDuplicate={() => setDuplicateAsk(true)}
                 onOpenWorkdir={(anchor) => {
                   setWdAnchor(anchor);
                   setWdOpen(true);
@@ -5443,6 +5451,7 @@ const TabRuntime = memo(function TabRuntime({
                 onRefreshOllamaModels={onRefreshOllamaModels}
                 onRefreshAntigravityModels={onRefreshAntigravityModels}
                 onRefreshOpencodeModels={onRefreshOpencodeModels}
+                onRefreshProviderCatalogs={onRefreshProviderCatalogs}
                 onModelChange={(model) => {
                   saveSettings({ model });
                   appendNotice(t("app.toast.modelSwitched", { model: modelDisplayLabel(model) }));
@@ -5584,16 +5593,40 @@ const TabRuntime = memo(function TabRuntime({
 
         {aboutOpen ? <AboutModal onClose={() => setAboutOpen(false)} /> : null}
 
-        {state.mcpSetup ? (
-          <McpSetupDialog
-            key={state.mcpSetupRevision}
-            servers={state.mcpSetup.servers}
-            subagents={state.mcpSetup.subagents}
-            onConfirm={(enabled, subagents) =>
-              sendRpc({ cmd: "mcp_session_configure", enabled, subagents })
+        {state.mcpSetup || duplicateAsk ? (
+          <CapabilityDialog
+            key={state.mcpSetup ? `setup-${state.mcpSetupRevision}` : "duplicate"}
+            title={state.mcpSetup ? "Set up this chat" : t("app.titlebar.duplicateSession")}
+            hint={
+              state.mcpSetup
+                ? "Choose what this chat starts with. Both choices are locked for the session, even after a restart."
+                : t("app.duplicate.hint")
+            }
+            servers={
+              state.mcpSetup ? state.mcpSetup.servers : (state.settings?.capabilityPrefill ?? [])
+            }
+            subagents={
+              state.mcpSetup ? state.mcpSetup.subagents : state.settings?.subagents === true
+            }
+            emptyHint={state.mcpSetup ? undefined : t("app.duplicate.noServers")}
+            confirmLabel={state.mcpSetup ? "Confirm and start" : t("app.duplicate.confirm")}
+            busyLabel={state.mcpSetup ? "Starting session" : undefined}
+            dismissLabel={state.mcpSetup ? "Cancel" : t("app.duplicate.back")}
+            onConfirm={
+              state.mcpSetup
+                ? (enabled, spawn) =>
+                    sendRpc({ cmd: "mcp_session_configure", enabled, subagents: spawn })
+                : (enabled, spawn) => {
+                    duplicateSession(enabled, spawn);
+                    setDuplicateAsk(false);
+                  }
             }
             // Cancel discards the freshly minted session; its workspace tab stays.
-            onCancel={() => sendRpc({ cmd: "mcp_session_cancel" })}
+            onCancel={
+              state.mcpSetup
+                ? () => sendRpc({ cmd: "mcp_session_cancel" })
+                : () => setDuplicateAsk(false)
+            }
           />
         ) : null}
 
@@ -5621,6 +5654,7 @@ const TabRuntime = memo(function TabRuntime({
             opencodeModelsError={opencodeModelsError ?? undefined}
             opencodeVisionModels={opencodeVisionModels}
             onRefreshOpencodeModels={onRefreshOpencodeModels}
+            onRefreshProviderCatalogs={onRefreshProviderCatalogs}
             changelog={changelog}
             onRefreshChangelog={onRefreshChangelog}
             oauthWaiting={state.oauthWaiting}
@@ -6092,9 +6126,6 @@ export function TabBar({
 
 export function MainHead({
   session,
-  model,
-  capabilityRows,
-  subagents,
   workspaceDir,
   busy,
   hasMessages,
@@ -6104,16 +6135,12 @@ export function MainHead({
   onRename,
 }: {
   session: string;
-  model?: string;
-  /** Capability rows the Duplicate popover offers: this chat's own MCP set and subagent
-   *  flag, so a copy starts faithful and the toggles are how it diverges. */
-  capabilityRows: McpSetupServer[];
-  subagents: boolean;
   workspaceDir?: string;
   busy: boolean;
   hasMessages: boolean;
   onExport: () => void;
-  onDuplicate: (enabled: string[], subagents: boolean) => void;
+  /** Raise the tab's capability dialog for a copy of this chat. */
+  onDuplicate: () => void;
   onOpenWorkdir: (anchor: { top?: number; bottom?: number; left: number }) => void;
   onRename?: (title: string) => void;
 }) {
@@ -6121,32 +6148,12 @@ export function MainHead({
   const [title, setTitle] = useState(session);
   const [isEditing, setIsEditing] = useState(false);
   const isEditingRef = useRef(false);
-  const [dupOpen, setDupOpen] = useState(false);
-  const [dupServers, setDupServers] = useState<Set<string>>(new Set());
-  const [dupSubagents, setDupSubagents] = useState(false);
-  const dupWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!isEditingRef.current) {
       setTitle(session);
     }
   }, [session]);
-
-  useEffect(() => {
-    if (!dupOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (dupWrapRef.current && !dupWrapRef.current.contains(e.target as Node)) setDupOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDupOpen(false);
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [dupOpen]);
 
   const commit = useCallback(() => {
     if (!isEditingRef.current) return;
@@ -6219,85 +6226,19 @@ export function MainHead({
           >
             <I.folder size={10} /> {wsLabel}
           </span>
-          {model ? (
-            <span className="pill">
-              <I.brain size={10} /> {modelDisplayLabel(model)}
-            </span>
-          ) : null}
         </div>
       </div>
       <span className="grow" />
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <div ref={dupWrapRef} style={{ position: "relative" }}>
-          <button
-            type="button"
-            className="h-btn"
-            disabled={!hasMessages}
-            title={t("app.titlebar.duplicateSession")}
-            onClick={() => {
-              if (dupOpen) {
-                setDupOpen(false);
-                return;
-              }
-              // Pre-fill from what THIS chat runs with: a copy starts faithful, and the
-              // toggles are how it diverges.
-              setDupServers(new Set(capabilityRows.filter((r) => r.enabled).map((r) => r.name)));
-              setDupSubagents(subagents);
-              setDupOpen(true);
-            }}
-          >
-            <I.copy size={12} /> {t("app.header.duplicate")}
-          </button>
-          {dupOpen ? (
-            <div
-              className="popup"
-              style={{
-                top: "calc(100% + 6px)",
-                right: 0,
-                left: "auto",
-                bottom: "auto",
-                width: 300,
-              }}
-            >
-              <div className="dup-panel">
-                <div className="dup-title">{t("app.titlebar.duplicateSession")}</div>
-                <div className="dup-hint">{t("app.duplicate.hint")}</div>
-                <div className="dup-caps">
-                  <CapabilityPicker
-                    servers={capabilityRows}
-                    selected={dupServers}
-                    subagents={dupSubagents}
-                    onToggleServer={(name) =>
-                      setDupServers((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(name)) next.delete(name);
-                        else next.add(name);
-                        return next;
-                      })
-                    }
-                    onToggleSubagents={() => setDupSubagents((on) => !on)}
-                    emptyHint={t("app.duplicate.noServers")}
-                  />
-                </div>
-                <div className="dup-actions">
-                  <button
-                    type="button"
-                    className="btn small"
-                    onClick={() => {
-                      onDuplicate([...dupServers], dupSubagents);
-                      setDupOpen(false);
-                    }}
-                  >
-                    {t("app.duplicate.confirm")}
-                  </button>
-                  <button type="button" className="mini-btn" onClick={() => setDupOpen(false)}>
-                    {t("app.duplicate.back")}
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : null}
-        </div>
+        <button
+          type="button"
+          className="h-btn"
+          disabled={!hasMessages}
+          title={t("app.titlebar.duplicateSession")}
+          onClick={onDuplicate}
+        >
+          <I.copy size={12} /> {t("app.header.duplicate")}
+        </button>
         <button
           type="button"
           className="h-btn"
@@ -6765,8 +6706,11 @@ export function App() {
   }
   const previousActiveTabId = previousActiveRef.current;
 
-  const requestOllamaModels = useCallback((force?: boolean) => {
-    rpcSend({ tabId: activeTabIdRef.current, cmd: "ollama_models_list", force }).catch((err) =>
+  // The three catalog requests below are fire-and-forget refreshes of live lists. The
+  // backend answers from its own cache window, so surfaces call them freely (opening the
+  // Models page, opening the composer's model picker) instead of offering a button.
+  const requestOllamaModels = useCallback(() => {
+    rpcSend({ tabId: activeTabIdRef.current, cmd: "ollama_models_list" }).catch((err) =>
       recordFrontendFailure("frontend.ollama_models_failed", err),
     );
   }, []);
@@ -6778,12 +6722,18 @@ export function App() {
     }).catch((err) => recordFrontendFailure("frontend.antigravity_models_failed", err));
   }, []);
 
-  const requestOpencodeModels = useCallback((force?: boolean) => {
+  const requestOpencodeModels = useCallback(() => {
     rpcSend({
       tabId: activeTabIdRef.current,
       cmd: "opencode_models_refresh",
-      force,
     }).catch((err) => recordFrontendFailure("frontend.opencode_models_failed", err));
+  }, []);
+
+  const requestProviderCatalogs = useCallback(() => {
+    rpcSend({
+      tabId: activeTabIdRef.current,
+      cmd: "provider_models_refresh",
+    }).catch((err) => recordFrontendFailure("frontend.provider_models_failed", err));
   }, []);
 
   const requestChangelog = useCallback((force?: boolean) => {
@@ -7712,6 +7662,7 @@ export function App() {
           opencodeModelsError={opencodeCatalog.error}
           opencodeVisionModels={opencodeCatalog.visionModels}
           onRefreshOpencodeModels={requestOpencodeModels}
+          onRefreshProviderCatalogs={requestProviderCatalogs}
           changelog={changelog}
           onRefreshChangelog={requestChangelog}
           tabsList={tabs}

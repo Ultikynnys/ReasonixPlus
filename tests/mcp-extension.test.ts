@@ -588,6 +588,21 @@ describe("computeMcpExtensionStatus", () => {
     expect(status.server.hasExtensionArg).toBe(false);
   });
 
+  it("reports the install state of every managed build", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reasonix-playwright-"));
+    mkdirSync(join(dir, "chromium-1248"));
+    writeFileSync(join(dir, "chromium-1248", "INSTALLATION_COMPLETE"), "");
+    const installs = computeMcpExtensionStatus({}, { PLAYWRIGHT_BROWSERS_PATH: dir }).installs;
+    // Every mode is reported, so a picker can gate the ones it cannot offer.
+    expect(installs.map((entry) => entry.browser)).toEqual([...PLAYWRIGHT_MANAGED_BROWSERS]);
+    expect(installs).toEqual([
+      { browser: "chromium", state: "installed" },
+      { browser: "firefox", state: "missing" },
+      { browser: "webkit", state: "missing" },
+      { browser: "msedge", state: "system" },
+    ]);
+  });
+
   it("reports managed and CDP connection modes", () => {
     const managed: ReasonixConfig = {
       mcpServers: {

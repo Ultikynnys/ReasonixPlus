@@ -119,11 +119,20 @@ describe("settings Shortcuts page", () => {
     );
   });
 
-  it("shows the configured quick-send order as the Ctrl+1-9 order", () => {
-    render(<SettingsModal {...baseProps} initialPage="general" />);
+  it("is its own page in the nav", () => {
+    render(<SettingsModal {...baseProps} />);
 
-    // The ordering the dropdown and the digits share is edited in General, so that
-    // section has to name the hotkey that consumes it.
+    fireEvent.click(screen.getByText("Quick send"));
+
+    expect(screen.getByText("Composer quick actions and their hotkeys")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Message sent to the model")).toBeTruthy();
+  });
+
+  it("shows the configured quick-send order as the Ctrl+1-9 order", () => {
+    render(<SettingsModal {...baseProps} initialPage="quickSend" />);
+
+    // The ordering the dropdown and the digits share is edited on the Quick send page,
+    // so that page has to name the hotkey that consumes it.
     expect(screen.getByText(/Ctrl\+1-9|1-9/)).toBeTruthy();
   });
 });
