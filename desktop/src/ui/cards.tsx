@@ -151,7 +151,6 @@ export function Card({
   headRight,
   copyText,
   anchor,
-  preview,
 }: {
   tone?: Tone;
   icon: ReactNode;
@@ -169,8 +168,6 @@ export function Card({
   /** Stable jump target for the Events tab (`call:<id>` / `notice:<id>`), so a
    *  recorded event lands on THIS card instead of its turn's prompt bubble. */
   anchor?: string;
-  /** Content under the head that stays visible while the body is collapsed. */
-  preview?: ReactNode;
 }) {
   const { open, toggle } = useJumpOpen(anchor, defaultOpen);
   return (
@@ -180,7 +177,6 @@ export function Card({
           <CardHead icon={icon} kind={kind} name={name} meta={meta} open={open} onToggle={toggle} />
           {headRight}
         </div>
-        {preview ? <div className="card-preview">{preview}</div> : null}
         {open ? <div className="card-body">{children}</div> : null}
       </div>
       {copyText ? <CopyButton text={copyText} /> : null}
@@ -745,12 +741,12 @@ export function ToolCard({
       }
       headRight={fileRef ? <OpenFileButton path={fileRef.path} label={fileRef.path} /> : undefined}
       copyText={[formattedArgs, result].filter(Boolean).join("\n\n")}
-      preview={
-        previewPage ? (
-          <ToolPagePreview path={previewPage.path} host={previewPage.host} name={name} />
-        ) : undefined
-      }
     >
+      {previewPage ? (
+        <div className="card-preview">
+          <ToolPagePreview path={previewPage.path} host={previewPage.host} name={name} />
+        </div>
+      ) : null}
       <div className="tool-call">
         {args ? (
           <div className="row">

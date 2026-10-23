@@ -3993,9 +3993,9 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   font-family: "Geist Mono", monospace;
   font-size: 12.5px;
 }
-/* Rendered-page screenshot a web tool reported: visible while the card is collapsed. */
+/* Rendered-page screenshot a web tool reported, above the args/result rows. */
 .card-preview {
-  padding: 0 14px 10px;
+  padding: 10px 14px 0;
 }
 .tool-preview {
   margin: 0;

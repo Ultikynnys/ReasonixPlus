@@ -354,7 +354,7 @@ describe("ToolCard — show-in-explorer button", () => {
     expect(header.textContent).toContain("ollama");
   });
 
-  it("shows the rendered page preview inside the card while collapsed", () => {
+  it("keeps the rendered page preview in the expanded body only", () => {
     const { container } = render(
       wrap(
         <ToolCard
@@ -367,6 +367,9 @@ describe("ToolCard — show-in-explorer button", () => {
         />,
       ),
     );
+    // A collapsed card is head-only: the render arrives with the body.
+    expect(container.querySelector("img.tool-preview-shot")).toBeNull();
+    fireEvent.click(screen.getByText("web_fetch"));
     const image = container.querySelector("img.tool-preview-shot") as HTMLImageElement | null;
     expect(image).toBeTruthy();
     expect(image?.getAttribute("src")).toContain(
@@ -374,8 +377,7 @@ describe("ToolCard — show-in-explorer button", () => {
     );
     // The host tells the reader which site the page came from.
     expect(container.querySelector(".tool-preview-host")?.textContent).toBe("example.com");
-    // The body stays collapsed; the preview does not depend on expanding the card.
-    expect(container.querySelector(".tool-call")).toBeNull();
+    expect(container.querySelector(".card-body .card-preview")).not.toBeNull();
   });
 
   it("opens the full preview image on click without collapsing the card", () => {
@@ -391,12 +393,13 @@ describe("ToolCard — show-in-explorer button", () => {
         />,
       ),
     );
+    fireEvent.click(screen.getByText("web_fetch"));
     const open = container.querySelector(".tool-preview-open") as HTMLButtonElement;
     fireEvent.click(open);
     expect(openPath).toHaveBeenCalledWith("/shots/page.png");
     // www. is dropped so the host reads as the site, and the click did not toggle the card.
     expect(container.querySelector(".tool-preview-host")?.textContent).toBe("example.com");
-    expect(container.querySelector(".tool-call")).toBeNull();
+    expect(container.querySelector(".tool-call")).not.toBeNull();
   });
 
   it("keeps the host when the preview image cannot load", () => {
@@ -412,6 +415,7 @@ describe("ToolCard — show-in-explorer button", () => {
         />,
       ),
     );
+    fireEvent.click(screen.getByText("web_fetch"));
     fireEvent.error(container.querySelector("img.tool-preview-shot")!);
     expect(container.querySelector("img.tool-preview-shot")).toBeNull();
     expect(container.querySelector(".tool-preview-host")?.textContent).toBe("example.com");
@@ -428,6 +432,7 @@ describe("ToolCard — show-in-explorer button", () => {
         />,
       ),
     );
+    fireEvent.click(screen.getByText("web_fetch"));
     expect(container.querySelector("img.tool-preview-shot")).toBeNull();
   });
 
