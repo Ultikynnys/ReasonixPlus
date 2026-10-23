@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -40,6 +40,12 @@ beforeAll(() => {
     value: { writeText: vi.fn() },
     configurable: true,
   });
+});
+
+beforeEach(() => {
+  // The plugin's openPath resolves; a bare vi.fn() returns undefined and any
+  // `.catch()` on the call would throw inside the click handler.
+  vi.mocked(openPath).mockResolvedValue(undefined);
 });
 
 afterEach(() => {
