@@ -1,5 +1,5 @@
 <!-- platform:begin — this section is auto-managed by Reasonix+ (overwritten on playwright-tooling-version bumps). Your additions go below the platform:end marker and survive upgrades. -->
-<!-- playwright-tooling-version: 5 -->
+<!-- playwright-tooling-version: 8 -->
 
 # Playwright driver: persistent cross-browser control
 
@@ -58,15 +58,16 @@ silent recovery mechanisms.
 
 ## Rendered pages and lazy content
 
-`web_fetch` cannot run scripts, so a JS-rendered site returns page chrome only: YouTube,
-social feeds, and most single-page apps need this browser. Prefer the site's own search
-URL (`browser_navigate`), then read the snapshot or `browser_find`.
+When the selected search engine drives a browser, the system prompt carries a "Web pages"
+section: `web_fetch` keeps one page open and every result ends with a `page:` state line, so
+drive it with `action: scroll|click|wait|back|close` rather than re-fetching. That section is
+the authoritative copy for `web_fetch`; the notes here cover the MCP browser tools.
 
-Sections below the fold mount only after scrolling: press `End` (or
-`browser_mouse_wheel`) and re-read, repeating until the section appears. YouTube comments
-measured at 5-20 threads in 6-12 s after one to three presses, about ten more per press;
-roughly one attempt in three never mounts them, so retry once and then report that the
-section did not load rather than that it is empty.
+Sections below the fold mount only after scrolling: YouTube comments measured at 5-20 threads
+in 6-12 s after one to three scrolls, about ten more per scroll; roughly one attempt in three
+never mounts them, so retry once and then report that the section did not load rather than
+that it is empty. Use `browser_navigate` when the site needs a login, a click target
+`web_fetch` cannot address, or console inspection.
 <!-- platform:end -->
 
 ## Agent notes (append below — the platform refreshes only the section above)

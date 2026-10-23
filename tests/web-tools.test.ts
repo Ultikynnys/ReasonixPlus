@@ -2,7 +2,7 @@ import { lookup } from "node:dns/promises";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { searchEngineDeclared } from "@reasonix/core-utils";
+import { SEARCH_ENGINE_SPECS, searchEngineDeclared } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadBaiduApiKey, loadMetasoApiKey, writeConfig } from "../src/config.js";
 import { ToolRegistry } from "../src/tools.js";
@@ -11,6 +11,8 @@ import {
   closeBrowserSearches,
 } from "../src/tools/browser-search.js";
 import {
+  closeWebFetchPages,
+  fillQueryTemplate,
   formatSearchResults,
   htmlToText,
   parseBingResults,
@@ -19,6 +21,7 @@ import {
   webFetch,
   webSearch,
 } from "../src/tools/web.js";
+import { pageStub } from "./support/page-stub.js";
 
 vi.mock("node:dns/promises", () => ({
   lookup: vi.fn(async () => [{ address: "93.184.216.34", family: 4 }]),
@@ -1992,6 +1995,7 @@ describe("web_search through the managed browser engine", () => {
   });
 
   afterEach(async () => {
+    await closeWebFetchPages();
     await closeBrowserSearches();
     __setBrowserCoreLoaderForTests(null);
   });
@@ -2005,11 +2009,8 @@ describe("web_search through the managed browser engine", () => {
           executablePath: () => "/fake/chrome",
           launch: async () => ({
             newContext: async () => ({
-              newPage: async () => ({
-                goto: async () => ({ status: () => 200 }),
-                waitForSelector: async () => ({}),
-                content: async () => html,
-              }),
+              newPage: async () =>
+                pageStub({ html, title: "SERP", url: "https://duckduckgo.com/" }).page,
               close: async () => undefined,
             }),
             close: async () => undefined,
@@ -2048,6 +2049,57 @@ describe("web_search through the managed browser engine", () => {
     },
   );
 
+  it.skipIf(!declared)(
+    "reads the SERP through the session page and keeps it for the fetch",
+    async () => {
+      const stubs: Array<ReturnType<typeof pageStub>> = [];
+      const core = {
+        kind: "ok" as const,
+        core: {
+          webkit: {
+            executablePath: () => "/fake/chrome",
+            launch: async () => ({
+              newContext: async () => ({
+                newPage: async () => {
+                  const stub = pageStub({
+                    html: DDG_HTML,
+                    title: "SERP",
+                    url: "https://duckduckgo.com/",
+                  });
+                  stubs.push(stub);
+                  return stub.page;
+                },
+                close: async () => undefined,
+              }),
+              close: async () => undefined,
+            }),
+          },
+        } as never,
+        executablePath: "/fake/chrome",
+      };
+      __setBrowserCoreLoaderForTests(() => core);
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath });
+      const sessionName = "shared-page";
+      const rootDir = mkdtempSync(join(tmpdir(), "reasonix-web-search-shared-"));
+
+      const found = (await registry.dispatch(
+        "web_search",
+        JSON.stringify({ query: "deepseek balance", topK: 2 }),
+        { sessionName },
+      )) as string;
+      expect(found).toContain("https://example.com/docs");
+
+      // The fetch acts on the page the search left: no second page, one stub.
+      const fetched = (await registry.dispatch("web_fetch", JSON.stringify({ action: "read" }), {
+        sessionName,
+        rootDir,
+      })) as string;
+      expect(stubs).toHaveLength(1);
+      expect(fetched).toContain("alpha snippet");
+    },
+  );
+
   it.skipIf(!declared)("lets a per-call Stop cancel a browser search", async () => {
     let resolutions = 0;
     __setBrowserCoreLoaderForTests(() => {
@@ -2066,6 +2118,67 @@ describe("web_search through the managed browser engine", () => {
     expect(out).toContain("cancelledByUser");
     // The search aborted before touching the browser install.
     expect(resolutions).toBe(0);
+  });
+
+  it("leaves a direct-read engine on its own transport", async () => {
+    let resolutions = 0;
+    __setBrowserCoreLoaderForTests(() => {
+      resolutions += 1;
+      return { kind: "notInstalled" };
+    });
+    const directDir = mkdtempSync(join(tmpdir(), "reasonix-web-search-direct-"));
+    const directConfig = join(directDir, "config.json");
+    writeConfig({ webSearchEngine: "bing" }, directConfig);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          '<li class="b_algo"><h2><a href="https://example.com/hit">Deepseek balance</a></h2></li>',
+          { status: 200, headers: { "content-type": "text/html" } },
+        ),
+    ) as unknown as typeof fetch;
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath: directConfig });
+      const out = (await registry.dispatch(
+        "web_search",
+        JSON.stringify({ query: "deepseek balance" }),
+        { sessionName: "direct-engine" },
+      )) as string;
+      expect(out).toContain("engine: bing");
+      expect(out).toContain("https://example.com/hit");
+      // A non-browser engine never opens the shared page.
+      expect(resolutions).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.each(["ollama", "deepseek"])("web_fetch on %s keeps its own fetch API", async (engine) => {
+    const dir = mkdtempSync(join(tmpdir(), "reasonix-engine-fetch-api-"));
+    const configPath = join(dir, "config.json");
+    writeConfig({ webSearchEngine: engine }, configPath);
+    const registry = new ToolRegistry();
+    registerWebTools(registry, { configPath });
+    const originalFetch = globalThis.fetch;
+    // Offline: the engine's own API answers with a server error, so the copy proves routing.
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response("[]", { status: 500, headers: { "content-type": "application/json" } }),
+    ) as unknown as typeof fetch;
+    try {
+      const out = (await registry.dispatch(
+        "web_fetch",
+        JSON.stringify({ url: "https://example.com/page" }),
+        { sessionName: `api-${engine}`, rootDir: dir },
+      )) as string;
+      // Its own declaration answers: not a browser render, not the generic read.
+      expect(out).toMatch(/web_fetch: (Ollama|DeepSeek)/);
+      expect(out).not.toContain("WebKit");
+      expect(out).not.toContain("preview:");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
@@ -2087,6 +2200,7 @@ describe("web_fetch through the managed browser engine", () => {
   });
 
   afterEach(async () => {
+    await closeWebFetchPages();
     await closeBrowserSearches();
     __setBrowserCoreLoaderForTests(null);
   });
@@ -2102,17 +2216,13 @@ describe("web_fetch through the managed browser engine", () => {
             newContext: async (contextOpts: unknown) => {
               contexts.push(contextOpts);
               return {
-                newPage: async () => ({
-                  goto: async () => ({ status: () => 200 }),
-                  waitForLoadState: async () => undefined,
-                  content: async () => PAGE_HTML,
-                  title: async () => "Rendered Page",
-                  url: () => "https://example.com/final",
-                  screenshot: async () => {
-                    if (overrides.screenshotError) throw overrides.screenshotError;
-                    return Buffer.from("page-png");
-                  },
-                }),
+                newPage: async () =>
+                  pageStub({
+                    html: PAGE_HTML,
+                    title: "Rendered Page",
+                    url: "https://example.com/final",
+                    screenshotError: overrides.screenshotError,
+                  }).page,
                 close: async () => undefined,
               };
             },
@@ -2208,6 +2318,7 @@ describe("web_fetch through a bot-blocking host", () => {
   });
 
   afterEach(async () => {
+    await closeWebFetchPages();
     await closeBrowserSearches();
     __setBrowserCoreLoaderForTests(null);
   });
@@ -2220,14 +2331,13 @@ describe("web_fetch through a bot-blocking host", () => {
           executablePath: () => "/fake/chrome",
           launch: async () => ({
             newContext: async () => ({
-              newPage: async () => ({
-                goto: async () => ({ status: () => 403 }),
-                waitForLoadState: async () => undefined,
-                content: async () => RENDERED_HTML,
-                title: async () => "Blocked page rendered",
-                url: () => "https://9gag.com/tag/rick-roll",
-                screenshot: async () => Buffer.from("blocked-png"),
-              }),
+              newPage: async () =>
+                pageStub({
+                  html: RENDERED_HTML,
+                  title: "Blocked page rendered",
+                  url: "https://9gag.com/tag/rick-roll",
+                  status: 403,
+                }).page,
               close: async () => undefined,
             }),
             close: async () => undefined,
@@ -2303,6 +2413,491 @@ describe("web_fetch through a bot-blocking host", () => {
       )) as string;
       // Only bot-gate statuses reach for the browser; a real 404 stays a 404.
       expect(out).toContain("404");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("reads a plain url directly on a direct-read engine", async () => {
+    // The fast path stays fast: no browser launch, no page kept open.
+    __setBrowserCoreLoaderForTests(() => ({ kind: "notInstalled" }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response("<html><body>direct body</body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+    ) as unknown as typeof fetch;
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath });
+      const out = (await registry.dispatch(
+        "web_fetch",
+        JSON.stringify({ url: "https://example.com/plain" }),
+        { rootDir },
+      )) as string;
+      expect(out).toContain("direct body");
+      expect(out).not.toContain("page:");
+      expect(out).not.toContain("render: unavailable");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("asks for a url when a control action has no page open", async () => {
+    const registry = new ToolRegistry();
+    registerWebTools(registry, { configPath });
+    const out = (await registry.dispatch("web_fetch", JSON.stringify({ action: "scroll" }), {
+      rootDir,
+      sessionName: "fresh-direct-session",
+    })) as string;
+    expect(out).toContain("pass a url to open one");
+  });
+});
+
+/** Driving one page across calls: the loop that reaches content a single read cannot. */
+/** Searching a site's own page instead of a fixed SERP: the freedom a browser gives. */
+describe("web_search over a supplied page", () => {
+  const declared = searchEngineDeclared("playwright-webkit");
+  const LISTING = `
+    <html><body>
+      <nav><a href="/about">About this site</a></nav>
+      <main>
+        <article><a href="/watch?v=aaa">Rock material tutorial for Substance Designer</a>
+          <p>Rock and moss cliff material in Substance Designer from scratch.</p></article>
+        <article><a href="/watch?v=bbb">Material artist portfolio review</a>
+          <p>Portfolio critique for environment artists.</p></article>
+        <article><a href="https://example.com/extra">External material reference</a></article>
+      </main>
+      <a href="#top">back to top</a>
+      <a href="javascript:void(0)">menu</a>
+    </body></html>`;
+
+  const configDir = mkdtempSync(join(tmpdir(), "reasonix-web-url-search-"));
+  const configPath = join(configDir, "config.json");
+  const rootDir = mkdtempSync(join(tmpdir(), "reasonix-web-url-search-root-"));
+
+  beforeEach(() => {
+    writeConfig({ webSearchEngine: "playwright-webkit" }, configPath);
+  });
+
+  afterEach(async () => {
+    await closeWebFetchPages();
+    await closeBrowserSearches();
+    __setBrowserCoreLoaderForTests(null);
+  });
+
+  function listingCore() {
+    return {
+      kind: "ok" as const,
+      core: {
+        webkit: {
+          executablePath: () => "/fake/chrome",
+          launch: async () => ({
+            newContext: async () => ({
+              newPage: async () =>
+                pageStub({
+                  html: LISTING,
+                  title: "Site search",
+                  url: "https://videos.example/search?q=rock",
+                }).page,
+              close: async () => undefined,
+            }),
+            close: async () => undefined,
+          }),
+        },
+      } as never,
+      executablePath: "/fake/chrome",
+    };
+  }
+
+  it("fills the query into the template", () => {
+    expect(fillQueryTemplate("https://x.test/search?q={q}", "material artist")).toBe(
+      "https://x.test/search?q=material%20artist",
+    );
+    expect(fillQueryTemplate("https://x.test/s?q=%s", "a&b")).toBe("https://x.test/s?q=a%26b");
+    // No placeholder: a fixed listing page is read as-is.
+    expect(fillQueryTemplate("https://x.test/tag/rick-roll", "ignored")).toBe(
+      "https://x.test/tag/rick-roll",
+    );
+  });
+
+  it.skipIf(!declared)("reads the page's links, ranked and de-duplicated", async () => {
+    __setBrowserCoreLoaderForTests(() => listingCore());
+    const registry = new ToolRegistry();
+    registerWebTools(registry, { configPath });
+    const out = (await registry.dispatch(
+      "web_search",
+      JSON.stringify({
+        query: "material rock tutorial",
+        url: "https://videos.example/search?q={q}",
+        topK: 2,
+      }),
+      { sessionName: "page-search", rootDir },
+    )) as string;
+
+    expect(out).toContain("source: https://videos.example/search?q=rock");
+    // The most on-query link wins, and relative hrefs were resolved against the page.
+    expect(out).toContain("https://videos.example/watch?v=aaa");
+    expect(out).toContain("Rock material tutorial");
+    expect(out).toContain("v=bbb");
+    // Anchors and javascript: links are navigation, not results.
+    expect(out).not.toContain("#top");
+    expect(out).not.toContain("javascript:");
+    expect(out).not.toContain("About this site");
+  });
+
+  it.skipIf(!declared)("honours a linkSelector for a page full of navigation", async () => {
+    __setBrowserCoreLoaderForTests(() => listingCore());
+    const registry = new ToolRegistry();
+    registerWebTools(registry, { configPath });
+    const out = (await registry.dispatch(
+      "web_search",
+      JSON.stringify({
+        query: "material",
+        url: "https://videos.example/search?q={q}",
+        linkSelector: "article a",
+      }),
+      { sessionName: "page-search-selector", rootDir },
+    )) as string;
+
+    expect(out).toContain("watch?v=aaa");
+    expect(out).toContain("watch?v=bbb");
+    expect(out).not.toContain("/about");
+  });
+
+  it.skipIf(!declared)("says so when the page has no result links", async () => {
+    __setBrowserCoreLoaderForTests(
+      () =>
+        ({
+          kind: "ok",
+          core: {
+            webkit: {
+              executablePath: () => "/fake/chrome",
+              launch: async () => ({
+                newContext: async () => ({
+                  newPage: async () =>
+                    pageStub({
+                      html: "<html><body><p>nothing</p></body></html>",
+                      title: "x",
+                      url: "https://empty.test/",
+                    }).page,
+                  close: async () => undefined,
+                }),
+                close: async () => undefined,
+              }),
+            },
+          },
+        }) as never,
+    );
+    const registry = new ToolRegistry();
+    registerWebTools(registry, { configPath });
+    const out = (await registry.dispatch(
+      "web_search",
+      JSON.stringify({ query: "x", url: "https://empty.test/search?q={q}" }),
+      { sessionName: "page-search-empty", rootDir },
+    )) as string;
+    expect(out).toContain("no result links on");
+    expect(out).toContain("linkSelector");
+  });
+});
+
+describe("web_fetch page control", () => {
+  const declared = searchEngineDeclared("playwright-webkit");
+  const configDir = mkdtempSync(join(tmpdir(), "reasonix-web-fetch-drive-"));
+  const configPath = join(configDir, "config.json");
+  const rootDir = mkdtempSync(join(tmpdir(), "reasonix-web-fetch-drive-root-"));
+  const PAGE_HTML =
+    "<html><head><title>Driven Page</title></head><body><p>body copy</p><div id=comments>thread</div></body></html>";
+
+  beforeEach(() => {
+    writeConfig({ webSearchEngine: "playwright-webkit" }, configPath);
+  });
+
+  afterEach(async () => {
+    await closeWebFetchPages();
+    await closeBrowserSearches();
+    __setBrowserCoreLoaderForTests(null);
+  });
+
+  function drivingCore(stubOptions: Partial<Parameters<typeof pageStub>[0]> = {}) {
+    const stubs: Array<ReturnType<typeof pageStub>> = [];
+    const core = {
+      kind: "ok" as const,
+      core: {
+        webkit: {
+          executablePath: () => "/fake/chrome",
+          launch: async () => ({
+            newContext: async () => ({
+              newPage: async () => {
+                const stub = pageStub({
+                  html: PAGE_HTML,
+                  title: "Driven Page",
+                  url: "https://example.com/driving",
+                  ...stubOptions,
+                });
+                stubs.push(stub);
+                return stub.page;
+              },
+              close: async () => undefined,
+            }),
+            close: async () => undefined,
+          }),
+        },
+      } as never,
+      executablePath: "/fake/chrome",
+    };
+    return { core, stubs };
+  }
+
+  async function drive(args: Record<string, unknown>, session = "drive") {
+    const registry = new ToolRegistry();
+    registerWebTools(registry, { configPath });
+    return (await registry.dispatch("web_fetch", JSON.stringify(args), {
+      rootDir,
+      sessionName: session,
+    })) as string;
+  }
+
+  it.skipIf(!declared)("keeps the page open so the next call does not navigate again", async () => {
+    const { core, stubs } = drivingCore();
+    __setBrowserCoreLoaderForTests(() => core);
+
+    const opened = await drive({ url: "https://example.com/driving" });
+    expect(opened).toContain("engine: playwright-webkit");
+    expect(opened).toContain("body copy");
+    // The state line is what tells a caller whether more is below.
+    expect(opened).toMatch(/^page: acted=no scrollY=0\/2400/m);
+
+    const read = await drive({ action: "read" });
+    expect(read).toContain("body copy");
+    // One page, one navigation: the second call reused it.
+    expect(stubs).toHaveLength(1);
+    expect(stubs[0]!.calls.gotos).toEqual(["https://example.com/driving"]);
+  });
+
+  it.skipIf(!declared)("reports scrolling and what is left below", async () => {
+    const { core, stubs } = drivingCore({ scrollStep: 1200, present: { "#comments": true } });
+    __setBrowserCoreLoaderForTests(() => core);
+
+    await drive({ url: "https://example.com/driving" });
+    const scrolled = await drive({ action: "scroll", scrolls: 1, selector: "#comments" });
+    expect(stubs[0]!.calls.keys).toEqual(["End"]);
+    expect(scrolled).toContain("scrollY=1200/2400");
+    expect(scrolled).toContain("below=0 (end of page)");
+    expect(scrolled).toContain("acted=yes");
+    expect(scrolled).toContain("present: #comments=yes");
+  });
+
+  it.skipIf(!declared)("returns the probed section on its own", async () => {
+    const { core } = drivingCore({
+      present: { "#comments": true },
+      sectionText: "@someone: funniest thread here",
+    });
+    __setBrowserCoreLoaderForTests(() => core);
+
+    await drive({ url: "https://example.com/driving" });
+    const read = await drive({ action: "read", selector: "#comments" });
+    // The section arrives separately, so page chrome cannot crowd it out of the cap.
+    expect(read).toContain("section [#comments]:");
+    expect(read).toContain("funniest thread here");
+  });
+
+  it.skipIf(!declared)("clicks a selector and reports whether it exists", async () => {
+    const { core, stubs } = drivingCore({ present: { "#comments": true } });
+    __setBrowserCoreLoaderForTests(() => core);
+
+    await drive({ url: "https://example.com/driving" });
+    const clicked = await drive({ action: "click", selector: "#comments" });
+    expect(stubs[0]!.calls.clicks).toEqual(["#comments"]);
+    expect(clicked).toContain("present: #comments=yes");
+  });
+
+  it.skipIf(!declared)("waits for a slow section and says whether it arrived", async () => {
+    const { core } = drivingCore({ present: { "#comments": false } });
+    __setBrowserCoreLoaderForTests(() => core);
+
+    await drive({ url: "https://example.com/driving" });
+    const waited = await drive({ action: "wait", selector: "#comments" });
+    expect(waited).toContain("present: #comments=no");
+    expect(waited).toContain("acted=yes");
+  });
+
+  it.skipIf(!declared)("refuses an action with no page open", async () => {
+    const { core } = drivingCore();
+    __setBrowserCoreLoaderForTests(() => core);
+    const out = await drive({ action: "scroll" }, "empty-session");
+    expect(out).toContain("no page is open in this session");
+  });
+
+  it.skipIf(!declared)("saves a long page to the workspace and returns only its head", async () => {
+    const marker = "LAST-PARAGRAPH-MARKER";
+    const longBody = `<p>${"filler copy ".repeat(600)}</p><h2>Install</h2><ul><li>step one</li><li>step two</li></ul><p>${marker}</p>`;
+    const { core } = drivingCore({
+      html: `<html><head><title>Long Page</title></head><body>${longBody}</body></html>`,
+    });
+    __setBrowserCoreLoaderForTests(() => core);
+
+    const out = await drive({
+      url: "https://example.com/driving",
+      outFile: ".reasonix/pages/long-page.md",
+    });
+    expect(out).toContain("saved:");
+    expect(out).not.toContain(marker);
+
+    const saved = readFileSync(join(rootDir, ".reasonix/pages/long-page.md"), "utf8");
+    // The file carries what the tool result never could: the whole body.
+    expect(saved).toContain(marker);
+    expect(saved).toContain("url: https://example.com/driving");
+    expect(saved).toContain("title: Driven Page");
+    // Structure survives, so the file tools can outline and grep it.
+    expect(saved).toContain("## Install");
+    expect(saved).toContain("- step one");
+    expect(saved.length).toBeGreaterThan(5_000);
+  });
+
+  it.skipIf(!declared)("auto-names the file when the caller passes a directory", async () => {
+    const { core } = drivingCore();
+    __setBrowserCoreLoaderForTests(() => core);
+    const out = await drive({ url: "https://example.com/driving", outFile: "pages/" });
+    const path = /^saved: (.+?) \(/m.exec(out)?.[1] ?? "";
+    expect(path).toContain(join("pages", "page-"));
+    expect(path).toContain("driven-page");
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it.skipIf(!declared)("refuses to write outside the workspace", async () => {
+    const { core } = drivingCore();
+    __setBrowserCoreLoaderForTests(() => core);
+    const out = await drive({ url: "https://example.com/driving", outFile: "../../escape.md" });
+    expect(out).toContain("inside the workspace");
+    expect(existsSync(join(rootDir, "..", "..", "escape.md"))).toBe(false);
+  });
+
+  it.skipIf(!declared)("status reports the page without reading it or navigating", async () => {
+    const { core, stubs } = drivingCore();
+    __setBrowserCoreLoaderForTests(() => core);
+
+    await drive({ url: "https://example.com/driving" });
+    const before = stubs[0]!.calls.screenshots;
+    const status = await drive({ action: "status" });
+    // Inspecting is free: the url and position come back without a screenshot or a reload.
+    expect(status).toContain("example.com/driving");
+    expect(status).toContain("page:");
+    expect(stubs[0]!.calls.gotos).toHaveLength(1);
+    expect(stubs[0]!.calls.screenshots).toBe(before);
+  });
+
+  it.skipIf(!declared)("status reports a closed page instead of failing", async () => {
+    const { core } = drivingCore();
+    __setBrowserCoreLoaderForTests(() => core);
+    expect(await drive({ action: "status" }, "status-empty")).toContain("page: closed");
+  });
+
+  it.skipIf(!declared)("close shuts the page so the next call opens a fresh one", async () => {
+    const { core, stubs } = drivingCore();
+    __setBrowserCoreLoaderForTests(() => core);
+
+    await drive({ url: "https://example.com/driving" });
+    expect(await drive({ action: "close" })).toContain("page: closed");
+    await drive({ url: "https://example.com/driving" });
+    expect(stubs).toHaveLength(2);
+  });
+
+  it.skipIf(!declared)("keeps the page open past any idle period", async () => {
+    vi.useFakeTimers();
+    try {
+      const { core, stubs } = drivingCore();
+      __setBrowserCoreLoaderForTests(() => core);
+      await drive({ url: "https://example.com/driving" });
+      expect(stubs).toHaveLength(1);
+
+      // A long think must not cost the agent the page it was reading.
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      const read = await drive({ action: "read" });
+      expect(read).toContain("body copy");
+      expect(stubs).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/** The browser page is opt-in by declaration, so every other engine keeps its own
+ *  transport: a search or a fetch there must never resolve, launch, or open a browser. */
+describe("engines that declare no browser", () => {
+  const engines = SEARCH_ENGINE_SPECS.filter((spec) => spec.browser === null).map(
+    (spec) => spec.id,
+  );
+
+  function noBrowserCore(counter: { resolutions: number }) {
+    __setBrowserCoreLoaderForTests(() => {
+      counter.resolutions += 1;
+      return { kind: "notInstalled" };
+    });
+  }
+
+  function answeredFetch() {
+    return vi.fn(
+      async () =>
+        new Response("<html><body>no results here</body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+    ) as unknown as typeof fetch;
+  }
+
+  function configFor(engine: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "reasonix-engine-matrix-"));
+    const path = join(dir, "config.json");
+    writeConfig({ webSearchEngine: engine }, path);
+    return path;
+  }
+
+  it("covers the whole declared set", () => {
+    // Derived from the registry: a new engine joins this check without editing it.
+    expect(engines).toContain("bing");
+    expect(engines.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it.each(engines)("web_search on %s never touches a browser", async (engine) => {
+    const counter = { resolutions: 0 };
+    noBrowserCore(counter);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = answeredFetch();
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath: configFor(engine) });
+      const out = (await registry.dispatch(
+        "web_search",
+        JSON.stringify({ query: "deepseek balance" }),
+        { sessionName: `matrix-search-${engine}` },
+      )) as string;
+      // Whether it answers or reports its own missing key, it never reaches for WebKit.
+      expect(out).not.toContain("WebKit");
+      expect(counter.resolutions).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.each(engines)("web_fetch on %s never touches a browser", async (engine) => {
+    const counter = { resolutions: 0 };
+    noBrowserCore(counter);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = answeredFetch();
+    try {
+      const registry = new ToolRegistry();
+      registerWebTools(registry, { configPath: configFor(engine) });
+      const out = (await registry.dispatch(
+        "web_fetch",
+        JSON.stringify({ url: "https://example.com/page" }),
+        { sessionName: `matrix-fetch-${engine}`, rootDir: tmpdir() },
+      )) as string;
+      expect(out).not.toContain("WebKit");
+      expect(out).not.toContain("render:");
+      expect(counter.resolutions).toBe(0);
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -2,9 +2,9 @@
  *  managed browser); web_fetch sniffs HTML to text. */
 
 import { lookup } from "node:dns/promises";
-import { writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import {
   BROWSER_SEARCH_ENGINES,
   SEARCH_ENGINE_SPECS,
@@ -38,7 +38,11 @@ import { interpolate, t } from "../i18n/index.js";
 import type { ToolRegistry } from "../tools.js";
 import {
   type EngineCopy,
+  type PageActionResult,
+  type PageSession,
+  type PageSessionOptions,
   RenderUnavailableError,
+  openPageSession,
   renderManagedPage,
   searchWithBrowser,
 } from "./browser-search.js";
@@ -63,6 +67,19 @@ export interface PageContent {
   previewPath?: string;
   /** Something the reader should know about how this page was obtained. */
   note?: string;
+  /** Where the driven page stands, so a caller can decide whether to scroll more. */
+  page?: {
+    scrollY: number;
+    docHeight: number;
+    viewportHeight: number;
+    acted: boolean;
+  };
+  /** Selectors the caller asked about, and whether the page has them now. */
+  present?: Record<string, boolean>;
+  /** Text of the probed element, so a mounted region can be read on its own. */
+  section?: { selector: string; text: string };
+  /** Source markup, when the reader has it, so a saved copy keeps its structure. */
+  html?: string;
 }
 
 export interface WebFetchOptions {
@@ -80,6 +97,12 @@ export interface WebFetchOptions {
 export interface WebSearchOptions {
   topK?: number;
   signal?: AbortSignal;
+  /** The agent's open page, when the engine drives one: the search reads that page. */
+  page?: PageSession;
+  /** A page to read as a result list instead of a general SERP. `{q}`/`%s` takes the query. */
+  url?: string;
+  /** CSS selector for that page's result anchors. Defaults to every `a[href]`. */
+  linkSelector?: string;
   /** Config path for provider-specific keys. Defaults to ~/.reasonix/config.json. */
   configPath?: string;
   /** Backend engine: "bing" (scrapes cn.bing.com HTML — default, works from CN without proxy), "bing-intl" (www.bing.com, indexes international sites), "searxng" (self-hosted SearXNG), "metaso" (Metaso API), "baidu" (Baidu AI Search API), "tavily" (LLM-friendly JSON API), "perplexity" (Perplexity AI), "exa" (Exa API), "brave" (Brave Search API), or "ollama" (Ollama cloud web search). */
@@ -421,6 +444,10 @@ export async function webSearch(
 ): Promise<SearchResult[]> {
   const engine = opts.engine ?? WEB_SEARCH_ENGINE_NAMES.at(0);
   if (!engine) throw new Error(NO_ENGINE_MESSAGE);
+  // A supplied page is read as the result list: any site's search becomes searchable here,
+  // which is the freedom a browser gives and a fixed SERP list does not.
+  const url = opts.url;
+  if (url) return (await webSearchByUrl(query, { ...opts, engine, url })).results;
   return dispatchSearch(query, { ...opts, engine });
 }
 
@@ -1004,6 +1031,7 @@ async function searchPlaywright(
     parsers: { duckduckgo: parseDuckDuckGoResults, bing: parseBingResults },
     topK,
     signal: opts.signal,
+    ...(opts.page ? { session: opts.page } : {}),
   });
 }
 
@@ -1267,6 +1295,178 @@ const FETCH_TRANSPORTS: ReadonlyMap<SearchEngineFetchStrategy, FetchTransport> =
   ["deepseek", (url, opts, copy) => webFetchDeepseek(url, opts, copy)],
   ["playwright", (url, opts, copy, spec) => webFetchPlaywright(url, opts, copy, spec)],
 ]);
+
+/** A page kept open for one agent session, so a site can be driven across tool calls. */
+interface LivePage {
+  session: PageSession;
+  browser: SearchEngineBrowser;
+}
+
+/** One page per agent session: it lives until the agent closes it, the way a browser tab
+ *  stays open between tool calls. No idle timer, because a later call must find the page
+ *  it left, including after a long think. */
+const livePages = new Map<string, LivePage>();
+
+function pageKey(sessionName: string, browser: SearchEngineBrowser): string {
+  return `${sessionName}\u0000${browser}`;
+}
+
+async function closeLivePage(key: string): Promise<void> {
+  const entry = livePages.get(key);
+  if (!entry) return;
+  livePages.delete(key);
+  await entry.session.close().catch(() => undefined);
+}
+
+/** Close every driven page (teardown and tests). */
+export async function closeWebFetchPages(): Promise<void> {
+  await Promise.all([...livePages.keys()].map((key) => closeLivePage(key)));
+}
+
+async function livePageFor(sessionName: string, browser: SearchEngineBrowser): Promise<LivePage> {
+  const key = pageKey(sessionName, browser);
+  const existing = livePages.get(key);
+  if (existing) return existing;
+  const session = await openPageSession(browser, browserRenderCopy(browser));
+  const entry: LivePage = { session, browser };
+  livePages.set(key, entry);
+  return entry;
+}
+
+/** What a driven call asked the page to do. */
+export interface WebFetchControl {
+  url?: string;
+  action?: "read" | "status" | "scroll" | "click" | "wait" | "back" | "close" | "reset";
+  selector?: string;
+  scrolls?: number;
+  waitMs?: number;
+  fullPage?: boolean;
+  /** Save the page here instead of returning its whole body, for the file tools to read. */
+  outFile?: string;
+}
+
+function drivenResult(
+  result: PageActionResult,
+  opts: WebFetchOptions & { fullPage?: boolean },
+): PageContent {
+  const text = htmlToText(result.html);
+  const maxChars = opts.maxChars ?? DEFAULT_FETCH_MAX_CHARS;
+  return {
+    url: result.state.url,
+    title: result.state.title || undefined,
+    ...finishPageText(text, maxChars),
+    previewPath: result.preview ? savePagePreview(result.preview, opts.rootDir) : undefined,
+    page: {
+      scrollY: result.state.scrollY,
+      docHeight: result.state.docHeight,
+      viewportHeight: result.state.viewportHeight,
+      acted: result.acted,
+    },
+    html: result.html,
+    present: result.present,
+    ...(result.section ? { section: result.section } : {}),
+  };
+}
+
+/** One control step on an open page. */
+function actOnPage(
+  session: PageSession,
+  control: WebFetchControl,
+  step: PageSessionOptions,
+): Promise<PageActionResult> {
+  switch (control.action) {
+    case "scroll":
+      return session.scroll(control.scrolls ?? 1, step);
+    case "click":
+      return session.click(control.selector as string, step);
+    case "wait":
+      return session.waitFor(control.selector as string, step);
+    case "back":
+      return session.back(step);
+    default:
+      return session.read({ ...step, fullPage: control.fullPage });
+  }
+}
+
+/** Page-gone errors: a crashed browser or a closed context, not a bad request. */
+const DEAD_PAGE = /target page|has been closed|context was closed|browser has been closed/i;
+
+/** Run `work` on the session page. A navigation may reopen once, since a dead browser is
+ *  recoverable there; a step cannot, because a fresh page has nothing to step on. */
+async function withLivePage<T>(
+  sessionName: string,
+  browser: SearchEngineBrowser,
+  canReopen: boolean,
+  work: (page: PageSession) => Promise<T>,
+): Promise<T> {
+  const entry = await livePageFor(sessionName, browser);
+  try {
+    return await work(entry.session);
+  } catch (err) {
+    if (!canReopen || !DEAD_PAGE.test(messageOf(err))) throw err;
+    await closeLivePage(pageKey(sessionName, browser));
+    const reopened = await livePageFor(sessionName, browser);
+    return await work(reopened.session);
+  }
+}
+
+/** Drive the session's page: navigate, act, then report what the page holds now. */
+async function fetchDrivenPage(
+  control: WebFetchControl,
+  opts: WebFetchOptions,
+  browser: SearchEngineBrowser,
+  sessionName: string,
+): Promise<PageContent & { links?: string[] }> {
+  const action = control.action ?? "read";
+  if (action === "close" || action === "reset") {
+    await closeLivePage(pageKey(sessionName, browser));
+    return {
+      url: control.url ?? "",
+      text: "page: closed; the next call opens a fresh page",
+      truncated: false,
+    };
+  }
+  if ((action === "click" || action === "wait") && !control.selector) {
+    throw new Error(`web_fetch: action "${action}" needs a selector`);
+  }
+  const open = livePages.get(pageKey(sessionName, browser));
+  if (action === "status") {
+    // Inspecting the page must never fail: "nothing open" is a state, not an error.
+    if (!open) {
+      return { url: "", text: "page: closed; nothing is open in this session", truncated: false };
+    }
+    const at = await open.session.status({ signal: opts.signal });
+    return {
+      url: at.url,
+      title: at.title || undefined,
+      text: "",
+      truncated: false,
+      page: {
+        scrollY: at.scrollY,
+        docHeight: at.docHeight,
+        viewportHeight: at.viewportHeight,
+        acted: false,
+      },
+    };
+  }
+  if (!control.url && !open) {
+    throw new Error(
+      "web_fetch: no page is open in this session; pass a url to open one, then act on it",
+    );
+  }
+  const step: PageSessionOptions = {
+    signal: opts.signal,
+    waitMs: control.waitMs,
+    ...(control.selector ? { probes: [control.selector] } : {}),
+  };
+  const url = control.url;
+  const result = await withLivePage(sessionName, browser, Boolean(url), async (page) => {
+    const opened = url ? await page.navigate(url, step) : undefined;
+    if (action !== "read") return await actOnPage(page, control, step);
+    return opened ?? (await actOnPage(page, control, step));
+  });
+  return drivenResult(result, opts);
+}
 /** Parse SearXNG HTML search results using node-html-parser. */
 export function parseSearxngHtmlResults(html: string): SearchResult[] {
   const root = parseHtml(html);
@@ -1631,8 +1831,14 @@ export async function webFetch(url: string, opts: WebFetchOptions = {}): Promise
   }
   const raw = await readBodyCapped(resp, FETCH_MAX_BYTES);
   const title = extractTitle(raw);
-  const text = contentType.includes("text/html") ? htmlToText(raw) : raw;
-  return { url: currentUrl, title, ...finishPageText(text, maxChars) };
+  const isHtml = contentType.includes("text/html");
+  const text = isHtml ? htmlToText(raw) : raw;
+  return {
+    url: currentUrl,
+    title,
+    ...finishPageText(text, maxChars),
+    ...(isHtml ? { html: raw } : {}),
+  };
 }
 
 /** Streams + caps so chunked responses (or servers lying about Content-Length) can't balloon the heap. */
@@ -1708,12 +1914,130 @@ export function htmlToText(html: string): string {
   return s.trim();
 }
 
+/** Saved copies keep headings, list items and links, so a file tool can outline and grep them. */
+const MARKDOWN_HEADINGS = new Set(["h1", "h2", "h3", "h4", "h5", "h6"]);
+
+export function htmlToMarkdown(html: string): string {
+  const input = html.length > MAX_HTML_INPUT ? html.slice(0, MAX_HTML_INPUT) : html;
+  const root = parseHtml(input);
+  for (const node of root.querySelectorAll(STRIP_BLOCK_TAGS)) node.remove();
+  const out: string[] = [];
+  walkMarkdown(root, out, 0);
+  return decodeHtmlEntities(out.join(""))
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function walkMarkdown(node: WalkableNode, out: string[], depth: number): void {
+  if (node.nodeType === 3) {
+    const text = node.rawText ?? node.text ?? "";
+    if (!/^\s*<[!?]/.test(text)) out.push(text);
+    return;
+  }
+  const tag = node.rawTagName?.toLowerCase();
+  const child = () => {
+    for (const next of node.childNodes) walkMarkdown(next, out, depth + 1);
+  };
+  if (tag && MARKDOWN_HEADINGS.has(tag)) {
+    out.push(`\n\n${"#".repeat(Number(tag[1]))} `);
+    child();
+    out.push("\n\n");
+    return;
+  }
+  if (tag === "li") {
+    out.push(`\n${"  ".repeat(Math.min(depth, 4))}- `);
+    child();
+    out.push("\n");
+    return;
+  }
+  if (tag === "pre") {
+    out.push("\n\n```\n");
+    child();
+    out.push("\n```\n\n");
+    return;
+  }
+  if (tag === "a") {
+    const href = nodeAttr(node, "href");
+    if (href && /^https?:/i.test(href)) {
+      out.push("[");
+      child();
+      out.push(`](${href})`);
+      return;
+    }
+    child();
+    return;
+  }
+  if (tag && BLOCK_BREAK_TAGS.has(tag)) {
+    out.push("\n");
+    child();
+    out.push("\n");
+    return;
+  }
+  child();
+}
+
+/** How much of a page may land on disk when the caller saves it. */
+const SAVE_MAX_CHARS = 2_000_000;
+
+/** How much of a saved page still comes back inline, so a caller can tell what it got. */
+const SAVED_HEAD_CHARS = 1_500;
+
+export interface SavedPage {
+  path: string;
+  chars: number;
+  lines: number;
+}
+
+/** Write a page under the workspace so the file tools can read and search it. */
+export function saveFetchedPage(page: PageContent, outFile: string, rootDir?: string): SavedPage {
+  const root = resolve(rootDir ?? process.cwd());
+  const wanted = resolve(root, outFile);
+  const isDir = /[\\/]$/.test(outFile) || (existsSync(wanted) && statSync(wanted).isDirectory());
+  const body = page.html ? htmlToMarkdown(page.html) : page.text;
+  const ext = page.html ? "md" : "txt";
+  const target = isDir ? join(wanted, `page-${Date.now()}-${slugFor(page)}.${ext}`) : wanted;
+  const inside = relative(root, target);
+  if (inside.startsWith("..")) {
+    throw new Error(`web_fetch: outFile must stay inside the workspace (${outFile})`);
+  }
+  const heading = [`url: ${page.url}`];
+  if (page.title) heading.push(`title: ${page.title}`);
+  heading.push(`fetched: ${new Date().toISOString()}`);
+  const section = page.section ? `\n\n## ${page.section.selector}\n\n${page.section.text}` : "";
+  const content = `${heading.join("\n")}\n\n${body}${section}\n`;
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, content, "utf8");
+  return {
+    path: target,
+    chars: content.length,
+    lines: content.split("\n").length,
+  };
+}
+
+function slugFor(page: PageContent): string {
+  const source = page.title ?? page.url;
+  const slug = source
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  return slug || "page";
+}
+
 interface WalkableNode {
   nodeType: number;
   rawText?: string;
   text?: string;
   rawTagName?: string;
   childNodes: WalkableNode[];
+}
+
+/** Elements carry attributes, text nodes do not; the walk sees both. */
+function nodeAttr(node: WalkableNode, name: string): string | null {
+  const read = (node as { getAttribute?: (key: string) => string | null }).getAttribute;
+  return typeof read === "function" ? read.call(node, name) : null;
 }
 
 function walkExtract(node: WalkableNode, out: string[]): void {
@@ -1772,6 +2096,119 @@ export interface WebToolsOptions {
   rootDir?: string;
 }
 
+/** One line telling a caller where the page stands and what it can do next. */
+export function formatPageState(page: PageContent): string {
+  const at = page.page;
+  if (!at) return "";
+  const below = Math.max(0, at.docHeight - (at.scrollY + at.viewportHeight));
+  const parts = [
+    `acted=${at.acted ? "yes" : "no"}`,
+    `scrollY=${at.scrollY}/${at.docHeight}`,
+    `viewport=${at.viewportHeight}`,
+    below > 0 ? `below=${below} (scroll for more)` : "below=0 (end of page)",
+  ];
+  const probes = Object.entries(page.present ?? {});
+  const present = probes.length
+    ? `\npresent: ${probes.map(([selector, there]) => `${selector}=${there ? "yes" : "no"}`).join(", ")}`
+    : "";
+  return `page: ${parts.join(" ")}${present}`;
+}
+
+/** Every `{q}`/`%s` in a template becomes the encoded query; a template without either is
+ *  read as-is, so a fixed listing page works too. */
+export function fillQueryTemplate(template: string, query: string): string {
+  const encoded = encodeURIComponent(query);
+  if (/\{q\}|%s/.test(template)) return template.replace(/\{q\}|%s/g, encoded);
+  return template;
+}
+
+/** Anchors that are page furniture on a listing: counters, controls, and back-links. */
+const ANCHOR_NOISE =
+  /^(?:\d+\s*)?(?:comments?|likes?|points?|shares?|replies|save|share|upvotes?|downvotes?|back to top|next|previous|log ?in|sign ?up)$/i;
+
+/** Anchors on a page, scored by how much of the query they carry. A site's own search page
+ *  has no schema to parse, so relevance and de-duplication stand in for one. */
+function parseAnchorResults(
+  html: string,
+  baseUrl: string,
+  query: string,
+  opts: { topK: number; linkSelector?: string },
+): SearchResult[] {
+  const root = parseHtml(html);
+  const anchors = root.querySelectorAll(opts.linkSelector ?? "a[href]");
+  const tokens = query.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [];
+  const seen = new Set<string>();
+  const scored: Array<{ result: SearchResult; score: number }> = [];
+  for (const anchor of anchors) {
+    const href = anchor.getAttribute("href")?.trim();
+    if (!href || href.startsWith("#")) continue;
+    let url: URL;
+    try {
+      url = new URL(href, baseUrl);
+    } catch {
+      continue;
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") continue;
+    // A link back to this page is navigation, not a result.
+    if (url.href === baseUrl) continue;
+    const title = flattenText(anchor.textContent ?? "");
+    if (!title) continue;
+    if (seen.has(url.href)) continue;
+    seen.add(url.href);
+    const block = anchor.parentNode;
+    const snippet = block
+      ? flattenText((block.textContent ?? "").replace(title, "")).slice(0, 240)
+      : "";
+    const haystack = `${title} ${snippet}`.toLowerCase();
+    const score = tokens.filter((token) => haystack.includes(token)).length;
+    // Link farms and cards pad a page with counters and controls; those are not results.
+    if (title.length < 3 || ANCHOR_NOISE.test(title)) continue;
+    scored.push({ result: { title, url: url.href, snippet }, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, opts.topK).map((entry) => entry.result);
+}
+
+/** Read `opts.url` as a result list: the page is rendered, which is what reaches a site's
+ *  own search instead of a fixed SERP. */
+async function webSearchByUrl(
+  query: string,
+  opts: WebSearchOptions & { url: string },
+): Promise<{ results: SearchResult[]; source: string }> {
+  const target = fillQueryTemplate(opts.url, query);
+  const topK = Math.max(1, Math.min(10, opts.topK ?? DEFAULT_TOPK));
+  if (!/^https?:\/\//i.test(target)) throw new Error(t("webErrors.fetchInvalidUrl"));
+  const signal = opts.signal;
+  const page = opts.page;
+  let opened: PageActionResult;
+  let owned: PageSession | undefined;
+  if (page) {
+    opened = await page.navigate(target, { signal });
+  } else {
+    // A library caller has no session page: borrow one for this search and hand it back.
+    const browser =
+      (opts.engine ? searchEngineSpec(opts.engine)?.browser : null) ?? BROWSER_SEARCH_ENGINES[0];
+    owned = await openPageSession(browser, browserRenderCopy(browser), { signal });
+    try {
+      opened = await owned.navigate(target, { signal });
+    } catch (err) {
+      await owned.close().catch(() => undefined);
+      throw err;
+    }
+  }
+  try {
+    return {
+      results: parseAnchorResults(opened.html, opened.state.url, query, {
+        topK,
+        ...(opts.linkSelector ? { linkSelector: opts.linkSelector } : {}),
+      }),
+      source: opened.state.url,
+    };
+  } finally {
+    await owned?.close().catch(() => undefined);
+  }
+}
+
 export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions = {}): ToolRegistry {
   const defaultTopK = opts.defaultTopK ?? DEFAULT_TOPK;
   const maxFetchChars = opts.maxFetchChars ?? DEFAULT_FETCH_MAX_CHARS;
@@ -1791,28 +2228,81 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
           type: "integer",
           description: `Number of results to return. Default ${defaultTopK}.`,
         },
+        url: {
+          type: "string",
+          description:
+            "Read this page as the result list instead of a general search engine: any site's own search or a fixed listing page. `{q}` or `%s` is replaced with the URL-encoded query, for example https://www.youtube.com/results?search_query={q}. The result names the page in a source: line.",
+        },
+        linkSelector: {
+          type: "string",
+          description:
+            "CSS selector for that page's result anchors, when the default (every link) returns navigation instead of results.",
+        },
       },
       required: ["query"],
     },
-    fn: async (args: { query: string; topK?: number }, ctx) => {
+    fn: async (
+      args: { query: string; topK?: number; url?: string; linkSelector?: string },
+      ctx,
+    ) => {
       // Read at call time, not registration time — the engine setting mutates config mid-session (#1309).
       const engine = loadWebSearchEngine(opts.configPath);
       const endpoint = loadWebSearchEndpoint(opts.configPath);
-      const results = await webSearch(args.query, {
-        topK: args.topK ?? defaultTopK,
-        // A managed browser takes seconds to launch and load, so the per-call Stop has
-        // to reach it too, not only the turn's Esc.
-        signal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
-        engine,
-        endpoint,
-        configPath: opts.configPath,
-      });
+      const spec = engine ? searchEngineSpec(engine) : undefined;
+      const browser = spec?.browser ?? null;
+      const signal = mergeSignals(ctx?.signal, ctx?.cancelSignal);
+      const sessionName = ctx?.sessionName ?? "default";
+      // A browser engine reads the SERP through the agent's own page, so a search and a
+      // fetch share one tab, as the MCP browser does. A cancelled call opens nothing, and a
+      // direct-read engine opens nothing unless this call needs a page to read.
+      const needsPage = browser !== null || Boolean(args.url);
+      const live =
+        needsPage && !signal?.aborted
+          ? await livePageFor(sessionName, browser ?? BROWSER_SEARCH_ENGINES[0]).catch(
+              () => undefined,
+            )
+          : undefined;
+      let source: string | undefined;
+      let results: SearchResult[];
+      if (args.url) {
+        if (!fillQueryTemplate(args.url, args.query).startsWith("http")) {
+          throw new Error(t("webErrors.fetchInvalidUrl"));
+        }
+        const driven = await webSearchByUrl(args.query, {
+          url: args.url,
+          ...(args.linkSelector ? { linkSelector: args.linkSelector } : {}),
+          topK: args.topK ?? defaultTopK,
+          engine,
+          endpoint,
+          configPath: opts.configPath,
+          signal,
+          ...(live ? { page: live.session } : {}),
+        });
+        results = driven.results;
+        source = driven.source;
+        if (results.length === 0) {
+          throw new Error(
+            `web_search: no result links on ${source}${args.linkSelector ? ` matching "${args.linkSelector}"` : ""}; pass linkSelector to target that page's anchors`,
+          );
+        }
+      } else {
+        results = await webSearch(args.query, {
+          topK: args.topK ?? defaultTopK,
+          // A managed browser takes seconds to launch and load, so the per-call Stop has
+          // to reach it too, not only the turn's Esc.
+          signal,
+          engine,
+          endpoint,
+          configPath: opts.configPath,
+          ...(live ? { page: live.session } : {}),
+        });
+      }
       if (results.length === 0) {
         consecutiveEmptySearches++;
       } else {
         consecutiveEmptySearches = 0;
       }
-      let formatted = formatSearchResults(args.query, results, engine);
+      let formatted = formatSearchResults(args.query, results, engine, source);
       if (consecutiveEmptySearches >= 2) {
         formatted +=
           "\n\n[Directive] Consecutive web searches returned 0 results. STOP web searches for this issue. You must pivot to an alternative solution in the codebase or prompt the user for clarification.";
@@ -1824,24 +2314,68 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
   registry.register({
     name: "web_fetch",
     description:
-      "Download a URL and return its visible text content (HTML pages get scripts/styles/nav stripped). Truncated at the tool-result cap. Use after web_search when a snippet isn't enough.",
+      "Read a web page as a browser sees it. Returns visible text (scripts/styles/nav stripped), truncated at the tool-result cap, plus a preview image of the page. Use after web_search when a snippet is not enough. One page stays open for the whole session, so a site can be driven step by step instead of one-shotted: call again with action=scroll when the state line says content is below, action=click to open a panel, action=wait to give a slow section time, or pass selector to also return that element's own text. Sections that mount on scroll (comment threads, infinite lists) only appear this way. The page survives turns until action=close; a later call with url navigates that same page, so nothing from the previous page remains. Pass outFile to write a long page to disk and get only its head back, then read or search that file with the file tools.",
     readOnly: true,
     parallelSafe: true,
     parameters: {
       type: "object",
       properties: {
-        url: { type: "string", description: "Absolute http:// or https:// URL." },
+        url: {
+          type: "string",
+          description:
+            "Absolute http:// or https:// URL to navigate to. Omit to act on the page already open in this session.",
+        },
+        action: {
+          type: "string",
+          enum: ["read", "status", "scroll", "click", "wait", "back", "close"],
+          description:
+            "read (default) reports the page now; status reports whether a page is open and where it stands, cheaply; scroll moves down (see scrolls); click and wait need a selector; back goes to the previous page; close shuts the page, which otherwise stays open for the whole session.",
+        },
+        selector: {
+          type: "string",
+          description:
+            "CSS selector to click, to wait for, or to report presence for. Its state appears as present: in the result.",
+        },
+        scrolls: {
+          type: "integer",
+          description: "For action=scroll: how many screens to move down. Default 1.",
+        },
+        waitMs: {
+          type: "integer",
+          description:
+            "Extra settle in milliseconds after the step, capped at 5000. Use for a section that renders after its data request.",
+        },
+        fullPage: {
+          type: "boolean",
+          description:
+            "Capture the whole page as the preview instead of the visible window. Costs more bandwidth on a long page.",
+        },
+        outFile: {
+          type: "string",
+          description:
+            "Write the page to this file instead of returning its body, and return only a head of it. Headings, lists and links are kept, so reading and searching it with the file tools works. Relative paths resolve against the workspace; end the path with a separator to auto-name the file.",
+        },
       },
-      required: ["url"],
     },
-    fn: async (args: { url: string }, ctx) => {
-      if (!/^https?:\/\//i.test(args.url)) {
+    fn: async (args: WebFetchControl, ctx) => {
+      const signal = mergeSignals(ctx?.signal, ctx?.cancelSignal);
+      if (args.url && !/^https?:\/\//i.test(args.url)) {
+        throw new Error(t("webErrors.fetchInvalidUrl"));
+      }
+      if (!args.url && !args.action) {
         throw new Error(t("webErrors.fetchInvalidUrl"));
       }
       // Read at call time, not registration time — the engine setting mutates config mid-session (#1309).
       const engine = loadWebSearchEngine(opts.configPath);
       const spec = engine ? searchEngineSpec(engine) : undefined;
       if (!spec) throw new Error(NO_ENGINE_MESSAGE);
+      const fetchOpts: WebFetchOptions = {
+        // A saved page is parsed from disk, so the write needs the whole body.
+        maxChars: args.outFile ? SAVE_MAX_CHARS : maxFetchChars,
+        signal,
+        configPath: opts.configPath,
+        rootDir: ctx?.rootDir ?? opts.rootDir,
+      };
       // Declared, not branched: an engine that owns a fetch API names it in its JSON.
       const transport = FETCH_TRANSPORTS.get(spec.fetchStrategy);
       if (!transport) {
@@ -1849,23 +2383,60 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
           `web_fetch: engine "${spec.id}" declares fetchStrategy "${spec.fetchStrategy}"`,
         );
       }
-      const page = await transport(
-        args.url,
-        {
-          maxChars: maxFetchChars,
-          signal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
-          configPath: opts.configPath,
-          rootDir: ctx?.rootDir ?? opts.rootDir,
-        },
-        copyFor({ engine: spec.id as WebSearchEngineName }),
-        spec,
-      );
+      const sessionName = ctx?.sessionName ?? "default";
+      const browser = spec.browser ?? BROWSER_SEARCH_ENGINES[0];
+      // A browser engine always drives a page; a direct-read engine only when the call asks
+      // for page control, so a plain read keeps its fast path.
+      const driven =
+        spec.browser !== null ||
+        Boolean(args.action) ||
+        Boolean(args.selector) ||
+        Boolean(args.scrolls);
+      let page: PageContent & { links?: string[] };
+      if (driven) {
+        try {
+          page = await fetchDrivenPage(args, fetchOpts, browser, sessionName);
+        } catch (err) {
+          if (!(err instanceof RenderUnavailableError) || !args.url) throw err;
+          // No usable browser: a plain read still answers, and the note says it did.
+          page = {
+            ...(await transport(
+              args.url,
+              fetchOpts,
+              copyFor({ engine: spec.id as WebSearchEngineName }),
+              spec,
+            )),
+            note: `render: unavailable (${messageOf(err)})`,
+          };
+        }
+      } else {
+        page = await transport(
+          args.url as string,
+          fetchOpts,
+          copyFor({ engine: spec.id as WebSearchEngineName }),
+          spec,
+        );
+      }
       const head = [`engine: ${engine}`];
       if (page.previewPath) head.push(`preview: ${page.previewPath}`);
       const header = page.title ? `${page.title}\n${page.url}` : page.url;
       const links = page.links?.length ? `\n\nlinks:\n${page.links.join("\n")}` : "";
       const note = page.note ? `\n\n[${page.note}]` : "";
-      return `${head.join("\n")}\n\n${header}\n\n${page.text}${links}${note}`;
+      const state = page.page ? `\n\n${formatPageState(page)}` : "";
+      // The probed element on its own: a mounted section is often past the text cap.
+      const section = page.section
+        ? `\n\nsection [${page.section.selector}]:\n${page.section.text.slice(0, maxFetchChars)}`
+        : "";
+      const noPage = args.action === "close" || args.action === "reset" || args.action === "status";
+      if (args.outFile && !noPage) {
+        // A long page belongs on disk: the file tools page through it without flooding
+        // the transcript, and only a head comes back here as proof of what was saved.
+        const saved = saveFetchedPage(page, args.outFile, fetchOpts.rootDir);
+        head.push(`saved: ${saved.path} (${saved.chars} chars, ${saved.lines} lines)`);
+        const body = page.text.slice(0, SAVED_HEAD_CHARS);
+        return `${head.join("\n")}\n\n${header}\n\nhead (${body.length} of ${page.text.length} chars):\n${body}${links}${state}${note}`;
+      }
+      return `${head.join("\n")}\n\n${header}\n\n${page.text}${section}${links}${state}${note}`;
     },
   });
 
@@ -1876,9 +2447,12 @@ export function formatSearchResults(
   query: string,
   results: SearchResult[],
   engine?: string,
+  /** The page that was read as a result list, when the search was a navigation. */
+  source?: string,
 ): string {
   const lines: string[] = [`query: ${query}`];
   if (engine) lines.push(`engine: ${engine}`);
+  if (source) lines.push(`source: ${source}`);
 
   // Check if the first result carries an AI answer (Perplexity/Exa)
   const hasAnswer = results.length > 0 && results[0]?.url === "" && results[0]?.answer;

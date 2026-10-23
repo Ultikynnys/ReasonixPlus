@@ -32,6 +32,8 @@ import {
   resolvePlaywrightBrowsersDir,
   withPlaywrightWorkspaceProfile,
 } from "../src/mcp/extension.js";
+import { resolvePlaywrightTemplatePath } from "../src/mcp/playwright-tooling.js";
+import { SILENCE_MEDIA } from "../src/tools/browser-search.js";
 
 describe("Playwright extension store", () => {
   it("always points at the official Chrome Web Store listing", () => {
@@ -418,8 +420,47 @@ describe("Playwright connection configuration", () => {
         "@playwright/mcp",
         "--browser=chromium",
         "--user-data-dir=.reasonix/playwright/profiles/chromium",
+        expect.stringMatching(/^--init-script=.*silence-media\.js$/),
       ],
     });
+  });
+
+  it("mutes page media in the managed browser but never the user's own", () => {
+    const managed = withPlaywrightWorkspaceProfile({
+      transport: "stdio",
+      name: "playwright",
+      command: "npx",
+      args: ["-y", "@playwright/mcp", "--browser=webkit"],
+    });
+    const init = managed.args.find((arg) => arg.startsWith("--init-script="));
+    expect(init).toBeTruthy();
+    // The flag must point at a file that exists, or the server rejects the launch.
+    expect(existsSync(init!.slice("--init-script=".length))).toBe(true);
+    // A user-supplied init script is replaced, so the mute cannot be dropped by accident.
+    const replaced = withPlaywrightWorkspaceProfile({
+      transport: "stdio",
+      name: "playwright",
+      command: "npx",
+      args: ["-y", "@playwright/mcp", "--browser=webkit", "--init-script=mine.js"],
+    });
+    expect(replaced.args.filter((arg) => arg.includes("--init-script"))).toHaveLength(1);
+    expect(replaced.args.join(" ")).not.toContain("mine.js");
+  });
+
+  it("ships the same mute script the browser tools inject", () => {
+    // One behaviour, two carriers: the daemon injects the string, the MCP server loads the
+    // file. Both must keep every muting step, so the check names the steps, not the text.
+    const bundled = readFileSync(resolvePlaywrightTemplatePath("silence-media.js"), "utf8");
+    for (const [carrier, script] of [
+      ["bundled file", bundled],
+      ["injected string", SILENCE_MEDIA],
+    ] as const) {
+      expect(script, carrier).toContain("muted = true");
+      expect(script, carrier).toContain("volume = 0");
+      expect(script, carrier).toContain("HTMLMediaElement.prototype");
+      expect(script, carrier).toContain("MutationObserver");
+      expect(script, carrier).toContain("pause()");
+    }
   });
 
   it("does not rewrite extension, CDP, or remote Playwright specs", () => {
@@ -505,6 +546,7 @@ describe("Playwright connection configuration", () => {
         "@playwright/mcp",
         "--browser=chromium",
         "--user-data-dir=.reasonix/playwright/profiles/chromium",
+        expect.stringMatching(/^--init-script=.*silence-media\.js$/),
       ]);
     },
   );

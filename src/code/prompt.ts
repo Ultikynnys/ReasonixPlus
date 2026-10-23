@@ -31,8 +31,26 @@ Bad: \`"look into the auth code"\`. Good: \`"List every caller of validateToken 
 
 **Fan-out is one batch.** Issue independent spawns together, with no write, shell or MCP call between them: an interleaved unsafe call splits the burst, so later spawns start only after the earlier ones finish.`;
 
+/** Rendered only when the session's web_search drives a managed browser. Any other engine
+ *  reads pages one at a time, so the driving loop would describe a page it cannot open. */
+const WEB_TOOL_SECTION = `# Web pages
+
+web_search and web_fetch run in a managed browser, which keeps one page open for the session. Work it as a loop, not one shot: **open** with \`web_fetch\` and a \`url\`, or let \`web_search\` open it; **inspect** with \`action: "read"\`, with \`"status"\` for position alone, or with a \`selector\` for one section; **control** with \`"scroll"\` (and \`scrolls\`), \`"click"\` or \`"wait"\` (with a \`selector\`), \`"back"\`, or a new \`web_search\`; repeat until the page holds what the task needs, then **close** with \`action: "close"\`. The page and its browser are held for the whole session until that close.
+
+Every result ends with a state line, \`page: acted=no scrollY=0/4394 viewport=1200 below=3194 (scroll for more)\`. \`below=\` above zero means read further with \`action: "scroll"\` before concluding a page has nothing; sections that mount on scroll, such as comment threads and infinite lists, appear only that way. A \`selector\` also returns that element's own text as a \`section […]\` block, which is how a long thread is read past the boilerplate above it. \`present: <selector>=no\` means the page does not have that element yet. \`status\` answers the same question about the page itself: it reports the open url and position without reading anything, and reports \`page: closed\` when nothing is open, so it is safe to call before deciding the next step.
+
+One page means a search or a new \`url\` replaces what was there, so nothing from the previous page survives. Use \`web_search\` for ranked links and this page for what a snippet cannot answer; reach for the browser tools only when a click target or a login the fetch cannot handle is involved.
+
+**Long pages belong on disk.** \`outFile\` writes the page there and returns only its head, so nothing floods the transcript: pass a path (\`.reasonix/pages/readme.md\`, or a directory to auto-name) and then read or search that file with the ordinary file tools, by line range, outline, or content search. The file keeps headings, lists, links and code blocks from the page.
+
+**Search any site, not just the two backends.** \`web_search\` also takes \`url\`: the page named there is read as the result list, so a site's own search or a listing page works. Put \`{q}\` or \`%s\` where the query goes (\`https://www.youtube.com/results?search_query={q}\`), or omit it to read a fixed listing. Add \`linkSelector\` when the page's default links are navigation rather than results. The result names the page in a \`source:\` line. Prefer this when the site's own index knows things a general SERP lists badly, and when both backends refuse or answer a different query.`;
+
 /** Built per-session against the resolved model id so the contract names the actual tier (#582). */
-function codeSystemBase(modelId: string, subagentsEnabled = false): string {
+function codeSystemBase(
+  modelId: string,
+  subagentsEnabled = false,
+  browserWebTools = false,
+): string {
   // Function replacers insert the text literally, so a "$" in the model id cannot expand into a
   // capture-group pattern (string replacements treat $&, $', $` specially).
   const base = CODE_SYSTEM_TEMPLATE.replace("__ESCALATION_CONTRACT__", () =>
@@ -40,9 +58,14 @@ function codeSystemBase(modelId: string, subagentsEnabled = false): string {
   );
   // A disabled session gets the template with the section spliced out (placeholder
   // and one of its two blank-line guards), so the prefix carries no trace of it.
-  return subagentsEnabled
+  const withSubagents = subagentsEnabled
     ? base.replace("__SUBAGENT_SECTION__", () => SUBAGENT_SECTION)
     : base.replace("\n\n__SUBAGENT_SECTION__\n", "\n");
+  // Same rule for the web-page section: only the engine that drives a managed browser
+  // gets it, because the driving loop it documents exists only there.
+  return browserWebTools
+    ? withSubagents.replace("__WEB_TOOL_SECTION__", () => WEB_TOOL_SECTION)
+    : withSubagents.replace("\n\n__WEB_TOOL_SECTION__\n", "\n");
 }
 
 const CODE_SYSTEM_TEMPLATE = `You are Reasonix+, a standalone coding assistant. The tool specification defines available tools and parameters. Follow the rules below.
@@ -286,6 +309,8 @@ Do not reinterpret, weaken, or discard requirements for convenience, speed, or t
 
 __SUBAGENT_SECTION__
 
+__WEB_TOOL_SECTION__
+
 __ESCALATION_CONTRACT__
 
 ${TUI_FORMATTING_RULES}
@@ -344,12 +369,16 @@ export interface CodeSystemPromptOptions {
   /** Whether this SESSION was minted with the subagent tool. Read from the session's
    *  frozen meta by the host: a live settings edit must not rewrite a cached prefix. */
   subagentsEnabled?: boolean;
+  /** Whether the selected web search engine drives a managed browser. Only that engine
+   *  offers the persistent page the matching section documents. */
+  browserWebTools?: boolean;
 }
 
 export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions = {}): string {
   const codeBase = codeSystemBase(
     opts.modelId ?? DEFAULT_CODE_MODEL,
     opts.subagentsEnabled === true,
+    opts.browserWebTools === true,
   );
   const withMemory = applyMemoryStack(codeBase, rootDir, { homeDir: opts.homeDir });
   const gitignorePath = join(rootDir, ".gitignore");

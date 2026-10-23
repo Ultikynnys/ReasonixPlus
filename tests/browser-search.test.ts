@@ -7,6 +7,7 @@ import {
   __resolveBrowserCoreForTests,
   __setBrowserCoreLoaderForTests,
   closeBrowserSearches,
+  openPageSession,
   renderManagedPage,
   searchWithBrowser,
 } from "../src/tools/browser-search.js";
@@ -65,7 +66,20 @@ function expectHit(
 }
 
 interface FakeCall {
-  kind: "launch" | "context" | "goto" | "wait" | "settle" | "shot" | "close";
+  kind:
+    | "launch"
+    | "context"
+    | "goto"
+    | "wait"
+    | "settle"
+    | "init"
+    | "shot"
+    | "eval"
+    | "sleep"
+    | "click"
+    | "back"
+    | "key"
+    | "close";
   detail?: unknown;
   /** The timeout the transport asked for, so slow-link budgets can be asserted. */
   timeout?: number;
@@ -84,9 +98,18 @@ interface SerpBehavior {
   screenshotError?: Error;
   title?: string;
   finalUrl?: string;
-}
-
-/** A playwright-core stand-in: records what the transport asks of it, per SERP. */
+  /** Page-scroll state the session reports, so scrolling can be measured. */
+  scrollY?: number;
+  viewportHeight?: number;
+  docHeight?: number;
+  evaluateResult?: unknown;
+  evaluateError?: Error;
+  clickError?: Error;
+  /** What a probe of the caller's selectors reports. */
+  presentResult?: Record<string, boolean>;
+  /** What reading the probed element returns; null means the element is absent. */
+  sectionResult?: { selector: string; text: string } | null;
+} /** A playwright-core stand-in: records what the transport asks of it, per SERP. */
 function fakeBrowser(behavior: { duckduckgo?: SerpBehavior; bing?: SerpBehavior } = {}): {
   browserType: unknown;
   calls: FakeCall[];
@@ -129,12 +152,51 @@ function fakeBrowser(behavior: { duckduckgo?: SerpBehavior; bing?: SerpBehavior 
                 calls.push({ kind: "settle", detail: state, timeout: opts?.timeout });
                 if (current.settleError) throw current.settleError;
               },
+              addInitScript: async (script: string) => {
+                calls.push({ kind: "init", detail: script });
+              },
               title: async () => current.title ?? "Fake title",
               url: () => current.finalUrl ?? "https://example.com/",
-              screenshot: async () => {
-                calls.push({ kind: "shot" });
+              screenshot: async (opts?: { fullPage?: boolean }) => {
+                calls.push({ kind: "shot", detail: opts?.fullPage ? "full" : "viewport" });
                 if (current.screenshotError) throw current.screenshotError;
                 return Buffer.from("fake-png");
+              },
+              evaluate: async <T>(expression: string) => {
+                calls.push({ kind: "eval", detail: expression });
+                if (current.evaluateError) throw current.evaluateError;
+                if (expression.includes("innerText")) {
+                  return (current.sectionResult ?? null) as T;
+                }
+                if (expression.includes("querySelector")) {
+                  return (current.presentResult ?? {}) as T;
+                }
+                if (expression.includes("scrollY")) {
+                  return {
+                    url: current.finalUrl ?? "https://example.com/",
+                    title: current.title ?? "Fake title",
+                    scrollY: current.scrollY ?? 0,
+                    docHeight: current.docHeight ?? 2400,
+                    viewportHeight: current.viewportHeight ?? 1200,
+                  } as T;
+                }
+                return (current.evaluateResult ?? {}) as T;
+              },
+              waitForTimeout: async (ms: number) => {
+                calls.push({ kind: "sleep", timeout: ms });
+              },
+              click: async (selector: string) => {
+                calls.push({ kind: "click", detail: selector });
+                if (current.clickError) throw current.clickError;
+              },
+              goBack: async () => {
+                calls.push({ kind: "back" });
+              },
+              keyboard: {
+                press: async (key: string) => {
+                  calls.push({ kind: "key", detail: key });
+                  current.scrollY = (current.scrollY ?? 0) + (current.viewportHeight ?? 1200);
+                },
               },
               content: async () =>
                 waited ? (current.htmlAfterWait ?? current.html) : current.html,
@@ -176,6 +238,22 @@ afterEach(async () => {
 });
 
 describe("renderManagedPage", () => {
+  it("silences page media before the page can load", async () => {
+    const fake = fakeBrowser();
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    await renderManagedPage(BROWSER, copy, "https://example.com/");
+
+    const kinds = fake.calls.map((call) => call.kind);
+    const init = kinds.indexOf("init");
+    expect(init).toBeGreaterThanOrEqual(0);
+    // Muting is installed before the navigation that could start playback.
+    expect(init).toBeLessThan(kinds.indexOf("goto"));
+    const script = fake.calls[init]!.detail as string;
+    expect(script).toContain("muted = true");
+    expect(script).toContain("volume = 0");
+    expect(script).toContain("HTMLMediaElement");
+  });
+
   it("renders in a small transient window and closes it", async () => {
     const fake = fakeBrowser({
       bing: {
@@ -240,7 +318,123 @@ describe("renderManagedPage", () => {
   });
 });
 
+describe("openPageSession", () => {
+  it("navigates once and keeps the page for later steps", async () => {
+    const fake = fakeBrowser({ bing: { html: "<p>driven</p>", title: "Driven" } });
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const session = await openPageSession(BROWSER, copy);
+    const opened = await session.navigate("https://example.com/page");
+    expect(opened.state.url).toBe("https://example.com/");
+    expect(opened.html).toContain("driven");
+    // One context, one goto: a session is not a context per call.
+    expect(fake.calls.filter((call) => call.kind === "context")).toHaveLength(1);
+    expect(visited(fake.calls)).toEqual(["https://example.com/page"]);
+    // Media muting is installed on a driven page too.
+    expect(fake.calls.some((call) => call.kind === "init")).toBe(true);
+    await session.close();
+    expect(fake.calls.at(-1)!.kind).toBe("close");
+  });
+
+  it("scrolls with End and reports the position it reached", async () => {
+    const fake = fakeBrowser({ bing: { viewportHeight: 1200, docHeight: 3600, html: "<p>x</p>" } });
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const session = await openPageSession(BROWSER, copy);
+    await session.navigate("https://example.com/page");
+    const scrolled = await session.scroll(2);
+    expect(fake.calls.filter((call) => call.kind === "key").map((call) => call.detail)).toEqual([
+      "End",
+      "End",
+    ]);
+    expect(scrolled.state.scrollY).toBe(2400);
+    expect(scrolled.state.docHeight).toBe(3600);
+    await session.close();
+  });
+
+  it("clicks a selector and reports the click", async () => {
+    const fake = fakeBrowser();
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const session = await openPageSession(BROWSER, copy);
+    await session.navigate("https://example.com/page");
+    const clicked = await session.click("#more");
+    expect(clicked.acted).toBe(true);
+    expect(fake.calls.filter((call) => call.kind === "click").map((call) => call.detail)).toEqual([
+      "#more",
+    ]);
+    await session.close();
+  });
+
+  it("reports a missing selector instead of failing the step", async () => {
+    await closeBrowserSearches();
+    const fake = fakeBrowser({
+      bing: { clickError: new Error("no such element"), presentResult: { "#nope": false } },
+    });
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const session = await openPageSession(BROWSER, copy);
+    await session.navigate("https://example.com/page");
+    const refused = await session.click("#nope");
+    expect(refused.acted).toBe(false);
+    // The selector is probed, so the result says why nothing was clicked.
+    expect(refused.present).toHaveProperty("#nope");
+    await session.close();
+  });
+
+  it("reports a probe selector's presence", async () => {
+    const fake = fakeBrowser({ bing: { presentResult: { "#comments": true } } });
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const session = await openPageSession(BROWSER, copy);
+    await session.navigate("https://example.com/page");
+    const read = await session.read({ probes: ["#comments"] });
+    expect(read.present).toEqual({ "#comments": true });
+    await session.close();
+  });
+
+  it("returns the probed element's own text", async () => {
+    const fake = fakeBrowser({
+      bing: {
+        presentResult: { "#comments": true },
+        sectionResult: { selector: "#comments", text: "@someone: nice thread" },
+      },
+    });
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const session = await openPageSession(BROWSER, copy);
+    await session.navigate("https://example.com/page");
+    const read = await session.read({ probes: ["#comments"] });
+    // The element is read on its own, so boilerplate above it cannot crowd it out.
+    expect(read.section).toEqual({ selector: "#comments", text: "@someone: nice thread" });
+    await session.close();
+  });
+
+  it("captures a full page when asked", async () => {
+    const fake = fakeBrowser();
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const session = await openPageSession(BROWSER, copy);
+    await session.navigate("https://example.com/page");
+    await session.read({ fullPage: true });
+    const shots = fake.calls.filter((call) => call.kind === "shot");
+    expect(shots.at(-1)!.detail).toBe("full");
+    await session.close();
+  });
+});
+
 describe("searchWithBrowser", () => {
+  it("reads the SERP through a session page when one is given", async () => {
+    const fake = fakeBrowser();
+    __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));
+    const session = await openPageSession(BROWSER, copy);
+    const results = await searchWithBrowser(QUERY, {
+      browser: BROWSER,
+      copy,
+      parsers: PARSERS,
+      topK: 5,
+      session,
+    });
+    expect(results).toEqual(EXPECTED);
+    // The search used the caller's page: one context, the session's own navigation.
+    expect(fake.calls.filter((call) => call.kind === "context")).toHaveLength(1);
+    expect(visited(fake.calls)[0]).toContain("html.duckduckgo.com/html/?q=");
+    await session.close();
+  });
+
   it("searches DuckDuckGo's no-JS SERP with a desktop UA and maps the results", async () => {
     const fake = fakeBrowser();
     __setBrowserCoreLoaderForTests(() => coreOf(fake.browserType));

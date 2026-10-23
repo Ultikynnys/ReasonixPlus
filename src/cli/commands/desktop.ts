@@ -5209,7 +5209,17 @@ export function refreshTabSystemPrompt(
     // The session's frozen flag, never live config: a settings edit must not
     // rewrite the prefix of a conversation already in flight.
     subagentsEnabled: sessionSubagentsEnabled(tab),
+    // Live config: the engine is read at call time, so the section that documents the
+    // persistent page follows whichever engine is selected now.
+    browserWebTools: webSearchDrivesBrowser(),
   });
+}
+
+/** Whether the selected web search engine renders in a managed browser. Only that engine
+ *  hands web_fetch the persistent page its prompt section documents. */
+export function webSearchDrivesBrowser(configPath?: string): boolean {
+  const engine = readWebSearchEngine(configPath);
+  return Boolean(engine && searchEngineSpec(engine)?.browser);
 }
 
 /** Knowledge-level refresh after an edit-gate flip: mirror the mode into the dispatch
@@ -10104,6 +10114,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           const cfg = readConfig();
           cfg.webSearchEngine = msg.webSearchEngine;
           writeConfig(cfg);
+          // The web-page section follows the engine, so a switch rewrites the prompt now
+          // rather than at the next restart.
+          refreshTabSystemPrompt(tab);
+          tab.runtime?.loop.prefix.replaceSystem(tab.system);
         }
         if (msg.searchSettings !== undefined) {
           const { writes } = parseSearchSettingsPatch(msg.searchSettings);

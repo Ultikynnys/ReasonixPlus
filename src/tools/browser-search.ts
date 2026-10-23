@@ -28,10 +28,16 @@ interface PwPage {
   ): Promise<PwResponse | null>;
   waitForSelector(selector: string, opts: { timeout: number }): Promise<unknown>;
   waitForLoadState(state: "networkidle", opts?: { timeout: number }): Promise<void>;
+  addInitScript(script: string): Promise<void>;
   content(): Promise<string>;
   title(): Promise<string>;
   url(): string;
-  screenshot(opts?: { type?: "png" }): Promise<Buffer>;
+  screenshot(opts?: { type?: "png"; fullPage?: boolean }): Promise<Buffer>;
+  evaluate<T>(expression: string): Promise<T>;
+  waitForTimeout(ms: number): Promise<void>;
+  click(selector: string, opts?: { timeout: number }): Promise<void>;
+  goBack(opts?: { timeout: number }): Promise<unknown>;
+  keyboard: { press(key: string): Promise<void> };
 }
 interface PwContextOptions {
   userAgent: string;
@@ -61,6 +67,9 @@ export interface BrowserSearchOptions {
   signal?: AbortSignal;
   /** Whole-search ceiling in ms, shared by every backend. Defaults to 60s. */
   budgetMs?: number;
+  /** The agent's open page: the SERP is read through it, so search and fetch share one
+   *  tab. Omitted, the search opens its own page and closes it. */
+  session?: PageSession;
 }
 
 export type SerpParser = (html: string) => BrowserSearchResult[];
@@ -222,6 +231,8 @@ interface BrowserState {
   idleTimer?: NodeJS.Timeout;
   /** In-flight launch, so concurrent searches share one browser instead of racing. */
   launching?: Promise<PwBrowser>;
+  /** Open page sessions; while any exist the idle timer stays off, since the page needs it. */
+  pins: number;
   /** Bumped by a teardown, so a launch that finishes afterwards cannot resurrect a browser. */
   generation: number;
 }
@@ -231,7 +242,7 @@ const states = new Map<SearchEngineBrowser, BrowserState>();
 function stateOf(browser: SearchEngineBrowser): BrowserState {
   let state = states.get(browser);
   if (!state) {
-    state = { generation: 0 };
+    state = { generation: 0, pins: 0 };
     states.set(browser, state);
   }
   return state;
@@ -269,6 +280,23 @@ function startIdleTimer(browser: SearchEngineBrowser): NodeJS.Timeout {
   return timer;
 }
 
+/** Keep the browser alive while a page session is open on it. */
+function pinBrowser(browser: SearchEngineBrowser): void {
+  const state = stateOf(browser);
+  state.pins += 1;
+  if (state.idleTimer) {
+    clearTimeout(state.idleTimer);
+    state.idleTimer = undefined;
+  }
+}
+
+/** Release a pin; the last one restarts the idle close the page session suspended. */
+function unpinBrowser(browser: SearchEngineBrowser): void {
+  const state = stateOf(browser);
+  state.pins = Math.max(0, state.pins - 1);
+  if (state.pins === 0 && state.instance) state.idleTimer = startIdleTimer(browser);
+}
+
 /** Close one browser and forget it; never throws. It does not cancel an in-flight launch:
  *  a search replacing a dead instance still wants the replacement that launch is making. */
 async function closeBrowser(browser: SearchEngineBrowser): Promise<void> {
@@ -294,6 +322,8 @@ export async function closeBrowserSearches(): Promise<void> {
   for (const state of states.values()) {
     state.generation += 1;
     state.launching = undefined;
+    // A torn-down teardown drops every page session with its browser.
+    state.pins = 0;
   }
   await Promise.all([...states.keys()].map(closeBrowser));
   for (const state of states.values()) state.core = undefined;
@@ -325,7 +355,8 @@ async function launch(browser: SearchEngineBrowser, copy: EngineCopy): Promise<P
 async function browserFor(browser: SearchEngineBrowser, copy: EngineCopy): Promise<PwBrowser> {
   const state = stateOf(browser);
   if (state.instance) {
-    state.idleTimer?.refresh?.();
+    // A pinned browser has no idle timer; a bare refresh must not resurrect one.
+    if (state.pins === 0) state.idleTimer?.refresh?.();
     return state.instance;
   }
   if (state.launching) return state.launching;
@@ -377,6 +408,39 @@ async function openContext(
 /** Run `work` on a fresh page in a fresh context of the cached managed browser, then
  *  close the context. The SERP transport and the website probe share this path, so the
  *  install resolution, launch reuse and desktop UA have one home. */
+/** A tool must never make noise, and a headless build still plays page audio, so every
+ *  media element is muted and stopped before it can start. The same script is bundled as
+ *  data/tooling/playwright/silence-media.js for the Playwright MCP server. */
+export const SILENCE_MEDIA = `(() => {
+  const silence = (el) => {
+    try { el.muted = true; el.volume = 0; } catch (e) {}
+    try { if (!el.paused) el.pause(); } catch (e) {}
+  };
+  const proto = window.HTMLMediaElement && HTMLMediaElement.prototype;
+  if (proto && typeof proto.play === "function") {
+    const play = proto.play;
+    proto.play = function () {
+      silence(this);
+      return play.apply(this, arguments);
+    };
+  }
+  const sweep = () => {
+    for (const el of document.querySelectorAll("video,audio")) silence(el);
+  };
+  for (const type of ["play", "playing", "canplay", "loadeddata"]) {
+    document.addEventListener(type, (e) => {
+      const el = e.target;
+      if (el && el.tagName && /^(VIDEO|AUDIO)$/i.test(el.tagName)) silence(el);
+    }, true);
+  }
+  const root = document.documentElement;
+  if (root) new MutationObserver(sweep).observe(root, { childList: true, subtree: true });
+})();`;
+
+async function silencePage(page: PwPage): Promise<void> {
+  await page.addInitScript(SILENCE_MEDIA).catch(() => undefined);
+}
+
 export async function withManagedPage<T>(
   browser: SearchEngineBrowser,
   copy: EngineCopy,
@@ -384,7 +448,9 @@ export async function withManagedPage<T>(
 ): Promise<T> {
   const context = await openContext(browser, copyForBrowser(browser, copy));
   try {
-    return await work(await context.newPage());
+    const page = await context.newPage();
+    await silencePage(page);
+    return await work(page);
   } finally {
     await context.close().catch(() => undefined);
   }
@@ -439,6 +505,7 @@ export async function renderManagedPage(
   });
   try {
     const page = await context.newPage();
+    await silencePage(page);
     try {
       await abortable(
         page.goto(url, { waitUntil: "load", timeout: phaseTimeout(deadline, NAV_TIMEOUT_MS) }),
@@ -462,6 +529,262 @@ export async function renderManagedPage(
     return { url: page.url(), title, html, preview };
   } finally {
     await context.close().catch(() => undefined);
+  }
+}
+
+/** One driven step (click, wait, back) must never hang a tool call. */
+const SESSION_STEP_MS = 15_000;
+/** More presses than any page needs to mount its sections. */
+const SESSION_MAX_SCROLLS = 12;
+/** Let newly mounted content arrive before measuring. */
+const SCROLL_SETTLE_MS = 500;
+
+/** Where the page is: enough for a caller to tell "more below" from "the end". */
+export interface PageState {
+  url: string;
+  title: string;
+  scrollY: number;
+  docHeight: number;
+  viewportHeight: number;
+}
+
+export interface PageSessionOptions {
+  signal?: AbortSignal;
+  /** Wait for this selector as part of the step, and report whether it appeared. */
+  waitFor?: string;
+  /** Extra settle in ms, clamped to the render settle ceiling. */
+  waitMs?: number;
+  /** Selectors whose presence the caller wants reported. */
+  probes?: readonly string[];
+}
+
+export interface PageActionResult {
+  state: PageState;
+  html: string;
+  preview?: Buffer;
+  /** Probe selector -> present now. */
+  present: Record<string, boolean>;
+  /** The step found its target (element clicked, selector appeared). */
+  acted: boolean;
+  /** Text of the probed section itself, so a mounted region is readable without the rest
+   *  of the page standing in front of it in the cap. */
+  section?: { selector: string; text: string };
+}
+
+/** A page kept open between tool calls, so a site can be driven instead of one-shotted. */
+export interface PageSession {
+  navigate(url: string, opts?: PageSessionOptions): Promise<PageActionResult>;
+  waitFor(selector: string, opts?: PageSessionOptions): Promise<PageActionResult>;
+  scroll(times: number, opts?: PageSessionOptions): Promise<PageActionResult>;
+  click(selector: string, opts?: PageSessionOptions): Promise<PageActionResult>;
+  back(opts?: PageSessionOptions): Promise<PageActionResult>;
+  read(opts?: PageSessionOptions & { fullPage?: boolean }): Promise<PageActionResult>;
+  /** Position only: cheap enough to poll between steps. */
+  status(opts?: PageSessionOptions): Promise<PageState>;
+  close(): Promise<void>;
+}
+
+/** Text of one element, or null when the page has none. String expression, so nothing
+ *  has to cross into the page. */
+function sectionScript(selector: string): string {
+  return `(() => {
+    const name = ${JSON.stringify(selector)};
+    let el = null;
+    try { el = document.querySelector(name); } catch (e) { el = null; }
+    if (!el) return null;
+    const text = (el.innerText || el.textContent || "").trim();
+    return { selector: name, text: text.slice(0, 24000) };
+  })()`;
+}
+
+const PAGE_STATE_SCRIPT = `(() => {
+  const doc = document.documentElement;
+  return {
+    url: location.href,
+    title: document.title,
+    scrollY: Math.round(window.scrollY || 0),
+    docHeight: doc ? doc.scrollHeight : 0,
+    viewportHeight: Math.round(window.innerHeight || 0),
+  };
+})()`;
+
+/** Presence of the caller's selectors. A string expression, because a transpiled closure
+ *  cannot cross into the page. */
+function presenceScript(selectors: readonly string[]): string {
+  return `(() => {
+    const out = {};
+    for (const sel of ${JSON.stringify([...selectors])}) {
+      try { out[sel] = Boolean(document.querySelector(sel)); } catch (e) { out[sel] = false; }
+    }
+    return out;
+  })()`;
+}
+
+class ManagedPageSession implements PageSession {
+  constructor(
+    private readonly browser: SearchEngineBrowser,
+    private readonly copy: EngineCopy,
+    private readonly context: PwContext,
+    private readonly page: PwPage,
+  ) {}
+
+  async navigate(url: string, opts: PageSessionOptions = {}): Promise<PageActionResult> {
+    try {
+      await abortable(
+        this.page.goto(url, { waitUntil: "load", timeout: NAV_TIMEOUT_MS }),
+        opts.signal,
+      );
+    } catch (err) {
+      const message = messageOf(err);
+      throw new Error(this.copy("cannotReach", { message }));
+    }
+    return await this.snapshot(opts, false);
+  }
+
+  async waitFor(selector: string, opts: PageSessionOptions = {}): Promise<PageActionResult> {
+    const appeared = await this.tryWaitFor(selector, opts);
+    return await this.snapshot(opts, appeared);
+  }
+
+  async scroll(times: number, opts: PageSessionOptions = {}): Promise<PageActionResult> {
+    const presses = Math.max(1, Math.min(Math.trunc(times) || 1, SESSION_MAX_SCROLLS));
+    for (let press = 0; press < presses; press += 1) {
+      await abortable(this.page.keyboard.press("End"), opts.signal);
+      await abortable(this.page.waitForTimeout(SCROLL_SETTLE_MS), opts.signal).catch(
+        () => undefined,
+      );
+    }
+    return await this.snapshot(opts, true);
+  }
+
+  async click(selector: string, opts: PageSessionOptions = {}): Promise<PageActionResult> {
+    const clicked = await abortable(
+      this.page.click(selector, { timeout: SESSION_STEP_MS }),
+      opts.signal,
+    )
+      .then(() => true)
+      .catch((err: unknown) => {
+        if (messageOf(err) === ABORTED) throw err;
+        // A missing element is an answer, not a failure: the state reports what is there.
+        return false;
+      });
+    return await this.snapshot({ ...opts, probes: [...(opts.probes ?? []), selector] }, clicked);
+  }
+
+  async back(opts: PageSessionOptions = {}): Promise<PageActionResult> {
+    const went = await abortable(this.page.goBack({ timeout: SESSION_STEP_MS }), opts.signal)
+      .then(() => true)
+      .catch(() => false);
+    return await this.snapshot(opts, went);
+  }
+
+  async read(opts: PageSessionOptions & { fullPage?: boolean } = {}): Promise<PageActionResult> {
+    return await this.snapshot(opts, false);
+  }
+
+  /** Where the page stands, without reading it: no navigation, no markup, no screenshot. */
+  async status(opts: PageSessionOptions = {}): Promise<PageState> {
+    return await abortable(this.page.evaluate<PageState>(PAGE_STATE_SCRIPT), opts.signal).catch(
+      () => this.blindState(),
+    );
+  }
+
+  async close(): Promise<void> {
+    await this.context.close().catch(() => undefined);
+    unpinBrowser(this.browser);
+  }
+
+  /** Wait for the caller's selector as part of a step, reporting whether it arrived. */
+  private async tryWaitFor(selector: string, opts: PageSessionOptions): Promise<boolean> {
+    return await abortable(
+      this.page.waitForSelector(selector, { timeout: SESSION_STEP_MS }),
+      opts.signal,
+    )
+      .then(() => true)
+      .catch(() => false);
+  }
+
+  /** Settle, then report the page as it stands: markup, screenshot, position, probes. */
+  private async snapshot(
+    opts: PageSessionOptions & { fullPage?: boolean },
+    acted: boolean,
+  ): Promise<PageActionResult> {
+    let hit = acted;
+    if (opts.waitFor) hit = (await this.tryWaitFor(opts.waitFor, opts)) || hit;
+    // Best effort: a page that never idles still has usable content.
+    await abortable(
+      this.page.waitForLoadState("networkidle", { timeout: RENDER_SETTLE_MS }),
+      opts.signal,
+    ).catch(() => undefined);
+    const extra = Math.min(Math.max(opts.waitMs ?? 0, 0), RENDER_SETTLE_MS);
+    if (extra > 0)
+      await abortable(this.page.waitForTimeout(extra), opts.signal).catch(() => undefined);
+    const state = await abortable(
+      this.page.evaluate<PageState>(PAGE_STATE_SCRIPT),
+      opts.signal,
+    ).catch(() => this.blindState());
+    const html = await abortable(this.page.content(), opts.signal);
+    const preview = await abortable(
+      this.page.screenshot({ type: "png", ...(opts.fullPage ? { fullPage: true } : {}) }),
+      opts.signal,
+    ).catch(() => undefined);
+    const probes = opts.probes?.length ? opts.probes : [];
+    const present = probes.length
+      ? await abortable(
+          this.page.evaluate<Record<string, boolean>>(presenceScript(probes)),
+          opts.signal,
+        ).catch(() => ({}) as Record<string, boolean>)
+      : {};
+    const section = probes.length
+      ? ((await abortable(
+          this.page.evaluate<{ selector: string; text: string } | null>(
+            sectionScript(probes[0] as string),
+          ),
+          opts.signal,
+        ).catch(() => null)) ?? undefined)
+      : undefined;
+    return { state, html, preview, present, acted: hit, ...(section ? { section } : {}) };
+  }
+
+  /** Position unknown (the page refused the probe), but the address is still good. */
+  private blindState(): Promise<PageState> {
+    return this.page.title().then(
+      (title) => ({
+        url: this.page.url(),
+        title: title.trim(),
+        scrollY: 0,
+        docHeight: 0,
+        viewportHeight: 0,
+      }),
+      () => ({ url: this.page.url(), title: "", scrollY: 0, docHeight: 0, viewportHeight: 0 }),
+    );
+  }
+}
+
+/** Open a page that stays open between calls. The browser is pinned while it lives, so the
+ *  idle close cannot pull the page out from under the caller. */
+export async function openPageSession(
+  browser: SearchEngineBrowser,
+  copy: EngineCopy,
+  opts: { signal?: AbortSignal } = {},
+): Promise<PageSession> {
+  const bound = copyForBrowser(browser, copy);
+  if (opts.signal?.aborted) throw new Error(bound("cannotReach", { message: ABORTED }));
+  const context = await openContext(browser, bound, {
+    ...CONTEXT_OPTIONS,
+    viewport: RENDER_VIEWPORT,
+  }).catch((err: unknown) => {
+    throw new RenderUnavailableError(messageOf(err));
+  });
+  pinBrowser(browser);
+  try {
+    const page = await context.newPage();
+    await silencePage(page);
+    return new ManagedPageSession(browser, bound, context, page);
+  } catch (err) {
+    unpinBrowser(browser);
+    await context.close().catch(() => undefined);
+    throw new RenderUnavailableError(messageOf(err));
   }
 }
 
@@ -495,20 +818,30 @@ async function runSerp(
   signal: AbortSignal | undefined,
   parse: SerpParser,
   deadline: number,
+  session?: PageSession,
 ): Promise<SerpAttempt> {
-  const context = await openContext(browser, copy);
+  // A session page is the agent's own tab: the SERP is read through it, so a search and a
+  // fetch share one page the way the MCP browser does.
+  const context = session ? undefined : await openContext(browser, copy);
   try {
-    const page = await context.newPage();
+    const page = context ? await context.newPage() : undefined;
+    if (page) await silencePage(page);
     let status = 0;
+    let first: string;
     try {
-      const response = await abortable(
-        page.goto(serp.url(query), {
-          waitUntil: "domcontentloaded",
-          timeout: phaseTimeout(deadline, NAV_TIMEOUT_MS),
-        }),
-        signal,
-      );
-      status = response?.status() ?? 0;
+      if (page) {
+        const response = await abortable(
+          page.goto(serp.url(query), {
+            waitUntil: "domcontentloaded",
+            timeout: phaseTimeout(deadline, NAV_TIMEOUT_MS),
+          }),
+          signal,
+        );
+        status = response?.status() ?? 0;
+        first = await page.content();
+      } else {
+        first = (await session!.navigate(serp.url(query), { signal })).html;
+      }
     } catch (err) {
       // A caller's Stop is final; an unreachable SERP leaves the next one to try.
       if (messageOf(err) === ABORTED) throw new Error(copy("cannotReach", { message: ABORTED }));
@@ -526,24 +859,28 @@ async function runSerp(
     }
     // What the document already carries decides whether waiting can help: a rendered
     // SERP answers now, and a wall or a real empty page will not improve with time.
-    const first = await page.content();
     const arrived = parse(first);
     if (arrived.length > 0 || serp.empty.test(first) || SERP_WALL.test(first)) {
       return { serp, results: arrived, html: first, status, settled: true, waitMs: 0 };
     }
     const waitMs = phaseTimeout(deadline, RESULT_WAIT_MS);
     let settled = true;
+    let html = first;
     try {
-      await abortable(page.waitForSelector(serp.resultSelector, { timeout: waitMs }), signal);
+      if (page) {
+        await abortable(page.waitForSelector(serp.resultSelector, { timeout: waitMs }), signal);
+        html = await page.content();
+      } else {
+        html = (await session!.waitFor(serp.resultSelector, { signal })).html;
+      }
     } catch (err) {
       // The caller giving up is not a withheld SERP; report it as the cancellation it is.
       if (messageOf(err) === ABORTED) throw new Error(copy("cannotReach", { message: ABORTED }));
       settled = false;
     }
-    const html = await page.content();
     return { serp, results: parse(html), html, status, settled, waitMs };
   } finally {
-    await context.close().catch(() => undefined);
+    await context?.close().catch(() => undefined);
   }
 }
 
@@ -640,6 +977,7 @@ export async function searchWithBrowser(
       signal,
       parsers[serp.id],
       deadline,
+      opts.session,
     );
     const answer = answerOf(attempt);
     if (answer) return answer;

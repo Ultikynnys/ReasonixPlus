@@ -300,6 +300,49 @@ describe("codeSystemPrompt", () => {
     });
   });
 
+  describe("web pages — minted only for a browser-backed search engine", () => {
+    it("says nothing about the persistent page otherwise", () => {
+      const out = codeSystemPrompt(root, { configPath: cfgPath });
+      expect(out).not.toContain("# Web pages");
+      expect(out).not.toContain("scroll for more");
+      expect(out).not.toContain("__WEB_TOOL_SECTION__");
+    });
+
+    it("renders the driving loop when the engine drives a browser", () => {
+      const out = codeSystemPrompt(root, { configPath: cfgPath, browserWebTools: true });
+      expect(out).toContain("# Web pages");
+      expect(out).toContain("below=3194 (scroll for more)");
+      expect(out).toContain('action: "close"');
+      expect(out).toContain("section […]");
+      // The controlled lifecycle, start to close, is what the schema alone does not convey.
+      expect(out).toContain("**open**");
+      expect(out).toContain("**inspect**");
+      expect(out).toContain("**control**");
+      expect(out).toContain('`"status"`');
+      expect(out).toContain("page: closed");
+      // The single-page consequence is the part a caller cannot infer from the schema.
+      expect(out).toContain("replaces what was there");
+    });
+
+    it("keeps the neighbours' spacing when the section is off", () => {
+      const off = codeSystemPrompt(root, { configPath: cfgPath });
+      const on = codeSystemPrompt(root, { configPath: cfgPath, browserWebTools: true });
+      expect(on.length).toBeGreaterThan(off.length);
+      expect(off).toMatch(/token savings\.\n\nYou are running on/);
+    });
+
+    it("places both conditional sections without disturbing each other", () => {
+      const both = codeSystemPrompt(root, {
+        configPath: cfgPath,
+        subagentsEnabled: true,
+        browserWebTools: true,
+      });
+      expect(both.indexOf("# Subagents")).toBeLessThan(both.indexOf("# Web pages"));
+      // The web section lands right before the model/escalation line, not inside a section.
+      expect(both.indexOf("# Web pages")).toBeLessThan(both.indexOf("You are running on"));
+    });
+  });
+
   describe("system append", () => {
     it("does not add a User System Append section when neither option is provided", () => {
       const out = codeSystemPrompt(root);

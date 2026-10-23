@@ -2,8 +2,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { refreshEditModeKnowledge, refreshTabSystemPrompt } from "../src/cli/commands/desktop.js";
+import {
+  refreshEditModeKnowledge,
+  refreshTabSystemPrompt,
+  webSearchDrivesBrowser,
+} from "../src/cli/commands/desktop.js";
 import { codeSystemPrompt } from "../src/code/prompt.js";
+import { writeConfig } from "../src/config.js";
 import { patchSessionMeta } from "../src/memory/session.js";
 import { ToolRegistry } from "../src/tools.js";
 
@@ -192,5 +197,28 @@ describe("refreshTabSystemPrompt — session MCP overlay", () => {
     refreshTabSystemPrompt(on);
     expect(on.system).toContain("spawn_subagent({ task, tools })");
     expect(on.system).toContain("The task is the whole brief");
+  });
+
+  it("gives the web-page section only to an engine that drives a browser", () => {
+    const tab = {
+      rootDir: root,
+      currentModel: "deepseek-v4-pro",
+      system: "stale",
+      toolset: {},
+      subagents: false,
+    };
+
+    // A direct-read engine reads pages one at a time, so the driving loop does not apply.
+    writeConfig({ webSearchEngine: "bing" }, configPath);
+    expect(webSearchDrivesBrowser()).toBe(false);
+    refreshTabSystemPrompt(tab);
+    expect(tab.system).not.toContain("# Web pages");
+
+    // The same tab, engine switched: the section follows, without a restart.
+    writeConfig({ webSearchEngine: "playwright-webkit" }, configPath);
+    expect(webSearchDrivesBrowser()).toBe(true);
+    refreshTabSystemPrompt(tab);
+    expect(tab.system).toContain("# Web pages");
+    expect(tab.system).toContain("below=3194 (scroll for more)");
   });
 });

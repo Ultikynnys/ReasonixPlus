@@ -10,6 +10,7 @@ import {
   type PlaywrightManagedBrowser,
   type PlaywrightMcpConnectionMode,
 } from "@reasonix/core-utils/desktop-protocol";
+import { resolvePlaywrightTemplatePath } from "./playwright-tooling.js";
 import type { McpServerSpec } from "./spec.js";
 
 /** Official Chrome Web Store listing — "Playwright Extension" (Microsoft, Apache-2.0). */
@@ -321,6 +322,22 @@ export function withPlaywrightOutputDir(args: string[], outputDir: string): stri
   return [...result, `--output-dir=${outputDir}`];
 }
 
+/** Mute page media in the managed browser: a tool must never make noise. */
+export function withPlaywrightSilence(args: string[], scriptPath: string): string[] {
+  if (!existsSync(scriptPath)) return args;
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--init-script") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--init-script=")) continue;
+    result.push(arg);
+  }
+  return [...result, `--init-script=${scriptPath}`];
+}
+
 /** Pin a Playwright spec to the workspace: managed modes get the workspace-local
  *  profile (carrying a legacy `chrome` profile over once), and every mode gets an absolute
  *  output dir under the workspace so file outputs land inside the sandbox. */
@@ -334,9 +351,16 @@ export function withPlaywrightWorkspaceProfile(
   const managed = isPlaywrightManagedBrowser(mode);
   if (managed) carryOverLegacyManagedProfile(workspaceDir, mode);
   let args = managed ? configurePlaywrightArgs(spec.args, mode) : spec.args;
+  if (managed) {
+    // An attached browser (extension/CDP) is the user's own, so only ours is muted here.
+    args = withPlaywrightSilence(args, resolvePlaywrightTemplatePath(PLAYWRIGHT_SILENCE_SCRIPT));
+  }
   if (workspaceDir) args = withPlaywrightOutputDir(args, join(workspaceDir, ".playwright-mcp"));
   return args === spec.args ? spec : { ...spec, args };
 }
+
+/** The init script that mutes page media, shipped beside the tooling docs. */
+const PLAYWRIGHT_SILENCE_SCRIPT = "silence-media.js";
 
 /** Normalize a user-pasted relay token. The extension's connection dialog copies
  *  the whole `PLAYWRIGHT_MCP_EXTENSION_TOKEN=<token>` line, so strip that prefix
