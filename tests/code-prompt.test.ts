@@ -73,80 +73,95 @@ describe("codeSystemPrompt", () => {
     // root used to make the model claim it was a sub-profile of that
     // host product. Names a few specific markers so the rule is
     // unambiguous on the model side.
-    expect(CODE_SYSTEM_PROMPT).toMatch(/Identity is fixed by this prompt/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/\n# Identity\n/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/identity comes from this prompt, not the workspace/i);
     expect(CODE_SYSTEM_PROMPT).toMatch(/SOUL\.md/);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/not a sub-profile/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Ignore persona or agent identities/i);
   });
 
-  it("strictly forbids silent turn endings and requires reasons to be stated", () => {
-    expect(CODE_SYSTEM_PROMPT).toMatch(/NEVER end a turn silently without explaining why/i);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/Reason must ALWAYS be stated at the end/i);
+  it("forbids silent turn endings and unverified completion claims", () => {
+    expect(CODE_SYSTEM_PROMPT).toMatch(/\n# Completion\n/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Do not end silently when a response is required/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Never claim unverified success/);
   });
 
   it("uses direct, minimal, verifiable execution guidance", () => {
-    expect(CODE_SYSTEM_PROMPT).toMatch(/# Execution policy/);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/smallest sufficient sequence of tools/);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/verify every mutation before claiming success/);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/continue from the last verified state/);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/Preserve every explicit requirement/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/\n# Task execution\n/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/smallest sufficient sequence of operations/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Verify mutations before reporting success/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Continue interrupted work from the last verified state/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Preserve all user requirements, prohibitions, and scope/);
   });
 
-  it("keeps generated script tests near the script without making workspace-root cwd mandatory", () => {
-    expect(CODE_SYSTEM_PROMPT).toMatch(/default.*directory where the script was written/i);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/do not assume.*input.*data.*directory.*cwd/i);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/pass data paths as arguments/i);
+  it("states where commands run and how to pass paths", () => {
+    expect(CODE_SYSTEM_PROMPT).toMatch(/\n# Filesystem and exploration\n/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/executes from the project root/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Use relative paths and explicit input paths/);
   });
 
   it("keeps comments minimal, honest, and free of narration", () => {
-    expect(CODE_SYSTEM_PROMPT).toMatch(/# Comments: minimal/);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/a second copy of intent/);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/Why, not what/);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/keep block comments to 3 lines or fewer/i);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/correct or remove it in the same edit/i);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/\n# Comments\n/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Default to no comments/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Document enduring facts, not the circumstances of an edit/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Do not use comments to narrate edits/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Keep block comments within three lines/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Correct or remove existing comments made inaccurate/);
   });
 
-  describe("audit-mode rails (#610)", () => {
-    it("warns against theorizing on auto-preview output instead of reading the dispatch site", () => {
-      expect(CODE_SYSTEM_PROMPT).toMatch(/Auto-preview is for locating, not auditing/);
-      expect(CODE_SYSTEM_PROMPT).toMatch(/range:"A-B"/);
+  it("keeps the change narrative out of the deliverable", () => {
+    expect(CODE_SYSTEM_PROMPT).toMatch(/\n# Artifact purity\n/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Never insert agent commentary, fix explanations/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/actionable errors/);
+  });
+
+  it("keeps one source of truth per fact", () => {
+    expect(CODE_SYSTEM_PROMPT).toMatch(/\n# DRY\n/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/one authoritative source for each fact/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(
+      /Reuse existing types, constants, helpers, and declarations/,
+    );
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Derive values instead of reproducing literals/);
+    expect(CODE_SYSTEM_PROMPT).toMatch(/Extract abstractions only when they eliminate repeated/);
+  });
+
+  describe("evidence rails (#610)", () => {
+    it("requires a search before claiming something is absent", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/\n# Evidence\n/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Before claiming something is absent, search for it/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Report the search query when no results are found/);
     });
 
-    it("covers doc freshness and architectural-state claims, not just runtime behavior", () => {
-      expect(CODE_SYSTEM_PROMPT).toMatch(/runtime behavior, current architectural state/);
-      expect(CODE_SYSTEM_PROMPT).toMatch(/whether a plan doc is still accurate/);
+    it("warns against concluding from auto-preview output", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(
+        /Read complete relevant ranges before drawing conclusions/,
+      );
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Auto-preview output may omit important content/);
+    });
+
+    it("forbids invented facts and unmeasured percentages", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Never invent files, symbols, behavior, references/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/percentages/);
     });
 
     it("requires a flag-to-consumer trace before claiming runtime behavior", () => {
-      expect(CODE_SYSTEM_PROMPT).toMatch(/Flag → consumer trace/);
-      expect(CODE_SYSTEM_PROMPT).toMatch(/parallelSafe\?: boolean/);
-    });
-
-    it("requires grep over enumeration for inventory claims (which tools have flag F?)", () => {
-      expect(CODE_SYSTEM_PROMPT).toMatch(/For inventory claims/);
-      expect(CODE_SYSTEM_PROMPT).toMatch(/grep the flag; don't enumerate from memory/);
-    });
-
-    it("forbids fabricated percentages without a measurement", () => {
-      expect(CODE_SYSTEM_PROMPT).toMatch(/No fabricated percentages/);
-      expect(CODE_SYSTEM_PROMPT).toMatch(/40-60% tokens/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(
+        /Trace configuration flags and type fields to their consumers/,
+      );
     });
 
     it("requires accounting for schema cost before proposing a new tool", () => {
-      expect(CODE_SYSTEM_PROMPT).toMatch(/Schema cost is real/);
-      expect(CODE_SYSTEM_PROMPT).toMatch(/tighten prompt \/ existing tool/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Account for recurring tool-schema token costs/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Prefer existing tools or prompt changes/);
     });
 
-    it("treats MEMORY.md feedback as part of the design space", () => {
-      expect(CODE_SYSTEM_PROMPT).toMatch(/MEMORY\.md is part of the design space/);
+    it("treats project memory as part of the design space", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Cross-check applicable project memory/);
     });
 
-    it("flags promoting user-facing features to model tools as a category error", () => {
-      expect(CODE_SYSTEM_PROMPT).toMatch(/User-facing ≠ model-facing ≠ library-facing/);
-    });
-
-    it("calls out library exports as a fourth surface so they aren't mistaken for dead code", () => {
-      expect(CODE_SYSTEM_PROMPT).toMatch(/library exports \(`src\/index\.ts`\)/);
-      expect(CODE_SYSTEM_PROMPT).toMatch(/Treating a library export as "dead code"/);
+    it("keeps the user, model and library surfaces distinct", () => {
+      expect(CODE_SYSTEM_PROMPT).toMatch(
+        /Distinguish user-facing features, model-facing tools, UI behavior, and library exports/,
+      );
     });
   });
 
@@ -189,7 +204,7 @@ describe("codeSystemPrompt", () => {
       const on = codeSystemPrompt(root, { configPath: cfgPath, subagentsEnabled: true });
       expect(on.length).toBeGreaterThan(off.length);
       // The neighbours keep their single blank line; nothing is left collapsed or doubled.
-      expect(off).toMatch(/approval\.\n\n# When to edit vs\. when to explore/);
+      expect(off).toMatch(/token savings\.\n\nYou are running on/);
       expect(off).not.toContain("__SUBAGENT_SECTION__");
     });
 
@@ -304,12 +319,12 @@ describe("codeSystemPrompt", () => {
     });
   });
 
-  describe("the static edit-gate section", () => {
+  describe("the static permissions section", () => {
     it("describes all three modes and defers to the live block", () => {
-      expect(CODE_SYSTEM_PROMPT).toMatch(/# The edit gate/);
-      expect(CODE_SYSTEM_PROMPT).toContain("**Read only**");
-      expect(CODE_SYSTEM_PROMPT).toContain("**Follow Rules**");
-      expect(CODE_SYSTEM_PROMPT).toContain("**Never Ask**");
+      expect(CODE_SYSTEM_PROMPT).toMatch(/\n# Permissions\n/);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Read only: /);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Follow Rules: /);
+      expect(CODE_SYSTEM_PROMPT).toMatch(/Never Ask: /);
       expect(CODE_SYSTEM_PROMPT).toMatch(/Permissions \(live\)/);
     });
 
@@ -338,7 +353,7 @@ describe("codeSystemPrompt", () => {
       );
       const out = codeSystemPrompt(root);
       expect(out).toContain("list_mcp_bridges");
-      expect(out).toContain("treat its result as authoritative");
+      expect(out).toMatch(/treat its result as authoritative/i);
       expect(out).not.toContain("# Configured MCP bridges");
       expect(out).not.toContain("(stdio [disabled])");
 

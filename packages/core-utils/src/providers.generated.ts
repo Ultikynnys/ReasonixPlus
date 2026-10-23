@@ -3,6 +3,7 @@
 
 import deepseek from "./providers/deepseek.json";
 import experiential from "./providers/experiential.json";
+import gemini_api from "./providers/gemini-api.json";
 import gemini from "./providers/gemini.json";
 import mimo from "./providers/mimo.json";
 import ollama from "./providers/ollama.json";
@@ -23,6 +24,7 @@ export interface ProviderDocumentSource {
 export const PROVIDER_DOCUMENTS: readonly ProviderDocumentSource[] = [
   { file: "deepseek.json", document: deepseek },
   { file: "experiential.json", document: experiential },
+  { file: "gemini-api.json", document: gemini_api },
   { file: "gemini.json", document: gemini },
   { file: "mimo.json", document: mimo },
   { file: "ollama.json", document: ollama },
@@ -45,6 +47,7 @@ export const PROVIDER_IDS = [
   "ollama",
   "synthetic",
   "openrouter",
+  "gemini-api",
 ] as const;
 
 /** Falls back to string when no provider is declared, so an empty set still builds. */

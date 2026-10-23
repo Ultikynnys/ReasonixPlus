@@ -2298,6 +2298,19 @@ function PageModels({
       />
 
       <DeclaredProviderCard
+        group="gemini-api"
+        defaultOpen={false}
+        models={modelColumn(groupModels("gemini-api"))}
+        settings={
+          <ProviderSettingFields
+            providerId="gemini-api"
+            settings={settings.providerSettings}
+            onSave={onSave}
+          />
+        }
+      />
+
+      <DeclaredProviderCard
         group="opencode"
         defaultOpen={false}
         models={modelColumn(groupModels("opencode"))}

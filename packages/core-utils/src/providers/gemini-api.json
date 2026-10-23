@@ -1,0 +1,115 @@
+{
+  "id": "gemini-api",
+  "providerId": "gemini-api",
+  "label": "Google Gemini API",
+  "shortLabel": "GAPI",
+  "order": 12,
+  "setupGate": ["apiKey"],
+  "pickerGate": null,
+  "routing": {
+    "staticCatalog": true,
+    "discoveredCatalog": false,
+    "checkedLast": false,
+    "foreignCatalog": true,
+    "modelScheme": "gemini-api/"
+  },
+  "groupLabelKey": "composer.modelGeminiApiGroup",
+  "precedence": 10,
+  "defaultModel": "gemini-3.5-flash-lite",
+  "knownCatalog": true,
+  "models": [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+    "gemini-pro-latest",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite"
+  ],
+  "goModels": [],
+  "speechModels": [],
+  "vision": { "patterns": ["^gemini-"] },
+  "modelFilter": null,
+  "reasoningEfforts": [],
+  "reasoningRules": [
+    {
+      "pattern": "^gemini-[3-9](?:$|[.-])",
+      "efforts": ["low", "medium", "high"],
+      "control": "gemini-level"
+    },
+    { "pattern": ".*", "efforts": [], "control": "none" }
+  ],
+  "endpoint": {
+    "strategy": "standard",
+    "default": "https://generativelanguage.googleapis.com/v1beta",
+    "tiers": {}
+  },
+  "settingsPanel": null,
+  "settings": [
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["GEMINI_API_KEY"],
+      "configKey": "geminiApiKey",
+      "label": "Google Gemini API key",
+      "hint": "A key from Google AI Studio. Requests bill to that key's project, independently of Gemini models served by Antigravity sign-in.",
+      "signupUrl": "https://aistudio.google.com/apikey"
+    },
+    {
+      "key": "baseUrl",
+      "kind": "url",
+      "env": ["GEMINI_API_BASE_URL"],
+      "configKey": "geminiApiBaseUrl",
+      "label": "Gemini API base URL",
+      "hint": "Endpoint override for the Gemini API. Empty uses the declared default."
+    }
+  ],
+  "credentials": {
+    "publicKey": null,
+    "oauthConfig": null
+  },
+  "usable": { "apiKey": true, "keylessLocal": false, "always": false },
+  "discovery": {
+    "strategy": "runtime",
+    "listField": null,
+    "idField": "name",
+    "excludeSpeech": false
+  },
+  "wire": {
+    "format": "gemini-interactions",
+    "path": "/interactions",
+    "apiKeyHeader": "x-goog-api-key",
+    "stampMessageIds": false,
+    "streamOptions": false,
+    "storeFlag": false,
+    "toolStream": false,
+    "thinking": null,
+    "reasoningEffort": false
+  },
+  "billing": { "kind": "usd", "schedule": null },
+  "usage": { "probe": null },
+  "strings": {
+    "notConfigured": "Not configured yet — add a Google Gemini API key in Settings → Gemini API to use these models.",
+    "noCredential": "No Gemini API key for {model} — add one in Settings → Gemini API.",
+    "apiKey": "Gemini API · {baseUrl} · API key",
+    "apiNone": "Gemini API · {baseUrl} · no key: add a Google AI Studio key in Settings"
+  },
+  "errors": {
+    "i18nPrefix": "custom",
+    "brands": ["Gemini"],
+    "hosts": ["generativelanguage.googleapis.com", "googleapis.com", "google.com"],
+    "serverReport": "standard"
+  },
+  "client": {
+    "auth": "api-key",
+    "transport": null,
+    "allowMissingKey": false
+  }
+}

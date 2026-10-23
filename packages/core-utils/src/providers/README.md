@@ -281,6 +281,7 @@ Objects:
 | `routing` | `staticCatalog`, `discoveredCatalog`, `checkedLast`, `foreignCatalog`, `modelScheme` | How a bare model id reaches this provider |
 | `discovery` | `strategy`, `listField`, `idField`, `excludeSpeech`, `visionField` | Where the live catalog comes from and how to read it |
 | `client` | `auth`, `transport`, `allowMissingKey` | Per-request credentials and wire format |
+| `wire` | `format`, `path`, `apiKeyHeader`, `stampMessageIds`, `streamOptions`, `storeFlag`, `toolStream`, `thinking`, `reasoningEffort` | Request shape: `format` is `chat-completions` (default), `ollama-native`, or `gemini-interactions`; `path` replaces the `/chat/completions` suffix; `apiKeyHeader` replaces `Authorization: Bearer` |
 | `strings` | map of strings | Provider-named UI copy, keys listed under Provider copy |
 | `vision` | `models`, `patterns`, `predicate`, `fromProvider`, `stripSchemeAndTag`, `refreshable` | Id list, regexes, inherited catalog, or a catalog a sync may replace |
 

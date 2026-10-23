@@ -1355,6 +1355,39 @@ describe("client-gemini", () => {
       expect(res.content).toBe("seen");
     });
 
+    it("replaces a linked image with a note instead of sending the URL as bytes", async () => {
+      // Cloud Code carries bytes, so a link would otherwise reach it as base64 of
+      // the URL text and 400 the turn.
+      let captured: { body: unknown } | null = null;
+      const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+        captured = { body: JSON.parse(init?.body as string) };
+        return new Response(JSON.stringify(wrappedResponse([{ text: "ok" }])), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof globalThis.fetch;
+
+      const client = geminiClient(fetch);
+      await client.chat({
+        model: "gemini-2.5-flash",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "what is this?" },
+              { type: "image_url", image_url: { url: "https://example.com/a.png" } },
+            ],
+          },
+        ],
+      });
+
+      const body = captured?.body as { request: { contents: Array<{ parts: unknown[] }> } };
+      expect(body.request.contents[0]?.parts).toEqual([
+        { text: "what is this?" },
+        { text: "[image not sent: this endpoint accepts inline images only]" },
+      ]);
+    });
+
     it("throws a clear error when not signed in", async () => {
       const client = new DeepSeekClient({
         baseUrl: "https://cloudcode-pa.googleapis.com",

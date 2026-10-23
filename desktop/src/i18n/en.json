@@ -68,6 +68,7 @@
     "modelExperientialGroup": "Experiential Labs",
     "modelSyntheticGroup": "Synthetic",
     "modelOpenRouterGroup": "OpenRouter",
+    "modelGeminiApiGroup": "Google Gemini API",
     "modelNoneEnabled": "No models enabled. Enable them in Settings → Models to pick them here.",
     "modelError": "Couldn't fetch models: {error}",
     "modelOllamaGroup": "Ollama",

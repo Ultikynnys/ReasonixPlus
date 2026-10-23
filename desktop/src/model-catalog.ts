@@ -23,6 +23,9 @@ export type ModelCatalogGroupKey =
   | "experiential"
   | "synthetic"
   | "openrouter"
+  // The Gemini API provider (API key) is a picker group of its own, separate
+  // from the Antigravity-served `gemini` catalog.
+  | "gemini-api"
   // Ollama owns a settings card without being a picker group: its models come
   // from the runtime probe, so the picker never lists them.
   | "ollama";
@@ -76,6 +79,7 @@ const GROUP_KEYS: ReadonlySet<string> = new Set<ModelCatalogGroupKey>([
   "experiential",
   "synthetic",
   "openrouter",
+  "gemini-api",
 ]);
 
 interface CatalogGroupEntry {

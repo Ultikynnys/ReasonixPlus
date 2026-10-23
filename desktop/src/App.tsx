@@ -558,6 +558,9 @@ function queuedFrom(sendOrText: string | QueuedSend, images?: QueuedSend["images
 type State = {
   ready: boolean;
   needsSetup: boolean;
+  /** Why this chat cannot run: the daemon's provider-specific "what is missing" copy,
+   *  shown on the setup screen. Null when the tab is simply not gated. */
+  setupMessage: string | null;
   busy: boolean;
   /** True between an optimistic send and the daemon's $turn_started ack (or
    *  its $turn_complete rejection). Visual pending spin only — turn state
@@ -2180,6 +2183,25 @@ function queueDiscardPatch(
   };
 }
 
+/** A credential-gated chat cannot run a send. `send()` still parks one optimistically
+ *  (a send racing the gate), and without this it would spin on that ack forever: release
+ *  it and say why the message never ran, so a gated chat is never a silent dead end. */
+function gatedSendPatch(
+  state: State,
+  message: string | undefined,
+): { messages: ChatMessage[]; awaitingAck: boolean } | Record<string, never> {
+  if (!state.awaitingAck) return {};
+  return {
+    awaitingAck: false,
+    messages: insertNotice(
+      state.messages,
+      message ??
+        "This chat can't run yet: the selected model's provider has no credential. Add its API key in Settings → Models.",
+      "warning",
+    ),
+  };
+}
+
 /** True when the given turn already carries a user-visible explanation (a warning
  *  segment or a notice). Prevents $turn_complete from adding a duplicate stop card
  *  when the loop already surfaced the reason. */
@@ -2423,7 +2445,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       };
     }
     case "$ready":
-      return { ...state, ready: true, needsSetup: false, mcpSetup: null };
+      return { ...state, ready: true, needsSetup: false, setupMessage: null, mcpSetup: null };
     case "$workspace_initialized":
       return {
         ...state,
@@ -2435,7 +2457,14 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
     case "$needs_setup":
       // Either side of the `$ready` fork resolves the session-start picker: a chat
       // that still needs a credential must not keep the dialog waiting on `$ready`.
-      return { ...state, needsSetup: true, ready: false, mcpSetup: null };
+      return {
+        ...state,
+        needsSetup: true,
+        ready: false,
+        setupMessage: ev.message ?? null,
+        mcpSetup: null,
+        ...gatedSendPatch(state, ev.message),
+      };
     case "$turn_complete": {
       // Clear pause-gate-tied modals too. By the time the loop emits
       // $turn_complete, anything still in these arrays is orphaned — the
@@ -3655,6 +3684,7 @@ const TabRuntime = memo(function TabRuntime({
   const [state, dispatch] = useReducer(reduce, {
     ready: false,
     needsSetup: false,
+    setupMessage: null,
     busy: false,
     awaitingAck: false,
     compacting: false,
@@ -5215,6 +5245,7 @@ const TabRuntime = memo(function TabRuntime({
           ) : state.needsSetup ? (
             <NeedsSetupView
               workspaceDir={state.settings?.workspaceDir}
+              message={state.setupMessage}
               onPickWorkspace={pickWorkspace}
               onOpenSettings={() => openSettingsAt("models")}
             />
@@ -6476,10 +6507,12 @@ function EmptyState({
 
 function NeedsSetupView({
   workspaceDir,
+  message,
   onPickWorkspace,
   onOpenSettings,
 }: {
   workspaceDir?: string;
+  message?: string | null;
   onPickWorkspace: () => void;
   onOpenSettings: () => void;
 }) {
@@ -6500,6 +6533,19 @@ function NeedsSetupView({
       <div style={{ fontSize: 12.5, color: "var(--muted)", maxWidth: 460, textAlign: "center" }}>
         {t("app.setup.description")}
       </div>
+      {message ? (
+        <div
+          role="alert"
+          style={{
+            fontSize: 12.5,
+            color: "var(--danger)",
+            maxWidth: 460,
+            textAlign: "center",
+          }}
+        >
+          {message}
+        </div>
+      ) : null}
       <div
         style={{
           width: "min(420px, 100%)",

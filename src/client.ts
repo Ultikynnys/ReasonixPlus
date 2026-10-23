@@ -70,6 +70,7 @@ function cacheHitTokensFrom(u: RawUsage): number | undefined {
     u.cache_read_input_tokens,
     u.cachedContentTokenCount,
     u.cached_content_token_count,
+    u.total_cached_tokens,
   ];
   return candidates.find(
     (value): value is number => typeof value === "number" && Number.isFinite(value),
@@ -111,16 +112,29 @@ export class Usage {
       // Google Antigravity / Gemini usageMetadata names.
       typeof u.promptTokenCount === "number" ||
       typeof u.candidatesTokenCount === "number" ||
-      typeof u.totalTokenCount === "number"
+      typeof u.totalTokenCount === "number" ||
+      // Gemini API `/interactions` usage names.
+      typeof u.total_input_tokens === "number" ||
+      typeof u.total_output_tokens === "number"
     );
   }
 
   static fromApi(raw: RawUsage | undefined | null): Usage {
     const u = raw ?? {};
     const promptTokens =
-      u.prompt_tokens ?? u.prompt_eval_count ?? u.input_tokens ?? u.promptTokenCount ?? 0;
+      u.prompt_tokens ??
+      u.prompt_eval_count ??
+      u.input_tokens ??
+      u.promptTokenCount ??
+      u.total_input_tokens ??
+      0;
     const completionTokens =
-      u.completion_tokens ?? u.eval_count ?? u.output_tokens ?? u.candidatesTokenCount ?? 0;
+      u.completion_tokens ??
+      u.eval_count ??
+      u.output_tokens ??
+      u.candidatesTokenCount ??
+      u.total_output_tokens ??
+      0;
     const cacheHitTokens = cacheHitTokensFrom(u) ?? 0;
     const cacheMissTokens =
       u.prompt_cache_miss_tokens ?? Math.max(0, promptTokens - cacheHitTokens);
@@ -209,18 +223,84 @@ function parseDataUrl(url: string): { mimeType: string; data: string } {
   return { mimeType: "application/octet-stream", data: url };
 }
 
+/** A tool result's text: a plain string message, or the text parts of a
+ *  structured one. Shared by both Gemini wirings so a result reads the same way
+ *  whichever one sends it. */
+function toolResultText(content: ChatMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part) => part.type === "text")
+    .map((part) => (part as { text: string }).text)
+    .join("\n");
+}
+
 /** Tool result body for a Cloud Code functionResponse, whose response must be a JSON object. */
 function toolResultContent(content: ChatMessage["content"]): Record<string, unknown> {
-  const result =
-    typeof content === "string"
-      ? content
-      : Array.isArray(content)
-        ? content
-            .filter((part) => part.type === "text")
-            .map((part) => (part as { text: string }).text)
-            .join("\n")
-        : "";
-  return { result };
+  return { result: toolResultText(content) };
+}
+
+/** Text and image parts of one message, independent of wire shape: Cloud Code
+ *  wraps them as `{text}`/`{inlineData}`, interactions as `{type}` parts. A linked
+ *  image is its own case because neither wire can inline one. */
+type MessagePart =
+  | { kind: "text"; text: string }
+  | { kind: "image"; mimeType: string; data: string }
+  | { kind: "imageLink"; url: string };
+
+function messageParts(
+  content: ChatMessage["content"],
+  opts: { textOnly?: boolean } = {},
+): MessagePart[] {
+  const parts: MessagePart[] = [];
+  const pushText = (text: string, requireNonEmpty: boolean): void => {
+    if (requireNonEmpty && text.length === 0) return;
+    parts.push({ kind: "text", text });
+  };
+  if (typeof content === "string") {
+    pushText(content, true);
+    return parts;
+  }
+  if (!Array.isArray(content)) return parts;
+  for (const part of content) {
+    if (part.type === "text") pushText(part.text, opts.textOnly === true);
+    else if (part.type === "image_url" && opts.textOnly !== true) {
+      const url = part.image_url.url;
+      if (url.startsWith("data:")) {
+        const parsed = parseDataUrl(url);
+        parts.push({ kind: "image", mimeType: parsed.mimeType, data: parsed.data });
+      } else {
+        parts.push({ kind: "imageLink", url });
+      }
+    }
+  }
+  return parts;
+}
+
+/** Placeholder for an image the wire cannot carry, matching the loop's own
+ *  "[image removed: ...]" notes: the turn continues and the model is told. */
+const INLINE_IMAGES_ONLY = "[image not sent: this endpoint accepts inline images only]";
+
+/** Stand-in user turn for a transcript the wire would reject as empty. */
+const CONTINUE_PROMPT = "Continue the conversation.";
+
+/** Why an interaction that still asks for an action produced no runnable call:
+ *  the only actions it reports are client-side functions, so this means the model
+ *  reached for something else (a server-side tool, for instance). */
+const ACTION_NOT_RUNNABLE = "the model asked for an action this client cannot run";
+
+/** One message's parts in Cloud Code's shape: text as `{text}`, an inlined image
+ *  as `{inlineData}`, and a linked image as the same placeholder note the
+ *  interactions builder uses, since that wire carries bytes rather than links. */
+function cloudCodeParts(
+  content: ChatMessage["content"],
+  textOnly = false,
+): Array<Record<string, unknown>> {
+  return messageParts(content, { textOnly }).map((part) => {
+    if (part.kind === "text") return { text: part.text };
+    if (part.kind === "imageLink") return { text: INLINE_IMAGES_ONLY };
+    return { inlineData: { mimeType: part.mimeType, data: part.data } };
+  });
 }
 
 /** Fields the Gemini function-declaration `Schema` type accepts (an OpenAPI 3.0
@@ -378,6 +458,182 @@ function ollamaThinkValue(
   if (control.effort) return control.effort;
   if (control.thinking === "enabled") return true;
   return undefined;
+}
+
+/** Cloud Code thinkingConfig is an object; the Gemini API's interactions wire takes
+ *  one `thinking_level` string. A disabled toggle has no field of its own there,
+ *  so it maps to the API's lowest level (which reports no thought tokens). */
+function interactionThinkingLevel(control: ReasoningControl): string | undefined {
+  if (control.contract.control !== "gemini-level") return undefined;
+  if (control.thinking === "disabled") return "minimal";
+  return control.effort;
+}
+
+/** Wire form of a function call's arguments: the API sends an object, the loop
+ *  stores a JSON string. Undefined when the frame carries no arguments at all,
+ *  so an absent field is never mistaken for `{}`. */
+function interactionArgumentsText(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+/** A rejected interactions request answers either with an SSE error frame or with
+ *  the API's JSON envelope, so the readable message is fished out of both rather
+ *  than showing raw protocol at the user. */
+function interactionFailureMessage(body: string): string {
+  const fromJson = (text: string): string | undefined => {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      const envelope = Array.isArray(parsed) ? parsed[0] : parsed;
+      return extractMidStreamError(envelope)?.message;
+    } catch {
+      return undefined;
+    }
+  };
+  const direct = fromJson(body);
+  if (direct) return direct;
+  const line = body.split("\n").find((entry) => entry.startsWith("data:"));
+  return (line && fromJson(line.slice(5).trim())) || body;
+}
+
+/** One in-flight `function_call` step of a streamed interaction: the index the
+ *  loop assembles under, plus whether its arguments were already forwarded, so a
+ *  trailing complete step cannot append them twice. */
+interface InteractionToolSlot {
+  index: number;
+  sawArguments: boolean;
+}
+
+/** Gemini API (`POST /v1beta/interactions`) request body. That wire carries a
+ *  `step_list` transcript rather than chat messages, so every message the loop
+ *  keeps is translated into the step that stands for it. */
+function buildInteractionsPayload(
+  opts: ChatRequestOptions,
+  stream: boolean,
+  control: ReasoningControl,
+): Record<string, unknown> {
+  const steps: Array<Record<string, unknown>> = [];
+  let systemInstruction: string | undefined;
+  const wireModel = stripProviderQualifier(opts.model);
+  // Adjacent user turns merge into one step: a step boundary reads as a new user
+  // turn, and trimming, steering or an injected record can leave two in a row.
+  const pushContent = (content: Array<Record<string, unknown>>): void => {
+    if (content.length === 0) return;
+    const previous = steps.at(-1);
+    if (previous?.type === "user_input") {
+      const merged = [...((previous.content as Array<Record<string, unknown>>) ?? []), ...content];
+      previous.content = merged;
+      return;
+    }
+    steps.push({ type: "user_input", content });
+  };
+  /** This wire takes text and image content; an image it cannot inline (a link)
+   *  is answered with "Unsupported url", so it becomes the loop's placeholder note. */
+  const contentOf = (content: ChatMessage["content"], textOnly = false) =>
+    messageParts(content, { textOnly }).map((part): Record<string, unknown> => {
+      if (part.kind === "text") return { type: "text", text: part.text };
+      if (part.kind === "imageLink") return { type: "text", text: INLINE_IMAGES_ONLY };
+      return { type: "image", mime_type: part.mimeType, data: part.data };
+    });
+  // A function_result must name its function. The loop's tool message carries the
+  // name; a nameless result is resolved from the call it answers, or dropped —
+  // the API 400s on an empty name ("Name cannot be empty").
+  const pendingCallNames = new Map<string, string[]>();
+  const callNameById = new Map<string, string>();
+  // A Gemini 3 call replayed without its signature is rejected outright
+  // ("Request contains an invalid argument"), so a call whose own signature is
+  // gone borrows any known one, else Google's documented sentinel — exactly what
+  // the Cloud Code builder does for the same reason.
+  const needsSignature = requiresThoughtSignature(wireModel);
+  let carriedSignature: string | undefined;
+  for (const msg of opts.messages) {
+    for (const call of msg.tool_calls ?? []) {
+      if (call.thoughtSignature) {
+        carriedSignature = call.thoughtSignature;
+        break;
+      }
+    }
+    if (carriedSignature) break;
+  }
+
+  for (const msg of opts.messages) {
+    switch (msg.role) {
+      case "system": {
+        const text = messageText(msg, true);
+        if (text.length > 0) {
+          systemInstruction = systemInstruction ? `${systemInstruction}\n\n${text}` : text;
+        }
+        break;
+      }
+      case "user": {
+        pushContent(contentOf(msg.content));
+        break;
+      }
+      case "assistant": {
+        const content = contentOf(msg.content, true);
+        if (content.length > 0) steps.push({ type: "model_output", content });
+        for (const call of msg.tool_calls ?? []) {
+          const id = call.id ?? globalThis.crypto.randomUUID();
+          const pending = pendingCallNames.get(call.function.name) ?? [];
+          pending.push(id);
+          pendingCallNames.set(call.function.name, pending);
+          callNameById.set(id, call.function.name);
+          const signature =
+            call.thoughtSignature ||
+            carriedSignature ||
+            (needsSignature ? SKIP_THOUGHT_SIGNATURE_VALIDATOR : "");
+          if (signature) carriedSignature = signature;
+          steps.push({
+            type: "function_call",
+            id,
+            name: call.function.name,
+            arguments: parseToolCallArguments(call.function.arguments),
+            ...(signature ? { signature } : {}),
+          });
+        }
+        break;
+      }
+      case "tool": {
+        const pending = msg.name ? pendingCallNames.get(msg.name) : undefined;
+        if (msg.tool_call_id && pending) {
+          const matched = pending.indexOf(msg.tool_call_id);
+          if (matched >= 0) pending.splice(matched, 1);
+        }
+        // The name may come from the message, from the call it answers, or from
+        // what is still pending for this role.
+        const answered = msg.tool_call_id ? callNameById.get(msg.tool_call_id) : undefined;
+        const name = msg.name || answered || pending?.shift() || "";
+        if (name.length === 0) break;
+        steps.push({ type: "function_result", name, result: toolResultText(msg.content) });
+        break;
+      }
+    }
+  }
+  // The wire rejects an empty transcript with a misleading "model not found", and
+  // a summary-only or system-only context can produce one.
+  if (steps.length === 0) {
+    steps.push({ type: "user_input", content: [{ type: "text", text: CONTINUE_PROMPT }] });
+  }
+
+  const payload: Record<string, unknown> = { model: wireModel, input: steps };
+  if (stream) payload.stream = true;
+  if (systemInstruction) payload.system_instruction = systemInstruction;
+  if (opts.tools?.length) {
+    payload.tools = opts.tools.map((tool) => ({
+      type: "function",
+      name: tool.function.name,
+      description: tool.function.description,
+      parameters: sanitizeGeminiSchema(tool.function.parameters),
+    }));
+  }
+  const generationConfig: Record<string, unknown> = {
+    ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+    ...(opts.maxTokens !== undefined ? { max_output_tokens: opts.maxTokens } : {}),
+  };
+  const thinkingLevel = interactionThinkingLevel(control);
+  if (thinkingLevel) generationConfig.thinking_level = thinkingLevel;
+  if (Object.keys(generationConfig).length > 0) payload.generation_config = generationConfig;
+  return payload;
 }
 
 export interface ChatResponse {
@@ -801,11 +1057,12 @@ export class DeepSeekClient {
     }
   }
 
-  /** Authorization header when a key exists — omitted entirely for keyless
-   *  endpoints (Ollama's local daemon ignores auth, so `Bearer ` would be noise). */
-  private async authHeaders(): Promise<Record<string, string>> {
+  /** The key header the provider declares (Google's `x-goog-api-key`); null keeps
+   *  the bearer default, and a keyless endpoint (local Ollama) sends neither. */
+  private async authHeaders(headerName?: string | null): Promise<Record<string, string>> {
     const key = await this.resolveApiKey();
-    return key ? { Authorization: `Bearer ${key}` } : {};
+    if (!key) return {};
+    return headerName ? { [headerName]: key } : { Authorization: `Bearer ${key}` };
   }
 
   /** Timer + combined-signal pair for one request — the caller clears the
@@ -843,13 +1100,18 @@ export class DeepSeekClient {
       await sleep(rateLimitWaitMs, signal);
     }
     let transport = await this.resolveTransport();
+    const provider = providerForModel(opts.model);
+    // Declared request quirks: where the key rides and which path it posts to are
+    // data, so a provider that speaks neither bearer auth nor /chat/completions
+    // needs no branch here.
+    const wire = providerSpec(provider)?.wire ?? DEFAULT_PROVIDER_WIRE;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (stream) headers.Accept = "text/event-stream";
     if (transport) {
       log.verbose(`${stream ? "stream" : "chat"} → ${transport.endpoint}`);
       Object.assign(headers, transport.headers);
     } else {
-      Object.assign(headers, await this.authHeaders());
+      Object.assign(headers, await this.authHeaders(wire.apiKeyHeader));
     }
     // OpenCode is told apart from other harnesses by request identity alone, and
     // its keyless free tier admits only traffic that carries OpenCode's own
@@ -864,12 +1126,12 @@ export class DeepSeekClient {
       const orgId = await this.resolveOpencodeOrgId();
       if (orgId) headers["x-opencode-org-id"] ??= orgId;
     }
-    const isOllama = providerForModel(opts.model) === "ollama";
+    const isOllama = provider === "ollama";
     const endpoint =
       transport?.endpoint ??
       (isOllama
         ? `${deriveNativeOllamaOrigin(this.baseUrl)}/api/chat`
-        : `${this.zaiResolvedBase ?? this.baseUrl}/chat/completions`);
+        : `${this.zaiResolvedBase ?? this.baseUrl}${wire.path ?? "/chat/completions"}`);
     const ollamaShow = isOllama ? await this.resolveOllamaShow(opts) : undefined;
     const init: RequestInit = {
       method: "POST",
@@ -1046,7 +1308,11 @@ export class DeepSeekClient {
         : supportedReasoningEfforts(opts.model);
     const control = reasoningControl({
       provider,
-      model: opts.model,
+      // The contract belongs to the model, not to its routing qualifier:
+      // `supportedReasoningEfforts` already reads the wire id, so resolving the
+      // contract on the qualified one could pick a different rule than the ladder
+      // the effort is clamped to.
+      model: stripProviderQualifier(opts.model),
       reasoningEffort: opts.reasoningEffort,
       thinking,
       supported,
@@ -1062,6 +1328,11 @@ export class DeepSeekClient {
     // endpoint, so this branch never reaches the chat-completions payload below.
     if (wire.format === "ollama-native") {
       return this.buildOllamaPayload(opts, stream, control, ollamaShow);
+    }
+    // The Gemini API speaks a step_list protocol: `messages`, `max_tokens` and
+    // friends are not fields there, so the whole body is translated instead.
+    if (wire.format === "gemini-interactions") {
+      return buildInteractionsPayload(opts, stream, control);
     }
     const payload: Record<string, unknown> = {
       // `ollama/<id>` and `<provider>/<id>` namespacing is client-side routing —
@@ -1252,8 +1523,14 @@ export class DeepSeekClient {
     if (providerForModel(opts.model) === "ollama") {
       return this.chatOllama(opts);
     }
+    // An Antigravity client is defined by its endpoint, not by the model name: a
+    // `gemini-2.5-flash` id that routes to the Gemini API elsewhere still runs on
+    // this client's Cloud Code auth.
     if (this.geminiMode || providerForModel(opts.model) === "gemini") {
       return this.chatGemini(opts);
+    }
+    if (providerSpec(providerForModel(opts.model))?.wire.format === "gemini-interactions") {
+      return this.chatInteractions(opts);
     }
     const { signal, timer } = this.withTimeout(opts.signal);
     try {
@@ -1318,6 +1595,230 @@ export class DeepSeekClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** Gemini API non-streaming turn — a `{status, steps}` interaction instead of a
+   *  choice list, so the reply is assembled from its steps rather than unwrapped. */
+  private async chatInteractions(opts: ChatRequestOptions): Promise<ChatResponse> {
+    const { signal, timer } = this.withTimeout(opts.signal);
+    try {
+      const { resp } = await drainStatusChunks(this.prepareRequest(opts, false, signal));
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(
+          `${this._errorPrefix(opts.model)} ${resp.status}: ${interactionFailureMessage(body)}`,
+        );
+      }
+      return this.parseInteractionResponse(await resp.json());
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** An interaction's answer lives in its steps: `model_output` carries the text
+   *  (and any generated image), `function_call` the tool calls, `thought` the
+   *  reasoning the model chose to summarize. */
+  private parseInteractionResponse(data: any): ChatResponse {
+    let content = "";
+    let reasoning = "";
+    let image: { dataUrl: string; mimeType: string } | undefined;
+    const toolCalls: ToolCall[] = [];
+    for (const step of Array.isArray(data?.steps) ? data.steps : []) {
+      if (step?.type === "model_output") {
+        for (const part of step.content ?? []) {
+          if (part?.type === "text" && typeof part.text === "string") content += part.text;
+          else if (part?.type === "image" && typeof part.data === "string") {
+            const mimeType = part.mime_type ?? "application/octet-stream";
+            image = { dataUrl: `data:${mimeType};base64,${part.data}`, mimeType };
+          }
+        }
+      } else if (step?.type === "thought") {
+        // A thought step carries only its signature unless summaries are asked
+        // for, so this stays empty on a default request.
+        if (typeof step.text === "string") reasoning += step.text;
+      } else if (step?.type === "function_call") {
+        toolCalls.push({
+          id: step.id ?? globalThis.crypto.randomUUID(),
+          type: "function" as const,
+          function: { name: step.name ?? "", arguments: JSON.stringify(step.arguments ?? {}) },
+          ...(typeof step.signature === "string" && step.signature
+            ? { thoughtSignature: step.signature }
+            : {}),
+        });
+      }
+    }
+    return {
+      content,
+      reasoningContent: reasoning || null,
+      toolCalls,
+      ...(image ? { image } : {}),
+      usage: Usage.fromApi(data?.usage),
+      raw: data,
+      // Every call this wire reports is a client-side function; an interaction
+      // that still asks for an action has asked for one we cannot run, and an
+      // empty answer with no reason would read as a silent stall.
+      ...(data?.status === "requires_action" && toolCalls.length === 0
+        ? { stopReason: ACTION_NOT_RUNNABLE }
+        : {}),
+    };
+  }
+
+  /** Gemini API streaming turn — each frame names the step it belongs to, so a
+   *  `step.delta` is routed by its slot instead of by field-name guessing. */
+  private async *streamInteractions(opts: ChatRequestOptions): AsyncGenerator<StreamChunk> {
+    const { signal, timer, timedOut } = this.withTimeout(opts.signal);
+    let resp: Response;
+    try {
+      ({ resp } = yield* this.prepareRequest(opts, true, signal));
+    } catch (err) {
+      clearTimeout(timer);
+      throw err;
+    }
+    if (!resp.ok || !resp.body) {
+      clearTimeout(timer);
+      const body = await resp.text().catch(() => "");
+      throw new Error(
+        `${this._errorPrefix(opts.model)} ${resp.status}: ${interactionFailureMessage(body)}`,
+      );
+    }
+    const queue: StreamChunk[] = [];
+    let done = false;
+    let nextToolCallIndex = 0;
+    const toolSlots = new Map<number, InteractionToolSlot>();
+    const parser = createParser({
+      onEvent: (ev: EventSourceMessage) => {
+        if (!ev.data || ev.data === "[DONE]") {
+          done = true;
+          return;
+        }
+        try {
+          const json = JSON.parse(ev.data);
+          queue.push(
+            ...this.parseInteractionStreamChunks(json, toolSlots, () => nextToolCallIndex++),
+          );
+        } catch {
+          /* skip malformed sse frame */
+        }
+      },
+    });
+    yield* this.pumpSse(resp.body, parser, queue, {
+      isDone: () => done,
+      timedOut: () => timedOut(),
+      cleanup: () => clearTimeout(timer),
+    });
+  }
+
+  /** Map one interactions SSE frame onto zero or more StreamChunks. */
+  private parseInteractionStreamChunks(
+    json: any,
+    toolSlots: Map<number, InteractionToolSlot>,
+    nextToolCallIndex: () => number,
+  ): StreamChunk[] {
+    const event = typeof json?.event_type === "string" ? json.event_type : "";
+    const chunk: StreamChunk = { raw: json };
+    const chunks: StreamChunk[] = [];
+    const slot = toolSlots.get(json?.index);
+
+    if (event === "interaction.completed") {
+      if (json?.interaction?.usage) chunk.usage = Usage.fromApi(json.interaction.usage);
+      // Calls stream before this frame, so an action request with no slot opened
+      // asked for something other than a client-side function.
+      if (json?.interaction?.status === "requires_action" && toolSlots.size === 0) {
+        chunk.stopReason = ACTION_NOT_RUNNABLE;
+      }
+    }
+
+    if (event === "step.start") {
+      if (json?.step?.type === "function_call") {
+        const opened: InteractionToolSlot = { index: nextToolCallIndex(), sawArguments: false };
+        toolSlots.set(json.index, opened);
+        // The opening frame announces the call with an empty `arguments: {}`
+        // placeholder; the real arguments follow in a delta (or the closing step).
+        const complete = interactionArgumentsText(json.step.arguments);
+        const hasArguments = complete !== undefined && complete !== "" && complete !== "{}";
+        if (hasArguments) opened.sawArguments = true;
+        chunks.push({
+          raw: json,
+          toolCallDelta: {
+            index: opened.index,
+            ...(typeof json.step.id === "string" ? { id: json.step.id } : {}),
+            ...(typeof json.step.name === "string" ? { name: json.step.name } : {}),
+            // A call can carry the model's signature itself instead of the thought
+            // step that preceded it, and the continuation is rejected without one.
+            ...(typeof json.step.signature === "string" && json.step.signature
+              ? { thoughtSignature: json.step.signature }
+              : {}),
+            argumentsDelta: hasArguments && complete ? complete : "",
+          },
+        });
+      }
+    } else if (event === "step.delta") {
+      const delta = json?.delta ?? {};
+      // A call frame names itself either by the step it belongs to or by its own
+      // delta type; a slot opened by step.start covers the rest.
+      const isToolStep =
+        slot !== undefined ||
+        json?.step?.type === "function_call" ||
+        delta.type === "arguments_delta" ||
+        delta.type === "function_call";
+      if (isToolStep) {
+        // A call may be announced by a step.start, or only surface here; either
+        // way its arguments are forwarded once, in wire order.
+        let target = slot;
+        if (!target) {
+          target = { index: nextToolCallIndex(), sawArguments: false };
+          toolSlots.set(json?.index, target);
+        }
+        const name = typeof delta.name === "string" ? delta.name : undefined;
+        const id = typeof delta.id === "string" ? delta.id : undefined;
+        const args = interactionArgumentsText(delta.arguments);
+        if (args !== undefined) target.sawArguments = true;
+        if (name || id || args !== undefined) {
+          chunks.push({
+            raw: json,
+            toolCallDelta: {
+              index: target.index,
+              ...(id ? { id } : {}),
+              ...(name ? { name } : {}),
+              ...(args !== undefined ? { argumentsDelta: args } : {}),
+            },
+          });
+        }
+      } else if (delta.type === "thought_signature" || typeof delta.signature === "string") {
+        // Hoisted to the chunk so the assembler can attach it to a call that
+        // streamed in an earlier frame.
+        if (typeof delta.signature === "string" && delta.signature) {
+          chunk.thoughtSignature = delta.signature;
+        }
+      } else if (delta.type === "image" && typeof delta.data === "string") {
+        // A streamed generated image uses the same part shape as an input one.
+        const mimeType =
+          typeof delta.mime_type === "string" ? delta.mime_type : "application/octet-stream";
+        chunk.image = { dataUrl: `data:${mimeType};base64,${delta.data}`, mimeType };
+      } else if (typeof delta.text === "string" && delta.text.length > 0) {
+        if (delta.type === "thought" || delta.thought === true) chunk.reasoningDelta = delta.text;
+        else chunk.contentDelta = delta.text;
+      }
+    } else if (event === "step.stop" && slot && !slot.sawArguments) {
+      // Arguments that never streamed still arrive with the closing step.
+      const complete = interactionArgumentsText(json?.step?.arguments);
+      if (complete !== undefined) {
+        slot.sawArguments = true;
+        chunks.push({ raw: json, toolCallDelta: { index: slot.index, argumentsDelta: complete } });
+      }
+    }
+
+    if (
+      chunk.contentDelta !== undefined ||
+      chunk.reasoningDelta !== undefined ||
+      chunk.usage !== undefined ||
+      chunk.thoughtSignature !== undefined ||
+      chunk.image !== undefined ||
+      chunk.stopReason !== undefined
+    ) {
+      chunks.unshift(chunk);
+    }
+    return chunks;
   }
 
   /** Resolve the Google OAuth token + Cloud Code project id for a gemini
@@ -1699,32 +2200,14 @@ export class DeepSeekClient {
         }
         case "user": {
           flushFunctionResponses();
-          const parts: Array<Record<string, unknown>> = [];
-          if (typeof msg.content === "string") {
-            if (msg.content.length > 0) parts.push({ text: msg.content });
-          } else if (Array.isArray(msg.content)) {
-            for (const part of msg.content) {
-              if (part.type === "text") parts.push({ text: part.text });
-              else if (part.type === "image_url") {
-                const parsed = parseDataUrl(part.image_url.url);
-                parts.push({ inlineData: { mimeType: parsed.mimeType, data: parsed.data } });
-              }
-            }
-          }
           // Gemini rejects contents with zero parts; drop them defensively.
-          pushContent("user", parts);
+          pushContent("user", cloudCodeParts(msg.content));
           break;
         }
         case "assistant": {
           flushFunctionResponses();
           const parts: Array<Record<string, unknown>> = [];
-          if (typeof msg.content === "string") {
-            if (msg.content.length > 0) parts.push({ text: msg.content });
-          } else if (Array.isArray(msg.content)) {
-            for (const part of msg.content) {
-              if (part.type === "text" && part.text.length > 0) parts.push({ text: part.text });
-            }
-          }
+          parts.push(...cloudCodeParts(msg.content, true));
           const msgThoughtSig = msg.tool_calls?.find((c) => {
             const s = c.thoughtSignature ?? (c as any).thought_signature;
             return typeof s === "string" && s.length > 0;
@@ -1801,7 +2284,7 @@ export class DeepSeekClient {
     if (contents.length > 0 && contents[0]?.role === "model") {
       contents.unshift({
         role: "user",
-        parts: [{ text: "Continue the conversation." }],
+        parts: [{ text: CONTINUE_PROMPT }],
       });
     }
     const request: Record<string, unknown> = { contents };
@@ -2096,12 +2579,17 @@ export class DeepSeekClient {
   }
 
   async *stream(opts: ChatRequestOptions): AsyncGenerator<StreamChunk> {
-    if (providerForModel(opts.model) === "ollama") {
+    const provider = providerForModel(opts.model);
+    if (provider === "ollama") {
       yield* this.streamOllama(opts);
       return;
     }
-    if (this.geminiMode || providerForModel(opts.model) === "gemini") {
+    if (this.geminiMode || provider === "gemini") {
       yield* this.streamGemini(opts);
+      return;
+    }
+    if (providerSpec(provider)?.wire.format === "gemini-interactions") {
+      yield* this.streamInteractions(opts);
       return;
     }
     const { signal, timer, timedOut } = this.withTimeout(opts.signal);

@@ -132,6 +132,10 @@ export interface RawUsage {
   totalTokenCount?: number;
   cachedContentTokenCount?: number;
   cached_content_token_count?: number;
+  /** Gemini API `/interactions` names — every bucket spelled out explicitly. */
+  total_input_tokens?: number;
+  total_output_tokens?: number;
+  total_cached_tokens?: number;
 }
 
 export interface ChatRequestOptions {

@@ -1397,6 +1397,44 @@ describe("Desktop App reducer — usage", () => {
     expect(resolved.needsSetup).toBe(true);
   });
 
+  const SETUP_MESSAGE = "Not configured yet — add an OpenRouter API key in Settings → Models.";
+
+  it("$needs_setup keeps the daemon's model-specific reason for the setup screen", () => {
+    const gated = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$needs_setup",
+        reason: "no_api_key",
+        message: SETUP_MESSAGE,
+      },
+    });
+    expect(gated.setupMessage).toBe(SETUP_MESSAGE);
+    // A later credential clears it: the setup screen must not keep explaining a gap
+    // that no longer exists.
+    expect(reduce(gated, { t: "incoming", event: { type: "$ready" } }).setupMessage).toBeNull();
+  });
+
+  it("$needs_setup releases a send parked behind the credential gate and says why", () => {
+    const parked = reduce(
+      reduce(baseAppState(), {
+        t: "incoming",
+        event: { type: "$ready" },
+      }),
+      { t: "send_user", text: "start the conversation", clientId: "c-1" },
+    );
+    expect(parked.awaitingAck).toBe(true);
+
+    const gated = reduce(parked, {
+      t: "incoming",
+      event: { type: "$needs_setup", reason: "no_api_key", message: SETUP_MESSAGE },
+    });
+    // The composer would otherwise spin on an ack the gated daemon never sends.
+    expect(gated.awaitingAck).toBe(false);
+    const notice = gated.messages.at(-1);
+    expect(notice?.kind).toBe("notice");
+    expect(notice?.kind === "notice" ? notice.text : "").toContain("OpenRouter");
+  });
+
   it("stores shell-output filtering totals from the context breakdown event", () => {
     const next = reduce(initialState(), {
       t: "incoming",

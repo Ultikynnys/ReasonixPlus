@@ -171,8 +171,10 @@ describe("KNOWN_MODELS", () => {
       ...MIMO_MODELS,
       ...OPENCODE_MODELS,
       ...ANTIGRAVITY_MODELS,
-      // Synthetic is last in display order, so its catalog closes the list.
+      // Synthetic and the separate Gemini API provider are last in display
+      // order, so their catalogs close the list.
       ...requireProviderSpec("synthetic").models,
+      ...requireProviderSpec("gemini-api").models,
     ]);
   });
 });

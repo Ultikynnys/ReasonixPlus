@@ -12,6 +12,7 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
   return {
     ready: false,
     needsSetup: false,
+    setupMessage: null,
     busy: false,
     awaitingAck: false,
     compacting: false,

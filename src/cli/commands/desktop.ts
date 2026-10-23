@@ -5264,6 +5264,27 @@ function notConfiguredMessage(model: string): string {
   );
 }
 
+/** The setup gate's refusal, always carrying the picked model's own "what is missing"
+ *  copy: the setup screen replaces the chat, so without it a model whose provider has
+ *  no credential is a dead end the user is never told about. Exported for tests. */
+export function needsSetupEvent(model: string): NeedsSetupEvent & { message: string } {
+  return { type: "$needs_setup", reason: "no_api_key", message: notConfiguredMessage(model) };
+}
+
+function emitNeedsSetup(tab: Tab): void {
+  emit(needsSetupEvent(tab.currentModel), tab.id);
+}
+
+/** A chat whose provider has no usable credential cannot run anything: not a retry,
+ *  not a side question, not the transcript a clone owes. Say so in the transcript with
+ *  the provider's own copy — a command that answers nothing reads as a silent failure. */
+function refuseUnrunnableModel(tab: Tab): void {
+  emit(
+    { type: "$notice", text: notConfiguredMessage(tab.currentModel), severity: "warning" },
+    tab.id,
+  );
+}
+
 /** One pre-flight rejection of a turn start; `reason` is the terminal-card text,
  *  `outcome` the $turn_complete settlement. Pure over its inputs — env probes
  *  arrive as booleans so the table can be driven from tests. */
@@ -5348,7 +5369,7 @@ function emitTabGate(tab: Tab): void {
   // leave the confirm unsent, so the chat could run without its frozen set.
   if (tab.mcpSetupPending) return;
   if (tabHasCredential(tab)) emit({ type: "$ready" }, tab.id);
-  else emit({ type: "$needs_setup", reason: "no_api_key" }, tab.id);
+  else emitNeedsSetup(tab);
 }
 
 /** Effective ctxMaxOverride for a tab: Ollama tabs use the server's learned /api/show
@@ -6684,7 +6705,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (!tab.runtime) {
-      endTurn("aborted");
+      // Every gate above should have refused already; if one is ever missed, the turn
+      // still owes the user the reason instead of settling as a bare abort.
+      endTurn("stopped", { reason: notConfiguredMessage(tab.currentModel) });
       return;
     }
     let rt = tab.runtime;
@@ -8076,7 +8099,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // side of `$ready` and must not wait on the session read either.
       if (!tabHasCredential(tab)) {
         emitTabDiagnostic(tab, "tab.setup.required", { reason: "credential-unavailable" }, "warn");
-        emit({ type: "$needs_setup", reason: "no_api_key" }, tab.id);
+        emitNeedsSetup(tab);
       }
 
       // Start the toolset/runtime build before the display work below: `$ready`
@@ -8311,7 +8334,12 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     tab.owedTurn = undefined;
     if (!owed || owed.session !== tab.currentSession) return;
     if (tab.runtime) void runTurn(tab, owed.content);
-    else appendSessionMessage(tab.currentSession, { role: "user", content: owed.content });
+    else {
+      // The copy lands on disk either way, but a transcript that never answers reads as
+      // a cancelled conversation — name the missing credential above it.
+      refuseUnrunnableModel(tab);
+      appendSessionMessage(tab.currentSession, { role: "user", content: owed.content });
+    }
   }
 
   /** The ONE way a fresh chat is opened: workspace check, creation gate, announced mint,
@@ -8690,7 +8718,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           if (!t.pending) {
             emitMcpSpecs(t);
             emitSkills(t);
-            if (!tabHasCredential(t)) emit({ type: "$needs_setup", reason: "no_api_key" }, t.id);
+            if (!tabHasCredential(t)) emitNeedsSetup(t);
             else if (t.toolset) emit({ type: "$ready" }, t.id);
           }
           if ((n++ & 3) === 3) await new Promise<void>((resolve) => setImmediate(resolve));
@@ -9012,7 +9040,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             // The picker is answered either way: without a credential the tab lands on
             // the setup screen, and only `$needs_setup` tells the frontend to stop
             // waiting for a `$ready` that is never coming.
-            emit({ type: "$needs_setup", reason: "no_api_key" }, tab.id);
+            emitNeedsSetup(tab);
           }
           emitCtxBreakdown(tab);
           // A chat opened by a caller that omitted the capability answer still owes its
@@ -10273,7 +10301,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "retry") {
-      if (!tab.runtime) return;
+      if (!tab.runtime) {
+        refuseUnrunnableModel(tab);
+        return;
+      }
       // Retry truncates the log outside the turn stream — record the
       // replacement in the kernel event log (session.retracted) so replaying
       // the events sidecar yields the truncated conversation.
@@ -10296,7 +10327,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
 
     if (msg.cmd === "btw") {
-      if (!tab.runtime) return;
+      if (!tab.runtime) {
+        refuseUnrunnableModel(tab);
+        return;
+      }
       const question = msg.text.trim();
       if (!question) return;
       void (async () => {

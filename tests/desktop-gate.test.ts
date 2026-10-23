@@ -1,8 +1,13 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { providerSpec } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { tabCurrentModelUsable, tabHasCredential } from "../src/cli/commands/desktop.js";
+import {
+  needsSetupEvent,
+  tabCurrentModelUsable,
+  tabHasCredential,
+} from "../src/cli/commands/desktop.js";
 
 /** Minimal tab stub — the gate functions only read `currentModel`. */
 type TabStub = { currentModel: string };
@@ -93,6 +98,18 @@ describe("desktop setup gate (#welcome)", () => {
     expect(tabHasCredential(ollamaTab as never)).toBe(true);
     // …but a cloud endpoint without ollamaApiKey is NOT keyless — the tab 401s.
     expect(tabCurrentModelUsable(ollamaTab as never)).toBe(false);
+  });
+
+  it("the setup refusal names the credential the picked model is missing", () => {
+    // The copy is the provider's own declaration, so a new provider (or a reworded
+    // one) needs no change here — and an unconfigured model never lands on the setup
+    // screen without saying which key to add.
+    const spec = providerSpec("openrouter");
+    expect(spec).toBeDefined();
+    const ev = needsSetupEvent(`${spec?.routing.modelScheme ?? ""}${spec?.defaultModel ?? ""}`);
+    expect(ev.reason).toBe("no_api_key");
+    expect(ev.message).toContain(spec?.label ?? "OpenRouter");
+    expect(ev.message).toContain("Settings");
   });
 
   /** Write `~/.reasonix/config.json` inside the stubbed home. */

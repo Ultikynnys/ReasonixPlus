@@ -1025,7 +1025,14 @@ export interface SessionEmptyEvent {
   sizeBytes: number;
 }
 
-export type NeedsSetupEvent = { type: "$needs_setup"; reason: "no_api_key" };
+export type NeedsSetupEvent = {
+  type: "$needs_setup";
+  reason: "no_api_key";
+  /** Provider-specific copy naming what the picked model is missing. The setup screen
+   *  replaces the chat, so without it an unconfigured model is a dead end that never
+   *  says which credential to add. */
+  message?: string;
+};
 
 /** One approval rule, resolved: which mode owns it, what it does, and where it applies. */
 export interface RuleRecord {

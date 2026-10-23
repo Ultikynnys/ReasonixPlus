@@ -241,8 +241,10 @@ export interface ProviderBillingSpec {
   balance: ProviderBalanceSpec | null;
 }
 
-/** Wire format the transport speaks for this provider. */
-export type ProviderWireFormat = "chat-completions" | "ollama-native";
+/** Wire format the transport speaks for this provider. `gemini-interactions` is
+ *  Google's `POST /v1beta/interactions` step_list protocol: it shares nothing with
+ *  chat-completions, so the client builds and parses it from scratch. */
+export type ProviderWireFormat = "chat-completions" | "ollama-native" | "gemini-interactions";
 
 /** Where a provider expects its thinking toggle; null when it refuses the field. */
 export type ProviderThinkingStyle = "top-level" | "zai-top-level" | "mimo-top-level";
@@ -261,6 +263,10 @@ export interface ProviderWireSpec {
   thinking: ProviderThinkingStyle | null;
   /** Whether a `reasoning_effort` field is accepted. */
   reasoningEffort: boolean;
+  /** Request path appended to the resolved base URL; null means `/chat/completions`. */
+  path: string | null;
+  /** Header carrying the API key; null means `Authorization: Bearer <key>`. */
+  apiKeyHeader: string | null;
 }
 
 /** Safe defaults: a provider that declares nothing never inherits a quirk. */
@@ -272,9 +278,15 @@ export const DEFAULT_PROVIDER_WIRE: ProviderWireSpec = {
   toolStream: false,
   thinking: null,
   reasoningEffort: true,
+  path: null,
+  apiKeyHeader: null,
 };
 
-const WIRE_FORMATS: ReadonlySet<string> = new Set(["chat-completions", "ollama-native"]);
+const WIRE_FORMATS: ReadonlySet<string> = new Set([
+  "chat-completions",
+  "ollama-native",
+  "gemini-interactions",
+]);
 const THINKING_STYLES: ReadonlySet<string> = new Set([
   "top-level",
   "zai-top-level",
@@ -776,7 +788,16 @@ function parseWire(value: unknown, where: string): ProviderWireSpec {
       `${where}.thinking`,
     ),
     reasoningEffort: flag(raw.reasoningEffort ?? true, `${where}.reasoningEffort`),
+    path: nullablePath(raw.path, `${where}.path`),
+    apiKeyHeader: nullableText(raw.apiKeyHeader, `${where}.apiKeyHeader`),
   };
+}
+
+/** A request path must start with a slash so it appends to the base URL cleanly. */
+function nullablePath(value: unknown, where: string): string | null {
+  const path = nullableText(value, where);
+  if (path !== null && !path.startsWith("/")) fail(where, "expected a path starting with /");
+  return path;
 }
 
 function parseRateSchedule(value: unknown, where: string): RateSchedule | null {
