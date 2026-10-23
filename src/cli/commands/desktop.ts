@@ -1787,7 +1787,10 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
   }
 }
 
-function emitSettings(tab: Tab): void {
+/** `turnReleased` marks the echo that follows a model switch which aborted the
+ *  running turn. A failover repaints `model` mid-turn too, so an unmarked echo
+ *  may never settle the desktop's busy flag. */
+function emitSettings(tab: Tab, opts: { turnReleased?: boolean } = {}): void {
   const config = readConfig();
   const oauth = config.openaiOAuth;
   const antigravityOAuth = config.antigravityOAuth;
@@ -1844,6 +1847,7 @@ function emitSettings(tab: Tab): void {
       recentWorkspaces: recent,
       reasonixLocalDir: reasonixDefaultWorkspaceDir(),
       model: tab.currentModel,
+      ...(opts.turnReleased ? { turnReleased: true } : {}),
       providerCatalogs,
       providerSettings: collectProviderSettings(config),
       webSearchEngine: readWebSearchEngine(),
@@ -4610,11 +4614,35 @@ export function tabStatus(tab: Tab): TabStatusEvent {
     type: "$tab_status",
     busy: tabBusy(tab),
     ...(tab.runtime ? { turn: tab.runtime.loop.currentTurn } : {}),
-    // The daemon holds no send queue — the desktop drains its own.
-    queued: 0,
+    // The daemon holds no send queue: the desktop drains its own, and this
+    // count is only the inputs parked behind the active turn.
+    queued: tab.parkedSends,
     compacting: tab.compactingManual,
     switching: tab.switching,
   };
+}
+
+/** Upper bound on one teardown step of a closing tab, so a hung provider stream
+ *  or MCP close can never keep the tab (and $tab_closed) alive. */
+export const TAB_CLOSE_TIMEOUT_MS = 5_000;
+
+/** Wait for a closing tab's aborted turn to unwind. A turn mid-subagent owns a
+ *  child loop with its own provider request; dropping the tab out from under it
+ *  leaves that child running. Bounded and rejection-proof, so a close always ends. */
+export async function settleTurnBeforeClose(tab: Pick<Tab, "activeTurn">): Promise<void> {
+  // A turn body that rejected must still free the close rather than skip it.
+  const turn = tab.activeTurn?.catch(() => undefined);
+  if (!turn) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, TAB_CLOSE_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([turn, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Manual compaction for the desktop "Compact now" button: runs the loop's
@@ -4858,6 +4886,14 @@ interface Tab {
   compactingManual: boolean;
   manualCompactDone?: Promise<void>;
   activeTurn?: Promise<void>;
+  /** Sends the daemon holds behind `activeTurn` right now. Reported as
+   *  `$tab_status.queued`, which the desktop takes as the ack for a send that
+   *  arrived mid-turn instead of timing it out as lost. */
+  parkedSends: number;
+  /** Set when this channel is being torn down. A send parked behind the turn that
+   *  is unwinding must not start a fresh turn for a tab that no longer exists:
+   *  nothing would show it and its tools would still run. */
+  closing: boolean;
   turnCleanup?: Promise<void>;
   fileIndex: FileWithStats[] | null;
   fileIndexBuilding: Promise<FileWithStats[]> | null;
@@ -6002,6 +6038,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       runtime: null,
       aborter: null,
       compactingManual: false,
+      parkedSends: 0,
+      closing: false,
       fileIndex: null,
       fileIndexBuilding: null,
       fileIndexBuiltAt: 0,
@@ -6505,6 +6543,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     emitTabDiagnostic(tab, "tab.close.started", undefined, "info");
     cancelMailAuth(tab, MailProvider.Outlook);
     cancelMailAuth(tab, MailProvider.Gmail);
+    // Before the abort: a send parked behind this turn wakes up when it unwinds,
+    // and must find the channel closed rather than start a turn nobody can see.
+    tab.closing = true;
     abortTurn(tab);
     cancelPendingGates(tab);
     try {
@@ -6521,13 +6562,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       try {
         // closeAll's loop iterates every MCP client sequentially with no
         // per-client timeout — one hung streamable-http close can stall
-        // the whole tab close.  Race the entire batch against 5 s so
-        // $tab_closed still fires.
-        const DEADLINE = 5000;
+        // the whole tab close.  Race the entire batch against the shared
+        // close bound so $tab_closed still fires.
         await Promise.race([
           tab.mcpRuntime.closeAll(),
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("timed out after 5 s")), DEADLINE),
+            setTimeout(
+              () => reject(new Error(`timed out after ${TAB_CLOSE_TIMEOUT_MS / 1000} s`)),
+              TAB_CLOSE_TIMEOUT_MS,
+            ),
           ),
         ]);
       } catch (err) {
@@ -6539,6 +6582,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         process.stderr.write(`reasonix: tab MCP closeAll failed — ${messageOf(err)}\n`);
       }
     }
+    // Everything that can unblock the turn has run: wait for it to actually
+    // finish before the tab disappears, or a child subagent outlives the session.
+    await settleTurnBeforeClose(tab);
     // A gated fresh chat never became a real conversation; its never-confirmed
     // session dies with the tab on EVERY close path (X cancel, Ctrl+W, workspace
     // removal). The boot sweep is the force-exit equivalent.
@@ -6616,8 +6662,21 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     clientId?: string,
   ): Promise<void> {
     while (tab.manualCompactDone || tab.activeTurn) {
-      await (tab.manualCompactDone ?? tab.activeTurn);
+      // A send parked behind the running turn has been received: say so on the
+      // turn-state channel the desktop already reconciles against. Silent, its
+      // stale-ack timer calls the send lost mid-turn, drops the rest of the
+      // queue and asks the user to check a connection that is fine.
+      tab.parkedSends += 1;
+      try {
+        emit(tabStatus(tab), tab.id);
+        await (tab.manualCompactDone ?? tab.activeTurn);
+      } finally {
+        tab.parkedSends -= 1;
+      }
     }
+    // The tab was closed while this send waited: its turn would run with no channel
+    // to show it, so stop here rather than start one behind a removed tab.
+    if (tab.closing) return;
     const work = runTurnInner(tab, text, images, clientId);
     tab.activeTurn = work;
     try {
@@ -9982,6 +10041,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
 
     if (msg.cmd === "settings_save") {
+      // Whether this save aborted a running turn by switching the model: the
+      // echo below is the only settings message allowed to settle the desktop's
+      // busy flag.
+      let releasedTurn = false;
       try {
         // Provider credentials persist before the early-return branches below
         // (workspaceDir, model, …) can swallow the message.
@@ -10156,14 +10219,17 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             // client's 11-min timeout. Abort BEFORE the rebuild so the OLD loop
             // is the one stopped, and WITHOUT the `switching` flag so the
             // turn's $turn_complete still lands and the FE settles + drains.
-            if (tab.aborter) abortTurn(tab, desktopUserAbortLoopOptions());
+            if (tab.aborter) {
+              releasedTurn = true;
+              abortTurn(tab, desktopUserAbortLoopOptions());
+            }
             // applyTabModel rolls the tab back to the previous model if the
             // rebuild throws, so the UI never shows a model the daemon never
             // built a runtime for.
             applyTabModel(tab, next, { persistDefault: true });
           }
         }
-        emitSettings(tab);
+        emitSettings(tab, { turnReleased: releasedTurn });
         void refreshProviderCatalogs();
         emitTabGate(tab);
       } catch (err) {

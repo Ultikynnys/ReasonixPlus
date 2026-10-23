@@ -684,7 +684,7 @@ describe("Desktop App reducer — usage", () => {
     });
   });
 
-  it("releases a busy turn when the model changes so queued sends drain", () => {
+  it("releases a busy turn when the marked model switch lands", () => {
     const base: Parameters<typeof reduce>[0] = {
       ...initialState(),
       busy: true,
@@ -712,6 +712,7 @@ describe("Desktop App reducer — usage", () => {
         workspaceDir: "/workspace",
         recentWorkspaces: [],
         model: "glm-5.3-flash",
+        turnReleased: true,
         version: "0.50.1",
       },
     });
@@ -722,6 +723,108 @@ describe("Desktop App reducer — usage", () => {
     expect(next.turnStatus).toBeNull();
     expect(next.turnStatusTool).toBeNull();
     expect(next.queuedSends).toHaveLength(1);
+  });
+
+  it("keeps a running turn when a failover repaints the model", () => {
+    const base: Parameters<typeof reduce>[0] = {
+      ...initialState(),
+      busy: true,
+      awaitingAck: false,
+      turnStatus: "waiting_model",
+      turnStatusTool: "spawn_subagent",
+      settings: {
+        reasoningEffort: "high",
+        editMode: "follow",
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "gpt-5.6-sol",
+        subagentModel: "gpt-5.6-sol",
+        version: "0.50.1",
+      },
+      queuedSends: [{ text: "typed while the subagent ran" }],
+    };
+
+    // A provider ran dry mid-turn: the tab (and the subagent pin with it) moved
+    // to a backup, but the turn never ended. Settling here marked the task
+    // complete over a live subagent and drained the queue into that turn.
+    const next = reduce(base, {
+      t: "incoming",
+      event: {
+        type: "$settings",
+        reasoningEffort: "high",
+        editMode: "follow",
+        quickSendId: "proceed",
+        quickSends: [],
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "glm-5.3-flash",
+        subagentModel: "glm-5.3-flash",
+        providerCatalogs: {},
+        version: "0.50.1",
+      },
+    });
+
+    expect(next.busy).toBe(true);
+    expect(next.turnStatus).toBe("waiting_model");
+    expect(next.turnStatusTool).toBe("spawn_subagent");
+    expect(next.queuedSends).toHaveLength(1);
+    expect(next.settings?.model).toBe("glm-5.3-flash");
+  });
+
+  it("takes the parked-send count as the ack for a send that arrived mid-turn", () => {
+    const parked: Parameters<typeof reduce>[0] = {
+      ...initialState(),
+      busy: false,
+      awaitingAck: true,
+      settings: {
+        reasoningEffort: "high",
+        editMode: "follow",
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "gpt-5.6-sol",
+        version: "0.50.1",
+      },
+      queuedSends: [{ text: "next" }],
+    };
+
+    // The daemon holds the send behind a turn that is still unwinding. Without
+    // this ack the stale-send watchdog releases it after 10 s with the "never
+    // acknowledged" warning and discards the queue behind it.
+    const next = reduce(parked, {
+      t: "incoming",
+      event: { type: "$tab_status", busy: true, queued: 1, compacting: false, switching: false },
+    });
+
+    expect(next.awaitingAck).toBe(false);
+    expect(next.busy).toBe(true);
+    expect(next.queuedSends).toHaveLength(1);
+  });
+
+  it("keeps a fold engaged when it parks the send instead of claiming a turn", () => {
+    const folding: Parameters<typeof reduce>[0] = {
+      ...initialState(),
+      busy: false,
+      awaitingAck: true,
+      settings: {
+        reasoningEffort: "high",
+        editMode: "follow",
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "gpt-5.6-sol",
+        version: "0.50.1",
+      },
+    };
+
+    const next = reduce(folding, {
+      t: "incoming",
+      event: { type: "$tab_status", busy: false, queued: 1, compacting: true, switching: false },
+    });
+
+    // The ack lands, but the fold keeps the chat engaged through `compacting`:
+    // claiming busy here would leave the next probe reporting a lost turn.
+    expect(next.awaitingAck).toBe(false);
+    expect(next.busy).toBe(false);
+    expect(next.compacting).toBe(true);
   });
 
   it("keeps a running turn when $settings refreshes without a model change", () => {
@@ -1246,6 +1349,88 @@ describe("Desktop App reducer — usage", () => {
       result: "Tool call cancelled because the conversation stopped. No result was produced.",
       ok: false,
     });
+  });
+
+  it("closes a subagent run its settled turn left running", () => {
+    const state: Parameters<typeof reduce>[0] = {
+      ...initialState(),
+      busy: true,
+      messages: [
+        {
+          kind: "assistant" as const,
+          turn: 1,
+          segments: [
+            {
+              kind: "tool" as const,
+              callId: "review-1",
+              name: "spawn_subagent",
+              args: JSON.stringify({ task: "review changes" }),
+              startedAt: 200,
+              subagentRuns: [
+                { runId: "run-a", task: "review changes", status: "running" as const, tools: [] },
+                { runId: "run-b", task: "read the diff", status: "done" as const, tools: [] },
+              ],
+            },
+          ],
+          pending: true,
+        },
+      ],
+    };
+
+    const next = reduce(state, { t: "incoming", event: { type: "$turn_complete" } });
+    const assistant = next.messages[0];
+    if (assistant?.kind !== "assistant") throw new Error("expected assistant message");
+    const segment = assistant.segments[0];
+    if (segment?.kind !== "tool") throw new Error("expected tool segment");
+
+    // The child's progress stream ends with the turn, so a run left running would
+    // keep a spinner on a card the daemon already declared idle.
+    expect(segment.subagentRuns?.map((run) => run.status)).toEqual(["failed", "done"]);
+  });
+
+  it("does not reopen a spinner for a run that arrives after its turn settled", () => {
+    const settled = reduce(
+      {
+        ...initialState(),
+        messages: [
+          {
+            kind: "assistant" as const,
+            turn: 1,
+            pending: true,
+            segments: [
+              {
+                kind: "tool" as const,
+                callId: "review-1",
+                name: "spawn_subagent",
+                args: JSON.stringify({ task: "review changes" }),
+                startedAt: 200,
+              },
+            ],
+          },
+        ],
+      },
+      { t: "incoming", event: { type: "$turn_complete" } },
+    );
+
+    const next = reduce(settled, {
+      t: "incoming",
+      event: {
+        type: "subagent.progress",
+        id: 9,
+        ts: "2026-06-01T00:00:00.000Z",
+        turn: 1,
+        runId: "run-late",
+        parentCallId: "review-1",
+        task: "review changes",
+        action: "start",
+      },
+    });
+    const assistant = next.messages[0];
+    if (assistant?.kind !== "assistant") throw new Error("expected assistant message");
+    const segment = assistant.segments[0];
+    if (segment?.kind !== "tool") throw new Error("expected tool segment");
+
+    expect(segment.subagentRuns?.map((run) => run.status)).toEqual(["failed"]);
   });
 
   it("adds a terminal stop card when a turn ends without an answer", () => {

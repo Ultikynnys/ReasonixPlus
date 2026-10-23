@@ -234,6 +234,17 @@ describe("failover wiring — structural invariants in the daemon", () => {
     expect(emitted).toBeGreaterThan(settled);
   });
 
+  it("never marks its settings echo as a turn release", () => {
+    // `turnReleased` is how a genuine (turn-aborting) model switch tells the
+    // desktop it may settle. A failover only repaints the model, so any echo
+    // carrying the flag would mark a live turn, and its running subagent,
+    // complete the moment a composer click re-emitted settings.
+    expect(body).toContain("if (failedOverTo) emitSettings(tab);");
+    expect(body).not.toContain("turnReleased");
+    // The one place that may set it aborts the turn first.
+    expect(src).toContain("emitSettings(tab, { turnReleased: releasedTurn });");
+  });
+
   it("keeps the failover inside the single turn lifecycle", () => {
     expect(body.match(/type: "\$turn_started"/g)?.length).toBe(1);
     expect(body).not.toContain('type: "$turn_complete"');

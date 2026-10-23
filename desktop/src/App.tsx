@@ -2171,12 +2171,25 @@ function gatedSendPatch(
   };
 }
 
-/** True when the given turn already carries a user-visible explanation (a warning
- *  segment or a notice). Prevents $turn_complete from adding a duplicate stop card
- *  when the loop already surfaced the reason. */
-/** The message list a settled turn leaves behind: unresolved tool segments get
- *  a canned cancelled result. Shared by $turn_complete and the $tab_status
- *  idle resync so the two settle paths cannot drift apart again. */
+/** A settled turn cannot still be running a child: the spawn's progress stream
+ *  stops with the turn, so a run left `running` would keep a spinner on a card
+ *  the daemon already declared idle. */
+function settleSubagentRuns(
+  runs: SubagentRunProgress[] | undefined,
+): SubagentRunProgress[] | undefined {
+  if (!runs || runs.length === 0) return runs;
+  let changed = false;
+  const closed = runs.map((run) => {
+    if (run.status !== "running") return run;
+    changed = true;
+    return { ...run, status: "failed" as const };
+  });
+  return changed ? closed : runs;
+}
+
+/** The message list a settled turn leaves behind: unresolved tool segments get a
+ *  canned cancelled result and any subagent run left running is closed. Shared by
+ *  $turn_complete and the $tab_status idle resync so the two cannot drift apart. */
 export function settleTurnMessages(messages: ChatMessage[]): ChatMessage[] {
   return messages.map((message) =>
     message.kind === "assistant"
@@ -2187,16 +2200,20 @@ export function settleTurnMessages(messages: ChatMessage[]): ChatMessage[] {
           // The transcript's own record that THIS chat saw the turn end: history
           // loaded from disk is closed but never stamped (see ChatMessage).
           settled: true,
-          segments: message.segments.map((segment) =>
-            segment.kind === "tool" && segment.result === undefined
+          segments: message.segments.map((segment) => {
+            if (segment.kind !== "tool") return segment;
+            const runs = settleSubagentRuns(segment.subagentRuns);
+            const withRuns =
+              runs === segment.subagentRuns ? segment : { ...segment, subagentRuns: runs };
+            return withRuns.result === undefined
               ? {
-                  ...segment,
+                  ...withRuns,
                   result:
                     "Tool call cancelled because the conversation stopped. No result was produced.",
                   ok: false,
                 }
-              : segment,
-          ),
+              : withRuns;
+          }),
         }
       : message,
   );
@@ -2217,6 +2234,9 @@ function runningToolIndex(segments: readonly AssistantSegment[], callId: string)
   return -1;
 }
 
+/** True when the given turn already carries a user-visible explanation (a warning
+ *  segment or a notice). Prevents $turn_complete from adding a duplicate stop card
+ *  when the loop already surfaced the reason. */
 function turnHasTerminalExplanation(messages: ChatMessage[], turn: number | undefined): boolean {
   return messages.some(
     (m) =>
@@ -2476,7 +2496,13 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       const compacting = ev.compacting === true;
       if (ev.busy === state.busy && compacting === state.compacting && !state.awaitingAck)
         return state;
-      if (ev.busy) return { ...state, busy: true, awaitingAck: false, compacting };
+      // The daemon reports a live turn, or sends held behind one. Either way it has
+      // our send: adopt its busy flag and drop the ack gate. Reading a held send as
+      // silence let the stale-ack timer drop the queue and claim the agent never
+      // answered while it was working, and `busy` stays the daemon's answer so a
+      // fold engages through `compacting` instead of reading as a turn owed a stop.
+      if (ev.busy || ev.queued > 0)
+        return { ...state, busy: ev.busy, awaitingAck: false, compacting };
       // A fold leaves turn-busy false while the daemon is still working — adopt
       // its compacting state and never mistake that for a lost terminal.
       if (compacting) return { ...state, compacting };
@@ -2772,13 +2798,13 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       const wsChanged =
         prevWs !== undefined &&
         normalizeWorkspacePath(prevWs) !== normalizeWorkspacePath(ev.workspaceDir);
-      // A model switch aborts the running turn daemon-side (the in-flight turn
-      // holds the previous loop/model) so it can't wedge the tab. Mirror that
-      // release here: any model change clears a busy/stuck turn so the FE
-      // unblocks and its queued sends drain, even if the abort's $turn_complete
-      // lands late — otherwise those queued messages inherit the same freeze.
-      const modelChanged = state.settings != null && state.settings.model !== ev.model;
-      const releaseTurn = wsChanged || modelChanged;
+      // A user model switch aborts the running turn daemon-side (the in-flight
+      // turn holds the previous loop/model) so it can't wedge the tab, and the
+      // daemon marks that echo. Mirror only that release: an automatic failover
+      // repaints `model` (and the subagent pin with it) while its turn keeps
+      // running, so releasing on any model change settled a live turn, posted
+      // "Task complete" over a running subagent and let the queue drain into it.
+      const releaseTurn = wsChanged || ev.turnReleased === true;
       return {
         ...state,
         busy: releaseTurn ? false : state.busy,
@@ -3204,6 +3230,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       if (!host) return state;
       const hostMessage = host.message;
       const hostSegment = host.segment;
+      // A card whose turn already ended can never host a live child, so a late
+      // start (out-of-order after a reconnect) must not reopen a spinner on it.
+      const settledHost = state.messages[hostMessage];
+      const closeLateRuns = settledHost?.kind === "assistant" && settledHost.settled === true;
       return {
         ...state,
         turnLastEventMs: Date.now(),
@@ -3213,7 +3243,10 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           const segment = segments[hostSegment];
           if (!segment || segment.kind !== "tool") return m;
           const runs = applySubagentProgress(segment.subagentRuns ?? [], ev);
-          segments[hostSegment] = { ...segment, subagentRuns: runs };
+          segments[hostSegment] = {
+            ...segment,
+            subagentRuns: closeLateRuns ? settleSubagentRuns(runs) : runs,
+          };
           return { ...m, segments };
         }),
       };

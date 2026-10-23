@@ -179,7 +179,9 @@ export type TabStatusEvent = {
   busy: boolean;
   /** Turn number the running (or most recent) turn is on, when known. */
   turn?: number;
-  /** Number of queued sends the daemon holds behind the active turn. */
+  /** Number of sends the daemon is holding behind the active turn. Above zero is
+   *  also the ack for a send that arrived mid-turn: the desktop clears its
+   *  optimistic ack gate instead of timing the send out as lost. */
   queued: number;
   /** Manual compaction in progress. */
   compacting: boolean;
@@ -1112,6 +1114,10 @@ export interface SettingsEvent {
    *  workspace choice when a new (workspace-less) tab asks for one. */
   reasonixLocalDir?: string;
   model: string;
+  /** Set only on the echo that follows a model switch which aborted the running
+   *  turn. A failover also repaints `model` mid-turn without ending that turn, so
+   *  the desktop may treat a bare model change as a cosmetic update only. */
+  turnReleased?: boolean;
   providerCatalogs?: Partial<
     Record<
       ProviderID,

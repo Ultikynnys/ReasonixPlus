@@ -5,7 +5,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { tabBusy, tabStatus, turnStartRejection } from "../src/cli/commands/desktop.js";
+import {
+  TAB_CLOSE_TIMEOUT_MS,
+  settleTurnBeforeClose,
+  tabBusy,
+  tabStatus,
+  turnStartRejection,
+} from "../src/cli/commands/desktop.js";
 import type { TurnImage } from "../src/types.js";
 
 const OPENAI_MODEL = "gate-test-openai";
@@ -154,6 +160,7 @@ describe("tabBusy / tabStatus — one busy source", () => {
       runtime: null,
       compactingManual: false,
       switching: true,
+      parkedSends: 0,
     };
     const idle = {
       aborter: null,
@@ -161,6 +168,7 @@ describe("tabBusy / tabStatus — one busy source", () => {
       runtime: null,
       compactingManual: false,
       switching: false,
+      parkedSends: 0,
     };
 
     expect(tabStatus(busyNoRuntime as never)).toEqual({
@@ -186,6 +194,7 @@ describe("tabBusy / tabStatus — one busy source", () => {
       runtime: { loop: { currentTurn: 3 } },
       compactingManual: true,
       switching: false,
+      parkedSends: 0,
     };
     expect(tabStatus(running as never)).toEqual({
       type: "$tab_status",
@@ -195,5 +204,98 @@ describe("tabBusy / tabStatus — one busy source", () => {
       compacting: true,
       switching: false,
     });
+  });
+
+  it("counts the sends the daemon is holding behind the active turn", () => {
+    // A parked input is acknowledged through this count; reporting zero made the
+    // desktop time the send out mid-turn and drop the queue behind it.
+    const holding = {
+      aborter: null,
+      activeTurn: Promise.resolve(),
+      runtime: null,
+      compactingManual: false,
+      switching: false,
+      parkedSends: 2,
+    };
+    expect(tabStatus(holding as never)).toEqual({
+      type: "$tab_status",
+      busy: true,
+      queued: 2,
+      compacting: false,
+      switching: false,
+    });
+  });
+});
+
+describe("settleTurnBeforeClose: a closing tab never outlives its child", () => {
+  it("returns at once for a tab with no turn in flight", async () => {
+    await expect(settleTurnBeforeClose({ activeTurn: undefined })).resolves.toBeUndefined();
+  });
+
+  it("waits for the aborting turn to unwind", async () => {
+    let settled = false;
+    const turn = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        settled = true;
+        resolve();
+      }, 0);
+    });
+    await settleTurnBeforeClose({ activeTurn: turn });
+    expect(settled).toBe(true);
+  });
+
+  it("still frees the close when the turn body rejected", async () => {
+    // A throw escaping a turn must not skip the tab teardown that follows it.
+    await expect(
+      settleTurnBeforeClose({ activeTurn: Promise.reject(new Error("boom")) }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("bounds the wait so a wedged client cannot stall the close", async () => {
+    vi.useFakeTimers();
+    try {
+      let done = false;
+      const waiting = settleTurnBeforeClose({
+        activeTurn: new Promise<void>(() => undefined),
+      }).then(() => {
+        done = true;
+      });
+      await vi.advanceTimersByTimeAsync(TAB_CLOSE_TIMEOUT_MS - 1);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await waiting;
+      expect(done).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("tab close: a parked send never starts a turn behind a removed tab", () => {
+  const src = readFileSync(join(process.cwd(), "src/cli/commands/desktop.ts"), "utf8");
+  const runTurn = src.slice(
+    src.indexOf("async function runTurn("),
+    src.indexOf("async function runTurnInner("),
+  );
+  const close = src.slice(
+    src.indexOf("async function closeChannel("),
+    src.indexOf("async function closeWorkspaceTab("),
+  );
+
+  it("marks the channel closed before it aborts the turn", () => {
+    // A send parked behind the unwinding turn wakes up when it resolves; it has to
+    // find the channel closed, or it starts a turn nobody can see or stop.
+    expect(src).toContain("closing: boolean;");
+    expect(close.indexOf("tab.closing = true;")).toBeGreaterThan(0);
+    expect(close.indexOf("tab.closing = true;")).toBeLessThan(close.indexOf("abortTurn(tab);"));
+    expect(close).toContain("await settleTurnBeforeClose(tab);");
+  });
+
+  it("stops a runTurn that finds the channel closed instead of starting it", () => {
+    expect(runTurn).toContain("if (tab.closing) return;");
+    // The guard sits after the park loop, so a send that waited is covered too.
+    expect(runTurn.indexOf("if (tab.closing) return;")).toBeGreaterThan(
+      runTurn.indexOf("tab.parkedSends -= 1;"),
+    );
   });
 });
