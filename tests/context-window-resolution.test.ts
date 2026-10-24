@@ -151,6 +151,34 @@ describe("a server that advertises its own window", () => {
         windowsPath: modelWindowsPath(home),
       }),
     ).toBe(65_536 - 8_192);
+    // Keyed by the ref resolution asks for, never by a bare wire id another provider
+    // could serve under the same name.
+    expect(Object.keys(loadModelWindows(modelWindowsPath(home)).windows)).toEqual([
+      "local/saluki-27b",
+    ]);
+  });
+
+  it("does not qualify an id the server already qualified", async () => {
+    const home = join(dir, "home3");
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "local/chatty", meta: { n_ctx: 49_152 } }] }), {
+        status: 200,
+      })) as typeof fetch;
+    await fetchProviderModels({
+      provider: "local",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      fallback: [],
+      force: true,
+      homeDir: home,
+      fetchImpl,
+    });
+    expect(Object.keys(loadModelWindows(modelWindowsPath(home)).windows)).toEqual(["local/chatty"]);
+    expect(
+      resolveContextTokens("local/chatty", 600_000, {
+        path: cfgPath,
+        windowsPath: modelWindowsPath(home),
+      }),
+    ).toBe(49_152 - 8_192);
   });
 
   it("ignores a catalog that advertises no window", async () => {

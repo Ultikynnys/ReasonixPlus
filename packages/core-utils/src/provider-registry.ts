@@ -126,6 +126,9 @@ export interface ProviderDiscoverySpec {
   /** Dotted field carrying each entry's input modality list; null when the catalog
    *  reports none, which leaves the declared vision rules as the only evidence. */
   visionField: string | null;
+  /** Dotted field carrying the window the endpoint actually serves, for a provider
+   *  whose launch flags own it; null when the catalog reports none. */
+  contextField: string | null;
 }
 
 /** How a bare model id may route to this provider. */
@@ -802,6 +805,7 @@ function parseDiscovery(value: unknown, where: string): ProviderDiscoverySpec {
     idField: text(raw.idField, `${where}.idField`),
     excludeSpeech: flag(raw.excludeSpeech, `${where}.excludeSpeech`),
     visionField: nullableText(raw.visionField, `${where}.visionField`),
+    contextField: nullableText(raw.contextField, `${where}.contextField`),
   };
 }
 

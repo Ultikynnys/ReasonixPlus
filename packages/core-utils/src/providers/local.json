@@ -62,7 +62,8 @@
     "strategy": "models-endpoint",
     "listField": "data",
     "idField": "id",
-    "excludeSpeech": false
+    "excludeSpeech": false,
+    "contextField": "meta.n_ctx"
   },
   "wire": { "reasoningEffort": false, "parallelToolCalls": false, "thinking": "chat-template" },
   "billing": { "kind": "none", "schedule": null },

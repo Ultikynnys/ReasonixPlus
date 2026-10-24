@@ -1,6 +1,6 @@
 /** Learned per-model context windows — persistence, TTL freshness, bounds, corruption. */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -14,6 +14,7 @@ import {
   learnedContextTokens,
   loadModelWindows,
   modelWindowsPath,
+  recordModelWindow,
   saveModelWindows,
 } from "../src/model-windows.js";
 
@@ -89,6 +90,57 @@ describe("contextTokensForLearnedModel", () => {
 
   it("ignores an unknown model", () => {
     expect(contextTokensForLearnedModel(store, "gpt-6.1-sol", 2_000)).toBeUndefined();
+  });
+});
+
+describe("recordModelWindow", () => {
+  it("writes a window the caller stated", () => {
+    const path = join(dir, "w.json");
+    recordModelWindow("local/saluki-27b", 131_072, { path, now: 1_000 });
+    expect(loadModelWindows(path).windows["local/saluki-27b"]).toEqual({
+      contextTokens: 131_072,
+      at: 1_000,
+    });
+  });
+
+  it("leaves a fresh entry alone when the value has not changed", () => {
+    const path = join(dir, "w.json");
+    recordModelWindow("local/saluki-27b", 131_072, { path, now: 1_000 });
+    recordModelWindow("local/saluki-27b", 131_072, { path, now: 2_000 });
+    expect(JSON.parse(readFileSync(path, "utf8")).windows["local/saluki-27b"].at).toBe(1_000);
+  });
+
+  it("refreshes a stale entry even at the same value", () => {
+    const path = join(dir, "w.json");
+    recordModelWindow("local/saluki-27b", 131_072, { path, now: 1_000 });
+    recordModelWindow("local/saluki-27b", 131_072, { path, now: 10_000 + MODEL_WINDOW_TTL_MS });
+    expect(JSON.parse(readFileSync(path, "utf8")).windows["local/saluki-27b"].at).toBe(
+      10_000 + MODEL_WINDOW_TTL_MS,
+    );
+  });
+
+  it("overwrites a window that no longer matches the server", () => {
+    const path = join(dir, "w.json");
+    recordModelWindow("local/saluki-27b", 131_072, { path, now: 1_000 });
+    recordModelWindow("local/saluki-27b", 262_144, { path, now: 2_000 });
+    expect(learnedContextTokens("local/saluki-27b", 3_000, path)).toBe(262_144);
+  });
+
+  it("ignores a value no server could have meant", () => {
+    const path = join(dir, "absent.json");
+    recordModelWindow("local/saluki-27b", 3, { path });
+    recordModelWindow("  ", 131_072, { path });
+    expect(loadModelWindows(path).windows).toEqual({});
+  });
+
+  it("does not throw when the store cannot be written", () => {
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "", "utf8");
+    expect(() =>
+      recordModelWindow("local/saluki-27b", 131_072, {
+        path: join(blocker, "model-windows.json"),
+      }),
+    ).not.toThrow();
   });
 });
 

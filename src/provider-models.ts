@@ -2,13 +2,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { type ProviderSpec, providerSpec, providerSpecsInOrder } from "@reasonix/core-utils";
 import { readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
-import {
-  clampWindowTokens,
-  learnModelWindow,
-  loadModelWindows,
-  modelWindowsPath,
-  saveModelWindows,
-} from "./model-windows.js";
+import { modelWindowsPath, recordModelWindow } from "./model-windows.js";
 import { reasonixHome } from "./reasonix-home.js";
 
 /** A provider whose endpoint never authenticates declares so; every other provider
@@ -94,35 +88,30 @@ function fieldAt(value: unknown, dotted: string): unknown {
   return cursor;
 }
 
-/** Records the window a context-owning server advertises in its own catalog
- *  (`meta.n_ctx` from llama.cpp), so the ctx cap follows the server rather than a
- *  hand-entered setting. Recorded under the wire id and its qualified ref. */
+/** Records the window a context-owning server advertises in its own catalog, so the cap
+ *  follows the server rather than a hand-entered setting. The dotted field is declared
+ *  per provider (`discovery.contextField`): the window is the server's launch flag. */
 function recordServedWindows(
   spec: ProviderSpec | undefined,
   entries: readonly unknown[],
   idField: string,
   homeDir?: string,
 ): void {
-  if (!spec?.context) return;
-  const path = modelWindowsPath(homeDir);
-  let store = loadModelWindows(path);
-  let changed = false;
+  if (!spec?.context || !spec.discovery.contextField) return;
+  // No explicit path means the user's store, which `recordModelWindow` refuses to
+  // write under test.
+  const path = homeDir === undefined ? undefined : modelWindowsPath(homeDir);
   for (const entry of entries) {
     const model = entry as Record<string, unknown> | null;
     const id = model?.[idField];
-    const reported = fieldAt(model, "meta.n_ctx");
+    const reported = fieldAt(model, spec.discovery.contextField);
     if (typeof id !== "string" || !id.trim() || typeof reported !== "number") continue;
-    const tokens = clampWindowTokens(reported);
-    if (tokens === undefined) continue;
-    for (const key of [id.trim(), `${spec.id}/${id.trim()}`]) {
-      const next = learnModelWindow(store, key, tokens);
-      if (next !== store) {
-        store = next;
-        changed = true;
-      }
-    }
+    const wire = id.trim();
+    // Keyed by the ref resolution asks for, so a bare wire id cannot shadow another
+    // provider's model of the same name.
+    const ref = wire.startsWith(`${spec.id}/`) ? wire : `${spec.id}/${wire}`;
+    recordModelWindow(ref, reported, path === undefined ? {} : { path });
   }
-  if (changed) saveModelWindows(store, path);
 }
 
 /** Ids whose declared modality field lists `image`. Empty when the provider declares

@@ -86,14 +86,7 @@ import {
   rewriteSession,
   stampTranscriptMessage,
 } from "./memory/session.js";
-import {
-  clampWindowTokens,
-  learnModelWindow,
-  learnedContextTokens,
-  loadModelWindows,
-  modelWindowsPath,
-  saveModelWindows,
-} from "./model-windows.js";
+import { recordModelWindow } from "./model-windows.js";
 import { ToolCallRepair } from "./repair/index.js";
 import {
   type PrefixDiagnosticHashes,
@@ -1035,25 +1028,8 @@ export class CacheFirstLoop {
    *  Every fold target and auto-compaction trigger resolves through resolveContextTokens,
    *  so the correction applies from the next call on. */
   private learnContextWindow(err: unknown): void {
-    // A test run must never write the user's learned-window store: a fixture refusal that
-    // names 8192 tokens would otherwise change window resolution for the rest of the run.
-    if (process.env.VITEST === "true") return;
     const parsed = parseAvailableContextTokens(err);
-    if (parsed === undefined) return;
-    const reported = clampWindowTokens(parsed);
-    if (reported === undefined) return;
-    // Any disagreement is worth recording: a restart with a different `--ctx-size` has
-    // to supersede a stale learned window in either direction.
-    if (learnedContextTokens(this.model) === reported) return;
-    try {
-      const path = modelWindowsPath();
-      saveModelWindows(learnModelWindow(loadModelWindows(path), this.model, reported), path);
-    } catch (writeFailure) {
-      // Best-effort: a read-only home must not block overflow recovery.
-      process.stderr.write(
-        `reasonix: learned context window not saved — ${messageOf(writeFailure)}\n`,
-      );
-    }
+    if (parsed !== undefined) recordModelWindow(this.model, parsed);
   }
 
   /** Fold a copy of `messages` down to `targetTokens`, or null when folding

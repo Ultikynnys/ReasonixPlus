@@ -124,12 +124,43 @@ export function contextTokensForLearnedModel(
   return entry.contextTokens;
 }
 
-/** Learned window for a model through the shared store cache — the read path every
- *  ctxMax consumer shares. */
+/** Learned window for a model through the shared store cache: the read path every
+ *  ctxMax consumer shares. An omitted path means the user's own store, which a test
+ *  run must not resolve against. */
 export function learnedContextTokens(
   model: string,
   now: number = Date.now(),
-  path: string = modelWindowsPath(),
+  path?: string,
 ): number | undefined {
-  return contextTokensForLearnedModel(loadModelWindows(path), model, now);
+  if (path === undefined && process.env.VITEST === "true") return undefined;
+  return contextTokensForLearnedModel(loadModelWindows(path ?? modelWindowsPath()), model, now);
+}
+
+/** The single write path for a window a server stated for one model, whether the
+ *  server said so in its catalog or in a refusal. Skips a value the store already
+ *  reports fresh, and never throws: a read-only home must not disturb the caller. */
+export function recordModelWindow(
+  model: string,
+  contextTokens: number,
+  opts: { path?: string; now?: number } = {},
+): void {
+  // A test run must never write the user's store: a fixture window would change
+  // resolution for the rest of the run. An explicit path is a test-owned file.
+  if (opts.path === undefined && process.env.VITEST === "true") return;
+  const tokens = clampWindowTokens(contextTokens);
+  const ref = model.trim();
+  if (!ref || tokens === undefined) return;
+  const path = opts.path ?? modelWindowsPath();
+  try {
+    const store = loadModelWindows(path);
+    // A stale entry is refreshed even at the same value: the TTL is measured from `at`.
+    if (contextTokensForLearnedModel(store, ref, opts.now) === tokens) return;
+    saveModelWindows(learnModelWindow(store, ref, tokens, opts.now), path);
+  } catch (writeFailure) {
+    process.stderr.write(
+      `reasonix: could not save the learned context window: ${
+        writeFailure instanceof Error ? writeFailure.message : String(writeFailure)
+      }\n`,
+    );
+  }
 }
