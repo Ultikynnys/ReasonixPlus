@@ -49,11 +49,9 @@
     {
       "key": "contextTokens",
       "kind": "internal",
-      "editable": true,
       "env": [],
       "configKey": null,
-      "label": "Server context tokens",
-      "hint": "Match llama-server --ctx-size; the output reserve is kept inside that window."
+      "label": null
     }
   ],
   "credentials": { "publicKey": null, "oauthConfig": null },

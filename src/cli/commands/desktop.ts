@@ -441,11 +441,17 @@ import {
 } from "../../provider-models.js";
 import type { SubagentEvent } from "../../tools/subagent.js";
 
+import { clampWindowTokens, forgetModelWindow, recordModelWindow } from "../../model-windows.js";
 import {
   commandOutputTelemetryPath,
   summarizeCommandOutputMetrics,
 } from "../../telemetry/command-output.js";
-import { billingContextForModel, resolveContextTokens } from "../../telemetry/stats.js";
+import {
+  billingContextForModel,
+  contextWindowBounds,
+  resolveContextTokens,
+  servedWindowTotal,
+} from "../../telemetry/stats.js";
 import { countTokensBounded } from "../../tokenizer.js";
 import type { ChoiceOption } from "../../tools/choice.js";
 import type { StepCompletion } from "../../tools/plan.js";
@@ -1819,7 +1825,8 @@ function emitSettings(tab: Tab, opts: { turnReleased?: boolean } = {}): void {
       quickSends: loadCustomQuickSends(),
       quickSendId: loadQuickSendId(),
       feedbackCues: loadFeedbackCues(),
-      contextTokens: tab.ctxMaxOverride ?? null,
+      contextTokens: servedWindowTotal(tab.currentModel) ?? tab.ctxMaxOverride ?? null,
+      contextTokensBounds: contextWindowBounds(tab.currentModel),
       maxIterPerTurn: tab.runtime?.loop.maxIterPerTurn ?? loadMaxIterPerTurn(),
       maxIterPerTurnOverride:
         typeof config.maxIterPerTurn === "number" ? config.maxIterPerTurn : null,
@@ -5441,6 +5448,30 @@ function tabCtxMaxOverride(tab: Tab): number | undefined {
   );
 }
 
+/** The context slider states one window per tab. A provider that serves its own window
+ *  (`--ctx-size`) keeps it in its own setting, and the learned entry follows so the new
+ *  value applies at once; every other model writes the global cap. */
+function applyTabWindow(tab: Tab, value: number | null): void {
+  const spec = providerSpec(providerForModel(tab.currentModel));
+  const context = spec?.context;
+  if (!spec || !context) {
+    saveContextTokens(value);
+    tab.ctxMaxOverride = loadContextTokens();
+    return;
+  }
+  // An out-of-range value is not stored: an unusable provider window resolves back to
+  // the provider default, which reads as "the slider did nothing".
+  const tokens = value === null ? null : (clampWindowTokens(value) ?? null);
+  saveProviderSettings([
+    {
+      providerId: spec.id,
+      key: context.setting,
+      value: tokens === null ? null : String(tokens),
+    },
+  ]);
+  if (tokens === null) forgetModelWindow(tab.currentModel);
+  else recordModelWindow(tab.currentModel, tokens);
+}
 function buildRuntimeFor(tab: Tab): RuntimeState {
   if (!tab.toolset) throw new Error("buildRuntimeFor called before initTabToolset finished");
   const toolset = tab.toolset;
@@ -10074,9 +10105,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           for (const openTab of tabs.values()) emitSettings(openTab);
         }
         if (msg.contextTokens !== undefined) {
-          saveContextTokens(msg.contextTokens);
-          const next = loadContextTokens();
-          tab.ctxMaxOverride = next;
+          applyTabWindow(tab, msg.contextTokens);
           // Re-resolve verdict-aware so an Ollama tab keeps its learned window
           // while the new user value stays the fallback (matches boot logic).
           tab.runtime?.loop.configure({ ctxMaxOverride: tabCtxMaxOverride(tab) ?? null });

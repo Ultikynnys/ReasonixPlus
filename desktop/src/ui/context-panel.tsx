@@ -1339,8 +1339,9 @@ function CtxParameters({
   usage: UsageStats;
   onSaveSettings?: (patch: SettingsPatch) => void;
 }) {
+  const bounds = settings?.contextTokensBounds ?? { min: 128_000, max: 1_000_000 };
   const effectiveTokens = settings?.contextTokens ?? usage.ctxMax ?? 300_000;
-  const clampedTokens = Math.min(1_000_000, Math.max(128_000, effectiveTokens));
+  const clampedTokens = Math.min(bounds.max, Math.max(bounds.min, effectiveTokens));
   const [sliderValue, setSliderValue] = useState<number>(clampedTokens);
 
   useEffect(() => {
@@ -1348,8 +1349,7 @@ function CtxParameters({
   }, [clampedTokens]);
 
   const commit = (val: number) => {
-    const next = Math.min(1_000_000, Math.max(128_000, val));
-    onSaveSettings?.({ contextTokens: next });
+    onSaveSettings?.({ contextTokens: Math.min(bounds.max, Math.max(bounds.min, val)) });
   };
 
   const effectiveTriggerPct = Math.round((settings?.autoCompactTrigger ?? 0.8) * 100);
@@ -1397,11 +1397,11 @@ function CtxParameters({
         label={t("contextPanel.contextWindow")}
         value={sliderValue}
         display={`${fmtCompact(sliderValue)} (${sliderValue.toLocaleString()})`}
-        min={128_000}
-        max={1_000_000}
-        step={1_000}
-        boundMin="128K"
-        boundMax="1M"
+        min={bounds.min}
+        max={bounds.max}
+        step={bounds.min <= 1_024 ? 256 : 1_000}
+        boundMin={fmtCompact(bounds.min)}
+        boundMax={fmtCompact(bounds.max)}
         ariaLabel={t("contextPanel.contextWindow")}
         onChange={setSliderValue}
         onCommit={commit}

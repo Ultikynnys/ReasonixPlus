@@ -186,8 +186,10 @@ describe("provider settings store", () => {
         (entry) => entry.kind !== "secret" && !entry.editable,
       )) {
         for (const name of setting.env) process.env[name] = "environment-value";
-        saveProviderSetting(spec.id, setting.key, "stored-value", path);
-        expect(loadProviderSetting(spec.id, setting.key, path)).toBe("stored-value");
+        // A server-window setting only accepts a token count above its reserve.
+        const value = spec.context?.setting === setting.key ? "65536" : "stored-value";
+        saveProviderSetting(spec.id, setting.key, value, path);
+        expect(loadProviderSetting(spec.id, setting.key, path)).toBe(value);
         for (const name of setting.env) expect(process.env[name]).toBe("environment-value");
       }
     }

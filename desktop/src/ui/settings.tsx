@@ -2027,13 +2027,8 @@ function ProviderSettingRow({
   useEffect(() => setDraft(value ?? ""), [value]);
   const label = setting.label ?? setting.key;
   const signupUrl = setting.signupUrl;
-  const serverContext = providerSpec(providerId)?.context;
   const fallbackPlaceholder =
-    serverContext?.setting === setting.key
-      ? String(serverContext.defaultTokens)
-      : setting.kind === "url"
-        ? providerDefaultEndpoint(providerId)
-        : undefined;
+    setting.kind === "url" ? providerDefaultEndpoint(providerId) : undefined;
   const placeholder = setting.placeholder ?? fallbackPlaceholder;
   const save = (next: string): void => {
     onSave({ providerSettings: { [providerId]: { [setting.key]: next.trim() } } });

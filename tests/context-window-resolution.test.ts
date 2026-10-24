@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeConfig } from "../src/config.js";
+import { LARGEST_WINDOW_TOKENS, SMALLEST_WINDOW_TOKENS } from "../src/context-window.js";
 import {
   emptyModelWindows,
   learnModelWindow,
@@ -14,7 +15,14 @@ import {
   saveModelWindows,
 } from "../src/model-windows.js";
 import { fetchProviderModels } from "../src/provider-models.js";
-import { DEFAULT_CONTEXT_TOKENS, resolveContextTokens } from "../src/telemetry/stats.js";
+import {
+  DEFAULT_CONTEXT_TOKENS,
+  MAX_CONTEXT_TOKENS,
+  MIN_CONTEXT_TOKENS,
+  contextWindowBounds,
+  resolveContextTokens,
+  servedWindowTotal,
+} from "../src/telemetry/stats.js";
 
 let dir: string;
 let cfgPath: string;
@@ -125,6 +133,58 @@ describe("every other provider", () => {
 
   it("falls back to the safe default when nothing is configured", () => {
     expect(resolved("some-future-model")).toBe(DEFAULT_CONTEXT_TOKENS);
+  });
+});
+
+describe("the window a control states", () => {
+  it("states the total a server owns, not the prompt budget", () => {
+    setServerWindow(131_072);
+    expect(servedWindowTotal("local/saluki-27b", { path: cfgPath, windowsPath, now: 2_000 })).toBe(
+      131_072,
+    );
+  });
+
+  it("follows a window the server reported", () => {
+    learn("local/saluki-27b", 262_144);
+    expect(servedWindowTotal("local/saluki-27b", { path: cfgPath, windowsPath, now: 2_000 })).toBe(
+      262_144,
+    );
+  });
+
+  it("falls back to the provider default when nothing is set", () => {
+    expect(servedWindowTotal("local/saluki-27b", { path: cfgPath, windowsPath, now: 2_000 })).toBe(
+      32_768,
+    );
+  });
+
+  it("has no total for a provider that does not own its window", () => {
+    expect(
+      servedWindowTotal("deepseek-v4-pro", { path: cfgPath, windowsPath, now: 2_000 }),
+    ).toBeUndefined();
+  });
+
+  it("allows a sub-128K window only where the server owns it", () => {
+    expect(contextWindowBounds("local/saluki-27b")).toEqual({
+      min: SMALLEST_WINDOW_TOKENS,
+      max: LARGEST_WINDOW_TOKENS,
+    });
+    expect(contextWindowBounds("deepseek-v4-pro")).toEqual({
+      min: MIN_CONTEXT_TOKENS,
+      max: MAX_CONTEXT_TOKENS,
+    });
+  });
+
+  it("tracks a slider write, and a reset returns to the default", () => {
+    setServerWindow(65_536);
+    const budget = () =>
+      resolveContextTokens("local/saluki-27b", undefined, {
+        path: cfgPath,
+        windowsPath,
+        now: 2_000,
+      });
+    expect(budget()).toBe(65_536 - 8_192);
+    writeConfig({}, cfgPath);
+    expect(budget()).toBe(24_576);
   });
 });
 

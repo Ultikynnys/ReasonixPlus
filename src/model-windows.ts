@@ -136,26 +136,22 @@ export function learnedContextTokens(
   return contextTokensForLearnedModel(loadModelWindows(path ?? modelWindowsPath()), model, now);
 }
 
-/** The single write path for a window a server stated for one model, whether the
- *  server said so in its catalog or in a refusal. Skips a value the store already
- *  reports fresh, and never throws: a read-only home must not disturb the caller. */
-export function recordModelWindow(
-  model: string,
-  contextTokens: number,
-  opts: { path?: string; now?: number } = {},
+/** The store a write targets, or undefined when a test run named none: a fixture must
+ *  never touch the user's file. */
+function writePath(path: string | undefined): string | undefined {
+  if (path !== undefined) return path;
+  return process.env.VITEST === "true" ? undefined : modelWindowsPath();
+}
+
+/** Applies `mutate` to the store at `path` and saves the store it returns. Best-effort:
+ *  a read-only home reports and moves on. */
+function updateStore(
+  path: string,
+  mutate: (store: ModelWindowStore) => ModelWindowStore | undefined,
 ): void {
-  // A test run must never write the user's store: a fixture window would change
-  // resolution for the rest of the run. An explicit path is a test-owned file.
-  if (opts.path === undefined && process.env.VITEST === "true") return;
-  const tokens = clampWindowTokens(contextTokens);
-  const ref = model.trim();
-  if (!ref || tokens === undefined) return;
-  const path = opts.path ?? modelWindowsPath();
   try {
-    const store = loadModelWindows(path);
-    // A stale entry is refreshed even at the same value: the TTL is measured from `at`.
-    if (contextTokensForLearnedModel(store, ref, opts.now) === tokens) return;
-    saveModelWindows(learnModelWindow(store, ref, tokens, opts.now), path);
+    const next = mutate(loadModelWindows(path));
+    if (next !== undefined) saveModelWindows(next, path);
   } catch (writeFailure) {
     process.stderr.write(
       `reasonix: could not save the learned context window: ${
@@ -163,4 +159,35 @@ export function recordModelWindow(
       }\n`,
     );
   }
+}
+
+/** The single write path for a window a server or the user stated for one model. Skips a
+ *  value the store already reports fresh, so a repeated discovery writes nothing. */
+export function recordModelWindow(
+  model: string,
+  contextTokens: number,
+  opts: { path?: string; now?: number } = {},
+): void {
+  const path = writePath(opts.path);
+  const tokens = clampWindowTokens(contextTokens);
+  const ref = model.trim();
+  if (path === undefined || !ref || tokens === undefined) return;
+  updateStore(path, (store) => {
+    // A stale entry is refreshed even at the same value: the TTL counts from `at`.
+    if (contextTokensForLearnedModel(store, ref, opts.now) === tokens) return undefined;
+    return learnModelWindow(store, ref, tokens, opts.now);
+  });
+}
+
+/** Drops a learned window so resolution falls back to the provider setting. */
+export function forgetModelWindow(model: string, opts: { path?: string } = {}): void {
+  const path = writePath(opts.path);
+  const ref = model.trim();
+  if (path === undefined || !ref) return;
+  updateStore(path, (store) => {
+    if (!Object.hasOwn(store.windows, ref)) return undefined;
+    const windows = { ...store.windows };
+    delete windows[ref];
+    return { ...store, windows };
+  });
 }

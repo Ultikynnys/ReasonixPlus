@@ -1078,6 +1078,9 @@ export interface SettingsEvent {
   quickSends: QuickSend[];
   /** User-configured context-window cap (tokens); null = per-model default (300K). */
   contextTokens?: number | null;
+  /** Range the context slider may state for this tab's model; absent = [128K, 1M]. A
+   *  provider that serves its own window (`--ctx-size`) allows smaller values. */
+  contextTokensBounds?: { min: number; max: number };
   /** Effective per-turn iteration cap after config, environment, and default resolution. */
   maxIterPerTurn?: number | null;
   /** Explicit config override; null means environment/default resolution is active. */

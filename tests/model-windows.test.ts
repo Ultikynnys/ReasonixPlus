@@ -10,6 +10,7 @@ import {
   clampWindowTokens,
   contextTokensForLearnedModel,
   emptyModelWindows,
+  forgetModelWindow,
   learnModelWindow,
   learnedContextTokens,
   loadModelWindows,
@@ -141,6 +142,30 @@ describe("recordModelWindow", () => {
         path: join(blocker, "model-windows.json"),
       }),
     ).not.toThrow();
+  });
+});
+
+describe("forgetModelWindow", () => {
+  it("drops an entry so resolution falls back", () => {
+    const path = join(dir, "w.json");
+    recordModelWindow("local/saluki-27b", 131_072, { path, now: 1_000 });
+    forgetModelWindow("local/saluki-27b", { path });
+    expect(loadModelWindows(path).windows).toEqual({});
+  });
+
+  it("leaves other models alone", () => {
+    const path = join(dir, "w.json");
+    recordModelWindow("local/saluki-27b", 131_072, { path, now: 1_000 });
+    recordModelWindow("local/other", 65_536, { path, now: 1_000 });
+    forgetModelWindow("local/saluki-27b", { path });
+    expect(Object.keys(loadModelWindows(path).windows)).toEqual(["local/other"]);
+  });
+
+  it("is a no-op for a model with no entry", () => {
+    const path = join(dir, "w.json");
+    recordModelWindow("local/saluki-27b", 131_072, { path, now: 1_000 });
+    forgetModelWindow("local/absent", { path });
+    expect(Object.keys(loadModelWindows(path).windows)).toEqual(["local/saluki-27b"]);
   });
 });
 

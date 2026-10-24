@@ -66,20 +66,45 @@ export interface ResolveContextTokensOptions {
   now?: number;
 }
 
-/** A server-owned window minus the tokens the response may take. The learned value is
- *  what the server actually serves, so it outranks a hand-entered setting, and the
- *  reserve always comes out of the total. */
-function serverOwnedWindow(
+/** The total a server-owned provider serves for `model`, before the output reserve. The
+ *  learned value is what the server actually serves, so it outranks a hand-entered
+ *  setting; the reserve always comes out of the returned total. */
+function servedTotal(
   provider: ModelProvider,
   context: NonNullable<ProviderSpec["context"]>,
   learned: number | undefined,
   path: string | undefined,
 ): number {
   const stored = Number(loadProviderSetting(provider, context.setting, path));
-  const total =
+  return (
     learned ??
-    (Number.isInteger(stored) && stored > context.outputReserve ? stored : context.defaultTokens);
-  return Math.max(SMALLEST_WINDOW_TOKENS, total - context.outputReserve);
+    (Number.isInteger(stored) && stored > context.outputReserve ? stored : context.defaultTokens)
+  );
+}
+
+/** The total window a control may state for `model`, or undefined when the provider does
+ *  not own its window. The slider edits this; resolution subtracts the output reserve. */
+export function servedWindowTotal(
+  model: string,
+  opts: ResolveContextTokensOptions = {},
+): number | undefined {
+  const provider = providerForModel(model);
+  const context = providerSpec(provider)?.context;
+  if (!context) return undefined;
+  return servedTotal(
+    provider,
+    context,
+    learnedContextTokens(model, opts.now, opts.windowsPath),
+    opts.path,
+  );
+}
+
+/** The range a context-window control may state: a server-owned window is not bound by
+ *  the 128K cloud floor. */
+export function contextWindowBounds(model: string): { min: number; max: number } {
+  return providerSpec(providerForModel(model))?.context
+    ? { min: SMALLEST_WINDOW_TOKENS, max: LARGEST_WINDOW_TOKENS }
+    : { min: MIN_CONTEXT_TOKENS, max: MAX_CONTEXT_TOKENS };
 }
 
 /** The effective context cap for a model. A provider that declares a server-owned window
@@ -95,7 +120,10 @@ export function resolveContextTokens(
   const context = providerSpec(provider)?.context;
   // The server owns this window (`--ctx-size`), so nothing above it can raise it:
   // exceeding a serving window fails the request outright.
-  if (context) return serverOwnedWindow(provider, context, learned, opts.path);
+  if (context) {
+    const total = servedTotal(provider, context, learned, opts.path);
+    return Math.max(SMALLEST_WINDOW_TOKENS, total - context.outputReserve);
+  }
 
   const perModel = loadModelContextTokens(model, opts.path);
   if (perModel !== undefined) return perModel;
