@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { type ProviderSpec, providerSpec, providerSpecsInOrder } from "@reasonix/core-utils";
 import { readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
+import {
+  clampWindowTokens,
+  learnModelWindow,
+  loadModelWindows,
+  modelWindowsPath,
+  saveModelWindows,
+} from "./model-windows.js";
 import { reasonixHome } from "./reasonix-home.js";
 
 /** A provider whose endpoint never authenticates declares so; every other provider
@@ -85,6 +92,37 @@ function fieldAt(value: unknown, dotted: string): unknown {
     cursor = (cursor as Record<string, unknown>)[key];
   }
   return cursor;
+}
+
+/** Records the window a context-owning server advertises in its own catalog
+ *  (`meta.n_ctx` from llama.cpp), so the ctx cap follows the server rather than a
+ *  hand-entered setting. Recorded under the wire id and its qualified ref. */
+function recordServedWindows(
+  spec: ProviderSpec | undefined,
+  entries: readonly unknown[],
+  idField: string,
+  homeDir?: string,
+): void {
+  if (!spec?.context) return;
+  const path = modelWindowsPath(homeDir);
+  let store = loadModelWindows(path);
+  let changed = false;
+  for (const entry of entries) {
+    const model = entry as Record<string, unknown> | null;
+    const id = model?.[idField];
+    const reported = fieldAt(model, "meta.n_ctx");
+    if (typeof id !== "string" || !id.trim() || typeof reported !== "number") continue;
+    const tokens = clampWindowTokens(reported);
+    if (tokens === undefined) continue;
+    for (const key of [id.trim(), `${spec.id}/${id.trim()}`]) {
+      const next = learnModelWindow(store, key, tokens);
+      if (next !== store) {
+        store = next;
+        changed = true;
+      }
+    }
+  }
+  if (changed) saveModelWindows(store, path);
 }
 
 /** Ids whose declared modality field lists `image`. Empty when the provider declares
@@ -175,6 +213,7 @@ export async function fetchProviderModels(options: {
       const visionModels = visionIdsOf(entries, idField, spec?.discovery.visionField ?? null)
         .filter((id) => !excluded.has(id))
         .sort();
+      recordServedWindows(spec, entries, idField, options.homeDir);
       writeJsonFileSilently(path, { models, visionModels, checkedAt: Date.now() });
       return { provider, models, visionModels, source: "live" };
     } catch (error) {

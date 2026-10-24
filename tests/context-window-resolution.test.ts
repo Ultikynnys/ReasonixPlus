@@ -6,7 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeConfig } from "../src/config.js";
-import { emptyModelWindows, learnModelWindow, saveModelWindows } from "../src/model-windows.js";
+import {
+  emptyModelWindows,
+  learnModelWindow,
+  loadModelWindows,
+  modelWindowsPath,
+  saveModelWindows,
+} from "../src/model-windows.js";
+import { fetchProviderModels } from "../src/provider-models.js";
 import { DEFAULT_CONTEXT_TOKENS, resolveContextTokens } from "../src/telemetry/stats.js";
 
 let dir: string;
@@ -118,5 +125,46 @@ describe("every other provider", () => {
 
   it("falls back to the safe default when nothing is configured", () => {
     expect(resolved("some-future-model")).toBe(DEFAULT_CONTEXT_TOKENS);
+  });
+});
+
+describe("a server that advertises its own window", () => {
+  it("records meta.n_ctx from the catalog and budgets against it", async () => {
+    const home = join(dir, "home");
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "saluki-27b", meta: { n_ctx: 65_536 } }] }), {
+        status: 200,
+      })) as typeof fetch;
+    const catalog = await fetchProviderModels({
+      provider: "local",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      fallback: [],
+      force: true,
+      homeDir: home,
+      fetchImpl,
+    });
+    expect(catalog.models).toEqual(["saluki-27b"]);
+    // No provider setting anywhere: the budget can only come from the payload.
+    expect(
+      resolveContextTokens("local/saluki-27b", 600_000, {
+        path: cfgPath,
+        windowsPath: modelWindowsPath(home),
+      }),
+    ).toBe(65_536 - 8_192);
+  });
+
+  it("ignores a catalog that advertises no window", async () => {
+    const home = join(dir, "home2");
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "m" }] }), { status: 200 })) as typeof fetch;
+    await fetchProviderModels({
+      provider: "local",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      fallback: [],
+      force: true,
+      homeDir: home,
+      fetchImpl,
+    });
+    expect(loadModelWindows(modelWindowsPath(home)).windows).toEqual({});
   });
 });
