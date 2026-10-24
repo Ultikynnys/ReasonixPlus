@@ -1,0 +1,80 @@
+{
+  "id": "local",
+  "providerId": "local",
+  "label": "Local (llama.cpp)",
+  "shortLabel": "LOCAL",
+  "order": 12,
+  "setupGate": ["baseUrl", "apiKey"],
+  "routing": {
+    "staticCatalog": false,
+    "discoveredCatalog": false,
+    "checkedLast": false,
+    "modelScheme": "local/",
+    "qualifyModels": true
+  },
+  "groupLabelKey": "settings.localSection",
+  "precedence": null,
+  "defaultModel": null,
+  "knownCatalog": false,
+  "models": [],
+  "goModels": [],
+  "speechModels": [],
+  "vision": {},
+  "modelFilter": null,
+  "reasoningEfforts": [],
+  "endpoint": {
+    "strategy": "standard",
+    "default": "http://127.0.0.1:8080/v1",
+    "tiers": {},
+    "keyTuple": "resolve"
+  },
+  "context": { "setting": "contextTokens", "outputReserve": 8192, "defaultTokens": 32768 },
+  "settings": [
+    {
+      "key": "baseUrl",
+      "kind": "url",
+      "editable": true,
+      "env": ["LOCAL_BASE_URL"],
+      "configKey": null,
+      "label": "Server URL",
+      "hint": "OpenAI-compatible llama.cpp endpoint. Start llama-server with --jinja for tool calling."
+    },
+    {
+      "key": "apiKey",
+      "kind": "secret",
+      "env": ["LOCAL_API_KEY"],
+      "configKey": null,
+      "label": "Local API key (optional)"
+    },
+    {
+      "key": "contextTokens",
+      "kind": "internal",
+      "editable": true,
+      "env": [],
+      "configKey": null,
+      "label": "Server context tokens",
+      "hint": "Match llama-server --ctx-size; the output reserve is kept inside that window."
+    }
+  ],
+  "credentials": { "publicKey": null, "oauthConfig": null },
+  "usable": { "apiKey": true, "keylessLocal": false, "baseUrl": true, "always": false },
+  "discovery": {
+    "strategy": "models-endpoint",
+    "listField": "data",
+    "idField": "id",
+    "excludeSpeech": false
+  },
+  "wire": { "reasoningEffort": false, "parallelToolCalls": false, "thinking": "chat-template" },
+  "billing": { "kind": "none", "schedule": null },
+  "cost": { "tier": "cheap", "compactionTrigger": 0.7 },
+  "usage": { "probe": null, "urls": [], "primaryWindow": null },
+  "strings": {
+    "notConfigured": "Configure the Local server URL in Settings > Models.",
+    "noCredential": "Configure a server URL or API key for {model} in Settings > Models > Local.",
+    "apiBare": "Local: {baseUrl}",
+    "modelsLabel": "Server models",
+    "modelsHint": "Models are discovered from the server. Tool calling requires a compatible model and chat template."
+  },
+  "errors": { "i18nPrefix": "custom", "brands": ["llama.cpp"], "hosts": [], "serverReport": "standard" },
+  "client": { "auth": "api-key", "transport": null, "allowMissingKey": true }
+}

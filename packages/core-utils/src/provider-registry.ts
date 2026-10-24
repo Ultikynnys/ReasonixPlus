@@ -78,6 +78,7 @@ export interface ProviderSettingSpec {
   /** Setting key inside the provider's own store entry (e.g. `apiKey`, `baseUrl`). */
   key: string;
   kind: ProviderSettingKind;
+  editable: boolean;
   /** Environment variables that override the persisted value, highest priority first. */
   env: readonly string[];
   /** Legacy config field this setting migrated from; null when it never had one. */
@@ -107,6 +108,9 @@ export interface ProviderUsableSpec {
   apiKey: boolean;
   /** A keyless localhost daemon counts as runnable. */
   keylessLocal: boolean;
+  /** A resolved user-declared endpoint counts as runnable without a key (a
+   *  self-hosted server the operator named, which may not be loopback). */
+  baseUrl: boolean;
   /** The provider always runs (OpenCode falls back to free models). */
   always: boolean;
 }
@@ -136,6 +140,9 @@ export interface ProviderRoutingSpec {
   foreignCatalog: boolean;
   /** Model-id prefix that always routes here, e.g. Ollama's `ollama/` scheme. */
   modelScheme: string | null;
+  /** The provider owns its whole catalog, so every picker row carries the model
+   *  scheme even when no other provider serves the bare id. */
+  qualifyModels: boolean;
 }
 
 /** How a provider's 5xx failures are reported. */
@@ -241,6 +248,18 @@ export interface ProviderBillingSpec {
   balance: ProviderBalanceSpec | null;
 }
 
+/** A context window the provider's own server owns (a llama.cpp `--ctx-size`),
+ *  so the budget the loop may fill is the setting minus the output reserve the
+ *  server must also fit in the same window. */
+export interface ProviderContextSpec {
+  /** Declared setting holding the server's total window. */
+  setting: string;
+  /** Tokens the provider keeps for the response, subtracted from `setting`. */
+  outputReserve: number;
+  /** Window assumed when the setting is unset. */
+  defaultTokens: number;
+}
+
 /** Relative per-token cost. `cheap` treats a cache read as a rounding error,
  *  `premium` treats every resent byte as real money. */
 export type ProviderCostTier = "cheap" | "standard" | "premium";
@@ -264,7 +283,11 @@ export interface ProviderCostSpec {
 export type ProviderWireFormat = "chat-completions" | "ollama-native" | "gemini-interactions";
 
 /** Where a provider expects its thinking toggle; null when it refuses the field. */
-export type ProviderThinkingStyle = "top-level" | "zai-top-level" | "mimo-top-level";
+export type ProviderThinkingStyle =
+  | "top-level"
+  | "zai-top-level"
+  | "mimo-top-level"
+  | "chat-template";
 
 /** Request field carrying the output-token cap. Newer OpenAI models reject the
  *  chat-completions `max_tokens` spelling in favor of `max_completion_tokens`. */
@@ -322,11 +345,17 @@ const THINKING_STYLES: ReadonlySet<string> = new Set([
   "top-level",
   "zai-top-level",
   "mimo-top-level",
+  "chat-template",
 ]);
 const MAX_TOKENS_FIELDS: ReadonlySet<string> = new Set(["max_tokens", "max_completion_tokens"]);
 const COST_TIERS: ReadonlySet<string> = new Set(["cheap", "standard", "premium"]);
 
-export type ProviderReasoningControl = "effort" | "gemini-level" | "gemini-budget" | "cloudcode-budget" | "none";
+export type ProviderReasoningControl =
+  | "effort"
+  | "gemini-level"
+  | "gemini-budget"
+  | "cloudcode-budget"
+  | "none";
 
 export interface ProviderReasoningRule {
   pattern: string;
@@ -393,6 +422,8 @@ export interface ProviderSpec {
   reasoningDefault: ReasoningEffort | undefined;
   discovery: ProviderDiscoverySpec;
   client: ProviderClientSpec;
+  /** Server-owned context window; null when the model table supplies the cap. */
+  context: ProviderContextSpec | null;
   errors: ProviderErrorsSpec;
   billing: ProviderBillingSpec;
   cost: ProviderCostSpec;
@@ -728,6 +759,7 @@ function parseSetting(value: unknown, where: string): ProviderSettingSpec {
   return {
     key,
     kind,
+    editable: flag(raw.editable ?? false, `${where}.editable`),
     env: texts(raw.env ?? [], `${where}.env`),
     configKey: nullableText(raw.configKey, `${where}.configKey`),
     label,
@@ -753,6 +785,7 @@ function parseUsable(value: unknown, where: string): ProviderUsableSpec {
   return {
     apiKey: flag(raw.apiKey, `${where}.apiKey`),
     keylessLocal: flag(raw.keylessLocal, `${where}.keylessLocal`),
+    baseUrl: flag(raw.baseUrl ?? false, `${where}.baseUrl`),
     always: flag(raw.always, `${where}.always`),
   };
 }
@@ -928,10 +961,7 @@ function parseCost(value: unknown, where: string): ProviderCostSpec {
     ...(raw.compactionTrigger === undefined
       ? {}
       : {
-          compactionTrigger: fractionOfWindow(
-            raw.compactionTrigger,
-            `${where}.compactionTrigger`,
-          ),
+          compactionTrigger: fractionOfWindow(raw.compactionTrigger, `${where}.compactionTrigger`),
         }),
     ...(raw.keepImages === undefined
       ? {}
@@ -983,7 +1013,32 @@ function parseRouting(value: unknown, where: string): ProviderRoutingSpec {
     checkedLast: flag(raw.checkedLast ?? false, `${where}.checkedLast`),
     foreignCatalog: flag(raw.foreignCatalog ?? false, `${where}.foreignCatalog`),
     modelScheme: nullableText(raw.modelScheme, `${where}.modelScheme`),
+    qualifyModels: flag(raw.qualifyModels ?? false, `${where}.qualifyModels`),
   };
+}
+
+/** A server-owned window must fit the declared setting and reserve, so a
+ *  declaration that cannot produce a positive prompt budget fails to load. */
+function parseContext(
+  value: unknown,
+  where: string,
+  settings: readonly ProviderSettingSpec[],
+): ProviderContextSpec | null {
+  if (value === undefined || value === null) return null;
+  const raw = record(value, where);
+  const setting = text(raw.setting, `${where}.setting`);
+  if (!settings.some((entry) => entry.key === setting)) {
+    fail(`${where}.setting`, `"${setting}" is not a declared setting`);
+  }
+  const outputReserve = number(raw.outputReserve, `${where}.outputReserve`);
+  if (!Number.isInteger(outputReserve) || outputReserve <= 0) {
+    fail(`${where}.outputReserve`, "expected a positive integer");
+  }
+  const defaultTokens = number(raw.defaultTokens, `${where}.defaultTokens`);
+  if (!Number.isInteger(defaultTokens) || defaultTokens <= outputReserve) {
+    fail(`${where}.defaultTokens`, "expected an integer above outputReserve");
+  }
+  return { setting, outputReserve, defaultTokens };
 }
 
 function parseModelId(value: unknown, where: string): ProviderModelIdSpec {
@@ -1002,13 +1057,24 @@ function parseModelId(value: unknown, where: string): ProviderModelIdSpec {
 
 const REASONING_LEVELS: ReadonlySet<string> = new Set(["low", "medium", "high", "xhigh", "max"]);
 const REASONING_CONTROLS: ReadonlySet<string> = new Set([
-  "effort", "gemini-level", "gemini-budget", "cloudcode-budget", "none",
+  "effort",
+  "gemini-level",
+  "gemini-budget",
+  "cloudcode-budget",
+  "none",
 ]);
 
-function parseReasoningAliases(value: unknown, where: string): Partial<Record<ReasoningEffort, ReasoningEffort>> {
+function parseReasoningAliases(
+  value: unknown,
+  where: string,
+): Partial<Record<ReasoningEffort, ReasoningEffort>> {
   const out: Partial<Record<ReasoningEffort, ReasoningEffort>> = {};
   for (const [key, mapped] of Object.entries(record(value ?? {}, where))) {
-    out[choice<ReasoningEffort>(key, REASONING_LEVELS, where)] = choice<ReasoningEffort>(mapped, REASONING_LEVELS, `${where}.${key}`);
+    out[choice<ReasoningEffort>(key, REASONING_LEVELS, where)] = choice<ReasoningEffort>(
+      mapped,
+      REASONING_LEVELS,
+      `${where}.${key}`,
+    );
   }
   return out;
 }
@@ -1019,20 +1085,37 @@ function parseReasoningRules(value: unknown, where: string): ProviderReasoningRu
     const at = `${where}[${index}]`;
     const raw = record(entry, at);
     const pattern = text(raw.pattern, `${at}.pattern`);
-    try { new RegExp(pattern); } catch { fail(at, "invalid regular expression"); }
+    try {
+      new RegExp(pattern);
+    } catch {
+      fail(at, "invalid regular expression");
+    }
     const efforts = subset<ReasoningEffort>(raw.efforts, REASONING_LEVELS, `${at}.efforts`);
     if (new Set(efforts).size !== efforts.length) fail(at, "duplicate effort");
     const budgets: Partial<Record<ReasoningEffort, number>> = {};
     for (const [key, value] of Object.entries(record(raw.budgets ?? {}, `${at}.budgets`))) {
       const level = choice<ReasoningEffort>(key, REASONING_LEVELS, at);
       const budget = number(value, at);
-      if (!efforts.includes(level) || !Number.isInteger(budget) || budget < 1) fail(at, "invalid thinking budget");
+      if (!efforts.includes(level) || !Number.isInteger(budget) || budget < 1)
+        fail(at, "invalid thinking budget");
       budgets[level] = budget;
     }
-    const control = choice<ProviderReasoningControl>(raw.control ?? "effort", REASONING_CONTROLS, `${at}.control`);
-    if ((control === "gemini-budget" || control === "cloudcode-budget") && efforts.some((level) => budgets[level] === undefined)) fail(at, "missing thinking budget");
+    const control = choice<ProviderReasoningControl>(
+      raw.control ?? "effort",
+      REASONING_CONTROLS,
+      `${at}.control`,
+    );
+    if (
+      (control === "gemini-budget" || control === "cloudcode-budget") &&
+      efforts.some((level) => budgets[level] === undefined)
+    )
+      fail(at, "missing thinking budget");
     if (control === "none" && efforts.length) fail(at, "disabled control has efforts");
-    return { pattern, efforts, budgets, control,
+    return {
+      pattern,
+      efforts,
+      budgets,
+      control,
       aliases: parseReasoningAliases(raw.aliases, `${at}.aliases`),
       forcedThinking: flag(raw.forcedThinking ?? false, `${at}.forcedThinking`),
     };
@@ -1067,7 +1150,11 @@ function parseProvider(value: unknown, source: string): ProviderSpec {
       MODEL_FILTERS,
       `${scope}: modelFilter`,
     ),
-    reasoningEfforts: subset<ReasoningEffort>(raw.reasoningEfforts ?? [], REASONING_LEVELS, `${scope}: reasoningEfforts`),
+    reasoningEfforts: subset<ReasoningEffort>(
+      raw.reasoningEfforts ?? [],
+      REASONING_LEVELS,
+      `${scope}: reasoningEfforts`,
+    ),
     reasoningAliases: parseReasoningAliases(raw.reasoningAliases, `${scope}: reasoningAliases`),
     reasoningRules: parseReasoningRules(raw.reasoningRules ?? [], `${scope}: reasoningRules`),
     endpoint: parseEndpoint(raw.endpoint, `${scope}: endpoint`),
@@ -1102,6 +1189,7 @@ function parseProvider(value: unknown, source: string): ProviderSpec {
           ),
     discovery: parseDiscovery(raw.discovery, `${scope}: discovery`),
     client: parseClient(raw.client, `${scope}: client`),
+    context: parseContext(raw.context, `${scope}: context`, settings),
     errors: parseErrors(raw.errors, `${scope}: errors`, label),
     billing: parseBilling(raw.billing, `${scope}: billing`),
     cost: parseCost(raw.cost, `${scope}: cost`),
@@ -1412,7 +1500,7 @@ export function isLocalBaseUrl(baseUrl: string | undefined): boolean {
   if (!baseUrl) return true;
   try {
     const host = new URL(baseUrl).hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
   } catch {
     return false;
   }
@@ -1428,7 +1516,9 @@ export function providerUsable(
   if (spec.usable.apiKey && context.endpoint.apiKey) return true;
   const oauthField = spec.credentials.oauthConfig;
   if (oauthField && context.oauthToken?.(oauthField)) return true;
-  return spec.usable.keylessLocal && isLocalBaseUrl(context.endpoint.baseUrl);
+  if (spec.usable.keylessLocal && isLocalBaseUrl(context.endpoint.baseUrl)) return true;
+  if (spec.usable.baseUrl && context.endpoint.baseUrl) return true;
+  return spec.usable.always;
 }
 
 function readSettingValue(

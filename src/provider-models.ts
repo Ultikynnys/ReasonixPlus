@@ -1,10 +1,17 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { providerSpec, providerSpecsInOrder } from "@reasonix/core-utils";
+import { type ProviderSpec, providerSpec, providerSpecsInOrder } from "@reasonix/core-utils";
 import { readJsonFileSilently, writeJsonFileSilently } from "./core/json-file.js";
 import { reasonixHome } from "./reasonix-home.js";
 
+/** A provider whose endpoint never authenticates declares so; every other provider
+ *  needs a key before its catalog is worth requesting. */
+function keylessDiscovery(spec: ProviderSpec | undefined): boolean {
+  return Boolean(spec && (spec.usable.keylessLocal || spec.usable.baseUrl));
+}
+
 export type CatalogProvider =
+  | "local"
   | "deepseek"
   | "openai"
   | "zai"
@@ -135,15 +142,15 @@ export async function fetchProviderModels(options: {
   if (existing) return existing;
   const request = (async (): Promise<ProviderCatalog> => {
     try {
-      if (!apiKey)
+      const spec = providerSpec(provider);
+      if (!apiKey && !keylessDiscovery(spec))
         throw new Error("Model discovery requires an API key; using the fallback catalog");
       const response = await (options.fetchImpl ?? fetch)(`${baseUrl.replace(/\/$/, "")}/models`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
         signal: AbortSignal.timeout(options.timeoutMs ?? 5_000),
       });
       if (!response.ok) throw new Error(`Model discovery returned HTTP ${response.status}`);
       const body = (await response.json()) as { data?: unknown; models?: unknown };
-      const spec = providerSpec(provider);
       const listField = spec?.discovery.listField ?? "data";
       const idField = spec?.discovery.idField ?? "id";
       const entries = (body as Record<string, unknown>)[listField];

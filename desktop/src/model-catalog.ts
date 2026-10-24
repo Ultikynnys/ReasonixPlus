@@ -14,6 +14,7 @@ import {
 import type { TKey } from "./i18n";
 
 export type ModelCatalogGroupKey =
+  | "local"
   | "deepseek"
   | "openai"
   | "zai"
@@ -32,6 +33,7 @@ export type ModelCatalogGroupKey =
 
 /** Catalog keys the daemon publishes live discovery snapshots under. */
 export type ProviderCatalogKey =
+  | "local"
   | "deepseek"
   | "openai"
   | "zai"
@@ -70,6 +72,7 @@ export interface ModelCatalogView {
 
 /** Desktop picker groups — the UI contract every `pickerGroup` must name. */
 const GROUP_KEYS: ReadonlySet<string> = new Set<ModelCatalogGroupKey>([
+  "local",
   "deepseek",
   "openai",
   "zai",
@@ -193,7 +196,7 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
       // prefix reads as a provider qualifier, so rewriting would drop the vendor
       // from a wire id the endpoint then rejects.
       const value =
-        provider && ownsId !== undefined && ownsId !== provider
+        provider && (spec.routing.qualifyModels || (ownsId !== undefined && ownsId !== provider))
           ? id.startsWith(`${provider}/`)
             ? id
             : `${provider}/${id}`

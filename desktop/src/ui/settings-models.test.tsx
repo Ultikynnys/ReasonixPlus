@@ -112,18 +112,30 @@ describe("PageModels default-model enum", () => {
     vi.restoreAllMocks();
   });
 
-  it("offers only API-key fields: a provider's base URL lives in JSON", () => {
+  it("renders secrets and explicitly editable provider settings", () => {
     const { container } = render(<SettingsModal {...baseProps} initialPage="models" />);
     container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
       if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
     });
-    // An endpoint is declared in the provider file, so no card offers an input for it.
     expect(container.querySelectorAll(".setting-row-base-url")).toHaveLength(0);
     const declaredKeys = PROVIDER_SPECS.reduce(
-      (count, spec) => count + spec.settings.filter((setting) => setting.kind === "secret").length,
+      (count, spec) =>
+        count +
+        spec.settings.filter((setting) => setting.kind === "secret" || setting.editable).length,
       0,
     );
     expect(container.querySelectorAll(".setting-row-entry")).toHaveLength(declaredKeys);
+  });
+
+  it("saves the local server URL and lists qualified server aliases", () => {
+    const onSave = vi.fn();
+    const { container } = render(<SettingsModal {...baseProps} initialPage="models" onSave={onSave} settings={{ ...baseSettings, providerCatalogs: { local: { models: ["saluki-27b"], source: "live" } } }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Local (llama.cpp)" }));
+    const input = screen.getByPlaceholderText("http://127.0.0.1:8080/v1");
+    fireEvent.change(input, { target: { value: "http://localhost:9090/v1" } });
+    fireEvent.click(within(input.closest(".setting-row-entry") as HTMLElement).getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith({ providerSettings: { local: { baseUrl: "http://localhost:9090/v1" } } });
+    expect(modelCard(container, "local/saluki-27b")).not.toBeNull();
   });
 
   it("uses stacked Save-only API key entries and refreshes catalogs without a button", () => {
@@ -193,7 +205,9 @@ describe("PageModels default-model enum", () => {
       onSave.mockClear();
       fireEvent.change(input, { target: { value: "  declared-secret  " } });
       fireEvent.click(
-        within(card as HTMLElement).getAllByRole("button", { name: "Save" })[0] as HTMLElement,
+        within(input.closest(".setting-row-entry") as HTMLElement).getByRole("button", {
+          name: "Save",
+        }),
       );
       const [patch] = onSave.mock.calls[0] as [
         { providerSettings?: Record<string, Record<string, string>> },

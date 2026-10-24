@@ -24,6 +24,20 @@ model id), so it needs no union membership at all.
 
 If you skip step 2, `tests/provider-files.test.ts` fails and tells you to run it.
 
+## Local llama.cpp server
+
+Select Local (llama.cpp) in Settings > Models. Set the server URL (default
+`http://127.0.0.1:8080/v1`) and an optional API key. Models are discovered from
+`/v1/models` and selected as `local/<server-alias>`.
+
+Start llama-server with a tool-capable model and `--jinja`. Local requests disable
+parallel tool calls and thinking by default. The `context` block declares the
+server window, the tokens the response may take inside it, and the window assumed
+when the setting is unset; the loop, the meter, the request cap and the settings
+field all read that one block. Set Server context tokens to match `--ctx-size`,
+including when reducing it to fit GPU memory. The existing client request timeout
+is 660 seconds. Discovery failures are shown in the provider card.
+
 ## Removing a provider
 
 1. Delete `providers/<id>.json`.
@@ -138,7 +152,8 @@ or a provider never means editing TypeScript.
 | Field | Meaning |
 | --- | --- |
 | `key` | Setting key inside the provider's own store entry |
-| `kind` | `secret` renders a key field; `url` is an environment-only override and is never a form field |
+| `kind` | `secret` renders a key field; `url` is an endpoint override; `internal` is app-managed state |
+| `editable` | Explicitly exposes a non-secret setting in the provider card; defaults to false |
 | `env` | Environment variables that override the value, highest priority first |
 | `configKey` | Config field the value persists to; null means environment only |
 | `label`, `hint` | Field label and hint text, inline in the declaration |
@@ -297,11 +312,12 @@ Objects:
 | `credentials` | `publicKey`, `oauthConfig` | A key assumed when nothing is configured, and the OAuth credential field |
 | `settings` | array | Persisted fields this provider declares, see Settings above |
 | `settingsPanel` | panel name or null | Bespoke behavior panel the settings card renders above its fields |
-| `usable` | `apiKey`, `keylessLocal`, `always` | Ways the model can run right now |
+| `usable` | `apiKey`, `keylessLocal`, `baseUrl`, `always` | Ways the model can run right now; `baseUrl` accepts any user-declared endpoint without a key |
 | `billing` | `kind`, `schedule`, `peakModels`, `balance` | Peak/off-peak calendar (see Peak hours) and the account-balance endpoint |
 | `cost` | `tier`, `toolResultTokens`, `compactionTrigger`, `keepImages` | Relative token cost and the retention caps it implies (see Cost tier) |
+| `context` | `setting`, `outputReserve`, `defaultTokens` | A server-owned context window: the declared setting holds the total, the reserve is subtracted for the prompt budget, and `defaultTokens` applies while the setting is unset |
 | `usage` | `probe`, `urls`, `urlBase`, `urlGate`, `minIntervalSeconds`, `primaryWindow`, `resetsStyle` | Where plan usage is published (see Usage) |
-| `routing` | `staticCatalog`, `discoveredCatalog`, `checkedLast`, `foreignCatalog`, `modelScheme` | How a bare model id reaches this provider |
+| `routing` | `staticCatalog`, `discoveredCatalog`, `checkedLast`, `foreignCatalog`, `modelScheme`, `qualifyModels` | How a bare model id reaches this provider; `qualifyModels` keeps `<provider>/` on every picker row of a provider that owns its catalog |
 | `discovery` | `strategy`, `listField`, `idField`, `excludeSpeech`, `visionField` | Where the live catalog comes from and how to read it |
 | `client` | `auth`, `transport`, `allowMissingKey` | Per-request credentials and wire format |
 | `wire` | `format`, `path`, `apiKeyHeader`, `stampMessageIds`, `streamOptions`, `storeFlag`, `maxTokensField`, `parallelToolCalls`, `promptCacheKey`, `toolStream`, `thinking`, `reasoningEffort` | Request shape: `format` is `chat-completions` (default), `ollama-native`, or `gemini-interactions`; `path` replaces the `/chat/completions` suffix; `apiKeyHeader` replaces `Authorization: Bearer` |

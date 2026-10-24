@@ -1,36 +1,29 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseProviderSettingsPatch, providerDeclared } from "@reasonix/core-utils";
+import { PROVIDER_SPECS, parseProviderSettingsPatch, providerDeclared } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   anyProviderConfigured,
+  bridgeEndpointEnv,
   loadEndpointForModel,
+  loadProviderApiKeys,
   loadProviderSetting,
   readConfig,
   saveProviderSetting,
+  saveProviderSettings,
   setProviderSetting,
 } from "../src/config.js";
 
 /** Env names that shadow the store; cleared so the persisted value is the only source. */
-const PROVIDER_ENV = [
-  "DEEPSEEK_API_KEY",
-  "DEEPSEEK_BASE_URL",
-  "OPENAI_API_KEY",
-  "OPENAI_BASE_URL",
-  "ZAI_API_KEY",
-  "ZAI_BASE_URL",
-  "OPENCODE_API_KEY",
-  "OPENCODE_BASE_URL",
-  "MIMO_API_KEY",
-  "MIMO_BASE_URL",
-  "EXPERIENTIAL_API_KEY",
-  "EXPERIENTIAL_BASE_URL",
-  "SYNTHETIC_API_KEY",
-  "SYNTHETIC_BASE_URL",
-  "OLLAMA_API_KEY",
-  "OLLAMA_BASE_URL",
-];
+const PROVIDER_ENV = new Set(
+  PROVIDER_SPECS.flatMap((spec) => spec.settings.flatMap((setting) => setting.env)),
+);
+const SECRET_SETTINGS = PROVIDER_SPECS.flatMap((spec) =>
+  spec.settings
+    .filter((setting) => setting.kind === "secret")
+    .map((setting) => ({ providerId: spec.id, setting })),
+);
 
 describe("provider settings store", () => {
   let dir: string;
@@ -143,6 +136,61 @@ describe("provider settings store", () => {
     saveProviderSetting("synthetic", "apiKey", "", path);
     expect(loadProviderSetting("synthetic", "apiKey", path)).toBeUndefined();
     expect(readConfig(path).providerSettings?.synthetic).toBeUndefined();
+  });
+
+  it("replaces and clears a startup-bridged DeepSeek credential", () => {
+    saveProviderSetting("deepseek", "apiKey", "old-key", path);
+    bridgeEndpointEnv(path);
+    expect(process.env.DEEPSEEK_API_KEY).toBe("old-key");
+
+    for (const value of ["  replacement-key  ", ""]) {
+      saveProviderSetting("deepseek", "apiKey", value, path);
+      expect(loadEndpointForModel("deepseek-chat", path).apiKey).toBe(value.trim() || undefined);
+      expect(process.env.DEEPSEEK_API_KEY).toBe(value.trim() || undefined);
+    }
+  });
+
+  it.each(SECRET_SETTINGS)("replaces and clears $providerId secrets", ({ providerId, setting }) => {
+    for (const name of setting.env) process.env[name] = "old-key";
+    for (const value of ["  replacement-key  ", "", "second-key", null]) {
+      saveProviderSetting(providerId, setting.key, value, path);
+      const expected = value?.trim() || undefined;
+      expect(loadProviderSetting(providerId, setting.key, path)).toBe(expected);
+      for (const name of setting.env) expect(process.env[name]).toBe(expected);
+      expect(loadProviderApiKeys(path)[providerId]).toBe(expected);
+    }
+  });
+
+  it("validates a whole batch before changing config or environment", () => {
+    const entry = SECRET_SETTINGS[0];
+    if (!entry) return;
+    const { providerId, setting } = entry;
+    saveProviderSetting(providerId, setting.key, "old-key", path);
+    const before = readFileSync(path, "utf8");
+    expect(() =>
+      saveProviderSettings(
+        [
+          { providerId, key: setting.key, value: "new-key" },
+          { providerId, key: "undeclared-setting", value: "invalid" },
+        ],
+        path,
+      ),
+    ).toThrow(/declares no setting/);
+    expect(readFileSync(path, "utf8")).toBe(before);
+    for (const name of setting.env) expect(process.env[name]).toBe("old-key");
+  });
+
+  it("does not synchronize non-secret settings into the environment", () => {
+    for (const spec of PROVIDER_SPECS) {
+      for (const setting of spec.settings.filter(
+        (entry) => entry.kind !== "secret" && !entry.editable,
+      )) {
+        for (const name of setting.env) process.env[name] = "environment-value";
+        saveProviderSetting(spec.id, setting.key, "stored-value", path);
+        expect(loadProviderSetting(spec.id, setting.key, path)).toBe("stored-value");
+        for (const name of setting.env) expect(process.env[name]).toBe("environment-value");
+      }
+    }
   });
 
   it("refuses undeclared keys and unknown providers", () => {

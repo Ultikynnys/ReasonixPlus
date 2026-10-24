@@ -195,6 +195,7 @@
     "voiceDownloadError": "Voice model download failed: {error}",
     "openaiSection": "OpenAI (GPT-6 / GPT-5.6)",
     "ollamaSection": "Ollama",
+    "localSection": "Local (llama.cpp)",
     "antigravitySection": "Google Antigravity (Gemini)",
     "mcpSection": "Configured",
     "apiKeySet": "Set · {prefix}…",

@@ -1308,6 +1308,9 @@ export class DeepSeekClient {
     // Request quirks are declared per provider (`wire`), so adding or deleting a
     // provider file never needs a branch here.
     const wire = providerSpec(provider)?.wire ?? DEFAULT_PROVIDER_WIRE;
+    // A provider whose server owns the context window also names the tokens the
+    // response may take inside it, so a request never budgets past the window.
+    const outputReserve = providerSpec(provider)?.context?.outputReserve;
     // Xiaomi documents reasoning text interfering with tool-call extraction, so
     // the stored preference can force thinking off on tool requests. Shared by
     // both transports: it is a product decision, not a wire quirk.
@@ -1374,11 +1377,17 @@ export class DeepSeekClient {
       payload.tools = opts.tools;
     }
     if (opts.temperature !== undefined) payload.temperature = opts.temperature;
-    if (opts.maxTokens !== undefined) payload[wire.maxTokensField] = opts.maxTokens;
+    if (opts.maxTokens !== undefined) {
+      payload[wire.maxTokensField] =
+        outputReserve === undefined ? opts.maxTokens : Math.min(opts.maxTokens, outputReserve);
+    }
     if (opts.responseFormat) payload.response_format = opts.responseFormat;
     // Thinking-toggle placement is declared per provider (`wire.thinking`); a
     // provider that declares no style never receives the field.
     switch (wire.thinking) {
+      case "chat-template":
+        payload.chat_template_kwargs = { enable_thinking: opts.thinking === "enabled" };
+        break;
       case "zai-top-level":
         // GLM-5.3 cannot disable thinking and reasoning_effort only applies while
         // thinking is on, so a forced model always reports "enabled" here.

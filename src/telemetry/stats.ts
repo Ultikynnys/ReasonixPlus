@@ -3,6 +3,7 @@ import type { Usage } from "../client.js";
 import {
   type ModelProvider,
   loadEndpointForModel,
+  loadProviderSetting,
   providerForModel,
   readConfig,
 } from "../config.js";
@@ -55,6 +56,16 @@ export const DEFAULT_CONTEXT_TOKENS = 131_072;
  *  (honored up to the 1M API ceiling, even above the model's default window), else the model
  *  table, else the safe fallback — every ctxMax consumer resolves through here so they agree. */
 export function resolveContextTokens(model: string, configured?: number): number {
+  const provider = providerForModel(model);
+  const context = providerSpec(provider)?.context;
+  if (context) {
+    // The server owns this window (`--ctx-size`), so the global override cannot
+    // raise it: exceeding a serving window fails the request outright.
+    const stored = Number(loadProviderSetting(provider, context.setting));
+    const total =
+      Number.isInteger(stored) && stored > context.outputReserve ? stored : context.defaultTokens;
+    return total - context.outputReserve;
+  }
   // Ollama windows are set by the model/server (`num_ctx`) and can be far
   // below the DeepSeek 300K floor — never clamp an explicit Ollama value up.
   const isOllama = typeof model === "string" && model.startsWith("ollama/");

@@ -270,11 +270,36 @@ export function setProviderSetting(
       `setProviderSetting: provider "${providerId}" declares no setting "${key}" (declared: ${declared})`,
     );
   }
+  const setting = spec.settings.find((entry) => entry.key === key);
+  let trimmed = value?.trim() ?? "";
+  if (setting?.editable && setting.kind === "url" && trimmed) {
+    const url = new URL(trimmed);
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    ) {
+      throw new Error("Server URL must use HTTP or HTTPS without credentials, query, or fragment");
+    }
+    url.pathname = `${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}/v1`;
+    trimmed = url.toString().replace(/\/$/, "");
+  }
+  const serverContext = spec.context?.setting === key ? spec.context : null;
+  if (serverContext && trimmed) {
+    const tokens = Number(trimmed);
+    if (!Number.isInteger(tokens) || tokens <= serverContext.outputReserve) {
+      throw new Error(
+        `Server context tokens must be a whole number above the ${serverContext.outputReserve}-token output reserve`,
+      );
+    }
+    trimmed = String(tokens);
+  }
   const store = cfg.providerSettings ?? {};
   const entry = store[providerId] ?? {};
   cfg.providerSettings = store;
   store[providerId] = entry;
-  const trimmed = value?.trim() ?? "";
   if (trimmed) entry[key] = trimmed;
   else delete entry[key];
   if (Object.keys(entry).length === 0) {
@@ -299,9 +324,32 @@ export function saveProviderSetting(
   value: string | null,
   path: string = defaultConfigPath(),
 ): void {
+  saveProviderSettings([{ providerId, key, value }], path);
+}
+
+export function saveProviderSettings(
+  writes: readonly { providerId: string; key: string; value: string | null }[],
+  path: string = defaultConfigPath(),
+): void {
+  if (writes.length === 0) return;
   const cfg = readConfig(path);
-  setProviderSetting(cfg, providerId, key, value);
+  for (const { providerId, key, value } of writes) {
+    setProviderSetting(cfg, providerId, key, value);
+  }
   writeConfig(cfg, path);
+  for (const { providerId, key, value } of writes) {
+    syncProviderSettingEnv(providerId, key, providerSettingFromStore(cfg, providerId, key) ?? null);
+  }
+}
+
+function syncProviderSettingEnv(providerId: string, key: string, value: string | null): void {
+  const setting = providerSpec(providerId)?.settings.find((entry) => entry.key === key);
+  if (!setting || (setting.kind !== "secret" && !setting.editable)) return;
+  const trimmed = value?.trim() ?? "";
+  for (const name of setting.env) {
+    if (trimmed) process.env[name] = trimmed;
+    else Reflect.deleteProperty(process.env, name);
+  }
 }
 
 /** Legacy per-engine fields older versions persisted, and the setting each one
@@ -1853,20 +1901,11 @@ export function webSearchEndpoint(path: string = defaultConfigPath()): string {
 }
 
 export function saveApiKey(key: string, path: string = defaultConfigPath()): void {
-  const trimmed = key.trim();
-  saveProviderSetting("deepseek", "apiKey", trimmed, path);
-  // A stale process env (User-level Windows env, `.env`, shell rc) shadows config in
-  // loadEndpoint's fallback branch — an explicit UI save must win for the current run.
-  if (trimmed) process.env.DEEPSEEK_API_KEY = trimmed;
-  // biome-ignore lint/performance/noDelete: undefined-assign leaks the string "undefined" into process.env
-  else delete process.env.DEEPSEEK_API_KEY;
+  saveProviderSetting("deepseek", "apiKey", key, path);
 }
 
 export function saveOpenAIApiKey(key: string, path: string = defaultConfigPath()): void {
-  const trimmed = key.trim();
-  saveProviderSetting("openai", "apiKey", trimmed, path);
-  // biome-ignore lint/performance/noDelete: undefined-assign leaks the string "undefined" into process.env
-  if (!trimmed) delete process.env.OPENAI_API_KEY;
+  saveProviderSetting("openai", "apiKey", key, path);
 }
 
 export function saveOpenAIOAuth(creds: OpenAIOAuthCreds, path: string = defaultConfigPath()): void {

@@ -7,6 +7,7 @@ import {
   messageOf,
   modelDisplayLabel,
   modelWireName,
+  providerDefaultEndpoint,
   providerSpec,
   providerString,
   searchSharedCredential,
@@ -1552,9 +1553,7 @@ export function OpenAISection({
         <div className="setting-row">
           <div className="l">
             <div className="n">{copy("panelSignInTitle")}</div>
-            <div className="h">
-              {waiting ? copy("panelWaiting") : copy("panelSignInHint")}
-            </div>
+            <div className="h">{waiting ? copy("panelWaiting") : copy("panelSignInHint")}</div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {waiting && (
@@ -1609,9 +1608,7 @@ export function AntigravitySection({
           <div className="l">
             <div className="n">{copy("panelSignedIn")}</div>
             <div className="h">
-              {account
-                ? copy("panelAccount", { account })
-                : copy("panelTokenSet")}
+              {account ? copy("panelAccount", { account }) : copy("panelTokenSet")}
             </div>
           </div>
           <button type="button" className="btn" onClick={onSignOut} disabled={waiting}>
@@ -1622,9 +1619,7 @@ export function AntigravitySection({
         <div className="setting-row">
           <div className="l">
             <div className="n">{copy("panelSignInTitle")}</div>
-            <div className="h">
-              {waiting ? copy("panelWaiting") : copy("panelSignInHint")}
-            </div>
+            <div className="h">{waiting ? copy("panelWaiting") : copy("panelSignInHint")}</div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {waiting && (
@@ -1685,9 +1680,7 @@ export function MiMoSection({
         <div className="setting-row">
           <div className="l">
             <div className="n">{copy("panelSignInTitle")}</div>
-            <div className="h">
-              {waiting ? copy("panelWaiting") : copy("panelSignInHint")}
-            </div>
+            <div className="h">{waiting ? copy("panelWaiting") : copy("panelSignInHint")}</div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {waiting && (
@@ -1760,9 +1753,7 @@ export function OpencodeSection({
         <div className="setting-row">
           <div className="l">
             <div className="n">{copy("panelSignInTitle")}</div>
-            <div className="h">
-              {waiting ? copy("panelWaiting") : copy("panelSignInHint")}
-            </div>
+            <div className="h">{waiting ? copy("panelWaiting") : copy("panelSignInHint")}</div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {waiting && (
@@ -2021,8 +2012,6 @@ function ModelList({
   );
 }
 
-/** A provider's API key field, rendered from its JSON declaration. A base URL is not a
- *  UI setting: a provider's endpoint comes from `endpoint` in its own file. */
 function ProviderSettingRow({
   providerId,
   setting,
@@ -2034,16 +2023,42 @@ function ProviderSettingRow({
   value?: string;
   onSave: (patch: SettingsPatch) => void;
 }) {
+  const [draft, setDraft] = useState(value ?? "");
+  useEffect(() => setDraft(value ?? ""), [value]);
   const label = setting.label ?? setting.key;
   const signupUrl = setting.signupUrl;
+  const serverContext = providerSpec(providerId)?.context;
+  const fallbackPlaceholder =
+    serverContext?.setting === setting.key
+      ? String(serverContext.defaultTokens)
+      : setting.kind === "url"
+        ? providerDefaultEndpoint(providerId)
+        : undefined;
+  const placeholder = setting.placeholder ?? fallbackPlaceholder;
   const save = (next: string): void => {
     onSave({ providerSettings: { [providerId]: { [setting.key]: next.trim() } } });
   };
+  if (setting.kind !== "secret") {
+    return (
+      <div className="setting-row setting-row-entry">
+        <div className="l">
+          <div className="n">{label}</div>
+          <div className="h">{setting.hint}</div>
+        </div>
+        <SettingsEntry
+          value={draft}
+          onChange={setDraft}
+          placeholder={placeholder}
+          onSave={() => save(draft)}
+        />
+      </div>
+    );
+  }
   return (
     <ApiKeyRow
       label={label}
       prefix={value}
-      placeholder={setting.placeholder ?? undefined}
+      placeholder={placeholder}
       onSave={save}
       hint={
         signupUrl ? (
@@ -2064,8 +2079,6 @@ function ProviderSettingRow({
   );
 }
 
-/** Every user-editable setting of one provider: API keys only. Adding a provider or
- *  changing its endpoint is a JSON edit, never a form field. */
 export function ProviderSettingFields({
   providerId,
   settings,
@@ -2080,7 +2093,7 @@ export function ProviderSettingFields({
   return (
     <>
       {spec.settings
-        .filter((setting) => setting.kind === "secret")
+        .filter((setting) => setting.kind === "secret" || setting.editable)
         .map((setting) => (
           <ProviderSettingRow
             key={setting.key}
@@ -2437,6 +2450,29 @@ function PageModels({
                   ? (providerString("opencode", "modelsError", { error: opencodeModelsError }) ??
                     t("composer.modelError", { error: opencodeModelsError }))
                   : (providerString("opencode", "modelsHint") ?? "")
+              }
+            />
+          </>
+        }
+      />
+
+      <DeclaredProviderCard
+        group="local"
+        defaultOpen={false}
+        models={modelColumn(groupModels("local"))}
+        settings={
+          <>
+            <ProviderSettingFields
+              providerId="local"
+              settings={settings.providerSettings}
+              onSave={onSave}
+            />
+            <ProviderCatalogRow
+              label={providerString("local", "modelsLabel") ?? t("settings.ollamaModels")}
+              hint={
+                settings.providerCatalogs?.local?.error ??
+                providerString("local", "modelsHint") ??
+                ""
               }
             />
           </>

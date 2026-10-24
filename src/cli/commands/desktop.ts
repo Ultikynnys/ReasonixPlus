@@ -24,6 +24,7 @@ import {
   scanImageMentions,
   sleep,
   stripMentionTokens,
+  stripProviderQualifier,
   tailLines,
   toApprovalPrompt,
 } from "@reasonix/core-utils";
@@ -228,6 +229,7 @@ import {
   saveOpenAIApiKey,
   saveOpenAIOAuth,
   saveOpencodeOAuth,
+  saveProviderSettings,
   saveQuestionTimerEnabled,
   saveQuickSendId,
   saveReasoningEffort,
@@ -235,7 +237,6 @@ import {
   saveWorkspaceDir,
   searchSettingFromConfig,
   setMcpServerDisabled,
-  setProviderSetting,
   setSearchSetting,
   supportedReasoningEfforts,
   updateRule,
@@ -1658,7 +1659,7 @@ function collectProviderSettings(cfg: ReasonixConfig): ProviderSettingsMap {
   const out: ProviderSettingsMap = {};
   for (const spec of PROVIDER_SPECS) {
     for (const setting of spec.settings) {
-      if (setting.kind === "internal") continue;
+      if (setting.kind === "internal" && !setting.editable) continue;
       const value =
         setting.kind === "secret"
           ? maskApiKey(apiKeys[spec.id])
@@ -5425,19 +5426,16 @@ function emitTabGate(tab: Tab): void {
   else emitNeedsSetup(tab);
 }
 
-/** Effective ctxMaxOverride for a tab: Ollama tabs use the server's learned /api/show
- *  window (verdict store) when fresh, else the user `contextTokens` setting — every ctxMax
- *  consumer (loop, meter, settings changes) must resolve the same value. */
+/** Effective ctxMaxOverride for a tab: a provider whose window comes from its own
+ *  runtime probe (Ollama's /api/show) uses the learned value when fresh, else the
+ *  user `contextTokens` setting — every ctxMax consumer resolves the same value. */
 function tabCtxMaxOverride(tab: Tab): number | undefined {
-  // A provider that declares a model-id scheme reports its own window per model
-  // (learned from the runtime probe); every other provider uses the user override.
   const spec = providerSpec(providerForModel(tab.currentModel));
-  const scheme = spec?.routing.modelScheme ?? null;
-  if (scheme === null) return tab.ctxMaxOverride;
+  if (spec?.discovery.strategy !== "runtime") return tab.ctxMaxOverride;
   return (
     contextTokensForModel(
       loadOllamaVerdicts(ollamaVerdictsPath()),
-      tab.currentModel.replace(`${scheme}/`, ""),
+      stripProviderQualifier(tab.currentModel),
       Date.now(),
     ) ?? tab.ctxMaxOverride
   );
@@ -10020,24 +10018,23 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           !(kindOf(write) === "secret" && write.value === maskApiKey(previews[write.providerId])),
       );
       if (accepted.length === 0) return;
-      void (async () => {
-        const cfg = readConfig();
-        for (const write of accepted) {
-          setProviderSetting(cfg, write.providerId, write.key, write.value);
+      saveProviderSettings(accepted);
+      // The runtime snapshots the endpoint + credential at build time, so a tab
+      // that just became usable must be rebuilt or the saved value looks inert.
+      // A context-only edit needs no rebuild: the loop reads that budget live.
+      const affectsRuntime = (write: { providerId: string; key: string }): boolean => {
+        const kind = kindOf(write);
+        return kind === "secret" || kind === "url";
+      };
+      if (accepted.some(affectsRuntime)) rebuildCredentialedTabs();
+      for (const providerId of new Set(accepted.map((write) => write.providerId))) {
+        const spec = providerSpec(providerId);
+        if (spec?.discovery.strategy === "models-endpoint") {
+          void refreshProviderCatalogs(true, spec.id);
         }
-        writeConfig(cfg);
-        // The endpoint + credential are snapshotted at build time, so a tab that
-        // just became usable must be rebuilt or the saved value looks inert.
-        if (accepted.some((write) => kindOf(write) === "secret")) rebuildCredentialedTabs();
-        for (const providerId of new Set(accepted.map((write) => write.providerId))) {
-          const spec = providerSpec(providerId);
-          if (spec?.routing.discoveredCatalog) {
-            void refreshProviderCatalogs(false, spec.id);
-          }
-          if (spec?.settingsPanel) PANEL_AFTER_PERSIST[spec.settingsPanel]?.();
-        }
-        emitSettings(tab);
-      })();
+        if (spec?.settingsPanel) PANEL_AFTER_PERSIST[spec.settingsPanel]?.();
+      }
+      emitSettings(tab);
     }
 
     if (msg.cmd === "settings_save") {
