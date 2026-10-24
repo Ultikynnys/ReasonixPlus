@@ -1,12 +1,15 @@
-import { providerSpec, stripProviderQualifier } from "@reasonix/core-utils";
+import { type ProviderSpec, providerSpec, stripProviderQualifier } from "@reasonix/core-utils";
 import type { Usage } from "../client.js";
 import {
   type ModelProvider,
   loadEndpointForModel,
+  loadModelContextTokens,
   loadProviderSetting,
   providerForModel,
   readConfig,
 } from "../config.js";
+import { LARGEST_WINDOW_TOKENS, SMALLEST_WINDOW_TOKENS } from "../context-window.js";
+import { learnedContextTokens } from "../model-windows.js";
 import type { CacheDiagnosticEntry } from "./cache-diagnostics.js";
 
 /** Default per-model context window (tokens), prompt-side only. Supplies the cap when no
@@ -47,24 +50,62 @@ export const DEEPSEEK_CONTEXT_TOKENS: Record<string, number> = {
 /** Lower bound of the user-configurable `contextTokens` setting. */
 export const MIN_CONTEXT_TOKENS = 128_000;
 /** Upper bound of the user-configurable `contextTokens` setting — the API's 1M-token ceiling. */
-export const MAX_CONTEXT_TOKENS = 1_000_000;
+export const MAX_CONTEXT_TOKENS = LARGEST_WINDOW_TOKENS;
 
 /** Fallback when the caller's model id isn't in the table — safe lower bound. */
 export const DEFAULT_CONTEXT_TOKENS = 131_072;
 
-/** The effective context cap for a model: the configured `contextTokens` override when set
- *  (honored up to the 1M API ceiling, even above the model's default window), else the model
- *  table, else the safe fallback — every ctxMax consumer resolves through here so they agree. */
-export function resolveContextTokens(model: string, configured?: number): number {
+/** Sources for window resolution. A caller that owns a config or a learned-window file
+ *  passes it explicitly so tests never read the user's real state. */
+export interface ResolveContextTokensOptions {
+  /** Config file holding the per-model map and the provider settings. */
+  path?: string;
+  /** Learned-window store written when a server states its own window. */
+  windowsPath?: string;
+  /** Epoch ms for learned-entry freshness. */
+  now?: number;
+}
+
+/** A server-owned window minus the tokens the response may take. The learned value is
+ *  what the server actually serves, so it outranks a hand-entered setting, and the
+ *  reserve always comes out of the total. */
+function serverOwnedWindow(
+  provider: ModelProvider,
+  context: NonNullable<ProviderSpec["context"]>,
+  learned: number | undefined,
+  path: string | undefined,
+): number {
+  const stored = Number(loadProviderSetting(provider, context.setting, path));
+  const total =
+    learned ??
+    (Number.isInteger(stored) && stored > context.outputReserve ? stored : context.defaultTokens);
+  return Math.max(SMALLEST_WINDOW_TOKENS, total - context.outputReserve);
+}
+
+/** The effective context cap for a model. A provider that declares a server-owned window
+ *  owns the answer; otherwise a per-model window, a learned one for a model the table
+ *  cannot place, the configured override, then the table. Every consumer resolves here. */
+export function resolveContextTokens(
+  model: string,
+  configured?: number,
+  opts: ResolveContextTokensOptions = {},
+): number {
+  const learned = learnedContextTokens(model, opts.now, opts.windowsPath);
   const provider = providerForModel(model);
   const context = providerSpec(provider)?.context;
-  if (context) {
-    // The server owns this window (`--ctx-size`), so the global override cannot
-    // raise it: exceeding a serving window fails the request outright.
-    const stored = Number(loadProviderSetting(provider, context.setting));
-    const total =
-      Number.isInteger(stored) && stored > context.outputReserve ? stored : context.defaultTokens;
-    return total - context.outputReserve;
+  // The server owns this window (`--ctx-size`), so nothing above it can raise it:
+  // exceeding a serving window fails the request outright.
+  if (context) return serverOwnedWindow(provider, context, learned, opts.path);
+
+  const perModel = loadModelContextTokens(model, opts.path);
+  if (perModel !== undefined) return perModel;
+  // A tabulated window is known, so it outranks anything learned: only a model the
+  // table cannot place is one whose window we have to take on trust.
+  if (
+    learned !== undefined &&
+    !Object.hasOwn(DEEPSEEK_CONTEXT_TOKENS, stripProviderQualifier(model))
+  ) {
+    return learned;
   }
   // Ollama windows are set by the model/server (`num_ctx`) and can be far
   // below the DeepSeek 300K floor — never clamp an explicit Ollama value up.
@@ -73,7 +114,7 @@ export function resolveContextTokens(model: string, configured?: number): number
   // routing syntax, so a qualified ref shares the native id's window.
   const modelDefault = DEEPSEEK_CONTEXT_TOKENS[stripProviderQualifier(model)];
   if (typeof configured === "number" && Number.isFinite(configured)) {
-    const floor = isOllama ? 1_024 : MIN_CONTEXT_TOKENS;
+    const floor = isOllama ? SMALLEST_WINDOW_TOKENS : MIN_CONTEXT_TOKENS;
     // An explicit override is the source of truth: honor it up to the 1M API
     // ceiling, even above the model's default window. The table only supplies
     // the default when no override is set, so the meter and the request budget

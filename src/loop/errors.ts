@@ -27,9 +27,41 @@ function errorText(err: unknown): string {
   return typeof err === "string" ? err : err instanceof Error ? err.message : "";
 }
 
-/** Every phrasing a provider has used for "the request is bigger than the window". */
+/** Every phrasing a provider has used for "the request is bigger than the window".
+ *  llama.cpp reports its own wording and `exceed_context_size_error` type. */
 const CONTEXT_OVERFLOW_RE =
-  /maximum context length|context window|prompt too long|reduce the length/i;
+  /maximum context length|context window|prompt too long|reduce the length|exceeds the available context size|exceed_context_size_error/i;
+
+/** First usable count from the first pattern that matches: a phrasing whose number
+ *  does not parse falls through to the next one instead of losing the value. */
+function firstTokenCount(text: string, patterns: readonly RegExp[]): number | undefined {
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (!match) continue;
+    const tokens = Number(match[1]);
+    if (Number.isFinite(tokens) && tokens > 0) return Math.floor(tokens);
+  }
+  return undefined;
+}
+
+const AVAILABLE_TOKENS_RES = [
+  /available context size\s*[:(]?\s*(\d+)/i,
+  /maximum context length(?: is)?\s*[:(]?\s*(\d+)/i,
+  /"n_ctx"\s*:\s*(\d+)/i,
+];
+
+const REQUESTED_TOKENS_RES = [/requested\s+(\d+)\s+tokens/i, /request\s*\((\d+)\s*tokens?\)/i];
+
+/** The window a provider says it enforces, when its refusal names one. llama.cpp
+ *  states it both in prose and as `n_ctx`, so either field is authoritative. */
+export function parseAvailableContextTokens(err: unknown): number | undefined {
+  return firstTokenCount(errorText(err), AVAILABLE_TOKENS_RES);
+}
+
+/** Tokens the provider says the rejected request used. */
+function parseRequestedContextTokens(text: string): number | undefined {
+  return firstTokenCount(text, REQUESTED_TOKENS_RES);
+}
 
 export function formatLoopError(
   err: Error,
@@ -39,15 +71,15 @@ export function formatLoopError(
   const msg = err.message ?? "";
   const match = new RegExp(`^(${PROVIDER_ERROR_BRANDS}) (\\d{3}):\\s*([\\s\\S]*)$`).exec(msg);
   const provider = resolveErrorProvider(opts?.provider, match?.[1], opts?.upstreamHost);
-  if (
-    match &&
-    (msg.includes("maximum context length") || /context window|prompt too long/i.test(msg))
-  ) {
-    const reqMatch = msg.match(/requested\s+(\d+)\s+tokens/);
-    const requested = reqMatch
-      ? `${Number(reqMatch[1]).toLocaleString()} tokens`
-      : t("errors.contextOverflowTooMany");
-    return providerMessage(provider, "context", { requested, inner: msg });
+  if (match && CONTEXT_OVERFLOW_RE.test(msg)) {
+    const requested = parseRequestedContextTokens(msg);
+    return providerMessage(provider, "context", {
+      requested:
+        requested === undefined
+          ? t("errors.contextOverflowTooMany")
+          : `${requested.toLocaleString()} tokens`,
+      inner: msg,
+    });
   }
   if (!match) {
     if (/timed out after/i.test(msg)) return providerMessage(provider, "timeout", { inner: msg });

@@ -50,6 +50,7 @@ import { atomicWriteSync, tmpSiblingPath } from "./core/atomic-write.js";
 import { loadDotMcpJson } from "./mcp/dot-mcp-json.js";
 import { type McpServerSpec, parseMcpSpec } from "./mcp/spec.js";
 import { BUILTIN_MEMORY_TYPES } from "./memory/builtin-types.js";
+import { clampWindowTokens } from "./model-windows.js";
 import { ollamaThinkingFor } from "./ollama-thinking.js";
 import {
   isDiscoveredOpencodeModel,
@@ -838,6 +839,10 @@ export interface ReasonixConfig {
    *  [128000, 1000000] at load; an explicit value is honored up to that ceiling by
    *  resolveContextTokens, even above the model's default window. */
   contextTokens?: number;
+  /** Per-model context windows in tokens, keyed by model id (a provider qualifier is
+   *  optional), honored below the global 128K floor. Providers that declare a server-owned
+   *  window use their own `contextTokens` setting instead. */
+  modelContextTokens?: Record<string, number>;
   /** Whether the conversation auto-compacts before a turn once the estimated
    *  request reaches the trigger ratio of the context window. Defaults to true. */
   autoCompact?: boolean;
@@ -1411,6 +1416,23 @@ function sanitizeModelsField(cfg: Record<string, unknown>): void {
   else cfg.models = undefined;
 }
 
+/** Validate the per-model window map — drop non-numeric entries and clamp the rest, so
+ *  a hand-edited value can neither invent a window nor exceed the API ceiling. */
+function sanitizeModelContextTokensField(cfg: Record<string, unknown>): void {
+  const raw = cfg.modelContextTokens;
+  if (raw === undefined) return;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    cfg.modelContextTokens = undefined;
+    return;
+  }
+  const cleaned: Record<string, number> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    const tokens = typeof value === "number" ? clampWindowTokens(value) : undefined;
+    if (tokens !== undefined && id.trim()) cleaned[id.trim()] = tokens;
+  }
+  cfg.modelContextTokens = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
 /** Validate Antigravity OAuth models — delegates to `isUsableAntigravityModel`. */
 function sanitizeAntigravityOAuthField(cfg: Record<string, unknown>): void {
   const raw = cfg.antigravityOAuth;
@@ -1452,6 +1474,7 @@ export function readConfig(path: string = defaultConfigPath()): ReasonixConfig {
         sanitizeStringArrayField(cfg, segments);
       }
       sanitizeModelsField(cfg);
+      sanitizeModelContextTokensField(cfg);
       sanitizeAntigravityOAuthField(cfg);
       migrateProviderSettings(cfg);
       migrateSearchSettings(cfg);
@@ -2955,6 +2978,20 @@ export function loadContextTokens(path: string = defaultConfigPath()): number | 
   const v = readConfig(path).contextTokens;
   if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
   return Math.min(MAX_CONTEXT_TOKENS, Math.max(MIN_CONTEXT_TOKENS, Math.floor(v)));
+}
+
+/** Per-model window from the `modelContextTokens` map: exact id first, then the id
+ *  without its provider qualifier. Clamped to bounds a server could actually have. */
+export function loadModelContextTokens(
+  model: string,
+  path: string = defaultConfigPath(),
+): number | undefined {
+  const map = readConfig(path).modelContextTokens;
+  if (!map) return undefined;
+  const id = model.trim();
+  if (!id) return undefined;
+  const value = map[id] ?? map[stripProviderQualifier(id)];
+  return typeof value === "number" ? clampWindowTokens(value) : undefined;
 }
 
 /** Persist the context-window cap. `null` / undefined clears it back to the per-model
