@@ -1,15 +1,16 @@
-/** OpenCode Console device-flow OAuth, mirroring the OpenCode CLI's `opencode
- *  auth login`. The bearer token authenticates Zen + Go inference. */
+/** OpenCode Console device-flow OAuth, mirroring the OpenCode CLI's `opencode auth login`.
+ *  The bearer token authenticates Zen + Go inference and lives only in memory. */
 
-import {
-  type OpencodeOAuthCreds,
-  clearOpencodeOAuth,
-  defaultConfigPath,
-  readConfig,
-  saveOpencodeOAuth,
-} from "./config.js";
+import { defaultConfigPath, purgeOpencodeOAuth } from "./config.js";
 import { singleFlight } from "./core/lazy.js";
 import { OAUTH_FLOW_TIMEOUT_MS, envOr, fetchUserEmail, isTokenFresh } from "./oauth-shared.js";
+import {
+  type OpencodeOAuthCreds,
+  forgetOpencodeOAuth,
+  opencodeOAuthSession,
+  opencodeSessionEpoch,
+  rememberOpencodeOAuth,
+} from "./opencode-session.js";
 
 export const OPENCODE_CONSOLE_DEFAULT_SERVER = "https://opencode.ai/console";
 /** Public native client id the Console allowlists for the device flow. */
@@ -182,8 +183,8 @@ export async function beginOpencodeDeviceFlow(
 
 async function refreshOpencodeToken(
   creds: OpencodeOAuthCreds,
-  path: string,
-): Promise<OpencodeOAuthCreds> {
+  epoch: number,
+): Promise<OpencodeOAuthCreds | undefined> {
   const server = (creds.server ?? opencodeConsoleServer()).replace(/\/+$/, "");
   const token = await postJson<DeviceTokenResponse>(`${server}/auth/device/token`, {
     grant_type: "refresh_token",
@@ -199,7 +200,7 @@ async function refreshOpencodeToken(
     refreshToken: token.refresh_token ?? creds.refreshToken,
     expiresAt: Date.now() + (token.expires_in ?? 3600) * 1000,
   };
-  saveOpencodeOAuth(next, path);
+  if (!rememberOpencodeOAuth(next, epoch)) return undefined;
   return next;
 }
 
@@ -208,29 +209,28 @@ const refreshOpencodeOnce = singleFlight<string | undefined>();
 /** A usable OpenCode access token — refreshes from the stored refresh token
  *  when expired or within 5 min of expiry. Undefined when no OAuth creds exist
  *  or refresh fails (callers fall back to their static key / public tier). */
-export async function resolveOpencodeToken(
-  path: string = defaultConfigPath(),
-): Promise<string | undefined> {
-  const creds = readConfig(path).opencodeOAuth;
+export async function resolveOpencodeToken(): Promise<string | undefined> {
+  const creds = opencodeOAuthSession();
   if (!creds?.accessToken) return undefined;
   if (isTokenFresh(creds.expiresAt, creds.refreshToken)) return creds.accessToken;
+  const epoch = opencodeSessionEpoch();
   return refreshOpencodeOnce(async () => {
     try {
-      const next = await refreshOpencodeToken(creds, path);
-      return next.accessToken;
+      const next = await refreshOpencodeToken(creds, epoch);
+      return next?.accessToken;
     } catch {
       return undefined;
     }
   });
 }
 
-/** True when a Console OAuth session is stored (an access token exists). Sync —
- *  gates the subscription catalog without a network refresh. */
-export function hasOpencodeOAuthSession(path: string = defaultConfigPath()): boolean {
-  return Boolean(readConfig(path).opencodeOAuth?.accessToken);
+/** True while this process holds a Console session. Gates the subscription catalog. */
+export function hasOpencodeOAuthSession(): boolean {
+  return Boolean(opencodeOAuthSession()?.accessToken);
 }
 
-/** Sign-out drops the stored tokens. */
+/** Sign-out forgets the in-memory session and deletes any legacy on-disk block. */
 export async function signOutOpencode(path: string = defaultConfigPath()): Promise<void> {
-  clearOpencodeOAuth(path);
+  forgetOpencodeOAuth();
+  purgeOpencodeOAuth(path);
 }

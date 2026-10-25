@@ -196,6 +196,7 @@ import {
   pickFallbackModel,
   providerForModel,
   providerSettingFromStore,
+  purgeOpencodeOAuth,
   pushRecentWorkspace,
   readConfig,
   webSearchEngine as readWebSearchEngine,
@@ -227,7 +228,6 @@ import {
   saveOllamaGenerationPatch,
   saveOpenAIApiKey,
   saveOpenAIOAuth,
-  saveOpencodeOAuth,
   saveProviderSettings,
   saveQuestionTimerEnabled,
   saveQuickSendId,
@@ -434,6 +434,7 @@ import {
   signOutOpencode,
 } from "../../opencode-oauth.js";
 import { fetchOpencodeQuota } from "../../opencode-quota.js";
+import { opencodeOAuthSession, rememberOpencodeOAuth } from "../../opencode-session.js";
 import {
   type CatalogProvider,
   type ProviderCatalog,
@@ -1842,7 +1843,7 @@ export function modelEndpointFor(model: string, path?: string): ModelEndpointInf
       };
     }
     case "opencode": {
-      const oauth = readConfig(path).opencodeOAuth;
+      const oauth = opencodeOAuthSession();
       const key = loadOpencodeApiKey(path);
       // Go models bill the Go plan windows; free/anon Zen models have no usage API
       // and paid Zen has no price table here, so both measure nothing. Resolved on
@@ -1876,7 +1877,7 @@ function emitSettings(tab: Tab, opts: { turnReleased?: boolean } = {}): void {
   const config = readConfig();
   const oauth = config.openaiOAuth;
   const antigravityOAuth = config.antigravityOAuth;
-  const opencodeOAuth = config.opencodeOAuth;
+  const opencodeOAuth = opencodeOAuthSession();
   const ep = loadEndpoint();
   const editMode = loadEditMode();
   if (tab.toolset) applyPlanMode(tab.toolset.tools, editMode);
@@ -5589,8 +5590,7 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
   } else {
     log.debug(`model ${tab.currentModel} → DeepSeek; endpoint ${ep.baseUrl ?? "default"}`);
   }
-  // Stable conversation identity for OpenCode's x-opencode-session routing
-  // follows the tab's session name; subagents get independent generated ids.
+  // The tab's session name keys the prompt cache; subagents get independent ids.
   const client = createModelClient({
     model: tab.currentModel,
     sessionId: tab.currentSession ?? undefined,
@@ -8803,6 +8803,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     });
   }, QUOTA_POLL_INTERVAL_MS);
 
+  purgeOpencodeOAuth();
   const rl = createInterface({ input: stdin });
   emit({ type: "$connected" });
   markPhase("rpc_stdin_listening");
@@ -10059,7 +10060,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             .then((creds) => {
               if (gen !== opencodeOAuthGen) return; // superseded by a newer begin/signout
               pendingOpencodeOAuth = null;
-              saveOpencodeOAuth(creds);
+              rememberOpencodeOAuth(creds);
               lastOpencodeOAuthError = null;
               // A fresh credential unlocks the paid + Go catalog and may make
               // previously unusable tabs usable — build (or rebuild) them, then

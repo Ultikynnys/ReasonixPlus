@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { ToolSpec } from "./types.js";
 
 /** OpenCode release the wire shape was copied from. Only the shape matters to the
@@ -14,38 +14,52 @@ const OPENCODE_CLIENT = "cli";
 /** Base62, in OpenCode's own character order. */
 const ID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-function base62(bytes: Buffer, from: number, length: number): string {
+function base62(bytes: Buffer): string {
   let out = "";
-  for (let i = from; i < from + length; i += 1) out += ID_CHARS[bytes[i]! % 62];
+  for (const byte of bytes) out += ID_CHARS[byte % 62];
   return out;
 }
 
-/** A `ses_<26>` id for a conversation: 12 hex chars, then 14 base62, matching the
- *  shape upstream's descending identifier generator produces. */
-export function opencodeSessionId(conversation: string): string {
-  const digest = createHash("sha256").update(`reasonix-session:${conversation}`).digest();
-  return `ses_${digest.toString("hex", 0, 6)}${base62(digest, 6, 14)}`;
+/** One run's OpenCode request identity. Both values are fresh randomness, never
+ *  derived from the conversation or the workspace, so no two runs can be linked. */
+export interface OpencodeIdentity {
+  /** `ses_<26>`: 12 hex chars then 14 base62, the shape upstream's generator emits. */
+  readonly session: string;
+  /** 40 hex chars, the shape upstream uses for a project id. */
+  readonly project: string;
 }
 
-/** A project id for a workspace directory — upstream hashes the directory too, so
- *  the value is a hash rather than an id we invent. */
-export function opencodeProjectId(directory: string): string {
-  return createHash("sha1").update(`directory:${directory}`).digest("hex");
-}
-
-/** Every identity header one model request carries. `session` must already be a
- *  session id from `opencodeSessionId`. */
-export function opencodeIdentityHeaders(
-  session: string,
-  directory: string,
-): Record<string, string> {
+export function createOpencodeIdentity(): OpencodeIdentity {
   return {
-    "x-opencode-session-id": session,
-    "x-session-affinity": session,
-    "X-Session-Id": session,
+    session: `ses_${randomBytes(6).toString("hex")}${base62(randomBytes(14))}`,
+    project: randomBytes(20).toString("hex"),
+  };
+}
+
+let current: OpencodeIdentity | undefined;
+
+/** The identity this process sends. Created on first use and kept until the process
+ *  exits or the gateway rejects it, so it lives exactly as long as the run does. */
+export function opencodeIdentity(): OpencodeIdentity {
+  current ??= createOpencodeIdentity();
+  return current;
+}
+
+/** Replace the process identity after the gateway rejects the current one. */
+export function rotateOpencodeIdentity(): OpencodeIdentity {
+  current = createOpencodeIdentity();
+  return current;
+}
+
+/** Every identity header one model request carries. */
+export function opencodeIdentityHeaders(identity: OpencodeIdentity): Record<string, string> {
+  return {
+    "x-opencode-session-id": identity.session,
+    "x-session-affinity": identity.session,
+    "X-Session-Id": identity.session,
     "User-Agent": OPENCODE_USER_AGENT,
-    "x-opencode-project": opencodeProjectId(directory),
-    "x-opencode-session": session,
+    "x-opencode-project": identity.project,
+    "x-opencode-session": identity.session,
     "x-opencode-client": OPENCODE_CLIENT,
   };
 }

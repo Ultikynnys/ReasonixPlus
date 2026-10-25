@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   DEFAULT_PROVIDER_WIRE,
   type ProviderBalanceShape,
@@ -31,12 +29,12 @@ import { messageText } from "./loop/messages.js";
 import { showPayloadContextLength, showPayloadThinking } from "./ollama-model-map.js";
 import { type OllamaThinkingCapability, recordOllamaThinking } from "./ollama-thinking.js";
 import {
+  opencodeIdentity,
   opencodeIdentityHeaders,
-  opencodeSessionId,
+  rotateOpencodeIdentity,
   withOpencodeRequiredTool,
 } from "./opencode-identity.js";
 import { type ReasoningControl, reasoningControl } from "./reasoning-control.js";
-import { reasonixHome } from "./reasonix-home.js";
 import { buildResponsesPayload } from "./responses-api.js";
 import { type RetryOptions, fetchWithRetryProgress } from "./retry.js";
 import { stableHash } from "./telemetry/cache-diagnostics.js";
@@ -895,8 +893,7 @@ export class DeepSeekClient {
   readonly baseUrl: string;
   readonly timeoutMs: number;
   readonly retry: RetryOptions;
-  /** Conversation identity behind the OpenCode session headers; null → a uuid.
-   *  Either way it is hashed into the `ses_…` shape the gateway expects. */
+  /** Conversation id behind the prompt-cache key; null falls back to a per-instance id. */
   readonly sessionId: string | null;
   private readonly _fetch: typeof fetch;
   private readonly minChatIntervalMs: number;
@@ -919,9 +916,6 @@ export class DeepSeekClient {
    *  uncataloged ids carry no provider signal, so the name never routes. */
   private readonly geminiMode: boolean;
   private _generatedSessionId: string | null = null;
-  /** Set after the OpenCode gateway rejects the configured session id — a fresh,
-   *  gateway-accepted id reused for every later request on this client. */
-  private opencodeSessionOverride: string | null = null;
   private nextChatRequestAt = 0;
 
   /** What was last sent per Ollama model, for cache-prefix inference. */
@@ -1024,15 +1018,6 @@ export class DeepSeekClient {
     return /insufficient balance|no resource package|please recharge/i.test(body);
   }
 
-  /** Stable per-conversation id for OpenCode's x-opencode-session header.
-   *  `opencodeSessionOverride` wins once the gateway rejects the configured id
-   *  (see prepareRequest); it stays fixed for prompt-cache routing stability. */
-  private resolveOpencodeSessionId(): string {
-    if (this.opencodeSessionOverride) return this.opencodeSessionOverride;
-    this._generatedSessionId ??= randomUUID();
-    return opencodeSessionId(this.sessionId ?? this._generatedSessionId);
-  }
-
   /** True for the OpenCode Go gateway's opaque session-routing 400, whose body
    *  is exactly `{"model":"<id>"}` (no error envelope). */
   private async isOpencodeSessionRejection(resp: Response): Promise<boolean> {
@@ -1119,7 +1104,7 @@ export class DeepSeekClient {
     // markers — so a request for an opencode model introduces itself as one.
     // ??= lets an explicitly configured transport header win over every default.
     if (providerForModel(opts.model) === "opencode") {
-      const identity = opencodeIdentityHeaders(this.resolveOpencodeSessionId(), process.cwd());
+      const identity = opencodeIdentityHeaders(opencodeIdentity());
       for (const [name, value] of Object.entries(identity)) headers[name] ??= value;
       // A Console session token is org-scoped: without this header the gateway
       // can't resolve the org and answers 401 "Invalid API key". A static API
@@ -1189,15 +1174,12 @@ export class DeepSeekClient {
       }
       // The OpenCode Go gateway rejects some `x-opencode-session` values with an
       // opaque 400 whose body is exactly `{"model":"<id>"}` — its session-routing
-      // check is format-dependent, and stable ids like `desktop-<ts>-<counter>`
-      // (an all-digit tail) are refused. Regenerate the session id and retry a
-      // few times; the accepted value is retained for the conversation so
-      // prompt-cache routing stays stable across turns.
+      // check is format-dependent. Regenerate the identity headers and retry a few
+      // times; the accepted values stay fixed for the rest of the run.
       if (providerForModel(opts.model) === "opencode") {
         for (let attempt = 0; attempt < 3; attempt += 1) {
           if (!(await this.isOpencodeSessionRejection(resp))) break;
-          this.opencodeSessionOverride = opencodeSessionId(randomUUID());
-          headers["x-opencode-session"] = this.opencodeSessionOverride;
+          Object.assign(headers, opencodeIdentityHeaders(rotateOpencodeIdentity()));
           log.verbose(
             `opencode 400 on ${endpoint} — retrying with a fresh session id (attempt ${attempt + 1})`,
           );
@@ -1222,15 +1204,6 @@ export class DeepSeekClient {
         } catch {
           payloadKeys = "unparsable";
         }
-        // Full request body dump for offline bisection of gateway 400s.
-        try {
-          writeFileSync(
-            join(reasonixHome(), "cache", "opencode-error-request.json"),
-            typeof init.body === "string" ? init.body : "",
-          );
-        } catch {
-          void 0;
-        }
         recordDiagnostic("model.error.body", {
           level: "error",
           details: {
@@ -1242,8 +1215,6 @@ export class DeepSeekClient {
             toolNames,
             bodyBytes: typeof init.body === "string" ? init.body.length : -1,
             endpoint,
-            authPrefix: (headers.Authorization ?? "").slice(0, 10),
-            orgHeader: headers["x-opencode-org-id"] ?? null,
           },
         });
       }

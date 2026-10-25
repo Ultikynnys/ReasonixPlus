@@ -16,10 +16,10 @@ import {
   loadMimoProtocol,
   loadOpencodeApiKey,
   providerForModel,
-  readConfig,
 } from "./config.js";
 import { resolveOpenAIToken } from "./oauth.js";
 import { resolveOpencodeToken } from "./opencode-oauth.js";
+import { opencodeOAuthSession } from "./opencode-session.js";
 
 export interface ResolvedModelClientOptions {
   model: string;
@@ -56,7 +56,7 @@ const AUTH_RESOLVERS: Readonly<
     // Go / Go+ inference authenticates with the workspace service key (`oc_sk…`).
     // A Console OAuth session token is a different credential and the Go/Zen
     // gateways 401 it, so it is only a fallback when no service key is configured.
-    loadOpencodeApiKey(ctx.configPath) ?? resolveOpencodeToken(ctx.configPath),
+    loadOpencodeApiKey(ctx.configPath) ?? resolveOpencodeToken(),
   // Gemini authenticates through `geminiAuthResolver`, never a bearer key.
   "gemini-oauth": () => undefined,
 };
@@ -90,7 +90,7 @@ const TRANSPORT_RESOLVERS: Readonly<
           endpoint: `${ctx.endpoint.baseUrl ?? DEFAULT_OPENCODE_CHAT_URL}/responses`,
           headers: {
             Authorization: `Bearer ${
-              (await resolveOpencodeToken(ctx.configPath)) ?? ctx.endpoint.apiKey ?? "public"
+              (await resolveOpencodeToken()) ?? ctx.endpoint.apiKey ?? "public"
             }`,
           },
           api: "responses" as const,
@@ -118,9 +118,7 @@ export function modelClientOptions(opts: ResolvedModelClientOptions): DeepSeekCl
     apiKeyResolver: spec ? AUTH_RESOLVERS[spec.client.auth](ctx) : undefined,
     // Only a Console session needs its organization id on the request.
     opencodeOrgResolver:
-      spec?.client.auth === "opencode"
-        ? () => readConfig(opts.configPath).opencodeOAuth?.orgId
-        : undefined,
+      spec?.client.auth === "opencode" ? () => opencodeOAuthSession()?.orgId : undefined,
     transportResolver: spec?.client.transport
       ? TRANSPORT_RESOLVERS[spec.client.transport](ctx)
       : undefined,

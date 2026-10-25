@@ -57,6 +57,7 @@ import {
   isOpencodeGoModel,
   reasoningEffortsForModel,
 } from "./opencode-models.js";
+import { opencodeOAuthSession } from "./opencode-session.js";
 import { discoveredProviderModels, isCatalogProvider } from "./provider-models.js";
 import { reasonixHome } from "./reasonix-home.js";
 import { MAX_CONTEXT_TOKENS, MIN_CONTEXT_TOKENS } from "./telemetry/stats.js";
@@ -772,26 +773,6 @@ export interface GmailOAuthCreds {
   account?: string;
 }
 
-/** OpenCode Console device-flow tokens — set by the settings "Sign in with
- *  OpenCode" flow. The access token authenticates Zen + Go inference, so it
- *  unlocks the paid/subscription model catalog the same way an API key does. */
-export interface OpencodeOAuthCreds {
-  accessToken: string;
-  refreshToken: string;
-  /** ms epoch — Console access tokens are short-lived; refreshed from refreshToken when within 5 min of expiry. */
-  expiresAt: number;
-  /** Account email from the Console `/api/user` endpoint — shown masked in settings, never shipped over the bridge. */
-  account?: string;
-  /** Active Console organization id — sent as `x-opencode-org-id` on inference
-   *  so a session token is scoped to this org (the gateway rejects an unscoped
-   *  session token with 401). Unused for static API keys. */
-  orgId?: string;
-  /** Active Console organization display name. */
-  orgName?: string;
-  /** Console server origin the tokens were issued by (defaults to opencode.ai/console). */
-  server?: string;
-}
-
 /** A per-model provider declaration from the `models` config map. */
 export interface ModelProviderConfig {
   /** Which provider's endpoint family serves the model id. */
@@ -808,9 +789,6 @@ export interface ReasonixConfig {
   /** Google Antigravity OAuth tokens — set by the "Sign in with Google" flow;
    *  powers gemini-* models on the Antigravity quota. */
   antigravityOAuth?: AntigravityOAuthCreds;
-  /** OpenCode Console device-flow tokens — set by the "Sign in with OpenCode"
-   *  flow; unlocks the OpenCode Zen/Go paid + subscription model catalog. */
-  opencodeOAuth?: OpencodeOAuthCreds;
   /** Selected managed mail integration. Outlook remains the default for existing installs. */
   mailProvider?: MailProvider;
   /** User-owned Google OAuth client and tokens for the official Gmail MCP server. */
@@ -1177,7 +1155,7 @@ export function loadMimoProtocol(): "chat" | "responses" {
 export function hasOpencodeCredential(path: string = defaultConfigPath()): boolean {
   const key = loadOpencodeApiKey(path);
   if (key && key !== "public") return true;
-  return Boolean(readConfig(path).opencodeOAuth?.accessToken);
+  return Boolean(opencodeOAuthSession()?.accessToken);
 }
 
 /** Ollama cloud API key: env > config > undefined. */
@@ -1961,20 +1939,27 @@ export function clearAntigravityOAuth(path: string = defaultConfigPath()): void 
   writeConfig(rest, path);
 }
 
-export function saveOpencodeOAuth(
-  creds: OpencodeOAuthCreds,
-  path: string = defaultConfigPath(),
-): void {
-  const cfg = readConfig(path);
-  cfg.opencodeOAuth = creds;
-  writeConfig(cfg, path);
-}
-
-export function clearOpencodeOAuth(path: string = defaultConfigPath()): void {
-  const cfg = readConfig(path);
-  if (!cfg.opencodeOAuth) return;
-  const { opencodeOAuth: _drop, ...rest } = cfg;
-  writeConfig(rest, path);
+/** Drop an `opencodeOAuth` block left by an older build so no Console token
+ *  survives on disk. Returns true when the file changed. */
+export function purgeOpencodeOAuth(path: string = defaultConfigPath()): boolean {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8").replace(/^\uFEFF/, "");
+  } catch {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const cfg = parsed as Record<string, unknown>;
+  if (!("opencodeOAuth" in cfg)) return false;
+  const rest = Object.fromEntries(Object.entries(cfg).filter(([key]) => key !== "opencodeOAuth"));
+  writeConfig(rest as ReasonixConfig, path);
+  return true;
 }
 
 /** Persist the inference key issued by MiMo browser authorization (an API key,

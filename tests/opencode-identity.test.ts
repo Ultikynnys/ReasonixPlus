@@ -1,34 +1,62 @@
-/** The harness identity used for opencode.ai requests — shapes, stability, header set. */
+/** The harness identity used for opencode.ai requests — shapes, randomness, header set. */
 
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   OPENCODE_READ_TOOL,
   OPENCODE_USER_AGENT,
+  createOpencodeIdentity,
+  opencodeIdentity,
   opencodeIdentityHeaders,
-  opencodeProjectId,
-  opencodeSessionId,
+  rotateOpencodeIdentity,
   withOpencodeRequiredTool,
 } from "../src/opencode-identity.js";
 
 /** `ses_` + 12 hex chars + 14 base62, as upstream's identifier generator emits. */
 const SESSION_SHAPE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+const PROJECT_SHAPE = /^[0-9a-f]{40}$/;
 
-describe("opencodeSessionId", () => {
-  it("shapes any conversation id into a session id", () => {
-    expect(opencodeSessionId("desktop-17123456789012-3")).toMatch(SESSION_SHAPE);
+describe("createOpencodeIdentity", () => {
+  it("builds ids in the shapes the gateway expects", () => {
+    const identity = createOpencodeIdentity();
+    expect(identity.session).toMatch(SESSION_SHAPE);
+    expect(identity.project).toMatch(PROJECT_SHAPE);
   });
 
-  it("is stable for one conversation so routing and caching stay pinned", () => {
-    expect(opencodeSessionId("tab-a")).toBe(opencodeSessionId("tab-a"));
-    expect(opencodeSessionId("tab-a")).not.toBe(opencodeSessionId("tab-b"));
+  it("shares nothing between two runs", () => {
+    const first = createOpencodeIdentity();
+    const second = createOpencodeIdentity();
+    expect(first.session).not.toBe(second.session);
+    expect(first.project).not.toBe(second.project);
+  });
+
+  it("never reproduces the retired conversation and directory derivations", () => {
+    const conversation = "tab-a";
+    const directory = "/work/one";
+    const digest = createHash("sha256").update(`reasonix-session:${conversation}`).digest();
+    const retiredSession = `ses_${digest.toString("hex", 0, 6)}`;
+    const retiredProject = createHash("sha1").update(`directory:${directory}`).digest("hex");
+
+    for (let draw = 0; draw < 32; draw += 1) {
+      const identity = createOpencodeIdentity();
+      expect(identity.session.startsWith(retiredSession)).toBe(false);
+      expect(identity.project).not.toBe(retiredProject);
+    }
   });
 });
 
-describe("opencodeProjectId", () => {
-  it("is a hash of the workspace, stable per directory", () => {
-    expect(opencodeProjectId("/work/one")).toMatch(/^[0-9a-f]{40}$/);
-    expect(opencodeProjectId("/work/one")).toBe(opencodeProjectId("/work/one"));
-    expect(opencodeProjectId("/work/one")).not.toBe(opencodeProjectId("/work/two"));
+describe("opencodeIdentity", () => {
+  it("keeps one identity for the life of the process", () => {
+    expect(opencodeIdentity()).toBe(opencodeIdentity());
+  });
+
+  it("replaces it on rotation without returning to the previous value", () => {
+    const before = opencodeIdentity();
+    const rotated = rotateOpencodeIdentity();
+    expect(rotated).not.toBe(before);
+    expect(rotated.session).not.toBe(before.session);
+    expect(rotated.project).not.toBe(before.project);
+    expect(opencodeIdentity()).toBe(rotated);
   });
 });
 
@@ -50,14 +78,14 @@ describe("withOpencodeRequiredTool", () => {
 
 describe("opencodeIdentityHeaders", () => {
   it("sends the full identity OpenCode's own client sends", () => {
-    const sessionago = opencodeSessionId("tab-a");
-    expect(opencodeIdentityHeaders(sessionago, "/work/one")).toEqual({
-      "x-opencode-session-id": sessionago,
-      "x-session-affinity": sessionago,
-      "X-Session-Id": sessionago,
+    const identity = createOpencodeIdentity();
+    expect(opencodeIdentityHeaders(identity)).toEqual({
+      "x-opencode-session-id": identity.session,
+      "x-session-affinity": identity.session,
+      "X-Session-Id": identity.session,
       "User-Agent": OPENCODE_USER_AGENT,
-      "x-opencode-project": opencodeProjectId("/work/one"),
-      "x-opencode-session": sessionago,
+      "x-opencode-project": identity.project,
+      "x-opencode-session": identity.session,
       "x-opencode-client": "cli",
     });
   });

@@ -10,13 +10,13 @@ import {
   generateKeyPairSync,
   randomBytes,
 } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { providerSpec } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type BalanceInfo, pickPrimaryBalance } from "../src/client.js";
 import { parseCodexQuotaPayload } from "../src/codex-backend.js";
-import { readConfig, saveOpencodeOAuth, writeConfig } from "../src/config.js";
+import { readConfig, writeConfig } from "../src/config.js";
 import { isQuotaExhaustedError } from "../src/loop/errors.js";
 import { beginMiMoLoginFlow, decryptMiMoCredential } from "../src/mimo-auth.js";
 import { fetchMiMoQuota, readMiMoConsoleSession } from "../src/mimo-quota.js";
@@ -55,7 +55,11 @@ import {
   signOutOpencode,
 } from "../src/opencode-oauth.js";
 import { fetchOpencodeQuota, opencodeUsageUrl } from "../src/opencode-quota.js";
-
+import {
+  forgetOpencodeOAuth,
+  opencodeOAuthSession,
+  rememberOpencodeOAuth,
+} from "../src/opencode-session.js";
 describe("opencode-models", () => {
   const TEST_DIR = join(process.cwd(), ".tmp-test-opencode-models");
 
@@ -425,6 +429,7 @@ describe("opencode-oauth", () => {
 
   describe("opencode-oauth", () => {
     beforeEach(() => {
+      forgetOpencodeOAuth();
       mkdirSync(TEST_DIR, { recursive: true });
     });
 
@@ -482,35 +487,30 @@ describe("opencode-oauth", () => {
       expect(creds.orgId).toBe("org-1");
       expect(creds.orgName).toBe("Acme");
       expect(calls.some((u) => u.endsWith("/auth/device/token"))).toBe(true);
+      expect(existsSync(CONFIG_PATH)).toBe(false);
     });
 
-    it("returns a fresh stored access token without a network call", async () => {
-      saveOpencodeOAuth(
-        {
-          accessToken: "fresh-token",
-          refreshToken: "refresh-1",
-          expiresAt: Date.now() + 60 * 60 * 1000,
-        },
-        CONFIG_PATH,
-      );
+    it("returns a fresh in-memory access token without a network call", async () => {
+      rememberOpencodeOAuth({
+        accessToken: "fresh-token",
+        refreshToken: "refresh-1",
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
 
-      expect(hasOpencodeOAuthSession(CONFIG_PATH)).toBe(true);
-      expect(await resolveOpencodeToken(CONFIG_PATH)).toBe("fresh-token");
+      expect(hasOpencodeOAuthSession()).toBe(true);
+      expect(await resolveOpencodeToken()).toBe("fresh-token");
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it("refreshes an expired token and persists the rotated pair", async () => {
-      saveOpencodeOAuth(
-        {
-          accessToken: "old-token",
-          refreshToken: "refresh-old",
-          expiresAt: Date.now() - 1000,
-          server: "https://opencode.ai/console",
-        },
-        CONFIG_PATH,
-      );
+    it("refreshes an expired token in memory and writes nothing to disk", async () => {
+      rememberOpencodeOAuth({
+        accessToken: "old-token",
+        refreshToken: "refresh-old",
+        expiresAt: Date.now() - 1000,
+        server: "https://opencode.ai/console",
+      });
       const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
         expect(url).toBe("https://opencode.ai/console/auth/device/token");
         const body = JSON.parse(String(init?.body));
@@ -524,20 +524,53 @@ describe("opencode-oauth", () => {
       });
       vi.stubGlobal("fetch", fetchMock);
 
-      expect(await resolveOpencodeToken(CONFIG_PATH)).toBe("new-token");
-      const stored = readConfig(CONFIG_PATH).opencodeOAuth;
-      expect(stored?.accessToken).toBe("new-token");
-      expect(stored?.refreshToken).toBe("refresh-new");
+      expect(await resolveOpencodeToken()).toBe("new-token");
+      expect(opencodeOAuthSession()?.accessToken).toBe("new-token");
+      expect(opencodeOAuthSession()?.refreshToken).toBe("refresh-new");
+      expect(existsSync(CONFIG_PATH)).toBe(false);
     });
 
-    it("sign-out clears the stored session", async () => {
-      saveOpencodeOAuth(
-        { accessToken: "a", refreshToken: "r", expiresAt: Date.now() + 1000 },
-        CONFIG_PATH,
+    it("drops a refresh that settles after sign-out", async () => {
+      rememberOpencodeOAuth({
+        accessToken: "old-token",
+        refreshToken: "refresh-old",
+        expiresAt: Date.now() - 1000,
+        server: "https://opencode.ai/console",
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => {
+          forgetOpencodeOAuth();
+          return jsonResponse({
+            access_token: "new-token",
+            refresh_token: "refresh-new",
+            expires_in: 3600,
+          });
+        }),
       );
-      expect(hasOpencodeOAuthSession(CONFIG_PATH)).toBe(true);
+
+      expect(await resolveOpencodeToken()).toBeUndefined();
+      expect(opencodeOAuthSession()).toBeUndefined();
+    });
+
+    it("sign-out forgets the session and deletes a legacy on-disk block", async () => {
+      rememberOpencodeOAuth({ accessToken: "a", refreshToken: "r", expiresAt: Date.now() + 1000 });
+      writeFileSync(
+        CONFIG_PATH,
+        JSON.stringify({
+          model: "big-pickle",
+          opencodeOAuth: { accessToken: "legacy", refreshToken: "r", expiresAt: 1 },
+        }),
+      );
+
+      expect(hasOpencodeOAuthSession()).toBe(true);
+      expect(readConfig(CONFIG_PATH)).toHaveProperty("opencodeOAuth");
+
       await signOutOpencode(CONFIG_PATH);
-      expect(hasOpencodeOAuthSession(CONFIG_PATH)).toBe(false);
+
+      expect(hasOpencodeOAuthSession()).toBe(false);
+      expect(readConfig(CONFIG_PATH)).not.toHaveProperty("opencodeOAuth");
+      expect(readConfig(CONFIG_PATH).model).toBe("big-pickle");
     });
   });
 });
@@ -859,6 +892,7 @@ describe("model-client", () => {
 
   describe("modelClientOptions — OpenCode credentials", () => {
     beforeEach(() => {
+      forgetOpencodeOAuth();
       mkdirSync(TEST_DIR, { recursive: true });
       Reflect.deleteProperty(process.env, "OPENCODE_API_KEY");
       Reflect.deleteProperty(process.env, "MIMO_API_KEY");
@@ -866,22 +900,20 @@ describe("model-client", () => {
     });
 
     afterEach(() => {
+      forgetOpencodeOAuth();
       rmSync(TEST_DIR, { recursive: true, force: true });
       Reflect.deleteProperty(process.env, "OPENCODE_API_KEY");
       Reflect.deleteProperty(process.env, "MIMO_API_KEY");
       Reflect.deleteProperty(process.env, "MIMO_BASE_URL");
     });
 
-    it("wires x-opencode-org-id to the stored session org for opencode models", async () => {
-      saveOpencodeOAuth(
-        {
-          accessToken: "access-1",
-          refreshToken: "refresh-1",
-          expiresAt: Date.now() + 60 * 60 * 1000,
-          orgId: "org-1",
-        },
-        CONFIG_PATH,
-      );
+    it("wires x-opencode-org-id to the in-memory session org for opencode models", async () => {
+      rememberOpencodeOAuth({
+        accessToken: "access-1",
+        refreshToken: "refresh-1",
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        orgId: "org-1",
+      });
 
       const opts = modelClientOptions({ model: "glm-5-free", configPath: CONFIG_PATH });
       expect(await opts.opencodeOrgResolver?.()).toBe("org-1");
@@ -893,14 +925,11 @@ describe("model-client", () => {
     });
 
     it("prefers the Go service key over a Console OAuth session", async () => {
-      saveOpencodeOAuth(
-        {
-          accessToken: "session-access",
-          refreshToken: "refresh-1",
-          expiresAt: Date.now() + 60 * 60 * 1000,
-        },
-        CONFIG_PATH,
-      );
+      rememberOpencodeOAuth({
+        accessToken: "session-access",
+        refreshToken: "refresh-1",
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
       const cfg = readConfig(CONFIG_PATH);
       cfg.opencodeApiKey = "oc_sk_service_key";
       writeConfig(cfg, CONFIG_PATH);
@@ -910,14 +939,11 @@ describe("model-client", () => {
     });
 
     it("falls back to the Console OAuth token when no service key is set", async () => {
-      saveOpencodeOAuth(
-        {
-          accessToken: "session-access",
-          refreshToken: "refresh-1",
-          expiresAt: Date.now() + 60 * 60 * 1000,
-        },
-        CONFIG_PATH,
-      );
+      rememberOpencodeOAuth({
+        accessToken: "session-access",
+        refreshToken: "refresh-1",
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
 
       const opts = modelClientOptions({ model: "deepseek-v4.1-flash", configPath: CONFIG_PATH });
       expect(await opts.apiKeyResolver?.()).toBe("session-access");
