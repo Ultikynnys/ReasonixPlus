@@ -299,9 +299,6 @@ export interface KernelSubagentProgressEvent extends KernelWireEventBase {
   toolOk?: boolean;
   error?: string;
   turns?: number;
-  maxToolIters?: number;
-  maxElapsedMs?: number;
-  budgetExhausted?: "tool-iters" | "elapsed";
 }
 
 /** Machine-readable phase tag on a `status` event (mirror of src/loop StatusCode).
@@ -520,6 +517,14 @@ export interface PlanRestoredEvent {
   status?: "active" | "finished";
 }
 
+/** One mutation request's outcome, published on the snapshot the daemon emitted because
+ *  of it. The client settles its optimistic state ONLY on the answer to its own id. */
+export interface SessionMutationAnswer {
+  requestId: string;
+  /** Create only, and only on success: the session this request minted. */
+  created?: string;
+}
+
 export interface SessionsEvent {
   type: "$sessions";
   /** Identifies the daemon lifetime that produced this snapshot. Shared by every
@@ -532,8 +537,10 @@ export interface SessionsEvent {
    *  initialise a workspace the client has never listed, and never advances
    *  `revision`, so a cache read can never outrank a settled snapshot. */
   primed?: boolean;
-  /** Delete operations settled by this authoritative snapshot. */
-  settledDeletes?: { name: string; removed: boolean }[];
+  /** The requests whose outcome this snapshot publishes. This is the ONLY thing that
+   *  settles a delete, clear or create the client asked for: a listing that merely
+   *  omits or still holds a hidden name is some other request's truth, never this one's. */
+  answers?: SessionMutationAnswer[];
   items: {
     name: string;
     messageCount: number;
@@ -576,10 +583,6 @@ export interface TabOpenedEvent {
   groupId?: string;
   /** Session owned by this channel. */
   activeSession?: string;
-  /** True when this channel was opened for a fresh, not-yet-listed session (New
-   *  chat / duplicate). Drives the "Creating session…" indicator until the
-   *  channel's first `$sessions` snapshot lands. */
-  creating?: boolean;
 }
 
 /** One backend session channel closed. A tab_close command emits this once for
@@ -1081,10 +1084,6 @@ export interface SettingsEvent {
   /** Range the context slider may state for this tab's model; absent = [128K, 1M]. A
    *  provider that serves its own window (`--ctx-size`) allows smaller values. */
   contextTokensBounds?: { min: number; max: number };
-  /** Effective per-turn iteration cap after config, environment, and default resolution. */
-  maxIterPerTurn?: number | null;
-  /** Explicit config override; null means environment/default resolution is active. */
-  maxIterPerTurnOverride?: number | null;
   /** Whether THIS session was minted with the subagent tool — the frozen per-chat
    *  capability. Drives whether the composer offers the subagent model picker at
    *  all: without the tool the choice has no effect. */
@@ -1546,8 +1545,6 @@ export interface SettingsPatch {
   quickSendId?: string;
   /** Context-window cap in tokens, clamped to [128000, 1000000]; null/undefined = per-model default. */
   contextTokens?: number | null;
-  /** Per-turn iteration cap, clamped to [50, 100]; null/undefined = default (50). */
-  maxIterPerTurn?: number | null;
   /** Turn pre-turn auto-compaction on/off. */
   autoCompact?: boolean;
   /** Auto-compaction trigger fraction, clamped to [0.5, 0.95]; null/undefined = default (0.8). */
@@ -1648,13 +1645,16 @@ export type OutgoingCommand = { tabId?: string } & (
   /** Pull one tab's live turn state ($tab_status reply) — the reconciliation
    *  probe the desktop polls while busy so a lost terminal event can't wedge it. */
   | { cmd: "tab_status" }
-  | { cmd: "session_delete"; name: string }
+  /** `requestId` is the frontend's name for this mutation. The daemon answers it
+   *  exactly once through the `answers` of one $sessions snapshot, and the client
+   *  settles its optimistic hide on that answer alone. */
+  | { cmd: "session_delete"; name: string; requestId: string }
   /** Delete every session the caller is optimistically hiding. `names` is the
-   *  frontend's exact hide-list, echoed so the daemon can settle every one even
-   *  if its own workspace listing misses some (kept optional for older callers).
-   *  `keep` is the list the caller told the user would survive; the daemon never
-   *  deletes a name from it, whatever its own live check reports. */
-  | { cmd: "session_clear"; names?: string[]; keep?: string[] }
+   *  frontend's exact hide-list, echoed so the daemon can answer for every one even
+   *  if its own workspace listing misses some. `keep` is the list the caller told
+   *  the user would survive; the daemon never deletes a name from it, whatever its
+   *  own live check reports. `requestId` answers this request, as for a delete. */
+  | { cmd: "session_clear"; names?: string[]; keep?: string[]; requestId: string }
   /** Legacy alias for additive session_open; never replaces the active agent. */
   | { cmd: "session_load"; name: string }
   /** Focus an existing session agent or add it to the current workspace tab. */
@@ -1670,7 +1670,9 @@ export type OutgoingCommand = { tabId?: string } & (
       body: string;
     } & MemoryWriteOptions)
   | { cmd: "memory_delete"; path: string }
-  | { cmd: "new_chat" }
+  /** `requestId` is answered in the `answers` of the snapshot that lists the minted
+   *  session, or of the snapshot that reports the creation did not happen. */
+  | { cmd: "new_chat"; requestId: string }
   | { cmd: "setup_save_key"; key: string }
   | { cmd: "setup_save_openai_key"; key: string }
   | { cmd: "oauth_begin" }
@@ -1770,6 +1772,8 @@ export type OutgoingCommand = { tabId?: string } & (
       enabled?: string[];
       /** Whether the clone may spawn subagents. */
       subagents?: boolean;
+      /** Answered like `new_chat`: the clone's mint, or the refusal that stopped it. */
+      requestId: string;
     }
   | { cmd: "retry" }
   | { cmd: "btw"; text: string }

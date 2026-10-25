@@ -95,7 +95,10 @@ import {
   rpcSend,
 } from "./protocol";
 import {
+  type SessionIntentRequest,
+  type SessionMutationAsk,
   type SessionsStore,
+  abandonIntent,
   applySessionsSnapshot,
   beginIntent,
   clearPartition,
@@ -103,9 +106,11 @@ import {
   focusRefreshDue,
   hasOpenSessionIntent,
   hiddenNames,
+  intentRecord,
   mutationFor,
-  openIntentId,
+  noteIntentAttempt,
   patchSession,
+  pendingSessionRequests,
   sessionsEntry,
   visibleSessions,
 } from "./sessions-store";
@@ -220,10 +225,41 @@ const RIGHT_SIDEBAR_COLLAPSE_WIDTH = 1120;
  *  `settings_save`, so the UI never queues a round-trip per keystroke/click. */
 const SETTINGS_SAVE_DEBOUNCE_MS = 200;
 
-/** How long an unconfirmed session mutation may stay silent before the channel asks
- *  for the authoritative list. It only REQUESTS a snapshot; it never reveals a row,
- *  so unlike the old wall-clock release it cannot resurrect a real delete. */
-const INTENT_RECONCILE_TIMEOUT_MS = 10_000;
+/** How often an unanswered session mutation is re-sent, and how many times. Its
+ *  request id makes a re-send the same request, so the daemon cannot run it twice;
+ *  the bound is the only path that gives up, and giving up reveals the rows. */
+const MUTATION_RETRY_MS = 5_000;
+const MUTATION_RETRY_LIMIT = 12;
+
+/** Names one session mutation. The daemon echoes it in the snapshot that answers it,
+ *  which is what ties the UI to what the backend actually did. */
+let sessionMutationSeq = 0;
+
+function newSessionRequestId(): string {
+  sessionMutationSeq += 1;
+  return `m${sessionMutationSeq}-${Date.now().toString(36)}`;
+}
+
+/** The command that re-sends `request` under its own id, or null when the request
+ *  cannot be rebuilt from what the intent kept. A create re-sends `new_chat`, which the
+ *  daemon answers by id instead of minting again; a duplicate carries a transcript
+ *  generated at click time, so it waits for its answer rather than re-sending.
+ *  Extracted so the retry driver and the click path cannot disagree. */
+function mutationCommand(request: SessionIntentRequest, requestId: string): OutgoingCommand | null {
+  switch (request.kind) {
+    case "delete":
+      return { cmd: "session_delete", name: request.name, requestId };
+    case "clear":
+      return {
+        cmd: "session_clear",
+        names: [...request.names],
+        keep: [...request.keep],
+        requestId,
+      };
+    case "create":
+      return request.origin === "new-chat" ? { cmd: "new_chat", requestId } : null;
+  }
+}
 
 /** How long a locally-written settings field stays authoritative against the
  *  daemon's `$settings` echo. Long enough to outlast any in-flight echo, short
@@ -293,9 +329,6 @@ export type SubagentRunProgress = {
   reasoningChars?: number;
   toolReadChars?: number;
   turns?: number;
-  maxToolIters?: number;
-  maxElapsedMs?: number;
-  budgetExhausted?: "tool-iters" | "elapsed";
   error?: string;
   thought?: string;
   recentRows?: SubagentActivityRow[];
@@ -469,15 +502,13 @@ export type SessionInfo = {
   workspaceStatus?: "matched" | "legacy_missing_meta";
 };
 
-/** A session-list mutation in flight for a channel. One field carries the whole
- *  fact, so the indicator cannot be told one thing and the "what are we waiting
- *  for" another. `awaitingName` is present only for "create": the indicator
- *  clears when that session is listed, and is omitted when the target is
- *  unknown (then the first snapshot settles it). */
-export type SessionMutation =
-  | { kind: "delete" }
-  | { kind: "clear" }
-  | { kind: "create"; awaitingName?: string };
+/** A session-list mutation in flight for a channel. The indicator and the lock live
+ *  exactly as long as this mutation has no answer, and nothing else decides that. */
+export type SessionMutation = { kind: "delete" | "clear" | "create" };
+
+/** What recording a mutation yields: the id the daemon will answer, and the record that
+ *  id rides on the wire. The click sends the record; a retry re-sends it unchanged. */
+export type SessionIntentRecord = { requestId: string; request: SessionIntentRequest };
 
 /** THE wording for an in-flight session mutation, and the only place it is
  *  defined. Rendered by exactly one surface: the main-area pill. */
@@ -2364,9 +2395,6 @@ export function applySubagentProgress(
     reasoningChars: ev.reasoningChars ?? previous?.reasoningChars,
     toolReadChars: ev.toolReadChars ?? previous?.toolReadChars,
     turns: ev.turns ?? previous?.turns,
-    maxToolIters: ev.maxToolIters ?? previous?.maxToolIters,
-    maxElapsedMs: ev.maxElapsedMs ?? previous?.maxElapsedMs,
-    budgetExhausted: ev.budgetExhausted ?? previous?.budgetExhausted,
     error: ev.error ?? previous?.error,
     thought: ev.thought ?? previous?.thought,
     recentRows,
@@ -2834,8 +2862,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           quickSends: ev.quickSends,
           quickSendId: ev.quickSendId,
           contextTokens: ev.contextTokens ?? null,
-          maxIterPerTurn: ev.maxIterPerTurn ?? null,
-          maxIterPerTurnOverride: ev.maxIterPerTurnOverride ?? null,
           // Frozen per session, and absent reads as off: a daemon that predates the
           // field minted nothing with the tool, so there is no picker to keep.
           subagents: ev.subagents ?? false,
@@ -3525,7 +3551,8 @@ type TabAction = Action;
 type TabDispatcher = (action: TabAction) => void;
 
 /** Asks the daemon for the authoritative session list — the one reconciliation entry
- *  point. Neither an escaped hide nor a stuck intent reveals a row by itself. */
+ *  point for a session removed outside this window. It settles nothing: only a
+ *  request's own answer does. */
 function requestSessionList(tabId: string): void {
   void rpcSend({ tabId, cmd: "session_list" }).catch((err) =>
     recordFrontendFailure("frontend.session_list_resync_failed", err),
@@ -3545,14 +3572,14 @@ interface TabRuntimeProps {
   /** This channel's workspace session list — owned by App and shared by every
    *  channel on the same directory, so no channel can disagree with another. */
   sessionView: SessionView;
-  /** Records a delete/clear/create the user asked for on this channel's workspace.
-   *  `keep` names a clear-all must leave visible (sessions that cannot be deleted). */
+  /** Records a delete/clear/create the user asked for on this channel's workspace and
+   *  returns the request id the daemon will answer it under. */
   onSessionIntent: (
     workspaceDir: string | undefined,
-    kind: SessionMutation["kind"],
-    name?: string,
-    keep?: readonly string[],
-  ) => void;
+    ask: SessionMutationAsk,
+  ) => SessionIntentRecord;
+  /** Drops a request the daemon never answered, so the rows it hid come back. */
+  onSessionIntentFailed: (workspaceDir: string | undefined, requestId: string) => void;
   /** Applies an optimistic row edit (rename/reorder) until a snapshot confirms it. */
   onSessionPatch: (
     workspaceDir: string | undefined,
@@ -3643,13 +3670,9 @@ const TabRuntime = memo(function TabRuntime({
   registerDispatch,
   onWorkspaceInitialized,
   onNewTab,
-  sessionView: {
-    items: sessions,
-    mutation: sessionsMutation,
-    pendingDeleteCount,
-    openIntentId: sessionIntentId,
-  },
+  sessionView: { items: sessions, mutation: sessionsMutation, pendingDeleteCount },
   onSessionIntent,
+  onSessionIntentFailed,
   onSessionPatch,
   onBusyChange,
   sessionRates,
@@ -3888,11 +3911,19 @@ const TabRuntime = memo(function TabRuntime({
 
   const rpcQueue = useRef(Promise.resolve());
   const sendRpc = useCallback(
-    (cmd: OutgoingCommand) => {
+    (cmd: OutgoingCommand): Promise<boolean> => {
       const queued = rpcQueue.current.then(() => rpcSend({ tabId, ...cmd }));
-      rpcQueue.current = queued.catch((err) =>
-        recordFrontendFailure("frontend.rpc_failed", err, { cmd: cmd.cmd }),
+      // Reports the outcome without ever rejecting: every caller is fire-and-forget,
+      // and a mutation needs to know whether its request left this window.
+      const settled = queued.then(
+        () => true,
+        (err) => {
+          recordFrontendFailure("frontend.rpc_failed", err, { cmd: cmd.cmd });
+          return false;
+        },
       );
+      rpcQueue.current = settled.then(() => undefined);
+      return settled;
     },
     [tabId],
   );
@@ -4009,32 +4040,41 @@ const TabRuntime = memo(function TabRuntime({
     (from: string) => sendRpc({ cmd: "workspace_rules_copy", from }),
     [sendRpc],
   );
+  /** Records the mutation, sends it under its id, and gives up on it when the request
+   *  never left this window. One path for every session mutation, so none can be sent
+   *  without an id and none can outlive a lost message.
+   *
+   *  The command is derived from the recorded request by default, which is the same call
+   *  the retry driver makes: the click cannot send one thing while the retry repeats
+   *  another. Only a duplicate passes a builder, because its transcript is generated at
+   *  click time and is deliberately not kept in the intent. */
+  const startSessionMutation = useCallback(
+    (ask: SessionMutationAsk, build?: (requestId: string) => OutgoingCommand) => {
+      const workspaceDir = state.settings?.workspaceDir;
+      const { requestId, request } = onSessionIntent(workspaceDir, ask);
+      const command = build ? build(requestId) : mutationCommand(request, requestId);
+      if (command === null) return;
+      void sendRpc(command).then((sent) => {
+        if (!sent) onSessionIntentFailed(workspaceDir, requestId);
+      });
+    },
+    [onSessionIntent, onSessionIntentFailed, sendRpc, state.settings?.workspaceDir],
+  );
+
   const newChat = useCallback(() => {
     // One workspace mutation at a time: the shortcut must not stack creates behind a
-    // delete that is still waiting for its settling snapshot.
+    // delete that is still waiting for its answer.
     if (sessionsMutation !== null) return;
     clearAbortDraft();
     // Composer state belongs to the old conversation — drop it now so a
     // half-typed draft can't leak into the fresh session.
     setDraft("");
     setPendingImages([]);
-    // Lock the workspace NOW, not when the daemon's `creating` echo arrives: that
-    // round-trip leaves every New chat control reading idle, and a double click in
-    // the gap mints a second session. A name-less intent hides no row.
-    const workspaceDir = state.settings?.workspaceDir;
-    if (workspaceDir) onSessionIntent(workspaceDir, "create");
-    // The transcript clear comes from the daemon's $session_loaded reply —
-    // clearing optimistically here orphans the UI on a blank screen when the
-    // RPC fails while the backend still points at the old session.
-    rpcSend({ tabId, cmd: "new_chat" }).catch((err) => {
-      recordFrontendFailure("frontend.new_chat_failed", err);
-      dispatch({
-        t: "push_notice",
-        text: `Couldn't start a new chat: ${messageOf(err)}. Your current conversation is untouched.`,
-        severity: "error",
-      });
-    });
-  }, [clearAbortDraft, onSessionIntent, sessionsMutation, state.settings?.workspaceDir, tabId]);
+    // The transcript clear comes from the daemon's $session_loaded reply — clearing
+    // optimistically here orphans the UI on a blank screen when the request is lost
+    // while the backend still points at the old session.
+    startSessionMutation({ kind: "create", origin: "new-chat" });
+  }, [clearAbortDraft, sessionsMutation, startSessionMutation]);
 
   const pickWorkspace = useCallback(async () => {
     // Browsing ends in a workspace switch, so it is locked like the picker.
@@ -4865,19 +4905,17 @@ const TabRuntime = memo(function TabRuntime({
         appendNotice(t("app.toast.emptySession"));
         return;
       }
-      const workspaceDir = state.settings?.workspaceDir;
-      if (workspaceDir) onSessionIntent(workspaceDir, "create");
-      sendRpc({ cmd: "duplicate_session", markdown: md, enabled, subagents });
-      appendNotice(t("app.toast.duplicatedSession"), "success");
+      // No success notice here: the clone exists when the backend says it minted one,
+      // which is what the answered snapshot carries.
+      startSessionMutation({ kind: "create", origin: "duplicate" }, (requestId) => ({
+        cmd: "duplicate_session",
+        markdown: md,
+        enabled,
+        subagents,
+        requestId,
+      }));
     },
-    [
-      appendNotice,
-      onSessionIntent,
-      sessionsMutation,
-      state.messages,
-      state.settings?.workspaceDir,
-      sendRpc,
-    ],
+    [appendNotice, sessionsMutation, startSessionMutation, state.messages],
   );
 
   // Sessions whose agent is ACTIVELY RUNNING (a turn in flight) in any tab on
@@ -4918,18 +4956,9 @@ const TabRuntime = memo(function TabRuntime({
     onBusyChange(tabId, state.busy);
   }, [onBusyChange, tabId, state.busy]);
 
-  // A mutation whose settling snapshot never arrives must not hide a row forever.
-  // One bounded request per intent asks the daemon for the truth; the store's
-  // content rule (and its escape) is what actually decides visibility.
-  const reconciledIntentRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (sessionIntentId === null || reconciledIntentRef.current === sessionIntentId) return;
-    const timer = window.setTimeout(() => {
-      reconciledIntentRef.current = sessionIntentId;
-      requestSessionList(tabId);
-    }, INTENT_RECONCILE_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [sessionIntentId, tabId]);
+  // A mutation whose settling snapshot never arrives must not hide a row forever. The
+  // re-send of an unanswered request lives in App, once for the whole store, so a
+  // channel never re-asks on its own and never decides a hide is done.
 
   // The right panel reaches the transcript only through its Events tab, which reads
   // turns and stamps, never streamed text. A revision-keyed array keeps memo() able
@@ -5077,25 +5106,17 @@ const TabRuntime = memo(function TabRuntime({
         appendNotice(t("app.deleteRunningRefused"), "warning");
         return;
       }
-      onSessionIntent(state.settings?.workspaceDir, "delete", name);
-      sendRpc({ cmd: "session_delete", name });
+      // The id rides the request, so only the daemon's answer to THIS delete lifts
+      // the row. A request that never left this window lifts it straight away.
+      startSessionMutation({ kind: "delete", name });
     },
-    [
-      appendNotice,
-      onSessionIntent,
-      runningSessions,
-      sessionsMutation,
-      state.settings?.workspaceDir,
-      sendRpc,
-    ],
+    [appendNotice, runningSessions, sessionsMutation, startSessionMutation],
   );
 
   const clearSessions = useCallback(() => {
     if (sessionsMutation !== null) return;
-    // Echo the exact names being hidden so the daemon can settle every one even
-    // if its own workspace listing misses some — otherwise the rows stay hidden
-    // forever and the app looks wedged. The split is the same rule the confirm
-    // dialog counted with, so what it promised and what rides the request match.
+    // The split the confirm dialog counted with rides the request, so what it promised
+    // and what is deleted match, and the answer settles every hidden row under one id.
     const { doomed, kept } = clearPartition(sessions, runningSessions);
     // Nothing deletable: say so rather than start a clear that can never settle.
     if (doomed.length === 0) {
@@ -5105,17 +5126,8 @@ const TabRuntime = memo(function TabRuntime({
     // `kept` stays visible through the whole clear: those rows are not deleted.
     // It also rides the request, so the daemon cannot delete a session this
     // dialog told the user would survive even when its live view disagrees.
-    onSessionIntent(state.settings?.workspaceDir, "clear", undefined, kept);
-    sendRpc({ cmd: "session_clear", names: doomed, keep: kept });
-  }, [
-    appendNotice,
-    onSessionIntent,
-    runningSessions,
-    sessions,
-    sessionsMutation,
-    state.settings?.workspaceDir,
-    sendRpc,
-  ]);
+    startSessionMutation({ kind: "clear", names: doomed, keep: kept });
+  }, [appendNotice, runningSessions, sessions, sessionsMutation, startSessionMutation]);
 
   const reorderSession = useCallback(
     (name: string) => {
@@ -6603,8 +6615,6 @@ type SessionView = {
   mutation: SessionMutation | null;
   pendingDeleteCount: number;
   confirmed: boolean;
-  /** Id of the mutation in flight, so a channel reconciles once per intent. */
-  openIntentId: number | null;
 };
 
 const EMPTY_SESSION_VIEW: SessionView = {
@@ -6612,7 +6622,6 @@ const EMPTY_SESSION_VIEW: SessionView = {
   mutation: null,
   pendingDeleteCount: 0,
   confirmed: false,
-  openIntentId: null,
 };
 
 export function App() {
@@ -6686,17 +6695,15 @@ export function App() {
     sessionsStoreRef.current = next;
     if (changed) setSessionsStore(next);
   }, []);
+  /** Records a mutation the user asked for and returns the id the daemon will answer it
+   *  under, plus the record that id rides on the wire. The caller sends BOTH, so what the
+   *  click requests and what a retry repeats are one record, not two. */
   const beginSessionIntent = useCallback(
-    (
-      workspaceDir: string | undefined,
-      kind: SessionMutation["kind"],
-      name?: string,
-      keep?: readonly string[],
-    ) => {
-      commitSessionsStore(
-        beginIntent(sessionsStoreRef.current, workspaceDir, { kind, name, keep }),
-        true,
-      );
+    (workspaceDir: string | undefined, ask: SessionMutationAsk): SessionIntentRecord => {
+      const requestId = newSessionRequestId();
+      const record = { ...ask, requestId };
+      commitSessionsStore(beginIntent(sessionsStoreRef.current, workspaceDir, record), true);
+      return { requestId, request: intentRecord(record) };
     },
     [commitSessionsStore],
   );
@@ -6731,7 +6738,6 @@ export function App() {
         mutation: mutationFor(sessionsStore, tab.workspaceDir),
         pendingDeleteCount: hiddenNames(sessionsStore, tab.workspaceDir).length,
         confirmed: sessionsEntry(sessionsStore, tab.workspaceDir).confirmed,
-        openIntentId: openIntentId(sessionsStore, tab.workspaceDir),
       });
     }
     return views;
@@ -6927,6 +6933,80 @@ export function App() {
     }
   }, []);
 
+  /** Drops a request the daemon never answered, so its rows come back instead of staying
+   *  hidden behind a message that was lost. The one give-up path: it is always visible. */
+  const giveUpSessionIntent = useCallback(
+    (workspaceDir: string | undefined, requestId: string) => {
+      const key = normalizeWorkspacePath(workspaceDir);
+      const { store, abandoned } = abandonIntent(sessionsStoreRef.current, key, requestId);
+      if (!abandoned) return;
+      commitSessionsStore(store, true);
+      recordFrontendFailure(
+        "frontend.session_mutation_unanswered",
+        new Error(`no answer for ${requestId}`),
+      );
+      // Say it on a channel of the workspace that gave up, not wherever the user happens
+      // to be looking: the rows that came back are that workspace's.
+      const target =
+        tabsRef.current.find((tab) => normalizeWorkspacePath(tab.workspaceDir) === key)?.id ??
+        activeTabIdRef.current;
+      if (target) {
+        deliverToTab(target, {
+          t: "push_notice",
+          text: t("app.sessionMutationUnconfirmed"),
+          severity: "warning",
+        });
+      }
+    },
+    [commitSessionsStore, deliverToTab],
+  );
+
+  // Every open mutation is driven from HERE, once, and not from a channel: a re-send is
+  // the same request under the same id, so N channels could never turn one listing into
+  // several contradictory verdicts. A delete is idempotent, so re-sending is safe; the
+  // bound is the only give-up, and giving up reveals the rows and says so.
+  const openMutationKey = useMemo(
+    () =>
+      pendingSessionRequests(sessionsStore)
+        .map((pending) => pending.requestId)
+        .join(" "),
+    [sessionsStore],
+  );
+  useEffect(() => {
+    if (!openMutationKey) return;
+    const tick = () => {
+      for (const pending of pendingSessionRequests(sessionsStoreRef.current)) {
+        const { workspaceDir, requestId, request, attempts } = pending;
+        if (attempts >= MUTATION_RETRY_LIMIT) {
+          giveUpSessionIntent(workspaceDir, requestId);
+          continue;
+        }
+        const channel = tabsRef.current.find(
+          (tab) => normalizeWorkspacePath(tab.workspaceDir) === workspaceDir,
+        );
+        if (!channel) {
+          giveUpSessionIntent(workspaceDir, requestId);
+          continue;
+        }
+        commitSessionsStore(
+          noteIntentAttempt(sessionsStoreRef.current, workspaceDir, requestId),
+          false,
+        );
+        // Only what `mutationCommand` can rebuild from the recorded request is re-sent; a
+        // duplicate spends its budget waiting, because its transcript is not in the intent.
+        const command = mutationCommand(request, requestId);
+        if (command === null) continue;
+        void rpcSend({ tabId: channel.id, ...command }).catch((err) =>
+          recordFrontendFailure("frontend.session_mutation_failed", err, {
+            cmd: command.cmd,
+          }),
+        );
+      }
+    };
+    const timer = window.setInterval(tick, MUTATION_RETRY_MS);
+    return () => window.clearInterval(timer);
+  }, [openMutationKey, commitSessionsStore, giveUpSessionIntent]);
+
   const registerDispatch = useCallback((tabId: string, d: TabDispatcher | null) => {
     if (d) {
       dispatchersRef.current.set(tabId, d);
@@ -7116,11 +7196,6 @@ export function App() {
                 },
               });
               const openedSession = ev.activeSession ?? ev.sessions?.[0];
-              // A fresh channel's session is not on disk yet, so record the create
-              // here, where the workspace it belongs to is known.
-              if (ev.creating === true && openedSession && ev.workspaceDir) {
-                beginSessionIntent(ev.workspaceDir, "create", openedSession);
-              }
               setTabs((prev) => {
                 const idx = prev.findIndex((t) => t.id === tabId);
                 if (idx === -1) {
@@ -7377,7 +7452,12 @@ export function App() {
             if (ev.type === "$sessions" && tabId) {
               tracker.mark("sessions_list_received", {
                 tabId,
-                details: { count: ev.items.length, epoch: ev.epoch, revision: ev.revision },
+                details: {
+                  count: ev.items.length,
+                  epoch: ev.epoch,
+                  revision: ev.revision,
+                  answers: ev.answers?.length ?? 0,
+                },
               });
               // The store is the ONLY handler: no channel keeps its own copy, so one
               // snapshot updates every channel of the workspace at once.
@@ -7385,9 +7465,18 @@ export function App() {
               if (ws) {
                 const result = applySessionsSnapshot(sessionsStoreRef.current, ws, ev);
                 commitSessionsStore(result.store, result.changed);
-                // A hide the daemon never settled: ask for the authoritative list
-                // once rather than keep a row hidden forever.
-                if (result.escaped.length > 0) requestSessionList(tabId);
+                // A duplicate is confirmed by the same answer that settles its intent:
+                // the notice states the backend minted this session, not that we asked.
+                for (const settled of result.answered) {
+                  const { request } = settled;
+                  if (request.kind !== "create" || request.origin !== "duplicate") continue;
+                  if (!settled.answer.created) continue;
+                  deliverToTab(tabId, {
+                    t: "push_notice",
+                    text: t("app.toast.duplicatedSession"),
+                    severity: "success",
+                  });
+                }
               }
               return;
             }
@@ -7510,9 +7599,8 @@ export function App() {
   useEffect(() => {
     if (!activeTabId) return;
     const onFocus = () => {
-      // An open mutation is settled by its own snapshot, and every extra listing counts
-      // as one more that did not confirm its hide. The bounded intent reconcile already
-      // covers a hide that never settles, so this one stands down.
+      // A mutation in flight is answered by its own request id, so a listing here would
+      // only waste a walk over the store and land a snapshot the mutation cannot use.
       if (hasOpenSessionIntent(sessionsStoreRef.current)) return;
       const now = Date.now();
       if (!focusRefreshDue(lastFocusRefreshRef.current, now)) return;
@@ -7707,6 +7795,7 @@ export function App() {
           registerDispatch={registerDispatch}
           sessionView={sessionViewFor(t.workspaceDir)}
           onSessionIntent={beginSessionIntent}
+          onSessionIntentFailed={giveUpSessionIntent}
           onSessionPatch={patchSessionRow}
           onWorkspaceInitialized={markWorkspaceInitialized}
           onNewTab={openTab}

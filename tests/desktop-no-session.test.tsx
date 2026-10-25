@@ -28,6 +28,14 @@ const settle = (ms = 40) =>
     await new Promise((r) => setTimeout(r, ms));
   });
 
+/** The id the app sent with its most recent `cmd`, which is what the daemon answers. */
+function lastRequestId(cmd: "session_delete" | "session_clear" | "new_chat"): string {
+  const calls = sent.filter((command) => command.cmd === cmd);
+  const id = calls[calls.length - 1]?.requestId;
+  if (typeof id !== "string") throw new Error(`no requestId on ${cmd}`);
+  return id;
+}
+
 /** Boot one active tab bound to session "A" (which has two messages). */
 async function startupWithSessionA() {
   await feed({ type: "$connected" });
@@ -171,7 +179,6 @@ describe("desktop — no-session main-area state", () => {
         epoch: "e1",
         revision: 2,
         items: [],
-        settledDeletes: [{ name: "A", removed: true }],
       },
       "t1",
     );
@@ -202,11 +209,12 @@ describe("desktop — no-session main-area state", () => {
     });
     await settle(20);
 
-    // In flight — one indicator, in the main area, and nowhere else.
+    // In flight: one indicator, in the main area, and nowhere else.
     expect(screen.getAllByText("Deleting session…")).toHaveLength(1);
     expect(screen.queryByText("Deleting…")).toBeNull();
 
-    // Daemon settles: it detaches the channel and lists no sessions.
+    // Daemon settles: it detaches the channel and lists no sessions. Only the
+    // answer to this delete's own request id may lift the row and the indicator.
     await feed({ type: "$session_bound", name: "" }, "t1");
     await feed(
       {
@@ -214,7 +222,7 @@ describe("desktop — no-session main-area state", () => {
         epoch: "e1",
         revision: 2,
         items: [],
-        settledDeletes: [{ name: "A", removed: true }],
+        answers: [{ requestId: lastRequestId("session_delete") }],
       },
       "t1",
     );
@@ -224,6 +232,60 @@ describe("desktop — no-session main-area state", () => {
     expect(screen.queryByText("Deleting session…")).toBeNull();
     expect(screen.queryByText(/hello from session A/)).toBeNull();
     expect(screen.getByPlaceholderText(/Ask the agent/)).toBeTruthy();
+  });
+
+  it("keeps the row hidden and the throbber running until the delete is answered", async () => {
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await startupWithSessionA();
+    expect(document.querySelectorAll(".session-item")).toHaveLength(1);
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Delete session" }).click();
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Delete" }).click();
+    });
+    await settle(20);
+
+    // The optimistic hide takes the row off before any snapshot lands.
+    expect(document.querySelectorAll(".session-item")).toHaveLength(0);
+    expect(screen.getAllByText("Deleting session…")).toHaveLength(1);
+
+    // Another channel's refresh, a turn ending, a tab closing: every one of these
+    // lists the session again because the folder is still on disk. None of them is
+    // the answer to this delete, so none of them may put the row back.
+    for (let revision = 2; revision <= 4; revision += 1) {
+      await feed(
+        {
+          type: "$sessions",
+          epoch: "e1",
+          revision,
+          items: [{ name: "A", messageCount: 2, mtime: new Date(1).toISOString() }],
+        },
+        "t1",
+      );
+      await settle(10);
+      expect(document.querySelectorAll(".session-item")).toHaveLength(0);
+      expect(screen.getAllByText("Deleting session…")).toHaveLength(1);
+    }
+
+    // The answer lands: one listing, one verdict, and the list agrees with it.
+    await feed(
+      {
+        type: "$sessions",
+        epoch: "e1",
+        revision: 5,
+        items: [],
+        answers: [{ requestId: lastRequestId("session_delete") }],
+      },
+      "t1",
+    );
+    await settle(40);
+    expect(screen.queryByText("Deleting session…")).toBeNull();
+    expect(document.querySelectorAll(".session-item")).toHaveLength(0);
   });
 
   it("creates the session from the message typed in the neutral state", async () => {
@@ -239,7 +301,6 @@ describe("desktop — no-session main-area state", () => {
         epoch: "e1",
         revision: 2,
         items: [],
-        settledDeletes: [{ name: "A", removed: true }],
       },
       "t1",
     );
@@ -268,14 +329,30 @@ describe("desktop — no-session main-area state", () => {
     expect(screen.getByText("Review my latest commit changes")).toBeTruthy();
   });
 
-  it("surfaces a New-chat creation and seeds the channel from the workspace's sessions", async () => {
+  it("surfaces a New-chat creation from the click and seeds the channel from the workspace's sessions", async () => {
     render(<App />);
     await act(async () => {
       await Promise.resolve();
     });
     await startupWithSessionA();
 
-    // New chat opens a fresh channel (t2) on the same workspace.
+    // New chat locks the workspace at the CLICK and asks under a request id; nothing
+    // the daemon does afterwards is needed to start the indicator.
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(".new-btn")!.click();
+    });
+    await settle(20);
+
+    const newChats = sent.filter((command) => command.cmd === "new_chat");
+    expect(newChats).toHaveLength(1);
+    expect(typeof newChats[0]!.requestId).toBe("string");
+
+    // Creation is surfaced the same way deletion is: once, in the main area, with no
+    // second copy in the sidebar header or the empty-state button.
+    expect(screen.getAllByText("Creating session…")).toHaveLength(1);
+    expect(screen.queryByText("Creating…")).toBeNull();
+
+    // The daemon opens the fresh channel for the session it minted.
     await feed(
       {
         type: "$tab_opened",
@@ -284,31 +361,26 @@ describe("desktop — no-session main-area state", () => {
         groupId: "g1",
         sessions: ["B"],
         activeSession: "B",
-        creating: true,
       },
       "t2",
     );
     await settle(20);
 
-    // The fresh channel seeds its sidebar from the workspace cache, so session
-    // A's row never blanks out to "No sessions yet"...
+    // The fresh channel seeds its sidebar from the workspace's list, so session A's
+    // row never blanks out to "No sessions yet".
     expect(screen.queryByText(/No sessions yet/)).toBeNull();
-    // ...and creation is surfaced the same way deletion is: once, in the main
-    // area, with no second copy in the sidebar header or the empty-state button.
-    expect(screen.getAllByText("Creating session…")).toHaveLength(1);
-    expect(screen.queryByText("Creating…")).toBeNull();
 
-    // The channel's first snapshot settles the indicator. Same epoch as the seed:
-    // one daemon lifetime produced both, and only a restart resets the epoch.
+    // The minted channel's own listing answers the request and carries the session.
     await feed(
       {
         type: "$sessions",
         epoch: "e1",
         revision: 2,
         items: [
-          { name: "A", messageCount: 2, mtime: new Date(1).toISOString() },
           { name: "B", messageCount: 0, mtime: new Date(2).toISOString() },
+          { name: "A", messageCount: 2, mtime: new Date(1).toISOString() },
         ],
+        answers: [{ requestId: lastRequestId("new_chat"), created: "B" }],
       },
       "t2",
     );
@@ -316,57 +388,57 @@ describe("desktop — no-session main-area state", () => {
 
     expect(screen.queryByText("Creating session…")).toBeNull();
     expect(screen.queryByText("Creating…")).toBeNull();
+    // The minted session is on screen beside the one that was already there.
+    expect(document.querySelectorAll('.session-item[title="B"]').length).toBeGreaterThan(0);
+    expect(document.querySelectorAll('.session-item[title="A"]').length).toBeGreaterThan(0);
   });
 
-  it("keeps the create indicator until the minted session is actually listed", async () => {
+  it("keeps the create indicator through listings that do not answer it", async () => {
     render(<App />);
     await act(async () => {
       await Promise.resolve();
     });
     await startupWithSessionA();
 
-    // New chat opens channel t2 for a just-minted session B.
-    await feed(
-      {
-        type: "$tab_opened",
-        workspaceDir: WS,
-        active: true,
-        groupId: "g1",
-        sessions: ["B"],
-        activeSession: "B",
-        creating: true,
-      },
-      "t2",
-    );
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(".new-btn")!.click();
+    });
     await settle(20);
     expect(screen.getByText("Creating session…")).toBeTruthy();
 
-    // A refresh that predates B (another channel's clear-all, a stale read)
-    // must not tear the indicator down: it is waiting for B, not for any reply.
-    await feed(
-      {
-        type: "$sessions",
-        epoch: "e1",
-        revision: 2,
-        items: [{ name: "A", messageCount: 2, mtime: new Date(1).toISOString() }],
-      },
-      "t2",
-    );
-    await settle(40);
-    expect(screen.getByText("Creating session…")).toBeTruthy();
+    // Two listings that even contain a session nobody in this request asked for: the
+    // old rule settled the indicator on exactly this, which is the class of bug that
+    // made the UI claim a mint the backend had not confirmed.
+    for (let revision = 2; revision <= 3; revision += 1) {
+      await feed(
+        {
+          type: "$sessions",
+          epoch: "e1",
+          revision,
+          items: [
+            { name: "B", messageCount: 0, mtime: new Date(2).toISOString() },
+            { name: "A", messageCount: 2, mtime: new Date(1).toISOString() },
+          ],
+        },
+        "t1",
+      );
+      await settle(20);
+      expect(screen.getByText("Creating session…")).toBeTruthy();
+    }
 
-    // The snapshot that lists B is the one that finishes the task.
+    // The answer to this request settles it, and names what was minted.
     await feed(
       {
         type: "$sessions",
         epoch: "e1",
-        revision: 3,
+        revision: 4,
         items: [
-          { name: "A", messageCount: 2, mtime: new Date(1).toISOString() },
           { name: "B", messageCount: 0, mtime: new Date(2).toISOString() },
+          { name: "A", messageCount: 2, mtime: new Date(1).toISOString() },
         ],
+        answers: [{ requestId: lastRequestId("new_chat"), created: "B" }],
       },
-      "t2",
+      "t1",
     );
     await settle(40);
     expect(screen.queryByText("Creating session…")).toBeNull();

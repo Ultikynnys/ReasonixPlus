@@ -913,11 +913,11 @@ describe("loop-truncation-continuation", () => {
       expect(events.find((ev) => ev.role === "done")?.content).toBe("wer completed");
     });
 
-    it("gives up after the continuation cap instead of looping forever", async () => {
-      const responses: FakeResponseShape[] = Array.from({ length: 6 }, () => ({
-        content: "same partial",
-        finish_reason: "length",
-      }));
+    it("keeps continuing for as long as the model keeps truncating", async () => {
+      const responses: FakeResponseShape[] = [
+        ...Array.from({ length: 6 }, () => ({ content: "same partial", finish_reason: "length" })),
+        { content: "and finished" },
+      ];
       const { client, captured } = makeFakeClient(responses, { echoMessages: true });
       const loop = new CacheFirstLoop({
         client,
@@ -929,14 +929,15 @@ describe("loop-truncation-continuation", () => {
       const events: LoopEvent[] = [];
       for await (const ev of loop.step("go")) events.push(ev);
 
-      // Initial call + MAX_TRUNCATION_CONTINUATIONS resumes, then a loud give-up.
-      expect(captured.length).toBe(CacheFirstLoop.MAX_TRUNCATION_CONTINUATIONS + 1);
+      // Six cutoffs in a row, well past the three the old budget allowed: every
+      // one resumes, and the turn ends on the model's own completion.
+      expect(captured.length).toBe(7);
+      expect(events.find((ev) => ev.role === "done")?.content).toBe("and finished");
       expect(
         events
           .filter((ev) => ev.role === "warning")
-          .some((ev) => ev.content?.includes("after 3 continuations")),
-      ).toBe(true);
-      expect(events[events.length - 1]?.role).toBe("done");
+          .some((ev) => ev.content?.includes("continuations")),
+      ).toBe(false);
     });
   });
 });
@@ -1156,7 +1157,7 @@ describe("loop-premature-stop", () => {
       expect(captured.length).toBe(2);
     });
 
-    it("stops nudging after the per-turn budget and ends loudly, not silently", async () => {
+    it("keeps nudging for as long as the model ends mid-task, then finishes on its own answer", async () => {
       const reg = probeRegistry();
       const partial = "Now the remaining verification:";
       const responses: FakeResponseShape[] = [
@@ -1166,9 +1167,8 @@ describe("loop-premature-stop", () => {
             { id: "c1", type: "function", function: { name: "probe", arguments: "{}" } },
           ],
         },
-        { content: partial },
-        { content: partial },
-        { content: partial },
+        ...Array.from({ length: 4 }, () => ({ content: partial })),
+        { content: "All checks passed; the task is complete." },
       ];
       const { client, captured } = makeFakeClient(responses, { echoMessages: true });
       const loop = new CacheFirstLoop({
@@ -1182,15 +1182,17 @@ describe("loop-premature-stop", () => {
       const events: LoopEvent[] = [];
       for await (const ev of loop.step("fix the bug")) events.push(ev);
 
-      // Tool round + first premature final + one call per nudge (the last
-      // premature final ends the turn without another call).
-      expect(captured.length).toBe(CacheFirstLoop.MAX_PREMATURE_STOP_NUDGES + 2);
+      // Tool round, then four premature finals past the two nudges the old
+      // budget allowed, then the model's own completion ends the turn.
+      expect(captured.length).toBe(6);
+      expect(events.find((ev) => ev.role === "done")?.content).toBe(
+        "All checks passed; the task is complete.",
+      );
       expect(
         events
           .filter((ev) => ev.role === "warning")
-          .some((ev) => ev.content?.includes("after 2 continuation prompts")),
-      ).toBe(true);
-      expect(events[events.length - 1]?.role).toBe("done");
+          .some((ev) => ev.content?.includes("continuation prompts")),
+      ).toBe(false);
     });
   });
 });

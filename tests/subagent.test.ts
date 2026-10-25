@@ -28,7 +28,6 @@ import {
   registerSubagentTool,
   resolveSubagentModel,
   spawnSubagent,
-  subagentBudgetHint,
 } from "../src/tools/subagent.js";
 import { registerTodoTool } from "../src/tools/todo.js";
 import {
@@ -205,47 +204,6 @@ describe("registerSubagentTool", () => {
     expect(progress[0]?.iter).toBe(1);
   });
 
-  it("enforces maxToolIters and returns a partial budget result", async () => {
-    const parent = new ToolRegistry();
-    let calls = 0;
-    parent.register({
-      name: "noop",
-      readOnly: true,
-      fn: () => {
-        calls++;
-        return "ok";
-      },
-    });
-    const client = makeClient([
-      ...makeToolCallResponses(3),
-      { content: "Partial review from the evidence already collected." },
-    ]);
-    const { sink, events } = makeSink();
-    const result = await spawnSubagent({
-      client,
-      parentRegistry: parent,
-      system: "review",
-      task: "review",
-      maxToolIters: 2,
-      sink,
-    });
-    expect(calls).toBe(2);
-    expect(result.success).toBe(false);
-    expect(result.budgetExhausted).toBe("tool-iters");
-    expect(result.toolIters).toBe(2);
-    expect(result.output).toContain("Partial review");
-    expect(JSON.parse(formatSubagentResult(result))).toMatchObject({
-      partial: true,
-      budget_exhausted: "tool-iters",
-      max_tool_iters: 2,
-    });
-    expect(events.at(-1)).toMatchObject({
-      kind: "end",
-      budgetExhausted: "tool-iters",
-      maxToolIters: 2,
-    });
-  });
-
   it("stops and trims a degenerating streamed child response", async () => {
     let requestSignal: AbortSignal | undefined;
     const repeated = MATERIAL_REASONING_LOOP.repeat(4);
@@ -294,40 +252,30 @@ describe("registerSubagentTool", () => {
     });
   });
 
-  it("enforces maxElapsedMs for a hanging child request", async () => {
-    const client = silentClient();
-    const started = Date.now();
-    const result = await spawnSubagent({
-      client,
-      parentRegistry: new ToolRegistry(),
-      system: "review",
-      task: "review",
-      maxElapsedMs: 25,
-    });
-    expect(Date.now() - started).toBeLessThan(1000);
-    expect(result.success).toBe(false);
-    expect(result.budgetExhausted).toBe("elapsed");
-    expect(result.error).toMatch(/time budget exhausted/);
-  });
-
   it("ticks elapsed progress while the child waits on a silent provider", async () => {
     // A provider that accepts the request and then says nothing for minutes used to
     // leave the spawn's card frozen at 0s: the wrapper reports on a delta, a tool or a
     // stop, and a request in flight is none of those.
     const client = silentClient();
     const { sink, events } = makeSink();
-    const result = await spawnSubagent({
+    const controller = new AbortController();
+    const run = spawnSubagent({
       client,
       parentRegistry: new ToolRegistry(),
       system: "review",
       task: "review",
       sink,
-      maxElapsedMs: 1300,
+      parentSignal: controller.signal,
     });
+    // Nothing but the heartbeat can report progress on a provider that says
+    // nothing, so the abort lands once a tick has proven it is advancing.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    controller.abort();
+    const result = await run;
     const ticks = events.filter((event) => event.kind === "stream-progress");
     expect(ticks.length).toBeGreaterThan(0);
     expect(ticks.at(-1)?.elapsedMs ?? 0).toBeGreaterThanOrEqual(900);
-    expect(result.budgetExhausted).toBe("elapsed");
+    expect(result.success).toBe(false);
   });
 
   it("survives a progress sink that throws under the heartbeat", async () => {
@@ -338,15 +286,19 @@ describe("registerSubagentTool", () => {
         if (event.kind === "stream-progress") throw new Error("transport closed");
       },
     };
-    const result = await spawnSubagent({
+    const controller = new AbortController();
+    const run = spawnSubagent({
       client: silentClient(),
       parentRegistry: new ToolRegistry(),
       system: "review",
       task: "review",
       sink,
-      maxElapsedMs: 1300,
+      parentSignal: controller.signal,
     });
-    expect(result.budgetExhausted).toBe("elapsed");
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    controller.abort();
+    const result = await run;
+    expect(result.success).toBe(false);
   });
 
   it("surfaces a child-loop error in the structured result + end event", async () => {
@@ -668,49 +620,6 @@ describe("registerSubagentTool", () => {
     const parsed = JSON.parse(out);
     expect(parsed.success).toBe(true);
     expect(parsed.output).toBe("ok");
-  });
-});
-
-describe("subagentBudgetHint", () => {
-  it("stays silent on the first spawn of a session", () => {
-    expect(subagentBudgetHint(1, 120)).toBeNull();
-  });
-
-  it("emits the soft note from the second spawn through the fourth", () => {
-    expect(subagentBudgetHint(2, 240)).toMatch(/\[note: this session has spawned 2 subagents/);
-    expect(subagentBudgetHint(4, 480)).toMatch(/\[note: this session has spawned 4 subagents/);
-  });
-
-  it("escalates to the strong budget hint past five spawns", () => {
-    const out = subagentBudgetHint(5, 600);
-    expect(out).toMatch(/\[budget: this session has now spawned 5 subagents/);
-    expect(out).toMatch(/parallel fan-out or >10-read context blow-up/);
-  });
-
-  it("escalates to the strong hint when cumulative tokens cross 50k even at low spawn count", () => {
-    const out = subagentBudgetHint(2, 60_000);
-    expect(out).toMatch(
-      /\[budget: this session has now spawned 2 subagents totalling 60000 tokens/,
-    );
-  });
-});
-
-describe("registerSubagentTool — per-session budget feedback", () => {
-  it("appends nothing on the first spawn, the soft note on the second, and the strong hint on the fifth", async () => {
-    const parent = new ToolRegistry();
-    const client = makeClient([{ content: "answer" }]);
-    registerSubagentTool(parent, { client });
-
-    const outs: string[] = [];
-    for (let i = 0; i < 5; i++) {
-      outs.push(await parent.dispatch("spawn_subagent", JSON.stringify({ task: `q${i}` })));
-    }
-
-    expect(outs[0]).not.toMatch(/\[(note|budget):/);
-    expect(outs[1]).toMatch(/\[note: this session has spawned 2 subagents/);
-    expect(outs[2]).toMatch(/\[note: this session has spawned 3 subagents/);
-    expect(outs[3]).toMatch(/\[note: this session has spawned 4 subagents/);
-    expect(outs[4]).toMatch(/\[budget: this session has now spawned 5 subagents/);
   });
 });
 
@@ -1235,48 +1144,6 @@ describe("spawnSubagent allowedTools", () => {
   });
 });
 
-describe("iteration-cap recovery", () => {
-  it("a child that exhausts the iteration cap returns an attributed partial, never silence", async () => {
-    const parent = new ToolRegistry();
-    parent.register({ name: "noop", readOnly: true, fn: () => "ok" });
-    // Distinct args per call: the storm breaker must not end this turn first —
-    // the submission is exercising the cap, not the repeat guard.
-    const { client } = makeFakeClient(
-      Array.from({ length: 200 }, (_, i) => ({
-        content: "",
-        tool_calls: [
-          {
-            id: `call_${i}`,
-            type: "function" as const,
-            function: { name: "noop", arguments: JSON.stringify({ i }) },
-          },
-        ],
-      })),
-    );
-
-    const result = await spawnSubagent({
-      client,
-      parentRegistry: parent,
-      system: "gather facts",
-      task: "keep scanning",
-    });
-
-    // Before the unattended ladder this was the unattributable
-    // "subagent ended without producing an answer" with empty output.
-    expect(result.success).toBe(false);
-    expect(result.forcedSummary).toBe(true);
-    expect(result.output).toMatch(/iteration budget/);
-    expect(result.error).toBeUndefined();
-    expect(result.stopReason ?? result.output).toMatch(/iteration budget/);
-    expect(result.toolIters).toBeGreaterThanOrEqual(CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN);
-
-    const envelope = JSON.parse(formatSubagentResult(result));
-    expect(envelope.partial).toBe(true);
-    expect(envelope.output).toMatch(/iteration budget/);
-    expect(envelope.note).toMatch(/force-summarized/i);
-  }, 120_000);
-});
-
 describe("repetition guard — always on for children", () => {
   it("terminates a child that re-thinks the identical thought instead of returning nothing", async () => {
     const parent = new ToolRegistry();
@@ -1392,14 +1259,13 @@ describe("inherited loop options", () => {
   it("inherits every loop setting and forces compaction on", () => {
     // `defaults` is passed explicitly so this is a policy assertion, not a read of the
     // developer machine's config: an inherited value wins, config/env fills the gap.
-    const defaults = { maxIterPerTurn: 50, maxOutputTokens: 8_192 };
+    const defaults = { maxOutputTokens: 8_192 };
     // A child must not depend on the loop's DEFAULT for compaction: if that default
     // ever flipped, an unattended run would have no compaction and nobody to press
     // it. No caller can switch it off either — the policy has one implementation.
     expect(childLoopOptions(undefined, defaults)).toEqual({
       ctxMaxOverride: undefined,
       autoCompactTriggerRatio: undefined,
-      maxIterPerTurn: 50,
       maxOutputTokens: 8_192,
       hooks: undefined,
       hookCwd: undefined,
@@ -1410,7 +1276,6 @@ describe("inherited loop options", () => {
         {
           ctxMaxOverride: 300_000,
           autoCompactTriggerRatio: 0.5,
-          maxIterPerTurn: 12,
           maxOutputTokens: 1_024,
           hooks: [],
           hookCwd: "C:/ws",
@@ -1420,7 +1285,6 @@ describe("inherited loop options", () => {
     ).toEqual({
       ctxMaxOverride: 300_000,
       autoCompactTriggerRatio: 0.5,
-      maxIterPerTurn: 12,
       maxOutputTokens: 1_024,
       hooks: [],
       hookCwd: "C:/ws",

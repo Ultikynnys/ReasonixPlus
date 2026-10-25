@@ -26,8 +26,6 @@ const usage: UsageStats = {
 const settings: Settings = {
   reasoningEffort: "high",
   editMode: "follow",
-  maxIterPerTurn: 50,
-  maxIterPerTurnOverride: null,
   workspaceDir: "/repo",
   recentWorkspaces: [],
   model: "deepseek-reasoner",
@@ -1328,8 +1326,6 @@ describe("ContextPanel files", () => {
         settings={{
           ...settings,
           contextTokens: 500_000,
-          maxIterPerTurn: 75,
-          maxIterPerTurnOverride: 75,
         }}
         usage={usage}
         mcpSpecs={[]}
@@ -1366,21 +1362,6 @@ describe("ContextPanel files", () => {
     expect(resetBtn).toBeTruthy();
     fireEvent.click(resetBtn);
     expect(onSaveSettings).toHaveBeenCalledWith({ contextTokens: null });
-
-    const iterationSlider = screen.getByRole("slider", { name: "Max iterations" });
-    expect(iterationSlider.getAttribute("min")).toBe("50");
-    expect(iterationSlider.getAttribute("max")).toBe("100");
-    expect(iterationSlider.getAttribute("step")).toBe("1");
-    expect((iterationSlider as HTMLInputElement).value).toBe("75");
-    expect(screen.getByText("75 iters")).toBeTruthy();
-
-    fireEvent.change(iterationSlider, { target: { value: "90" } });
-    fireEvent.pointerUp(iterationSlider);
-    expect(onSaveSettings).toHaveBeenCalledWith({ maxIterPerTurn: 90 });
-
-    const iterationReset = screen.getByTitle("Reset to environment or default (50)");
-    fireEvent.click(iterationReset);
-    expect(onSaveSettings).toHaveBeenCalledWith({ maxIterPerTurn: null });
   });
 
   it("hides Ollama generation controls when neither endpoint is Ollama", () => {
@@ -1449,10 +1430,10 @@ describe("ContextPanel files", () => {
     const section = screen.getByTestId("ollama-generation-settings");
     expect(section).toBeTruthy();
 
-    // Placed after Max iterations.
-    const maxIter = screen.getByRole("slider", { name: "Max iterations" });
+    // Placed after the last settings slider.
+    const compactAt = screen.getByRole("slider", { name: "Auto-compact at" });
     expect(
-      maxIter.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING,
+      compactAt.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
 
     // Commit a temperature edit on blur.

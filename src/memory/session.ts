@@ -1156,29 +1156,30 @@ export function deleteSession(name: string): boolean {
   }
 }
 
-/** Delete many sessions, yielding to the event loop between chunks so a large
- *  clear never blocks the daemon's RPC reader. Persists the directory index once
- *  at the end, not once per session. */
+/** Delete many sessions, yielding between chunks so a large clear never blocks the
+ *  daemon's RPC reader. Each chunk retires its names from the directory index before
+ *  the yield, so a listing taken mid-clear cannot report a session already removed. */
 export async function deleteSessions(
   names: readonly string[],
   chunkSize = 24,
 ): Promise<{ name: string; removed: boolean }[]> {
   const settled: { name: string; removed: boolean }[] = [];
   for (let start = 0; start < names.length; start += chunkSize) {
+    const dropped: string[] = [];
     for (const name of names.slice(start, start + chunkSize)) {
       try {
         // Already-absent names count as settled-removed, so a tab bound to a
         // dangling session is still replaced.
-        settled.push({ name, removed: removeSessionFiles(name) || !sessionExists(name) });
+        const removed = removeSessionFiles(name) || !sessionExists(name);
+        if (removed) dropped.push(name);
+        settled.push({ name, removed });
       } catch {
         settled.push({ name, removed: false });
       }
     }
+    sessionDirectoryIndex.removeMany(dropped);
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  sessionDirectoryIndex.removeMany(
-    settled.filter((result) => result.removed).map((result) => result.name),
-  );
   return settled;
 }
 

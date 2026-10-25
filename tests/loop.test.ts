@@ -602,7 +602,6 @@ describe("CacheFirstLoop (non-streaming)", () => {
       prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
       tools: reg,
       stream: false,
-      maxToolIters: 16,
     });
 
     // Call abort AFTER the first tool event fires — simulates the user
@@ -665,7 +664,6 @@ describe("CacheFirstLoop (non-streaming)", () => {
       prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
       tools: reg,
       stream: false,
-      maxToolIters: 8,
     });
 
     const stepPromise = (async () => {
@@ -728,7 +726,6 @@ describe("CacheFirstLoop (non-streaming)", () => {
       prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
       tools: reg,
       stream: false,
-      maxToolIters: 8,
     });
 
     const stepPromise = (async () => {
@@ -787,7 +784,6 @@ describe("CacheFirstLoop (non-streaming)", () => {
       prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
       tools: reg,
       stream: false,
-      maxToolIters: 16,
     });
 
     // Turn 1 — abort mid-flight.
@@ -840,7 +836,6 @@ describe("CacheFirstLoop (non-streaming)", () => {
       prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
       tools: reg,
       stream: false,
-      maxToolIters: 16,
     });
 
     let aborted = false;
@@ -959,7 +954,6 @@ describe("CacheFirstLoop (non-streaming)", () => {
       prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
       tools: reg,
       stream: false,
-      maxToolIters: 8,
     });
 
     const events: { role: string; forcedSummary?: boolean; content?: string }[] = [];
@@ -1024,7 +1018,6 @@ describe("CacheFirstLoop (non-streaming)", () => {
       tools: reg,
       stream: false,
       repetitionGuardEnabled: true,
-      maxToolIters: 8,
     });
 
     const events: { role: string; forcedSummary?: boolean; content?: string }[] = [];
@@ -1580,7 +1573,6 @@ describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
       prefix: new ImmutablePrefix({ system: "s", toolSpecs: tools.specs() }),
       tools,
       stream: true,
-      maxToolIters: 1,
     });
 
     const deltas: Array<{ name?: string; chars?: number }> = [];
@@ -1684,7 +1676,6 @@ describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
       client,
       prefix: new ImmutablePrefix({ system: "s" }),
       stream: true,
-      maxToolIters: 1,
     });
 
     const channels: Array<"reasoning" | "content"> = [];
@@ -1722,7 +1713,6 @@ describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
       prefix: new ImmutablePrefix({ system: "s" }),
       stream: true,
       repetitionGuardEnabled: true,
-      maxToolIters: 1,
     });
 
     const events: LoopEvent[] = [];
@@ -1771,7 +1761,6 @@ describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
       prefix: new ImmutablePrefix({ system: "s" }),
       stream: true,
       repetitionGuardEnabled: true,
-      maxToolIters: 1,
     });
 
     const events: LoopEvent[] = [];
@@ -1800,7 +1789,6 @@ describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
       prefix: new ImmutablePrefix({ system: "s" }),
       stream: true,
       repetitionGuardEnabled: true,
-      maxToolIters: 1,
     });
 
     const events: LoopEvent[] = [];
@@ -1834,7 +1822,6 @@ describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
       prefix: new ImmutablePrefix({ system: "s" }),
       stream: true,
       repetitionGuardEnabled: true,
-      maxToolIters: 1,
     });
 
     const events: LoopEvent[] = [];
@@ -3453,32 +3440,6 @@ describe("CacheFirstLoop — ollama length-truncation continuation", () => {
     ).toBe(true);
   });
 
-  it("gives up (does not loop forever) when the model keeps truncating", async () => {
-    const { fetch, chatCalls } = ollamaFetch("Hel", "lo", true);
-    const client = new DeepSeekClient({
-      baseUrl: "http://localhost:11434/v1",
-      allowMissingKey: true,
-      fetch,
-    });
-    const loop = new CacheFirstLoop({
-      client,
-      prefix: new ImmutablePrefix({ system: "be brief" }),
-      stream: true,
-      model: "ollama/qwen3:32b",
-    });
-
-    const events: LoopEvent[] = [];
-    for await (const ev of loop.step("hello")) events.push(ev);
-
-    // Cap of 3 continuations: initial + 3 continuations, then give up.
-    expect(chatCalls()).toBe(CacheFirstLoop.MAX_TRUNCATION_CONTINUATIONS + 1);
-    expect(
-      events
-        .filter((ev) => ev.role === "warning")
-        .some((ev) => ev.content?.includes("after 3 continuations")),
-    ).toBe(true);
-  });
-
   it("does not continue when a tool call was cut mid-stream", async () => {
     // First call truncates carrying a partial tool call (no result) — the loop
     // must NOT append a phantom tool_call and re-request; it ends the turn.
@@ -3682,31 +3643,6 @@ describe("CacheFirstLoop — thinking-only completion continuation", () => {
     expect(events.some((ev) => ev.role === "done")).toBe(true);
   });
 
-  it("never ends the turn empty: after the bounded ladder it shows the reasoning as the answer", async () => {
-    const { fetch, chatCalls } = thinkingOnlyFetch([
-      { thinking: THINKING_ONLY },
-      { thinking: THINKING_ONLY },
-      { thinking: THINKING_ONLY },
-      { thinking: THINKING_ONLY },
-    ]);
-    const loop = makeThinkingOnlyLoop(fetch);
-
-    const events: LoopEvent[] = [];
-    for await (const ev of loop.step("hello")) events.push(ev);
-
-    // One refused attempt plus one per recovery stage, and no more.
-    expect(chatCalls()).toBe(CacheFirstLoop.MAX_THINKING_ONLY_RECOVERIES + 1);
-    expect(events.find((ev) => ev.role === "assistant_final")?.content).toBe(THINKING_ONLY);
-    expect(warningsOf(events).some((w) => w.includes("shown above as the answer"))).toBe(true);
-    // The promoted text is the turn's single assistant entry, and the turn ends
-    // normally instead of stranding the conversation with nothing.
-    const assistants = loop.log.entries.filter((m) => m.role === "assistant");
-    expect(assistants).toHaveLength(1);
-    expect(assistants[0]?.reasoning_content).toBe(THINKING_ONLY);
-    expect(events.some((ev) => ev.role === "done")).toBe(true);
-    expect(events.some((ev) => ev.role === "error")).toBe(false);
-  });
-
   it("rejects degenerate single-character thinking fragments like 'p' immediately without completing the task", async () => {
     const { fetch, chatCalls } = thinkingOnlyFetch([{ thinking: " p" }]);
     const client = new DeepSeekClient({
@@ -3741,23 +3677,7 @@ describe("CacheFirstLoop — thinking-only completion continuation", () => {
   });
 });
 
-describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
-  // Build a client that always returns a tool call — the loop would
-  // run forever without the iteration cap. Use unique call IDs AND
-  // unique arguments so the storm breaker (threshold=3 for identical
-  // (name, args) tuples) doesn't fire first.
-  const infiniteToolResponses = (count: number): FakeResponseShape[] =>
-    Array.from({ length: count }, (_, i) => ({
-      content: "",
-      tool_calls: [
-        {
-          id: `call_${i}`,
-          type: "function" as const,
-          function: { name: "noop", arguments: JSON.stringify({ i }) },
-        },
-      ],
-    }));
-
+describe("CacheFirstLoop — runaway loop guards", () => {
   const registerNoop = (): ToolRegistry => {
     const tools = new ToolRegistry();
     tools.register({
@@ -3769,278 +3689,9 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
     return tools;
   };
 
-  // Mirrors the loop's grace grant: max(5, round(cap / 2)) extra iterations.
-  const graceFor = (cap: number) => Math.max(5, Math.round(cap / 2));
-
-  it("grants a grace window on a productive turn, then pauses with the log intact", async () => {
-    const cap = CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN;
-    const hardCap = cap + graceFor(cap);
-    const fetchMock = fakeFetch(infiniteToolResponses(hardCap + 10));
-    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock });
-    const tools = registerNoop();
-    const loop = new CacheFirstLoop({
-      client,
-      prefix: new ImmutablePrefix({ system: "be brief", toolSpecs: tools.specs() }),
-      tools,
-      stream: false,
-    });
-
-    const events: any[] = [];
-    for await (const ev of loop.step("do stuff forever")) {
-      events.push(ev);
-    }
-
-    // Productive turn: the cap fires at maxIterPerTurn but grants a grace
-    // window instead of force-summarizing.
-    const graceEv = events.find(
-      (e) => e.role === "warning" && /Continuing up to/.test(e.content ?? ""),
-    );
-    expect(graceEv).toBeDefined();
-    expect(graceEv!.content).toContain(String(cap));
-    expect(graceEv!.content).toContain(String(hardCap));
-
-    // Grace exhausts: the turn PAUSES. No forced summary, no done event,
-    // the log stays intact so the next "continue" resumes with full state.
-    const pauseEv = events.find((e) => e.role === "warning" && /paused/.test(e.content ?? ""));
-    expect(pauseEv).toBeDefined();
-    expect(pauseEv!.content).toContain(String(hardCap));
-    expect(events.find((e) => e.role === "done")).toBeUndefined();
-    expect(events.find((e) => e.role === "assistant_final" && e.forcedSummary)).toBeUndefined();
-
-    // One API call per iter; the grace-grant iteration (the cap check at
-    // maxIterPerTurn) consumes no request. cap + grace - 1 calls, zero
-    // summary calls.
-    expect(fetchMock).toHaveBeenCalledTimes(hardCap - 1);
-  });
-
-  it("respects custom maxIterPerTurn option", async () => {
-    const customCap = 3;
-    const hardCap = customCap + graceFor(customCap);
-    const fetchMock = fakeFetch(infiniteToolResponses(hardCap + 10));
-    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock });
-    const tools = registerNoop();
-    const loop = new CacheFirstLoop({
-      client,
-      prefix: new ImmutablePrefix({ system: "be brief", toolSpecs: tools.specs() }),
-      tools,
-      stream: false,
-      maxIterPerTurn: customCap,
-    });
-
-    const events: any[] = [];
-    for await (const ev of loop.step("do stuff forever")) {
-      events.push(ev);
-    }
-
-    const graceEv = events.find(
-      (e) => e.role === "warning" && /Continuing up to/.test(e.content ?? ""),
-    );
-    expect(graceEv).toBeDefined();
-    expect(graceEv!.content).toContain(String(customCap));
-    expect(graceEv!.content).toContain(String(hardCap));
-    expect(events.find((e) => e.role === "done")).toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledTimes(hardCap - 1);
-  });
-
-  it("grants a FRESH grace window on the turn after a pause", async () => {
-    const customCap = 3;
-    const hardCap = customCap + graceFor(customCap);
-    const fetchMock = fakeFetch(infiniteToolResponses(hardCap * 2 + 10));
-    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock });
-    const tools = registerNoop();
-    const loop = new CacheFirstLoop({
-      client,
-      prefix: new ImmutablePrefix({ system: "be brief", toolSpecs: tools.specs() }),
-      tools,
-      stream: false,
-      maxIterPerTurn: customCap,
-    });
-
-    const all: any[] = [];
-    for await (const ev of loop.step("do stuff forever")) {
-      all.push(ev);
-    }
-    for await (const ev of loop.step("continue")) {
-      all.push(ev);
-    }
-
-    // Both turns hit the cap while productive and each got its OWN grace
-    // grant: proves the latch is per-turn, not a session-wide cap raise.
-    const graceWarnings = all.filter(
-      (e) => e.role === "warning" && /Continuing up to/.test(e.content ?? ""),
-    );
-    expect(graceWarnings).toHaveLength(2);
-    const pauseWarnings = all.filter((e) => e.role === "warning" && /paused/.test(e.content ?? ""));
-    expect(pauseWarnings).toHaveLength(2);
-    expect(all.find((e) => e.role === "done")).toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledTimes((hardCap - 1) * 2);
-  });
-
-  it("stops a stuck-then-productive turn at the cap (no grace window)", async () => {
-    // The turn starts stuck: three IDENTICAL calls trip the storm breaker
-    // (threshold=3) on the third, latching `_turnSelfCorrected` (the stub
-    // + "try something different" continuation happens in-loop). The model
-    // then produces DISTINCT calls, so the turn is productive again, but
-    // the latch is set: at the cap the turn stops instead of being granted a
-    // grace window.
-    const customCap = 6;
-    const responses: FakeResponseShape[] = [
-      ...Array.from({ length: 3 }, () => ({
-        content: "",
-        tool_calls: [
-          {
-            id: "call_0",
-            type: "function" as const,
-            function: { name: "noop", arguments: JSON.stringify({ i: 0 }) },
-          },
-        ],
-      })),
-      ...Array.from({ length: customCap - 3 }, (_, i) => ({
-        content: "",
-        tool_calls: [
-          {
-            id: `call_${i + 3}`,
-            type: "function" as const,
-            function: { name: "noop", arguments: JSON.stringify({ i: i + 3 }) },
-          },
-        ],
-      })),
-      { content: "Here is what I found." },
-    ];
-    const fetchMock = fakeFetch(responses);
-    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock });
-    const tools = registerNoop();
-    const loop = new CacheFirstLoop({
-      client,
-      prefix: new ImmutablePrefix({ system: "be brief", toolSpecs: tools.specs() }),
-      tools,
-      stream: false,
-      maxIterPerTurn: customCap,
-    });
-
-    const events: any[] = [];
-    for await (const ev of loop.step("do stuff forever")) {
-      events.push(ev);
-    }
-
-    const capEv = events.find((e) => e.role === "warning" && /iteration cap/.test(e.content ?? ""));
-    expect(capEv).toBeDefined();
-    expect(capEv!.content).toContain(String(customCap));
-
-    // The cap stopped the turn — no summary call, no done event.
-    expect(events.find((e) => e.role === "done")).toBeUndefined();
-
-    // customCap model requests, no summary call.
-    expect(fetchMock).toHaveBeenCalledTimes(customCap);
-  });
-
-  it("never-ask mode never pauses on the iteration cap — the turn runs past it", async () => {
-    const cap = 3;
-    const hardCap = cap + graceFor(cap);
-    // Unique tool calls past the cap, then a text completion so the turn ends
-    // naturally (the fake client round-robins, so the text must be consumed
-    // before the last tool call would repeat into a storm).
-    const fetchMock = fakeFetch([...infiniteToolResponses(cap + 10), { content: "finally done" }]);
-    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock });
-    const tools = registerNoop();
-    const loop = new CacheFirstLoop({
-      client,
-      prefix: new ImmutablePrefix({ system: "be brief", toolSpecs: tools.specs() }),
-      tools,
-      stream: false,
-      maxIterPerTurn: cap,
-      getEditMode: () => "never-ask",
-    });
-
-    const events: any[] = [];
-    for await (const ev of loop.step("do stuff forever")) {
-      events.push(ev);
-    }
-
-    // The cap fired, noted once, and the turn kept going: no pause warning,
-    // no grace grant (never-ask bypasses before the grace branch), no forced summary.
-    const yoloEv = events.find((e) => e.role === "warning" && /Never Ask/.test(e.content ?? ""));
-    expect(yoloEv).toBeDefined();
-    expect(yoloEv!.content).toContain(String(cap));
-    expect(
-      events.filter((e) => e.role === "warning" && /paused/.test(e.content ?? "")),
-    ).toHaveLength(0);
-    expect(
-      events.filter((e) => e.role === "warning" && /Continuing up to/.test(e.content ?? "")),
-    ).toHaveLength(0);
-    expect(events.find((e) => e.role === "assistant_final" && e.forcedSummary)).toBeUndefined();
-
-    // The turn completed naturally (text response) AFTER passing the cap.
-    expect(events.find((e) => e.role === "done")).toBeDefined();
-    expect(fetchMock).toHaveBeenCalledTimes(cap + 11);
-    expect(fetchMock.mock.calls.length).toBeGreaterThan(hardCap);
-  });
-
-  it("never-ask mode continues past the cap even if an earlier repeat-loop self-correction occurred", async () => {
-    // A prior self-correction event shouldn't prevent never-ask mode from running past
-    // the iteration cap: three identical calls latch `_turnSelfCorrected`, but the
-    // turn then resumes productive unique tool calls. At the cap, never-ask mode bypasses
-    // the cap instead of forcing a summary.
-    const customCap = 6;
-    const responses: FakeResponseShape[] = [
-      ...Array.from({ length: 3 }, () => ({
-        content: "",
-        tool_calls: [
-          {
-            id: "call_0",
-            type: "function" as const,
-            function: { name: "noop", arguments: JSON.stringify({ i: 0 }) },
-          },
-        ],
-      })),
-      ...Array.from({ length: customCap - 2 }, (_, i) => ({
-        content: "",
-        tool_calls: [
-          {
-            id: `call_${i + 3}`,
-            type: "function" as const,
-            function: { name: "noop", arguments: JSON.stringify({ i: i + 3 }) },
-          },
-        ],
-      })),
-      { content: "Here is what I found." },
-    ];
-    const fetchMock = fakeFetch(responses);
-    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock });
-    const tools = registerNoop();
-    const loop = new CacheFirstLoop({
-      client,
-      prefix: new ImmutablePrefix({ system: "be brief", toolSpecs: tools.specs() }),
-      tools,
-      stream: false,
-      maxIterPerTurn: customCap,
-      getEditMode: () => "never-ask",
-    });
-
-    const events: any[] = [];
-    for await (const ev of loop.step("do stuff forever")) {
-      events.push(ev);
-    }
-
-    // Must emit the never-ask cap bypass warning, not the stuck forced summary.
-    const yoloEv = events.find((e) => e.role === "warning" && /Never Ask/.test(e.content ?? ""));
-    expect(yoloEv).toBeDefined();
-    expect(yoloEv!.content).toContain(String(customCap));
-    expect(
-      events.find((e) => e.role === "warning" && /forcing a summary/.test(e.content ?? "")),
-    ).toBeUndefined();
-    expect(
-      events.find((e) => e.role === "assistant_final" && e.forcedSummary === true),
-    ).toBeUndefined();
-    expect(events.find((e) => e.role === "done")).toBeDefined();
-    // 3 storm iters (first 2 normal + 1 suppressed self-correction nudge) + (customCap - 2) tool calls + 1 final text
-    expect(fetchMock).toHaveBeenCalledTimes(customCap + 2);
-  });
-
-  it("stops an actively repeating loop in never-ask via the storm breaker", async () => {
-    // In never-ask mode, if the model ignores the self-correction nudge and repeats
-    // into a second all-suppressed storm, the storm-breaker guard catches it
-    // and stops the turn immediately.
+  it("stops an actively repeating loop via the storm breaker", async () => {
+    // If the model ignores the self-correction nudge and repeats into a second
+    // all-suppressed storm, the storm-breaker guard catches it and stops the turn.
     const responses: FakeResponseShape[] = [
       // 3 identical calls -> trips first storm -> _turnSelfCorrected latched
       ...Array.from({ length: 3 }, () => ({
@@ -4075,8 +3726,6 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
       prefix: new ImmutablePrefix({ system: "be brief", toolSpecs: tools.specs() }),
       tools,
       stream: false,
-      maxIterPerTurn: 20,
-      getEditMode: () => "never-ask",
     });
 
     const events: any[] = [];
@@ -4087,62 +3736,6 @@ describe("CacheFirstLoop — per-turn iteration cap (#2037)", () => {
     // The storm breaker ends the looping turn with a done event (no summary).
     expect(events.find((e) => e.role === "done")).toBeDefined();
     expect(fetchMock).toHaveBeenCalledTimes(4);
-  });
-
-  it("unattended: asks for the answer at the cap, then force-summarizes with the reason", async () => {
-    const cap = 3;
-    const grace = graceFor(cap);
-    const wrap = CacheFirstLoop.UNATTENDED_WRAP_UP_ITERS;
-    const fetchMock = fakeFetch(infiniteToolResponses(cap + grace + wrap + 10));
-    const client = new DeepSeekClient({ apiKey: "sk-test", fetch: fetchMock });
-    const tools = registerNoop();
-    const loop = new CacheFirstLoop({
-      client,
-      prefix: new ImmutablePrefix({ system: "be brief", toolSpecs: tools.specs() }),
-      tools,
-      stream: false,
-      maxIterPerTurn: cap,
-      unattended: true,
-    });
-
-    const events: any[] = [];
-    for await (const ev of loop.step("do stuff forever")) {
-      events.push(ev);
-    }
-
-    // The wrap-up nudge REPLACES the human's "continue" — no pause text, since
-    // nobody is there to read it and answer it.
-    const wrapEv = events.find(
-      (e) => e.role === "warning" && /no operator attached/.test(e.content ?? ""),
-    );
-    expect(wrapEv).toBeDefined();
-    expect(wrapEv!.content).toContain(String(cap + grace));
-    expect(
-      events.filter((e) => e.role === "warning" && /paused/.test(e.content ?? "")),
-    ).toHaveLength(0);
-
-    // The nudge is a real message in the log, so the model can act on it.
-    expect(
-      loop.log.entries.some(
-        (m) =>
-          m.role === "user" &&
-          typeof m.content === "string" &&
-          /Stop calling tools/.test(m.content),
-      ),
-    ).toBe(true);
-
-    // The stop hands the consumer an answer AND the reason — never silence.
-    const finalEv = events.find((e) => e.role === "assistant_final" && e.forcedSummary === true);
-    expect(finalEv).toBeDefined();
-    expect(finalEv!.content).toMatch(/iteration budget/);
-    const doneEv = events.find((e) => e.role === "done");
-    expect(doneEv).toBeDefined();
-    expect(doneEv!.content).toMatch(/iteration budget/);
-
-    // The wrap window is real work, not just a notice: the turn ran past the
-    // attended hard cap (cap + grace) before it was stopped.
-    expect(fetchMock.mock.calls.length).toBeGreaterThan(cap + grace - 1);
-    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(cap + grace + wrap + 1);
   });
 });
 

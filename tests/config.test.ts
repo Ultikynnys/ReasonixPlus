@@ -47,7 +47,6 @@ import {
   loadFilesystemOutlineThresholdBytes,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
-  loadMaxIterPerTurn,
   loadMimoApiKey,
   loadMimoKeyName,
   loadModel,
@@ -88,7 +87,6 @@ import {
   saveDuplicateSessionTokens,
   saveEditMode,
   saveFeedbackCues,
-  saveMaxIterPerTurn,
   saveModel,
   saveOllamaGenerationPatch,
   saveOpenAIApiKey,
@@ -1349,31 +1347,6 @@ describe("config", () => {
     delete process.env.OLLAMA_TEMPERATURE;
     // biome-ignore lint/performance/noDelete: restore the test process environment
     delete process.env.OLLAMA_TOP_P;
-  });
-
-  it("loadMaxIterPerTurn defaults to 50 when unset", () => {
-    expect(loadMaxIterPerTurn(path)).toBe(50);
-  });
-
-  it("loadMaxIterPerTurn clamps out-of-range values to [50, 100]", () => {
-    writeConfig({ maxIterPerTurn: 20 } as any, path);
-    expect(loadMaxIterPerTurn(path)).toBe(50);
-    writeConfig({ maxIterPerTurn: 150 } as any, path);
-    expect(loadMaxIterPerTurn(path)).toBe(100);
-  });
-
-  it("saveMaxIterPerTurn persists clamped value and clears on null", () => {
-    saveMaxIterPerTurn(75, path);
-    expect(readConfig(path).maxIterPerTurn).toBe(75);
-
-    saveMaxIterPerTurn(20, path);
-    expect(readConfig(path).maxIterPerTurn).toBe(50);
-
-    saveMaxIterPerTurn(120, path);
-    expect(readConfig(path).maxIterPerTurn).toBe(100);
-
-    saveMaxIterPerTurn(null, path);
-    expect(readConfig(path).maxIterPerTurn).toBeUndefined();
   });
 
   it("autoCompact defaults to true and persists either state", () => {

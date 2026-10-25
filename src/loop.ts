@@ -2,12 +2,7 @@ import { flattenText, messageOf, sleep } from "@reasonix/core-utils";
 import { type DeepSeekClient, Usage } from "./client.js";
 import { claimingSession } from "./code/plan-claim.js";
 import { type PlanRecord, type PlanRepository, planRepository } from "./code/plans.js";
-import {
-  type EditMode,
-  type ReasoningEffort,
-  clampAutoCompactTrigger,
-  providerForModel,
-} from "./config.js";
+import { type ReasoningEffort, clampAutoCompactTrigger, providerForModel } from "./config.js";
 import { tryParseJson } from "./core/parse-json.js";
 import type { PauseGate } from "./core/pause-gate.js";
 import { pauseGate as defaultPauseGate } from "./core/pause-gate.js";
@@ -224,12 +219,6 @@ export interface CacheFirstLoopOptions {
   maxResultTokens?: number;
   /** Image parts resent with each request. Defaults to KEEP_LAST_IMAGES. */
   keepImages?: number;
-  /** Maximum tool-call iterations per turn. Overrides config/env. Default 50. */
-  maxIterPerTurn?: number;
-  /** Live edit-mode getter, never-ask never pauses on the iteration cap. Thunk
-   *  (not a snapshot) so a mid-session Shift+Tab flip takes effect, same
-   *  pattern as shell.ts's `allowAll`. */
-  getEditMode?: () => EditMode;
   /** User-configured context-window cap (tokens). Undefined = per-model default.
    *  Hot-applied via configure(). */
   ctxMaxOverride?: number;
@@ -253,9 +242,9 @@ export interface CacheFirstLoopOptions {
   /** Inject this session's active plan into outgoing requests. Default true; a subagent
    *  sets false so it can never adopt or continue the parent's plan. */
   planContext?: boolean;
-  /** Runs with no operator to answer the loop's prompts (a subagent): the iteration
-   *  cap's human-facing pause becomes a self-driven wrap-up, then a forced summary.
-   *  Attended turns keep the pause. */
+  /** Runs with no operator to answer the loop's prompts (a subagent): a stop that
+   *  would otherwise wait for a human carries its reason into a forced summary, and
+   *  a bare replay becomes an order to answer. Attended turns keep the pause. */
   unattended?: boolean;
   /** In-memory floor for the turn counter across runtime rebuilds. Combined
    *  with session-meta `lastTurn`, ordinals never regress. */
@@ -275,8 +264,6 @@ export interface ReconfigurableOptions {
   autoCompact?: boolean;
   /** Auto-compaction trigger fraction; `null` = reset to default. undefined = keep current. */
   autoCompactTriggerRatio?: number | null;
-  /** Per-turn iteration cap; undefined = keep current, `null` = reset to default (50). */
-  maxIterPerTurn?: number | null;
   /** Toggle the stream repetition / "stuck re-thinking" guard. undefined = keep current. */
   repetitionGuardEnabled?: boolean | null;
 }
@@ -358,32 +345,9 @@ export class CacheFirstLoop {
   readonly scratch = new VolatileScratch();
   readonly stats = new SessionStats();
   readonly repair: ToolCallRepair;
-  /** Hard iteration cap per turn — prevents runaway tool-call loops from
-   *  burning unlimited API budget. Override via REASONIX_MAX_ITER env var. */
-  static readonly DEFAULT_MAX_ITER_PER_TURN = 50;
-  /** Output-token-truncation continuations allowed per turn — a model stuck
-   *  regenerating a partial answer must not loop forever. */
-  static readonly MAX_TRUNCATION_CONTINUATIONS = 3;
-  /** Recovery attempts for a gateway refusal that names no offending field
-   *  (replay, request-only fold, durable fold) before the error surfaces. */
-  static readonly MAX_UPSTREAM_REFUSAL_RECOVERIES = 3;
-  /** Reasoner-contract repairs per turn — back-fill `reasoning_content` on the
-   *  bare assistant turns a thinking-mode endpoint demands back, then re-send. */
-  static readonly MAX_REASONING_REPAIRS = 2;
-  /** Escalating recoveries for a thinking-only completion (reasoning, no content,
-   *  no tool call): replay the stop, nudge for an answer, then hand the reasoning
-   *  back before the turn falls back to showing that reasoning. */
-  static readonly MAX_THINKING_ONLY_RECOVERIES = 3;
   /** Consecutive identical-reasoning iterations before the reasoning-loop guard
    *  collapses the turn to a forced summary. */
   static readonly REASONING_LOOP_LIMIT = 3;
-  /** Premature-stop nudges per turn — a model that always answers in
-   *  fragments can't loop forever. */
-  static readonly MAX_PREMATURE_STOP_NUDGES = 2;
-  /** Extra iterations granted to an unattended turn after the wrap-up nudge asks
-   *  it to stop gathering and answer. Bounds the nudge, so an unattended turn
-   *  cannot spin past its cap just because nobody can say "stop". */
-  static readonly UNATTENDED_WRAP_UP_ITERS = 5;
   /** Files the model has read this session; gates edit_file / multi_edit so SEARCH text matches on-disk bytes. Cleared on mechanical truncate (the model's byte-level view of the elided history is gone). In-memory only — naturally empty on resume. */
   readonly readTracker = new ReadTracker();
 
@@ -398,8 +362,6 @@ export class CacheFirstLoop {
   readonly maxResultTokens: number;
   /** Image parts resent with each request, resolved from the cost policy. */
   readonly keepImages: number;
-  /** Maximum tool-call iterations per turn. Config > env > default (50). */
-  maxIterPerTurn: number;
   /** Context-window cap override (tokens) — mutable via configure(); undefined = per-model default. */
   ctxMaxOverride: number | undefined;
   /** Pre-turn auto-compaction toggle. */
@@ -467,52 +429,25 @@ export class CacheFirstLoop {
   }
 
   private _turnSelfCorrected = false;
-  /** Failure-driven self-corrects this turn. Capped at 3 so a model that keeps
-   *  calling a broken tool can't loop forever, while still outlasting the single
-   *  repeat-driven self-correct. */
-  private _failureSteers = 0;
-  /** Grace-window size granted when the iter cap fires on a productive turn. Set once per turn, at first fire. */
-  private _iterGrace = 0;
-  /** True once the cap fired and the grace window latched this turn. The hard stop moves to maxIterPerTurn + _iterGrace. */
-  private _iterGraceApplied = false;
-  /** True once a never-ask turn bypassed the cap, the cap block is skipped for the rest of the turn. */
-  private _iterCapBypassed = false;
-  /** Extra iterations granted by the unattended wrap-up nudge (0 = not asked yet). */
-  private _wrapUpGrace = 0;
-  /** Latched once the unattended wrap-up nudge has been sent this turn. */
-  private _wrapUpAsked = false;
   /** True when nobody can type "continue" to this loop — see CacheFirstLoopOptions.unattended. */
   private readonly _unattended: boolean;
   private readonly _planContext: boolean;
   /** Plan-state signature already injected this turn — see takePlanContext(). */
   private _injectedPlanSig: string | null = null;
-  /** Live edit-mode getter — hosts that don't pass it keep the default pause. */
-  private readonly _getEditMode: (() => EditMode) | undefined;
   /** Latched once per turn — the empty-completion guard retries exactly once. */
   private _emptyResponseRetried = false;
-  /** Count of thinking-only recoveries this turn — each stage changes the
-   *  request so a model that stops after thinking gets a reason to answer. */
+  /** Escalation stage for a thinking-only completion this turn — each stage
+   *  changes the request so a model that stops after thinking gets a reason to answer. */
   private _thinkingOnlyRecoveries = 0;
   /** True when a thinking-only retry appended a partial assistant message to the log
-   *  that must be replaced by the subsequent answer or discarded on give-up. */
+   *  that must be replaced by the subsequent answer or discarded when the turn ends. */
   private _thinkingOnlyPartialAppended = false;
   /** Latched once per turn — replay one provider failure before any output reached the UI. */
   private _providerErrorRetried = false;
-  /** Count of network disconnect wait-and-reconnect attempts this turn. */
-  private _networkReconnects = 0;
-  /** Count of output-token-truncation continuations this turn — caps the resume loop. */
-  private _truncationContinuations = 0;
-  /** Count of premature-stop nudges this turn — caps the finish-or-continue re-prompt loop. */
-  private _prematureStopNudges = 0;
-  /** Image-shrink retries after a provider rejected the request body as too
-   *  large — caps the shrink-and-retry heal before the error surfaces. */
-  private _compactRecoveries = 0;
+  /** Shrink level reached by the image heal (0 = not tried yet). */
   private _payloadShrinkAttempts = 0;
   /** Recovery stage for a field-less gateway refusal this turn (0 = none). */
   private _refusalRecoveryStage = 0;
-  /** Repairs after a thinking-mode endpoint rejected a bare assistant turn
-   *  (`reasoning_content` not passed back) — caps the stamp-and-resend ladder. */
-  private _reasoningRepairs = 0;
   /** Latched once the endpoint proves it wants `reasoning_content` on every
    *  assistant turn: stale-reasoning pruning then has to stay off, or the
    *  repair and the prune would undo each other on every send. */
@@ -521,10 +456,6 @@ export class CacheFirstLoop {
    *  log keeps its full history; only the outgoing copy is folded, so a retried
    *  request is smaller while the transcript the user sees stays complete. */
   private _requestFoldTarget: number | null = null;
-  /** Mid-turn auto-compactions this turn — bounds the per-iteration recheck so
-   *  a fold that still leaves the estimate over the trigger can't compact on
-   *  every remaining iteration. */
-  private _midTurnCompacts = 0;
   /** Normalized reasoning text from the previous iteration — detects a model
    *  re-thinking the identical thought (a reasoning-only loop) when tool args
    *  drift so the storm breaker can't fire. */
@@ -561,8 +492,6 @@ export class CacheFirstLoop {
     this.maxOutputTokens = opts.maxOutputTokens;
     this.maxResultTokens = opts.maxResultTokens ?? DEFAULT_MAX_RESULT_TOKENS;
     this.keepImages = opts.keepImages ?? KEEP_LAST_IMAGES;
-    this.maxIterPerTurn = opts.maxIterPerTurn ?? CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN;
-    this._getEditMode = opts.getEditMode;
     this._unattended = opts.unattended === true;
     this._planContext = opts.planContext !== false;
     this._repetitionGuardEnabled = Boolean(opts.repetitionGuardEnabled);
@@ -779,9 +708,6 @@ export class CacheFirstLoop {
       this.autoCompactTriggerRatio = clampAutoCompactTrigger(
         opts.autoCompactTriggerRatio ?? AUTO_COMPACT_TRIGGER_RATIO,
       );
-    }
-    if (opts.maxIterPerTurn !== undefined) {
-      this.maxIterPerTurn = opts.maxIterPerTurn ?? CacheFirstLoop.DEFAULT_MAX_ITER_PER_TURN;
     }
     if (opts.repetitionGuardEnabled !== undefined) {
       this._repetitionGuardEnabled = Boolean(opts.repetitionGuardEnabled);
@@ -1551,29 +1477,13 @@ export class CacheFirstLoop {
     // naturally as this turn's tool calls flow through.
     this.repair.resetStorm();
     this._turnSelfCorrected = false;
-    this._failureSteers = 0;
-    // Grace state is per-turn too: a paused turn's "continue" starts a fresh
-    // turn with the base cap restored (and a fresh grace grant if it stays
-    // productive). Keeping the latch would silently raise every later turn's
-    // cap for the whole session and skip the grace warning on continue.
-    this._iterGrace = 0;
-    this._iterGraceApplied = false;
-    this._iterCapBypassed = false;
-    this._wrapUpGrace = 0;
-    this._wrapUpAsked = false;
     this._emptyResponseRetried = false;
     this._thinkingOnlyRecoveries = 0;
     this._thinkingOnlyPartialAppended = false;
     this._providerErrorRetried = false;
-    this._networkReconnects = 0;
-    this._truncationContinuations = 0;
-    this._prematureStopNudges = 0;
-    this._compactRecoveries = 0;
     this._payloadShrinkAttempts = 0;
     this._refusalRecoveryStage = 0;
-    this._reasoningRepairs = 0;
     this._requestFoldTarget = null;
-    this._midTurnCompacts = 0;
     this._lastReasoningSig = null;
     this._reasoningLoopCount = 0;
     // Fresh controller for this turn: the prior step's signal has
@@ -1647,15 +1557,14 @@ export class CacheFirstLoop {
     for (let iter = 0; ; iter++) {
       // Mid-turn auto-compaction: a long tool loop crosses the threshold long
       // after turn start, and the pre-turn check above never re-runs inside
-      // the iteration loop. Bounded per turn (see _midTurnCompacts).
-      if (this.autoCompact && iter > 0 && this._midTurnCompacts < 2) {
+      // the iteration loop.
+      if (this.autoCompact && iter > 0) {
         const estimate = estimateRequestTokens(
           pruneOldImageParts([...this.prefix.toMessages(), ...this.log.entries], this.keepImages),
           this.prefix.tools(),
         );
         const ctxMax = resolveContextTokens(this.model, this.ctxMaxOverride);
         if (estimate >= this.autoCompactTriggerRatio * ctxMax) {
-          this._midTurnCompacts++;
           yield {
             turn: this._turn,
             role: "compaction_start",
@@ -1697,103 +1606,6 @@ export class CacheFirstLoop {
         } finally {
           this.resetAbortState();
         }
-        this._steerQueue.length = 0;
-        return;
-      }
-      // Hard iteration cap — prevents runaway tool-call loops from
-      // consuming unlimited API budget. What happens at the cap depends
-      // on the turn's health (#2037):
-      //  - never-ask mode (`getEditMode() === "never-ask"`): the cap never pauses or stops
-      //    the turn - nobody is watching to say "continue". Noted once, then the
-      //    turn runs without the cap. Genuine repeat loops are still caught in
-      //    dispatch by the storm-breaker guard.
-      //  - STUCK turn (storm-breaker latched `_turnSelfCorrected`): stop — the
-      //    next turn starts fresh instead of re-sending the garbage loop.
-      //  - PRODUCTIVE turn (distinct calls, results flowing): the cap grants a
-      //    grace window (~50% more, min 5) instead of a hard stop — killing a
-      //    healthy long task mid-flow just forces the user to re-prompt. If the
-      //    grace window also exhausts, the turn pauses NON-destructively: the log
-      //    stays intact, so the next "continue" resumes with full state.
-      //  - UNATTENDED turn (subagent): nobody can type "continue", so every stop
-      //    below instead asks the model for its answer and, failing that, hands
-      //    the consumer a forced summary carrying the reason. A warning-only exit
-      //    reaches a subagent as "no answer, no reason".
-      const hardCap =
-        this.maxIterPerTurn + (this._iterGraceApplied ? this._iterGrace : 0) + this._wrapUpGrace;
-      if (iter >= hardCap && !this._iterCapBypassed) {
-        if (!this._unattended && this._getEditMode?.() === "never-ask") {
-          this._iterCapBypassed = true;
-          yield {
-            turn: this._turn,
-            role: "warning",
-            severity: "low",
-            content: t("loop.iterLimitNeverAsk", { max: this.maxIterPerTurn }),
-          };
-          continue;
-        }
-        if (this._turnSelfCorrected) {
-          const stuckReason = t("loop.iterLimitReached", { max: this.maxIterPerTurn });
-          if (this._unattended) {
-            yield* this.stopUnattended(stuckReason, restoreModelIfNeeded);
-            return;
-          }
-          yield { turn: this._turn, role: "warning", severity: "high", content: stuckReason };
-          restoreModelIfNeeded();
-          this._steerQueue.length = 0;
-          return;
-        }
-        if (!this._iterGraceApplied) {
-          this._iterGrace = Math.max(5, Math.round(this.maxIterPerTurn / 2));
-          this._iterGraceApplied = true;
-          yield {
-            turn: this._turn,
-            role: "warning",
-            severity: "low",
-            content: t("loop.iterLimitGrace", {
-              max: this.maxIterPerTurn,
-              grace: this.maxIterPerTurn + this._iterGrace,
-            }),
-          };
-          continue;
-        }
-        if (this._unattended) {
-          // Ask first: a child at its cap usually already holds the findings and
-          // is only still gathering. The nudge converts the human's "continue"
-          // into a "stop and answer" plus a bounded window to do it in.
-          if (!this._wrapUpAsked) {
-            this._wrapUpAsked = true;
-            this._wrapUpGrace = CacheFirstLoop.UNATTENDED_WRAP_UP_ITERS;
-            this.appendAndPersist({
-              role: "user",
-              content: t("loop.unattendedWrapUpNudge", { max: hardCap }),
-              synthetic: true,
-            });
-            yield {
-              turn: this._turn,
-              role: "warning",
-              severity: "low",
-              content: t("loop.unattendedWrapUp", {
-                max: hardCap,
-                extra: this._wrapUpGrace,
-              }),
-            };
-            continue;
-          }
-          yield* this.stopUnattended(
-            t("loop.unattendedBudgetStop", { max: hardCap }),
-            restoreModelIfNeeded,
-          );
-          return;
-        }
-        yield {
-          turn: this._turn,
-          role: "warning",
-          severity: "high",
-          content: t("loop.iterLimitPaused", {
-            grace: this.maxIterPerTurn + this._iterGrace,
-          }),
-        };
-        restoreModelIfNeeded();
         this._steerQueue.length = 0;
         return;
       }
@@ -1940,10 +1752,8 @@ export class CacheFirstLoop {
           !signal.aborted &&
           cause.name !== "AbortError" &&
           !is4xxError(cause) &&
-          this._networkReconnects < 10 &&
           isNetworkConnectionError(cause);
         if (isNetworkLoss) {
-          this._networkReconnects++;
           yield {
             turn: this._turn,
             role: "warning",
@@ -1979,11 +1789,7 @@ export class CacheFirstLoop {
           const repaired = stampMissingReasoningForThinkingMode(this.log.toMessages(), this.model, {
             force: true,
           });
-          if (
-            repaired.stampedCount > 0 &&
-            this._reasoningRepairs < CacheFirstLoop.MAX_REASONING_REPAIRS
-          ) {
-            this._reasoningRepairs++;
+          if (repaired.stampedCount > 0) {
             this._reasoningRoundTripRequired = true;
             this.log.compactInPlace(repaired.messages);
             this.persistLog(repaired.messages);
@@ -1993,8 +1799,6 @@ export class CacheFirstLoop {
               severity: "high",
               content: t("loop.reasoningRoundTripRepair", {
                 count: String(repaired.stampedCount),
-                attempt: String(this._reasoningRepairs),
-                max: String(CacheFirstLoop.MAX_REASONING_REPAIRS),
               }),
             };
             continue;
@@ -2028,7 +1832,7 @@ export class CacheFirstLoop {
         // image-heavy: downscale the image parts already in the log, tell the
         // model what happened so it prefers smaller/cropped images, and retry
         // the iteration instead of killing the turn.
-        if (!signal.aborted && this._payloadShrinkAttempts < 2 && isPayloadTooLargeError(cause)) {
+        if (!signal.aborted && isPayloadTooLargeError(cause)) {
           const level: ShrinkLevel = this._payloadShrinkAttempts === 0 ? 1 : 2;
           this._payloadShrinkAttempts++;
           const shrink = await shrinkImagePartsForRetry([...this.log.entries], level);
@@ -2060,54 +1864,38 @@ export class CacheFirstLoop {
         // smaller, so ending the turn here is what made the failure look
         // permanent: every re-prompt replayed the byte-identical body.
         if (!signal.aborted && !partialDelivered && isUpstreamBareRefusal(cause)) {
-          if (this._refusalRecoveryStage < CacheFirstLoop.MAX_UPSTREAM_REFUSAL_RECOVERIES) {
-            this._refusalRecoveryStage++;
-            const attempt = this._refusalRecoveryStage;
-            const target = this.refusalFoldTarget();
-            let notice: UpstreamRefusalNoticeKey = "loop.upstreamRefusalRetry";
-            if (target !== null && attempt === 2) {
-              this._requestFoldTarget = target;
-              notice = "loop.upstreamRefusalTrimming";
-            } else if (target !== null && attempt === 3) {
-              yield {
-                turn: this._turn,
-                role: "compaction_start",
-                compactionTrigger: "overflow",
-                content: "",
-              };
-              const folded = await this.foldLogForRecovery(target, signal);
-              for (const ev of folded.events) yield ev;
-              if (folded.ok) notice = "loop.upstreamRefusalCompacting";
-            }
+          this._refusalRecoveryStage++;
+          const attempt = this._refusalRecoveryStage;
+          const target = this.refusalFoldTarget();
+          let notice: UpstreamRefusalNoticeKey = "loop.upstreamRefusalRetry";
+          if (target !== null && attempt === 2) {
+            this._requestFoldTarget = target;
+            notice = "loop.upstreamRefusalTrimming";
+          } else if (target !== null && attempt === 3) {
             yield {
               turn: this._turn,
-              role: "warning",
-              severity: "high",
-              content: t(notice, {
-                attempt: String(attempt),
-                max: String(CacheFirstLoop.MAX_UPSTREAM_REFUSAL_RECOVERIES),
-              }),
+              role: "compaction_start",
+              compactionTrigger: "overflow",
+              content: "",
             };
-            // Vitest drives the ladder to exhaustion; a real turn backs off so
-            // a gateway that is merely overloaded gets room to recover.
-            const retryDelay = process.env.VITEST === "true" ? 0 : UPSTREAM_REFUSAL_RETRY_DELAY_MS;
-            await sleepUnlessAborted(retryDelay, signal);
-            continue;
+            const folded = await this.foldLogForRecovery(target, signal);
+            for (const ev of folded.events) yield ev;
+            if (folded.ok) notice = "loop.upstreamRefusalCompacting";
           }
           yield {
             turn: this._turn,
             role: "warning",
             severity: "high",
-            content: t("loop.upstreamRefusalExhausted", {
-              max: String(CacheFirstLoop.MAX_UPSTREAM_REFUSAL_RECOVERIES),
-            }),
+            content: t(notice, { attempt: String(attempt) }),
           };
+          const retryDelay = process.env.VITEST === "true" ? 0 : UPSTREAM_REFUSAL_RETRY_DELAY_MS;
+          await sleepUnlessAborted(retryDelay, signal);
+          continue;
         }
         // Context-overflow recovery folds deterministically (no summarizer
         // call): the estimator just undercounted, so an estimated LLM call
         // could overflow the same window again. Fold, then retry the iteration.
-        if (!signal.aborted && this._compactRecoveries < 2 && isContextOverflowError(cause)) {
-          this._compactRecoveries++;
+        if (!signal.aborted && isContextOverflowError(cause)) {
           this.learnContextWindow(cause);
           yield {
             turn: this._turn,
@@ -2190,37 +1978,23 @@ export class CacheFirstLoop {
       // "incomplete", Gemini uses "MAX_TOKENS". The partial answer is already
       // rendered; append it to the log and re-request so the model continues
       // from where it stopped, instead of ending the turn on a truncated
-      // answer. Bounded per turn so a model stuck regenerating can't loop.
-      // Only continue when there is real content to resume from AND no tool
+      // answer. Only continue when there is real content to resume from AND no tool
       // call was cut mid-stream — a truncated tool_call has no result to feed
       // back, and appending it as a phantom would confuse the next request.
       const outputTruncated =
         finishReason === "length" || finishReason === "incomplete" || finishReason === "MAX_TOKENS";
       const partialHasContent = assistantContent.length > 0 || reasoningContent.length > 0;
       if (outputTruncated && partialHasContent && toolCalls.length === 0) {
-        if (this._truncationContinuations >= CacheFirstLoop.MAX_TRUNCATION_CONTINUATIONS) {
-          yield {
-            turn: this._turn,
-            role: "warning",
-            severity: "high",
-            content: t("loop.truncatedGiveUp", {
-              max: CacheFirstLoop.MAX_TRUNCATION_CONTINUATIONS,
-            }),
-          };
-          // fall through and end the turn with the partial content
-        } else {
-          this._truncationContinuations++;
-          this.appendAndPersist(
-            buildAssistantMessage(assistantContent, toolCalls, callModel, reasoningContent),
-          );
-          yield {
-            turn: this._turn,
-            role: "warning",
-            severity: "low",
-            content: t("loop.truncatedContinue"),
-          };
-          continue;
-        }
+        this.appendAndPersist(
+          buildAssistantMessage(assistantContent, toolCalls, callModel, reasoningContent),
+        );
+        yield {
+          turn: this._turn,
+          role: "warning",
+          severity: "low",
+          content: t("loop.truncatedContinue"),
+        };
+        continue;
       }
 
       // Attribute usage to the model that handled this request.
@@ -2438,28 +2212,12 @@ export class CacheFirstLoop {
             return;
           }
           const stage = this._thinkingOnlyRecoveries;
-          if (stage < CacheFirstLoop.MAX_THINKING_ONLY_RECOVERIES) {
-            this._thinkingOnlyRecoveries++;
-            yield this.escalateThinkingOnly(callModel, stage, reasoningContent);
-            continue;
-          }
-          // Every stage came back thinking-only: surface the reasoning as the
-          // turn's answer instead of ending the conversation with nothing. The
-          // warning above the text says exactly where it came from.
-          this.discardTailThinkingOnlyPartial();
-          yield {
-            turn: this._turn,
-            role: "warning",
-            severity: "high",
-            content: t("loop.thinkingOnlyRecovered", {
-              max: String(CacheFirstLoop.MAX_THINKING_ONLY_RECOVERIES),
-            }),
-          };
-          assistantContent = reasoningContent.trim();
-        } else {
-          // Conversational non-tool turns with substantial reasoning: promote so the turn isn't silent
-          assistantContent = reasoningContent.trim();
+          this._thinkingOnlyRecoveries++;
+          yield this.escalateThinkingOnly(callModel, stage, reasoningContent);
+          continue;
         }
+        // Conversational non-tool turns with substantial reasoning: promote so the turn isn't silent
+        assistantContent = reasoningContent.trim();
       }
 
       if (this._thinkingOnlyPartialAppended) {
@@ -2506,11 +2264,9 @@ export class CacheFirstLoop {
       // keep the API contract, and continue the iter — model gets one shot to
       // self-correct before the loud-warning path takes over.
       const failureSuppressed = report.failureSuppressed === true && allSuppressed;
-      const canSelfCorrect =
-        !this._turnSelfCorrected || (failureSuppressed && this._failureSteers < 3);
+      const canSelfCorrect = !this._turnSelfCorrected || failureSuppressed;
       if (allSuppressed && canSelfCorrect) {
         this._turnSelfCorrected = true;
-        if (failureSuppressed) this._failureSteers++;
         this.replaceTailAssistantMessage(
           buildAssistantMessage(assistantContent, toolCalls, callModel, reasoningContent),
         );
@@ -2584,31 +2340,18 @@ export class CacheFirstLoop {
         const stoppedMidTask =
           turnHadToolActivity && !repetitionStall && looksLikePrematureStop(assistantContent);
         if (cutOff || stoppedMidTask) {
-          if (this._prematureStopNudges >= CacheFirstLoop.MAX_PREMATURE_STOP_NUDGES) {
-            yield {
-              turn: this._turn,
-              role: "warning",
-              severity: "low",
-              content: t("loop.prematureStopGiveUp", {
-                max: CacheFirstLoop.MAX_PREMATURE_STOP_NUDGES,
-              }),
-            };
-            // fall through and end the turn with the partial message — never silently.
-          } else {
-            this._prematureStopNudges++;
-            this.appendAndPersist({
-              role: "user",
-              content: t(cutOff ? "loop.cutOffNudge" : "loop.prematureStopNudge"),
-              synthetic: true,
-            });
-            yield {
-              turn: this._turn,
-              role: "warning",
-              severity: "low",
-              content: t(cutOff ? "loop.cutOffWarning" : "loop.prematureStopWarning"),
-            };
-            continue;
-          }
+          this.appendAndPersist({
+            role: "user",
+            content: t(cutOff ? "loop.cutOffNudge" : "loop.prematureStopNudge"),
+            synthetic: true,
+          });
+          yield {
+            turn: this._turn,
+            role: "warning",
+            severity: "low",
+            content: t(cutOff ? "loop.cutOffWarning" : "loop.prematureStopWarning"),
+          };
+          continue;
         }
         restoreModelIfNeeded();
         yield { turn: this._turn, role: "done", content: assistantContent };

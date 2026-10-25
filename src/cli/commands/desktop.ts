@@ -79,6 +79,7 @@ import type {
   SessionEmptyEvent,
   SessionHistoryEvent,
   SessionLoadedEvent,
+  SessionMutationAnswer,
   SessionRetractedEvent,
   SessionsEvent,
   SettingsEvent,
@@ -164,7 +165,6 @@ import {
   loadFeedbackCues,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
-  loadMaxIterPerTurn,
   loadMaxOutputTokens,
   loadMetasoApiKey,
   loadMimoKeyName,
@@ -222,7 +222,6 @@ import {
   saveFeedbackCues,
   saveGmailOAuth,
   saveMailProvider,
-  saveMaxIterPerTurn,
   saveMimoCredential,
   saveModel,
   saveOllamaGenerationPatch,
@@ -792,6 +791,29 @@ export function newWorkspaceSessionWork(): {
   };
 }
 
+/** The answers this daemon has already published, bounded to the recent past. A client
+ *  re-sends an unanswered request under its own id, so a repeat here means its answer
+ *  was lost on the wire: republish that answer instead of running the mutation again. */
+export function newAnsweredMutationLog(limit = 32): {
+  add: (answer: SessionMutationAnswer) => void;
+  get: (requestId: string) => SessionMutationAnswer | undefined;
+} {
+  const order: string[] = [];
+  const answers = new Map<string, SessionMutationAnswer>();
+  return {
+    add(answer) {
+      if (answers.has(answer.requestId)) return;
+      answers.set(answer.requestId, answer);
+      order.push(answer.requestId);
+      const oldest = order.length > limit ? order.shift() : undefined;
+      if (oldest !== undefined) answers.delete(oldest);
+    },
+    get(requestId) {
+      return answers.get(requestId);
+    },
+  };
+}
+
 /** Refusal for a workspace switch while that directory is minting or removing a
  *  session: the tab waiting on the settle must not be re-targeted underneath it. */
 export const WORKSPACE_SWITCH_BLOCKED_MESSAGE =
@@ -901,9 +923,6 @@ export function projectSubagentEvent(ev: SubagentEvent): SubagentProgressPayload
     ...(ev.contextTokens !== undefined ? { contextTokens: ev.contextTokens } : {}),
     ...(ev.contextMax !== undefined ? { contextMax: ev.contextMax } : {}),
     ...(ev.thought ? { thought: redactDesktopDiagnosticMessage(ev.thought, 500) } : {}),
-    ...(ev.maxToolIters !== undefined ? { maxToolIters: ev.maxToolIters } : {}),
-    ...(ev.maxElapsedMs !== undefined ? { maxElapsedMs: ev.maxElapsedMs } : {}),
-    ...(ev.budgetExhausted ? { budgetExhausted: ev.budgetExhausted } : {}),
   };
   switch (ev.kind) {
     case "start":
@@ -1883,9 +1902,6 @@ function emitSettings(tab: Tab, opts: { turnReleased?: boolean } = {}): void {
       feedbackCues: loadFeedbackCues(),
       contextTokens: servedWindowTotal(tab.currentModel) ?? tab.ctxMaxOverride ?? null,
       contextTokensBounds: contextWindowBounds(tab.currentModel),
-      maxIterPerTurn: tab.runtime?.loop.maxIterPerTurn ?? loadMaxIterPerTurn(),
-      maxIterPerTurnOverride:
-        typeof config.maxIterPerTurn === "number" ? config.maxIterPerTurn : null,
       // The session's frozen capability: it is what the composer's subagent model
       // picker hides behind.
       subagents: tab.subagents,
@@ -3433,18 +3449,22 @@ async function refreshFunds(tab: Tab, options: { force?: boolean } = {}): Promis
 
 async function emitSessions(
   tab: Tab,
-  settledDeletes?: SessionsEvent["settledDeletes"],
-  options: { primeFromCache?: boolean; revalidate?: boolean } = {},
+  options: {
+    answers?: SessionMutationAnswer[];
+    primeFromCache?: boolean;
+    revalidate?: boolean;
+  } = {},
 ): Promise<void> {
   const startedAt = performance.now();
+  const answers = options.answers;
   // Stamped before the first await so a slow scan can never publish under a newer
-  // revision than a fast one. A settle emit re-stamps at send (see below).
+  // revision than a fast one. An answering emit re-stamps at send (see below).
   const epoch = DESKTOP_SESSIONS_EPOCH;
   const requestRevision = nextSessionsRevision(tab.rootDir);
   // A snapshot that answers a mutation the user just made reports that mutation and
   // nothing else: the edit is already folded into the index, and re-walking every
   // session folder on top of it is what made a create or a delete take seconds.
-  const revalidate = options.revalidate ?? settledDeletes === undefined;
+  const revalidate = options.revalidate ?? answers === undefined;
   const source = revalidate
     ? listSessionsForWorkspaceAsync(tab.rootDir)
     : {
@@ -3460,9 +3480,9 @@ async function emitSessions(
   try {
     // Paint the last-known list from the index cache while the store revalidates:
     // on a large store that scan is seconds, and the sidebar was blank until it
-    // landed. A settle confirmation only ever rides the authoritative revision.
+    // landed. An answer only ever rides the authoritative revision.
     let primed: SessionsEvent["items"] | null = null;
-    if (options.primeFromCache && settledDeletes === undefined) {
+    if (options.primeFromCache && answers === undefined) {
       const cached = await source.cached;
       if (cached) {
         primed = toSessionListItems(cached);
@@ -3485,17 +3505,16 @@ async function emitSessions(
     // Always follow a primed paint with the scan: the client only initialises from a
     // primed payload, so the authoritative one is what establishes its revision.
     const items = await request.value;
-    // A settle confirmation re-stamps: its payload already reflects the delete, and
-    // dropping it behind a concurrently started scan would strand an optimistic hide.
-    const revision =
-      settledDeletes === undefined ? requestRevision : nextSessionsRevision(tab.rootDir);
+    // An answering snapshot re-stamps: its payload already reflects the mutation, so
+    // it must never look older than a scan that started before it finished.
+    const revision = answers === undefined ? requestRevision : nextSessionsRevision(tab.rootDir);
     emit(
       {
         type: "$sessions",
         epoch,
         revision,
         items,
-        settledDeletes,
+        answers,
       },
       tab.id,
     );
@@ -4917,6 +4936,9 @@ interface Tab {
    *  without merging into an existing workspace tab. */
   pending: boolean;
   currentSession: string;
+  /** The client's create request this channel's mint answers, when New chat or Duplicate
+   *  opened it. The first listing that includes the mint publishes that answer. */
+  createRequestId?: string;
   /** Session name the shell-output totals are anchored to; null until the first
    *  emitCtxBreakdown binds it. See the re-anchor block there. */
   shellMetricsSession: string | null;
@@ -5097,6 +5119,12 @@ function nextSessionsRevision(dir: string): number {
   const next = (sessionsRevisions.get(key) ?? 0) + 1;
   sessionsRevisions.set(key, next);
   return next;
+}
+
+/** The client's name for a session mutation. A caller that sends none still gets an
+ *  answer: without an id there is nothing to answer, and the hide would never lift. */
+function mutationRequestId(raw: unknown): string {
+  return typeof raw === "string" && raw.length > 0 ? raw : randomUUID();
 }
 
 /** A workspace is usable only while it still exists as a directory — a deleted
@@ -5585,7 +5613,6 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
     // loop's baseline can regress below turns the desktop already rendered.
     turnFloor: tab.runtime?.loop.currentTurn ?? 0,
     reasoningEffort,
-    maxIterPerTurn: loadMaxIterPerTurn(),
     maxOutputTokens: loadMaxOutputTokens(),
     // Retention caps come from the provider's declared cost tier; a saved
     // trigger ratio still wins over the tier's suggestion.
@@ -5594,9 +5621,6 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
     autoCompact: loadAutoCompact(),
     autoCompactTriggerRatio: loadAutoCompactTrigger(undefined, costPolicy.compactionTrigger),
     repetitionGuardEnabled: loadRepetitionGuardEnabled(),
-    // Live thunk (not a snapshot) so a mid-session Shift+Tab mode flip
-    // stops the iteration cap from pausing the turn in yolo.
-    getEditMode: () => loadEditMode(),
     hooks: tab.hooks,
     hookCwd: tab.rootDir,
   });
@@ -6031,15 +6055,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     settleAnnounceBurst = resolve;
   });
 
+  /** Publishes one workspace's list, ONCE. Every channel on the directory reads the
+   *  same client-side entry, so a snapshot per channel was N copies of one fact, and a
+   *  mutation's answer has to arrive exactly once. */
   function emitSessionsForWorkspace(
     workspaceDir: string,
-    settledDeletes?: SessionsEvent["settledDeletes"],
+    answers?: SessionMutationAnswer[],
     options: { exceptTabId?: string; revalidate?: boolean } = {},
   ): void {
-    for (const t of tabsInWorkspace(workspaceDir)) {
-      if (t.id === options.exceptTabId) continue;
-      void emitSessions(t, settledDeletes, { revalidate: options.revalidate });
-    }
+    const channels = tabsInWorkspace(workspaceDir).filter((t) => t.id !== options.exceptTabId);
+    // Prefer the channel the user is looking at, so the answer rides the surface that
+    // started the mutation even when several channels share the directory.
+    const channel = channels.find((t) => t.id === lastActiveTabId) ?? channels[0];
+    if (!channel) return;
+    void emitSessions(channel, { ...options, answers });
   }
 
   /** Synchronous tab construction — no I/O. All cheap, disk-only events (`$settings`, `$sessions`, `$memory`, `$mcp_specs`) can fire against this immediately. The heavy bits (`buildCodeToolset`, MCP probes, runtime construction) happen in `initTabToolset` so the UI shell paints without waiting for them. */
@@ -6062,6 +6091,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       /** Capabilities the caller already answered (the Duplicate popover): the session
        *  mints with them frozen, so it never shows the picker. */
       capabilityAnswer?: ChatCapabilitySeed;
+      /** The client's create request this mint answers. */
+      createRequestId?: string;
     },
     pending = false,
   ): Tab {
@@ -6104,6 +6135,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       rootDir: dir,
       pending,
       currentSession: "",
+      createRequestId: restore?.createRequestId,
       shellMetricsSession: null,
       shellMetricsSince: 0,
       currentModel: model,
@@ -6555,7 +6587,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
 
   /** The `$tab_opened` projection, shared by a fresh announce and a resync replay
    *  so the two cannot disagree about a tab's shape. */
-  function emitTabOpened(tab: Tab, active?: boolean, creating?: boolean): void {
+  function emitTabOpened(tab: Tab, active?: boolean): void {
     emit(
       {
         type: "$tab_opened",
@@ -6566,7 +6598,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // than one blank name.
         sessions: tab.currentSession ? [tab.currentSession] : [],
         activeSession: tab.currentSession,
-        creating,
       },
       tab.id,
     );
@@ -7575,7 +7606,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   }
 
   /** The other half of the neutral state: the message sent into a channel that holds no
-   *  session creates that session HERE, carrying the message. */
+   *  session creates that session HERE, carrying the message. A send is answered by its
+   *  own `$session_bound` echo, not by a create request: nothing in the UI waits on it. */
   function bindSessionForSend(tab: Tab): void {
     const name = mintSessionFor(
       tab.rootDir,
@@ -7648,11 +7680,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   }
 
   /** Post-delete resync: detach every tab still bound to a removed session instead of
-   *  naming a session that is gone; every tab gets the refreshed sidebar list. */
-  function resyncAfterDeletes(
-    settledDeletes: SessionsEvent["settledDeletes"],
-    shouldDetach: (tab: Tab) => boolean,
-  ): void {
+   *  naming a session that is gone, then refresh every affected workspace. The answer to
+   *  the request is NOT part of this: it is published once, on the channel that asked. */
+  function resyncAfterDeletes(shouldDetach: (tab: Tab) => boolean): void {
     const refreshed = new Set<string>();
     for (const openTab of tabs.values()) {
       if (shouldDetach(openTab)) detachTabSession(openTab);
@@ -7662,7 +7692,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // with many open channels otherwise re-listed the store once per replaced
     // channel and buried the frontend in hundreds of $sessions events.
     for (const dir of refreshed) {
-      emitSessionsForWorkspace(dir, settledDeletes);
+      // The delete is already folded into the directory index, so this listing must not
+      // re-walk every session folder on top of it.
+      emitSessionsForWorkspace(dir, undefined, { revalidate: false });
       // The removed sessions may have owned in-flight plans: re-project this
       // workspace's plan history so no tab keeps labelling one with a session that
       // no longer exists (its claim now reads as free, which is what takeover uses).
@@ -7847,7 +7879,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       subagentLoopOptions: () => ({
         ctxMaxOverride: tab.runtime?.loop.ctxMaxOverride,
         autoCompactTriggerRatio: tab.runtime?.loop.autoCompactTriggerRatio,
-        maxIterPerTurn: tab.runtime?.loop.maxIterPerTurn,
         maxOutputTokens: tab.runtime?.loop.maxOutputTokens,
         maxResultTokens: tab.runtime?.loop.maxResultTokens,
         keepImages: tab.runtime?.loop.keepImages,
@@ -8221,9 +8252,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     /** Capabilities this channel was already created with (a duplicated session whose
      *  popover asked): the mint freezes them and the channel never opens a picker. */
     capabilityAnswer?: ChatCapabilitySeed;
-    /** Marks this channel as a just-minted session so the frontend shows a
-     *  "Creating session…" indicator until the first `$sessions` lands. */
+    /** Marks this channel as a just-minted session: its first listing must not revalidate
+     *  the whole store, and the workspace's creation gate stays shut until it lands. */
     creating?: boolean;
+    /** The client's create request this channel's mint answers. */
+    createRequestId?: string;
   };
 
   /** Announcing is the cheap half of opening a tab: skeleton plus `$tab_opened`.
@@ -8244,7 +8277,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // Announce before anything else: the UI shell mounts on this event, and the
     // deferred work lives in startTabInit so a restored set is announced in one
     // burst instead of one tab per macrotask.
-    emitTabOpened(tab, restore?.active, restore?.creating);
+    emitTabOpened(tab, restore?.active);
     // A pending (workspace-less) tab has no session, toolset, hooks or sidebar
     // to build — it exists only so the UI can prompt for a workspace. Assigning
     // one runs switchWorkspace, which does the full build. Do NOT emit $ready,
@@ -8404,9 +8437,21 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // stampSessionWorkspace) so a restored ghost lists on the emitSessions below.
         stampSessionWorkspace(tab.currentSession, tab.rootDir);
       }
-      // A freshly minted channel reports the session it just minted; its listing must
-      // not also revalidate every folder in the store.
-      const sessionsInitialized = emitSessions(tab, undefined, {
+      // A freshly minted channel reports the session it just minted; its listing must not
+      // also revalidate every folder in the store. That listing is also the answer to the
+      // client's create request: it is the first message that contains the mint. Registering
+      // it here, before the emit, is what stops the bootstrap fallback answering twice.
+      const createRequestId = restore?.createRequestId;
+      const createAnswer: SessionMutationAnswer | undefined =
+        createRequestId !== undefined && answeredMutations.get(createRequestId) === undefined
+          ? {
+              requestId: createRequestId,
+              ...(tab.currentSession ? { created: tab.currentSession } : {}),
+            }
+          : undefined;
+      if (createAnswer) answeredMutations.add(createAnswer);
+      const sessionsInitialized = emitSessions(tab, {
+        ...(createAnswer ? { answers: [createAnswer] } : {}),
         primeFromCache: true,
         revalidate: restore?.creating !== true,
       });
@@ -8419,9 +8464,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         });
       }
       if (restore?.creating) {
-        // The minted session is on the wire now, so every channel can see it and
-        // the workspace accepts another creation. Both outcomes release: a failed
-        // listing must not keep the gate shut until the toolset build ends.
+        // The minted session is on the wire now, so every channel can see it and the
+        // workspace accepts another creation. Both outcomes release: a failed listing
+        // must not keep the gate shut until the toolset build ends.
         const release = () => sessionCreationGate.leave(tab.rootDir);
         void sessionsInitialized.then(release, release);
       }
@@ -8477,6 +8522,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
    *  re-target the tab that is waiting for their settled snapshot. */
   const sessionWork = newWorkspaceSessionWork();
 
+  /** Requests already answered in this daemon lifetime: a re-send of one is answered
+   *  from here rather than deleting a second time. */
+  const answeredMutations = newAnsweredMutationLog();
+
   /** True while this workspace is minting or removing a session: the window in
    *  which switching away from it or forgetting it is undocumented behaviour. */
   function workspaceSessionBusy(workspaceDir: string): boolean {
@@ -8489,11 +8538,38 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     emit({ type: "$notice", text: message, severity: "warning" }, tabId);
   }
 
-  /** Arms the open gate's release for a just-bootstrapped channel. The gate reopens
-   *  when that channel publishes its session list (startTabInit), and unconditionally
-   *  when its bootstrap settles — a failed create must never lock a workspace. */
+  /** Publishes ONE request's answer on the channel that asked for it, and remembers it so
+   *  a re-send is republished. A workspace-wide refresh never carries answers, so a delete
+   *  or clear spanning two workspaces still answers once. */
+  function publishSessionAnswer(tab: Tab, answer: SessionMutationAnswer): void {
+    answeredMutations.add(answer);
+    // The requesting channel may close while the mutation runs; another channel of the
+    // same workspace reads the same list, so the answer goes to one of them instead.
+    const channel = tabs.has(tab.id) ? tab : workspaceTabFor(tab.rootDir);
+    if (!channel) return;
+    void emitSessions(channel, { answers: [answer] });
+  }
+
+  /** Answers a create that did not mint: the client stops waiting on an indicator, and
+   *  this workspace's list is the truth that nothing was added. */
+  function answerCreateRefusal(tab: Tab, requestId: string): void {
+    publishSessionAnswer(tab, { requestId });
+  }
+
+  /** Arms the open gate's release for a just-bootstrapped channel. startTabInit answers the
+   *  client's create request and reopens the gate; if the bootstrap settles first, the
+   *  answer lands here instead, so a failed create never leaves an indicator running. */
   function armCreationRelease(tab: Tab): void {
-    void tab.initialization?.finally(() => sessionCreationGate.leave(tab.rootDir));
+    const requestId = tab.createRequestId;
+    void tab.initialization?.finally(() => {
+      if (requestId !== undefined && answeredMutations.get(requestId) === undefined) {
+        publishSessionAnswer(tab, {
+          requestId,
+          ...(tab.currentSession ? { created: tab.currentSession } : {}),
+        });
+      }
+      sessionCreationGate.leave(tab.rootDir);
+    });
   }
 
   /** Announce a tab and start its deferred work — every caller but the restored-
@@ -8520,6 +8596,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     seed?: ChatSeedTurn;
     /** Diagnostic scope for a failed open. */
     origin: "new-chat" | "duplicate";
+    /** The client's request id, answered whether or not the mint happened. */
+    requestId: string;
   };
 
   /** Hand a just-minted chat its seed transcript: written to the log now when the user
@@ -8550,14 +8628,23 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
    *  lock handoff. It mints nothing itself (the tab skeleton does) and always hands it a
    *  capability answer or a picker seed, so no caller can open a chat that skipped both. */
   function openFreshChat(tab: Tab, spec: FreshChatSpec): Tab | undefined {
+    // A re-send of a request this daemon already answered: republish the answer rather
+    // than mint a second session under a new name.
+    const known = answeredMutations.get(spec.requestId);
+    if (known) {
+      publishSessionAnswer(tab, known);
+      return undefined;
+    }
     // Never drop a click in silence: the UI offers New chat here, so it owes the
     // user a reason instead of a dead button.
     if (tabNeedsWorkspace(tab)) {
       emit({ type: "$error", message: NO_WORKSPACE_MESSAGE }, tab.id);
+      answerCreateRefusal(tab, spec.requestId);
       return undefined;
     }
     if (!sessionCreationGate.tryEnter(tab.rootDir)) {
       refuseSessionMutation(SESSION_CREATION_IN_FLIGHT_MESSAGE, tab.id);
+      answerCreateRefusal(tab, spec.requestId);
       return undefined;
     }
     try {
@@ -8569,9 +8656,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         subagentModel: spec.prefs.subagentModel,
         capabilityAnswer: spec.answer,
         capabilitySeed: spec.capabilities,
-        // Fresh session, so the new channel shows a create indicator until its first
-        // $sessions snapshot lists the minted session.
+        // A fresh mint, whose first listing answers the client's create request.
         creating: true,
+        createRequestId: spec.requestId,
       });
       // The mint is synchronous, so the channel already owns its session: seeding the
       // transcript here lands it in the bootstrap's own session read.
@@ -8588,6 +8675,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         details: tabDiagnosticState(tab),
       });
       emit({ type: "$error", message: `${spec.origin} failed: ${(err as Error).message}` }, tab.id);
+      answerCreateRefusal(tab, spec.requestId);
       return undefined;
     }
   }
@@ -9485,16 +9573,24 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "session_delete") {
-      // The frontend hides the row optimistically and waits for a $sessions
-      // snapshot carrying its name in settledDeletes. A throw anywhere in this
-      // detach→delete→resync chain would skip that emit and strand the sidebar
-      // mid-delete, so settle it no matter what.
+      // The frontend hides the row optimistically and waits for the $sessions snapshot
+      // that answers this request id. A throw anywhere in this detach, delete, resync
+      // chain would skip that answer and strand the sidebar mid-delete, so every exit
+      // below answers exactly once.
+      const requestId = mutationRequestId(msg.requestId);
+      const known = answeredMutations.get(requestId);
+      if (known) {
+        // Its answer was lost on the way to the client: publish it again.
+        publishSessionAnswer(tab, known);
+        return;
+      }
       if (sessionsWithLiveTurn(tabs.values()).has(msg.name)) {
         // Refuse before detaching: a running session owns a turn the user did not
-        // ask to stop. Settle it as not-removed so the row unhides.
+        // ask to stop. The answer is a listing that still holds it, so the row unhides.
         emitTabDiagnostic(tab, "session.delete.refused_running", { doomed: msg.name }, "info");
         emit({ type: "$error", message: sessionRunningRefusal(msg.name) }, tab.id);
-        resyncAfterDeletes([{ name: msg.name, removed: false }], () => false);
+        resyncAfterDeletes(() => false);
+        publishSessionAnswer(tab, { requestId });
         return;
       }
       let affectedTabs: Tab[] = [];
@@ -9520,19 +9616,23 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           emit({ type: "$error", message: `session_delete failed: ${msg.name}` }, tab.id);
           restoreUntouchedRuntimes(affectedTabs, new Set());
         }
-        resyncAfterDeletes([{ name: msg.name, removed }], (t) =>
-          shouldDetachDeletedSession(t.currentSession, msg.name, removed),
-        );
+        resyncAfterDeletes((t) => shouldDetachDeletedSession(t.currentSession, msg.name, removed));
+        publishSessionAnswer(tab, { requestId });
       } finally {
         releaseDeleteBooking();
       }
       return;
     }
     if (msg.cmd === "session_clear") {
-      // Settle EVERY name the frontend optimistically hid — its echoed request
-      // list plus this workspace's on-disk sessions — so a delete that lands on a
-      // name the listing missed can't leave a row hidden forever. Runs off the
-      // reader thread so a large clear never freezes the RPC loop.
+      // Answer every name the frontend optimistically hid, its echoed request list plus
+      // this workspace's on-disk sessions, with the one request id it asked under. Runs
+      // off the reader thread so a large clear never freezes the RPC loop.
+      const requestId = mutationRequestId(msg.requestId);
+      const known = answeredMutations.get(requestId);
+      if (known) {
+        publishSessionAnswer(tab, known);
+        return;
+      }
       const requested = Array.isArray(msg.names)
         ? msg.names.filter((n): n is string => typeof n === "string" && n.length > 0)
         : [];
@@ -9589,20 +9689,18 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         try {
           affectedTabs = detachDoomedSessionWriters(new Set(plan.doomed));
           // Chunked batch: each name settles independently, the directory index
-          // persists once, and the event loop breathes between chunks.
+          // drops each chunk as it goes, and the event loop breathes between chunks.
           settledDeletes = await deleteSessions(plan.doomed);
-          // Settle the kept names too: their rows were never touched, and an
-          // unsettled hide would strand them.
+          // The kept names are answered too: their rows were never touched, and an
+          // unanswered hide would strand them.
           settledDeletes.push(...plan.kept.map((name) => ({ name, removed: false })));
         } catch (err) {
           emitDiagnosticError("session.clear.failed", err, { tabId: tab.id });
           emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
           restoreUntouchedRuntimes(affectedTabs, new Set());
-          // Still echo the requested names as settled so the frontend reconciles.
-          settledDeletes = [...new Set([...requested, ...plan.kept])].map((name) => ({
-            name,
-            removed: false,
-          }));
+          // Nothing is known to be gone, so the answer is a listing that still holds
+          // whatever survived, and the rows come back.
+          settledDeletes = [];
         }
         const removed = new Set(
           settledDeletes.filter((result) => result.removed).map((result) => result.name),
@@ -9619,19 +9717,17 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           );
           restoreUntouchedRuntimes(affectedTabs, removed);
         }
-        resyncAfterDeletes(settledDeletes, (t) => removed.has(t.currentSession));
+        resyncAfterDeletes((t) => removed.has(t.currentSession));
+        publishSessionAnswer(tab, { requestId });
       })()
         .catch((err) => {
           // Belt and braces: an unhandled rejection here would take the whole
           // daemon down, which is the worst possible "no indication" outcome.
           emitDiagnosticError("session.clear.crashed", err, { tabId: tab.id });
           emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
-          // Settle every name the frontend optimistically hid, so no row stays
-          // hidden behind a clear that never finished.
-          void emitSessions(
-            tab,
-            requested.map((name) => ({ name, removed: false })),
-          );
+          // Answer anyway: a clear that never finished must not keep its rows hidden.
+          resyncAfterDeletes(() => false);
+          publishSessionAnswer(tab, { requestId });
         })
         .finally(releaseClearBooking);
       return;
@@ -9768,6 +9864,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // tab and mount a fresh independent session beside them.
       openFreshChat(tab, {
         origin: "new-chat",
+        requestId: mutationRequestId(msg.requestId),
         // Inherit the source session's models/effort, otherwise the fresh channel
         // falls back to the global config default and drops the per-conversation
         // subagent override entirely.
@@ -9788,8 +9885,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // the context itself: a copy is a warm continuation, not a chat to set up again.
       // The workspace refusal is `openFreshChat`'s, so both chat kinds share it.
       const markdown = typeof msg.markdown === "string" ? msg.markdown : "";
+      const requestId = mutationRequestId(msg.requestId);
       if (!markdown.trim()) {
         emit({ type: "$error", message: "Duplicate session: nothing to duplicate." }, tab.id);
+        answerCreateRefusal(tab, requestId);
         return;
       }
       const context = buildDuplicateContext(markdown, loadDuplicateSessionTokens());
@@ -9804,6 +9903,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         : undefined;
       openFreshChat(tab, {
         origin: "duplicate",
+        requestId,
         prefs: {
           model: tab.currentModel,
           reasoningEffort: tab.currentReasoningEffort,
@@ -10209,14 +10309,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           tab.runtime?.loop.configure({ ctxMaxOverride: tabCtxMaxOverride(tab) ?? null });
           emitCtxBreakdown(tab);
           emitSettings(tab);
-        }
-        if (msg.maxIterPerTurn !== undefined) {
-          saveMaxIterPerTurn(msg.maxIterPerTurn);
-          const next = loadMaxIterPerTurn();
-          for (const openTab of tabs.values()) {
-            openTab.runtime?.loop.configure({ maxIterPerTurn: next });
-            emitSettings(openTab);
-          }
         }
         if (msg.autoCompact !== undefined) {
           saveAutoCompact(msg.autoCompact);

@@ -832,9 +832,6 @@ export interface ReasonixConfig {
   reasoningEffort?: ReasoningEffort;
   /** Per-turn output token cap sent as `max_tokens` in the API request. Undefined/null = no cap. */
   maxOutputTokens?: number | null;
-  /** Maximum tool-call iterations per turn. Prevents runaway loops from consuming
-   *  unlimited API budget. Default 50. Env `REASONIX_MAX_ITER` overrides. */
-  maxIterPerTurn?: number;
   /** Context-window cap in tokens, overriding the per-model default (300K). Clamped to
    *  [128000, 1000000] at load; an explicit value is honored up to that ceiling by
    *  resolveContextTokens, even above the model's default window. */
@@ -3070,35 +3067,6 @@ export function saveReasoningEffort(
   const cfg = readConfig(path);
   cfg.reasoningEffort = effort;
   writeConfig(cfg, path);
-}
-
-/** Load the per-turn iteration cap. Config > env > default (50). Clamped to [50, 100]. */
-export function loadMaxIterPerTurn(path: string = defaultConfigPath()): number {
-  const fromConfig = readConfig(path).maxIterPerTurn;
-  if (typeof fromConfig === "number" && Number.isFinite(fromConfig) && fromConfig > 0) {
-    return Math.min(100, Math.max(50, Math.floor(fromConfig)));
-  }
-  const fromEnv = process.env.REASONIX_MAX_ITER;
-  if (fromEnv) {
-    const n = Number(fromEnv);
-    if (Number.isFinite(n) && n > 0) return Math.min(100, Math.max(50, Math.floor(n)));
-  }
-  return 50;
-}
-
-/** Persist the per-turn iteration cap. `null` / undefined clears it back to default (50). */
-export function saveMaxIterPerTurn(
-  value: number | null | undefined,
-  path: string = defaultConfigPath(),
-): void {
-  const cfg = readConfig(path);
-  if (value === null || value === undefined) {
-    const { maxIterPerTurn: _drop, ...rest } = cfg;
-    writeConfig(rest, path);
-  } else {
-    const clamped = Math.min(100, Math.max(50, Math.floor(value)));
-    writeConfig({ ...cfg, maxIterPerTurn: clamped }, path);
-  }
 }
 
 /** Returns undefined when no cap is set (caller passes nothing to the API, server default applies). */

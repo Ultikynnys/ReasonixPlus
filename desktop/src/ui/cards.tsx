@@ -1295,7 +1295,7 @@ export type SubagentResultView = {
   /** True when the result WAS the subagent envelope, false for passed-through text. */
   structured: boolean;
   success: boolean;
-  /** Stopped before finishing: budget, iteration cap, or a guard force-summarized it. */
+  /** Stopped before finishing: a repetition or context guard force-summarized it. */
   partial: boolean;
   output: string;
   error?: string;
@@ -1540,13 +1540,8 @@ export function SubagentCard({
                   {dotJoin([
                     run.model ? modelDisplayLabel(run.model) : null,
                     run.phase,
-                    run.iter !== undefined
-                      ? `${run.iter} tools${run.maxToolIters !== undefined ? ` / ${run.maxToolIters}` : ""}`
-                      : null,
+                    run.iter !== undefined ? `${run.iter} tools` : null,
                     run.elapsedMs !== undefined ? formatDuration(run.elapsedMs) : null,
-                    run.maxElapsedMs !== undefined
-                      ? `${formatDuration(run.maxElapsedMs)} limit`
-                      : null,
                   ])}
                 </span>
                 <span className="prog">
@@ -1592,11 +1587,6 @@ export function SubagentCard({
                   run.turns !== undefined ? `${run.turns} turns` : null,
                 ])}
               </div>
-              {run.budgetExhausted ? (
-                <div className="role">
-                  Stopped at {run.budgetExhausted === "elapsed" ? "time" : "tool-call"} budget
-                </div>
-              ) : null}
               {run.error ? <div className="role">{sanitizeTerminalText(run.error)}</div> : null}
             </div>
           ))}

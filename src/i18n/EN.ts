@@ -522,8 +522,6 @@ export const EN: TranslationSchema = {
       "Your previous response again contained only thinking and stopped before answering. Here is that thinking:\n\n{reasoning}\n\nAnswer the user's request now, using that thinking as your notes. Reply with the final answer, or call a tool if work genuinely remains.",
     thinkingOnlyReasoningNudgeWarning:
       "The model stopped after thinking a second time — handed its reasoning back and asked it to answer.",
-    thinkingOnlyRecovered:
-      "The model kept stopping after thinking across {max} recovery attempts, so its own reasoning is shown above as the answer for this turn. Treat it as the model's unpolished output: retry, rephrase the request, or switch models.",
     thinkingOnlyGiveUp:
       "The model produced only thinking without an answer or tool call: ending the turn without an answer. Try again.",
     providerErrorRetry:
@@ -551,21 +549,17 @@ export const EN: TranslationSchema = {
     imagePayloadShrunk:
       "The model provider rejected the request because the attached image(s) made it too large. The images in context were {fate}; the turn is retrying. If you need image detail, load or produce a smaller or cropped image instead of a full-size one.",
     upstreamRefusalRetry:
-      "The provider refused the request without naming a field, so the request may not be faulty. Replaying it automatically (recovery {attempt}/{max}).",
+      "The provider refused the request without naming a field, so the request may not be faulty. Replaying it automatically (recovery {attempt}).",
     upstreamRefusalTrimming:
-      "The provider refused the request without naming a field. Retrying with older tool results trimmed from the outgoing request (recovery {attempt}/{max}).",
+      "The provider refused the request without naming a field. Retrying with older tool results trimmed from the outgoing request (recovery {attempt}).",
     upstreamRefusalCompacting:
-      "The provider refused the request without naming a field. Compacting the conversation so the retry is smaller (recovery {attempt}/{max}).",
-    upstreamRefusalExhausted:
-      "The provider refused the request without naming a field, and recovering did not get it through after {max} attempts. The conversation is intact: continue in a fresh turn, ask for a narrower scope, or switch models.",
+      "The provider refused the request without naming a field. Compacting the conversation so the retry is smaller (recovery {attempt}).",
     reasoningRoundTripRepair:
-      "The provider rejected the request because an earlier assistant turn was sent back without its reasoning. Back-filled the missing reasoning on {count} turn(s) and re-sent (repair {attempt}/{max}).",
+      "The provider rejected the request because an earlier assistant turn was sent back without its reasoning. Back-filled the missing reasoning on {count} turn(s) and re-sent.",
     connectionLostWaiting: "Connection lost. Waiting for connection to be re-established...",
     connectionRestoredResuming: "Connection re-established. Resuming conversation...",
     truncatedContinue:
       "The model hit its output-token limit mid-response — continuing generation from where it stopped.",
-    truncatedGiveUp:
-      "The model kept hitting its output-token limit after {max} continuations — ending the turn with the partial response. Raise the per-turn output cap in Settings or switch model.",
     prematureStopNudge:
       "Your previous message stopped mid-task without completing the work. If the task is now complete, end your reply with the proper final completion message summarizing what was done. If it is not complete, continue working right now with your tools — do not stop halfway.",
     cutOffNudge:
@@ -574,8 +568,6 @@ export const EN: TranslationSchema = {
       "The model's reply was cut off mid-sentence — prompting it to resume from where it stopped.",
     prematureStopWarning:
       "The model stopped mid-task mid-sentence — prompting it to finish the task or end with a proper completion message.",
-    prematureStopGiveUp:
-      "The model ended mid-task after {max} continuation prompts — ending the turn with the partial message. Ask it to continue if needed.",
     repetitionStall:
       "Stopped a degenerating model stream after detecting {repeatedChars} repeated characters (period {period}) in {channel} output. The repetitive tail was discarded; retry or switch models if the response is incomplete.",
     repetitionStallNoPrefix:
@@ -592,20 +584,6 @@ export const EN: TranslationSchema = {
     compactNothing: "Nothing to compact; the context is already small.",
     compactedRecovery:
       "Context window exceeded. Compacted the conversation ({before} -> {after} tokens) and retrying.",
-    iterLimitReached:
-      "Reached the {max}-iteration cap for this turn — stopping this turn. Raise with `maxIterPerTurn` config or REASONIX_MAX_ITER, or ask again in a fresh turn.",
-    iterLimitGrace:
-      "Reached the {max}-iteration cap, but the turn is still making progress. Continuing up to {grace} iterations. Set `maxIterPerTurn` in config or REASONIX_MAX_ITER for a higher cap.",
-    iterLimitPaused:
-      'Reached the {grace}-iteration hard cap. The turn paused; the conversation is intact. Say "continue" to keep going, or set `maxIterPerTurn` in config / REASONIX_MAX_ITER for a higher cap.',
-    iterLimitNeverAsk:
-      "Never Ask mode: reached the {max}-iteration cap, but the turn keeps running unattended, never-ask never pauses on the iteration cap. Stuck loops still stop the turn.",
-    unattendedWrapUp:
-      "Reached the {max}-iteration cap with no operator attached. Asking the subagent to stop gathering and return its findings now; {extra} more iterations before it is force-summarized.",
-    unattendedWrapUpNudge:
-      "Iteration budget exhausted ({max} tool-call iterations). Stop calling tools and return your verified findings now, complete and self-contained. Name exactly what you could not verify.",
-    unattendedBudgetStop:
-      "Stopped at the {max}-iteration budget without a returned answer. These are the findings gathered before the stop, not a complete result.",
     unattendedAnswerNudge:
       "You must return an answer now. Stop calling tools and state your findings, your conclusion, and exactly what you could not verify.",
     unattendedAnswerNudgeWarning:

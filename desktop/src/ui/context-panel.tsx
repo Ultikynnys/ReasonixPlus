@@ -1365,19 +1365,6 @@ function CtxParameters({
     onSaveSettings?.({ autoCompactTrigger: next / 100 });
   };
 
-  const effectiveMaxIter = settings?.maxIterPerTurn ?? 50;
-  const clampedMaxIter = Math.min(100, Math.max(50, effectiveMaxIter));
-  const [iterValue, setIterValue] = useState<number>(clampedMaxIter);
-
-  useEffect(() => {
-    setIterValue(clampedMaxIter);
-  }, [clampedMaxIter]);
-
-  const commitIter = (val: number) => {
-    const next = Math.min(100, Math.max(50, val));
-    onSaveSettings?.({ maxIterPerTurn: next });
-  };
-
   const effectiveDupTokens = settings?.duplicateSessionTokens ?? 50_000;
   const clampedDupTokens = Math.min(1_000_000, Math.max(1_000, effectiveDupTokens));
   const [dupTokensValue, setDupTokensValue] = useState<number>(clampedDupTokens);
@@ -1453,33 +1440,6 @@ function CtxParameters({
               className="mini-btn"
               title={t("contextPanel.autoCompactTriggerResetTooltip")}
               onClick={() => onSaveSettings?.({ autoCompactTrigger: null })}
-            >
-              {t("contextPanel.contextWindowReset")}
-            </button>
-          ) : null
-        }
-      />
-
-      <CtxSliderRow
-        label={t("contextPanel.maxIterations")}
-        value={iterValue}
-        display={t("contextPanel.maxIterationsUnit", { count: iterValue })}
-        min={50}
-        max={100}
-        step={1}
-        boundMin="50"
-        boundMax="100"
-        ariaLabel={t("contextPanel.maxIterations")}
-        onChange={setIterValue}
-        onCommit={commitIter}
-        reset={
-          settings?.maxIterPerTurnOverride !== undefined &&
-          settings?.maxIterPerTurnOverride !== null ? (
-            <button
-              type="button"
-              className="mini-btn"
-              title={t("contextPanel.maxIterationsResetTooltip")}
-              onClick={() => onSaveSettings?.({ maxIterPerTurn: null })}
             >
               {t("contextPanel.contextWindowReset")}
             </button>

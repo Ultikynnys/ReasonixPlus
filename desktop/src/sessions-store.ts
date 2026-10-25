@@ -1,21 +1,27 @@
-import { sortSessionsByCreationDescending } from "@reasonix/core-utils";
+import { type SessionMutationAnswer, sortSessionsByCreationDescending } from "@reasonix/core-utils";
 import type { SessionInfo, SessionMutation } from "./App";
 import { normalizeWorkspacePath } from "./workspace-path";
 
-/** A session-list mutation the user asked for and the daemon has not confirmed.
- *  Intents are the ONLY source of hidden rows: no timer, no per-channel copy. */
+/** The request a mutation intent was opened for, exactly as it went on the wire, so
+ *  a retry re-sends the same ask instead of inventing a new one. */
+export type SessionIntentRequest =
+  | { kind: "delete"; name: string }
+  | { kind: "clear"; names: readonly string[]; keep: readonly string[] }
+  | { kind: "create"; origin: "new-chat" | "duplicate" };
+
+/** A session-list mutation the user asked for and the daemon has not answered.
+ *  Intents are the ONLY source of hidden rows, and only the daemon's answer to the
+ *  request id below can retire one: no timer, no marker, no per-channel copy. */
 export interface SessionIntent {
-  id: number;
+  /** The request id the daemon echoes in a snapshot's `answers`. */
+  requestId: string;
   kind: SessionMutation["kind"];
   /** Names this intent keeps hidden until it settles (empty for a create). */
   hide: readonly string[];
-  /** Create only: the session that must be listed before the intent settles. */
-  expectName?: string;
-  /** Entry revision observed when the intent was recorded; a snapshot can only
-   *  settle it by being strictly newer than this. */
-  requestedRevision: number;
-  /** Newer snapshots that left it unsettled, for the bounded escape. */
-  unconfirmed: number;
+  /** What was asked, so an unanswered request can be re-sent unchanged. */
+  request: SessionIntentRequest;
+  /** How many times the caller has re-sent it without an answer. */
+  attempts: number;
 }
 
 /** One workspace's list. Every channel on that workspace reads THIS, so no
@@ -35,7 +41,6 @@ export interface SessionsEntry {
 
 export interface SessionsStore {
   byWorkspace: ReadonlyMap<string, SessionsEntry>;
-  nextIntentId: number;
 }
 
 export interface SessionsSnapshot {
@@ -44,21 +49,31 @@ export interface SessionsSnapshot {
   items: readonly SessionInfo[];
   /** A cache read, not a scan: it may only be the first word on a workspace. */
   primed?: boolean;
-  settledDeletes?: readonly { name: string; removed: boolean }[];
+  /** The requests this snapshot answers. The daemon emits one per mutation. */
+  answers?: readonly SessionMutationAnswer[];
 }
 
 export interface SnapshotResult {
   store: SessionsStore;
   /** False when nothing the sidebar renders changed, so the caller need not render. */
   changed: boolean;
-  /** Intents dropped by the bounded escape; the caller owes one fresh list request. */
-  escaped: readonly SessionIntent[];
+  /** The intents this snapshot settled, each with the answer that settled it. */
+  answered: readonly AnsweredSessionIntent[];
 }
 
-/** How many later listings may still show a hidden name before the hide is dropped.
- *  Dropping it then is truthful: the daemon has asserted that many times that the
- *  session is alive, and a row that cannot be hidden forever beats a stuck sidebar. */
-export const INTENT_ESCAPE_SNAPSHOTS = 3;
+/** An intent this snapshot settled, and what the daemon said about it. */
+export interface AnsweredSessionIntent {
+  request: SessionIntentRequest;
+  answer: SessionMutationAnswer;
+}
+
+/** One unanswered mutation, with the workspace its answer belongs to. */
+export interface PendingSessionRequest {
+  workspaceDir: string;
+  requestId: string;
+  request: SessionIntentRequest;
+  attempts: number;
+}
 
 /** Minimum gap between focus-driven list reconciles. A window regaining focus is the one
  *  moment this app can notice a session removed outside it, and the throttle keeps a
@@ -186,7 +201,7 @@ function latestIntent(store: SessionsStore, workspaceDir?: string): SessionInten
 }
 
 export function emptySessionsStore(): SessionsStore {
-  return { byWorkspace: new Map(), nextIntentId: 0 };
+  return { byWorkspace: new Map() };
 }
 
 export function sessionsEntry(store: SessionsStore, workspaceDir?: string): SessionsEntry {
@@ -205,15 +220,85 @@ export function hiddenNames(store: SessionsStore, workspaceDir?: string): string
 /** The in-flight mutation the progress pill reports: the user's most recent ask. */
 export function mutationFor(store: SessionsStore, workspaceDir?: string): SessionMutation | null {
   const latest = latestIntent(store, workspaceDir);
-  if (latest === undefined) return null;
-  if (latest.kind === "create") return { kind: "create", awaitingName: latest.expectName };
-  return { kind: latest.kind };
+  return latest === undefined ? null : { kind: latest.kind };
 }
 
-/** Identifies the open mutation so a caller can act once per intent (a stuck-hide
- *  reconciliation must not re-request on every snapshot). */
-export function openIntentId(store: SessionsStore, workspaceDir?: string): number | null {
-  return latestIntent(store, workspaceDir)?.id ?? null;
+/** Every unanswered mutation in the store, oldest first, with the workspace its answer
+ *  belongs to. This is the caller's whole retry queue: a request stays here exactly as
+ *  long as the daemon has not answered it. */
+export function pendingSessionRequests(store: SessionsStore): PendingSessionRequest[] {
+  const pending: PendingSessionRequest[] = [];
+  for (const [workspaceDir, entry] of store.byWorkspace) {
+    for (const intent of entry.intents) {
+      pending.push({
+        workspaceDir,
+        requestId: intent.requestId,
+        request: intent.request,
+        attempts: intent.attempts,
+      });
+    }
+  }
+  return pending;
+}
+
+/** Counts one unanswered re-send of `requestId`, so the caller can bound its retries
+ *  without keeping a second copy of what is in flight. */
+export function noteIntentAttempt(
+  store: SessionsStore,
+  workspaceDir: string,
+  requestId: string,
+): SessionsStore {
+  return remapIntent(store, workspaceDir, requestId, (intent) => ({
+    ...intent,
+    attempts: intent.attempts + 1,
+  }));
+}
+
+/** Retires a request the daemon never answered. The rows it hid come back: a client
+ *  that cannot reach its backend cannot claim they are gone. Reports whether anything
+ *  was dropped, so the caller only speaks up when it gave something up. */
+export function abandonIntent(
+  store: SessionsStore,
+  workspaceDir: string,
+  requestId: string,
+): { store: SessionsStore; abandoned: boolean } {
+  const key = normalizeWorkspacePath(workspaceDir);
+  const entry = store.byWorkspace.get(key);
+  if (entry === undefined || !entry.intents.some((intent) => intent.requestId === requestId)) {
+    return { store, abandoned: false };
+  }
+  const intents = entry.intents.filter((intent) => intent.requestId !== requestId);
+  const next: SessionsEntry = {
+    ...entry,
+    items: keepRows(entry.items, entry.raw, intents),
+    intents,
+  };
+  return { store: writeEntry(store, key, next), abandoned: true };
+}
+
+/** Copy-on-write edit of ONE intent; every intent that is not `requestId` keeps its
+ *  identity, so a rerender can still bail out on unchanged rows. */
+function remapIntent(
+  store: SessionsStore,
+  workspaceDir: string,
+  requestId: string,
+  edit: (intent: SessionIntent) => SessionIntent,
+): SessionsStore {
+  const key = normalizeWorkspacePath(workspaceDir);
+  const entry = store.byWorkspace.get(key);
+  if (entry === undefined) return store;
+  let touched = false;
+  const intents = entry.intents.map((intent) => {
+    if (intent.requestId !== requestId) return intent;
+    touched = true;
+    return edit(intent);
+  });
+  if (!touched) return store;
+  return writeEntry(store, key, {
+    ...entry,
+    intents,
+    items: keepRows(entry.items, entry.raw, intents),
+  });
 }
 
 /** True while ANY workspace holds an open intent. App-global operators (forgetting a
@@ -226,34 +311,50 @@ export function hasOpenSessionIntent(store: SessionsStore): boolean {
   return false;
 }
 
-/** Records a mutation the user asked for. `delete` hides one name, `clear` hides
- *  everything on screen except the `keep` names (sessions a delete must preserve,
- *  e.g. one with a running agent), `create` hides nothing and waits for its session
- *  to list. */
+/** What the user asked a session mutation to do, before it has an id. `kind` decides
+ *  which fields exist, so a delete cannot arrive without its name, a clear without the
+ *  names it clears, and a create without saying which chat it opens. */
+export type SessionMutationAsk =
+  | { kind: "delete"; name: string }
+  | { kind: "clear"; names: readonly string[]; keep?: readonly string[] }
+  | { kind: "create"; origin: "new-chat" | "duplicate" };
+
+/** The record an ask goes on the wire as. ONE definition: `beginIntent` stores what this
+ *  returns and the click sends what this returns, so the request the user's click makes
+ *  and the request a retry repeats cannot disagree. A clear records the names it dooms,
+ *  already minus the ones it promised to keep. */
+export function intentRecord(
+  ask: SessionMutationAsk & { requestId: string },
+): SessionIntentRequest {
+  if (ask.kind === "delete") return { kind: "delete", name: ask.name };
+  if (ask.kind === "clear") {
+    const keep = new Set(ask.keep ?? []);
+    return { kind: "clear", names: ask.names.filter((n) => !keep.has(n)), keep: [...keep] };
+  }
+  return { kind: "create", origin: ask.origin };
+}
+
+/** Records a mutation the user asked for, under the request id the daemon will answer.
+ *  `delete` hides one name, `clear` hides every name the request dooms, `create` hides
+ *  nothing and waits for its own answer. */
 export function beginIntent(
   store: SessionsStore,
   workspaceDir: string | undefined,
-  request: { kind: SessionMutation["kind"]; name?: string; keep?: readonly string[] },
+  ask: SessionMutationAsk & { requestId: string },
 ): SessionsStore {
   const key = normalizeWorkspacePath(workspaceDir);
   const entry = entryFor(store, key);
-  const id = store.nextIntentId + 1;
-  const keep = new Set(request.keep ?? []);
+  const request = intentRecord(ask);
+  // Read off the record, never off the ask: what the sidebar hides and what the daemon
+  // is told are the same list, so neither can be the odd one out.
   const hide =
-    request.kind === "delete"
-      ? request.name === undefined || keep.has(request.name)
-        ? []
-        : [request.name]
-      : request.kind === "clear"
-        ? entry.items.map((row) => row.name).filter((row) => !keep.has(row))
-        : [];
+    request.kind === "delete" ? [request.name] : request.kind === "clear" ? request.names : [];
   const intent: SessionIntent = {
-    id,
-    kind: request.kind,
+    requestId: ask.requestId,
+    kind: ask.kind,
     hide,
-    expectName: request.kind === "create" ? request.name : undefined,
-    requestedRevision: entry.revision,
-    unconfirmed: 0,
+    request,
+    attempts: 0,
   };
   const intents = [...entry.intents, intent];
   const next: SessionsEntry = {
@@ -261,7 +362,7 @@ export function beginIntent(
     items: keepRows(entry.items, entry.raw, intents),
     intents,
   };
-  return { ...writeEntry(store, key, next), nextIntentId: id };
+  return writeEntry(store, key, next);
 }
 
 /** Applies an optimistic row edit (rename, reorder) to the shared list. The next
@@ -286,30 +387,15 @@ export function patchSession(
   return writeEntry(store, key, next);
 }
 
-/** True when `snapshot` answers `intent` on content alone: the name it hides is gone,
- *  or the snapshot settles it explicitly; a create needs its session listed. */
-function settledByContent(intent: SessionIntent, snapshot: SessionsSnapshot): boolean {
-  if (intent.kind === "create") {
-    if (intent.expectName === undefined) return true;
-    return snapshot.items.some((item) => item.name === intent.expectName);
-  }
-  const listed = new Set(snapshot.items.map((item) => item.name));
-  const settled = new Set((snapshot.settledDeletes ?? []).map((result) => result.name));
-  return intent.hide.every((name) => !listed.has(name) || settled.has(name));
-}
-
 function sameIntentIdentity(a: readonly SessionIntent[], b: readonly SessionIntent[]): boolean {
   if (a === b) return true;
   if (a.length !== b.length) return false;
   return a.every((intent, index) => intent === b[index]);
 }
 
-/** Folds one `$sessions` snapshot into the store.
- *
- *  A primed (cache) payload may only initialise a workspace with no authoritative
- *  snapshot yet and never advances a revision, so it cannot outrank a settled scan.
- *  An authoritative payload applies when the epoch changed (a restart, where disk is
- *  the only truth) or when its revision is newer; otherwise it is a stale result. */
+/** Folds one `$sessions` snapshot into the store. Only `answers` retires an intent: a
+ *  listing that still holds a hidden name, or that happens to list a session nobody
+ *  asked about, is some other request's truth, never this one's. */
 export function applySessionsSnapshot(
   store: SessionsStore,
   workspaceDir: string | undefined,
@@ -319,12 +405,12 @@ export function applySessionsSnapshot(
   const entry = entryFor(store, key);
 
   if (snapshot.primed === true) {
-    if (entry.confirmed) return { store, changed: false, escaped: [] };
+    if (entry.confirmed) return { store, changed: false, answered: [] };
     const items = keepRows(entry.items, snapshot.items, entry.intents);
     const sameEpoch = entry.epoch === snapshot.epoch;
     const sameRaw = sameSessionRows(entry.raw, snapshot.items);
     if (sameEpoch && sameRaw && items === entry.items) {
-      return { store, changed: false, escaped: [] };
+      return { store, changed: false, answered: [] };
     }
     const next: SessionsEntry = {
       ...entry,
@@ -332,55 +418,42 @@ export function applySessionsSnapshot(
       items,
       epoch: snapshot.epoch,
     };
-    return { store: writeEntry(store, key, next), changed: items !== entry.items, escaped: [] };
+    return { store: writeEntry(store, key, next), changed: items !== entry.items, answered: [] };
   }
 
   const epochChanged = entry.epoch !== snapshot.epoch;
-  if (!epochChanged && entry.confirmed && snapshot.revision <= entry.revision) {
-    return { store, changed: false, escaped: [] };
+  const answers = new Map((snapshot.answers ?? []).map((answer) => [answer.requestId, answer]));
+  // A new daemon lifetime can never answer a request recorded against the old one.
+  const answered: AnsweredSessionIntent[] = epochChanged
+    ? []
+    : entry.intents.flatMap((intent) => {
+        const answer = answers.get(intent.requestId);
+        return answer === undefined ? [] : [{ request: intent.request, answer }];
+      });
+  const newer = epochChanged || !entry.confirmed || snapshot.revision > entry.revision;
+  if (!newer && answered.length === 0) {
+    return { store, changed: false, answered: [] };
   }
 
-  const intents: SessionIntent[] = [];
-  const escaped: SessionIntent[] = [];
-  // A new daemon lifetime cannot confirm an intent recorded against the old one:
-  // disk is the only truth left, and hiding a row the restarted daemon lists would
-  // be a lie the frontend could never resolve.
-  let intentsChanged = epochChanged;
+  const openIntents: SessionIntent[] = [];
   if (!epochChanged) {
+    const settled = new Set(answered.map((entryAnswer) => entryAnswer.answer.requestId));
     for (const intent of entry.intents) {
-      // A snapshot older than the request cannot answer it.
-      if (snapshot.revision <= intent.requestedRevision) {
-        intents.push(intent);
-        continue;
-      }
-      if (settledByContent(intent, snapshot)) {
-        intentsChanged = true;
-        continue;
-      }
-      const unconfirmed = intent.unconfirmed + 1;
-      if (unconfirmed >= INTENT_ESCAPE_SNAPSHOTS) {
-        escaped.push(intent);
-        intentsChanged = true;
-        continue;
-      }
-      intents.push({ ...intent, unconfirmed });
-      intentsChanged = true;
+      if (!settled.has(intent.requestId)) openIntents.push(intent);
     }
   }
-
-  const openIntents = intentsChanged ? intents : entry.intents;
   const items = keepRows(entry.items, snapshot.items, openIntents);
   const next: SessionsEntry = {
     raw: [...snapshot.items],
     items,
     epoch: snapshot.epoch,
-    revision: snapshot.revision,
+    revision: Math.max(entry.revision, snapshot.revision),
     confirmed: true,
     intents: openIntents,
   };
   return {
     store: writeEntry(store, key, next),
     changed: items !== entry.items || !sameIntentIdentity(entry.intents, openIntents),
-    escaped,
+    answered,
   };
 }

@@ -967,7 +967,6 @@ describe("loop-repetition-guard-toggle", () => {
         prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
         tools: reg,
         stream: false,
-        maxToolIters: 8,
       });
 
       const events = await drain(loop, "explore");
@@ -984,7 +983,6 @@ describe("loop-repetition-guard-toggle", () => {
         tools: reg,
         stream: false,
         repetitionGuardEnabled: true,
-        maxToolIters: 8,
       });
 
       const events = await drain(loop, "explore");

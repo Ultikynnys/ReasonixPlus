@@ -7,6 +7,7 @@ import {
   clearSessionPlan,
   deletableSessionNames,
   missingSessionRefusal,
+  newAnsweredMutationLog,
   sessionRunningRefusal,
   sessionsWithLiveTurn,
   shouldDetachDeletedSession,
@@ -229,13 +230,197 @@ describe("desktop — a session mutation owns its workspace while it settles", (
   });
 
   it("stands the focus reconcile down while a mutation is settling", () => {
-    // Every extra listing counts as one that did not confirm an open hide, so the
-    // outside-deletion reconcile must not run against a workspace mid-settle.
+    // An open mutation is answered by its own request id, so a focus listing can only
+    // waste a walk over the store: the reconcile waits for the answer instead.
     const focus = app.slice(
       app.indexOf("const lastFocusRefreshRef = useRef(0);"),
       app.indexOf("// Tracks each tab's running-agent flag"),
     );
     expect(focus).toContain("if (hasOpenSessionIntent(sessionsStoreRef.current)) return;");
     expect(focus.indexOf("hasOpenSessionIntent")).toBeLessThan(focus.indexOf("requestSessionList"));
+  });
+
+  it("answers a delete with the client's own request id, on every exit", () => {
+    const remove = daemon.slice(
+      daemon.indexOf('if (msg.cmd === "session_delete") {'),
+      daemon.indexOf('if (msg.cmd === "session_clear") {'),
+    );
+    expect(remove).toContain("const requestId = mutationRequestId(msg.requestId);");
+    // Every exit publishes the answer through the ONE publisher, and each one is the
+    // same request; a re-send republishes the stored answer instead of mutating again.
+    const published = remove.match(/publishSessionAnswer\(tab, [^)]*\)/g) ?? [];
+    expect(published).toHaveLength(3);
+    expect(published.filter((call) => call.includes("requestId"))).toHaveLength(2);
+    expect(remove).toContain("publishSessionAnswer(tab, known);");
+  });
+
+  it("answers a clear through the same publisher, including its crash fallback", () => {
+    const clear = daemon.slice(
+      daemon.indexOf('if (msg.cmd === "session_clear") {'),
+      daemon.indexOf('if (msg.cmd === "session_rename") {'),
+    );
+    expect(clear).toContain("const requestId = mutationRequestId(msg.requestId);");
+    // The crash fallback answers too: a clear that never finished must not stay hidden.
+    expect(clear).toContain(".catch((err) => {");
+    expect(clear.match(/publishSessionAnswer\(tab, \{ requestId \}\)/g)).toHaveLength(2);
+    expect(clear).toContain("publishSessionAnswer(tab, known);");
+  });
+
+  it("never lets a workspace refresh carry an answer, so a request answers once", () => {
+    const resync = daemon.slice(
+      daemon.indexOf("function resyncAfterDeletes("),
+      daemon.indexOf("function focusSessionChannel("),
+    );
+    // A delete can touch several workspaces; refreshing them all with the answer would
+    // publish the same request's verdict once per workspace.
+    expect(resync).not.toContain("answers");
+    expect(resync).toContain("emitSessionsForWorkspace(dir, undefined, { revalidate: false })");
+    expect(daemon).toContain("function publishSessionAnswer(");
+  });
+
+  it("emits ONE snapshot per workspace, not one per channel", () => {
+    const emit = daemon.slice(
+      daemon.indexOf("function emitSessionsForWorkspace("),
+      daemon.indexOf("function createTabSkeleton("),
+    );
+    expect(emit).toContain("void emitSessions(channel,");
+    // A loop over the workspace's channels would make N channels N verdicts.
+    expect(emit).not.toContain("for (const t of tabsInWorkspace(");
+  });
+
+  it("answers a re-sent request from the log instead of mutating twice", () => {
+    const answered = daemon.slice(
+      daemon.indexOf('if (msg.cmd === "session_delete") {'),
+      daemon.indexOf('if (msg.cmd === "session_clear") {'),
+    );
+    expect(answered).toContain("const known = answeredMutations.get(requestId);");
+    expect(answered.indexOf("answeredMutations.get(requestId)")).toBeLessThan(
+      answered.indexOf("detachDoomedSessionWriters("),
+    );
+  });
+});
+
+describe("desktop — a repeated mutation request is answered, not repeated", () => {
+  it("remembers an answered request so a re-send can republish its answer", () => {
+    const answered = newAnsweredMutationLog();
+    expect(answered.get("m1")).toBeUndefined();
+    answered.add({ requestId: "m1", created: "session-b" });
+    expect(answered.get("m1")).toEqual({ requestId: "m1", created: "session-b" });
+    // Adding twice must not consume a second slot: a re-send is the same request.
+    answered.add({ requestId: "m1", created: "other" });
+    expect(answered.get("m1")).toEqual({ requestId: "m1", created: "session-b" });
+  });
+
+  it("forgets the oldest answer so a long session cannot grow the log", () => {
+    const answered = newAnsweredMutationLog(2);
+    answered.add({ requestId: "m1" });
+    answered.add({ requestId: "m2" });
+    answered.add({ requestId: "m3" });
+    expect(answered.get("m1")).toBeUndefined();
+    expect(answered.get("m2")).toEqual({ requestId: "m2" });
+    expect(answered.get("m3")).toEqual({ requestId: "m3" });
+  });
+});
+
+describe("desktop — session creation is answered like any other request", () => {
+  const daemon = readFileSync(join(process.cwd(), "src/cli/commands/desktop.ts"), "utf8");
+  const app = readFileSync(join(process.cwd(), "desktop/src/App.tsx"), "utf8");
+
+  it("asks for the create under a client request id", () => {
+    const newChat = daemon.slice(
+      daemon.indexOf('if (msg.cmd === "new_chat") {'),
+      daemon.indexOf('if (msg.cmd === "duplicate_session") {'),
+    );
+    expect(newChat).toContain("requestId: mutationRequestId(msg.requestId)");
+
+    const duplicate = daemon.slice(
+      daemon.indexOf('if (msg.cmd === "duplicate_session") {'),
+      daemon.indexOf('if (msg.cmd === "oauth_begin") {'),
+    );
+    expect(duplicate).toContain("const requestId = mutationRequestId(msg.requestId);");
+    // An empty duplicate is refused, and a refusal still owes the client an answer.
+    expect(duplicate).toContain("answerCreateRefusal(tab, requestId);");
+  });
+
+  it("answers every path that will not mint", () => {
+    const open = daemon.slice(
+      daemon.indexOf("function openFreshChat("),
+      daemon.indexOf("// Restore the full tab set from the previous session"),
+    );
+    // Re-send of an already answered request: republish, never mint twice.
+    expect(open.indexOf("const known = answeredMutations.get(spec.requestId);")).toBeGreaterThan(0);
+    expect(open.indexOf("const known = answeredMutations.get(spec.requestId);")).toBeLessThan(
+      open.indexOf("sessionCreationGate.tryEnter("),
+    );
+    const refusals = open.match(/answerCreateRefusal\(tab, spec\.requestId\);/g) ?? [];
+    expect(refusals).toHaveLength(3);
+  });
+
+  it("answers the mint on the listing that first contains it", () => {
+    const bootStart = daemon.indexOf("const createAnswer: SessionMutationAnswer | undefined");
+    expect(bootStart).toBeGreaterThan(0);
+    const boot = daemon.slice(bootStart, daemon.indexOf("emitMemory(tab);", bootStart));
+    expect(boot).toContain("...(createAnswer ? { answers: [createAnswer] } : {})");
+    expect(boot).toContain("created: tab.currentSession");
+    // The gate reopens where the answer lands, so the two cannot drift apart.
+    expect(boot.indexOf("answeredMutations.add(createAnswer)")).toBeLessThan(
+      boot.indexOf("sessionCreationGate.leave(tab.rootDir)"),
+    );
+  });
+
+  it("answers a bootstrap that never lists its mint, and reopens the gate", () => {
+    const arm = daemon.slice(
+      daemon.indexOf("function armCreationRelease("),
+      daemon.indexOf("function bootstrapTab("),
+    );
+    expect(arm).toContain("const requestId = tab.createRequestId;");
+    // The fallback goes through the same publisher, and only when the listing did not
+    // answer first: that guard is what keeps it to one answer per request.
+    expect(arm).toContain("answeredMutations.get(requestId) === undefined");
+    expect(arm).toContain("publishSessionAnswer(tab, {");
+    expect(arm).toContain("sessionCreationGate.leave(tab.rootDir);");
+  });
+
+  it("sends no create flag on the wire: the click is the only source of the lock", () => {
+    const opened = daemon.slice(
+      daemon.indexOf("function emitTabOpened("),
+      daemon.indexOf("The authoritative tab set"),
+    );
+    expect(opened).not.toContain("creating");
+    expect(app).not.toContain("ev.creating");
+    // Both create kinds lock from the click, through the one mutation entry point.
+    expect(app).toContain('startSessionMutation({ kind: "create", origin: "new-chat" }');
+    expect(app).toContain('startSessionMutation({ kind: "create", origin: "duplicate" }');
+  });
+
+  it("starts every mutation through the one helper that owns the id", () => {
+    const helper = app.slice(
+      app.indexOf("const startSessionMutation = useCallback("),
+      app.indexOf("const newChat = useCallback("),
+    );
+    expect(helper).toContain("const { requestId, request } = onSessionIntent(workspaceDir, ask);");
+    // The click sends what a retry would re-send: one derivation, not two.
+    expect(helper).toContain("mutationCommand(request, requestId)");
+    expect(helper).toContain("if (!sent) onSessionIntentFailed(workspaceDir, requestId);");
+    // No call site may bypass it: a mutation sent without that id could never settle.
+    const callSites = app.match(/startSessionMutation\(\{ kind: "(delete|clear|create)"/g) ?? [];
+    expect(callSites).toHaveLength(4);
+    expect(app).not.toContain('sendRpc({ cmd: "session_delete"');
+    expect(app).not.toContain('sendRpc({ cmd: "session_clear"');
+    expect(app).not.toContain('rpcSend({ tabId, cmd: "new_chat"');
+  });
+
+  it("reports a duplicate from the answer, never from the send", () => {
+    const duplicate = app.slice(
+      app.indexOf("const duplicateSession = useCallback("),
+      app.indexOf("// Sessions whose agent is ACTIVELY RUNNING"),
+    );
+    expect(duplicate).not.toContain('t("app.toast.duplicatedSession")');
+    const sessionsEvent = app.slice(
+      app.indexOf('if (ev.type === "$sessions" && tabId) {'),
+      app.indexOf('if (ev.type === "$workspace_initialized" && tabId) {'),
+    );
+    expect(sessionsEvent).toContain('request.origin !== "duplicate"');
+    expect(sessionsEvent).toContain("settled.answer.created");
   });
 });

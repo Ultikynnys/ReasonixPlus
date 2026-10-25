@@ -6,7 +6,6 @@ import { type DeepSeekClient, Usage } from "../client.js";
 import {
   type ReasoningEffort,
   loadFallbackModels,
-  loadMaxIterPerTurn,
   loadMaxOutputTokens,
   loadModel,
   modelUsableFor,
@@ -68,9 +67,6 @@ export interface SubagentEvent {
   reasoningChars?: number;
   toolReadChars?: number;
   thought?: string;
-  maxToolIters?: number;
-  maxElapsedMs?: number;
-  budgetExhausted?: "tool-iters" | "elapsed";
 }
 
 let runIdCounter = 0;
@@ -94,8 +90,6 @@ export interface ChildLoopConfig {
   ctxMaxOverride: number | undefined;
   /** Auto-compaction trigger fraction (the loop clamps it to [0.5, 0.95]). */
   autoCompactTriggerRatio: number | undefined;
-  /** Per-turn tool-iteration cap, always resolved (config/env fallback). */
-  maxIterPerTurn: number;
   /** Per-response output cap (`max_tokens`); undefined = no cap. */
   maxOutputTokens: number | undefined;
   /** Per-tool-result token cap from the parent's cost policy. */
@@ -114,8 +108,8 @@ export interface ChildLoopConfig {
 /** What a host supplies: the inherited fields, all optional, minus the ones the child
  *  forces. Derived from ChildLoopConfig so the two can never drift apart. */
 export type SubagentLoopOptions = Partial<
-  Omit<ChildLoopConfig, "autoCompact" | "maxIterPerTurn" | "maxResultTokens" | "keepImages">
-> & { maxIterPerTurn?: number; maxResultTokens?: number; keepImages?: number };
+  Omit<ChildLoopConfig, "autoCompact" | "maxResultTokens" | "keepImages">
+> & { maxResultTokens?: number; keepImages?: number };
 
 /** The child loop's config: an inherited value wins, config/env supplies the fallback for
  *  hosts that pass no bag, and auto-compaction is forced on. `defaults` is a parameter
@@ -123,12 +117,10 @@ export type SubagentLoopOptions = Partial<
 export function childLoopOptions(
   inherited?: SubagentLoopOptions,
   defaults: {
-    maxIterPerTurn: number;
     maxOutputTokens?: number;
     maxResultTokens: number;
     keepImages: number;
   } = {
-    maxIterPerTurn: loadMaxIterPerTurn(),
     maxOutputTokens: loadMaxOutputTokens(),
     maxResultTokens: DEFAULT_MAX_RESULT_TOKENS,
     keepImages: KEEP_LAST_IMAGES,
@@ -137,7 +129,6 @@ export function childLoopOptions(
   return {
     ctxMaxOverride: inherited?.ctxMaxOverride,
     autoCompactTriggerRatio: inherited?.autoCompactTriggerRatio,
-    maxIterPerTurn: inherited?.maxIterPerTurn ?? defaults.maxIterPerTurn,
     maxOutputTokens: inherited?.maxOutputTokens ?? defaults.maxOutputTokens,
     maxResultTokens: inherited?.maxResultTokens ?? defaults.maxResultTokens,
     keepImages: inherited?.keepImages ?? defaults.keepImages,
@@ -172,10 +163,6 @@ export interface SpawnSubagentOptions {
    *  `*` grants a name prefix (`ghidra_*`), so one list can span several servers.
    *  NEVER_INHERITED still wins. */
   allowedTools?: readonly string[];
-  /** Enforced count of real child tool dispatches. */
-  maxToolIters?: number;
-  /** Enforced wall-clock deadline for the whole child run. */
-  maxElapsedMs?: number;
   /** Continue an earlier session instead of starting fresh — loads the prior messages from disk; `task` is treated as a continuation nudge. */
   resumeSession?: string;
   /** Everything the child loop inherits from the parent loop (cap, compaction trigger,
@@ -196,8 +183,8 @@ export interface SubagentResult {
   usage: Usage;
   /** True when the child terminated without a full answer (a user-abort placeholder) — `output` carries the placeholder text, routed to `error`. */
   forcedSummary?: boolean;
-  /** The child loop's own explanation for a stop it initiated (iteration budget,
-   *  repetition or context guard). Present so the parent reads WHY the run ended
+  /** The child loop's own explanation for a stop it initiated (repetition or context
+   *  guard). Present so the parent reads WHY the run ended
    *  instead of an unattributed "no answer". */
   stopReason?: string;
   /** Machine tag for that stop. `repetition-guard` means the run was terminated
@@ -206,9 +193,6 @@ export interface SubagentResult {
   /** The provider's quota/credits ran out, so replaying this model cannot help.
    *  The spawn site walks the configured backup models while this is set. */
   quotaExhausted?: boolean;
-  budgetExhausted?: "tool-iters" | "elapsed";
-  maxToolIters?: number;
-  maxElapsedMs?: number;
 }
 
 export interface SubagentToolOptions {
@@ -241,7 +225,8 @@ Rules:
 - Use the tools you have. A tool you cannot see was not granted to this run: MCP tools, when this run has them, arrive under their server-name prefix. You share the parent's sandbox and safety rules.
 - When you're done, your final assistant message is the only thing the parent will see: make it complete and self-contained. Never end silently. No follow-up offers, no questions, no "let me know if you need more."
 - Write that message for the parent agent to act on, and for a person to read: what you actually did (the files you read or changed, the commands you ran), what you found, what you verified and what you only assumed, and why you stopped. Concrete names and results, no narration of intent, and a few lines rather than a transcript of every step.
-- You must return an answer. Ending a run with nothing is a failure, and nobody will ask you again: when your budget runs out, stop calling tools and return the best answer you have, naming what you could not verify.
+- You must return an answer. Ending a run with nothing is a failure, and nobody will ask you again: stop calling tools and return the best answer you have when the task is done, naming what you could not verify.
+- There is no turn, step or tool-call budget. Nothing stops you for working long; if you believe you are near a limit or a maximum, you are not.
 
 ${NEGATIVE_CLAIM_RULE}
 
@@ -296,24 +281,6 @@ export function allowListCovers(allow: Iterable<string>, toolName: string): bool
   return false;
 }
 
-/** Per-session spawn count past which the soft hint fires on every subsequent return. */
-const SOFT_HINT_AFTER_SPAWNS = 1;
-/** Per-session count past which the strong hint fires (asks the model to justify the next spawn). */
-const STRONG_HINT_AFTER_SPAWNS = 4;
-/** Per-session cumulative subagent token total past which the strong hint also fires. */
-const STRONG_HINT_TOKEN_THRESHOLD = 50_000;
-
-/** null → first spawn of the session, no hint. Pure for testability. */
-export function subagentBudgetHint(spawnCount: number, totalTokens: number): string | null {
-  if (spawnCount > STRONG_HINT_AFTER_SPAWNS || totalTokens >= STRONG_HINT_TOKEN_THRESHOLD) {
-    return `[budget: this session has now spawned ${spawnCount} subagents totalling ${totalTokens} tokens. Each spawn pays a fresh prefix-cache miss plus a full child loop: confirm the next spawn is genuinely needed (parallel fan-out or >10-read context blow-up) before calling spawn_subagent again. If you can answer with direct tools, do that instead.]`;
-  }
-  if (spawnCount > SOFT_HINT_AFTER_SPAWNS) {
-    return `[note: this session has spawned ${spawnCount} subagents totalling ${totalTokens} tokens; confirm this one is worth it.]`;
-  }
-  return null;
-}
-
 /** The one stop that kills a run outright instead of forcing an answer out of it —
  *  the single predicate behind both the error text and the `terminated` flag. */
 function isRepetitionGuardStop(cause: WarningCause | undefined): boolean {
@@ -332,8 +299,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   const parentCallId = opts.parentCallId;
   const parentTurn = opts.parentTurn;
   const runId = nextRunId();
-  const maxToolIters = opts.maxToolIters;
-  const maxElapsedMs = opts.maxElapsedMs;
   const sessionName = opts.resumeSession ?? `subagent-${runId}-${timestampSuffix()}`;
 
   const startedAt = Date.now();
@@ -354,8 +319,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     model,
     iter: 0,
     elapsedMs: 0,
-    maxToolIters,
-    maxElapsedMs,
     waveSize: opts.waveSize,
     // The meter denominator is known at spawn time, before the first model call.
     contextMax,
@@ -405,22 +368,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
         NEVER_INHERITED_TOOLS,
       )
     : forkRegistryExcluding(opts.parentRegistry, NEVER_INHERITED_TOOLS);
-  let budgetExhausted: "tool-iters" | "elapsed" | undefined;
-  let dispatchedTools = 0;
-  if (maxToolIters !== undefined) {
-    childTools.addToolInterceptor("subagent-tool-budget", () => {
-      if (dispatchedTools >= maxToolIters) {
-        budgetExhausted = "tool-iters";
-        return JSON.stringify({
-          error: `subagent tool budget exhausted after ${maxToolIters} calls: stop using tools and return your verified findings now`,
-          __reasonixSubagentBudgetRefusal: true,
-          budgetExhausted,
-        });
-      }
-      dispatchedTools++;
-      return undefined;
-    });
-  }
   const childPrefix = new ImmutablePrefix({
     system: opts.system,
     toolSpecs: childTools.specs(),
@@ -463,14 +410,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   //      the fresh controller, so abort() called BEFORE step() runs
   //      still kills the new step at iter 0.
   const onParentAbort = () => childLoop.abort();
-  const deadlineTimer =
-    maxElapsedMs === undefined
-      ? undefined
-      : setTimeout(() => {
-          budgetExhausted = "elapsed";
-          childLoop.abort();
-        }, maxElapsedMs);
-  deadlineTimer?.unref?.();
   if (opts.parentSignal?.aborted) {
     childLoop.abort();
   } else {
@@ -558,16 +497,10 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
 
       if (ev.role === "tool") {
         recentThought = "";
-        let budgetRefusal = false;
-        try {
-          budgetRefusal = JSON.parse(ev.content ?? "{}").__reasonixSubagentBudgetRefusal === true;
-        } catch {
-          // Normal non-JSON tool results are real work and count toward the budget.
-        }
-        if (!budgetRefusal) toolIter++;
+        toolIter++;
         // New tool dispatched — the model went back to deciding, summarising flag resets so the next final-answer delta re-emits.
         summarisingEmitted = false;
-        if (!budgetRefusal) toolReadChars += ev.content?.length ?? 0;
+        toolReadChars += ev.content?.length ?? 0;
         emit({
           kind: "progress",
           runId,
@@ -647,7 +580,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   } catch (err) {
     errorMessage = (err as Error).message;
   } finally {
-    if (deadlineTimer) clearTimeout(deadlineTimer);
     clearInterval(heartbeat);
     opts.parentSignal?.removeEventListener("abort", onParentAbort);
   }
@@ -657,10 +589,10 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   // still counts as a failure: no answer came back, the parent has
   // nothing to render. Synthesize an error so `success: false` and the
   // UI surfaces the abort instead of returning empty output.
-  if (!final && streamedContent.trim() && (budgetExhausted || stopReason)) {
+  if (!final && streamedContent.trim() && stopReason) {
     // Content already streamed is real work: keep it as the partial result for
-    // ANY stop, not just the wrapper's own timers. A loop-initiated stop carries
-    // no error text here, so the reason rides alongside instead of replacing it.
+    // ANY stop. A loop-initiated stop carries no error text here, so the reason
+    // rides alongside instead of replacing it.
     final = streamedContent.trim();
     forcedSummaryFired = true;
     errorMessage = undefined;
@@ -674,13 +606,11 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
       : "subagent terminated by the repetition guard";
   }
   if (!errorMessage && !final) {
-    errorMessage = budgetExhausted
-      ? `subagent ${budgetExhausted === "elapsed" ? "time" : "tool-call"} budget exhausted before a final answer`
-      : opts.parentSignal?.aborted
-        ? "subagent aborted before producing an answer"
-        : stopReason
-          ? `subagent stopped before producing a final answer: ${stopReason}`
-          : "subagent ended without producing an answer";
+    errorMessage = opts.parentSignal?.aborted
+      ? "subagent aborted before producing an answer"
+      : stopReason
+        ? `subagent stopped before producing a final answer: ${stopReason}`
+        : "subagent ended without producing an answer";
   }
 
   const elapsedMs = Date.now() - startedAt;
@@ -708,13 +638,10 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     usage,
     contextTokens,
     contextMax,
-    maxToolIters,
-    maxElapsedMs,
-    budgetExhausted,
   });
 
   return {
-    success: !errorMessage && !forcedSummaryFired && !budgetExhausted,
+    success: !errorMessage && !forcedSummaryFired,
     output: errorMessage ? "" : truncated,
     error: errorMessage,
     turns,
@@ -726,9 +653,6 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     forcedSummary: forcedSummaryFired || undefined,
     ...(stopReason ? { stopReason } : {}),
     ...(stopCause ? { stopCause } : {}),
-    budgetExhausted,
-    maxToolIters,
-    maxElapsedMs,
     ...(quotaExhausted ? { quotaExhausted: true } : {}),
   };
 }
@@ -761,22 +685,6 @@ export function formatSubagentResult(r: SubagentResult): string {
     // kills a run outright.
     ...(isRepetitionGuardStop(r.stopCause) ? { terminated: true } : {}),
   };
-  if (r.budgetExhausted) {
-    return JSON.stringify({
-      success: false,
-      partial: true,
-      output: r.output || undefined,
-      error: r.error,
-      budget_exhausted: r.budgetExhausted,
-      max_tool_iters: r.maxToolIters,
-      max_elapsed_ms: r.maxElapsedMs,
-      turns: r.turns,
-      tool_iters: r.toolIters,
-      elapsed_ms: r.elapsedMs,
-      ...meta,
-      note: "Subagent stopped at its enforced work budget. Treat any output as partial findings; follow up directly only on a specific unresolved risk.",
-    });
-  }
   if (r.forcedSummary) {
     return JSON.stringify({
       success: false,
@@ -786,7 +694,7 @@ export function formatSubagentResult(r: SubagentResult): string {
       tool_iters: r.toolIters,
       elapsed_ms: r.elapsedMs,
       ...meta,
-      note: "Subagent was force-summarized: it was stopped before finishing (iteration cap, work budget, repetition or context guard) and never produced an answer of its own. `output` carries what it had produced: useful but potentially incomplete. Decide whether to accept the partial, narrow the task and re-spawn, or fall back to direct tools.",
+      note: "Subagent was force-summarized: it was stopped before finishing (repetition or context guard) and never produced an answer of its own. `output` carries what it had produced: useful but potentially incomplete. Decide whether to accept the partial, narrow the task and re-spawn, or fall back to direct tools.",
     });
   }
   if (!r.success) {
@@ -843,10 +751,6 @@ export function registerSubagentTool(
   const resolveClient = (model: string): DeepSeekClient =>
     typeof opts.client === "function" ? opts.client(model) : opts.client;
   const maxResultChars = opts.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
-  // Per-session counters survive across spawn calls because registerSubagentTool
-  // runs once per parent registry — closure scope is the session scope.
-  let sessionSpawnCount = 0;
-  let sessionSpawnTokens = 0;
 
   parentRegistry.register({
     name: SUBAGENT_TOOL_NAME,
@@ -908,8 +812,6 @@ export function registerSubagentTool(
           parentSignal: mergeSignals(ctx?.signal, ctx?.cancelSignal),
           inherited: opts.inherited?.(),
         });
-        sessionSpawnCount++;
-        sessionSpawnTokens += result.usage.totalTokens;
         if (opts.onSpawnComplete) {
           try {
             opts.onSpawnComplete(result);
@@ -954,16 +856,14 @@ export function registerSubagentTool(
           );
         }
       }
-      const formatted = formatSubagentResult(result);
-      const hint = subagentBudgetHint(sessionSpawnCount, sessionSpawnTokens);
-      return hint ? `${formatted}\n${hint}` : formatted;
+      return formatSubagentResult(result);
     },
   });
 
   return parentRegistry;
 }
 
-/** Registry forks inherit policy but start fresh counters (session-local limits); plan
+/** Registry forks inherit policy but start fresh state; plan
  *  mode propagates, so a child spawned in plan mode cannot escape it. */
 export function forkRegistryExcluding(
   parent: ToolRegistry,

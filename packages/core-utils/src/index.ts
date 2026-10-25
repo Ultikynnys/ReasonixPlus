@@ -316,6 +316,7 @@ export type {
   SessionsEvent,
   MentionResultsEvent,
   MentionPreviewEvent,
+  SessionMutationAnswer,
   TabOpenedEvent,
   TabClosedEvent,
   WorkspaceInitializedEvent,

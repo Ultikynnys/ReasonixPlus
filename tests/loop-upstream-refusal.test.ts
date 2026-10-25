@@ -106,7 +106,7 @@ describe("CacheFirstLoop — field-less gateway refusal recovery", () => {
     ).toBe(true);
   });
 
-  it("shrinks the outgoing request, then folds the log, before giving up", async () => {
+  it("shrinks the outgoing request, then folds the log", async () => {
     // Seed a history big enough that size is a plausible cause. Each oversized
     // tool result is healed to the send-time char cap, so several are needed to
     // cross the fold floor the ladder keys off.
@@ -147,18 +147,21 @@ describe("CacheFirstLoop — field-less gateway refusal recovery", () => {
     expect(events.some((e) => e.role === "error")).toBe(false);
   });
 
-  it("stops after the bounded ladder and surfaces the refresh advice", async () => {
-    const client = refusingClient(Number.POSITIVE_INFINITY);
+  it("keeps recovering past every stage until the gateway accepts the request", async () => {
+    const client = refusingClient(5);
     const loop = await makeLoop(client);
     const events = await runTurn(loop);
 
-    // The initial attempt plus one per recovery stage, and no more.
-    expect(client.calls()).toBe(4);
+    // Five refusals in a row, past the three stages the ladder used to allow:
+    // it keeps replaying the request until the gateway takes it.
+    expect(client.calls()).toBe(6);
     const warnings = events.filter((e) => e.role === "warning").map((e) => String(e.content));
-    expect(warnings.filter((w) => w.includes("Replaying it automatically")).length).toBe(3);
-    expect(warnings.some((w) => w.includes("recovering did not get it through after 3"))).toBe(
-      true,
+    expect(warnings.filter((w) => w.includes("Replaying it automatically")).length).toBeGreaterThan(
+      1,
     );
-    expect(events.some((e) => e.role === "error")).toBe(true);
+    expect(events.some((e) => e.role === "error")).toBe(false);
+    expect(
+      events.some((e) => e.role === "assistant_delta" && e.content === "recovered answer"),
+    ).toBe(true);
   });
 });
