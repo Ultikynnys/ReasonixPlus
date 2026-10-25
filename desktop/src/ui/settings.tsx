@@ -73,8 +73,12 @@ import {
   getActiveVoiceModelId,
   isVoiceModelDownloaded,
 } from "../voice/model-cache";
-import { VOICE_ENGINES, VOICE_MODELS, type VoiceModelId } from "../voice/model-registry";
-import { speechTranscriber } from "../voice/transcriber";
+import {
+  type BarkRuntimeStatus,
+  barkRuntimeStatus,
+  removeBarkRuntime,
+} from "../voice/bark-engine";
+import { VOICE_ENGINES, VOICE_MODELS, type VoiceModelId } from "../voice/model-registry";import { speechTranscriber } from "../voice/transcriber";
 import { type ChangelogState, PageChangelog } from "./changelog";
 import { FitText } from "./fit-text";
 import { activationHandler, escapeHandler } from "./keyboard";
@@ -1269,6 +1273,7 @@ function VoiceModelList() {
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [downloadFile, setDownloadFile] = useState<string>("");
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<BarkRuntimeStatus | null>(null);
 
   const refreshDownloaded = useCallback(async () => {
     const nextMap: Record<string, boolean> = {};
@@ -1276,8 +1281,13 @@ function VoiceModelList() {
       nextMap[m.modelId] = await isVoiceModelDownloaded(m.modelId);
     }
     setDownloadedMap(nextMap);
+    try {
+      setRuntimeStatus(await barkRuntimeStatus());
+    } catch {
+      // A browser build has no host runtime to report.
+      setRuntimeStatus(null);
+    }
   }, []);
-
   useEffect(() => {
     refreshDownloaded();
   }, [refreshDownloaded]);
@@ -1326,6 +1336,15 @@ function VoiceModelList() {
     }
   };
 
+  const handleRemoveRuntime = async () => {
+    try {
+      await removeBarkRuntime();
+      await refreshDownloaded();
+    } catch (err) {
+      setDownloadError(messageOf(err));
+    }
+  };
+
   return (
     <div className="voice-model-col">
       <div className="voice-col-title">{t("settings.voiceSection")}</div>
@@ -1338,13 +1357,23 @@ function VoiceModelList() {
           </button>
         </div>
       )}
+      {runtimeStatus?.installed && (
+        <div className="voice-runtime-row">
+          <span className="voice-section-hint">
+            {t("settings.voiceRuntimeInstalled", { size: formatBytes(runtimeStatus.bytes) })}
+          </span>
+          <button type="button" className="btn btn-subtle" onClick={handleRemoveRuntime}>
+            {t("settings.voiceRuntimeRemove")}
+          </button>
+        </div>
+      )}
       <div className="provider-models-scroll">
         <div className="voice-card-grid">
           {VOICE_MODELS.map((model) => {
             const isActive = activeModel === model.modelId;
             const isDownloaded = Boolean(downloadedMap[model.modelId]);
             const isDownloading = downloadingModel === model.modelId;
-            const runtime = VOICE_ENGINES[model.engine];
+            const engine = VOICE_ENGINES[model.engine];
 
             return (
               <div
@@ -1365,15 +1394,23 @@ function VoiceModelList() {
                     </>
                   )}
                   <span>{model.size}</span>
-                  {runtime.labelKey && (
+                  {engine.labelKey && (
                     <>
                       <span>•</span>
-                      <span>{t(runtime.labelKey)}</span>
+                      <span>{t(engine.labelKey)}</span>
                     </>
                   )}
                 </div>
 
                 <div className="voice-card-desc">{model.description}</div>
+
+                {engine.runtime && (
+                  <div className="voice-card-desc voice-runtime-note">
+                    {t("settings.voiceRuntimeNote", {
+                      size: formatBytes(engine.runtime.estimatedBytes),
+                    })}
+                  </div>
+                )}
 
                 {isDownloading && (
                   <div className="voice-download-box">
@@ -1393,8 +1430,8 @@ function VoiceModelList() {
                 )}
 
                 <div className="voice-card-actions">
-                  {runtime.requirementKey ? (
-                    <span className="voice-requirement">{t(runtime.requirementKey)}</span>
+                  {engine.requirementKey ? (
+                    <span className="voice-requirement">{t(engine.requirementKey)}</span>
                   ) : isDownloading ? (
                     <button type="button" className="btn" disabled>
                       {t("settings.voiceDownloading")}

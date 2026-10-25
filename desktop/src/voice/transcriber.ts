@@ -4,6 +4,12 @@
  */
 
 import {
+  barkRuntimeStatus,
+  fetchBarkModel,
+  installBarkRuntime,
+  transcribeWithBark as transcribeWithBarkHost,
+} from "./bark-engine";
+import {
   getActiveVoiceModelId,
   markVoiceModelDownloaded,
   setActiveVoiceModelId,
@@ -16,7 +22,6 @@ import {
 } from "./model-registry";
 import { CACTUS_MAX_SECONDS, CACTUS_SAMPLE_RATE, cactusSpeechEngine } from "./whistle-engine";
 import { downloadWhistleWeights, getCachedWhistleWeights } from "./whistle-weights";
-
 export type TranscriberStatus =
   | "idle"
   | "loading-model"
@@ -285,6 +290,10 @@ class LocalSpeechTranscriber {
       await this.downloadCactusModel(opt, modelId, onProgress);
       return;
     }
+    if (opt.engine === "bark") {
+      await this.downloadBarkModel(opt, modelId, onProgress);
+      return;
+    }
 
     this.updateStatus("downloading", `Downloading ${opt.name}...`);
 
@@ -355,6 +364,43 @@ class LocalSpeechTranscriber {
     }
   }
 
+  /**
+   * Installs the host runtime when it is missing, then fetches the weights.
+   * Both live outside the app bundle and survive app updates untouched.
+   */
+  private async downloadBarkModel(
+    opt: VoiceModelOption,
+    modelId: VoiceModelId,
+    onProgress?: (progress: DownloadProgress) => void,
+  ): Promise<void> {
+    this.updateStatus("downloading", `Preparing ${opt.name}...`);
+    try {
+      const runtime = await barkRuntimeStatus();
+      if (!runtime.installed) {
+        this.updateStatus("downloading", "Installing the Bark runtime...");
+        onProgress?.({ status: "initiate", file: "runtime" });
+        await installBarkRuntime();
+      }
+
+      this.updateStatus("downloading", `Downloading ${opt.name}...`);
+      onProgress?.({ status: "download", file: opt.weightsFile ?? undefined });
+      const installed = await fetchBarkModel(opt);
+      onProgress?.({
+        status: "done",
+        file: opt.weightsFile ?? undefined,
+        progress: 100,
+        loaded: installed.bytes,
+        total: installed.bytes,
+      });
+      markVoiceModelDownloaded(modelId, true);
+      this.updateStatus(this.activeModelId === modelId ? "ready" : "idle");
+    } catch (err) {
+      const details = errorDetails(err);
+      this.updateStatus("error", details);
+      throw new Error(`Failed to download voice model ${opt.name} (${details}).`);
+    }
+  }
+
   /** Ensures the active Cactus speech model is loaded into the engine. */
   private async ensureCactusModel(opt: VoiceModelOption): Promise<void> {
     if (cactusSpeechEngine.isModelLoaded) return;
@@ -371,6 +417,31 @@ class LocalSpeechTranscriber {
       const details = errorDetails(err);
       this.updateStatus("error", details);
       throw new Error(`Failed to load ${opt.name} (${details}).`);
+    }
+  }
+
+  /** Transcribes through the host Bark runtime. */
+  private async transcribeBark(
+    opt: VoiceModelOption,
+    audioData: Float32Array,
+    options?: TranscribeOptions,
+  ): Promise<TranscribeResult> {
+    if (options?.signal?.aborted) throw abortError();
+    this.updateStatus("transcribing", `Transcribing with ${opt.name}...`);
+    options?.onProgress?.({ status: "transcribing", detail: "Transcribing speech..." });
+    try {
+      const text = await transcribeWithBarkHost(opt, audioData);
+      if (!text) throw new Error("No speech was recognized in the recording.");
+      this.updateStatus("ready");
+      return { text };
+    } catch (err) {
+      if (isAbortError(err)) {
+        this.updateStatus("idle");
+        throw err;
+      }
+      const details = errorDetails(err);
+      this.updateStatus("error", details);
+      throw err;
     }
   }
 
@@ -449,8 +520,8 @@ class LocalSpeechTranscriber {
     const modelId = targetModelId ?? this.activeModelId;
     const opt = getVoiceModelOption(modelId);
     assertRunnable(opt);
-    if (opt.engine === "cactus") {
-      throw new Error(`${opt.name} runs on the Cactus engine and has no Transformers.js pipeline.`);
+    if (opt.engine !== "transformers") {
+      throw new Error(`${opt.name} does not run on the Transformers.js pipeline.`);
     }
 
     if (this.pipelineInstance && this.loadedModelId === modelId) {
@@ -514,6 +585,9 @@ class LocalSpeechTranscriber {
 
     const opt = getVoiceModelOption(this.activeModelId);
     assertRunnable(opt);
+    if (opt.engine === "bark") {
+      return this.transcribeBark(opt, audioData, options);
+    }
     if (opt.engine === "cactus") {
       return this.transcribeWithCactus(opt, audioData, options);
     }
@@ -587,6 +661,8 @@ class LocalSpeechTranscriber {
    */
   public async preload(): Promise<void> {
     const opt = getVoiceModelOption(this.activeModelId);
+    // Bark runs in its own process on demand, so there is nothing to warm up.
+    if (opt.engine === "bark") return;
     if (opt.engine === "cactus") {
       if (!cactusSpeechEngine.isModelLoaded) {
         const bytes = await getCachedWhistleWeights(opt);

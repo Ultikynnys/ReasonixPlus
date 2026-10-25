@@ -130,6 +130,6 @@ describe("LocalSpeechTranscriber (Cactus / Whistle)", () => {
   });
 
   it("refuses getPipeline for a Cactus model", async () => {
-    await expect(speechTranscriber.getPipeline("whistle")).rejects.toThrow(/Cactus engine/);
+    await expect(speechTranscriber.getPipeline("whistle")).rejects.toThrow(/pipeline/);
   });
 });

@@ -1,0 +1,16 @@
+{
+  "id": "bark-torch",
+  "python": "3.12",
+  "device": "cpu",
+  "installer": { "id": "uv", "version": "0.5.14" },
+  "requirements": [
+    "constriction==0.5.0",
+    "numpy==2.4.6",
+    "soundfile==0.14.0",
+    "soxr==1.1.0",
+    "transformers==5.19.0",
+    "librosa==0.11.0",
+    "torch>=2.6,<3"
+  ],
+  "estimatedBytes": 1073741824
+}

@@ -10631,6 +10631,18 @@ html[data-platform="macos"] .splash {
   line-height: 1.4;
 }
 
+.voice-runtime-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.voice-runtime-note {
+  flex: 0;
+  font-style: italic;
+}
+
 .voice-device-settings {
   display: flex;
   flex-direction: column;

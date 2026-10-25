@@ -116,15 +116,18 @@ describe("VoiceInputSettings: models", () => {
     if (!cactus!.parameters) expect(within(card).queryByText(/params/)).toBeNull();
   });
 
-  it("renders a model whose engine this build does not load as a requirement", () => {
-    const inert = VOICE_MODELS.find((model) => !isVoiceModelAvailable(model));
-    expect(inert).toBeTruthy();
+  it("offers a download for a bark model instead of a requirement", () => {
+    const bark = VOICE_MODELS.find((model) => model.engine === "bark");
+    expect(bark).toBeTruthy();
+    expect(isVoiceModelAvailable(bark!)).toBe(true);
     render(<VoiceInputSettings />);
 
-    const card = screen.getByText(inert!.name).closest(".voice-card") as HTMLElement;
-    expect(within(card).getByText("MLX engine")).toBeTruthy();
-    expect(within(card).getByText(/Apple silicon/)).toBeTruthy();
-    expect(within(card).queryByRole("button", { name: "Download" })).toBeNull();
+    const card = screen.getByText(bark!.name).closest(".voice-card") as HTMLElement;
+    expect(within(card).getByRole("button", { name: "Download" })).toBeTruthy();
+    // The card states the one-time runtime cost before the user commits.
+    expect(within(card).getByText("Python runtime")).toBeTruthy();
+    expect(within(card).getByText(/installed once and reused/)).toBeTruthy();
+    expect(within(card).queryByText(/MLX/)).toBeNull();
   });
 
   it("handles successful in-app download and activates model", async () => {

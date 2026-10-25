@@ -3,6 +3,7 @@
  * model files already sit in the local cache.
  */
 
+import { installedBarkModels, removeBarkModel } from "./bark-engine";
 import {
   DEFAULT_VOICE_MODEL_ID,
   VOICE_MODELS,
@@ -55,6 +56,12 @@ export function markVoiceModelDownloaded(id: VoiceModelId, downloaded = true): v
   }
 }
 
+/** The stored flag: the only presence signal when no host or cache can be asked. */
+function storedDownloadFlag(id: VoiceModelId): boolean {
+  if (typeof localStorage === "undefined") return false;
+  return localStorage.getItem(`${STORAGE_PREFIX_DOWNLOADED}${id}`) === "true";
+}
+
 export async function isVoiceModelDownloaded(id: VoiceModelId): Promise<boolean> {
   const opt = getVoiceModelOption(id);
   // An engine this build does not load has no cache, so nothing is ever present.
@@ -65,10 +72,18 @@ export async function isVoiceModelDownloaded(id: VoiceModelId): Promise<boolean>
       markVoiceModelDownloaded(id, true);
       return true;
     }
-    if (typeof localStorage !== "undefined") {
-      return localStorage.getItem(`${STORAGE_PREFIX_DOWNLOADED}${id}`) === "true";
+    return storedDownloadFlag(id);
+  }
+
+  if (opt.engine === "bark") {
+    try {
+      const installed = await installedBarkModels();
+      const present = installed.some((model) => model.repoId === opt.repoId);
+      if (present) markVoiceModelDownloaded(id, true);
+      return present;
+    } catch {
+      return storedDownloadFlag(id);
     }
-    return false;
   }
 
   // Check Web Cache API if available:
@@ -90,11 +105,7 @@ export async function isVoiceModelDownloaded(id: VoiceModelId): Promise<boolean>
     }
   }
 
-  if (typeof localStorage !== "undefined") {
-    return localStorage.getItem(`${STORAGE_PREFIX_DOWNLOADED}${id}`) === "true";
-  }
-
-  return false;
+  return storedDownloadFlag(id);
 }
 
 /** True when at least one voice model is present in the local cache. */
@@ -112,6 +123,18 @@ export async function deleteVoiceModelCache(id: VoiceModelId): Promise<void> {
 
   if (opt.engine === "cactus") {
     await deleteWhistleWeights(opt);
+    if (getActiveVoiceModelId() === id) {
+      setActiveVoiceModelId(DEFAULT_VOICE_MODEL_ID);
+    }
+    return;
+  }
+
+  if (opt.engine === "bark") {
+    try {
+      await removeBarkModel(opt);
+    } catch {
+      // Removal is best-effort; the shared runtime is never touched here.
+    }
     if (getActiveVoiceModelId() === id) {
       setActiveVoiceModelId(DEFAULT_VOICE_MODEL_ID);
     }

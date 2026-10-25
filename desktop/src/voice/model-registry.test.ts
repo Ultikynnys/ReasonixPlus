@@ -8,8 +8,10 @@ import {
   parseVoiceModel,
   parseVoiceModelRegistry,
   voiceModelSpec,
+  type VoiceEngine,
 } from "./model-registry";
 import { VOICE_MODEL_DOCUMENTS, VOICE_MODEL_IDS } from "./models.generated";
+import { BARK_RUNTIME } from "./runtimes";
 
 const DOCUMENTS = VOICE_MODEL_DOCUMENTS.map((entry) => entry.document as Record<string, unknown>);
 
@@ -40,24 +42,28 @@ describe("Voice model registry", () => {
     for (const model of VOICE_MODELS) {
       const { archive } = VOICE_ENGINES[model.engine];
       expect(Boolean(archive), model.id).toBe(model.weightsFile !== null);
-      expect(Boolean(archive?.configFile), model.id).toBe(model.configFile !== null);
+      expect(Boolean(archive?.loaderFile), model.id).toBe(model.loaderFile !== null);
     }
   });
 
-  it("keeps the bark family inert while this build has no MLX loader", () => {
-    expect(VOICE_ENGINES.bark.requirementKey).not.toBeNull();
+  it("ships a loader for every declared engine, so every model is usable", () => {
+    for (const engine of Object.keys(VOICE_ENGINES) as VoiceEngine[]) {
+      expect(VOICE_ENGINES[engine].requirementKey, engine).toBeNull();
+    }
+    for (const model of VOICE_MODELS) {
+      expect(isVoiceModelAvailable(model), model.id).toBe(true);
+    }
+  });
 
+  it("names the host runtime the bark family installs on first use", () => {
     const bark = VOICE_MODELS.filter((model) => model.engine === "bark");
     expect(bark.length).toBeGreaterThan(0);
-    for (const model of bark) {
-      expect(isVoiceModelAvailable(model), model.id).toBe(false);
-    }
-
+    expect(VOICE_ENGINES.bark.runtime).toBe(BARK_RUNTIME);
     for (const engine of ["transformers", "cactus"] as const) {
-      expect(VOICE_ENGINES[engine].requirementKey, engine).toBeNull();
-      for (const model of VOICE_MODELS.filter((entry) => entry.engine === engine)) {
-        expect(isVoiceModelAvailable(model), model.id).toBe(true);
-      }
+      expect(VOICE_ENGINES[engine].runtime, engine).toBeNull();
+    }
+    for (const model of bark) {
+      expect(model.loaderFile, model.id).toBe("bark_loader.py");
     }
   });
 
@@ -97,24 +103,43 @@ describe("Voice model declarations", () => {
     expect(parseOne({ engine: "cactus", weightsFile: "acme.cact" }).weightsFile).toBe("acme.cact");
   });
 
-  it("requires a .bark archive and a config file for the bark engine", () => {
+  it("requires a .bark archive, an official loader and a padding for the bark engine", () => {
     const bark = parseOne({
       engine: "bark",
       weightsFile: "model.bark",
-      configFile: "mlx/config.json",
+      loaderFile: "bark_loader.py",
+      paddingSeconds: 0.25,
     });
     expect(bark.weightsFile).toBe("model.bark");
-    expect(bark.configFile).toBe("mlx/config.json");
-    expect(isVoiceModelAvailable(bark)).toBe(false);
+    expect(bark.loaderFile).toBe("bark_loader.py");
+    expect(bark.paddingSeconds).toBe(0.25);
+    expect(isVoiceModelAvailable(bark)).toBe(true);
 
     expect(() => parseOne({ engine: "bark" })).toThrow(/weightsFile: required/);
     expect(() => parseOne({ engine: "bark", weightsFile: "model.bark" })).toThrow(
-      /configFile: required/,
+      /loaderFile: required/,
     );
-    expect(() => parseOne({ engine: "bark", weightsFile: "model.cact" })).toThrow(
-      /expected a \.bark archive/,
-    );
-    expect(() => parseOne({ configFile: "mlx/config.json" })).toThrow(/reads no config file/);
+    expect(() =>
+      parseOne({ engine: "bark", weightsFile: "model.bark", loaderFile: "bark_loader.py" }),
+    ).toThrow(/paddingSeconds: required/);
+    expect(() =>
+      parseOne({
+        engine: "bark",
+        weightsFile: "model.cact",
+        loaderFile: "bark_loader.py",
+        paddingSeconds: 0,
+      }),
+    ).toThrow(/expected a \.bark archive/);
+    expect(() => parseOne({ loaderFile: "bark_loader.py" })).toThrow(/reads no loader/);
+    expect(() => parseOne({ paddingSeconds: 0.25 })).toThrow(/takes no padding/);
+    expect(() =>
+      parseOne({
+        engine: "bark",
+        weightsFile: "model.bark",
+        loaderFile: "bark_loader.py",
+        paddingSeconds: -1,
+      }),
+    ).toThrow(/non-negative/);
   });
 
   it("rejects an id a file name cannot carry", () => {
@@ -151,24 +176,6 @@ describe("Voice model declarations", () => {
         ],
       }),
     ).toThrow(/2 models are marked default/);
-  });
-
-  it("rejects a model whose engine this build does not load as the default", () => {
-    expect(() =>
-      parseVoiceModelRegistry({
-        models: [
-          {
-            ...BASE_MODEL,
-            id: "acme-bark",
-            modelId: "acme/bark",
-            engine: "bark",
-            weightsFile: "model.bark",
-            configFile: "mlx/config.json",
-            default: true,
-          },
-        ],
-      }),
-    ).toThrow(/which this build does not load/);
   });
 
   it("orders the registry by card order", () => {

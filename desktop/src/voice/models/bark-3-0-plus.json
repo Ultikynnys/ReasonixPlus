@@ -12,5 +12,6 @@
   "description": "Every word, with fewer mistakes than Bark 3.0.",
   "repoId": "ConwayResearch/Underdog-Bark-3.0-Plus",
   "weightsFile": "model.bark",
-  "configFile": "mlx/config.json"
+  "loaderFile": "bark_loader.py",
+  "paddingSeconds": 0.25
 }

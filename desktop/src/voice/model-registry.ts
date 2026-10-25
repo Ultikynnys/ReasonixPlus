@@ -5,6 +5,7 @@
 
 import type { TKey } from "../i18n";
 import { VOICE_MODEL_DOCUMENTS, type VoiceModelId } from "./models.generated";
+import { BARK_RUNTIME, type VoiceRuntimeSpec } from "./runtimes";
 
 export type { VoiceModelId };
 
@@ -37,16 +38,20 @@ export interface VoiceModelOption {
   repoId: string;
   /** `cactus` and `bark` models only: the weights archive within `repoId`. */
   weightsFile: string | null;
-  /** `bark` models only: the config file within `repoId` that the runtime reads. */
-  configFile: string | null;
+  /** `bark` models only: the loader in `repoId` that decodes the weights archive. */
+  loaderFile: string | null;
+  /** `bark` models only: silence injected before the audio, in seconds. */
+  paddingSeconds: number | null;
 }
 
-/** How an engine packages its weights: the archive suffix and whether it also reads a config file. */
+/** How an engine packages its weights: the archive suffix and the loader it needs. */
 export interface VoiceEngineArchive {
   /** Required suffix of a declaration's `weightsFile`. */
   suffix: string;
-  /** True when the engine also needs the declaration's `configFile`. */
-  configFile: boolean;
+  /** True when the engine also needs the declaration's `loaderFile`. */
+  loaderFile: boolean;
+  /** True when the engine also needs the declaration's `paddingSeconds`. */
+  paddingSeconds: boolean;
 }
 
 /** What the settings card says about an engine, and whether this build can run it. */
@@ -57,25 +62,28 @@ export interface VoiceEngineRuntime {
   requirementKey: TKey | null;
   /** Weights packaging, or null when the engine loads a whole ONNX repo instead. */
   archive: VoiceEngineArchive | null;
+  /** Host runtime this engine needs installed, or null when it runs from the bundle. */
+  runtime: VoiceRuntimeSpec | null;
 }
 
 /**
  * Every engine a declaration may name, and the only place its packaging and
- * availability live. `bark` carries a requirement because the Bark weights are
- * entropy-coded MLX for Apple silicon, while this build loads ONNX through
- * transformers.js and `.cact` archives through Cactus.
+ * availability live. `bark` decodes an entropy-coded `.bark` archive with the
+ * model's own loader, so it needs the host runtime named by `BARK_RUNTIME`.
  */
 export const VOICE_ENGINES: Readonly<Record<VoiceEngine, VoiceEngineRuntime>> = {
-  transformers: { labelKey: null, requirementKey: null, archive: null },
+  transformers: { labelKey: null, requirementKey: null, archive: null, runtime: null },
   cactus: {
     labelKey: "settings.voiceEngineCactus",
     requirementKey: null,
-    archive: { suffix: ".cact", configFile: false },
+    archive: { suffix: ".cact", loaderFile: false, paddingSeconds: false },
+    runtime: null,
   },
   bark: {
     labelKey: "settings.voiceEngineBark",
-    requirementKey: "settings.voiceEngineBarkRequirement",
-    archive: { suffix: ".bark", configFile: true },
+    requirementKey: null,
+    archive: { suffix: ".bark", loaderFile: true, paddingSeconds: true },
+    runtime: BARK_RUNTIME,
   },
 };
 
@@ -101,7 +109,6 @@ function nullableText(value: unknown, where: string): string | null {
   if (value === undefined || value === null) return null;
   return text(value, where);
 }
-
 function number(value: unknown, where: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) fail(where, "expected a number");
   return value;
@@ -129,22 +136,38 @@ export function parseVoiceModel(value: unknown, source: string): VoiceModelOptio
   const engine = choice<VoiceEngine>(raw.engine, ENGINES, `${scope}: engine`);
   const { archive } = VOICE_ENGINES[engine];
   const weightsFile = nullableText(raw.weightsFile, `${scope}: weightsFile`);
-  const configFile = nullableText(raw.configFile, `${scope}: configFile`);
+  const loaderFile = nullableText(raw.loaderFile, `${scope}: loaderFile`);
+  const paddingSeconds =
+    raw.paddingSeconds === undefined || raw.paddingSeconds === null
+      ? null
+      : number(raw.paddingSeconds, `${scope}: paddingSeconds`);
+  if (paddingSeconds !== null && paddingSeconds < 0) {
+    fail(`${scope}: paddingSeconds`, "expected a non-negative number");
+  }
   // The archive is the whole download for an archive engine, so its absence cannot
   // be recovered from anywhere else, and no other engine reads one.
   if (!archive) {
     if (weightsFile) fail(`${scope}: weightsFile`, `the ${engine} engine packages no archive`);
-    if (configFile) fail(`${scope}: configFile`, `the ${engine} engine reads no config file`);
+    if (loaderFile) fail(`${scope}: loaderFile`, `the ${engine} engine reads no loader`);
+    if (paddingSeconds !== null) {
+      fail(`${scope}: paddingSeconds`, `the ${engine} engine takes no padding`);
+    }
   } else {
     if (!weightsFile) fail(`${scope}: weightsFile`, `required for the ${engine} engine`);
     if (!weightsFile.endsWith(archive.suffix)) {
       fail(`${scope}: weightsFile`, `expected a ${archive.suffix} archive`);
     }
-    if (archive.configFile && !configFile) {
-      fail(`${scope}: configFile`, `required for the ${engine} engine`);
+    if (archive.loaderFile && !loaderFile) {
+      fail(`${scope}: loaderFile`, `required for the ${engine} engine`);
     }
-    if (!archive.configFile && configFile) {
-      fail(`${scope}: configFile`, `the ${engine} engine reads no config file`);
+    if (!archive.loaderFile && loaderFile) {
+      fail(`${scope}: loaderFile`, `the ${engine} engine reads no loader`);
+    }
+    if (archive.paddingSeconds && paddingSeconds === null) {
+      fail(`${scope}: paddingSeconds`, `required for the ${engine} engine`);
+    }
+    if (!archive.paddingSeconds && paddingSeconds !== null) {
+      fail(`${scope}: paddingSeconds`, `the ${engine} engine takes no padding`);
     }
   }
   return {
@@ -161,7 +184,8 @@ export function parseVoiceModel(value: unknown, source: string): VoiceModelOptio
     description: text(raw.description, `${scope}: description`),
     repoId: text(raw.repoId, `${scope}: repoId`),
     weightsFile,
-    configFile,
+    loaderFile,
+    paddingSeconds,
   };
 }
 

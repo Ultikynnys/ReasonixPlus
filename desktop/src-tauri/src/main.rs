@@ -2,12 +2,22 @@
 
 mod diagnostics;
 mod rpc;
+mod voice_bark;
+mod voice_host;
+mod voice_models;
+mod voice_paths;
+mod voice_runtime;
 
 use diagnostics::record_frontend_diagnostic;
 use rpc::{RpcState, rpc_kill, rpc_send, rpc_spawn};
 use serde::Serialize;
 use std::path::Path;
 use tauri_plugin_window_state::DEFAULT_FILENAME;
+use voice_bark::voice_bark_transcribe;
+use voice_models::{voice_model_fetch, voice_model_remove, voice_model_status};
+use voice_runtime::{
+    RuntimeInstalls, voice_runtime_install, voice_runtime_remove, voice_runtime_status,
+};
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -647,6 +657,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(RpcState::default())
+        .manage(RuntimeInstalls::default())
         .invoke_handler(tauri::generate_handler![
             rpc_spawn,
             rpc_send,
@@ -659,7 +670,14 @@ fn main() {
             git_status,
             copy_file_to_path,
             copy_file_to_clipboard,
-            write_text_file
+            write_text_file,
+            voice_model_status,
+            voice_model_fetch,
+            voice_model_remove,
+            voice_runtime_status,
+            voice_runtime_install,
+            voice_runtime_remove,
+            voice_bark_transcribe
         ])
         .setup(|app| {
             use tauri::Manager;
