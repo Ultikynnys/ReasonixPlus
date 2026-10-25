@@ -1,0 +1,16 @@
+{
+  "id": "bark-3-0",
+  "modelId": "underdog/bark-3.0",
+  "engine": "bark",
+  "order": 60,
+  "default": false,
+  "name": "Bark 3.0 (English)",
+  "shortName": "Bark",
+  "badge": "Fastest",
+  "size": "~163 MB",
+  "parameters": "0.6B",
+  "description": "Every word, in the smallest Bark file.",
+  "repoId": "ConwayResearch/Underdog-Bark-3.0",
+  "weightsFile": "model.bark",
+  "configFile": "mlx/config.json"
+}

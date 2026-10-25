@@ -396,6 +396,7 @@ import {
   prunePendingMcpSessions,
   resolveSessionModelPrefs,
   sessionExists,
+  sessionIsEmpty,
   sessionNoticesPath,
   sessionPath,
   sessionSubagentsEnabled,
@@ -654,14 +655,33 @@ export function shouldDetachDeletedSession(
   return deleted && currentSession === deletedSession;
 }
 
-/** Sessions whose channel has a turn in flight. Deleting one would abort work the
- *  user is waiting on, so every delete path refuses them. */
+/** Work in a channel that a delete must not interrupt: a turn in flight, a winding-down
+ *  turn body, or a manual context fold. Turn markers are `tabBusy`'s, so the delete guard
+ *  and the busy flag the UI reads cannot disagree. */
+export function channelHoldsLiveWork(channel: {
+  aborter: unknown;
+  activeTurn?: unknown;
+  compactingManual?: boolean;
+}): boolean {
+  // A fold runs with both turn markers cleared, so it is named here rather than folded
+  // into the busy flag the UI reads.
+  return tabBusy(channel) || channel.compactingManual === true;
+}
+
+/** Sessions whose channel holds live work. Deleting one would abort work the user is
+ *  waiting on, so every delete path refuses them. */
 export function sessionsWithLiveTurn(
-  channels: Iterable<{ currentSession: string; aborter: unknown }>,
+  channels: Iterable<{
+    currentSession: string;
+    aborter: unknown;
+    activeTurn?: unknown;
+    compactingManual?: boolean;
+  }>,
 ): Set<string> {
   const running = new Set<string>();
   for (const channel of channels) {
-    if (channel.aborter !== null && channel.currentSession) running.add(channel.currentSession);
+    if (channel.currentSession && channelHoldsLiveWork(channel))
+      running.add(channel.currentSession);
   }
   return running;
 }
@@ -676,9 +696,45 @@ export function deletableSessionNames(
   return deletable;
 }
 
+/** What a clear-all deletes and what it leaves on disk. A declared keep outranks the live
+ *  check: the user acted on that promise, so a stale caller view costs an undeleted row,
+ *  never a deleted session. */
+export function clearSessionPlan(
+  candidates: Iterable<string>,
+  live: ReadonlySet<string>,
+  declaredKeep: Iterable<string> = [],
+): { doomed: string[]; kept: string[]; unremovable: ReadonlySet<string> } {
+  const unremovable = new Set<string>([...live, ...declaredKeep]);
+  const names = [...candidates];
+  const doomed = deletableSessionNames(names, unremovable);
+  return {
+    doomed,
+    kept: names.filter((name) => unremovable.has(name)),
+    unremovable,
+  };
+}
+
 /** Why a delete was refused, in one wording every delete path shares. */
 export function sessionRunningRefusal(name: string): string {
   return `Session "${name}" is running. Stop its agent first, then delete it.`;
+}
+
+/** The session a closing channel releases, or undefined when it releases nothing. New chat
+ *  mints eagerly, so a chat the channel never wrote to is the ghost row; anything with
+ *  content, or held by another channel, is never released. */
+export function abandonedSessionOnClose(input: {
+  session?: string;
+  empty: boolean;
+  heldByAnotherChannel: boolean;
+}): string | undefined {
+  if (!input.session || input.heldByAnotherChannel || !input.empty) return undefined;
+  return input.session;
+}
+
+/** Why a clicked row could not be opened: the session it names is gone. One wording for
+ *  the one place that refuses an open. */
+export function missingSessionRefusal(op: string, name: string): string {
+  return `${op}: "${name}" no longer exists. The session list has been refreshed.`;
 }
 
 /** Refusal for a second creation in a workspace that is already minting one. */
@@ -4611,7 +4667,7 @@ function emitCtxBreakdown(tab: Tab): void {
 /** Ground-truth "a turn is in flight or parked" for one tab — the one busy
  *  source the $tab_status reply reports, so the desktop can reconcile against a
  *  single definition. */
-export function tabBusy(tab: Pick<Tab, "aborter" | "activeTurn">): boolean {
+export function tabBusy(tab: { aborter: unknown; activeTurn?: unknown }): boolean {
   return tab.aborter !== null || tab.activeTurn !== undefined;
 }
 
@@ -6614,15 +6670,24 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     // Everything that can unblock the turn has run: wait for it to actually
     // finish before the tab disappears, or a child subagent outlives the session.
     await settleTurnBeforeClose(tab);
-    // A gated fresh chat never became a real conversation; its never-confirmed
-    // session dies with the tab on EVERY close path (X cancel, Ctrl+W, workspace
-    // removal). The boot sweep is the force-exit equivalent.
-    if (tab.mcpSetupPending && tab.currentSession) {
+    // A channel that closes without ever writing releases the mint it never filled: a
+    // gated fresh chat that never became a conversation, or a New chat the user closed
+    // before typing. The boot sweep is the force-exit equivalent.
+    const abandoned = tab.currentSession
+      ? abandonedSessionOnClose({
+          session: tab.currentSession,
+          empty: sessionIsEmpty(tab.currentSession),
+          heldByAnotherChannel: Array.from(tabs.values()).some(
+            (other) => other.id !== tab.id && other.currentSession === tab.currentSession,
+          ),
+        })
+      : undefined;
+    if (abandoned) {
       tab.mcpSetupPending = false;
-      if (deleteSession(tab.currentSession)) {
+      if (deleteSession(abandoned)) {
         emitSessionsForWorkspace(tab.rootDir);
       } else {
-        process.stderr.write(`reasonix: pending session delete failed — ${tab.currentSession}\n`);
+        process.stderr.write(`reasonix: empty session delete failed — ${abandoned}\n`);
       }
     }
     tabs.delete(tab.id);
@@ -7629,6 +7694,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
    *  `legacy` (session_load) never re-focuses a channel open in this same tab. */
   function openOrFocusSession(tab: Tab, name: string, legacy: boolean): void {
     const op = legacy ? "session_load" : "session_open";
+    // A sidebar row outlives its session whenever the store is removed elsewhere: the
+    // click would open a blank transcript, and the load's workspace stamp would rebuild
+    // the folder as an empty session. Refuse, and refresh the list so the row leaves.
+    if (!sessionExists(name)) {
+      emitTabDiagnostic(tab, "session.open.missing", { session: name }, "warn");
+      emit({ type: "$error", message: missingSessionRefusal(op, name) }, tab.id);
+      emitSessionsForWorkspace(tab.rootDir);
+      return;
+    }
     const home = sessionWorkspaceOf(name, tab.rootDir);
     const existing = channelServingSession(Array.from(tabs.values()), name, home);
     if (existing) {
@@ -8728,7 +8802,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // user actually opens them.
         ensureActiveToolset(activated);
         if (activated.toolset && !activated.mcpRuntime) void bridgeTabMcp(activated);
-        void emitSessions(activated);
+        // A delete or clear waiting for its settled snapshot owns this workspace's list.
+        // A tab switch must not publish a second listing over it: the mutation reads the
+        // extra snapshot as an unconfirmed hide, and three of those release the row.
+        if (!workspaceSessionBusy(activated.rootDir)) void emitSessions(activated);
       } else {
         emitDiagnostic(
           "tab.activate.failed",
@@ -9422,26 +9499,33 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       }
       let affectedTabs: Tab[] = [];
       let removed = false;
+      // Book the workspace for the delete, exactly like a clear: while it settles, a
+      // workspace switch or a tab switch would re-target the channel this delete owns.
+      const releaseDeleteBooking = sessionWork.begin(tab.rootDir);
       try {
-        // Detach live writers BEFORE removing the folder so none recreates it.
-        affectedTabs = detachDoomedSessionWriters(new Set([msg.name]));
-        const existed = sessionExists(msg.name);
-        removed = deleteSession(msg.name) || !existed;
-        if (!removed) {
+        try {
+          // Detach live writers BEFORE removing the folder so none recreates it.
+          affectedTabs = detachDoomedSessionWriters(new Set([msg.name]));
+          const existed = sessionExists(msg.name);
+          removed = deleteSession(msg.name) || !existed;
+          if (!removed) {
+            emit({ type: "$error", message: `session_delete failed: ${msg.name}` }, tab.id);
+            restoreUntouchedRuntimes(affectedTabs, new Set());
+          }
+        } catch (err) {
+          emitDiagnosticError("session.delete.failed", err, {
+            tabId: tab.id,
+            details: { session: msg.name },
+          });
           emit({ type: "$error", message: `session_delete failed: ${msg.name}` }, tab.id);
           restoreUntouchedRuntimes(affectedTabs, new Set());
         }
-      } catch (err) {
-        emitDiagnosticError("session.delete.failed", err, {
-          tabId: tab.id,
-          details: { session: msg.name },
-        });
-        emit({ type: "$error", message: `session_delete failed: ${msg.name}` }, tab.id);
-        restoreUntouchedRuntimes(affectedTabs, new Set());
+        resyncAfterDeletes([{ name: msg.name, removed }], (t) =>
+          shouldDetachDeletedSession(t.currentSession, msg.name, removed),
+        );
+      } finally {
+        releaseDeleteBooking();
       }
-      resyncAfterDeletes([{ name: msg.name, removed }], (t) =>
-        shouldDetachDeletedSession(t.currentSession, msg.name, removed),
-      );
       return;
     }
     if (msg.cmd === "session_clear") {
@@ -9451,6 +9535,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // reader thread so a large clear never freezes the RPC loop.
       const requested = Array.isArray(msg.names)
         ? msg.names.filter((n): n is string => typeof n === "string" && n.length > 0)
+        : [];
+      // Names the caller displayed as kept. They are never cleared, whatever this
+      // daemon thinks of their state: the confirm dialog already promised it.
+      const declaredKeep = Array.isArray(msg.keep)
+        ? msg.keep.filter((n): n is string => typeof n === "string" && n.length > 0)
         : [];
       // Book the workspace for the whole chunked pass: a switch or forget now
       // would re-target or close the tab this settle belongs to.
@@ -9466,11 +9555,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         } catch (err) {
           emitDiagnosticError("session.clear.list.failed", err, { tabId: tab.id });
         }
-        // A session with a turn in flight is never cleared: the user is waiting
-        // on that work, so it stays on disk and keeps its row.
+        // A session holding live work is never cleared: the user is waiting on
+        // that work, so it stays on disk and keeps its row.
         const running = sessionsWithLiveTurn(tabs.values());
-        const keptRunning = [...candidateNames].filter((name) => running.has(name));
-        const doomed = deletableSessionNames(candidateNames, running);
+        const plan = clearSessionPlan(candidateNames, running, declaredKeep);
+        const keptRunning = plan.kept.filter((name) => running.has(name));
         if (keptRunning.length > 0) {
           emitTabDiagnostic(
             tab,
@@ -9486,22 +9575,31 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             tab.id,
           );
         }
+        const keptAsPromised = plan.kept.filter((name) => !running.has(name));
+        if (keptAsPromised.length > 0) {
+          emitTabDiagnostic(
+            tab,
+            "session.clear.kept_declared",
+            { kept: keptAsPromised.length },
+            "info",
+          );
+        }
         let affectedTabs: Tab[] = [];
         let settledDeletes: { name: string; removed: boolean }[];
         try {
-          affectedTabs = detachDoomedSessionWriters(new Set(doomed));
+          affectedTabs = detachDoomedSessionWriters(new Set(plan.doomed));
           // Chunked batch: each name settles independently, the directory index
           // persists once, and the event loop breathes between chunks.
-          settledDeletes = await deleteSessions(doomed);
+          settledDeletes = await deleteSessions(plan.doomed);
           // Settle the kept names too: their rows were never touched, and an
           // unsettled hide would strand them.
-          settledDeletes.push(...keptRunning.map((name) => ({ name, removed: false })));
+          settledDeletes.push(...plan.kept.map((name) => ({ name, removed: false })));
         } catch (err) {
           emitDiagnosticError("session.clear.failed", err, { tabId: tab.id });
           emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
           restoreUntouchedRuntimes(affectedTabs, new Set());
           // Still echo the requested names as settled so the frontend reconciles.
-          settledDeletes = [...new Set([...requested, ...keptRunning])].map((name) => ({
+          settledDeletes = [...new Set([...requested, ...plan.kept])].map((name) => ({
             name,
             removed: false,
           }));
@@ -9509,10 +9607,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         const removed = new Set(
           settledDeletes.filter((result) => result.removed).map((result) => result.name),
         );
-        // A kept running session is a refusal, not a failure: reporting it as one
+        // A protected session is a refusal, not a failure: reporting it as one
         // would restore a runtime that was never torn down.
         const failed = settledDeletes.filter(
-          (result) => !result.removed && !running.has(result.name),
+          (result) => !result.removed && !plan.unremovable.has(result.name),
         );
         if (failed.length > 0) {
           emit(

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DeepSeekClient } from "../src/client.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { ImmutablePrefix } from "../src/memory/runtime.js";
-import { loadSessionMeta, patchSessionMeta } from "../src/memory/session.js";
+import { ensureSessionDir, loadSessionMeta, patchSessionMeta } from "../src/memory/session.js";
 
 /** Regression harness for the post-model-switch vanishing-cards bug: turn
  *  ordinals must be monotonic across runtime rebuilds, even when the live log
@@ -118,6 +118,7 @@ describe("monotonic turn ordinals across runtime rebuilds", () => {
 
   it("patchSessionMeta preserves a concurrent lastTurn (never regresses the stamp)", () => {
     const sessionName = "turn-floor-patch-order";
+    ensureSessionDir(sessionName);
     patchSessionMeta(sessionName, { lastTurn: 12 });
     patchSessionMeta(sessionName, { summary: "display only" });
     expect(loadSessionMeta(sessionName).lastTurn).toBe(12);

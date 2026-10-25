@@ -1,96 +1,25 @@
 /**
- * Voice processing model registry and cache helpers.
+ * Voice model selection and download cache: which model is active, and which
+ * model files already sit in the local cache.
  */
 
+import {
+  DEFAULT_VOICE_MODEL_ID,
+  VOICE_MODELS,
+  type VoiceModelId,
+  type VoiceModelOption,
+  getVoiceModelOption,
+  isVoiceModelAvailable,
+  voiceModelSpec,
+} from "./model-registry";
 import { deleteWhistleWeights, isWhistleWeightsCached } from "./whistle-weights";
-
-/** Which runtime loads and runs a voice model. */
-export type VoiceEngine = "transformers" | "cactus";
-
-export type VoiceModelId =
-  | "whisper-tiny.en"
-  | "Xenova/whisper-base.en"
-  | "Xenova/whisper-small.en"
-  | "whistle";
-
-export interface VoiceModelOption {
-  id: VoiceModelId;
-  /** The runtime that loads and runs this model. */
-  engine: VoiceEngine;
-  name: string;
-  shortName: string;
-  size: string;
-  /** Parameter-count label. Omitted for models that do not publish one. */
-  parameters?: string;
-  /** Short badge label shown on the settings card. */
-  badge?: string;
-  description: string;
-  /**
-   * The Hugging Face repo the model is fetched from. For `transformers`
-   * models this is an ONNX repo consumed by the ASR pipeline; for `cactus`
-   * models it holds the `.cact` weights file.
-   */
-  repoId: string;
-  /** Cactus models only: the `.cact` file name within `repoId`. */
-  weightsFile?: string;
-}
-
-export const DEFAULT_VOICE_MODEL_ID: VoiceModelId = "whisper-tiny.en";
-
-export const VOICE_MODELS: ReadonlyArray<VoiceModelOption> = [
-  {
-    id: "whisper-tiny.en",
-    engine: "transformers",
-    name: "Whisper Tiny (English)",
-    shortName: "Tiny",
-    badge: "Balanced",
-    size: "~40 MB",
-    parameters: "39M",
-    description: "Fastest transcription with lowest resource usage.",
-    repoId: "onnx-community/whisper-tiny.en",
-  },
-  {
-    id: "Xenova/whisper-base.en",
-    engine: "transformers",
-    name: "Whisper Base (English)",
-    shortName: "Base",
-    badge: "Balanced",
-    size: "~75 MB",
-    parameters: "74M",
-    description: "Noticeably higher accuracy for daily speech with moderate speed.",
-    repoId: "onnx-community/whisper-base.en",
-  },
-  {
-    id: "Xenova/whisper-small.en",
-    engine: "transformers",
-    name: "Whisper Small (English)",
-    shortName: "Small",
-    badge: "High Accuracy",
-    size: "~250 MB",
-    parameters: "244M",
-    description: "High accuracy speech recognition for accents, jargon, and noisy audio.",
-    repoId: "onnx-community/whisper-small.en",
-  },
-  {
-    id: "whistle",
-    engine: "cactus",
-    name: "Whistle (Multilingual)",
-    shortName: "Whistle",
-    badge: "Multilingual",
-    size: "~17 MB",
-    description:
-      "Tiny multilingual speech recognition (en, de, fr, es, it, nl, pl) on the Cactus engine. No GPU required.",
-    repoId: "Cactus-Compute/whistle",
-    weightsFile: "whistle.cact",
-  },
-];
 
 const STORAGE_KEY_ACTIVE = "reasonix.voiceModel";
 const STORAGE_PREFIX_DOWNLOADED = "reasonix.voiceModel.downloaded.";
 const VOICE_MODEL_CACHE = "transformers-cache";
 
 export function cacheRequestBelongsToModel(request: Request, model: VoiceModelOption): boolean {
-  return request.url.includes(model.repoId) || request.url.includes(model.id);
+  return request.url.includes(model.repoId) || request.url.includes(model.modelId);
 }
 
 async function voiceModelCacheKeys(): Promise<readonly Request[]> {
@@ -98,17 +27,14 @@ async function voiceModelCacheKeys(): Promise<readonly Request[]> {
   return cache.keys();
 }
 
-export function getVoiceModelOption(id: string): VoiceModelOption {
-  const found = VOICE_MODELS.find((m) => m.id === id);
-  return found ?? VOICE_MODELS[0]!;
-}
-
 export function getActiveVoiceModelId(): VoiceModelId {
   if (typeof localStorage === "undefined") {
     return DEFAULT_VOICE_MODEL_ID;
   }
   const stored = localStorage.getItem(STORAGE_KEY_ACTIVE);
-  if (stored && VOICE_MODELS.some((m) => m.id === stored)) {
+  const spec = stored ? voiceModelSpec(stored) : undefined;
+  // A stored id only holds while this build can run it; an inert engine falls back.
+  if (stored && spec && isVoiceModelAvailable(spec)) {
     return stored as VoiceModelId;
   }
   return DEFAULT_VOICE_MODEL_ID;
@@ -131,6 +57,8 @@ export function markVoiceModelDownloaded(id: VoiceModelId, downloaded = true): v
 
 export async function isVoiceModelDownloaded(id: VoiceModelId): Promise<boolean> {
   const opt = getVoiceModelOption(id);
+  // An engine this build does not load has no cache, so nothing is ever present.
+  if (!isVoiceModelAvailable(opt)) return false;
 
   if (opt.engine === "cactus") {
     if (await isWhistleWeightsCached(opt)) {
@@ -171,25 +99,24 @@ export async function isVoiceModelDownloaded(id: VoiceModelId): Promise<boolean>
 
 /** True when at least one voice model is present in the local cache. */
 export async function anyVoiceModelDownloaded(): Promise<boolean> {
-  for (const m of VOICE_MODELS) {
-    if (await isVoiceModelDownloaded(m.id)) return true;
+  for (const model of VOICE_MODELS) {
+    if (await isVoiceModelDownloaded(model.modelId)) return true;
   }
   return false;
 }
 
 export async function deleteVoiceModelCache(id: VoiceModelId): Promise<void> {
   const opt = getVoiceModelOption(id);
+  markVoiceModelDownloaded(id, false);
+  if (!isVoiceModelAvailable(opt)) return;
 
   if (opt.engine === "cactus") {
-    markVoiceModelDownloaded(id, false);
     await deleteWhistleWeights(opt);
     if (getActiveVoiceModelId() === id) {
       setActiveVoiceModelId(DEFAULT_VOICE_MODEL_ID);
     }
     return;
   }
-
-  markVoiceModelDownloaded(id, false);
 
   if (typeof caches !== "undefined") {
     try {

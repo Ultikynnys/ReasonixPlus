@@ -1,0 +1,16 @@
+{
+  "id": "bark-3-0-plus",
+  "modelId": "underdog/bark-3.0-plus",
+  "engine": "bark",
+  "order": 70,
+  "default": false,
+  "name": "Bark 3.0 Plus (English)",
+  "shortName": "Bark Plus",
+  "badge": "High Accuracy",
+  "size": "~180 MB",
+  "parameters": "0.6B",
+  "description": "Every word, with fewer mistakes than Bark 3.0.",
+  "repoId": "ConwayResearch/Underdog-Bark-3.0-Plus",
+  "weightsFile": "model.bark",
+  "configFile": "mlx/config.json"
+}

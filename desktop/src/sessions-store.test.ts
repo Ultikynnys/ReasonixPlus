@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "./App";
 import {
+  FOCUS_REFRESH_THROTTLE_MS,
   INTENT_ESCAPE_SNAPSHOTS,
   type SessionIntent,
   type SessionsStore,
   applySessionsSnapshot,
   beginIntent,
+  clearPartition,
   derivedItems,
   emptySessionsStore,
+  focusRefreshDue,
   hasOpenSessionIntent,
   hiddenNames,
   mutationFor,
@@ -275,6 +278,43 @@ describe("hasOpenSessionIntent", () => {
     const deleting = beginIntent(confirmed([A]), WORKSPACE, { kind: "delete", name: "a" });
     const other = beginIntent(deleting, "/elsewhere", { kind: "create", name: "x" });
     expect(hasOpenSessionIntent(other)).toBe(true);
+  });
+});
+
+describe("focus reconcile throttle", () => {
+  it("refreshes on the first focus, when nothing has been asked yet", () => {
+    expect(focusRefreshDue(0, 10_000)).toBe(true);
+  });
+
+  it("refreshes again only after the throttle window", () => {
+    expect(focusRefreshDue(10_000, 10_000 + FOCUS_REFRESH_THROTTLE_MS - 1)).toBe(false);
+    expect(focusRefreshDue(10_000, 10_000 + FOCUS_REFRESH_THROTTLE_MS)).toBe(true);
+  });
+
+  it("takes the window as an argument so the caller owns the cadence", () => {
+    expect(focusRefreshDue(1_000, 1_500, 250)).toBe(true);
+  });
+});
+
+describe("clear-all partition", () => {
+  it("keeps every running session and dooms the rest", () => {
+    // The confirm dialog counts with this split and the request carries it, so a
+    // session the dialog promised to keep can never arrive as doomed.
+    const { doomed, kept } = clearPartition([A, B], new Set(["a"]));
+    expect(doomed).toEqual(["b"]);
+    expect(kept).toEqual(["a"]);
+  });
+
+  it("dooms every row when nothing is running", () => {
+    const { doomed, kept } = clearPartition([A, B]);
+    expect(doomed).toEqual(["a", "b"]);
+    expect(kept).toEqual([]);
+  });
+
+  it("dooms nothing when every session is running", () => {
+    const { doomed, kept } = clearPartition([A, B], new Set(["a", "b"]));
+    expect(doomed).toEqual([]);
+    expect(kept).toEqual(["a", "b"]);
   });
 });
 

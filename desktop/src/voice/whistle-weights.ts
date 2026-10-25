@@ -1,15 +1,16 @@
 /**
- * Download and cache the Whistle `.cact` weights (the Cactus speech model).
+ * Download and cache a Cactus `.cact` speech model archive.
  *
- * The weights are ~16.9 MB and live on Hugging Face. They are fetched once and
- * stored in the Cache API so transcription never touches the network again.
+ * The archive lives on Hugging Face; it is fetched once and stored in the Cache
+ * API so transcription never touches the network again.
  */
 
 /** The minimal shape needed to locate a Cactus model's weights. */
 export interface CactusWeightsRef {
   id: string;
   repoId: string;
-  weightsFile?: string;
+  /** The `.cact` file within `repoId`; every cactus declaration carries one. */
+  weightsFile: string | null;
 }
 
 export interface WhistleDownloadProgress {
@@ -20,12 +21,13 @@ export interface WhistleDownloadProgress {
 }
 
 const WEIGHTS_CACHE = "cactus-needle-weights";
-const DEFAULT_WEIGHTS_FILE = "whistle.cact";
 
 /** The Hugging Face URL of a Cactus model's `.cact` weights. */
 export function whistleWeightsUrl(model: CactusWeightsRef): string {
-  const file = model.weightsFile ?? DEFAULT_WEIGHTS_FILE;
-  return `https://huggingface.co/${model.repoId}/resolve/main/${file}`;
+  if (!model.weightsFile) {
+    throw new Error(`Cactus model ${model.id} declares no weightsFile.`);
+  }
+  return `https://huggingface.co/${model.repoId}/resolve/main/${model.weightsFile}`;
 }
 
 function concatChunks(chunks: Uint8Array[]) {

@@ -22,6 +22,7 @@ vi.mock("@huggingface/transformers", () => ({
   env: mockEnv,
 }));
 
+import { VOICE_MODELS, isVoiceModelAvailable } from "./model-registry";
 import { isWebGPUSupported, speechTranscriber, suppressOnnxOptimizerNoise } from "./transcriber";
 
 describe("LocalSpeechTranscriber", () => {
@@ -103,6 +104,19 @@ describe("LocalSpeechTranscriber", () => {
       "onnx-community/whisper-small.en",
       expect.objectContaining({ device: "wasm", dtype: "q8" }),
     );
+  });
+
+  it("refuses a model whose engine this build does not load", async () => {
+    const inert = VOICE_MODELS.find((model) => !isVoiceModelAvailable(model));
+    expect(inert).toBeTruthy();
+
+    await expect(speechTranscriber.downloadModel(inert!.modelId)).rejects.toThrow(
+      /which this build does not include/,
+    );
+    await expect(speechTranscriber.getPipeline(inert!.modelId)).rejects.toThrow(
+      /which this build does not include/,
+    );
+    expect(mockPipeline).not.toHaveBeenCalled();
   });
 
   it("selects webgpu device when GPU adapter is available", async () => {

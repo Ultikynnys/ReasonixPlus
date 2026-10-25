@@ -1,0 +1,16 @@
+{
+  "id": "bark-3-0-pro",
+  "modelId": "underdog/bark-3.0-pro",
+  "engine": "bark",
+  "order": 80,
+  "default": false,
+  "name": "Bark 3.0 Pro (English)",
+  "shortName": "Bark Pro",
+  "badge": "Most Accurate",
+  "size": "~1.25 GB",
+  "parameters": "0.6B",
+  "description": "Full precision, the most accurate Bark, in a 1.25 GB download.",
+  "repoId": "ConwayResearch/Underdog-Bark-3.0-Pro",
+  "weightsFile": "model.bark",
+  "configFile": "mlx/config.json"
+}

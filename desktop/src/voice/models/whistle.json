@@ -1,0 +1,14 @@
+{
+  "id": "whistle",
+  "modelId": "whistle",
+  "engine": "cactus",
+  "order": 40,
+  "default": false,
+  "name": "Whistle (Multilingual)",
+  "shortName": "Whistle",
+  "badge": "Multilingual",
+  "size": "~17 MB",
+  "description": "Tiny multilingual speech recognition (en, de, fr, es, it, nl, pl) on the Cactus engine. No GPU required.",
+  "repoId": "Cactus-Compute/whistle",
+  "weightsFile": "whistle.cact"
+}

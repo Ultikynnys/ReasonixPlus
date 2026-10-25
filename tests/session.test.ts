@@ -379,6 +379,19 @@ describe("session persistence", () => {
     expect(matched[0]!.meta.workspace).toBeUndefined();
   });
 
+  it("a meta write never re-creates a session that is gone", () => {
+    const name = "code-a-202605251200";
+    ensureSessionDir(name);
+    deleteSession(name);
+
+    patchSessionMeta(name, { workspace: "/proj/a" });
+    expect(sessionExists(name)).toBe(false);
+    // The legacy backfill is a meta write too, so it cannot resurrect the folder
+    // as a zero-message row either.
+    expect(patchSessionWorkspaceIfMissing(name, "/proj/a")).toBe(false);
+    expect(sessionExists(name)).toBe(false);
+  });
+
   it("patchSessionWorkspaceIfMissing backfills workspace meta on first legacy load", () => {
     appendSessionMessage("code-a-202605251200", { role: "user", content: "x" });
 
@@ -1062,6 +1075,7 @@ describe("session persistence", () => {
   });
 
   it("session meta round-trips model + reasoningEffort", () => {
+    ensureSessionDir("prefs");
     patchSessionMeta("prefs", { model: "deepseek-v4-pro", reasoningEffort: "max" });
     expect(loadSessionMeta("prefs")).toMatchObject({
       model: "deepseek-v4-pro",
@@ -1077,6 +1091,7 @@ describe("session persistence", () => {
   });
 
   it("session meta round-trips per-session MCP state", () => {
+    ensureSessionDir("mcpstate");
     patchSessionMeta("mcpstate", {
       mcp: { disabledServers: ["blender"], disabledTools: { blender: ["a", "b"] } },
     });
@@ -1092,6 +1107,8 @@ describe("session persistence", () => {
     });
   });
   it("keeps the subagent flag per session, not per workspace", () => {
+    ensureSessionDir("with-subagents");
+    ensureSessionDir("without-subagents");
     patchSessionMeta("with-subagents", { workspace: "C:/proj", subagents: true });
     patchSessionMeta("without-subagents", { workspace: "C:/proj", subagents: false });
     // Same workspace, same config, opposite capabilities: each session owns its value.

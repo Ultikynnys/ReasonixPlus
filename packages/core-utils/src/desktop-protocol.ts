@@ -1651,8 +1651,10 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "session_delete"; name: string }
   /** Delete every session the caller is optimistically hiding. `names` is the
    *  frontend's exact hide-list, echoed so the daemon can settle every one even
-   *  if its own workspace listing misses some (kept optional for older callers). */
-  | { cmd: "session_clear"; names?: string[] }
+   *  if its own workspace listing misses some (kept optional for older callers).
+   *  `keep` is the list the caller told the user would survive; the daemon never
+   *  deletes a name from it, whatever its own live check reports. */
+  | { cmd: "session_clear"; names?: string[]; keep?: string[] }
   /** Legacy alias for additive session_open; never replaces the active agent. */
   | { cmd: "session_load"; name: string }
   /** Focus an existing session agent or add it to the current workspace tab. */

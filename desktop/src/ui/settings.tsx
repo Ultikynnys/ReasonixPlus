@@ -69,12 +69,11 @@ import {
   setSelectedAudioInputDeviceId,
 } from "../voice/device";
 import {
-  VOICE_MODELS,
-  type VoiceModelId,
   deleteVoiceModelCache,
   getActiveVoiceModelId,
   isVoiceModelDownloaded,
-} from "../voice/models";
+} from "../voice/model-cache";
+import { VOICE_ENGINES, VOICE_MODELS, type VoiceModelId } from "../voice/model-registry";
 import { speechTranscriber } from "../voice/transcriber";
 import { type ChangelogState, PageChangelog } from "./changelog";
 import { FitText } from "./fit-text";
@@ -1274,7 +1273,7 @@ function VoiceModelList() {
   const refreshDownloaded = useCallback(async () => {
     const nextMap: Record<string, boolean> = {};
     for (const m of VOICE_MODELS) {
-      nextMap[m.id] = await isVoiceModelDownloaded(m.id);
+      nextMap[m.modelId] = await isVoiceModelDownloaded(m.modelId);
     }
     setDownloadedMap(nextMap);
   }, []);
@@ -1342,13 +1341,14 @@ function VoiceModelList() {
       <div className="provider-models-scroll">
         <div className="voice-card-grid">
           {VOICE_MODELS.map((model) => {
-            const isActive = activeModel === model.id;
-            const isDownloaded = Boolean(downloadedMap[model.id]);
-            const isDownloading = downloadingModel === model.id;
+            const isActive = activeModel === model.modelId;
+            const isDownloaded = Boolean(downloadedMap[model.modelId]);
+            const isDownloading = downloadingModel === model.modelId;
+            const runtime = VOICE_ENGINES[model.engine];
 
             return (
               <div
-                key={model.id}
+                key={model.modelId}
                 className={`voice-card ${isActive ? "active" : ""}`}
                 data-active={isActive}
               >
@@ -1365,10 +1365,10 @@ function VoiceModelList() {
                     </>
                   )}
                   <span>{model.size}</span>
-                  {model.engine === "cactus" && (
+                  {runtime.labelKey && (
                     <>
                       <span>•</span>
-                      <span>Cactus engine</span>
+                      <span>{t(runtime.labelKey)}</span>
                     </>
                   )}
                 </div>
@@ -1393,7 +1393,9 @@ function VoiceModelList() {
                 )}
 
                 <div className="voice-card-actions">
-                  {isDownloading ? (
+                  {runtime.requirementKey ? (
+                    <span className="voice-requirement">{t(runtime.requirementKey)}</span>
+                  ) : isDownloading ? (
                     <button type="button" className="btn" disabled>
                       {t("settings.voiceDownloading")}
                     </button>
@@ -1405,7 +1407,7 @@ function VoiceModelList() {
                         <button
                           type="button"
                           className="btn"
-                          onClick={() => handleSelect(model.id)}
+                          onClick={() => handleSelect(model.modelId)}
                         >
                           {t("settings.voiceSelect")}
                         </button>
@@ -1414,7 +1416,7 @@ function VoiceModelList() {
                         type="button"
                         className="btn btn-subtle"
                         title="Delete downloaded files to free space"
-                        onClick={() => handleDelete(model.id)}
+                        onClick={() => handleDelete(model.modelId)}
                       >
                         {t("settings.voiceDelete")}
                       </button>
@@ -1424,7 +1426,7 @@ function VoiceModelList() {
                       type="button"
                       className="btn btn-download"
                       disabled={downloadingModel !== null}
-                      onClick={() => handleDownload(model.id)}
+                      onClick={() => handleDownload(model.modelId)}
                     >
                       {t("settings.voiceDownload")}
                     </button>

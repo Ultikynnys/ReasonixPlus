@@ -175,6 +175,51 @@ describe("tab-menu", () => {
   });
 
   describe("TabBar context menu integration", () => {
+    it("switches workspace tab on click", () => {
+      const setActive = vi.fn();
+      render(
+        <TabBar
+          tabs={[
+            { id: "alpha-1", workspaceDir: "/project/alpha" },
+            { id: "beta-1", workspaceDir: "/project/beta" },
+          ]}
+          activeId="alpha-1"
+          setActive={setActive}
+          onClose={vi.fn()}
+          onNew={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(screen.getByText("beta").closest(".tab-group")!);
+      expect(setActive).toHaveBeenCalledWith("beta-1");
+    });
+
+    it("locks the ribbon while a session change is still settling", () => {
+      // A delete/clear is settled by a snapshot of the workspace it started on, so the
+      // switch that would re-target that wait is refused and says why.
+      const setActive = vi.fn();
+      render(
+        <TabBar
+          tabs={[
+            { id: "alpha-1", workspaceDir: "/project/alpha" },
+            { id: "beta-1", workspaceDir: "/project/beta" },
+          ]}
+          activeId="alpha-1"
+          setActive={setActive}
+          onClose={vi.fn()}
+          onNew={vi.fn()}
+          blocked
+        />,
+      );
+
+      const betaTab = screen.getByText("beta").closest(".tab-group")!;
+      expect(betaTab.getAttribute("aria-disabled")).toBe("true");
+      expect(betaTab.getAttribute("data-blocked")).toBe("true");
+      expect(betaTab.getAttribute("title")).toBe("Finishing a session change first");
+      fireEvent.click(betaTab);
+      expect(setActive).not.toHaveBeenCalled();
+    });
+
     it("renders one workspace tab for multiple independent session channels", () => {
       const onClose = vi.fn();
       const { container } = render(

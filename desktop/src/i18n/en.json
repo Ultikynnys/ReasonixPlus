@@ -193,6 +193,9 @@
     "voiceDownloaded": "Downloaded",
     "voiceDelete": "Delete",
     "voiceDownloadError": "Voice model download failed: {error}",
+    "voiceEngineCactus": "Cactus engine",
+    "voiceEngineBark": "MLX engine",
+    "voiceEngineBarkRequirement": "Needs Apple silicon and the MLX runtime, which this build does not include.",
     "openaiSection": "OpenAI (GPT-6 / GPT-5.6)",
     "ollamaSection": "Ollama",
     "localSection": "Local (llama.cpp)",
@@ -504,6 +507,7 @@
     "tab": {
       "newTabTitle": "New tab ⌘T",
       "newTab": "New tab",
+      "switchBlocked": "Finishing a session change first",
       "clearAll": "Clear all tabs",
       "clearRight": "Clear tabs to the right",
       "clearLeft": "Clear tabs to the left"

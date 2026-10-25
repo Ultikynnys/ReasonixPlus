@@ -90,8 +90,14 @@ describe("whistle weights", () => {
     expect(whistleWeightsUrl(MODEL)).toBe(
       "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact",
     );
-    expect(whistleWeightsUrl({ id: "x", repoId: "Org/repo" })).toBe(
-      "https://huggingface.co/Org/repo/resolve/main/whistle.cact",
+    expect(
+      whistleWeightsUrl({ id: "other", repoId: "Org/repo", weightsFile: "other.cact" }),
+    ).toBe("https://huggingface.co/Org/repo/resolve/main/other.cact");
+  });
+
+  it("refuses a model that declares no archive", () => {
+    expect(() => whistleWeightsUrl({ id: "none", repoId: "Org/repo", weightsFile: null })).toThrow(
+      /declares no weightsFile/,
     );
   });
 

@@ -2,8 +2,8 @@
  * Audio input device enumeration and selection persistence.
  *
  * The selected device id is stored in localStorage (matching the voice-model
- * pattern in `models.ts`) so the choice survives restarts without needing the
- * daemon config round-trip. The composer reads it when starting a recording.
+ * pattern in `model-cache.ts`) so the choice survives restarts without needing
+ * the daemon config round-trip. The composer reads it when starting a recording.
  */
 
 export interface AudioInputDevice {

@@ -1,0 +1,14 @@
+{
+  "id": "whisper-small",
+  "modelId": "Xenova/whisper-small.en",
+  "engine": "transformers",
+  "order": 30,
+  "default": false,
+  "name": "Whisper Small (English)",
+  "shortName": "Small",
+  "badge": "High Accuracy",
+  "size": "~250 MB",
+  "parameters": "244M",
+  "description": "High accuracy speech recognition for accents, jargon, and noisy audio.",
+  "repoId": "onnx-community/whisper-small.en"
+}

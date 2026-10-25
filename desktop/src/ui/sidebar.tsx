@@ -5,6 +5,7 @@ import { recordFrontendFailure } from "../diagnostics";
 import { t, useLang } from "../i18n";
 import { I } from "../icons";
 import type { SessionPlanLabel } from "../plan-labels";
+import { clearPartition } from "../sessions-store";
 import { formatTokensPerSecond } from "../stream-rate";
 import { useClampedPopupPosition } from "./file-menu";
 import { activationHandler } from "./keyboard";
@@ -108,9 +109,14 @@ export function Sidebar({
   }, [sessions, query]);
 
   // Sessions a delete may touch. A session with an agent running is protected —
-  // the daemon refuses it — so it is never counted or hidden by a clear-all.
-  const runningCount = sessions.filter((s) => runningSessions?.has(s.name)).length;
-  const deletableCount = sessions.length - runningCount;
+  // the daemon refuses it — so it is never counted or hidden by a clear-all. The
+  // split is the shared one, so the counts here and the request App sends agree.
+  const clear = useMemo(
+    () => clearPartition(sessions, runningSessions),
+    [sessions, runningSessions],
+  );
+  const runningCount = clear.kept.length;
+  const deletableCount = clear.doomed.length;
 
   useEffect(() => {
     if (!pendingDelete && !pendingClear) return;

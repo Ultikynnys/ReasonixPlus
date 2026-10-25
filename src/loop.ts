@@ -80,6 +80,7 @@ import {
   appendSessionMessage,
   archiveSession,
   checkpointSessionMessages,
+  ensureSessionDir,
   loadSessionMessages,
   loadSessionMeta,
   patchSessionMeta,
@@ -1522,9 +1523,12 @@ export class CacheFirstLoop {
 
     this._turn++;
     // Persist before any event for this turn is emitted so a mid-turn crash
-    // or rebuild can't reissue the ordinal. Best-effort.
+    // or rebuild can't reissue the ordinal. This turn is about to write a
+    // conversation into the session, which is what minting it means; the stamp
+    // itself never creates a session. Best-effort.
     if (this.sessionName) {
       try {
+        ensureSessionDir(this.sessionName);
         patchSessionMeta(this.sessionName, { lastTurn: this._turn });
       } catch (err) {
         process.stderr.write(`reasonix: session meta lastTurn patch failed — ${messageOf(err)}\n`);

@@ -1,7 +1,12 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   NO_WORKSPACE_MESSAGE,
+  abandonedSessionOnClose,
+  clearSessionPlan,
   deletableSessionNames,
+  missingSessionRefusal,
   sessionRunningRefusal,
   sessionsWithLiveTurn,
   shouldDetachDeletedSession,
@@ -79,9 +84,41 @@ describe("desktop — a running session is never deleted", () => {
     expect(sessionsWithLiveTurn([channel("", new AbortController())]).size).toBe(0);
   });
 
+  it("protects a turn whose body is still unwinding after its aborter cleared", () => {
+    // Stop hooks and cleanup awaits run with the aborter gone but the turn body
+    // alive, and the row still reads as running: deleting it would abort work the
+    // user was told is kept.
+    const unwinding = { ...channel("draining", null), activeTurn: Promise.resolve() };
+    expect([...sessionsWithLiveTurn([unwinding])]).toEqual(["draining"]);
+  });
+
+  it("protects a session in the middle of a manual context fold", () => {
+    // A fold awaits the turn before it starts, so both turn markers are clear while
+    // the daemon still works on that session.
+    const folding = { ...channel("folding", null), compactingManual: true };
+    expect([...sessionsWithLiveTurn([folding])]).toEqual(["folding"]);
+  });
+
   it("leaves a running session out of a clear-all", () => {
     const doomed = deletableSessionNames(["working", "idle", "older"], new Set(["working"]));
     expect(doomed).toEqual(["idle", "older"]);
+  });
+
+  it("keeps every name the confirm dialog promised to keep", () => {
+    // The caller's list wins over the daemon's own view: a session the dialog
+    // labeled running survives a clear even when this daemon sees it idle, so the
+    // promise costs an undeleted row instead of a deleted session.
+    const plan = clearSessionPlan(["working", "promised", "older"], new Set(["working"]), [
+      "promised",
+    ]);
+    expect(plan.doomed).toEqual(["older"]);
+    expect(plan.kept).toEqual(["working", "promised"]);
+  });
+
+  it("clears everything when nothing is live or promised", () => {
+    const plan = clearSessionPlan(["a", "b"], new Set());
+    expect(plan.doomed).toEqual(["a", "b"]);
+    expect(plan.kept).toEqual([]);
   });
 
   it("ships a refusal that names the session and the way out", () => {
@@ -89,6 +126,54 @@ describe("desktop — a running session is never deleted", () => {
     expect(message).toContain("working");
     expect(message).toMatch(/running/i);
     expect(message).toMatch(/stop/i);
+  });
+});
+
+describe("desktop — a row whose session is gone cannot be opened", () => {
+  it("refuses in one shared wording that names the session", () => {
+    const message = missingSessionRefusal("session_open", "ghost-1");
+    expect(message).toContain("ghost-1");
+    expect(message).toMatch(/no longer exists/i);
+    expect(message).toMatch(/refreshed/i);
+  });
+
+  it("checks the session is on disk before it bootstraps a tab", () => {
+    // Opening a missing session would show a blank chat and, through the load's
+    // workspace stamp, rebuild its folder: the existence check has to run first.
+    const src = readFileSync(join(process.cwd(), "src/cli/commands/desktop.ts"), "utf8");
+    const open = src.slice(
+      src.indexOf("function openOrFocusSession("),
+      src.indexOf("function patchSessionMetaAndResync("),
+    );
+    expect(open).toContain("if (!sessionExists(name)) {");
+    expect(open).toContain("emitSessionsForWorkspace(tab.rootDir);");
+    expect(open.indexOf("if (!sessionExists(name))")).toBeLessThan(open.indexOf("bootstrapTab("));
+  });
+});
+
+describe("desktop — a closing channel releases the chat it never filled", () => {
+  it("releases an empty session no other channel serves", () => {
+    expect(
+      abandonedSessionOnClose({ session: "fresh", empty: true, heldByAnotherChannel: false }),
+    ).toBe("fresh");
+  });
+
+  it("keeps a session that holds any conversation", () => {
+    expect(
+      abandonedSessionOnClose({ session: "talked", empty: false, heldByAnotherChannel: false }),
+    ).toBeUndefined();
+  });
+
+  it("keeps a session another channel still serves", () => {
+    expect(
+      abandonedSessionOnClose({ session: "shared", empty: true, heldByAnotherChannel: true }),
+    ).toBeUndefined();
+  });
+
+  it("releases nothing from a channel with no session", () => {
+    expect(
+      abandonedSessionOnClose({ session: undefined, empty: true, heldByAnotherChannel: false }),
+    ).toBeUndefined();
   });
 });
 
@@ -106,5 +191,51 @@ describe("desktop — refusing a session command without a workspace", () => {
     // The daemon echoes this instead of returning silently, so a refused click
     // still tells the user what to do next.
     expect(NO_WORKSPACE_MESSAGE).toMatch(/workspace/i);
+  });
+});
+
+describe("desktop — a session mutation owns its workspace while it settles", () => {
+  const daemon = readFileSync(join(process.cwd(), "src/cli/commands/desktop.ts"), "utf8");
+  const app = readFileSync(join(process.cwd(), "desktop/src/App.tsx"), "utf8");
+
+  it("books the workspace for a single delete, exactly like a clear", () => {
+    const remove = daemon.slice(
+      daemon.indexOf('if (msg.cmd === "session_delete") {'),
+      daemon.indexOf('if (msg.cmd === "session_clear") {'),
+    );
+    expect(remove).toContain("const releaseDeleteBooking = sessionWork.begin(tab.rootDir);");
+    expect(remove).toContain("releaseDeleteBooking();");
+    // The booking has to cover the detach as well: that is what re-targets the channel.
+    expect(remove.indexOf("sessionWork.begin(tab.rootDir)")).toBeLessThan(
+      remove.indexOf("detachDoomedSessionWriters("),
+    );
+  });
+
+  it("never publishes a second listing over a mutation on tab activation", () => {
+    const activate = daemon.slice(
+      daemon.indexOf('if (msg.cmd === "tab_activate") {'),
+      daemon.indexOf('if (msg.cmd === "confirm_response") {'),
+    );
+    expect(activate).toContain(
+      "if (!workspaceSessionBusy(activated.rootDir)) void emitSessions(activated);",
+    );
+  });
+
+  it("routes every user tab switch through the one gate", () => {
+    expect(app).toContain("const tabSwitchBlocked = hasOpenSessionIntent(sessionsStore);");
+    expect(app).toContain("if (hasOpenSessionIntent(sessionsStoreRef.current)) return;");
+    expect(app).toContain("setActiveTabId={activateWorkspaceTab}");
+    expect(app).toContain("tabSwitchBlocked={tabSwitchBlocked}");
+  });
+
+  it("stands the focus reconcile down while a mutation is settling", () => {
+    // Every extra listing counts as one that did not confirm an open hide, so the
+    // outside-deletion reconcile must not run against a workspace mid-settle.
+    const focus = app.slice(
+      app.indexOf("const lastFocusRefreshRef = useRef(0);"),
+      app.indexOf("// Tracks each tab's running-agent flag"),
+    );
+    expect(focus).toContain("if (hasOpenSessionIntent(sessionsStoreRef.current)) return;");
+    expect(focus.indexOf("hasOpenSessionIntent")).toBeLessThan(focus.indexOf("requestSessionList"));
   });
 });

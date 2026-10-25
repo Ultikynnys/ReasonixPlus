@@ -98,7 +98,9 @@ import {
   type SessionsStore,
   applySessionsSnapshot,
   beginIntent,
+  clearPartition,
   emptySessionsStore,
+  focusRefreshDue,
   hasOpenSessionIntent,
   hiddenNames,
   mutationFor,
@@ -195,7 +197,7 @@ import { useIsScrollable } from "./ui/useIsScrollable";
 import { useResizable } from "./ui/useResizable";
 import { useTurnWatchdog } from "./ui/useTurnWatchdog";
 import { WorkdirPop } from "./ui/workdir-pop";
-import { anyVoiceModelDownloaded } from "./voice/models";
+import { anyVoiceModelDownloaded } from "./voice/model-cache";
 import { areWorkspacesLoaded, isWorkspaceRevealReady } from "./workspace-loading";
 import { normalizeWorkspacePath, toWorkspaceRelative } from "./workspace-path";
 
@@ -3615,7 +3617,10 @@ interface TabRuntimeProps {
     busy?: boolean;
   }[];
   activeTabId: string;
+  /** The gated switch: refuses while a session mutation is still settling. */
   setActiveTabId: (id: string) => void;
+  /** A session mutation is in flight somewhere, so the ribbon shows its tabs as locked. */
+  tabSwitchBlocked?: boolean;
   onRemoveWorkspace: (path: string) => void;
 }
 
@@ -3683,6 +3688,7 @@ const TabRuntime = memo(function TabRuntime({
   tabsList,
   activeTabId,
   setActiveTabId,
+  tabSwitchBlocked,
   onRemoveWorkspace,
 }: TabRuntimeProps) {
   const [state, dispatch] = useReducer(reduce, {
@@ -5088,18 +5094,19 @@ const TabRuntime = memo(function TabRuntime({
     if (sessionsMutation !== null) return;
     // Echo the exact names being hidden so the daemon can settle every one even
     // if its own workspace listing misses some — otherwise the rows stay hidden
-    // forever and the app looks wedged.
-    const names = sessions.map((session) => session.name);
-    const kept = names.filter((name) => runningSessions.has(name));
-    const doomed = names.filter((name) => !runningSessions.has(name));
+    // forever and the app looks wedged. The split is the same rule the confirm
+    // dialog counted with, so what it promised and what rides the request match.
+    const { doomed, kept } = clearPartition(sessions, runningSessions);
     // Nothing deletable: say so rather than start a clear that can never settle.
     if (doomed.length === 0) {
       appendNotice(t("app.deleteRunningRefused"), "warning");
       return;
     }
     // `kept` stays visible through the whole clear: those rows are not deleted.
+    // It also rides the request, so the daemon cannot delete a session this
+    // dialog told the user would survive even when its live view disagrees.
     onSessionIntent(state.settings?.workspaceDir, "clear", undefined, kept);
-    sendRpc({ cmd: "session_clear", names: doomed });
+    sendRpc({ cmd: "session_clear", names: doomed, keep: kept });
   }, [
     appendNotice,
     onSessionIntent,
@@ -5200,6 +5207,7 @@ const TabRuntime = memo(function TabRuntime({
           onNew={onNewTab}
           onClearTabs={clearTabs}
           singleTab={singleTab}
+          blocked={tabSwitchBlocked}
         />
 
         <MemoSidebar
@@ -6036,6 +6044,7 @@ export function TabBar({
   onNew,
   onClearTabs,
   singleTab,
+  blocked,
 }: {
   tabs: { id: string; workspaceDir?: string; session?: string; group?: string; busy?: boolean }[];
   activeId: string;
@@ -6044,6 +6053,9 @@ export function TabBar({
   onNew: () => void;
   onClearTabs?: (scope: ClearTabsScope) => void;
   singleTab?: boolean;
+  /** A session mutation is still settling: the ribbon shows it and refuses the switch
+   *  instead of re-targeting the list the mutation belongs to. */
+  blocked?: boolean;
 }) {
   useLang();
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -6103,9 +6115,11 @@ export function TabBar({
             key={g.key}
             className="tab tab-group"
             data-active={activeInGroup ? "true" : undefined}
-            onClick={() => setActive(head.id)}
-            onKeyDown={activationHandler(() => setActive(head.id))}
-            title={ws || label}
+            data-blocked={blocked ? "true" : undefined}
+            aria-disabled={blocked ? true : undefined}
+            onClick={blocked ? undefined : () => setActive(head.id)}
+            onKeyDown={blocked ? undefined : activationHandler(() => setActive(head.id))}
+            title={blocked ? t("app.tab.switchBlocked") : ws || label}
           >
             {activeAgents > 0 ? (
               <span
@@ -6686,6 +6700,17 @@ export function App() {
     },
     [commitSessionsStore],
   );
+
+  // A session delete/clear/create is settled by a snapshot that belongs to the workspace
+  // it was started on. Switching workspace tabs mid-flight re-targets that wait and leaves
+  // the ribbon and the backend disagreeing about which list is being replaced, so the
+  // switch waits for the store to settle. The flag drives the ribbon's lock; the callback
+  // is the enforcement every switch path shares.
+  const tabSwitchBlocked = hasOpenSessionIntent(sessionsStore);
+  const activateWorkspaceTab = useCallback((id: string) => {
+    if (hasOpenSessionIntent(sessionsStoreRef.current)) return;
+    setActiveTabId(id);
+  }, []);
   const patchSessionRow = useCallback(
     (workspaceDir: string | undefined, name: string, patch: Partial<SessionInfo>) => {
       const current = sessionsStoreRef.current;
@@ -7477,6 +7502,27 @@ export function App() {
     });
   }, [activeTabId]);
 
+  // A session can be removed outside this app — another window, the CLI, a directory
+  // cleanup — and no snapshot announces that, so its row would keep pointing at nothing.
+  // One throttled reconcile on focus asks the daemon for the truth through the same
+  // request path every other refresh uses.
+  const lastFocusRefreshRef = useRef(0);
+  useEffect(() => {
+    if (!activeTabId) return;
+    const onFocus = () => {
+      // An open mutation is settled by its own snapshot, and every extra listing counts
+      // as one more that did not confirm its hide. The bounded intent reconcile already
+      // covers a hide that never settles, so this one stands down.
+      if (hasOpenSessionIntent(sessionsStoreRef.current)) return;
+      const now = Date.now();
+      if (!focusRefreshDue(lastFocusRefreshRef.current, now)) return;
+      lastFocusRefreshRef.current = now;
+      requestSessionList(activeTabId);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [activeTabId]);
+
   // Tracks each tab's running-agent flag so the tab dot can show how many
   // agents are active in it. Every mounted TabRuntime reports its own busy.
   const reportTabBusy = useCallback(
@@ -7700,7 +7746,8 @@ export function App() {
           onRefreshChangelog={requestChangelog}
           tabsList={tabs}
           activeTabId={activeTabId}
-          setActiveTabId={setActiveTabId}
+          setActiveTabId={activateWorkspaceTab}
+          tabSwitchBlocked={tabSwitchBlocked}
           onRemoveWorkspace={onRemoveWorkspace}
         />
       ))}

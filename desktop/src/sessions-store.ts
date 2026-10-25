@@ -60,6 +60,38 @@ export interface SnapshotResult {
  *  session is alive, and a row that cannot be hidden forever beats a stuck sidebar. */
 export const INTENT_ESCAPE_SNAPSHOTS = 3;
 
+/** Minimum gap between focus-driven list reconciles. A window regaining focus is the one
+ *  moment this app can notice a session removed outside it, and the throttle keeps a
+ *  focus storm from walking the store once per event. */
+export const FOCUS_REFRESH_THROTTLE_MS = 5_000;
+
+/** True when a focus event is worth a reconcile: the first one, or one that arrives
+ *  outside the throttle window. `lastAt` is 0 before any focus-driven refresh. */
+export function focusRefreshDue(
+  lastAt: number,
+  now: number,
+  windowMs: number = FOCUS_REFRESH_THROTTLE_MS,
+): boolean {
+  if (lastAt <= 0) return true;
+  return now - lastAt >= windowMs;
+}
+
+/** How a clear-all splits the rows: the names it may delete, and the names the confirm
+ *  dialog promises to keep. One rule for both, so the count the dialog shows and the
+ *  list the request carries cannot disagree. */
+export function clearPartition(
+  sessions: readonly { name: string }[],
+  running: ReadonlySet<string> | undefined = NO_SESSION_NAMES,
+): { doomed: string[]; kept: string[] } {
+  const doomed: string[] = [];
+  const kept: string[] = [];
+  for (const session of sessions) {
+    if (running.has(session.name)) kept.push(session.name);
+    else doomed.push(session.name);
+  }
+  return { doomed, kept };
+}
+
 const EMPTY_ENTRY: SessionsEntry = {
   raw: [],
   items: [],
@@ -68,6 +100,10 @@ const EMPTY_ENTRY: SessionsEntry = {
   confirmed: false,
   intents: [],
 };
+
+/** Shared "no session is running" set: one instance, so the default argument of a
+ *  partition never allocates a set per call. */
+const NO_SESSION_NAMES: ReadonlySet<string> = new Set();
 
 /** True when two lists hold the same rows with the same metadata, so a caller can
  *  keep the previous array reference and a memoized sidebar can bail out. */

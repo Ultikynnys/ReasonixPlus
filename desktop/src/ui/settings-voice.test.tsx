@@ -6,7 +6,8 @@ import type { Settings } from "../App";
 import { MailProvider } from "../protocol";
 import { AudioRecorder } from "../voice/audio-recorder";
 import { setCachedAudioInputDevices } from "../voice/device";
-import { markVoiceModelDownloaded, setActiveVoiceModelId } from "../voice/models";
+import { markVoiceModelDownloaded, setActiveVoiceModelId } from "../voice/model-cache";
+import { VOICE_MODELS, isVoiceModelAvailable } from "../voice/model-registry";
 import { speechTranscriber } from "../voice/transcriber";
 import { AudioInputDeviceTest, SettingsModal, VoiceInputSettings } from "./settings";
 
@@ -86,32 +87,44 @@ describe("VoiceInputSettings: models", () => {
     onRefreshChangelog: vi.fn(),
   };
 
-  it("renders the model options with correct initial state", async () => {
+  it("renders every declared model, downloading only the ones this build can run", () => {
     render(<VoiceInputSettings />);
 
     expect(screen.getByText("Voice processing model")).toBeTruthy();
-    expect(screen.getByText("Whisper Tiny (English)")).toBeTruthy();
-    expect(screen.getByText("Whisper Base (English)")).toBeTruthy();
-    expect(screen.getByText("Whisper Small (English)")).toBeTruthy();
-    expect(screen.getByText("Whistle (Multilingual)")).toBeTruthy();
+    for (const model of VOICE_MODELS) {
+      expect(screen.getByText(model.name)).toBeTruthy();
+    }
 
     // No model is downloaded by default; all download on demand
     expect(screen.queryByText(/✓ Active/)).toBeNull();
 
-    // Every model has a Download button
-    const downloadButtons = screen.getAllByRole("button", { name: "Download" });
-    expect(downloadButtons).toHaveLength(4);
+    // Only a model whose engine this build loads offers a Download button.
+    const runnable = VOICE_MODELS.filter((model) => isVoiceModelAvailable(model));
+    expect(screen.getAllByRole("button", { name: "Download" })).toHaveLength(runnable.length);
   });
 
-  it("renders the Whistle card with its size and engine label but no param count", () => {
+  it("renders a cactus card from its declaration", () => {
+    const cactus = VOICE_MODELS.find((model) => model.engine === "cactus");
+    expect(cactus).toBeTruthy();
     render(<VoiceInputSettings />);
 
-    const card = screen.getByText("Whistle (Multilingual)").closest(".voice-card") as HTMLElement;
-    expect(within(card).getByText("~17 MB")).toBeTruthy();
-    expect(within(card).getByText("Multilingual")).toBeTruthy();
+    const card = screen.getByText(cactus!.name).closest(".voice-card") as HTMLElement;
+    expect(within(card).getByText(cactus!.size)).toBeTruthy();
+    if (cactus!.badge) expect(within(card).getByText(cactus!.badge)).toBeTruthy();
     expect(within(card).getByText("Cactus engine")).toBeTruthy();
-    // Whistle does not publish a parameter count, so no "params" cell renders.
-    expect(within(card).queryByText(/params/)).toBeNull();
+    // A model that publishes no parameter count renders no params cell.
+    if (!cactus!.parameters) expect(within(card).queryByText(/params/)).toBeNull();
+  });
+
+  it("renders a model whose engine this build does not load as a requirement", () => {
+    const inert = VOICE_MODELS.find((model) => !isVoiceModelAvailable(model));
+    expect(inert).toBeTruthy();
+    render(<VoiceInputSettings />);
+
+    const card = screen.getByText(inert!.name).closest(".voice-card") as HTMLElement;
+    expect(within(card).getByText("MLX engine")).toBeTruthy();
+    expect(within(card).getByText(/Apple silicon/)).toBeTruthy();
+    expect(within(card).queryByRole("button", { name: "Download" })).toBeNull();
   });
 
   it("handles successful in-app download and activates model", async () => {

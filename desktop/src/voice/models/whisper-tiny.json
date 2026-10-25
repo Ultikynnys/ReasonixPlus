@@ -1,0 +1,14 @@
+{
+  "id": "whisper-tiny",
+  "modelId": "whisper-tiny.en",
+  "engine": "transformers",
+  "order": 10,
+  "default": true,
+  "name": "Whisper Tiny (English)",
+  "shortName": "Tiny",
+  "badge": "Balanced",
+  "size": "~40 MB",
+  "parameters": "39M",
+  "description": "Fastest transcription with lowest resource usage.",
+  "repoId": "onnx-community/whisper-tiny.en"
+}

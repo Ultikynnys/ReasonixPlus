@@ -4,13 +4,16 @@
  */
 
 import {
-  type VoiceModelId,
-  type VoiceModelOption,
   getActiveVoiceModelId,
-  getVoiceModelOption,
   markVoiceModelDownloaded,
   setActiveVoiceModelId,
-} from "./models";
+} from "./model-cache";
+import {
+  type VoiceModelId,
+  type VoiceModelOption,
+  getVoiceModelOption,
+  isVoiceModelAvailable,
+} from "./model-registry";
 import { CACTUS_MAX_SECONDS, CACTUS_SAMPLE_RATE, cactusSpeechEngine } from "./whistle-engine";
 import { downloadWhistleWeights, getCachedWhistleWeights } from "./whistle-weights";
 
@@ -62,6 +65,14 @@ function abortError(): Error {
   const err = new Error("Transcription cancelled.");
   err.name = "AbortError";
   return err;
+}
+
+/** Rejects a model whose engine this build ships no loader for. */
+function assertRunnable(opt: VoiceModelOption): void {
+  if (isVoiceModelAvailable(opt)) return;
+  throw new Error(
+    `${opt.name} runs on the ${opt.engine} engine, which this build does not include.`,
+  );
 }
 
 /**
@@ -268,6 +279,7 @@ class LocalSpeechTranscriber {
     onProgress?: (progress: DownloadProgress) => void,
   ): Promise<void> {
     const opt = getVoiceModelOption(modelId);
+    assertRunnable(opt);
 
     if (opt.engine === "cactus") {
       await this.downloadCactusModel(opt, modelId, onProgress);
@@ -323,7 +335,7 @@ class LocalSpeechTranscriber {
       const bytes = await downloadWhistleWeights(opt, (p) => {
         onProgress?.({
           status: "progress",
-          file: opt.weightsFile,
+          file: opt.weightsFile ?? undefined,
           progress: p.progress,
           loaded: p.loaded,
           total: p.total,
@@ -435,12 +447,10 @@ class LocalSpeechTranscriber {
    */
   public async getPipeline(targetModelId?: VoiceModelId): Promise<ASRPipeline> {
     const modelId = targetModelId ?? this.activeModelId;
-
-    const guardOpt = getVoiceModelOption(modelId);
-    if (guardOpt.engine === "cactus") {
-      throw new Error(
-        `${guardOpt.name} runs on the Cactus engine and has no Transformers.js pipeline.`,
-      );
+    const opt = getVoiceModelOption(modelId);
+    assertRunnable(opt);
+    if (opt.engine === "cactus") {
+      throw new Error(`${opt.name} runs on the Cactus engine and has no Transformers.js pipeline.`);
     }
 
     if (this.pipelineInstance && this.loadedModelId === modelId) {
@@ -449,8 +459,6 @@ class LocalSpeechTranscriber {
     if (this.initPromise) {
       return this.initPromise;
     }
-
-    const opt = getVoiceModelOption(modelId);
 
     this.initPromise = (async () => {
       this.isInitializing = true;
@@ -505,6 +513,7 @@ class LocalSpeechTranscriber {
     }
 
     const opt = getVoiceModelOption(this.activeModelId);
+    assertRunnable(opt);
     if (opt.engine === "cactus") {
       return this.transcribeWithCactus(opt, audioData, options);
     }

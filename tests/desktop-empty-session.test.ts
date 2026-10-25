@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { sessionRecency } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  appendSessionMessage,
   ensureSessionDir,
   listSessionsForWorkspace,
   listSessionsForWorkspaceAsync,
@@ -11,6 +12,7 @@ import {
   patchSessionWorkspaceIfMissing,
   sessionDir,
   sessionExists,
+  sessionIsEmpty,
   sessionPath,
   stampSessionWorkspace,
 } from "../src/memory/session.js";
@@ -104,6 +106,18 @@ describe("desktop empty session persistence and workspace visibility", () => {
     ensureSessionDir(name);
     patchSessionMeta(name, { workspace: "/test/workspace" });
     expect(stampSessionWorkspace(name, "/other/workspace")).toBe(false);
+  });
+
+  it("reports a minted chat as empty until it holds a message", () => {
+    // A closing channel reads this before it releases a mint it never filled, so it
+    // must flip the moment a conversation starts.
+    const name = "desktop-20260905180000-3";
+    ensureSessionDir(name);
+    patchSessionMeta(name, { workspace: "/test/workspace" });
+    expect(sessionIsEmpty(name)).toBe(true);
+
+    appendSessionMessage(name, { role: "user", content: "hello" });
+    expect(sessionIsEmpty(name)).toBe(false);
   });
 
   it("sessionRecency honors updatedAt on SessionInfo", () => {

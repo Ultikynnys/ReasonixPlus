@@ -621,8 +621,7 @@ function touchSessionUpdatedAt(
   shape?: { messagesBytes: number; messageCount: number },
 ): void {
   try {
-    const p = sessionMetaPath(name);
-    const cur = readJsonFileSilently(p, isSessionMeta);
+    const cur = readJsonFileSilently(sessionMetaPath(name), isSessionMeta);
     const next: SessionMeta = {
       ...(cur ?? {}),
       updatedAt: Date.now(),
@@ -631,9 +630,7 @@ function touchSessionUpdatedAt(
       createdAt: creationStampFor(cur, name),
       ...(shape ?? {}),
     };
-    mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, JSON.stringify(next), "utf8");
-    chmodPrivate(p);
+    writeSessionMeta(name, next);
   } catch {
     void 0; /* best-effort — mtime fallback keeps sorting correct */
   }
@@ -644,6 +641,30 @@ function touchSessionUpdatedAt(
  *  Only stray files that are not session folders at all are invisible. */
 export function sessionExists(name: string): boolean {
   return existsSync(sessionDir(name)) || existsSync(legacyFlatJsonlPath(name));
+}
+
+/** True when a session holds no conversation: no counted messages and no transcript
+ *  bytes. The signal a closing channel reads before it releases a mint it never filled,
+ *  so a session with any content — counted or written — is never treated as empty. */
+export function sessionIsEmpty(name: string): boolean {
+  if ((loadSessionMeta(name).messageCount ?? 0) > 0) return false;
+  try {
+    return statSync(messagesPathForRead(name)).size === 0;
+  } catch {
+    return true;
+  }
+}
+
+/** THE meta write: one place decides whether meta may land. A meta write never mints a
+ *  session (`ensureSessionDir` does), so a late stamp cannot recreate a deleted folder.
+ *  Returns false when the session is gone. */
+function writeSessionMeta(name: string, next: SessionMeta): boolean {
+  if (!sessionExists(name)) return false;
+  const p = sessionMetaPath(name);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(next), "utf8");
+  chmodPrivate(p);
+  return true;
 }
 
 /** Enumerate session folders — every session folder lists, empty or not. */
@@ -920,12 +941,11 @@ export function legacySessionPrefixForWorkspace(workspace: string): string {
 }
 
 export function patchSessionWorkspaceIfMissing(name: string, workspace: string): boolean {
-  const meta = loadSessionMeta(name);
-  if (typeof meta.workspace === "string") return false;
-  const prefix = legacySessionPrefixForWorkspace(workspace);
-  if (!sanitizeName(name).startsWith(prefix)) return false;
-  patchSessionMeta(name, { workspace });
-  return true;
+  // Legacy names carry no workspace stamp, so the name prefix is the only evidence
+  // that they belong here. The stamp itself is the shared one: it refuses a session
+  // that is not on disk instead of recreating its folder.
+  if (!sanitizeName(name).startsWith(legacySessionPrefixForWorkspace(workspace))) return false;
+  return stampSessionWorkspace(name, workspace);
 }
 
 /** Stamp a channel's workspace on an on-disk session so the workspace-filtered
@@ -956,11 +976,8 @@ export function patchSessionMeta(name: string, patch: Partial<SessionMeta>): Ses
     updatedAt: Date.now(),
     createdAt: isFiniteStamp(patch.createdAt) ? patch.createdAt : creationStampFor(cur, name),
   };
-  const p = sessionMetaPath(name);
-  mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(next), "utf8");
-  chmodPrivate(p);
-  sessionDirectoryIndex.markStale(name);
+  // A session that is gone is not re-created by a stamp: see writeSessionMeta.
+  if (writeSessionMeta(name, next)) sessionDirectoryIndex.markStale(name);
   return next;
 }
 

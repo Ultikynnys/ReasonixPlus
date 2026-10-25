@@ -1,0 +1,14 @@
+{
+  "id": "whisper-base",
+  "modelId": "Xenova/whisper-base.en",
+  "engine": "transformers",
+  "order": 20,
+  "default": false,
+  "name": "Whisper Base (English)",
+  "shortName": "Base",
+  "badge": "Balanced",
+  "size": "~75 MB",
+  "parameters": "74M",
+  "description": "Noticeably higher accuracy for daily speech with moderate speed.",
+  "repoId": "onnx-community/whisper-base.en"
+}

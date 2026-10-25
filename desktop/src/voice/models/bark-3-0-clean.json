@@ -1,0 +1,16 @@
+{
+  "id": "bark-3-0-clean",
+  "modelId": "underdog/bark-3.0-clean",
+  "engine": "bark",
+  "order": 50,
+  "default": false,
+  "name": "Bark 3.0 Clean (English)",
+  "shortName": "Bark Clean",
+  "badge": "Dictation",
+  "size": "~180 MB",
+  "parameters": "0.6B",
+  "description": "Drops filler words, false starts and repeats so dictation reads as written text.",
+  "repoId": "ConwayResearch/Underdog-Bark-3.0-Clean",
+  "weightsFile": "model.bark",
+  "configFile": "mlx/config.json"
+}

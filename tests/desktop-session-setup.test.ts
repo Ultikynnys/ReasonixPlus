@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { capabilityPrefill, sessionSetupMeta } from "../src/cli/commands/desktop.js";
 import {
+  ensureSessionDir,
   loadSessionMeta,
   patchSessionMeta,
   sessionDir,
@@ -112,6 +113,7 @@ describe("session-start freeze round trip", () => {
     // The store resolves its directory per call, so the stub must be in force before
     // the first write. Assert it: a stray real-home write is the failure to avoid.
     expect(sessionDir("gated-chat").startsWith(home)).toBe(true);
+    ensureSessionDir("gated-chat");
     patchSessionMeta("gated-chat", sessionSetupMeta(configured, ["ghidra"], true));
 
     const meta = loadSessionMeta("gated-chat");
@@ -120,6 +122,7 @@ describe("session-start freeze round trip", () => {
   });
 
   it("reads a confirm that left subagents off as disabled, never as inherited", () => {
+    ensureSessionDir("plain-chat");
     patchSessionMeta("plain-chat", sessionSetupMeta(configured, configured, false));
 
     const meta = loadSessionMeta("plain-chat");
