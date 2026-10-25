@@ -1504,12 +1504,15 @@ function SettingsEntry({
   value,
   onChange,
   onSave,
+  onClear,
   placeholder,
   secret = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   onSave: () => void;
+  /** Removes the stored value; undefined when there is nothing saved to remove. */
+  onClear?: () => void;
   placeholder?: string;
   secret?: boolean;
 }) {
@@ -1522,6 +1525,11 @@ function SettingsEntry({
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
       />
+      {onClear ? (
+        <button type="button" className="btn" onClick={onClear}>
+          {t("settings.apiKeyClear")}
+        </button>
+      ) : null}
       <button type="button" className="btn primary" onClick={onSave}>
         {t("settings.apiKeySave")}
       </button>
@@ -1545,6 +1553,10 @@ function ApiKeyRow({
   onSave: (key: string) => void;
 }) {
   const [draft, setDraft] = useState("");
+  const commit = (next: string): void => {
+    onSave(next.trim());
+    setDraft("");
+  };
   return (
     <div className="setting-row setting-row-entry">
       <div className="l">
@@ -1556,10 +1568,8 @@ function ApiKeyRow({
         value={draft}
         onChange={setDraft}
         placeholder={prefix ?? placeholder}
-        onSave={() => {
-          onSave(draft.trim());
-          setDraft("");
-        }}
+        onSave={() => commit(draft)}
+        onClear={prefix ? () => commit("") : undefined}
       />
     </div>
   );

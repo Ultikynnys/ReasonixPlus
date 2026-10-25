@@ -138,7 +138,7 @@ describe("PageModels default-model enum", () => {
     expect(modelCard(container, "local/saluki-27b")).not.toBeNull();
   });
 
-  it("uses stacked Save-only API key entries and refreshes catalogs without a button", () => {
+  it("stacks API key entries that save, and refresh catalogs without a button", () => {
     const onSave = vi.fn();
     const onRefreshOpencodeModels = vi.fn();
     const onRefreshOllamaModels = vi.fn();
@@ -162,6 +162,7 @@ describe("PageModels default-model enum", () => {
       const row = input.closest(".setting-row-entry") as HTMLElement;
       expect(row).toBeTruthy();
       expect(row.firstElementChild?.className).toBe("l");
+      // Nothing is saved in this render, so no row can offer to clear a key.
       expect(within(row).queryByRole("button", { name: "Clear" })).toBeNull();
       onSave.mockClear();
       fireEvent.click(within(row).getByRole("button", { name: "Save" }));
@@ -215,6 +216,57 @@ describe("PageModels default-model enum", () => {
       expect(Object.keys(patch.providerSettings ?? {})).toEqual([spec.id]);
       expect(Object.values(patch.providerSettings?.[spec.id] ?? {})).toEqual(["declared-secret"]);
     }
+  });
+
+  it("clears a saved key from every provider row that shows one", () => {
+    const keyProviders = PROVIDER_SPECS.filter((spec) =>
+      spec.settings.some((setting) => setting.kind === "secret"),
+    );
+    if (keyProviders.length === 0) return;
+    const saved = Object.fromEntries(
+      keyProviders.map((spec) => [
+        spec.id,
+        Object.fromEntries(
+          spec.settings
+            .filter((setting) => setting.kind === "secret")
+            .map((setting) => [setting.key, "sk-saved…xyz"]),
+        ),
+      ]),
+    );
+    const onSave = vi.fn();
+    const { container } = render(
+      <SettingsModal
+        {...baseProps}
+        settings={{ ...baseSettings, providerSettings: saved }}
+        onSave={onSave}
+        initialPage="models"
+      />,
+    );
+    for (const button of container.querySelectorAll<HTMLButtonElement>(".provider-head")) {
+      if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+    }
+    let cleared = 0;
+    container.querySelectorAll<HTMLInputElement>('input[type="password"]').forEach((input) => {
+      const row = input.closest(".setting-row-entry") as HTMLElement;
+      const card = row.closest<HTMLElement>(".provider-card");
+      const spec = keyProviders.find((candidate) => {
+        const secret = candidate.settings.find((setting) => setting.kind === "secret");
+        return !!secret && !!card?.textContent?.includes(secret.label ?? "");
+      });
+      // A provider the picker hides may own no card; every rendered row must clear.
+      if (!spec) return;
+      onSave.mockClear();
+      fireEvent.change(input, { target: { value: "typed-replacement" } });
+      fireEvent.click(within(row).getByRole("button", { name: "Clear" }));
+      const [patch] = onSave.mock.calls[0] as [
+        { providerSettings?: Record<string, Record<string, string>> },
+      ];
+      expect(Object.keys(patch.providerSettings ?? {})).toEqual([spec.id]);
+      expect(Object.values(patch.providerSettings?.[spec.id] ?? {})).toEqual([""]);
+      cleared += 1;
+      expect(input.value).toBe("");
+    });
+    expect(cleared).toBeGreaterThan(0);
   });
 
   it("keeps provider-column button rows where the stacking rule applies", () => {
@@ -516,6 +568,24 @@ describe("Search tab", () => {
     fireEvent.change(input, { target: { value: "  tv-secret  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onSave).toHaveBeenCalledWith({ searchSettings: { tavily: { apiKey: "tv-secret" } } });
+  });
+
+  it("clears a saved search engine key", () => {
+    const onSave = vi.fn();
+    render(
+      <SettingsModal
+        {...baseProps}
+        settings={{
+          ...baseSettings,
+          webSearchEngine: "tavily",
+          searchSettings: { tavily: { apiKey: "tv-sec…ret" } },
+        }}
+        onSave={onSave}
+        initialPage="search"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(onSave).toHaveBeenCalledWith({ searchSettings: { tavily: { apiKey: "" } } });
   });
 
   it("shows a pointer note and no key input for an engine that reuses a provider key", () => {

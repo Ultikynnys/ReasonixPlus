@@ -141,6 +141,25 @@ const OWNER_ORDER: readonly ProviderID[] = [
   ...PROVIDER_IDS.filter((id) => !PROVIDER_MODEL_PRECEDENCE.includes(id)),
 ];
 
+/** Static ids each provider claims for a bare id, compiled once: its declared
+ *  catalog plus its tier list (`goModels`), which routes ids the catalog omits. */
+const STATIC_MODEL_CLAIMS: ReadonlyMap<ProviderID, ReadonlySet<string>> = new Map(
+  providerSpecsInOrder().flatMap((spec) =>
+    spec.providerId
+      ? [[spec.providerId, setOf([...spec.models, ...spec.goModels])] as const]
+      : [],
+  ),
+);
+
+const NO_MODEL_CLAIMS: ReadonlySet<string> = new Set();
+
+/** Static ids a provider claims for a bare id, tier list included. Bare-id
+ *  ownership reads this one set, so the desktop picker (which decides whether a
+ *  row keeps its bare value) and the tag resolver cannot disagree. */
+export function providerStaticModelClaims(provider: ProviderID): ReadonlySet<string> {
+  return STATIC_MODEL_CLAIMS.get(provider) ?? NO_MODEL_CLAIMS;
+}
+
 /** The provider a model id belongs to, from the registry alone: a `<provider>/`
  *  qualifier, then an id scheme, then the catalogs in precedence order. Display
  *  attribution only — send paths route through `providerForModel`. */
@@ -158,8 +177,7 @@ export function modelOwnerProvider(
   }
   for (const provider of OWNER_ORDER) {
     if (hints?.[provider]?.includes(trimmed)) return provider;
-    const spec = providerSpec(provider);
-    if (spec && (spec.models.includes(ref.id) || spec.goModels.includes(ref.id))) return provider;
+    if (providerStaticModelClaims(provider).has(ref.id)) return provider;
   }
   return null;
 }

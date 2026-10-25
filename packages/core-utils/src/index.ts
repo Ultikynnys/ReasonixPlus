@@ -113,6 +113,7 @@ export {
   modelProviderTag,
   modelWireName,
   parseModelRef,
+  providerStaticModelClaims,
   qualifyModelRef,
   stripProviderQualifier,
 } from "./models.js";

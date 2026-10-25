@@ -126,6 +126,7 @@
     "apiKeyNotSet": "(not set)",
     "apiKeyCancel": "Cancel",
     "apiKeySave": "Save",
+    "apiKeyClear": "Clear",
     "apiKeyShow": "show",
     "apiKeyHide": "hide",
     "environment": "Environment",

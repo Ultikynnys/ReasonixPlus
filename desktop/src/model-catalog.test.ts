@@ -9,6 +9,7 @@ import {
   providerForModelGroup,
 } from "./model-catalog";
 import {
+  modelDisplayLabel,
   modelOwnerProvider,
   providerDeclared,
   providerSpecsInOrder,
@@ -317,6 +318,36 @@ describe("deriveModelCatalog", () => {
           expect({ row, owner: modelOwnerProvider(row, hints) }).toEqual({ row, owner: provider });
         }
       }
+    },
+  );
+
+  it.skipIf(!providerDeclared("experiential"))(
+    "keeps a gateway row bare only when no tier catalog routes it elsewhere",
+    () => {
+      // OpenCode's Go tier routes ids its Zen row list omits (models.dev syncs
+      // the `-free` Zen ids), so an Experiential row for the same wire id must
+      // carry the gateway qualifier instead of reading as an OpenCode model.
+      const sources = {
+        opencodeModels: ["deepseek-v4.1-flash-free", "space-bunny-free", "big-pickle"],
+        providerCatalogs: {
+          experiential: {
+            models: ["deepseek-v4.1-flash", "deepseek-v4.1-flash-1017"],
+            source: "live" as const,
+          },
+        },
+      };
+      const catalog = deriveModelCatalog(sources);
+      const hints = modelProviderHints(sources);
+
+      const experiential = catalog.groups.find((group) => group.key === "experiential")!.models;
+      expect(experiential).toContain("experiential/deepseek-v4.1-flash");
+      expect(experiential).not.toContain("deepseek-v4.1-flash");
+      expect(modelOwnerProvider("experiential/deepseek-v4.1-flash", hints)).toBe("experiential");
+      // An id only the gateway serves keeps its bare, unqualified row.
+      expect(experiential).toContain("deepseek-v4.1-flash-1017");
+      // What the picker prints for each row: the gateway tag, not OpenCode's.
+      expect(modelDisplayLabel("experiential/deepseek-v4.1-flash", hints)).toMatch(/^EXP /);
+      expect(modelDisplayLabel("deepseek-v4.1-flash-1017", hints)).toMatch(/^EXP /);
     },
   );
 });

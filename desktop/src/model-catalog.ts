@@ -8,6 +8,7 @@ import {
   modelAcceptsImages,
   providerSpec,
   providerSpecsInOrder,
+  providerStaticModelClaims,
   stripProviderQualifier,
 } from "@reasonix/core-utils";
 
@@ -180,7 +181,11 @@ export function deriveModelCatalog(options: ModelCatalogOptions): ModelCatalogVi
   for (const { spec } of GROUP_ENTRIES) {
     const provider = spec.providerId;
     if (!provider) continue;
-    for (const id of modelsFor(spec)) {
+    // Ownership spans both channels a provider serves ids through: the rows its
+    // group lists, and the ids its static catalog plus tier list claim (OpenCode
+    // Go routes ids the synced Zen rows omit). A bare id must never stay bare
+    // under a group that does not serve it.
+    for (const id of [...modelsFor(spec), ...providerStaticModelClaims(provider)]) {
       const wire = stripProviderQualifier(id);
       const current = owner.get(wire);
       if (current === undefined || rankOf(provider) < rankOf(current)) owner.set(wire, provider);

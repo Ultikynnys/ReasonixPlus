@@ -18,10 +18,11 @@ import {
   modelProviderTag,
   modelWireName,
   parseModelRef,
+  providerStaticModelClaims,
   qualifyModelRef,
   stripProviderQualifier,
 } from "../src/models.js";
-import { requireProviderSpec } from "../src/provider-registry.js";
+import { type ProviderID, requireProviderSpec } from "../src/provider-registry.js";
 
 describe("modelAcceptsImages", () => {
   it("accepts OpenAI models including GPT-6 family and GPT-5.6 family", () => {
@@ -235,6 +236,22 @@ describe("modelOwnerProvider", () => {
     expect(modelOwnerProvider("my-private-gateway-id")).toBeNull();
     expect(modelOwnerProvider("")).toBeNull();
     expect(modelOwnerProvider(undefined)).toBeNull();
+  });
+});
+
+describe("providerStaticModelClaims", () => {
+  it("covers the declared catalog and the tier list a provider also routes", () => {
+    // Derived from the declaration: whatever `providers.json` lists, both lists
+    // place a bare id, so both attribute it.
+    const spec = requireProviderSpec("opencode");
+    const claims = providerStaticModelClaims("opencode");
+    for (const id of spec.models) expect(claims.has(id)).toBe(true);
+    for (const id of spec.goModels) expect(claims.has(id)).toBe(true);
+    expect(claims.has("no-such-model-declared")).toBe(false);
+  });
+
+  it("claims nothing for a provider that declares no catalog", () => {
+    expect(providerStaticModelClaims("custom" as ProviderID).size).toBe(0);
   });
 });
 

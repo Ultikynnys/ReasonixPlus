@@ -7158,6 +7158,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .setting-row-entry > .settings-entry .field {
   flex: 1 1 0;
   width: 100%;
+  min-width: 0;
   box-sizing: border-box;
 }
 .setting-row button {
