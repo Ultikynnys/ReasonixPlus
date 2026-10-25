@@ -177,9 +177,11 @@ fn fetch_blocking(
     app: &AppHandle,
     engine: &str,
     repo_id: &str,
-    weights_file: &str,
-    loader_file: Option<&str>,
+    references: &[String],
 ) -> Result<VoiceModelManifest, String> {
+    if references.is_empty() {
+        return Err("no files were named for this model".to_string());
+    }
     let root = app_voice_root(app)?;
     let revision = resolve_revision(repo_id)?;
     let dir = model_dir(&root, engine, repo_id, &revision);
@@ -191,13 +193,8 @@ fn fetch_blocking(
         }
     }
 
-    let mut references = vec![weights_file.to_string()];
-    if let Some(loader) = loader_file {
-        references.push(loader.to_string());
-    }
-
     let mut files = Vec::with_capacity(references.len());
-    for reference in &references {
+    for reference in references {
         let name = file_name_of(reference)?.to_string();
         let dest = dir.join(&name);
         let url = format!("https://huggingface.co/{repo_id}/resolve/{revision}/{reference}");
@@ -248,20 +245,10 @@ pub async fn voice_model_fetch(
     app: AppHandle,
     engine: String,
     repo_id: String,
-    weights_file: String,
-    loader_file: Option<String>,
+    files: Vec<String>,
 ) -> Result<VoiceModelManifest, String> {
     let handle = app.clone();
-    blocking(move || {
-        fetch_blocking(
-            &handle,
-            &engine,
-            &repo_id,
-            &weights_file,
-            loader_file.as_deref(),
-        )
-    })
-    .await
+    blocking(move || fetch_blocking(&handle, &engine, &repo_id, &files)).await
 }
 
 #[tauri::command]

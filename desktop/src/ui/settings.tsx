@@ -74,6 +74,7 @@ import {
   isVoiceModelDownloaded,
 } from "../voice/model-cache";
 import {
+  type BarkRuntimePhase,
   type BarkRuntimeStatus,
   barkRuntimeStatus,
   removeBarkRuntime,
@@ -1262,6 +1263,15 @@ export function AudioInputDeviceTest({ deviceId }: { deviceId: string }) {
   );
 }
 
+
+/** Provisioning phases named while a host runtime installs, in order. */
+const RUNTIME_STAGE_KEY: Record<BarkRuntimePhase, TKey> = {
+  installer: "settings.voiceRuntimeInstaller",
+  environment: "settings.voiceRuntimeEnvironment",
+  packages: "settings.voiceRuntimePackages",
+  ready: "settings.voiceRuntimeReady",
+};
+
 /**
  * Speech-to-text model picker, the left column of the voice input card: each
  * model downloads on demand into the local cache and is then selectable.
@@ -1274,6 +1284,7 @@ function VoiceModelList() {
   const [downloadFile, setDownloadFile] = useState<string>("");
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<BarkRuntimeStatus | null>(null);
+  const [downloadStage, setDownloadStage] = useState<BarkRuntimePhase | null>(null);
 
   const refreshDownloaded = useCallback(async () => {
     const nextMap: Record<string, boolean> = {};
@@ -1301,10 +1312,12 @@ function VoiceModelList() {
     setDownloadingModel(id);
     setDownloadProgress(0);
     setDownloadFile("");
+    setDownloadStage(null);
     setDownloadError(null);
 
     try {
       await speechTranscriber.downloadModel(id, (p) => {
+        setDownloadStage(p.stage ?? null);
         if (p.file) {
           const shortFileName = p.file.split("/").pop() || p.file;
           setDownloadFile(shortFileName);
@@ -1322,6 +1335,7 @@ function VoiceModelList() {
       setDownloadingModel(null);
       setDownloadProgress(0);
       setDownloadFile("");
+      setDownloadStage(null);
     }
   };
 
@@ -1416,14 +1430,22 @@ function VoiceModelList() {
                   <div className="voice-download-box">
                     <div className="voice-progress-meta">
                       <span className="voice-file-name">
-                        {downloadFile || t("settings.voiceDownloading")}
+                        {downloadStage
+                          ? t(RUNTIME_STAGE_KEY[downloadStage])
+                          : downloadFile || t("settings.voiceDownloading")}
                       </span>
-                      <span className="voice-pct">{downloadProgress}%</span>
+                      {!downloadStage && (
+                        <span className="voice-pct">{downloadProgress}%</span>
+                      )}
                     </div>
-                    <div className="voice-progress-track">
+                    <div
+                      className={`voice-progress-track${downloadStage ? " indeterminate" : ""}`}
+                      role="progressbar"
+                      aria-busy={Boolean(downloadStage)}
+                    >
                       <div
                         className="voice-progress-bar"
-                        style={{ width: `${downloadProgress}%` }}
+                        style={downloadStage ? undefined : { width: `${downloadProgress}%` }}
                       />
                     </div>
                   </div>

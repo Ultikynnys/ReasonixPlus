@@ -2,6 +2,7 @@
   "id": "bark-3-0-plus",
   "modelId": "underdog/bark-3.0-plus",
   "engine": "bark",
+  "format": "bark",
   "order": 70,
   "default": false,
   "name": "Bark 3.0 Plus (English)",

@@ -43,9 +43,11 @@ compile instead of silently resolving to another model.
 | `size` | string | Download size shown on the card |
 | `parameters` | string or absent | Parameter count shown on the card; absent renders no count |
 | `description` | string | One-line description under the title |
-| `repoId` | string | Hugging Face repo the weights are fetched from: an ONNX repo for `transformers`, the weights archive's repo for `cactus` and `bark` |
-| `weightsFile` | string or absent | `cactus` and `bark` only, required there and rejected elsewhere: the weights archive within `repoId` (`.cact`, `.bark`) |
-| `loaderFile` | string or absent | `bark` only, required there and rejected elsewhere: the official loader in `repoId` that decodes the weights archive |
+| `repoId` | string | Hugging Face repo the files are fetched from: an ONNX repo for `transformers`, the weights repo for `cactus` and `bark` |
+| `format` | `bark` or `safetensors` | `bark` only, required there and rejected elsewhere: an entropy-coded archive decoded by the repo's loader, or a plain `transformers` checkpoint |
+| `weightsFile` | string or absent | `cactus` and `bark` only, required there and rejected elsewhere: the weights file within `repoId`, ending in the format suffix |
+| `supportingFiles` | string array or absent | `bark` only: required for the `safetensors` format and rejected otherwise, the config, tokenizer and processor files the checkpoint reads |
+| `loaderFile` | string or absent | `bark` only: required for the `bark` format and rejected otherwise, the official loader in `repoId` that decodes the archive |
 | `paddingSeconds` | number or absent | `bark` only, required there and rejected elsewhere: silence injected before the audio, in seconds (`0` for Clean, `0.25` otherwise) |
 
 A model that needs a genuinely new runtime needs one new `engine` value plus the
@@ -57,9 +59,10 @@ existing one is a JSON file plus a sync.
 `../model-registry.ts` keeps one `VOICE_ENGINES` entry per engine: the label the
 card shows beside the size, how the engine packages its weights, and the host
 runtime it needs. `transformers` and `cactus` run inside the app bundle. `bark`
-cannot: its weights are an entropy-coded `.bark` archive that only the model's
-own Python loader decodes, so that engine names `BARK_RUNTIME` from
-`../runtimes/bark.json` and its cards state the one-time install.
+cannot: its repos ship an entropy-coded `.bark` archive that only the model's
+own loader decodes, or a plain `transformers` checkpoint, so `BARK_FORMATS`
+names each format's files. That engine also needs `BARK_RUNTIME` from
+`../runtimes/bark.json`, and its cards state the one-time install.
 
 Nothing about that runtime ships in the installer. The first Bark download
 provisions it through the host commands in `desktop/src-tauri/src/`:
@@ -71,7 +74,12 @@ provisions it through the host commands in `desktop/src-tauri/src/`:
 | `voice_runtime_remove` | Deletes the runtime and leaves every downloaded model alone |
 | `voice_model_fetch` | Resolves the repo revision, then streams the weights and loader to disk |
 | `voice_model_remove` | Deletes one model and leaves the shared runtime alone |
-| `voice_bark_transcribe` | Writes the recording as a WAV and drives the official loader |
+| `voice_bark_transcribe` | Writes the recording as a WAV and asks the warm worker for the text |
+
+`voice_bark_transcribe` does not start a process per dictation: the host keeps
+one worker alive, so the interpreter, the weights and the model graph are paid
+for once per session. The worker is replaced when another model or device is
+selected, stops after ten idle minutes, and is closed with the app.
 
 Each command reports rather than retries: a matching manifest is reused instead
 of refetching, a half-provisioned runtime directory is cleared before a retry,

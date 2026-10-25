@@ -2,6 +2,7 @@
   "id": "bark-3-0-pro",
   "modelId": "underdog/bark-3.0-pro",
   "engine": "bark",
+  "format": "safetensors",
   "order": 80,
   "default": false,
   "name": "Bark 3.0 Pro (English)",
@@ -11,7 +12,13 @@
   "parameters": "0.6B",
   "description": "Full precision, the most accurate Bark, in a 1.25 GB download.",
   "repoId": "ConwayResearch/Underdog-Bark-3.0-Pro",
-  "weightsFile": "model.bark",
-  "loaderFile": "bark_loader.py",
+  "weightsFile": "model.safetensors",
+  "supportingFiles": [
+    "config.json",
+    "generation_config.json",
+    "processor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json"
+  ],
   "paddingSeconds": 0.25
 }

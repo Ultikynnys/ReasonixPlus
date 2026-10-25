@@ -12,6 +12,20 @@ export type { VoiceModelId };
 /** Which runtime loads and runs a voice model. */
 export type VoiceEngine = "transformers" | "cactus" | "bark";
 
+/**
+ * How the Bark engine's repos package their weights: an entropy-coded `.bark`
+ * archive driven by the repo's own loader, or a plain `transformers` checkpoint.
+ */
+export type BarkFormat = "bark" | "safetensors";
+
+/** Per-format packaging rules, the only authority for a Bark declaration's files. */
+export const BARK_FORMATS: Readonly<
+  Record<BarkFormat, { suffix: string; loader: boolean; supportingFiles: boolean }>
+> = {
+  bark: { suffix: ".bark", loader: true, supportingFiles: false },
+  safetensors: { suffix: ".safetensors", loader: false, supportingFiles: true },
+};
+
 export interface VoiceModelOption {
   /** Declaration id: the `models/<id>.json` file name. */
   id: string;
@@ -36,20 +50,24 @@ export interface VoiceModelOption {
    * models it holds the weights archive named by `weightsFile`.
    */
   repoId: string;
-  /** `cactus` and `bark` models only: the weights archive within `repoId`. */
+  /** `cactus` and `bark` models only: the weights file within `repoId`. */
   weightsFile: string | null;
-  /** `bark` models only: the loader in `repoId` that decodes the weights archive. */
+  /** `bark` models only, `bark` format: the loader in `repoId` that decodes the archive. */
   loaderFile: string | null;
+  /** `bark` models only, `safetensors` format: files the checkpoint needs beside the weights. */
+  supportingFiles: readonly string[];
+  /** `bark` models only: how the repo packages the weights. */
+  format: BarkFormat | null;
   /** `bark` models only: silence injected before the audio, in seconds. */
   paddingSeconds: number | null;
 }
 
 /** How an engine packages its weights: the archive suffix and the loader it needs. */
 export interface VoiceEngineArchive {
-  /** Required suffix of a declaration's `weightsFile`. */
-  suffix: string;
-  /** True when the engine also needs the declaration's `loaderFile`. */
-  loaderFile: boolean;
+  /** Required suffix of a declaration's `weightsFile`, or null when its format decides. */
+  suffix: string | null;
+  /** True when the engine needs a `loaderFile`; null when its format decides. */
+  loaderFile: boolean | null;
   /** True when the engine also needs the declaration's `paddingSeconds`. */
   paddingSeconds: boolean;
 }
@@ -82,7 +100,7 @@ export const VOICE_ENGINES: Readonly<Record<VoiceEngine, VoiceEngineRuntime>> = 
   bark: {
     labelKey: "settings.voiceEngineBark",
     requirementKey: null,
-    archive: { suffix: ".bark", loaderFile: true, paddingSeconds: true },
+    archive: { suffix: null, loaderFile: null, paddingSeconds: true },
     runtime: BARK_RUNTIME,
   },
 };
@@ -108,6 +126,13 @@ function text(value: unknown, where: string): string {
 function nullableText(value: unknown, where: string): string | null {
   if (value === undefined || value === null) return null;
   return text(value, where);
+}
+
+/** A list of file references within one repo; absent means the engine reads none. */
+function fileList(value: unknown, where: string): readonly string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length === 0) fail(where, "expected a non-empty array");
+  return value.map((entry, index) => text(entry, `${where}[${index}]`));
 }
 function number(value: unknown, where: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) fail(where, "expected a number");
@@ -137,6 +162,8 @@ export function parseVoiceModel(value: unknown, source: string): VoiceModelOptio
   const { archive } = VOICE_ENGINES[engine];
   const weightsFile = nullableText(raw.weightsFile, `${scope}: weightsFile`);
   const loaderFile = nullableText(raw.loaderFile, `${scope}: loaderFile`);
+  const format = nullableText(raw.format, `${scope}: format`) as BarkFormat | null;
+  const supportingFiles = fileList(raw.supportingFiles, `${scope}: supportingFiles`);
   const paddingSeconds =
     raw.paddingSeconds === undefined || raw.paddingSeconds === null
       ? null
@@ -149,19 +176,42 @@ export function parseVoiceModel(value: unknown, source: string): VoiceModelOptio
   if (!archive) {
     if (weightsFile) fail(`${scope}: weightsFile`, `the ${engine} engine packages no archive`);
     if (loaderFile) fail(`${scope}: loaderFile`, `the ${engine} engine reads no loader`);
+    if (format) fail(`${scope}: format`, "only the bark engine declares a format");
+    if (supportingFiles.length) {
+      fail(`${scope}: supportingFiles`, `the ${engine} engine reads no supporting files`);
+    }
     if (paddingSeconds !== null) {
       fail(`${scope}: paddingSeconds`, `the ${engine} engine takes no padding`);
     }
   } else {
     if (!weightsFile) fail(`${scope}: weightsFile`, `required for the ${engine} engine`);
-    if (!weightsFile.endsWith(archive.suffix)) {
-      fail(`${scope}: weightsFile`, `expected a ${archive.suffix} archive`);
+    if (format && engine !== "bark") {
+      fail(`${scope}: format`, `only the bark engine declares a format`);
     }
-    if (archive.loaderFile && !loaderFile) {
+    // A format-driven engine packages its weights several ways, so the format
+    // decides the suffix and the files beside the weights.
+    const formatDriven = archive.loaderFile === null;
+    if (formatDriven && !format) fail(`${scope}: format`, `required for the ${engine} engine`);
+    const formatSpec = format ? BARK_FORMATS[format] : null;
+    if (format && !formatSpec) {
+      fail(`${scope}: format`, `expected ${Object.keys(BARK_FORMATS).join(" or ")}`);
+    }
+    const suffix = formatSpec?.suffix ?? archive.suffix;
+    if (suffix && !weightsFile.endsWith(suffix)) {
+      fail(`${scope}: weightsFile`, `expected a ${suffix} file`);
+    }
+    const needsLoader = formatSpec?.loader ?? archive.loaderFile;
+    if (needsLoader && !loaderFile) {
       fail(`${scope}: loaderFile`, `required for the ${engine} engine`);
     }
-    if (!archive.loaderFile && loaderFile) {
+    if (!needsLoader && loaderFile) {
       fail(`${scope}: loaderFile`, `the ${engine} engine reads no loader`);
+    }
+    if (formatSpec?.supportingFiles && supportingFiles.length === 0) {
+      fail(`${scope}: supportingFiles`, `required for the ${format} format`);
+    }
+    if (!formatSpec && supportingFiles.length) {
+      fail(`${scope}: supportingFiles`, `the ${engine} engine reads no supporting files`);
     }
     if (archive.paddingSeconds && paddingSeconds === null) {
       fail(`${scope}: paddingSeconds`, `required for the ${engine} engine`);
@@ -185,6 +235,8 @@ export function parseVoiceModel(value: unknown, source: string): VoiceModelOptio
     repoId: text(raw.repoId, `${scope}: repoId`),
     weightsFile,
     loaderFile,
+    supportingFiles,
+    format,
     paddingSeconds,
   };
 }

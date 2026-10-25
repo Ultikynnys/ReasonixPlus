@@ -4,6 +4,7 @@
  */
 
 import {
+  type BarkRuntimePhase,
   barkRuntimeStatus,
   fetchBarkModel,
   installBarkRuntime,
@@ -42,6 +43,8 @@ export interface DownloadProgress {
   progress?: number;
   loaded?: number;
   total?: number;
+  /** Provisioning phase while a host runtime installs, instead of file bytes. */
+  stage?: BarkRuntimePhase;
 }
 
 export interface TranscribeResult {
@@ -378,16 +381,22 @@ class LocalSpeechTranscriber {
       const runtime = await barkRuntimeStatus();
       if (!runtime.installed) {
         this.updateStatus("downloading", "Installing the Bark runtime...");
-        onProgress?.({ status: "initiate", file: "runtime" });
-        await installBarkRuntime();
+        await installBarkRuntime((phase) => onProgress?.({ status: "progress", stage: phase }));
       }
 
       this.updateStatus("downloading", `Downloading ${opt.name}...`);
-      onProgress?.({ status: "download", file: opt.weightsFile ?? undefined });
-      const installed = await fetchBarkModel(opt);
+      const installed = await fetchBarkModel(opt, (progress) => {
+        onProgress?.({
+          status: "progress",
+          file: progress.file,
+          loaded: progress.loaded,
+          total: progress.total,
+          progress:
+            progress.total > 0 ? Math.round((progress.loaded / progress.total) * 100) : 0,
+        });
+      });
       onProgress?.({
         status: "done",
-        file: opt.weightsFile ?? undefined,
         progress: 100,
         loaded: installed.bytes,
         total: installed.bytes,

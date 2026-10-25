@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_VOICE_MODEL_ID,
+  BARK_FORMATS,
   VOICE_ENGINES,
   VOICE_MODELS,
   getVoiceModelOption,
@@ -42,7 +43,12 @@ describe("Voice model registry", () => {
     for (const model of VOICE_MODELS) {
       const { archive } = VOICE_ENGINES[model.engine];
       expect(Boolean(archive), model.id).toBe(model.weightsFile !== null);
-      expect(Boolean(archive?.loaderFile), model.id).toBe(model.loaderFile !== null);
+      const format = model.format ? BARK_FORMATS[model.format] : null;
+      const needsLoader = format ? format.loader : archive?.loaderFile === true;
+      expect(needsLoader, model.id).toBe(model.loaderFile !== null);
+      expect(Boolean(format?.supportingFiles), model.id).toBe(
+        model.supportingFiles.length > 0,
+      );
     }
   });
 
@@ -63,7 +69,9 @@ describe("Voice model registry", () => {
       expect(VOICE_ENGINES[engine].runtime, engine).toBeNull();
     }
     for (const model of bark) {
-      expect(model.loaderFile, model.id).toBe("bark_loader.py");
+      const spec = BARK_FORMATS[model.format!];
+      expect(model.loaderFile !== null, model.id).toBe(spec.loader);
+      expect(model.weightsFile?.endsWith(spec.suffix), model.id).toBe(true);
     }
   });
 
@@ -103,43 +111,108 @@ describe("Voice model declarations", () => {
     expect(parseOne({ engine: "cactus", weightsFile: "acme.cact" }).weightsFile).toBe("acme.cact");
   });
 
-  it("requires a .bark archive, an official loader and a padding for the bark engine", () => {
+  it("requires a .bark archive, an official loader and a padding for the bark format", () => {
     const bark = parseOne({
       engine: "bark",
+      format: "bark",
       weightsFile: "model.bark",
       loaderFile: "bark_loader.py",
       paddingSeconds: 0.25,
     });
     expect(bark.weightsFile).toBe("model.bark");
     expect(bark.loaderFile).toBe("bark_loader.py");
+    expect(bark.supportingFiles).toEqual([]);
     expect(bark.paddingSeconds).toBe(0.25);
     expect(isVoiceModelAvailable(bark)).toBe(true);
 
     expect(() => parseOne({ engine: "bark" })).toThrow(/weightsFile: required/);
     expect(() => parseOne({ engine: "bark", weightsFile: "model.bark" })).toThrow(
-      /loaderFile: required/,
+      /format: required/,
     );
     expect(() =>
-      parseOne({ engine: "bark", weightsFile: "model.bark", loaderFile: "bark_loader.py" }),
+      parseOne({ engine: "bark", format: "bark", weightsFile: "model.bark" }),
+    ).toThrow(/loaderFile: required/);
+    expect(() =>
+      parseOne({
+        engine: "bark",
+        format: "bark",
+        weightsFile: "model.bark",
+        loaderFile: "bark_loader.py",
+      }),
     ).toThrow(/paddingSeconds: required/);
     expect(() =>
       parseOne({
         engine: "bark",
-        weightsFile: "model.cact",
+        format: "bark",
+        weightsFile: "model.safetensors",
         loaderFile: "bark_loader.py",
         paddingSeconds: 0,
       }),
-    ).toThrow(/expected a \.bark archive/);
+    ).toThrow(/expected a \.bark file/);
     expect(() => parseOne({ loaderFile: "bark_loader.py" })).toThrow(/reads no loader/);
     expect(() => parseOne({ paddingSeconds: 0.25 })).toThrow(/takes no padding/);
     expect(() =>
       parseOne({
         engine: "bark",
+        format: "bark",
         weightsFile: "model.bark",
         loaderFile: "bark_loader.py",
         paddingSeconds: -1,
       }),
     ).toThrow(/non-negative/);
+  });
+
+  it("takes a plain checkpoint for the safetensors format", () => {
+    const checkpoint = parseOne({
+      engine: "bark",
+      format: "safetensors",
+      weightsFile: "model.safetensors",
+      supportingFiles: ["config.json", "tokenizer.json"],
+      paddingSeconds: 0.25,
+    });
+    expect(checkpoint.format).toBe("safetensors");
+    expect(checkpoint.loaderFile).toBeNull();
+    expect(checkpoint.supportingFiles).toEqual(["config.json", "tokenizer.json"]);
+
+    expect(() =>
+      parseOne({
+        engine: "bark",
+        format: "safetensors",
+        weightsFile: "model.safetensors",
+        paddingSeconds: 0.25,
+      }),
+    ).toThrow(/supportingFiles: required/);
+    expect(() =>
+      parseOne({
+        engine: "bark",
+        format: "safetensors",
+        weightsFile: "model.safetensors",
+        loaderFile: "bark_loader.py",
+        supportingFiles: ["config.json"],
+        paddingSeconds: 0.25,
+      }),
+    ).toThrow(/reads no loader/);
+    expect(() =>
+      parseOne({
+        engine: "bark",
+        format: "safetensors",
+        weightsFile: "model.bark",
+        supportingFiles: ["config.json"],
+        paddingSeconds: 0.25,
+      }),
+    ).toThrow(/expected a \.safetensors file/);
+    expect(() =>
+      parseOne({
+        engine: "bark",
+        format: "gguf",
+        weightsFile: "model.bark",
+        loaderFile: "bark_loader.py",
+        paddingSeconds: 0.25,
+      }),
+    ).toThrow(/expected bark or safetensors/);
+    expect(() =>
+      parseOne({ format: "safetensors", supportingFiles: ["config.json"] }),
+    ).toThrow(/only the bark engine declares a format/);
   });
 
   it("rejects an id a file name cannot carry", () => {

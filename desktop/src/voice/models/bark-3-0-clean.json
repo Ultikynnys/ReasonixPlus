@@ -2,6 +2,7 @@
   "id": "bark-3-0-clean",
   "modelId": "underdog/bark-3.0-clean",
   "engine": "bark",
+  "format": "bark",
   "order": 50,
   "default": false,
   "name": "Bark 3.0 Clean (English)",

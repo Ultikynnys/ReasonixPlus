@@ -1,36 +1,16 @@
-//! Transcribe with an installed Bark model by driving its official loader.
+//! Transcribe with an installed Bark model by driving its warm worker.
 //!
-//! The loader is Python, so this writes a WAV, runs the runtime's interpreter,
-//! and reads back one marked result line. Nothing is inferred from raw stdout.
+//! Repos package weights two ways: an entropy-coded `.bark` archive that the
+//! repo's own loader decodes, or a plain `transformers` checkpoint. The worker
+//! loads the model once and answers every later dictation from memory.
 
-use crate::voice_host::{blocking, run_with_deadline, tail};
+use crate::voice_host::blocking;
 use crate::voice_models::{installed_dirs, read_manifest};
 use crate::voice_paths::{app_voice_root, runtime_dir};
 use crate::voice_runtime::python_exe;
+use crate::voice_worker::{BarkWorkers, Transcription, load_request, transcribe_request};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
 use tauri::AppHandle;
-
-const RESULT_PREFIX: &str = "RESULT ";
-
-/// Inference on CPU is slow but not unbounded; a wedged loader must not hang the app.
-const TRANSCRIBE_DEADLINE: Duration = Duration::from_secs(900);
-
-const DRIVER: &str = r#"
-import importlib.util, json, sys
-from pathlib import Path
-import soundfile as sf
-
-model_dir, weights, loader_name, audio, device, pad = sys.argv[1:7]
-spec = importlib.util.spec_from_file_location("official_bark", str(Path(model_dir) / loader_name))
-loader = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(loader)
-model = loader.load_model(str(Path(model_dir) / weights), device=device)
-wave, sr = sf.read(audio, dtype="float32", always_2d=True)
-text = loader.transcribe(model, wave.mean(1), sr, pad_s=float(pad))
-print("RESULT " + json.dumps({"text": text}))
-"#;
 
 /// 32-bit IEEE float mono WAV: exact samples, no requantization on the way out.
 fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<(), String> {
@@ -71,70 +51,21 @@ fn find_model_dir(root: &Path, engine: &str, repo_id: &str) -> Result<PathBuf, S
     Err(format!("{repo_id} is not installed yet"))
 }
 
-/// The transcript from the loader's marked line, or an error carrying its stderr.
-fn parse_result(output: &std::process::Output) -> Result<String, String> {
-    if !output.status.success() {
-        return Err(format!(
-            "Bark transcription failed ({}): {}",
-            output.status,
-            tail(&output.stderr, 600)
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let line = stdout
-        .lines()
-        .rev()
-        .find(|line| line.starts_with(RESULT_PREFIX))
-        .ok_or_else(|| {
-            format!(
-                "the Bark loader printed no result: {}",
-                tail(&output.stderr, 400)
-            )
-        })?;
-    let json: serde_json::Value = serde_json::from_str(&line[RESULT_PREFIX.len()..])
-        .map_err(|e| format!("parse Bark result: {e}"))?;
-    let text = json
-        .get("text")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if text.is_empty() {
-        return Err("No speech was recognized in the recording.".to_string());
-    }
-    Ok(text)
+fn monotonic_tag() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0)
 }
 
-fn run_driver(
-    python: &Path,
-    work: &Path,
-    model_dir: &Path,
-    weights_file: &str,
-    loader_file: &str,
-    padding_seconds: f64,
-    device: &str,
-) -> Result<String, String> {
-    let audio = work.join("input.wav");
-    let driver = work.join("driver.py");
-    std::fs::write(&driver, DRIVER).map_err(|e| format!("write {driver:?}: {e}"))?;
-
-    let mut cmd = Command::new(python);
-    cmd.arg(&driver)
-        .arg(model_dir)
-        .arg(weights_file)
-        .arg(loader_file)
-        .arg(&audio)
-        .arg(device)
-        .arg(padding_seconds.to_string());
-    let output = run_with_deadline(&mut cmd, TRANSCRIBE_DEADLINE, "python")?;
-    parse_result(&output)
-}
-
+#[allow(clippy::too_many_arguments)]
 fn transcribe_blocking(
     app: &AppHandle,
+    workers: &BarkWorkers,
     runtime_dir_name: &str,
     engine: &str,
     repo_id: &str,
+    format: &str,
     weights_file: &str,
     loader_file: &str,
     padding_seconds: f64,
@@ -160,34 +91,27 @@ fn transcribe_blocking(
 
     let audio = work.join("input.wav");
     let outcome = write_wav(&audio, samples, sample_rate).and_then(|()| {
-        run_driver(
-            &python,
-            &work,
-            &model_dir,
-            weights_file,
-            loader_file,
-            padding_seconds,
-            device,
-        )
+        workers.run(Transcription {
+            python: &python,
+            runtime_dir: &runtime,
+            key: format!("{format}|{}|{device}", model_dir.display()),
+            load: load_request(format, &model_dir, weights_file, loader_file, device),
+            request: transcribe_request(&audio, padding_seconds),
+        })
     });
     let _ = std::fs::remove_dir_all(&work);
     outcome
-}
-
-fn monotonic_tag() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0)
 }
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn voice_bark_transcribe(
     app: AppHandle,
+    workers: tauri::State<'_, BarkWorkers>,
     runtime_dir_name: String,
     engine: String,
     repo_id: String,
+    format: String,
     weights_file: String,
     loader_file: String,
     padding_seconds: f64,
@@ -195,12 +119,15 @@ pub async fn voice_bark_transcribe(
     sample_rate: u32,
     device: String,
 ) -> Result<String, String> {
+    let registry = workers.inner().clone();
     blocking(move || {
         transcribe_blocking(
             &app,
+            &registry,
             &runtime_dir_name,
             &engine,
             &repo_id,
+            &format,
             &weights_file,
             &loader_file,
             padding_seconds,

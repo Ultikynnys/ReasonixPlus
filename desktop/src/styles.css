@@ -10931,6 +10931,21 @@ html[data-platform="macos"] .splash {
   transition: width 0.2s ease;
 }
 
+.voice-progress-track.indeterminate .voice-progress-bar {
+  width: 35%;
+  transition: none;
+  animation: voice-progress-sweep 1.2s ease-in-out infinite;
+}
+
+@keyframes voice-progress-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(285%);
+  }
+}
+
 .voice-card-actions {
   display: flex;
   align-items: center;

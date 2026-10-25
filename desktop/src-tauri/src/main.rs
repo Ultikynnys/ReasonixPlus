@@ -7,6 +7,7 @@ mod voice_host;
 mod voice_models;
 mod voice_paths;
 mod voice_runtime;
+mod voice_worker;
 
 use diagnostics::record_frontend_diagnostic;
 use rpc::{RpcState, rpc_kill, rpc_send, rpc_spawn};
@@ -18,6 +19,7 @@ use voice_models::{voice_model_fetch, voice_model_remove, voice_model_status};
 use voice_runtime::{
     RuntimeInstalls, voice_runtime_install, voice_runtime_remove, voice_runtime_status,
 };
+use voice_worker::BarkWorkers;
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -658,6 +660,7 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(RpcState::default())
         .manage(RuntimeInstalls::default())
+        .manage(BarkWorkers::default())
         .invoke_handler(tauri::generate_handler![
             rpc_spawn,
             rpc_send,
@@ -720,6 +723,7 @@ fn main() {
                 let _ = diagnostics::record("info", "host.exit_requested", serde_json::json!({}));
                 let state = app.state::<RpcState>();
                 let _ = rpc::rpc_kill(state);
+                app.state::<BarkWorkers>().shutdown();
             }
         });
 }
