@@ -6,7 +6,7 @@ import {
   SUPPORTED_OFFICIAL_MODELS,
   ZAI_MODELS,
 } from "@reasonix/core-utils";
-import { fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./composer";
@@ -36,6 +36,103 @@ function renderComposer(props?: Partial<React.ComponentProps<typeof Composer>>) 
 }
 
 describe("desktop Composer model catalog", () => {
+  it("scores each Ollama row by the provider's declared multipliers", () => {
+    const { container } = renderComposer({
+      ollamaModels: ["deepseek-v4.1-flash:1017", "deepseek-v4-pro", "gemma4", "clef"],
+      enabledModels: [
+        "ollama/deepseek-v4.1-flash:1017",
+        "ollama/deepseek-v4-pro",
+        "ollama/gemma4",
+        "ollama/clef",
+      ],
+    });
+    fireEvent.click(container.querySelector(".model-pill")!);
+
+    /** The cost badge on the row whose label names `id`. */
+    const badgeOf = (id: string): HTMLElement | null => {
+      const rows = Array.from(container.querySelectorAll(".popup-item"));
+      const match = rows.find((el) => el.querySelector(".cmd")?.textContent?.includes(id));
+      return (match?.querySelector(".badge.cost") as HTMLElement | null) ?? null;
+    };
+
+    // Flash reads 0.5x off-peak and 1.1x inside the peak window; nothing divides it by
+    // another model, so the badge states the row's own weighted cost over the divisor.
+    expect(badgeOf("deepseek-v4.1-flash")).not.toBeNull();
+    expect(badgeOf("deepseek-v4.1-flash")?.textContent).toMatch(/^(0\.5|1\.1)x$/);
+    // Pro reprices with the same calendar, so its multiple follows the clock too.
+    expect(badgeOf("deepseek-v4-pro")?.textContent).toMatch(/^(2\.6|5\.2)x$/);
+    // A column a row leaves out charges nothing, so clef still reads a multiple.
+    expect(badgeOf("clef")?.textContent).toBe("0.5x");
+    expect(badgeOf("gemma4")?.textContent).toBe("2.4x");
+    // The tooltip states the multiple and names what charged it, without repeating the declared numbers.
+    expect(badgeOf("deepseek-v4-pro")?.getAttribute("title")).toMatch(
+      /(2\.6|5\.2)x, charging input, cached input and output by the declared multipliers/,
+    );
+    // The multiple rides in the same badge box the vision flag uses, and carries its ramp
+    // position so the stylesheet can tint it green to red.
+    const pro = badgeOf("deepseek-v4-pro")!;
+    expect(pro.className).toBe("badge cost");
+    expect(Number(pro.style.getPropertyValue("--cost-t"))).toBeGreaterThan(0.5);
+    // Green below 1x, half-way at 2x: flash's 0.5x sits at the green end, pro's 2.6x at 0.8.
+    expect(Number(badgeOf("deepseek-v4.1-flash")!.style.getPropertyValue("--cost-t"))).toBe(0);
+    expect(Number(badgeOf("gemma4")!.style.getPropertyValue("--cost-t"))).toBeCloseTo(0.68, 2);
+  });
+  it("puts the score in the same badge box the vision flag uses", () => {
+    const { container } = renderComposer({
+      ollamaModels: ["deepseek-v4-pro"],
+      ollamaVisionModels: new Set(["ollama/deepseek-v4-pro"]),
+      enabledModels: ["ollama/deepseek-v4-pro"],
+    });
+    fireEvent.click(container.querySelector(".model-pill")!);
+    const row = Array.from(container.querySelectorAll(".popup-item")).find((el) =>
+      el.querySelector(".cmd")?.textContent?.includes("deepseek-v4-pro"),
+    )!;
+    const badges = Array.from(row.querySelectorAll(".badge"));
+    // Two flags, one shape: the vision marker and the cost multiple.
+    expect(badges).toHaveLength(2);
+    expect(badges.filter((badge) => badge.classList.contains("cost"))).toHaveLength(1);
+  });
+
+  it("shows the active model's own score on both agent pills", () => {
+    const { container } = renderComposer({
+      modelLabel: "ollama/deepseek-v4-pro",
+      subagentModelLabel: "ollama/gemma4",
+    });
+    expect(container.querySelector(".model-pill .badge.cost")?.textContent).toMatch(
+      /^(2\.6|5\.2)x$/,
+    );
+    // A flat id costs the same all day, so its multiple never moves.
+    expect(container.querySelector(".subagent-pill .badge.cost")?.textContent).toBe("2.4x");
+  });
+
+  it("re-prices a peak-priced row when the window flips, without a reload", async () => {
+    vi.useFakeTimers();
+    try {
+      // 11:59 UTC on a weekday: Ollama's peak window opens one minute later.
+      vi.setSystemTime(new Date(Date.UTC(2026, 0, 1, 11, 59)));
+      const { container } = renderComposer({
+        modelLabel: "ollama/deepseek-v4.1-flash:1017",
+        ollamaModels: ["deepseek-v4.1-flash:1017"],
+        enabledModels: ["ollama/deepseek-v4.1-flash:1017"],
+      });
+      fireEvent.click(container.querySelector(".model-pill")!);
+      const rowCost = () => container.querySelector(".popup-item .badge.cost")?.textContent;
+      const pillCost = () => container.querySelector(".model-pill .badge.cost")?.textContent;
+      // Off-peak: the row's own multiple, on the row and on its pill.
+      expect(rowCost()).toBe("0.5x");
+      expect(pillCost()).toBe("0.5x");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+
+      // Peak: both surfaces re-read the period they are now in, with no reload.
+      expect(rowCost()).toBe("1.1x");
+      expect(pillCost()).toBe("1.1x");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("shows only the signed-in account's discovered Antigravity models and filters unusable ones", () => {
     const { container } = renderComposer({
       antigravityModels: [

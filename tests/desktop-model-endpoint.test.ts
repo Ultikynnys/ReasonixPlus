@@ -212,6 +212,19 @@ describe("desktop modelEndpointFor (#1529)", () => {
     });
   });
 
+  it("never reports a `usd` billing kind for Ollama, so the rate chip cannot key on one", () => {
+    // Ollama declares `quota-if-key`: a keyed account reports `quota`, a keyless
+    // one `none`. The status bar's peak/off-peak chip therefore gates on "this
+    // endpoint can spend money" plus the cloud deployment, never on `usd`, a
+    // kind this provider never reaches.
+    process.env.OLLAMA_API_KEY = "ollama-cloud-key";
+    const keyed = modelEndpointFor("ollama/deepseek-v4.1-flash:1017", path);
+    expect(keyed.deployment).toBe("cloud");
+    expect(keyed.billingKind).not.toBe("none");
+    Reflect.deleteProperty(process.env, "OLLAMA_API_KEY");
+    expect(modelEndpointFor("ollama/deepseek-v4.1-flash:1017", path).billingKind).toBe("none");
+  });
+
   it("uses an explicit Ollama provider mapping for an arbitrary model id", () => {
     writeConfig(
       {

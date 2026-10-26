@@ -253,21 +253,67 @@ describe("statusbar", () => {
     it("shows Ollama Cloud's rate chip only for token-priced Flash/Pro models", () => {
       renderBar({
         settings: {
-          model: "ollama/deepseek-v4-flash",
+          model: "ollama/deepseek-v4.1-flash:1017",
           modelEndpoint: {
             provider: "ollama",
             baseUrl: "https://ollama.com/v1",
-            billingKind: "usd",
+            // What the daemon reports for a keyed Ollama Cloud account: the
+            // declaration's `quota-if-key` resolves to `quota`, never `usd`.
+            billingKind: "quota",
             deployment: "cloud",
           },
         } as Settings,
       });
       expect(screen.getByText(/off-peak|peak/)).toBeTruthy();
+      // The ribbon states the period only: prices belong to the picker's cost
+      // multiple, never to a dollar figure here.
+      expect(screen.queryByText("in")).toBeNull();
+      expect(screen.queryByText(/^\$0\./)).toBeNull();
     });
 
     it("shows the Z.AI rate chip", () => {
       renderBar({ settings: { model: "glm-5.3-flash" } as Settings });
       expect(screen.getByText(/off-peak|peak/)).toBeTruthy();
+    });
+
+    it("adds the subagent model's priced chip when it sits on another calendar", () => {
+      renderBar({
+        settings: {
+          // The tab bills DeepSeek directly, so its own chip carries no price.
+          model: "deepseek-v4-flash",
+          subagentModel: "ollama/deepseek-v4-pro",
+          subagentModelEndpoint: {
+            provider: "ollama",
+            baseUrl: "https://ollama.com/v1",
+            billingKind: "quota",
+            deployment: "cloud",
+          },
+          subagents: true,
+        } as Settings,
+      });
+      // One chip per calendar: the tab's own, then the subagent's.
+      expect(screen.getAllByText(/off-peak|peak/).length).toBe(2);
+      // Neither chip carries a dollar figure: the ribbon states periods, and the
+      // picker's cost multiple is where money is mentioned.
+      expect(screen.queryByText(/\$0\./)).toBeNull();
+    });
+
+    it("leaves the pinned subagent's calendar out of a session that cannot spawn one", () => {
+      renderBar({
+        settings: {
+          model: "deepseek-v4-flash",
+          subagentModel: "ollama/deepseek-v4-pro",
+          subagentModelEndpoint: {
+            provider: "ollama",
+            baseUrl: "https://ollama.com/v1",
+            billingKind: "quota",
+            deployment: "cloud",
+          },
+          subagents: false,
+        } as Settings,
+      });
+      // No subagent ever runs, so only the tab's own period chip renders.
+      expect(screen.getAllByText(/off-peak|peak/).length).toBe(1);
     });
 
     it("shows GLM plan % left + plan for Z.AI tabs with both 5-hour and weekly limits", () => {
@@ -332,6 +378,23 @@ describe("statusbar", () => {
             baseUrl: "http://localhost:11434",
             billingKind: "none",
             deployment: "local",
+          },
+        } as Settings,
+      });
+      expect(screen.queryByText(/off-peak|peak/)).toBeNull();
+    });
+
+    it("hides the priced chip on a cloud endpoint that spends nothing", () => {
+      renderBar({
+        settings: {
+          model: "ollama/deepseek-v4.1-flash:1017",
+          modelEndpoint: {
+            provider: "ollama",
+            baseUrl: "https://ollama.com/v1",
+            // Keyless: `quota-if-key` resolves to `none`, so this endpoint cannot
+            // spend money and no rate belongs beside it.
+            billingKind: "none",
+            deployment: "cloud",
           },
         } as Settings,
       });

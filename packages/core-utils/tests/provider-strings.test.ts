@@ -29,6 +29,7 @@ const KEYS = new Set([
   "quotaPlanFallback",
   "offPeakTitle",
   "peakTitle",
+  "costTitle",
   "freeLabel",
   "freeTier",
   "freeTitle",
@@ -69,6 +70,8 @@ const PLACEHOLDERS = new Set([
   "monthly",
   "credit",
   "pct",
+  "multiplier",
+  "baseline",
 ]);
 
 const declared = PROVIDER_SPECS.flatMap((spec) =>

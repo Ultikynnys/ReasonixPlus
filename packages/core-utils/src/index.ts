@@ -55,14 +55,23 @@ export {
 } from "./session-order.js";
 export type { SessionRecencyInput } from "./session-order.js";
 export {
+  blendedRateCost,
   isOffPeakRate,
   isPeakPricedModel,
   isPeakRate,
   isRateScheduleWeekend,
   minutesUntilRateChangeForSchedule,
+  rateCost,
   ratePeriodForSchedule,
+  ratePricesForModel,
 } from "./rate-periods.js";
-export type { RatePeriod, RateSchedule } from "./rate-periods.js";
+export type {
+  RateModelPrices,
+  RatePeriod,
+  RatePrice,
+  RatePriceTable,
+  RateSchedule,
+} from "./rate-periods.js";
 export {
   antigravityUsageView,
   codexUsageView,
@@ -165,6 +174,7 @@ export {
   providerDeclared,
   providerDefaultEndpoint,
   providerReasoningEfforts,
+  providerRatePrices,
   providerRateSchedule,
   providerSettingSpec,
   providerShortLabel,

@@ -3,6 +3,7 @@ import { PROVIDER_DOCUMENTS } from "../src/providers.generated.js";
 import {
   PROVIDER_SPECS,
   parseProviderRegistry,
+  providerRatePrices,
   providerRateSchedule,
   providerSpec,
   providerString,
@@ -10,12 +11,15 @@ import {
 } from "../src/provider-registry.js";
 import {
   type RateSchedule,
+  blendedRateCost,
   isOffPeakRate,
   isPeakPricedModel,
   isPeakRate,
   isRateScheduleWeekend,
   minutesUntilRateChangeForSchedule,
+  rateCost,
   ratePeriodForSchedule,
+  ratePricesForModel,
 } from "../src/rate-periods.js";
 
 /** Weekday fixture — 2026-01-01 (Thursday). */
@@ -237,7 +241,7 @@ describe("Ollama Cloud rate periods", () => {
 
   it("declares which hosted ids carry the peak price", () => {
     expect(requireProviderSpec("ollama").billing.peakModels).toEqual([
-      "deepseek-v4-flash",
+      "deepseek-v4.1-flash",
       "deepseek-v4-pro",
     ]);
     // A provider with no peak rate has no priced ids to inherit either.
@@ -247,26 +251,203 @@ describe("Ollama Cloud rate periods", () => {
   it("matches a declared peak-priced id regardless of scheme or tag", () => {
     const peakModels = requireProviderSpec("ollama").billing.peakModels;
     for (const id of [
-      "ollama/deepseek-v4-flash:0731",
+      "ollama/deepseek-v4.1-flash:1017",
+      "ollama/deepseek-v4.1-flash:0731",
       "ollama/deepseek-v4-pro:0813",
-      "ollama/deepseek-v4-flash:cloud",
-      "deepseek-v4-pro:0731",
-      "deepseek-v4-flash",
+      "deepseek-v4-pro:1017",
+      "deepseek-v4.1-flash",
     ]) {
       expect(isPeakPricedModel(id, peakModels), id).toBe(true);
     }
     for (const id of [
       "ollama/llama3.1:latest",
-      "ollama/deepseek-v4-flash-vision-exp",
+      "ollama/gemma4",
+      "ollama/clef",
+      "ollama/deepseek-v4.1-flash-vision-exp",
       "qwen3/llama3.1",
     ]) {
       expect(isPeakPricedModel(id, peakModels), id).toBe(false);
     }
-    expect(isPeakPricedModel("deepseek-v4-flash", [])).toBe(false);
-    expect(isPeakPricedModel("deepseek-v4-flash", undefined)).toBe(false);
+    expect(isPeakPricedModel("deepseek-v4.1-flash", [])).toBe(false);
+    expect(isPeakPricedModel("deepseek-v4.1-flash", undefined)).toBe(false);
+  });
+
+  it("publishes a row for every id it bills, and prices the scheduled ones", () => {
+    const spec = requireProviderSpec("ollama");
+    const prices = providerRatePrices(spec);
+    expect(prices).not.toBeNull();
+    expect(prices!.scheduled).toEqual([...spec.billing.peakModels]);
+    expect(prices!.offPeakFactor).toBe(0.5);
+    // One triple for every row of the provider, declared once, none per model.
+    expect(prices!.multipliers).toEqual({ input: 10, cachedInput: 200, output: 1 });
+    // The declared scale the weighted cost divides by, so the multiple is data too.
+    expect(prices!.divisor).toBe(5);
+    expect(prices!.models["deepseek-v4.1-flash"]).toEqual({
+      input: 0.3,
+      cachedInput: 0.006,
+      output: 1.2,
+    });
+    expect(prices!.models["deepseek-v4-pro"]).toEqual({
+      input: 1.32,
+      cachedInput: 0.044,
+      output: 3.96,
+    });
+    // Every id the schedule reprices has a published row to reprice.
+    for (const id of spec.billing.peakModels) expect(prices!.models[id], id).toBeDefined();
+    // A provider that publishes no token price keeps the chip period-only.
+    expect(providerRatePrices("deepseek")).toBeNull();
+    expect(providerRatePrices("no-such-provider")).toBeNull();
+  });
+
+  it("derives off-peak for the scheduled ids and leaves the rest flat", () => {
+    const prices = providerRatePrices("ollama");
+    for (const model of ["ollama/deepseek-v4.1-flash:1017", "deepseek-v4-pro"]) {
+      const row = ratePricesForModel(model, prices);
+      expect(row, model).not.toBeNull();
+      expect(row!.offPeak.input).toBeCloseTo(row!.peak.input * 0.5, 6);
+      expect(row!.offPeak.cachedInput).toBeCloseTo(row!.peak.cachedInput * 0.5, 6);
+      expect(row!.offPeak.output).toBeCloseTo(row!.peak.output * 0.5, 6);
+    }
+    // An id the schedule does not name bills one price all day.
+    const flat = ratePricesForModel("ollama/gemma4", prices);
+    expect(flat?.offPeak).toEqual(flat!.peak);
+    // The row names the declared id, not the wire id it was asked about.
+    expect(ratePricesForModel("ollama/deepseek-v4.1-flash:1017", prices)!.id).toBe(
+      "deepseek-v4.1-flash",
+    );
+    // An id the provider does not price has no row, and neither has a provider
+    // that publishes no table at all.
+    expect(ratePricesForModel("ollama/llama3.1:latest", prices)).toBeNull();
+    expect(ratePricesForModel("deepseek-v4.1-flash", null)).toBeNull();
+    // A row that publishes a dash for a column charges nothing for it.
+    expect(ratePricesForModel("ollama/clef", prices)).toEqual({
+      id: "clef",
+      peak: { input: 0.24, cachedInput: 0, output: 0 },
+      offPeak: { input: 0.24, cachedInput: 0, output: 0 },
+    });
+    // A row missing only its cache still resolves, at the tagged wire id.
+    expect(ratePricesForModel("ollama/nemotron-3-nano:30b", prices)).toEqual({
+      id: "nemotron-3-nano",
+      peak: { input: 0.06, cachedInput: 0, output: 0.24 },
+      offPeak: { input: 0.06, cachedInput: 0, output: 0.24 },
+    });
+  });
+
+  it("rejects a schedule or multipliers the declaration cannot back", () => {
+    const template = PROVIDER_DOCUMENTS.find((entry) => entry.file === "ollama.json")?.document;
+    const withSchedule = JSON.parse(JSON.stringify(template)) as {
+      billing: { peakModels: string[] };
+    };
+    // The schedule may only reprice a published amount.
+    withSchedule.billing.peakModels = ["deepseek-v4.1-flash", "gemma4x"];
+    expect(() => parseProviderRegistry({ providers: [withSchedule] })).toThrow(/gemma4x/);
+
+    const noMultipliers = JSON.parse(JSON.stringify(template)) as {
+      billing: { prices: Record<string, unknown> };
+    };
+    // Every row is scored by these three values, so a table without them cannot score.
+    delete noMultipliers.billing.prices.multipliers;
+    expect(() => parseProviderRegistry({ providers: [noMultipliers] })).toThrow(
+      /prices\.multipliers/,
+    );
+
+    const zeroed = JSON.parse(JSON.stringify(template)) as {
+      billing: { prices: { multipliers: Record<string, number> } };
+    };
+    zeroed.billing.prices.multipliers = { input: 0, cachedInput: 0, output: 0 };
+    expect(() => parseProviderRegistry({ providers: [zeroed] })).toThrow(/at least one column/);
+
+    const emptyRow = JSON.parse(JSON.stringify(template)) as {
+      billing: { prices: { models: Record<string, Record<string, unknown>> } };
+    };
+    // A row with every column blank would score 0x, so it is rejected as unpriced.
+    emptyRow.billing.prices.models.gemma4 = {};
+    expect(() => parseProviderRegistry({ providers: [emptyRow] })).toThrow(
+      /models\.gemma4: expected at least one column/,
+    );
+
+    const noDivisor = JSON.parse(JSON.stringify(template)) as {
+      billing: { prices: Record<string, unknown> };
+    };
+    // Every multiple divides by the declared scale, so it cannot be omitted or zero.
+    delete noDivisor.billing.prices.divisor;
+    expect(() => parseProviderRegistry({ providers: [noDivisor] })).toThrow(
+      /prices\.divisor/,
+    );
+    const zeroDivisor = JSON.parse(JSON.stringify(template)) as {
+      billing: { prices: { divisor: number } };
+    };
+    zeroDivisor.billing.prices.divisor = 0;
+    expect(() => parseProviderRegistry({ providers: [zeroDivisor] })).toThrow(/above zero/);
+  });
+
+  it("charges each column by the provider's declared multipliers", () => {
+    // Weights stated once and applied to every row, so no two models are ever scored on
+    // different scales. Asserting one column at a time pins which multiplier it takes.
+    const declared = { input: 10, cachedInput: 200, output: 1 };
+    expect(blendedRateCost({ input: 1, cachedInput: 0, output: 0 }, declared)).toBeCloseTo(10, 6);
+    expect(blendedRateCost({ input: 0, cachedInput: 1, output: 0 }, declared)).toBeCloseTo(200, 6);
+    expect(blendedRateCost({ input: 0, cachedInput: 0, output: 1 }, declared)).toBeCloseTo(1, 6);
+    // The cheapest declared row: 10 * 0.24, with the columns it omits charging nothing.
+    expect(blendedRateCost({ input: 0.24, cachedInput: 0, output: 0 }, declared)).toBeCloseTo(
+      2.4,
+      6,
+    );
+  });
+
+  it("scores every published row with no model divided by another", () => {
+    const prices = providerRatePrices("ollama");
+    // Each row's own amounts, charged by the one declared triple.
+    const cases: Array<[string, number]> = [
+      ["ollama/nemotron-3-nano:30b", 0.168],
+      ["ollama/clef", 0.48],
+      ["ollama/nemotron-3-super", 0.75],
+      ["ollama/deepseek-v4.1-flash:1017", 0.54],
+      ["ollama/gpt-oss:120b", 0.98],
+      ["ollama/mistral-large-3", 1.3],
+      ["ollama/minimax-m3.1-flash", 1.02],
+      ["ollama/deepseek-v4-pro", 2.596],
+      ["ollama/glm-5.3-flash", 1.6],
+      ["ollama/gpt-oss:20b", 1.6],
+      ["ollama/gemma4", 2.36],
+      ["ollama/minimax-m2.7", 3.24],
+      ["ollama/mistral-large-4", 4.578],
+      ["ollama/nemotron-3-ultra", 4.8],
+      ["ollama/minimax-m3", 6.48],
+      ["ollama/kimi-k2.6", 9.1],
+      ["ollama/muse-spark-open", 9.35],
+      ["ollama/kimi-k2.7-code", 10.3],
+      ["ollama/glm-5.3", 14.08],
+      ["ollama/kimi-k3", 21],
+    ];
+    for (const [id, expected] of cases) {
+      expect(rateCost(id, prices, false), id).toBeCloseTo(expected, 3);
+    }
+  });
+
+  it("follows the calendar for a scheduled row and holds a flat one still", () => {
+    const prices = providerRatePrices("ollama");
+    expect(rateCost("ollama/deepseek-v4-pro", prices, true)).toBeCloseTo(5.192, 3);
+    expect(rateCost("ollama/deepseek-v4-pro", prices, false)).toBeCloseTo(2.596, 3);
+    // An id the schedule does not reprice costs the same either way.
+    expect(rateCost("ollama/gemma4", prices, true)).toBeCloseTo(
+      rateCost("ollama/gemma4", prices, false) as number,
+      6,
+    );
+    // No published row, no provider table: no multiple rather than a guess.
+    expect(rateCost("ollama/llama3.1:latest", prices, false)).toBeNull();
+    expect(rateCost("deepseek-v4.1-flash", null, false)).toBeNull();
+    expect(rateCost("deepseek-v4.1-flash", providerRatePrices("deepseek"), false)).toBeNull();
+  });
+
+  it("anchors the colour ramp on the multiple itself", () => {
+    // 0.5x stays green and 3x turns red; nothing rescales a row against its neighbours.
+    expect(rateCost("ollama/nemotron-3-nano:30b", providerRatePrices("ollama"), false)).toBeCloseTo(
+      0.168,
+      3,
+    );
   });
 });
-
 describe("Z.AI GLM rate periods", () => {
   it.each([
     [5, 59, true], // 05:59 UTC — before the peak window

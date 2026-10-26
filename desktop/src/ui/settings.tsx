@@ -34,6 +34,8 @@ import {
   modelProviderHints,
   providerForModelGroup,
 } from "../model-catalog";
+import { providerModelCost } from "../model-cost";
+import { useRateClock } from "../rate-clock";
 import type {
   FeedbackCueId,
   FeedbackCueSetting,
@@ -79,8 +81,10 @@ import {
   barkRuntimeStatus,
   removeBarkRuntime,
 } from "../voice/bark-engine";
-import { VOICE_ENGINES, VOICE_MODELS, type VoiceModelId } from "../voice/model-registry";import { speechTranscriber } from "../voice/transcriber";
+import { VOICE_ENGINES, VOICE_MODELS, type VoiceModelId } from "../voice/model-registry";
+import { speechTranscriber } from "../voice/transcriber";
 import { type ChangelogState, PageChangelog } from "./changelog";
+import { CostBadge } from "./cost-badge";
 import { FitText } from "./fit-text";
 import { activationHandler, escapeHandler } from "./keyboard";
 import { Shortcut, type ShortcutKey, localizeShortcutText } from "./shortcut";
@@ -1963,6 +1967,7 @@ const EAGER_FIT_ROWS = 8;
  *  `onSelect` (chat models only) makes a card clickable to set the default
  *  model; omit the handlers for a read-only list. */
 function ModelList({
+  provider,
   models,
   enabledSet,
   currentModel,
@@ -1971,6 +1976,9 @@ function ModelList({
   onSetAll,
   onSelect,
 }: {
+  /** The provider whose card this is: its declaration decides each row's price, and
+   *  a bare id in this list belongs to it even when another provider also serves it. */
+  provider?: string;
   models: readonly string[];
   enabledSet: ReadonlySet<string>;
   currentModel: string;
@@ -1980,6 +1988,8 @@ function ModelList({
   onSelect?: (id: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  // A card's rows re-price at the declared window flip, like the composer's pills.
+  const rateNow = useRateClock();
   const enabledCount = models.filter((id) => enabledSet.has(id)).length;
   const needle = query.trim().toLowerCase();
   const shown = needle
@@ -2035,6 +2045,7 @@ function ModelList({
           const enabled = enabledSet.has(id);
           // The card header already names the provider, so the id drops its prefix.
           const displayName = modelWireName(id);
+          const cost = providerModelCost(provider, id, rateNow);
           return (
             <div
               key={id}
@@ -2055,6 +2066,7 @@ function ModelList({
                   title={id}
                   deferUntilVisible={deferFit && index >= EAGER_FIT_ROWS}
                 />
+                <CostBadge cost={cost} />
                 {acceptsImages(id) ? <span className="badge">vision</span> : null}
               </div>
               {onToggle ? (
@@ -2320,8 +2332,11 @@ function PageModels({
     }
     onSave({ enabledModels: [...next] });
   };
-  const modelColumn = (ids: readonly string[], selectable = true) => (
+  /** A card's model column: the row's own provider prices its rows, so the card hands
+   *  down the group it renders rather than letting the list guess from bare ids. */
+  const modelColumn = (group: ModelCatalogGroupKey, ids: readonly string[], selectable = true) => (
     <ModelList
+      provider={providerForModelGroup(group)?.id}
       models={ids}
       enabledSet={enabledSet}
       currentModel={settings.model}
@@ -2366,7 +2381,7 @@ function PageModels({
       <DeclaredProviderCard
         group="deepseek"
         defaultOpen={false}
-        models={modelColumn(groupModels("deepseek"))}
+        models={modelColumn("deepseek", groupModels("deepseek"))}
         settings={
           <ProviderSettingFields
             providerId="deepseek"
@@ -2379,7 +2394,7 @@ function PageModels({
       <DeclaredProviderCard
         group="openai"
         defaultOpen={false}
-        models={modelColumn(groupModels("openai"))}
+        models={modelColumn("openai", groupModels("openai"))}
         settings={
           <>
             <ProviderSettingFields
@@ -2403,7 +2418,7 @@ function PageModels({
       <DeclaredProviderCard
         group="zai"
         defaultOpen={false}
-        models={modelColumn(groupModels("zai"))}
+        models={modelColumn("zai", groupModels("zai"))}
         settings={
           <ProviderSettingFields
             providerId="zai"
@@ -2416,7 +2431,7 @@ function PageModels({
       <DeclaredProviderCard
         group="mimo"
         defaultOpen={false}
-        models={modelColumn(groupModels("mimo"))}
+        models={modelColumn("mimo", groupModels("mimo"))}
         settings={
           <>
             <ProviderSettingFields
@@ -2439,7 +2454,7 @@ function PageModels({
       <DeclaredProviderCard
         group="experiential"
         defaultOpen={false}
-        models={modelColumn(groupModels("experiential"))}
+        models={modelColumn("experiential", groupModels("experiential"))}
         settings={
           <ProviderSettingFields
             providerId="experiential"
@@ -2452,7 +2467,7 @@ function PageModels({
       <DeclaredProviderCard
         group="synthetic"
         defaultOpen={false}
-        models={modelColumn(groupModels("synthetic"))}
+        models={modelColumn("synthetic", groupModels("synthetic"))}
         settings={
           <ProviderSettingFields
             providerId="synthetic"
@@ -2465,7 +2480,7 @@ function PageModels({
       <DeclaredProviderCard
         group="openrouter"
         defaultOpen={false}
-        models={modelColumn(groupModels("openrouter"))}
+        models={modelColumn("openrouter", groupModels("openrouter"))}
         settings={
           <ProviderSettingFields
             providerId="openrouter"
@@ -2478,7 +2493,7 @@ function PageModels({
       <DeclaredProviderCard
         group="gemini-api"
         defaultOpen={false}
-        models={modelColumn(groupModels("gemini-api"))}
+        models={modelColumn("gemini-api", groupModels("gemini-api"))}
         settings={
           <ProviderSettingFields
             providerId="gemini-api"
@@ -2491,7 +2506,7 @@ function PageModels({
       <DeclaredProviderCard
         group="opencode"
         defaultOpen={false}
-        models={modelColumn(groupModels("opencode"))}
+        models={modelColumn("opencode", groupModels("opencode"))}
         settings={
           <>
             <ProviderSettingFields
@@ -2525,7 +2540,7 @@ function PageModels({
       <DeclaredProviderCard
         group="local"
         defaultOpen={false}
-        models={modelColumn(groupModels("local"))}
+        models={modelColumn("local", groupModels("local"))}
         settings={
           <>
             <ProviderSettingFields
@@ -2548,7 +2563,7 @@ function PageModels({
       <DeclaredProviderCard
         group="ollama"
         defaultOpen={false}
-        models={modelColumn(ollamaList)}
+        models={modelColumn("ollama", ollamaList)}
         settings={
           <>
             <ProviderSettingFields
@@ -2584,7 +2599,7 @@ function PageModels({
       <DeclaredProviderCard
         group="antigravity"
         defaultOpen={false}
-        models={modelColumn(groupModels("antigravity"))}
+        models={modelColumn("antigravity", groupModels("antigravity"))}
         settings={
           <AntigravitySection
             signedIn={antigravitySignedIn}

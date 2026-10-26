@@ -84,7 +84,8 @@ as the generic fallback.
 Values are plain strings with optional `{placeholder}` slots, filled at the call
 site: `{model}`, `{error}`, `{baseUrl}`, `{account}`, `{org}`, `{message}`,
 `{when}`, `{left}`, `{resets}`, `{weeklyResets}`, `{session}`, `{sessionResets}`,
-`{plan}`, `{fiveHour}`, `{weekly}`, `{rolling}`, `{monthly}`, `{credit}` and `{pct}`.
+`{plan}`, `{fiveHour}`, `{weekly}`, `{rolling}`, `{monthly}`, `{credit}`, `{pct}`,
+`{multiplier}`.
 An unmatched placeholder stays literal. Every key is optional: an undeclared key
 returns `undefined`, so the call site keeps its generic wording and a new provider
 can adopt one sentence at a time.
@@ -95,6 +96,7 @@ can adopt one sentence at a time.
 | `apiOauth`, `apiKey`, `apiNone`, `apiBare`, `oauthFailed` | Status-bar API chip |
 | `quotaLabel`, `quotaTitle`, `quotaDualTitle`, `quotaLimitedTitle`, `quotaFiveHourTitle`, `quotaWeeklyTitle`, `quotaMonthlyTitle`, `quotaDailyTitle`, `quotaNoData`, `quotaNoDataUnavailable`, `quotaTurnTitle`, `quotaPlanName`, `quotaPlanFallback` | Status-bar quota chip |
 | `offPeakTitle`, `peakTitle` | Rate-period chip tooltip |
+| `costTitle` | Cost-multiple tooltip beside a model name |
 | `freeLabel`, `freeTier`, `freeTitle` | OpenCode free-tier chip |
 | `panelSignInTitle`, `panelSignIn`, `panelSignInHint`, `panelWaiting`, `panelSignedIn`, `panelAccount`, `panelAccountOrg`, `panelTokenSet`, `panelKeyStored`, `panelSignOut`, `panelCancel`, `panelFlowFailed` | OAuth sign-in panel |
 | `modelsLabel`, `modelsHint`, `modelsError` | Model-refresh row and its error line |
@@ -195,6 +197,47 @@ price multiplier, because a per-provider factor reads inconsistently (DeepSeek
 surcharges peak, Z.AI discounts off-peak) and the chip shows the period alone.
 What discount or surcharge applies is stated once, in that file's `offPeakTitle` /
 `peakTitle` copy.
+
+A provider that publishes what each period costs declares the amounts beside the
+ids it prices. The ribbon never shows a dollar figure: these amounts exist so a
+surface that names a model can say what it costs as a multiple.
+
+```json
+"prices": {
+  "offPeakFactor": 0.5,
+  "multipliers": { "input": 10, "cachedInput": 200, "output": 1 },
+  "divisor": 5,
+  "models": {
+    "deepseek-v4.1-flash": { "input": 0.3, "cachedInput": 0.006, "output": 1.2 },
+    "gemma4": { "input": 0.14, "cachedInput": 0.05, "output": 0.4 }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `models` | Amounts per billed id, in the provider's own currency per million tokens, validated as non-negative numbers. Every id is priced, not only the scheduled ones: a row `peakModels` does not name costs the same all day. A column a row leaves out, such as the dash the pricing page prints for a model with no cached rate, charges `0` rather than dropping the model |
+| `multipliers` | The three values every row of the provider is scored with, required and validated as non-negative with at least one above zero. One triple for the whole provider, so no two models can be scored on different scales and no surface carries a copy |
+| `offPeakFactor` | Fraction of the amount that off-peak charges for the ids `peakModels` names, above zero and at most 1 (default `0.5`). Off-peak is derived from it, so the two rows cannot disagree |
+
+The rate chip states the period and nothing more: no dollar figure appears in the
+ribbon, and the published amounts reach a surface only through the cost below.
+
+### Cost multiple
+
+Every surface that names a model can say what it costs. `rateCost(model, table, peak)`
+charges that row's own three amounts by the provider's declared `multipliers`, divides by
+the declared `divisor`, and reads the period in force. Nothing divides one model by
+another: the multiple is the row's own weighted cost against the declared scale. A caller
+passes the moment to price, and the desktop passes its rate clock: a timer armed at the
+next declared transition, so an open picker re-prices itself at the boundary instead of
+keeping what it read on mount.
+
+The multipliers are declaration data, read once per provider and never written in code,
+so changing how a column counts or what the scale divides by is a JSON edit.
+`costTitle` spells the multiple out with `{model}` and `{multiplier}`, so the provider that
+owns the prices also owns the sentence that explains them. The badge's colour runs on the
+multiple itself, not on a row's rank: `1x` and below is green and `3x` and above is red.
 
 `"schedule": null` (or no `schedule` key) means the provider has no price
 calendar, and the status bar renders no rate chip at all. Only `deepseek.json`,
@@ -313,7 +356,7 @@ Objects:
 | `settings` | array | Persisted fields this provider declares, see Settings above |
 | `settingsPanel` | panel name or null | Bespoke behavior panel the settings card renders above its fields |
 | `usable` | `apiKey`, `keylessLocal`, `baseUrl`, `always` | Ways the model can run right now; `baseUrl` accepts any user-declared endpoint without a key |
-| `billing` | `kind`, `schedule`, `peakModels`, `balance` | Peak/off-peak calendar (see Peak hours) and the account-balance endpoint |
+| `billing` | `kind`, `schedule`, `peakModels`, `prices`, `balance` | Peak/off-peak calendar and token prices (see Peak hours) and the account-balance endpoint |
 | `cost` | `tier`, `toolResultTokens`, `compactionTrigger`, `keepImages` | Relative token cost and the retention caps it implies (see Cost tier) |
 | `context` | `setting`, `outputReserve`, `defaultTokens` | A server-owned context window: the declared setting holds the total, the reserve is subtracted for the prompt budget, and `defaultTokens` applies while the setting is unset |
 | `usage` | `probe`, `urls`, `urlBase`, `urlGate`, `minIntervalSeconds`, `primaryWindow`, `resetsStyle` | Where plan usage is published (see Usage) |

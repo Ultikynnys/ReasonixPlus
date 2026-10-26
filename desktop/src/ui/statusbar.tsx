@@ -1,6 +1,4 @@
 import {
-  isPeakPricedModel,
-  providerRateSchedule,
   providerSpec,
   providerString,
   quotaWindowsSummary,
@@ -12,6 +10,7 @@ import type { Balance, Settings, UsageStats } from "../App";
 import { t } from "../i18n";
 import { I } from "../icons";
 import type { JobInfo } from "../protocol";
+import { rateChips } from "../rate-chips";
 import { THEME, THEME_STYLES, type Theme, type ThemeStyle, themeForStyle } from "../theme";
 import { resolveRibbonFunds } from "../usage-ribbon";
 import { hitPercent, tokenLabel } from "./format";
@@ -37,6 +36,15 @@ const WINDOW_TITLE_KEYS: Record<ProviderUsageWindow["label"], string> = {
   day: "quotaDailyTitle",
   plan: "quotaPlanTitle",
 };
+
+/** How long until the rate flips: "45m", "3h 12m", or "2d 9h" past a weekend. */
+function formatRateWhen(minutes: number): string {
+  if (minutes >= 1440) {
+    return `${Math.floor(minutes / 1440)}d ${Math.floor((minutes % 1440) / 60)}h`;
+  }
+  if (minutes >= 60) return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  return `${minutes}m`;
+}
 
 /** One chip for every quota-billed provider. Each provider normalizes to a
  *  ProviderUsageView, so the ribbon ("5h 70% · wk 88% left") renders through a
@@ -159,9 +167,6 @@ export function StatusBar({
   const spec = ep?.provider ? providerSpec(ep.provider) : undefined;
   const auth = spec?.client.auth ?? null;
   const openaiTab = auth === "openai-oauth";
-  // These two classify the *rate-period* chip (a declared price calendar whose
-  // applicability is per model), never the money chips below.
-  const ollamaTab = spec?.wire.format === "ollama-native";
   // Which money chip this tab gets, and whether $ is its native unit — one resolver
   // for every provider, so a new one needs no ribbon edit (see usage-ribbon.ts).
   const funds = resolveRibbonFunds(spec, ep);
@@ -205,17 +210,6 @@ export function StatusBar({
   }
   const dotDanger = connState === "off" || authFailed;
   const dotWarn = !dotDanger && openaiAuth === "none";
-  // Peak pricing follows daemon-resolved provider/deployment metadata and applies
-  // only to the ids the provider lists as priced (`billing.peakModels`), so a
-  // cheaper hosted model never inherits the rate chip.
-  const ollamaPeakPricing =
-    ollamaTab &&
-    ep?.deployment === "cloud" &&
-    ep?.billingKind === "usd" &&
-    isPeakPricedModel(settings?.model ?? "", spec?.billing.peakModels);
-  // The calendar is whatever the provider declares (`billing.schedule`): editing
-  // its JSON moves the peak hours, no code change needed.
-  const rateSchedule = ollamaTab && !ollamaPeakPricing ? null : providerRateSchedule(spec);
 
   // ---- Money chip ---------------------------------------------------------
   // One `$usage` payload reaches this file, so the chip and its tooltip are
@@ -322,22 +316,19 @@ export function StatusBar({
     const id = setInterval(() => setRateNow(new Date()), 30_000);
     return () => clearInterval(id);
   }, []);
-  const rate = rateSchedule ? ratePeriodForSchedule(rateNow, rateSchedule) : null;
-  const offPeak = !rate?.peak;
-  const rateMins = rate?.minutesUntilChange ?? 0;
-  // Weekends push the next change past a full day — render "2d 9h" instead of
-  // a raw "3420 min".
-  const when =
-    rateMins >= 1440
-      ? `${Math.floor(rateMins / 1440)}d ${Math.floor((rateMins % 1440) / 60)}h`
-      : rateMins >= 60
-        ? `${Math.floor(rateMins / 60)}h ${rateMins % 60}m`
-        : `${rateMins}m`;
-  // Each rate-scheduled provider declares its own peak and off-peak wording;
-  // the generic pair stays for a provider that declares neither.
-  const rateTitle =
-    (offPeak ? specCopy("offPeakTitle", { when }) : specCopy("peakTitle", { when })) ??
-    (offPeak ? t("statusbar.offPeakTitle", { when }) : t("statusbar.peakTitle", { when }));
+  const rateChipViews = rateChips(settings).map((chip) => {
+    const period = ratePeriodForSchedule(rateNow, chip.schedule);
+    const offPeak = !period.peak;
+    const when = formatRateWhen(period.minutesUntilChange);
+    // Each provider declares its own peak and off-peak wording; the generic pair
+    // stays for a provider that declares neither.
+    const title =
+      (offPeak
+        ? providerString(chip.spec, "offPeakTitle", { when })
+        : providerString(chip.spec, "peakTitle", { when })) ??
+      t(offPeak ? "statusbar.offPeakTitle" : "statusbar.peakTitle", { when });
+    return { key: chip.key, offPeak, title };
+  });
   const [themeOpen, setThemeOpen] = useState(false);
   const themePopRef = useRef<HTMLDivElement | null>(null);
   const themeButtonRef = useRef<HTMLSpanElement | null>(null);
@@ -402,14 +393,17 @@ export function StatusBar({
           <span className="v">{tokenLabel(totalTokens)}</span>
         </span>
       ) : null}
-      {rateSchedule ? (
-        <span className="seg" title={rateTitle}>
-          <I.clock size={11} style={{ color: offPeak ? "var(--success)" : "var(--warning)" }} />
-          <span className={`v ${offPeak ? "ok" : "warn"}`}>
-            {offPeak ? t("statusbar.offPeak") : t("statusbar.peak")}
+      {rateChipViews.map((chip) => (
+        <span key={chip.key} className="seg" title={chip.title}>
+          <I.clock
+            size={11}
+            style={{ color: chip.offPeak ? "var(--success)" : "var(--warning)" }}
+          />
+          <span className={`v ${chip.offPeak ? "ok" : "warn"}`}>
+            {chip.offPeak ? t("statusbar.offPeak") : t("statusbar.peak")}
           </span>
         </span>
-      ) : null}
+      ))}
 
       <span className="grow" />
 

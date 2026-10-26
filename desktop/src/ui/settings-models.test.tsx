@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { PROVIDER_SPECS, SEARCH_ENGINE_SPECS, providerDeclared } from "@reasonix/core-utils";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "../App";
@@ -416,6 +416,65 @@ describe("PageModels default-model enum", () => {
       (name) => name.textContent,
     );
     expect(names).not.toContain("ollama/clef:27b");
+  });
+
+  it("scores each Ollama row the way the picker does", () => {
+    const { container } = render(
+      <SettingsModal
+        {...baseProps}
+        settings={{ ...baseSettings, enabledModels: ["ollama/deepseek-v4.1-flash"] }}
+        ollamaModels={["deepseek-v4.1-flash", "deepseek-v4-pro", "gemma4", "clef"]}
+        initialPage="models"
+      />,
+    );
+    container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
+      if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+    });
+
+    /** The cost badge on the row that toggles `value`. */
+    const badgeOf = (value: string): HTMLElement | null =>
+      (modelCard(container, value)?.querySelector(".badge.cost") as HTMLElement | null) ?? null;
+
+    // The card names the provider, and that provider's declaration prices the row, so a
+    // bare `deepseek-v4.1-flash` here is Ollama's, not DeepSeek's.
+    expect(badgeOf("ollama/deepseek-v4.1-flash")?.textContent).toMatch(/^(0\.5|1\.1)x$/);
+    expect(badgeOf("ollama/deepseek-v4-pro")?.textContent).toMatch(/^(2\.6|5\.2)x$/);
+    expect(
+      Number(badgeOf("ollama/deepseek-v4-pro")?.style.getPropertyValue("--cost-t")),
+    ).toBeGreaterThan(0.5);
+    expect(badgeOf("ollama/gemma4")?.textContent).toBe("2.4x");
+    // A column a row leaves out charges nothing, so clef is still priced.
+    expect(badgeOf("ollama/clef")?.textContent).toBe("0.5x");
+  });
+
+  it("re-prices a peak-priced row when the window flips", async () => {
+    vi.useFakeTimers();
+    try {
+      // 11:59 UTC on a weekday: Ollama's peak window opens one minute later.
+      vi.setSystemTime(new Date(Date.UTC(2026, 0, 1, 11, 59)));
+      const { container } = render(
+        <SettingsModal
+          {...baseProps}
+          settings={{ ...baseSettings, enabledModels: ["ollama/deepseek-v4.1-flash"] }}
+          ollamaModels={["deepseek-v4.1-flash"]}
+          initialPage="models"
+        />,
+      );
+      for (const button of container.querySelectorAll<HTMLButtonElement>(".provider-head")) {
+        if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+      }
+      const cost = () =>
+        modelCard(container, "ollama/deepseek-v4.1-flash")?.querySelector(".badge.cost")
+          ?.textContent;
+      expect(cost()).toBe("0.5x");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(cost()).toBe("1.1x");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows a hub id's own name, keeping the wire id on hover", () => {

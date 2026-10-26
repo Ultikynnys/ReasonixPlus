@@ -69,7 +69,100 @@ export function isPeakPricedModel(
   peakModels: readonly string[] | null | undefined,
 ): boolean {
   if (!peakModels || peakModels.length === 0) return false;
-  return [stripProviderQualifier(model), stripOllamaSchemeAndTag(model)].some((candidate) =>
-    peakModels.includes(candidate),
+  return declaredIdForms(model).some((candidate) => peakModels.includes(candidate));
+}
+
+/** A token price in one rate period, in the provider's own currency per million
+ *  tokens: what it charges for fresh input, cached input and output. */
+export interface RatePrice {
+  input: number;
+  cachedInput: number;
+  output: number;
+}
+
+/** The prices a provider publishes: one row per id, the multipliers every row
+ *  blends with, the fraction off-peak charges of it, and the ids whose row moves with
+ *  the calendar. */
+export interface RatePriceTable {
+  models: Readonly<Record<string, RatePrice>>;
+  /** The three values every row of this provider blends with. One triple for the whole
+   *  provider, so two models can never be scored on different scales. */
+  multipliers: RatePrice;
+  /** What the weighted cost is divided by to read as a multiple, declared once so the
+   *  scale is data rather than a constant in code. */
+  divisor: number;
+  offPeakFactor: number;
+  /** Ids whose price moves with the schedule. Empty means every priced id moves. */
+  scheduled: readonly string[];
+}
+
+/** Both periods' prices for the model a caller asked about. */
+export interface RateModelPrices {
+  /** The declared id the prices key on, so a surface can name what it shows:
+   *  `ollama/deepseek-v4.1-flash:1017` resolves to `deepseek-v4.1-flash`. */
+  id: string;
+  peak: RatePrice;
+  offPeak: RatePrice;
+}
+
+/** The id forms a declaration may key on: as given, without a `<provider>/`
+ *  scheme, and without a `:tag` suffix. */
+function declaredIdForms(model: string): string[] {
+  return [stripProviderQualifier(model), stripOllamaSchemeAndTag(model)];
+}
+
+/** Both periods' prices for `model`, or null when the provider prices no id it
+ *  names. Off-peak is derived from the declared amount and factor, and an id the
+ *  schedule does not name keeps one price all day. */
+export function ratePricesForModel(
+  model: string,
+  table: RatePriceTable | null | undefined,
+): RateModelPrices | null {
+  if (!table) return null;
+  const id = declaredIdForms(model).find((candidate) => candidate in table.models);
+  if (id === undefined) return null;
+  const peak = table.models[id];
+  if (!peak) return null;
+  const moves = table.scheduled.length === 0 || table.scheduled.includes(id);
+  // Six decimals hold every published amount ($0.006) and shed the float noise
+  // the factor multiplication leaves behind (0.044 * 0.5 = 0.022000000000000002).
+  const offPeakAmount = (amount: number): number =>
+    moves ? Math.round(amount * table.offPeakFactor * 1e6) / 1e6 : amount;
+  return {
+    id,
+    peak,
+    offPeak: {
+      input: offPeakAmount(peak.input),
+      cachedInput: offPeakAmount(peak.cachedInput),
+      output: offPeakAmount(peak.output),
+    },
+  };
+}
+
+/** One row's weighted cost: each column charged by the provider's multipliers. The
+ *  scale is absolute, so two rows of one provider compare by their two numbers and no
+ *  model is divided by another. */
+export function blendedRateCost(price: RatePrice, multipliers: RatePrice): number {
+  return (
+    price.input * multipliers.input +
+    price.cachedInput * multipliers.cachedInput +
+    price.output * multipliers.output
   );
+}
+
+/** A model's cost multiple in `peak`'s period: its own row charged by the provider's
+ *  declared multipliers and divided by the declared divisor, or null when the provider
+ *  prices no id it names. */
+export function rateCost(
+  model: string,
+  table: RatePriceTable | null | undefined,
+  peak: boolean,
+): number | null {
+  if (!table) return null;
+  const row = ratePricesForModel(model, table);
+  if (!row) return null;
+  // The parser rejects a divisor of zero, so this only fails closed on a hand-built
+  // table: no scale, no badge, rather than a number that looks like a multiple.
+  if (!(table.divisor > 0)) return null;
+  return blendedRateCost(peak ? row.peak : row.offPeak, table.multipliers) / table.divisor;
 }

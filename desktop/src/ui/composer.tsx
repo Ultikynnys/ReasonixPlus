@@ -32,6 +32,8 @@ import {
   deriveModelCatalog,
   modelProviderHints,
 } from "../model-catalog";
+import { type ModelCost, modelCost } from "../model-cost";
+import { useRateClock } from "../rate-clock";
 import {
   BUILTIN_QUICK_SENDS,
   type EditMode,
@@ -45,6 +47,7 @@ import { speechTranscriber } from "../voice/transcriber";
 import { toWorkspaceRelative } from "../workspace-path";
 import type { ComposerDraft } from "./composer-draft";
 import { DEFAULT_COMPOSER_ROWS } from "./composer-sizing";
+import { CostBadge } from "./cost-badge";
 import { FitText } from "./fit-text";
 import { activationHandler } from "./keyboard";
 import { StuckLabel, TimerSpan } from "./live";
@@ -139,6 +142,7 @@ function ModelPickerPill({
   menuId,
   title,
   label,
+  cost,
   activeModel,
   openMenu,
   onToggle,
@@ -153,6 +157,8 @@ function ModelPickerPill({
   /** Tooltip and menu header share one string, so they cannot drift apart. */
   title: string;
   label: string;
+  /** What this model costs against the declared baseline, when its price is published. */
+  cost?: ModelCost | null;
   activeModel: string;
   openMenu: MenuId | null;
   onToggle: (id: MenuId) => void;
@@ -170,6 +176,7 @@ function ModelPickerPill({
         title={title}
       >
         <FitText text={label} />
+        <CostBadge cost={cost} />
         <I.chev size={10} />
       </button>
       {openMenu === menuId ? (
@@ -722,6 +729,9 @@ export function Composer({
     discoveredAntigravityModels: antigravityModels,
     opencodeModels,
   });
+  // A peak-priced model's multiple follows the clock, so the pills re-price at the
+  // same boundary the status bar chip does instead of keeping what they read on mount.
+  const rateNow = useRateClock();
 
   const modelListProps = {
     ollamaModels,
@@ -936,6 +946,7 @@ export function Composer({
               menuId="model"
               title={t("composer.switchModel")}
               label={modelDisplayLabel(modelLabel, providerHints)}
+              cost={modelCost(modelLabel, providerHints, rateNow)}
               activeModel={modelLabel}
               openMenu={openMenu}
               onToggle={toggleMenu}
@@ -953,6 +964,7 @@ export function Composer({
                 menuId="subagent"
                 title={t("composer.switchSubagentModel")}
                 label={modelDisplayLabel(subagentModelLabel, providerHints)}
+                cost={modelCost(subagentModelLabel, providerHints, rateNow)}
                 activeModel={subagentModelLabel}
                 openMenu={openMenu}
                 onToggle={toggleMenu}
@@ -1134,6 +1146,9 @@ export function ModelList({
   enabledModels?: string[];
   onRefreshAntigravityModels?: () => void;
 }) {
+  // A peak-priced model's multiple follows the clock, so the menu re-prices at the
+  // same boundary the status bar chip does instead of keeping what it read on mount.
+  const rateNow = useRateClock();
   const catalog = deriveModelCatalog({
     providerCatalogs,
     discoveredAntigravityModels: antigravityModels,
@@ -1233,6 +1248,9 @@ export function ModelList({
       return group.models.length > 0;
     });
 
+  // The active row keeps its price even when the catalog no longer lists it.
+  const activeCost = modelCost(activeModel, providerHints, rateNow);
+
   return (
     <div className="popup-list model-menu-list">
       {HAS_DECLARED_PROVIDERS ? (
@@ -1262,20 +1280,24 @@ export function ModelList({
               ) : null}
             </div>
             {group.error ? <div className="model-menu-error">{group.error}</div> : null}
-            {group.models.map((model) => (
-              <div
-                key={model}
-                className="popup-item"
-                data-active={model === activeModel}
-                onClick={() => onPick(model)}
-                onKeyDown={activationHandler(() => onPick(model))}
-              >
-                <div className="nm">
-                  <span className="cmd">{modelDisplayLabel(model, providerHints)}</span>
+            {group.models.map((model) => {
+              const cost = modelCost(model, providerHints, rateNow);
+              return (
+                <div
+                  key={model}
+                  className="popup-item"
+                  data-active={model === activeModel}
+                  onClick={() => onPick(model)}
+                  onKeyDown={activationHandler(() => onPick(model))}
+                >
+                  <div className="nm model-row">
+                    <span className="cmd">{modelDisplayLabel(model, providerHints)}</span>
+                    <CostBadge cost={cost} />
+                  </div>
+                  {catalog.acceptsImages(model) ? <span className="badge">vision</span> : null}
                 </div>
-                {catalog.acceptsImages(model) ? <span className="badge">vision</span> : null}
-              </div>
-            ))}
+              );
+            })}
           </Fragment>
         );
       })}
@@ -1286,8 +1308,9 @@ export function ModelList({
           onClick={() => onPick(activeModel)}
           onKeyDown={activationHandler(() => onPick(activeModel))}
         >
-          <div className="nm">
+          <div className="nm model-row">
             <span className="cmd">{modelDisplayLabel(activeModel, providerHints)}</span>
+            <CostBadge cost={activeCost} />
           </div>
         </div>
       )}

@@ -23,3 +23,18 @@ export function hitPercent(hit: number, miss: number): string {
 export function formatDuration(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)} ms`;
 }
+
+/** A cost multiple beside a model name: "1", "2", "7.5", "28.6". One decimal,
+ *  dropped when the number reads whole, because `2x` beats `2.0x`. */
+export function multiplierLabel(multiplier: number): string {
+  const rounded = Math.round(multiplier * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+/** Where a multiple sits on the cost ramp: 0 at `x` and below, where a model costs no more
+ *  than the declared scale, and 1 at three times it. Linear between the two so the badge
+ *  turns red exactly where the eye expects it. */
+export function costLevel(multiplier: number): number {
+  if (!(multiplier > 1)) return 0;
+  return Math.min(1, (multiplier - 1) / 2);
+}

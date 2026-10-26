@@ -2,7 +2,7 @@
 
 import type { ReasoningEffort } from "./permission-types.js";
 import { PROVIDER_DOCUMENTS, PROVIDER_IDS, type ProviderID } from "./providers.generated.js";
-import type { RateSchedule } from "./rate-periods.js";
+import type { RatePrice, RatePriceTable, RateSchedule } from "./rate-periods.js";
 
 /** Routable provider ids, generated from providers/*.json by `npm run providers:sync`. */
 export { PROVIDER_IDS };
@@ -246,6 +246,9 @@ export interface ProviderBillingSpec {
   schedule: RateSchedule | null;
   /** Model ids whose token price moves with the schedule; empty when none do. */
   peakModels: readonly string[];
+  /** Published token prices for the ids the provider prices; null when it
+   *  publishes none, so a chip can state the period without a figure. */
+  prices: RatePriceTable | null;
   /** Where the account balance is published; null means nowhere, so the ribbon
    *  shows no wallet chip it could never fill. */
   balance: ProviderBalanceSpec | null;
@@ -937,12 +940,85 @@ function parseRateSchedule(value: unknown, where: string): RateSchedule | null {
 
 function parseBilling(value: unknown, where: string): ProviderBillingSpec {
   const raw = record(value ?? {}, where);
+  const peakModels =
+    raw.peakModels === undefined ? [] : texts(raw.peakModels, `${where}.peakModels`);
   return {
     kind: choice<ProviderBillingKind>(raw.kind ?? "quota", PROVIDER_BILLING_KINDS, `${where}.kind`),
     schedule: parseRateSchedule(raw.schedule, `${where}.schedule`),
-    peakModels: raw.peakModels === undefined ? [] : texts(raw.peakModels, `${where}.peakModels`),
+    peakModels,
+    prices: parseRatePrices(raw.prices, `${where}.prices`, peakModels),
     balance: parseBalance(raw.balance, `${where}.balance`),
   };
+}
+
+/** Published prices per id, or null when the provider declares none. Off-peak is
+ *  the declared fraction of the scheduled ids' amounts, not a second table. */
+function parseRatePrices(
+  value: unknown,
+  where: string,
+  peakModels: readonly string[],
+): RatePriceTable | null {
+  if (value === undefined || value === null) return null;
+  const raw = record(value, where);
+  const rows = record(raw.models, `${where}.models`);
+  const models: Record<string, RatePrice> = {};
+  for (const [id, entry] of Object.entries(rows)) {
+    const at = `${where}.models.${id}`;
+    const amounts = record(entry, at);
+    models[id] = {
+      input: priceAmount(amounts.input, `${at}.input`),
+      cachedInput: priceAmount(amounts.cachedInput, `${at}.cachedInput`),
+      output: priceAmount(amounts.output, `${at}.output`),
+    };
+    const row = models[id];
+    // A row that charges nothing in any column would score 0x: it publishes no price.
+    if (row.input + row.cachedInput + row.output <= 0) {
+      fail(at, "expected at least one column above zero");
+    }
+  }
+  if (Object.keys(models).length === 0) {
+    fail(`${where}.models`, "expected at least one priced id: use null for no price table");
+  }
+  // The schedule may only reprice an id whose amounts are published.
+  for (const id of peakModels) {
+    if (!(id in models)) fail(`${where}.models`, `peakModels names "${id}", which publishes no price`);
+  }
+  const blend = record(raw.multipliers, `${where}.multipliers`);
+  const multipliers = {
+    input: blendMultiplier(blend.input, `${where}.multipliers.input`),
+    cachedInput: blendMultiplier(blend.cachedInput, `${where}.multipliers.cachedInput`),
+    output: blendMultiplier(blend.output, `${where}.multipliers.output`),
+  };
+  // One triple for the whole provider, and it has to charge something.
+  if (!(multipliers.input + multipliers.cachedInput + multipliers.output > 0)) {
+    fail(`${where}.multipliers`, "expected at least one column to count");
+  }
+  const divisor = number(raw.divisor, `${where}.divisor`);
+  // The declared scale has to be able to divide, or no multiple could be shown.
+  if (!(divisor > 0)) fail(`${where}.divisor`, "expected a divisor above zero");
+  return {
+    models,
+    multipliers,
+    divisor,
+    scheduled: peakModels,
+    offPeakFactor: fractionOfWindow(raw.offPeakFactor ?? 0.5, `${where}.offPeakFactor`),
+  };
+}
+
+/** A published price: an amount in the provider's own currency, never negative. A
+ *  column a row leaves out (a dash on the pricing page) charges nothing. */
+function priceAmount(value: unknown, where: string): number {
+  if (value === undefined || value === null) return 0;
+  const amount = number(value, where);
+  if (amount < 0) fail(where, "expected an amount of zero or more");
+  return amount;
+}
+
+/** A row's blend multiplier: how much one column counts, so never negative. */
+function blendMultiplier(value: unknown, where: string): number {
+  const multiplier = number(value, where);
+  if (multiplier < 0) fail(where, "expected a multiplier of zero or more");
+  return multiplier;
 }
 
 function parseBalance(value: unknown, where: string): ProviderBalanceSpec | null {
@@ -1310,6 +1386,15 @@ export function providerRateSchedule(
 ): RateSchedule | null {
   const spec = typeof provider === "string" ? providerSpec(provider) : provider;
   return spec?.billing.schedule ?? null;
+}
+
+/** The token prices a provider publishes, or null when it declares none. Takes an
+ *  id or an already-resolved spec, like `providerRateSchedule`. */
+export function providerRatePrices(
+  provider: string | ProviderSpec | undefined,
+): RatePriceTable | null {
+  const spec = typeof provider === "string" ? providerSpec(provider) : provider;
+  return spec?.billing.prices ?? null;
 }
 
 /** Declared UI copy with `{name}` placeholders filled from `vars`; an unmatched

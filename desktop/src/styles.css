@@ -5284,6 +5284,47 @@ html[data-platform="macos"] .startup-loading-overlay {
   color: var(--accent);
   margin-right: 6px;
 }
+/* A model row's name and its multiple share one line: the name truncates, the flag
+   keeps its width. Only this row goes flex, because a quick-send row stacks its
+   description under the command. */
+.popup-item .nm.model-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.popup-item .nm.model-row .cmd {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 0;
+}
+/* A row's trailing flag: the vision marker and the cost multiple share one box, so a
+   picker row reads label then flag instead of two different shapes. */
+.popup-item .badge,
+.model-pill .badge {
+  flex: none;
+  align-self: center;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--violet-soft);
+  color: var(--violet);
+}
+/* Cost multiple: the same box, tinted by the multiple itself. `--cost-t` runs 0 (1x and
+   below, green) to 1 (3x and above, red), and each selector carries one class more than
+   the shared box so the violet paint never wins. */
+.popup-item .badge.cost,
+.model-pill .badge.cost,
+.mcard .nm .badge.cost {
+  font-family: var(--mono, monospace);
+  font-variant-numeric: tabular-nums;
+  --cost-tone: color-mix(in srgb, var(--danger) calc(var(--cost-t, 0) * 100%), var(--success));
+  color: var(--cost-tone);
+  background: color-mix(in srgb, var(--cost-tone) 16%, transparent);
+}
 .popup-item .desc {
   display: block;
   font-size: 14px;
