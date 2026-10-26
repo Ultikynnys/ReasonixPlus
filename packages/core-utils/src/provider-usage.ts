@@ -125,11 +125,13 @@ export interface SyntheticQuotaWindow {
   renewsAt: string | null;
 }
 
-/** The reply's `weeklyTokenLimit`: the weekly credit pool, the only field matching the
- *  "Remaining weekly credits" gauge. It regenerates continuously, so the share is
- *  never `1 - spentThisWeek/limit` and cannot come from the request buckets. */
+/** The reply's `planWeeklyLimit` (older replies: `weeklyTokenLimit`): the weekly credit
+ *  pool, the only field matching the "Remaining weekly credits" gauge. It regenerates
+ *  continuously, so the share is never `1 - spentThisWeek/limit` and cannot come from
+ *  the request buckets. */
 export interface SyntheticCreditWindow {
-  /** % of the weekly pool still available (`percentRemaining`, 0-100). */
+  /** % of the weekly pool still available (`percentRemaining`, 0-100: the same unit
+   *  its `nextRegenPercent` sibling uses). */
   remainingPct: number;
   /** Next regeneration tick (`nextRegenAt`), or null when unreported. */
   nextRegenAt: string | null;
@@ -145,7 +147,7 @@ export interface SyntheticQuota {
 }
 
 /** Synthetic weekly credit window. The reply states the remaining share directly, so
- *  it is passed through untouched; a reply without `weeklyTokenLimit` (pay-as-you-go,
+ *  it is passed through untouched; a reply without a weekly credit pool (pay-as-you-go,
  *  or a bucket we cannot read) yields no window rather than an invented 100%. */
 export function syntheticUsageView(quota: Omit<SyntheticQuota, "fetchedAt">): ProviderUsageView {
   return {

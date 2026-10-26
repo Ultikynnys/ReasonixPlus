@@ -2243,9 +2243,20 @@ describe("desktop-provider-usage", () => {
   describe("fetchSyntheticQuota", () => {
     const BASE = "https://api.synthetic.new/v1";
     // Verbatim reply from the live route: the weekly credit pool the dashboard's
-    // "Remaining weekly credits" gauge draws sits in `weeklyTokenLimit`, while
+    // "Remaining weekly credits" gauge draws sits in `planWeeklyLimit`, while
     // `subscription` counts requests against a few-hour window.
     const LIVE = {
+      subscription: { limit: 500, requests: 0, renewsAt: "2026-10-26T13:27:41.177Z" },
+      search: { hourly: { limit: 250, requests: 0, renewsAt: "2026-10-26T09:27:41.178Z" } },
+      planWeeklyLimit: {
+        nextRegenAt: "2026-10-26T09:22:14.000Z",
+        percentRemaining: 0.7982197142857143,
+        nextRegenPercent: 2,
+      },
+    };
+    // The spelling the same route used before the weekly pool was renamed; the reply
+    // carried the pool in credits as well as a share.
+    const LEGACY = {
       subscription: { limit: 500, requests: 0, renewsAt: "2026-10-22T09:03:31.261Z" },
       search: { hourly: { limit: 250, requests: 0, renewsAt: "2026-10-22T05:03:31.262Z" } },
       freeToolCalls: { limit: 0, requests: 0, renewsAt: "2026-10-23T04:03:31.265Z" },
@@ -2261,8 +2272,11 @@ describe("desktop-provider-usage", () => {
     it("GETs the declared quotas route with the Bearer key", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse(LIVE));
       await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toEqual({
-        weeklyCredits: { remainingPct: 70.54936685714286, nextRegenAt: "2026-10-22T04:34:14.000Z" },
-        subscription: { limit: 500, requests: 0, renewsAt: "2026-10-22T09:03:31.261Z" },
+        weeklyCredits: {
+          remainingPct: 0.7982197142857143,
+          nextRegenAt: "2026-10-26T09:22:14.000Z",
+        },
+        subscription: { limit: 500, requests: 0, renewsAt: "2026-10-26T13:27:41.177Z" },
       });
       const [rawUrl, init] = fetchMock.mock.calls[0]!;
       const url = new URL(String(rawUrl));
@@ -2276,6 +2290,62 @@ describe("desktop-provider-usage", () => {
       fetchMock.mockResolvedValueOnce(jsonResponse(LIVE));
       await fetchSyntheticQuota("syn-key", "https://proxy.example/v1");
       expect(String(fetchMock.mock.calls[0]![0])).toBe("https://api.synthetic.new/v2/quotas");
+    });
+
+    it("reads the pre-rename weeklyTokenLimit spelling just the same", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(LEGACY));
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toEqual({
+        weeklyCredits: { remainingPct: 70.54936685714286, nextRegenAt: "2026-10-22T04:34:14.000Z" },
+        subscription: { limit: 500, requests: 0, renewsAt: "2026-10-22T09:03:31.261Z" },
+      });
+    });
+
+    it("prefers the current spelling over the older one", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ ...LIVE, weeklyTokenLimit: LEGACY.weeklyTokenLimit }),
+      );
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toMatchObject({
+        weeklyCredits: { remainingPct: 0.7982197142857143 },
+      });
+    });
+
+    it("falls through a malformed current spelling to a readable older one", async () => {
+      // Half a rename must not blank the chip: the pool is still in the other field.
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ ...LEGACY, planWeeklyLimit: { percentRemaining: "0.79" } }),
+      );
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toMatchObject({
+        weeklyCredits: { remainingPct: 70.54936685714286 },
+      });
+    });
+
+    it("derives the share from the credit amounts when no percentage is stated", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          weeklyTokenLimit: {
+            nextRegenAt: "2026-10-22T04:34:14.000Z",
+            maxCredits: "$2.10",
+            remainingCredits: "$1.48",
+          },
+        }),
+      );
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toMatchObject({
+        weeklyCredits: {
+          remainingPct: (1.48 / 2.1) * 100,
+          nextRegenAt: "2026-10-22T04:34:14.000Z",
+        },
+      });
+    });
+
+    it("invents no share from unusable credit amounts", async () => {
+      for (const credits of [
+        { maxCredits: "$0.00", remainingCredits: "$0.00" },
+        { maxCredits: "2.10", remainingCredits: "1.48" },
+        { maxCredits: "$2.10" },
+      ]) {
+        fetchMock.mockResolvedValueOnce(jsonResponse({ planWeeklyLimit: credits }));
+        await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
+      }
     });
 
     it("draws the weekly pool, not the idle request bucket that reads 100%", () => {
@@ -2332,6 +2402,10 @@ describe("desktop-provider-usage", () => {
       await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
       fetchMock.mockResolvedValueOnce(
         jsonResponse({ weeklyTokenLimit: { percentRemaining: "70.5" } }),
+      );
+      await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ planWeeklyLimit: { percentRemaining: "70.5" } }),
       );
       await expect(fetchSyntheticQuota("syn-key", BASE)).resolves.toBeUndefined();
     });

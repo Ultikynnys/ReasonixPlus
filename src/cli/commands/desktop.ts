@@ -3181,8 +3181,8 @@ async function readExperientialUsage(tab: Tab, options: { force?: boolean }): Pr
 }
 
 /** Synthetic plan usage: `/v2/quotas` states the weekly credit pool as
- *  `weeklyTokenLimit.percentRemaining`, the number synthetic.new's gauge draws. The
- *  request buckets (`subscription`, `search`) are no plan balance. */
+ *  `planWeeklyLimit.percentRemaining`, the number the dashboard's gauge draws. The
+ *  `subscription` and `search` buckets are no balance. */
 export async function fetchSyntheticQuota(
   apiKey: string,
   baseUrl: string,
@@ -3194,15 +3194,26 @@ export async function fetchSyntheticQuota(
     timeoutMs,
   });
   if (!reply.ok) return undefined;
-  const body = (reply.body ?? {}) as {
-    subscription?: unknown;
-    weeklyTokenLimit?: unknown;
-  };
+  const body = (reply.body ?? {}) as Record<string, unknown>;
   const subscription = toSyntheticRequestBucket(body.subscription);
-  const weeklyCredits = toSyntheticCreditWindow(body.weeklyTokenLimit);
+  const weeklyCredits = readSyntheticCreditWindow(body);
   // Nothing readable is "no data", never a guessed percentage.
   if (!subscription && !weeklyCredits) return undefined;
   return { weeklyCredits, subscription };
+}
+
+/** Both spellings `/v2/quotas` has used for the weekly credit pool: the route renamed
+ *  `weeklyTokenLimit` to `planWeeklyLimit`, and an account may answer either. */
+const SYNTHETIC_CREDIT_FIELDS = ["planWeeklyLimit", "weeklyTokenLimit"] as const;
+
+/** The first declared spelling that parses, so a reply carrying a malformed new field
+ *  beside a readable old one still reports the pool. */
+function readSyntheticCreditWindow(body: Record<string, unknown>): SyntheticCreditWindow | null {
+  for (const field of SYNTHETIC_CREDIT_FIELDS) {
+    const window = toSyntheticCreditWindow(body[field]);
+    if (window) return window;
+  }
+  return null;
 }
 
 /** One request-count bucket (`{limit, requests, renewsAt}`), or null when malformed. */
@@ -3217,17 +3228,43 @@ function toSyntheticRequestBucket(raw: unknown): SyntheticQuotaWindow | null {
   };
 }
 
-/** The weekly credit pool, or null when the reply omits it or reports no share. */
+/** The weekly credit pool, or null when the reply omits it or reports no share. The
+ *  share is `percentRemaining` when stated; a reply that states the pool only as credit
+ *  amounts derives it, since rendering nothing is the blank chip this reader fixes. */
 function toSyntheticCreditWindow(raw: unknown): SyntheticCreditWindow | null {
   if (!raw || typeof raw !== "object") return null;
-  const row = raw as { percentRemaining?: unknown; nextRegenAt?: unknown };
-  if (typeof row.percentRemaining !== "number" || !Number.isFinite(row.percentRemaining)) {
-    return null;
-  }
+  const row = raw as {
+    percentRemaining?: unknown;
+    nextRegenAt?: unknown;
+    maxCredits?: unknown;
+    remainingCredits?: unknown;
+  };
+  const stated =
+    typeof row.percentRemaining === "number" && Number.isFinite(row.percentRemaining)
+      ? row.percentRemaining
+      : null;
+  const remainingPct = stated ?? creditShare(row.remainingCredits, row.maxCredits);
+  if (remainingPct === null) return null;
   return {
-    remainingPct: row.percentRemaining,
+    remainingPct,
     nextRegenAt: typeof row.nextRegenAt === "string" ? row.nextRegenAt : null,
   };
+}
+
+/** `remaining` of `max` as a 0-100 share, or null when either is unreadable or the pool
+ *  is empty, so an unparseable reply never invents a number. */
+function creditShare(remaining: unknown, max: unknown): number | null {
+  const left = creditAmount(remaining);
+  const cap = creditAmount(max);
+  if (left === null || cap === null || cap <= 0) return null;
+  return (left / cap) * 100;
+}
+
+/** A credit string the route writes as `$1.48`, as a number; null for anything else. */
+function creditAmount(raw: unknown): number | null {
+  if (typeof raw !== "string") return null;
+  const match = /^\$(\d+(?:\.\d+)?)$/.exec(raw.trim());
+  return match ? Number(match[1]) : null;
 }
 
 /** Both quota readers share this shape: resolve the declared key, coalesce on the
