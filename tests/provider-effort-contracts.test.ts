@@ -17,6 +17,7 @@ describe("researched effort contracts", () => {
     ["deepseek", "deepseek-v4-pro", ["low", "high", "max"]],
     ["deepseek", "deepseek-reasoner", []],
     ["openai", "gpt-6.1-sol", ["low", "medium", "high", "xhigh", "max"]],
+    ["openai", "gpt-6.1-terra", ["low", "medium", "high", "xhigh", "max"]],
     ["openai", "gpt-5.5", ["low", "medium", "high", "xhigh"]],
     ["openai", "gpt-4o", []],
     ["zai", "glm-5.2", ["high", "max"]],

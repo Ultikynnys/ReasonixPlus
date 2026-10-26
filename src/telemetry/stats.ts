@@ -23,9 +23,10 @@ export const DEEPSEEK_CONTEXT_TOKENS: Record<string, number> = {
   "deepseek-v4-pro": 300_000,
   "deepseek-chat": 300_000,
   "deepseek-reasoner": 300_000,
-  // GPT-6 family (1M token window); 6.1 Sol advertises 1.05M but is held
-  // to the shared 1M API ceiling like the rest of the line.
+  // GPT-6 family (1M token window); the 6.1 models advertise 1.05M but are
+  // held to the shared 1M API ceiling like the rest of the line.
   "gpt-6.1-sol": 1_000_000,
+  "gpt-6.1-terra": 1_000_000,
   "gpt-6-astra": 1_000_000,
   "gpt-6-sol": 1_000_000,
   "gpt-6-luna": 1_000_000,

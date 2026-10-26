@@ -29,6 +29,7 @@ describe("modelAcceptsImages", () => {
     expect(modelAcceptsImages("gpt-6-astra")).toBe(true);
     expect(modelAcceptsImages("gpt-6-sol")).toBe(true);
     expect(modelAcceptsImages("gpt-6-luna")).toBe(true);
+    expect(modelAcceptsImages("gpt-6.1-terra")).toBe(true);
     expect(modelAcceptsImages("gpt-5.6-sol")).toBe(true);
     expect(modelAcceptsImages("gpt-5.6-terra")).toBe(true);
     expect(modelAcceptsImages("gpt-5.6-luna")).toBe(true);
@@ -141,6 +142,7 @@ describe("KNOWN_MODELS", () => {
 
   it("offers the OpenAI models including GPT-6 family and the GPT-5.6 family", () => {
     expect(KNOWN_MODELS).toContain("gpt-6.1-sol");
+    expect(KNOWN_MODELS).toContain("gpt-6.1-terra");
     expect(KNOWN_MODELS).toContain("gpt-6-astra");
     expect(KNOWN_MODELS).toContain("gpt-6-sol");
     expect(KNOWN_MODELS).toContain("gpt-6-luna");
@@ -148,6 +150,7 @@ describe("KNOWN_MODELS", () => {
     expect(KNOWN_MODELS).toContain("gpt-5.6-terra");
     expect(KNOWN_MODELS).toContain("gpt-5.6-luna");
     expect(OPENAI_MODELS).toContain("gpt-6.1-sol");
+    expect(OPENAI_MODELS).toContain("gpt-6.1-terra");
     expect(OPENAI_MODELS).toContain("gpt-6-astra");
     expect(OPENAI_MODELS).toContain("gpt-6-sol");
     expect(OPENAI_MODELS).toContain("gpt-6-luna");
