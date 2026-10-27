@@ -91,6 +91,8 @@ Ground factual claims about the codebase in verified source evidence.
 
 MCP availability can change during a session. Call \`list_mcp_bridges\` when current server availability, connection status, or tool registration matters. Treat its result as authoritative.
 
+Every bridged MCP tool takes an optional \`timeoutSec\` (seconds, default 60) that overrides one call's deadline and is stripped before dispatch. When a server tool declares its own \`timeoutSec\`, the deadline argument is \`_mcpTimeoutSec\`, with extra leading underscores until the name is free.
+
 Prefer suitable installed MCP tools. Fall back to built-in tools when necessary.
 
 # Task execution

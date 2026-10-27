@@ -1,5 +1,5 @@
 <!-- platform:begin — this section is auto-managed by Reasonix+ (overwritten on playwright-tooling-version bumps). Your additions go below the platform:end marker and survive upgrades. -->
-<!-- playwright-tooling-version: 8 -->
+<!-- playwright-tooling-version: 9 -->
 
 # Playwright driver: persistent cross-browser control
 
@@ -50,6 +50,12 @@ is formatted and can include result, event, and generated-code sections, so pars
 specific result section rather than assuming the final line is data. Treat
 `browser_run_code_unsafe` as RCE-equivalent and use it only when necessary with a
 trusted page and client.
+
+The bridge keeps a few tools off the model's schema payload to save context:
+`browser_drop`, `browser_emulate_media`, and `browser_resize`. They still work:
+call them through the driver
+(`node driver.mjs call browser_resize '{"width":1280,"height":720}'`).
+`browser_run_code_unsafe` stays on the model surface on purpose.
 
 The local HTTP server is intentionally localhost-only. State lives in `.server.json`
 next to this file. Stale state self-heals on the next invocation. Use

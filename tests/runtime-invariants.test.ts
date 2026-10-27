@@ -69,8 +69,10 @@ import {
   renderCacheMissReport,
 } from "../src/telemetry/cache-diagnostics.js";
 import {
+  MAX_MCP_SERVER_SPEC_BYTES,
   MAX_TOOL_SPEC_BYTES,
   fitsSpecBudget,
+  resolveMcpServerSpecBytes,
   resolveSpecBudgetBytes,
   specBytes,
   toolSpecBytes,
@@ -1958,6 +1960,33 @@ describe("spec-budget", () => {
       expect(resolveSpecBudgetBytes({ REASONIX_SPEC_BUDGET_BYTES: "0" })).toBe(MAX_TOOL_SPEC_BYTES);
       expect(resolveSpecBudgetBytes({ REASONIX_SPEC_BUDGET_BYTES: "-5" })).toBe(
         MAX_TOOL_SPEC_BYTES,
+      );
+    });
+
+    it("sizes the bridge allowance per server, below the built-in ceiling", () => {
+      expect(resolveMcpServerSpecBytes({})).toBe(MAX_MCP_SERVER_SPEC_BYTES);
+      expect(MAX_MCP_SERVER_SPEC_BYTES).toBe(36_000);
+      // One server's allowance is not the array ceiling: built-ins are bounded separately.
+      expect(MAX_MCP_SERVER_SPEC_BYTES).toBeLessThan(MAX_TOOL_SPEC_BYTES);
+    });
+
+    it("honors REASONIX_MCP_SPEC_BUDGET_BYTES, then the older array-wide override", () => {
+      expect(resolveMcpServerSpecBytes({ REASONIX_MCP_SPEC_BUDGET_BYTES: "12000" })).toBe(12_000);
+      expect(resolveMcpServerSpecBytes({ REASONIX_SPEC_BUDGET_BYTES: "9000" })).toBe(9000);
+      expect(
+        resolveMcpServerSpecBytes({
+          REASONIX_MCP_SPEC_BUDGET_BYTES: "12000",
+          REASONIX_SPEC_BUDGET_BYTES: "9000",
+        }),
+      ).toBe(12_000);
+    });
+
+    it("ignores an unparseable per-server override instead of disabling the cap", () => {
+      expect(resolveMcpServerSpecBytes({ REASONIX_MCP_SPEC_BUDGET_BYTES: "lots" })).toBe(
+        MAX_MCP_SERVER_SPEC_BYTES,
+      );
+      expect(resolveMcpServerSpecBytes({ REASONIX_MCP_SPEC_BUDGET_BYTES: "0" })).toBe(
+        MAX_MCP_SERVER_SPEC_BYTES,
       );
     });
 

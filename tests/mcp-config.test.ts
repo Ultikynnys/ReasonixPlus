@@ -14,7 +14,12 @@ import {
   canonicalizeSchemaForCache,
 } from "../src/mcp/registry.js";
 import { derefJsonSchema } from "../src/mcp/schema-deref.js";
-import { compactDescription, pruneMcpToolSchema } from "../src/mcp/schema-prune.js";
+import {
+  MAX_TOOL_DESCRIPTION_CHARS,
+  compactDescription,
+  condenseMcpSchema,
+  pruneMcpToolSchema,
+} from "../src/mcp/schema-prune.js";
 import { shellSplit } from "../src/mcp/shell-split.js";
 import { type McpServerSpec, parseMcpSpec } from "../src/mcp/spec.js";
 import { SseTransport } from "../src/mcp/sse.js";
@@ -765,6 +770,78 @@ describe("mcp-schema-deref", () => {
         JSON.stringify(canonicalizeMcpToolForCache(tool)),
       );
     });
+
+    it("compacts a tool description longer than the cap to its first sentence", () => {
+      const description =
+        "Send the message specified in the request body. The message is saved in the Sent Items folder, " +
+        "the attachments are re-encoded, the recipients are resolved against the tenant directory, and " +
+        "the call returns 202 Accepted with no body once the message is queued for delivery by Exchange.";
+      expect(description.length).toBeGreaterThan(MAX_TOOL_DESCRIPTION_CHARS);
+      const canonical = canonicalizeMcpToolForCache({
+        name: "send-mail",
+        description,
+        inputSchema: { type: "object", properties: {} },
+      });
+      expect(canonical.description).toBe("Send the message specified in the request body.");
+    });
+
+    it("leaves a description within the cap untouched", () => {
+      const description = "List the messages in the signed-in user's mailbox.";
+      expect(
+        canonicalizeMcpToolForCache({
+          name: "list-mail-messages",
+          description,
+          inputSchema: { type: "object", properties: {} },
+        }).description,
+      ).toBe(description);
+    });
+
+    it("collapses a repeated deep entity and stays byte-identical when re-canonicalized", () => {
+      const message = {
+        type: "object",
+        properties: {
+          subject: { type: "string", description: "The subject of the message." },
+          body: {
+            type: "object",
+            properties: {
+              content: { type: "string", description: "The content of the item." },
+              contentType: { type: "string", enum: ["text", "html"] },
+            },
+          },
+          toRecipients: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                emailAddress: {
+                  type: "object",
+                  properties: { address: { type: "string" }, name: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+        required: ["subject"],
+      };
+      const tool = {
+        name: "send-mail",
+        description: "Send the message specified in the request body.",
+        inputSchema: {
+          type: "object",
+          properties: { body: { type: "object", properties: { message } } },
+        },
+      };
+
+      const once = canonicalizeMcpToolForCache(tool);
+      const shaped = (once.inputSchema.properties?.body as JSONSchema).properties
+        ?.message as JSONSchema;
+      expect(shaped).toEqual({
+        type: "object",
+        description: "fields: body{}, subject*, toRecipients[]",
+      });
+      // The bridge canonicalizes twice (bridge + register); drift would cost a cache miss.
+      expect(JSON.stringify(canonicalizeMcpToolForCache(once))).toBe(JSON.stringify(once));
+    });
   });
 
   describe("bridgeMcpTools with a $ref schema", () => {
@@ -990,6 +1067,165 @@ describe("mcp-schema-prune", () => {
         const res1 = JSON.stringify(pruneMcpToolSchema(schema));
         const res2 = JSON.stringify(pruneMcpToolSchema(schema));
         expect(res1).toBe(res2);
+      });
+    });
+
+    describe("condenseMcpSchema", () => {
+      const timestampField: JSONSchema = {
+        type: "object",
+        properties: {
+          sentDateTime: {
+            description: "When the message was sent.",
+            anyOf: [
+              {
+                type: "string",
+                format: "date-time",
+                pattern: "^[0-9]{4}-(0[1-9]|1[012])-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+                description: "The Timestamp type is ISO 8601 in UTC.",
+              },
+              { type: "null" },
+            ],
+          },
+        },
+      };
+
+      it("collapses a null-only union into its value branch", () => {
+        const prop = condenseMcpSchema(timestampField).properties?.sentDateTime as JSONSchema;
+        expect(prop.anyOf).toBeUndefined();
+        expect(prop.type).toBe("string");
+        // `format` survives as the date hint; the serialized validator does not.
+        expect(prop.format).toBe("date-time");
+        expect(prop.pattern).toBeUndefined();
+        expect(prop.description).toBe("When the message was sent.");
+      });
+
+      it("normalizes nullable type arrays and leaves real unions alone", () => {
+        const condensed = condenseMcpSchema({
+          type: "object",
+          properties: {
+            subject: { type: ["string", "null"] },
+            scalar: { type: ["string", "number"] },
+          },
+        });
+        expect((condensed.properties?.subject as JSONSchema).type).toBe("string");
+        expect((condensed.properties?.scalar as JSONSchema).type).toEqual(["string", "number"]);
+      });
+
+      it("keeps top-level parameter prose and collapses nested entities into a field map", () => {
+        const schema: JSONSchema = {
+          type: "object",
+          properties: {
+            messageId: { type: "string", description: "The message to load." },
+            body: {
+              type: "object",
+              properties: {
+                Message: {
+                  type: "object",
+                  properties: {
+                    size: { type: "number", description: "The length of the attachment in bytes." },
+                    subject: { type: "string", description: "The subject of the message." },
+                  },
+                  required: ["subject"],
+                },
+              },
+            },
+          },
+          required: ["messageId"],
+        };
+
+        const condensed = condenseMcpSchema(schema);
+        expect(condensed.properties?.messageId).toEqual({
+          type: "string",
+          description: "The message to load.",
+        });
+        // One line per entity instead of a repeated sub-schema; every field is still named.
+        const message = (condensed.properties?.body as JSONSchema).properties
+          ?.Message as JSONSchema;
+        expect(message).toEqual({ type: "object", description: "fields: size, subject*" });
+      });
+
+      it("marks arrays, objects, enums, and required fields in a collapsed field map", () => {
+        const condensed = condenseMcpSchema({
+          type: "object",
+          properties: {
+            outer: {
+              type: "object",
+              properties: {
+                holder: {
+                  type: "object",
+                  properties: {
+                    recipients: {
+                      type: "array",
+                      items: { type: "object", properties: { address: { type: "string" } } },
+                    },
+                    body: { type: "object", properties: { contentType: { type: "string" } } },
+                    importance: { type: "string", enum: ["low", "normal", "high"] },
+                    subject: { type: "string" },
+                  },
+                  required: ["subject"],
+                },
+              },
+            },
+          },
+        });
+        const holder = (condensed.properties?.outer as JSONSchema).properties?.holder as JSONSchema;
+        expect(holder).toEqual({
+          type: "object",
+          description: "fields: body{}, importance(low|normal|high), recipients[], subject*",
+        });
+      });
+
+      it("gives a shape shared by two tools the same one-line field map", () => {
+        const shared: JSONSchema = {
+          type: "object",
+          properties: {
+            subject: { type: "string" },
+            toRecipients: { type: "array", items: { type: "object" } },
+          },
+          required: ["subject"],
+        };
+        const tool = (name: string): JSONSchema => ({
+          type: "object",
+          properties: { [name]: { type: "object", properties: { Message: shared } } },
+        });
+        const a = (condenseMcpSchema(tool("body")).properties?.body as JSONSchema).properties
+          ?.Message;
+        const b = (condenseMcpSchema(tool("message")).properties?.message as JSONSchema).properties
+          ?.Message;
+        expect(a).toEqual(b);
+        expect(a).toEqual({
+          type: "object",
+          description: "fields: subject*, toRecipients[]",
+        });
+      });
+
+      it("strips value noise and keeps meaning-bearing arrays", () => {
+        const condensed = condenseMcpSchema({
+          $schema: "http://json-schema.org/draft-07/schema#",
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            contentType: { type: "string", enum: ["text", "html"], default: "text" },
+            ids: { type: "array", items: { type: "string" }, title: "Identifiers" },
+            free: { type: "object", additionalProperties: true },
+          },
+          required: ["contentType"],
+        });
+        expect(condensed.$schema).toBeUndefined();
+        // `additionalProperties: false` is a real constraint; only the permissive form goes.
+        expect(condensed.additionalProperties).toBe(false);
+        expect(condensed.properties?.contentType).toEqual({
+          type: "string",
+          enum: ["text", "html"],
+        });
+        expect(condensed.properties?.ids).toEqual({ type: "array", items: { type: "string" } });
+        expect(condensed.properties?.free).toEqual({ type: "object" });
+        expect(condensed.required).toEqual(["contentType"]);
+      });
+
+      it("is idempotent so re-canonicalizing never churns the prompt prefix", () => {
+        const once = condenseMcpSchema(timestampField);
+        expect(condenseMcpSchema(once)).toEqual(once);
       });
     });
   });
@@ -1401,13 +1637,41 @@ describe("mcp-bridge-guards", () => {
     });
 
     it("keeps the accepted set deterministic across identical bridges", async () => {
-      const opts = { namePrefix: "srv_", serverName: "srv", specBudgetBytes: 700 };
+      const opts = { namePrefix: "srv_", serverName: "srv", specBudgetBytes: 90 };
       const a = await bridgeMcpTools(fakeClient([tool("a"), tool("b"), tool("c")]), opts);
       const b = await bridgeMcpTools(fakeClient([tool("a"), tool("b"), tool("c")]), opts);
       expect(a.registeredNames).toEqual(b.registeredNames);
       expect(a.skipped.map((s) => s.name)).toEqual(b.skipped.map((s) => s.name));
       expect(a.registeredNames.length).toBeGreaterThan(0);
       expect(a.skipped.length).toBeGreaterThan(0);
+    });
+
+    it("charges each server its own allowance, so a fat first server cannot starve the next", async () => {
+      // Regression: a shared pool let the first server's tools consume the whole ceiling,
+      // and every tool of the server bridged after it was deferred — surfacing as
+      // "connected · 0 tools" for a healthy server.
+      const registry = new ToolRegistry();
+      const bulky = (name: string): McpTool => ({
+        name,
+        description: "x".repeat(9_000),
+        inputSchema: { type: "object", properties: {} },
+      });
+      const first = await bridgeMcpTools(fakeClient([bulky("one"), bulky("two")]), {
+        registry,
+        namePrefix: "a_",
+        serverName: "a",
+      });
+      expect(first.registeredNames).toHaveLength(2);
+
+      const second = await bridgeMcpTools(fakeClient([tool("three")]), {
+        registry,
+        namePrefix: "b_",
+        serverName: "b",
+        // Deliberately below the bytes already sitting in the shared registry.
+        specBudgetBytes: 1_000,
+      });
+      expect(second.registeredNames).toEqual(["b_three"]);
+      expect(second.skipped).toEqual([]);
     });
   });
 });

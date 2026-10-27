@@ -1,5 +1,7 @@
 /** Hardcoded — fetching this list at runtime would make `mcp list` flaky offline / behind proxies. */
 
+import { OUTLOOK_MAIL_ENABLED_TOOLS_FILTER } from "./outlook-mail.js";
+
 export interface CatalogEntry {
   /** Short name, used as the namespace prefix when suggested. */
   name: string;
@@ -67,7 +69,7 @@ export const MCP_CATALOG: CatalogEntry[] = [
     name: "outlook_mail",
     summary: "Outlook and Hotmail mail with Microsoft device-code authentication",
     package: "@softeria/ms-365-mcp-server@0.85.0",
-    userArgs: "--enabled-tools mail|attachment|draft|get-current-user",
+    userArgs: `--enabled-tools ${OUTLOOK_MAIL_ENABLED_TOOLS_FILTER}`,
     note: "Reasonix+ keeps authentication controls in the desktop UI and exposes only mail operations to the model",
   },
 ];

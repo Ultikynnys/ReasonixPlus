@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { McpClient } from "../src/mcp/client.js";
 import {
+  PLAYWRIGHT_HIDDEN_TOOLS,
   PLAYWRIGHT_TOOLING_VERSION,
   _resetForTests,
   ensurePlaywrightTooling,
@@ -76,6 +77,32 @@ describe("ensurePlaywrightTooling", () => {
     const stamp = `playwright-tooling-version: ${PLAYWRIGHT_TOOLING_VERSION}`;
     expect(readFileSync(driver, "utf8")).toContain(stamp);
     expect(readFileSync(agents, "utf8")).toContain(stamp);
+  });
+
+  it("keeps the curated surface narrow without hiding code execution or core tools", () => {
+    const hidden = new Set(PLAYWRIGHT_HIDDEN_TOOLS);
+    expect([...hidden].sort()).toEqual(["browser_drop", "browser_emulate_media", "browser_resize"]);
+    // browser_run_code_unsafe is load-bearing: agents drive real work through it.
+    for (const kept of [
+      "browser_run_code_unsafe",
+      "browser_evaluate",
+      "browser_navigate",
+      "browser_snapshot",
+      "browser_find",
+      "browser_click",
+      "browser_type",
+    ]) {
+      expect(hidden.has(kept)).toBe(false);
+    }
+  });
+
+  it("documents every hidden tool in the bootstrapped AGENTS.md", () => {
+    const agents = readFileSync(resolvePlaywrightTemplatePath("AGENTS.md"), "utf8");
+    for (const tool of PLAYWRIGHT_HIDDEN_TOOLS) {
+      expect(agents).toContain(tool);
+    }
+    // The contract must say how to reach them, or an agent reads them as missing.
+    expect(agents).toContain("driver.mjs call");
   });
 
   it("bootstraps both files into the global tooling dir on first call", () => {
@@ -277,9 +304,13 @@ describe("bridge tooling-notice + description-suffix injection", () => {
     await client.close();
   });
 
-  it("appends the description suffix to every bridged tool description", async () => {
+  it("attaches the tooling pointer to the entry tools only", async () => {
     const client = new McpClient({
-      transport: new FakeMcpTransport([{ name: "browser_tabs" }, { name: "browser_click" }]),
+      transport: new FakeMcpTransport([
+        { name: "browser_navigate" },
+        { name: "browser_tabs" },
+        { name: "browser_click" },
+      ]),
     });
     await client.initialize();
     const { registry } = await bridgeMcpTools(client, {
@@ -293,9 +324,14 @@ describe("bridge tooling-notice + description-suffix injection", () => {
         upgraded: [],
       }),
     });
-    const specs = registry.specs();
-    for (const spec of specs) {
-      expect(spec.function.description).toContain("Tooling: ~/.reasonix/tools/playwright");
+    const described = (name: string): string =>
+      registry.specs().find((spec) => spec.function.name === name)?.function.description ?? "";
+    expect(described("playwright_browser_navigate")).toContain(
+      "Tooling: ~/.reasonix/tools/playwright",
+    );
+    // One pointer, not 22 copies: the notice already rides the first tool result.
+    for (const name of ["playwright_browser_tabs", "playwright_browser_click"]) {
+      expect(described(name)).not.toContain("Tooling:");
     }
     await client.close();
   });

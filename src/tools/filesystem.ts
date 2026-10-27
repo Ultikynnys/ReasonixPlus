@@ -316,7 +316,7 @@ export function registerFilesystemTools(
   const readTool = {
     parallelSafe: true,
     skipTruncationSave: true,
-    description: `Read a file. Relative paths resolve under the sandbox root; a true absolute path outside it requires user approval. A leading / or \\ is treated as sandbox-root-relative. Default returns FULL CONTENT for files ≤ ${Math.round(DEFAULT_OUTLINE_THRESHOLD_BYTES / 1024)} KiB. Optional scoping: head/tail (N lines), range "A-B" (1-indexed inclusive). Larger files auto-switch to outline mode (metadata + head + symbol outline for TS/JS/Python/Go/Rust/Markdown/Protobuf/text): drill in with range or search_content. Scoped reads (range/head/tail) stream a bounded window and work at any size; only an unscoped read of a file over ${Math.round(hardMaxFileBytes / (1024 * 1024))} MiB is refused, and binaries are refused. Use get_file_info for stat.`,
+    description: `Read a file. A true absolute path outside the sandbox requires user approval; the \`path\` parameter fixes how leading separators resolve. Default returns FULL CONTENT for files ≤ ${Math.round(DEFAULT_OUTLINE_THRESHOLD_BYTES / 1024)} KiB. Optional scoping: head/tail (N lines), range "A-B" (1-indexed inclusive). Larger files auto-switch to outline mode (metadata + head + symbol outline for TS/JS/Python/Go/Rust/Markdown/Protobuf/text): drill in with range or search_content. Scoped reads (range/head/tail) stream a bounded window and work at any size; only an unscoped read of a file over ${Math.round(hardMaxFileBytes / (1024 * 1024))} MiB is refused, and binaries are refused. Use get_file_info for stat.`,
     readOnly: true,
     stormExempt: true,
     parameters: {
@@ -471,8 +471,13 @@ export function registerFilesystemTools(
   };
   registry.register({ name: "read_file", ...readTool });
   // `read` is OpenCode's name for this tool, and the opencode.ai free tier only
-  // admits requests whose tool list carries it.
-  registry.register({ name: "read", ...readTool });
+  // admits requests whose tool list carries it. Its schema already duplicates
+  // `read_file`'s, so it points there instead of repeating the whole contract.
+  registry.register({
+    name: "read",
+    ...readTool,
+    description: "Alias of `read_file`: same arguments, same behaviour.",
+  });
 
   registry.register({
     name: "list_directory",
@@ -503,7 +508,7 @@ export function registerFilesystemTools(
     name: "directory_tree",
     parallelSafe: true,
     skipTruncationSave: true,
-    description: `Recursively list entries with indented tree structure (dirs marked '/'). Budget-aware: maxDepth defaults to 2, large subtrees (>50 children) auto-collapse to "[N hidden, list_directory to inspect]", and ${[...WALK_SKIP_DIR_NAMES].sort().join(" / ")} are skipped unless include_deps:true. For single-level use list_directory; for path lookups use search_files; for code lookups use search_content.`,
+    description: `Recursively list entries with indented tree structure (dirs marked '/'). Budget-aware: maxDepth defaults to 2, large subtrees (>50 children) auto-collapse to "[N hidden, list_directory to inspect]", and dependency / VCS / build directories (${[...WALK_SKIP_DIR_NAMES].length} names) are skipped unless include_deps:true. For single-level use list_directory; for path lookups use search_files; for code lookups use search_content.`,
     readOnly: true,
     parameters: {
       type: "object",
@@ -719,7 +724,7 @@ export function registerFilesystemTools(
     parallelSafe: true,
     skipTruncationSave: true,
     description:
-      "List files matching a glob pattern, sorted by mtime (most-recently-modified first) by default. Use this for 'what changed lately', 'find all *.test.ts', 'all configs under src/'. Glob syntax matches the cross-tool standard: `*` (any chars in one segment), `**` (any segments), `?` (one char), `{a,b}` (alternation). Pattern matches against the path RELATIVE to the search root (e.g. 'src/**/*.ts' from project root). Skips node_modules / .git / dist / build / etc by default. Default limit 200; raise via `limit` (max 1000). Different from `search_files` (substring on basename) and `search_content` (matches inside file contents).",
+      "List files matching a glob pattern, sorted by mtime (most-recently-modified first) by default. Use this for 'what changed lately', 'find all *.test.ts', 'all configs under src/'. Pattern matches against the path RELATIVE to the search root. Skips dependency / VCS / build dirs by default. Default limit 200; raise via `limit` (max 1000). Different from `search_files` (substring on basename) and `search_content` (matches inside file contents).",
     readOnly: true,
     parameters: {
       type: "object",

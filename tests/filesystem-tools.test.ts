@@ -40,7 +40,15 @@ describe("filesystem tools (built-in, sandbox-enforced)", () => {
       const out = await tools.dispatch("read", JSON.stringify({ path: "hello.txt", head: 1 }));
       expect(out).toMatch(/^line 1\n/);
       const spec = tools.specs().find((s) => s.function.name === "read");
-      expect(spec?.function.description).toBe(tools.get("read_file")?.description);
+      // The alias ships a pointer, not a second copy of read_file's whole contract.
+      expect(spec?.function.description).toBe(
+        "Alias of `read_file`: same arguments, same behaviour.",
+      );
+      expect(JSON.stringify(spec?.function.parameters)).toBe(
+        JSON.stringify(
+          tools.specs().find((s) => s.function.name === "read_file")?.function.parameters,
+        ),
+      );
       expect(tools.isParallelSafe("read")).toBe(true);
       expect(tools.get("read")?.origin).toBe(tools.get("read_file")?.origin);
     });

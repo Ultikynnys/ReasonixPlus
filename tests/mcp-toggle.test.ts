@@ -114,6 +114,15 @@ describe("bridgeMcpTools — managed-hide filter", () => {
     expect(specNames(registry)).toEqual(["demo_a"]);
   });
 
+  it("reports a managed hidden tool as hidden, not as a user toggle", async () => {
+    const { registeredNames, skipped } = await bridgeMcpTools(makeFakeClient(), {
+      namePrefix: "demo_",
+      hiddenTools: new Set(["b"]),
+    });
+    expect(registeredNames.sort()).toEqual(["demo_a"]);
+    expect(skipped).toEqual([{ name: "b", reason: "hidden by the managed surface" }]);
+  });
+
   it("registers everything when no hide list is given", async () => {
     const { registeredNames } = await bridgeMcpTools(makeFakeClient(), { namePrefix: "demo_" });
     expect(registeredNames.sort()).toEqual(["demo_a", "demo_b"]);

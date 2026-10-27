@@ -9,7 +9,7 @@ import { recordDiagnostic } from "../diagnostics.js";
 import { reasonixHome } from "../reasonix-home.js";
 import type { McpServerSpec } from "./spec.js";
 
-export const PLAYWRIGHT_TOOLING_VERSION = 8;
+export const PLAYWRIGHT_TOOLING_VERSION = 9;
 const STAMP_RE = /playwright-tooling-version:\s*(\d+)/g;
 const PLATFORM_BEGIN = "<!-- platform:begin";
 const PLATFORM_END = "<!-- platform:end -->";
@@ -177,9 +177,34 @@ export function playwrightToolingNotice(status: PlaywrightToolingResult): string
   return `${base} NOTE: bootstrap failed (${status.error}): create the folder per the bundled template before relying on it.`;
 }
 
-/** Compact per-tool description pointer — unmissable in any tool listing. */
-export function playwrightDescriptionSuffix(status: PlaywrightToolingResult): string {
-  return `Tooling: ${status.dir} (driver.mjs, AGENTS.md: read + keep updated).`;
+/** Tools that carry the tooling pointer: the ones a browser session starts with. Every other
+ *  tool would repeat the same sentence, and the full notice already rides the first result. */
+export const PLAYWRIGHT_SUFFIX_TOOLS: ReadonlySet<string> = new Set([
+  "browser_navigate",
+  "browser_snapshot",
+  "browser_find",
+]);
+
+/** Per-tool description pointer, attached to the entry tools only. */
+export function playwrightDescriptionSuffix(
+  status: PlaywrightToolingResult,
+): (toolName: string) => string | undefined {
+  const pointer = `Tooling: ${status.dir} (driver.mjs, AGENTS.md: read + keep updated).`;
+  return (toolName) => (PLAYWRIGHT_SUFFIX_TOOLS.has(toolName) ? pointer : undefined);
+}
+
+/** Browser tools the bridge keeps off the model's schema payload: file/data drops, media
+ *  emulation, and viewport resizing. `browser_run_code_unsafe` stays bridged: the agent
+ *  needs it for real work. Every hidden tool is still callable via `driver.mjs call <tool>`. */
+export const PLAYWRIGHT_HIDDEN_TOOLS: readonly string[] = [
+  "browser_drop",
+  "browser_emulate_media",
+  "browser_resize",
+];
+
+/** Hidden tools for a Playwright spec, or none: the spec-checked seam the runtime composes. */
+export function playwrightHiddenTools(spec: McpServerSpec): ReadonlySet<string> {
+  return isPlaywrightSpec(spec) ? new Set(PLAYWRIGHT_HIDDEN_TOOLS) : new Set<string>();
 }
 
 /** Playwright's default output dir (relative to the server cwd) for auto-named

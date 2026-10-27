@@ -6,17 +6,72 @@ import type { CallToolResult, McpContentBlock } from "./types.js";
 
 export const OUTLOOK_MAIL_SERVER_NAME = "outlook_mail";
 export const OUTLOOK_MAIL_PACKAGE = "@softeria/ms-365-mcp-server@0.85.0";
-/** `--enabled-tools` (not `--preset mail`) also enables `get-current-user`, whose
- *  `User.Read` scope the server's `verify-login` (GET /me) needs — without it every
- *  login reports 403 and sends are blocked. */
+/** Operations the server may expose, matched by its own `--enabled-tools` regex. The package
+ *  ships 124 tools (~600 KB of raw specs); condensed mail operations measure ~20 KB, so the
+ *  list stays explicit and administrative folder/rule tools stay off it. */
+export const OUTLOOK_MAIL_ENABLED_TOOLS: readonly string[] = [
+  "list-mail-messages",
+  "list-mail-folders",
+  "list-mail-folder-messages",
+  "get-mail-message",
+  "update-mail-message",
+  "delete-mail-message",
+  "move-mail-message",
+  "send-mail",
+  "create-draft-email",
+  "send-draft-message",
+  "create-reply-draft",
+  "create-reply-all-draft",
+  "create-forward-draft",
+  "get-mailbox-settings",
+  "list-mail-attachments",
+  "get-mail-attachment",
+  "add-mail-attachment",
+  "delete-mail-attachment",
+  "create-mail-attachment-upload-session",
+  // Hidden from the model (see OUTLOOK_MAIL_INTERNAL_TOOLS) but listed here on purpose:
+  // the desktop login flow calls these directly, and `get-current-user` carries the
+  // `User.Read` scope `verify-login` (GET /me) needs — without it every login reports
+  // 403 and sends are blocked.
+  "login",
+  "logout",
+  "verify-login",
+  "list-accounts",
+  "select-account",
+  "remove-account",
+  "get-current-user",
+];
+
+export const OUTLOOK_MAIL_ENABLED_TOOLS_FILTER = `^(${OUTLOOK_MAIL_ENABLED_TOOLS.join("|")})$`;
+
 export const OUTLOOK_MAIL_ARGS = [
   "-y",
   OUTLOOK_MAIL_PACKAGE,
   "--enabled-tools",
-  "mail|attachment|draft|get-current-user",
+  OUTLOOK_MAIL_ENABLED_TOOLS_FILTER,
 ] as const;
 
-/** Authentication and account mutation stay under explicit desktop-user control. */
+/** Force the shipped surface onto a bridged Outlook spec: the server reads `--enabled-tools`
+ *  once at spawn, and the filter stored in config belongs to the install, not to this build. */
+export function withOutlookMailSurface(spec: McpServerSpec): McpServerSpec {
+  if (spec.transport !== "stdio" || !isOutlookMailSpec(spec)) return spec;
+  const args: string[] = [];
+  for (let index = 0; index < spec.args.length; index += 1) {
+    const arg = spec.args[index]!;
+    if (arg === "--enabled-tools") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--enabled-tools=")) continue;
+    args.push(arg);
+  }
+  args.push("--enabled-tools", OUTLOOK_MAIL_ENABLED_TOOLS_FILTER);
+  return { ...spec, args };
+}
+
+/** Enabled by the shipped list but never bridged: login and account mutation stay under the
+ *  desktop user's control, and the rest could send or bypass the send gate. Keeping them
+ *  here also guards a widened `--enabled-tools` list. */
 export const OUTLOOK_MAIL_INTERNAL_TOOLS = new Set([
   "login",
   "verify-login",
@@ -43,8 +98,9 @@ export function isOutlookConfirmedSendTool(toolName: string): boolean {
   return OUTLOOK_MAIL_CONFIRMED_SEND_TOOLS.has(toolName);
 }
 
-/** Administrative folder, inbox-rule, and mailbox-configuration tools disabled by default.
- *  Kept off the model surface unless the user explicitly enables them in Settings → MCP. */
+/** Administrative folder, inbox-rule and mailbox-configuration writes. The shipped enable
+ *  list already excludes them, so this is the second guard for a widened surface and for a
+ *  user who extends the list in Settings. */
 export const OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS: readonly string[] = [
   "create-mail-child-folder",
   "create-mail-folder",
@@ -97,8 +153,24 @@ export function isOutlookMailSpec(spec: McpServerSpec): boolean {
   return spec.args.some((arg) => /^@softeria\/ms-365-mcp-server(?:@[A-Za-z0-9._-]+)?$/.test(arg));
 }
 
-export function managedMcpToolsHiddenFromModel(spec: McpServerSpec): ReadonlySet<string> {
-  return isOutlookMailSpec(spec) ? OUTLOOK_MAIL_INTERNAL_TOOLS : new Set<string>();
+/** Every Outlook tool the model must not reach: the internals, the default-off writes, and
+ *  send-capable tools that are not yet able to produce a bound confirmation preview. */
+export async function outlookMailHiddenTools(
+  spec: McpServerSpec,
+  client: Pick<McpClient, "listTools">,
+): Promise<ReadonlySet<string>> {
+  if (!isOutlookMailSpec(spec)) return new Set<string>();
+  const hidden = new Set<string>([
+    ...OUTLOOK_MAIL_INTERNAL_TOOLS,
+    ...OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS,
+  ]);
+  const listed = await client.listTools();
+  for (const tool of listed.tools) {
+    if (!isOutlookConfirmedSendTool(tool.name) && isOutlookSendCapableTool(tool.name)) {
+      hidden.add(tool.name);
+    }
+  }
+  return hidden;
 }
 
 interface MailAddress {

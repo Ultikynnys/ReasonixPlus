@@ -13,20 +13,19 @@ import {
   hydrateOutlookAttachments,
 } from "../../mcp/outlook-attachments.js";
 import {
-  OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS,
   confirmOutlookSend,
-  isOutlookConfirmedSendTool,
   isOutlookMailSpec,
   isOutlookReadOnlyTool,
-  isOutlookSendCapableTool,
-  managedMcpToolsHiddenFromModel,
   mcpTextResult,
   outlookAttachmentGuidance,
+  outlookMailHiddenTools,
+  withOutlookMailSurface,
 } from "../../mcp/outlook-mail.js";
 import {
   ensurePlaywrightTooling,
   isPlaywrightSpec,
   playwrightDescriptionSuffix,
+  playwrightHiddenTools,
   playwrightToolingNotice,
   playwrightWriteLocationNote,
 } from "../../mcp/playwright-tooling.js";
@@ -225,9 +224,12 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
       const matched = parsed.name ? normalized.find((s) => s.name === parsed.name) : undefined;
       const configuredSpec = overlayMatchedSpec(parsed, matched);
       const workspaceDir = ctx.getWorkspaceDir?.();
+      // Managed servers bridge with the surface this build ships, not with whatever an
+      // older install left in config: playwright re-pins its connection flags, outlook
+      // rewrites its `--enabled-tools` allow-list.
       const spec = isPlaywrightSpec(configuredSpec)
         ? withPlaywrightWorkspaceProfile(configuredSpec, workspaceDir)
-        : configuredSpec;
+        : withOutlookMailSurface(configuredSpec);
       if (spec.disabled) {
         sink({ state: "disabled", name: label });
         rejectReady(new Error(`MCP server "${label}" is disabled`));
@@ -283,18 +285,10 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
         await mcp.initialize({ signal });
         host = { client: mcp };
       }
-      const hiddenTools = new Set(managedMcpToolsHiddenFromModel(spec));
-      if (isOutlookMailSpec(spec)) {
-        const listed = await mcp.listTools();
-        for (const tool of listed.tools) {
-          if (!isOutlookConfirmedSendTool(tool.name) && isOutlookSendCapableTool(tool.name)) {
-            hiddenTools.add(tool.name);
-          }
-        }
-      }
-      const disabledTools = new Set([
-        ...(isOutlookMailSpec(spec) ? OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS : []),
-        ...hiddenTools,
+      // Each managed server owns its hidden set; the bridge turns the union into unbridged tools.
+      const hiddenTools = new Set<string>([
+        ...(await outlookMailHiddenTools(spec, mcp)),
+        ...playwrightHiddenTools(spec),
       ]);
       const bridge = await bridgeMcpTools(mcp, {
         registry: tools,
@@ -302,7 +296,7 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
         serverName: label,
         host,
         ready: bridgeReady,
-        disabledTools,
+        hiddenTools,
         ...(isOutlookMailSpec(spec)
           ? {
               beforeCall: (toolName, args, toolContext) =>

@@ -9,17 +9,17 @@ import { countTokens, countTokensBounded } from "../tokenizer.js";
 import { WIRE_TOOL_NAME_MAX, sanitizeWireToolName, toolNameDisambiguator } from "../tool-name.js";
 import { ToolRegistry } from "../tools.js";
 import type { ToolCallContext } from "../tools.js";
-import {
-  fitsSpecBudgetBytes,
-  resolveSpecBudgetBytes,
-  specBytes,
-  toolSpecBytes,
-} from "../tools/spec-budget.js";
+import { fitsSpecBudgetBytes, resolveMcpServerSpecBytes, specBytes } from "../tools/spec-budget.js";
 import type { JSONSchema } from "../types.js";
 import type { McpClient } from "./client.js";
 import { LatencyTracker, type SlowEvent } from "./latency.js";
 import { derefJsonSchema } from "./schema-deref.js";
-import { pruneMcpToolSchema } from "./schema-prune.js";
+import {
+  MAX_TOOL_DESCRIPTION_CHARS,
+  compactDescription,
+  condenseMcpSchema,
+  pruneMcpToolSchema,
+} from "./schema-prune.js";
 import type { CallToolResult, McpContentBlock, McpTool } from "./types.js";
 
 export interface BridgeOptions {
@@ -28,8 +28,8 @@ export interface BridgeOptions {
   /** Ownership tag recorded on each bridged tool, so a server cannot claim a name a different origin owns.
    *  Defaults to `mcp:<serverName>`. */
   origin?: string;
-  /** Ceiling for the whole spec array (desc + schema bytes). Tools over it are deferred, not registered.
-   *  Defaults to REASONIX_SPEC_BUDGET_BYTES or MAX_TOOL_SPEC_BYTES. */
+  /** Ceiling for THIS server's tools (desc + schema bytes). Tools over it are deferred, not
+   *  registered. Defaults to resolveMcpServerSpecBytes(). */
   specBudgetBytes?: number;
   /** Registry to populate. Creates a fresh one if omitted. */
   registry?: ToolRegistry;
@@ -56,9 +56,12 @@ export interface BridgeOptions {
   ready?: Promise<void>;
   /** How long to wait on `ready` before failing the dispatch. Default 30_000ms. */
   readyTimeoutMs?: number;
-  /** Bare MCP tool names (pre-prefix) that must NOT be registered — user-disabled
-   *  per-tool toggles. Skipped tools land in `BridgeResult.skipped`. */
+  /** Bare MCP tool names (pre-prefix) the user turned off. Skipped tools land in
+   *  `BridgeResult.skipped` as "disabled by user", so the two provenances stay distinct. */
   disabledTools?: ReadonlySet<string>;
+  /** Bare MCP names the hosting app keeps off the model surface for a managed server
+   *  (auth internals, ungated sends). Never reported as a user toggle. */
+  hiddenTools?: ReadonlySet<string>;
   /** Opt-in read-only classification (bare MCP name → pure read?). Marked tools stay
    *  dispatchable in read-only mode; every other bridged tool is refused there.
    *  Absent → no bridged tool counts as read-only. */
@@ -160,10 +163,12 @@ function withDescriptionSuffix(
 
 /** Register one MCP tool's bridged closure into the registry. Returns the registered name (or "" if skipped). */
 export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string {
-  // Canonicalize BEFORE registration so the registry's tool-list hash matches
-  // what the API actually receives — key-order/array-order drift from the MCP
-  // server would otherwise churn the prefix and cost a cache miss every turn.
-  const stableTool = canonicalizeMcpToolForCache(mcpTool);
+  return registerCanonicalMcpTool(canonicalizeMcpToolForCache(mcpTool), env);
+}
+
+/** The registration body for a tool the caller already canonicalized, so the
+ *  bridge's own pass is the only one per tool. */
+function registerCanonicalMcpTool(stableTool: McpTool, env: BridgeEnv): string {
   if (!stableTool.name) return "";
   // The model-facing wire name must satisfy the provider's function-name
   // grammar (OpenAI 400s the whole request otherwise). Dispatch is unaffected:
@@ -180,6 +185,8 @@ export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string 
   env.bareNames?.set(registeredName, stableTool.name);
   const schema = stableTool.inputSchema as JSONSchema;
   const properties = schema.properties ?? {};
+  // The call deadline is documented once in the system prompt instead of copied into every
+  // bridged schema; a server tool that owns a `timeoutSec` argument keeps it untouched.
   let timeoutKey = "timeoutSec";
   if (Object.hasOwn(properties, timeoutKey)) {
     timeoutKey = "_mcpTimeoutSec";
@@ -191,19 +198,7 @@ export function registerSingleMcpTool(mcpTool: McpTool, env: BridgeEnv): string 
       description:
         withDescriptionSuffix(stableTool.description, env.descriptionSuffix, stableTool.name) ??
         `MCP tool ${stableTool.name} from the ${env.serverName ?? (env.prefix.replace(/_$/, "") || "MCP")} server (no description supplied by the server; read the parameter schema).`,
-      parameters: {
-        ...schema,
-        properties: {
-          ...properties,
-          [timeoutKey]: {
-            type: "integer",
-            minimum: 1,
-            maximum: 2_147_483,
-            description:
-              "Override the MCP call deadline in seconds; omitted uses the client default (normally 60s). Host-only, not sent to the server.",
-          },
-        },
-      },
+      parameters: { ...schema, properties },
       readOnly: env.readOnlyTool?.(stableTool.name) || undefined,
       fn: async (args: Record<string, unknown>, ctx) => {
         const timeoutSec = args[timeoutKey];
@@ -367,20 +362,26 @@ export async function bridgeMcpTools(
   const stableTools = listed.tools
     .map((tool) => canonicalizeMcpToolForCache(tool))
     .sort((a, b) => `${prefix}${a.name}`.localeCompare(`${prefix}${b.name}`));
-  // Every spec byte ships in every request, so the array is capped at the seam where growth is unbounded.
+  // Every spec byte ships in every request, so each server is capped at the seam where growth
+  // is unbounded. Accounting is per server on purpose: charging the tools already registered
+  // would let one server consume the allowance and defer every tool of the next.
   // The running total is exact: each added tool is measured through the same mapping specs() emits.
-  const specBudget = opts.specBudgetBytes ?? resolveSpecBudgetBytes();
-  let usedSpecBytes = toolSpecBytes(registry.specs());
+  const specBudget = opts.specBudgetBytes ?? resolveMcpServerSpecBytes();
+  let usedSpecBytes = 0;
   for (const mcpTool of stableTools) {
     if (!mcpTool.name) {
       result.skipped.push({ name: "?", reason: "empty tool name" });
+      continue;
+    }
+    if (opts.hiddenTools?.has(mcpTool.name)) {
+      result.skipped.push({ name: mcpTool.name, reason: "hidden by the managed surface" });
       continue;
     }
     if (opts.disabledTools?.has(mcpTool.name)) {
       result.skipped.push({ name: mcpTool.name, reason: "disabled by user" });
       continue;
     }
-    const registeredName = registerSingleMcpTool(mcpTool, env);
+    const registeredName = registerCanonicalMcpTool(mcpTool, env);
     if (!registeredName) {
       result.skipped.push({
         name: mcpTool.name,
@@ -406,17 +407,22 @@ export async function bridgeMcpTools(
   return { ...result, env };
 }
 
-/** Deterministic copy of a bridged MCP tool: sorted schema keys + sorted set-like
- *  arrays (`required`, `dependentRequired`) so the registry's tool-list hash is
- *  stable across server responses, reconnects, and sessions. Prefix-cache safety. */
+/** Deterministic copy of a bridged MCP tool: condensed schema, compacted description, and
+ *  sorted keys/arrays so the registry's tool-list hash is stable across server responses,
+ *  reconnects, and sessions. Prefix-cache safety. */
 export function canonicalizeMcpToolForCache(tool: McpTool): McpTool {
   // Inline `$ref`/`$defs` first (zod v4 servers emit `#/$defs/__schemaN`): a
   // dangling ref is a hard provider 400, and prune/flatten would otherwise drop
-  // the `$defs` block while leaving the `$ref` behind. Then prune, then sort.
+  // the `$defs` block while leaving the `$ref` behind. Then prune, condense, sort.
   const prunedSchema = pruneMcpToolSchema(derefJsonSchema(tool.inputSchema as JSONSchema));
   return {
     ...tool,
-    inputSchema: canonicalizeSchemaForCache(prunedSchema) as McpTool["inputSchema"],
+    description: tool.description
+      ? compactDescription(tool.description, MAX_TOOL_DESCRIPTION_CHARS)
+      : tool.description,
+    inputSchema: canonicalizeSchemaForCache(
+      condenseMcpSchema(prunedSchema),
+    ) as McpTool["inputSchema"],
   };
 }
 

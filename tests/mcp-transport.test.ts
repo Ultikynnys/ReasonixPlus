@@ -1625,7 +1625,8 @@ describe("mcp", () => {
         const beforeCall = vi.fn(async () => null);
         const { registry } = await bridgeMcpTools(client, { transformArgs, beforeCall });
         const schema = registry.specs()[0].function.parameters;
-        expect(schema.properties?.timeoutSec).toMatchObject({ type: "integer", minimum: 1 });
+        // The deadline is documented once in the system prompt, not copied into each schema.
+        expect(schema.properties).not.toHaveProperty("timeoutSec");
         expect(schema.required).toEqual(["path"]);
         expect(tool.inputSchema.properties).not.toHaveProperty("timeoutSec");
         const args = { path: "model.glb", timeoutSec: 600 };
@@ -1669,6 +1670,23 @@ describe("mcp", () => {
       }
     });
 
+    it("keeps a parameters.properties object even when the server declares no arguments", async () => {
+      // Providers validate the shape: a bare {type:"object"} without `properties` is a 400
+      // risk, and the removed host-deadline property used to guarantee the key existed.
+      const client = new McpClient({
+        transport: new FakeMcpTransport({
+          tools: [{ name: "ping", inputSchema: { type: "object" } }],
+        }),
+      });
+      await client.initialize();
+      try {
+        const { registry } = await bridgeMcpTools(client, {});
+        expect(registry.specs()[0].function.parameters).toEqual({ type: "object", properties: {} });
+      } finally {
+        await client.close();
+      }
+    });
+
     it("preserves upstream timeout names and picks a deterministic collision-free control", async () => {
       const client = new McpClient({
         transport: new FakeMcpTransport({
@@ -1692,7 +1710,7 @@ describe("mcp", () => {
         const first = await bridgeMcpTools(client);
         const second = await bridgeMcpTools(client);
         expect(first.registry.specs()).toEqual(second.registry.specs());
-        expect(first.registry.specs()[0].function.parameters.properties).toHaveProperty(
+        expect(first.registry.specs()[0].function.parameters.properties).not.toHaveProperty(
           "__mcpTimeoutSec",
         );
         await first.registry.dispatch(

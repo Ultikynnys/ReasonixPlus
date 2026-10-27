@@ -47,6 +47,8 @@ import {
   OUTLOOK_MAIL_ARGS,
   OUTLOOK_MAIL_CONFIRMED_SEND_TOOLS,
   OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS,
+  OUTLOOK_MAIL_ENABLED_TOOLS,
+  OUTLOOK_MAIL_ENABLED_TOOLS_FILTER,
   OUTLOOK_MAIL_INTERNAL_TOOLS,
   confirmOutlookSend,
   extractOutlookMessageId,
@@ -55,13 +57,15 @@ import {
   isOutlookReadOnlyTool,
   isOutlookSendCapableTool,
   isTrustedMicrosoftLoginUrl,
+  outlookMailHiddenTools,
   parseOutlookDeviceCode,
   parseOutlookDraftMessage,
   parseOutlookLoginStatus,
   parseOutlookSendArgs,
+  withOutlookMailSurface,
 } from "../src/mcp/outlook-mail.js";
 import { bridgeMcpTools } from "../src/mcp/registry.js";
-import { parseMcpSpec } from "../src/mcp/spec.js";
+import { type McpServerSpec, parseMcpSpec } from "../src/mcp/spec.js";
 import type { CallToolResult, McpTool } from "../src/mcp/types.js";
 import { ToolRegistry } from "../src/tools.js";
 import { ChoiceRequestedError, registerChoiceTool } from "../src/tools/choice.js";
@@ -121,6 +125,71 @@ describe("outlook-mail-mcp", () => {
       ).toBe(true);
       expect(isManagedMcpSpec(parseMcpSpec("playwright=npx -y @playwright/mcp"))).toBe(true);
       expect(isManagedMcpSpec(parseMcpSpec("custom=npx -y custom-mcp"))).toBe(false);
+    });
+
+    it("spawns with a curated allow-list that keeps every gated tool", () => {
+      const filter = OUTLOOK_MAIL_ARGS[OUTLOOK_MAIL_ARGS.indexOf("--enabled-tools") + 1]!;
+      expect(filter).toBe(OUTLOOK_MAIL_ENABLED_TOOLS_FILTER);
+      // Anchored: an unanchored alternation would also match future names that merely
+      // contain one of these substrings.
+      expect(filter.startsWith("^(")).toBe(true);
+      expect(filter.endsWith(")$")).toBe(true);
+
+      const enabled = new Set(OUTLOOK_MAIL_ENABLED_TOOLS);
+      // The confirmation gate and the attachment hydration path call these by name.
+      for (const required of [
+        "send-mail",
+        "send-draft-message",
+        "create-reply-draft",
+        "create-reply-all-draft",
+        "create-forward-draft",
+        "update-mail-message",
+        "get-mail-message",
+        "list-mail-attachments",
+        "add-mail-attachment",
+        "verify-login",
+        "get-current-user",
+      ]) {
+        expect(enabled.has(required)).toBe(true);
+      }
+      // Send paths that carry no full message stay off the surface, and so do the
+      // administrative folder/rule tools.
+      for (const excluded of [
+        "reply-mail-message",
+        "reply-all-mail-message",
+        "forward-mail-message",
+        "graph-batch",
+        "create-mail-folder",
+        "update-mail-rule",
+        "update-mailbox-settings",
+      ]) {
+        expect(enabled.has(excluded)).toBe(false);
+      }
+    });
+
+    it("rewrites a stale enabled-tools filter before bridging", () => {
+      const stdioArgs = (spec: McpServerSpec): string[] => {
+        if (spec.transport !== "stdio") throw new Error("expected a stdio spec");
+        return spec.args;
+      };
+      const stale = parseMcpSpec(
+        "outlook_mail=npx -y @softeria/ms-365-mcp-server@0.85.0 --enabled-tools mail|attachment|draft|get-current-user",
+      );
+      const args = stdioArgs(withOutlookMailSurface(stale));
+      expect(args.filter((arg) => arg === "--enabled-tools")).toHaveLength(1);
+      expect(args[args.indexOf("--enabled-tools") + 1]).toBe(OUTLOOK_MAIL_ENABLED_TOOLS_FILTER);
+      expect(args).not.toContain("mail|attachment|draft|get-current-user");
+
+      const inline = parseMcpSpec(
+        "outlook_mail=npx -y @softeria/ms-365-mcp-server --enabled-tools=mail",
+      );
+      const inlineArgs = stdioArgs(withOutlookMailSurface(inline));
+      expect(inlineArgs).toContain(OUTLOOK_MAIL_ENABLED_TOOLS_FILTER);
+      expect(inlineArgs.some((arg) => arg.startsWith("--enabled-tools="))).toBe(false);
+
+      // Any other server keeps the args it was configured with.
+      const other = parseMcpSpec("custom=npx -y custom-mcp --enabled-tools mail");
+      expect(withOutlookMailSurface(other)).toEqual(other);
     });
 
     it("classifies every direct or indirect send-capable tool fail-safe", () => {
@@ -394,6 +463,36 @@ describe("outlook-mail-mcp", () => {
         "update-mail-rule",
         "update-mailbox-settings",
       ]);
+    });
+
+    it("hides internals, default-off writes, and send tools without a bound preview", async () => {
+      const client = {
+        listTools: async () => ({
+          tools: [
+            { name: "list-mail-messages" },
+            { name: "send-mail" },
+            { name: "send-mail-as" },
+            { name: "login" },
+            { name: "create-mail-folder" },
+          ],
+        }),
+      };
+      const spec = parseMcpSpec(`outlook_mail=npx ${OUTLOOK_MAIL_ARGS.join(" ")}`);
+      const hidden = await outlookMailHiddenTools(spec, client as never);
+      // The static guards ship whole, whatever the server happens to list.
+      for (const name of [...OUTLOOK_MAIL_INTERNAL_TOOLS, ...OUTLOOK_MAIL_DEFAULT_DISABLED_TOOLS]) {
+        expect(hidden.has(name)).toBe(true);
+      }
+      // A send tool with no bound confirmation preview is hidden by the upstream scan.
+      expect(hidden.has("send-mail-as")).toBe(true);
+      // Ordinary reads and the one gated send stay callable.
+      expect(hidden.has("list-mail-messages")).toBe(false);
+      expect(hidden.has("send-mail")).toBe(false);
+      const other = await outlookMailHiddenTools(
+        parseMcpSpec("other=npx some-server"),
+        client as never,
+      );
+      expect(other.size).toBe(0);
     });
 
     it("requires immutable user confirmation before send-draft-message dispatch", async () => {

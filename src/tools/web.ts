@@ -2314,7 +2314,7 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
   registry.register({
     name: "web_fetch",
     description:
-      "Read a web page as a browser sees it. Returns visible text (scripts/styles/nav stripped), truncated at the tool-result cap, plus a preview image of the page. Use after web_search when a snippet is not enough. One page stays open for the whole session, so a site can be driven step by step instead of one-shotted: call again with action=scroll when the state line says content is below, action=click to open a panel, action=wait to give a slow section time, or pass selector to also return that element's own text. Sections that mount on scroll (comment threads, infinite lists) only appear this way. The page survives turns until action=close; a later call with url navigates that same page, so nothing from the previous page remains. Pass outFile to write a long page to disk and get only its head back, then read or search that file with the file tools.",
+      "Read a web page as a browser sees it. Returns visible text (scripts/styles/nav stripped), truncated at the tool-result cap, plus a preview image of the page. Use after web_search when a snippet is not enough. One page stays open for the whole session, so drive it as a loop: action=scroll when content is below, action=click or action=wait to open and settle sections, a selector to read one element, action=back, then action=close. A new url replaces the page. Pass outFile to park a long page on disk and get only its head back.",
     readOnly: true,
     parallelSafe: true,
     parameters: {

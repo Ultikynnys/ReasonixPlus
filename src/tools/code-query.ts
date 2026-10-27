@@ -26,7 +26,7 @@ export function registerCodeQueryTools(registry: ToolRegistry, opts: CodeQueryTo
   registry.register({
     name: "get_symbols",
     description:
-      "Outline one TS/TSX/JS/JSX/Python/Go/Rust/Java file with tree-sitter. Returns top-level and nested symbols (functions, classes, methods, interfaces, types, enums, namespaces) with 1-based line/column. Ignores names inside comments and strings. Use for 'what's in this file' or 'where is X defined here'; use search_content for arbitrary text, comments, strings, or cross-file scans. Paths are project-root-relative; leading / or \\ is also treated as project-root-relative. Result: {path, symbols:[{name, kind, line, column, endLine, endColumn, parent?}]} or {path, error}.",
+      "Outline one TS/TSX/JS/JSX/Python/Go/Rust/Java file with tree-sitter. Returns top-level and nested symbols (functions, classes, methods, interfaces, types, enums, namespaces) with 1-based line/column. Ignores names inside comments and strings. Use for 'what's in this file' or 'where is X defined here'; use search_content for arbitrary text, comments, strings, or cross-file scans. Result: {path, symbols:[{name, kind, line, column, endLine, endColumn, parent?}]} or {path, error}.",
     readOnly: true,
     parallelSafe: true,
     stormExempt: true,
@@ -55,7 +55,7 @@ export function registerCodeQueryTools(registry: ToolRegistry, opts: CodeQueryTo
   registry.register({
     name: "find_in_code",
     description:
-      "Find an identifier `name` in one TS/TSX/JS/JSX/Python/Go/Rust/Java file using the AST. Skips comments and strings. `kind` can narrow results to 'call', 'definition', 'reference', or 'any'. This is within-file only and does not resolve cross-file references; use search_content plus reading for arbitrary text or cross-file scans. Paths are project-root-relative; leading / or \\ is also treated as project-root-relative. Result: {path, matches:[{line, column, kind, snippet}]} or {path, error}.",
+      "Find an identifier `name` in one TS/TSX/JS/JSX/Python/Go/Rust/Java file using the AST. Skips comments and strings. `kind` can narrow results to 'call', 'definition', 'reference', or 'any'. This is within-file only and does not resolve cross-file references; use search_content plus reading for arbitrary text or cross-file scans. Result: {path, matches:[{line, column, kind, snippet}]} or {path, error}.",
     readOnly: true,
     parallelSafe: true,
     stormExempt: true,
