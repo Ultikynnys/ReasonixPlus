@@ -110,6 +110,10 @@ const baseProps = {
   onConnectMail: vi.fn(),
   onCancelMail: vi.fn(),
   onSignOutMail: vi.fn(),
+  mcpAuth: null,
+  onConnectServer: vi.fn(),
+  onCancelServerSignIn: vi.fn(),
+  onDisconnectServer: vi.fn(),
   changelog: { releases: [], version: "", error: null, loaded: true },
   onRefreshChangelog: vi.fn(),
 };
@@ -137,12 +141,28 @@ describe("PageModels default-model enum", () => {
 
   it("saves the local server URL and lists qualified server aliases", () => {
     const onSave = vi.fn();
-    const { container } = render(<SettingsModal {...baseProps} initialPage="models" onSave={onSave} settings={{ ...baseSettings, providerCatalogs: { local: { models: ["saluki-27b"], source: "live" } } }} />);
+    const { container } = render(
+      <SettingsModal
+        {...baseProps}
+        initialPage="models"
+        onSave={onSave}
+        settings={{
+          ...baseSettings,
+          providerCatalogs: { local: { models: ["saluki-27b"], source: "live" } },
+        }}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Local (llama.cpp)" }));
     const input = screen.getByPlaceholderText("http://127.0.0.1:8080/v1");
     fireEvent.change(input, { target: { value: "http://localhost:9090/v1" } });
-    fireEvent.click(within(input.closest(".setting-row-entry") as HTMLElement).getByRole("button", { name: "Save" }));
-    expect(onSave).toHaveBeenCalledWith({ providerSettings: { local: { baseUrl: "http://localhost:9090/v1" } } });
+    fireEvent.click(
+      within(input.closest(".setting-row-entry") as HTMLElement).getByRole("button", {
+        name: "Save",
+      }),
+    );
+    expect(onSave).toHaveBeenCalledWith({
+      providerSettings: { local: { baseUrl: "http://localhost:9090/v1" } },
+    });
     expect(modelCard(container, "local/saluki-27b")).not.toBeNull();
   });
 

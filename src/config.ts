@@ -788,6 +788,23 @@ export interface GmailOAuthCreds {
   account?: string;
 }
 
+/** Browser OAuth credentials for one HTTP MCP server. Kept in its own map rather than on
+ *  the server entry, so a plugin's manifest rewrite (or a manual entry edit) can never
+ *  drop a sign-in the user completed. */
+export interface McpOAuthCreds {
+  accessToken: string;
+  refreshToken?: string;
+  /** ms epoch. 0 when the authorization server returned no `expires_in`. */
+  expiresAt: number;
+  tokenEndpoint: string;
+  clientId: string;
+  scope?: string;
+  /** RFC 8707 resource indicator the token was minted for (the MCP endpoint URL). */
+  resource?: string;
+  /** Account label from the token response, shown in Settings. */
+  account?: string;
+}
+
 /** A per-model provider declaration from the `models` config map. */
 export interface ModelProviderConfig {
   /** Which provider's endpoint family serves the model id. */
@@ -878,6 +895,9 @@ export interface ReasonixConfig {
   mcpEnv?: Record<string, Record<string, string>>;
   /** Canonical MCP server configuration — merges with and overrides legacy `mcp`/`mcpEnv`/`mcpDisabled`. */
   mcpServers?: Record<string, McpServerConfig>;
+  /** Sign-ins for HTTP MCP servers, keyed by server name. Separate from `mcpServers` so
+   *  the plugin store can rewrite an entry without taking the token with it. */
+  mcpOAuth?: Record<string, McpOAuthCreds>;
   /** Installed agent plugins, keyed by slug — one record per `~/.reasonix/plugins/<slug>`. */
   plugins?: Record<string, PluginRecord>;
   session?: string | null;
@@ -1461,6 +1481,47 @@ function sanitizePluginsField(cfg: Record<string, unknown>): void {
   cfg.plugins = Object.keys(cleaned).length > 0 ? cleaned : undefined;
 }
 
+/** Drop MCP sign-ins missing the three fields a refresh needs: without an access token,
+ *  a token endpoint and a client id the entry can neither be used nor renewed. */
+function sanitizeMcpOAuthField(cfg: Record<string, unknown>): void {
+  const raw = cfg.mcpOAuth;
+  if (raw === undefined) return;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    cfg.mcpOAuth = undefined;
+    return;
+  }
+  const str = (value: unknown): string | undefined =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined;
+  const cleaned: Record<string, McpOAuthCreds> = {};
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!name.trim() || !value || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    const accessToken = str(entry.accessToken);
+    const tokenEndpoint = str(entry.tokenEndpoint);
+    const clientId = str(entry.clientId);
+    if (!accessToken || !tokenEndpoint || !clientId) continue;
+    const creds: McpOAuthCreds = {
+      accessToken,
+      tokenEndpoint,
+      clientId,
+      expiresAt:
+        typeof entry.expiresAt === "number" && Number.isFinite(entry.expiresAt)
+          ? entry.expiresAt
+          : 0,
+    };
+    const refreshToken = str(entry.refreshToken);
+    const scope = str(entry.scope);
+    const resource = str(entry.resource);
+    const account = str(entry.account);
+    if (refreshToken) creds.refreshToken = refreshToken;
+    if (scope) creds.scope = scope;
+    if (resource) creds.resource = resource;
+    if (account) creds.account = account;
+    cleaned[name.trim()] = creds;
+  }
+  cfg.mcpOAuth = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
 export function readConfig(path: string = defaultConfigPath()): ReasonixConfig {
   let fd: number | undefined;
   try {
@@ -1493,6 +1554,7 @@ export function readConfig(path: string = defaultConfigPath()): ReasonixConfig {
       sanitizeModelContextTokensField(cfg);
       sanitizeAntigravityOAuthField(cfg);
       sanitizePluginsField(cfg);
+      sanitizeMcpOAuthField(cfg);
       migrateProviderSettings(cfg);
       migrateSearchSettings(cfg);
       if (cfg.mailProvider !== MailProvider.Outlook && cfg.mailProvider !== MailProvider.Gmail) {
@@ -2038,6 +2100,28 @@ export function clearGmailOAuth(path: string = defaultConfigPath()): void {
   if (!cfg.gmailOAuth) return;
   const { gmailOAuth: _drop, ...rest } = cfg;
   writeConfig(rest, path);
+}
+
+/** Store one MCP server's browser sign-in. Replaces any earlier token for that name:
+ *  the authorization server mints a new one on every connect. */
+export function saveMcpOAuth(
+  server: string,
+  creds: McpOAuthCreds,
+  path: string = defaultConfigPath(),
+): void {
+  const cfg = readConfig(path);
+  cfg.mcpOAuth = { ...(cfg.mcpOAuth ?? {}), [server]: creds };
+  writeConfig(cfg, path);
+}
+
+/** Drop one MCP server's sign-in. Returns true when there was one to drop. */
+export function clearMcpOAuth(server: string, path: string = defaultConfigPath()): boolean {
+  const cfg = readConfig(path);
+  if (!cfg.mcpOAuth?.[server]) return false;
+  const remaining = Object.entries(cfg.mcpOAuth).filter(([name]) => name !== server);
+  cfg.mcpOAuth = remaining.length > 0 ? Object.fromEntries(remaining) : undefined;
+  writeConfig(cfg, path);
+  return true;
 }
 
 /** Windows: case-insensitive — NTFS treats `F:\Foo` and `f:\foo` as one directory (#402). */

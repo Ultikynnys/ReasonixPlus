@@ -29,6 +29,54 @@ export interface SkillIndexEntry {
 /** Owner label a standalone skill's root is listed under. */
 const STANDALONE_SKILL_OWNER = "standalone";
 
+/** One installed agent plugin, as the prompt describes it. Installed plugins are listed
+ *  even when this chat did not enable them: the user still expects the agent to know what
+ *  is on the machine and what skills each one vendors. */
+export interface PluginPromptEntry {
+  /** Slug the plugin is installed under. */
+  name: string;
+  displayName: string;
+  version?: string;
+  /** Skill roots the plugin ships, absolute and forward-slashed by the caller. */
+  skillsRoots: readonly string[];
+  skillCount: number;
+  /** True when this chat enabled the plugin at its session-start confirm. */
+  enabled: boolean;
+}
+
+/** Cap on the plugin list: a plugin inventory is a handful of lines, never a crowd. */
+export const PLUGINS_MAX_CHARS = 2_000;
+
+function pluginsSection(plugins: readonly PluginPromptEntry[]): string {
+  const head = `# Plugins
+
+Installed agent plugins (Settings > Plugins). You cannot install, remove or enable one yourself: send the user there. A plugin's skills are usable only in a chat whose start enabled it, so a plugin marked "not enabled here" contributes nothing to this chat until the user enables it for a new chat.`;
+  const lines: string[] = [];
+  let used = head.length;
+  let dropped = 0;
+  for (const plugin of plugins) {
+    const skills = plugin.skillCount === 1 ? "1 skill" : `${plugin.skillCount} skills`;
+    const roots =
+      plugin.skillsRoots.length > 0
+        ? ` under ${plugin.skillsRoots.map((root) => `\`${root}\``).join(", ")}`
+        : "";
+    const version = plugin.version ? ` ${plugin.version}` : "";
+    const state = plugin.enabled ? "enabled here" : "not enabled here";
+    const line = `- ${plugin.displayName} (${plugin.name})${version} - ${state}. Ships ${skills}${roots}.`;
+    if (used + line.length + 1 > PLUGINS_MAX_CHARS) {
+      dropped += 1;
+      continue;
+    }
+    lines.push(line);
+    used += line.length + 1;
+  }
+  const tail =
+    dropped > 0
+      ? `\n- ${dropped} more plugin(s) installed; ask the user to list them in Settings > Plugins.`
+      : "";
+  return `${head}\n\n${lines.join("\n")}${tail}`;
+}
+
 function clipDescription(text: string): string {
   if (text.length <= SKILL_DESC_CHARS) return text;
   const cut = text.slice(0, SKILL_DESC_CHARS);
@@ -452,6 +500,10 @@ export interface CodeSystemPromptOptions {
    *  plugins it froze ship. Read from the session's frozen meta at call time, so a skill
    *  installed mid-chat reaches the next new chat, never a rebuilt prefix. */
   skills?: readonly SkillIndexEntry[];
+  /** Installed plugins, enabled or not. Unlike the skill index this reads LIVE config:
+   *  the point is that a chat can answer "what plugins are installed?" even when it
+   *  enabled none, and an install or removal rebuilds the prompt anyway. */
+  plugins?: readonly PluginPromptEntry[];
 }
 
 export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions = {}): string {
@@ -464,7 +516,11 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
     opts.skills && opts.skills.length > 0
       ? `${codeBase}\n\n${skillsSection(opts.skills)}`
       : codeBase;
-  const withMemory = applyMemoryStack(withSkills, rootDir, { homeDir: opts.homeDir });
+  const withPlugins =
+    opts.plugins && opts.plugins.length > 0
+      ? `${withSkills}\n\n${pluginsSection(opts.plugins)}`
+      : withSkills;
+  const withMemory = applyMemoryStack(withPlugins, rootDir, { homeDir: opts.homeDir });
   const gitignorePath = join(rootDir, ".gitignore");
   let result = withMemory;
   const gitignore = readCappedTextFile(gitignorePath, GITIGNORE_MAX_CHARS);

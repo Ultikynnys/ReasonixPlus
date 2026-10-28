@@ -25,6 +25,8 @@ export interface SharedClientAcquireOptions {
   signal?: AbortSignal;
   /** Dynamic per-request Streamable-HTTP headers (e.g. a rotating mail token). */
   headersResolver?: () => Promise<Record<string, string>>;
+  /** Static SSE headers resolved at spawn (SSE takes no per-request resolver). */
+  headers?: Record<string, string>;
 }
 
 function specIdentity(spec: McpServerSpec): string {
@@ -100,6 +102,7 @@ export class SharedClientRegistry {
   ): Promise<SharedClientEntry> {
     const transport = buildTransportFromSpec(spec, {
       cwd: opts.workspaceDir,
+      ...(opts.headers ? { headers: opts.headers } : {}),
       ...(opts.headersResolver ? { headersResolver: opts.headersResolver } : {}),
     });
     // StdioTransport defaults the child cwd to process.cwd() when workspaceDir is

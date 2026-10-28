@@ -58,6 +58,7 @@ import {
 } from "./notifications";
 import { planLabelsBySession } from "./plan-labels";
 import {
+  type CapabilityChoice,
   type CheckpointVerdict,
   type ChoiceVerdict,
   type ConfirmationChoice,
@@ -68,6 +69,7 @@ import {
   type LoadedMessage,
   type MailAuthState,
   MailProvider,
+  type McpAuthStatus,
   type McpExtensionCheck,
   type McpExtensionStatus,
   type McpSetupServer,
@@ -84,7 +86,6 @@ import {
   type PlaywrightMcpConnectionMode,
   type PluginInfo,
   type PluginSetupEntry,
-  type CapabilityChoice,
   type ProviderUsage,
   type RevisionVerdict,
   type SessionEventRecord,
@@ -660,6 +661,8 @@ type State = {
   mcpExtensionStatus: McpExtensionStatus | null;
   mcpExtensionCheck: McpExtensionCheck | null;
   mailAuth: MailAuthState | null;
+  /** Latest MCP sign-in event ($mcp_auth) — drives the per-server sign-in control. */
+  mcpAuth: McpAuthStatus | null;
   playwrightBrowserInstall: PlaywrightBrowserInstall | null;
   /** Files the agent has read or modified this session — paths as the tool args provided them. */
   sessionFiles: SessionFile[];
@@ -2786,6 +2789,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return { ...state, mcpExtensionCheck: ev.check };
     case "$mail_auth":
       return { ...state, mailAuth: ev.state };
+    case "$mcp_auth":
+      return { ...state, mcpAuth: ev.auth };
     case "$playwright_browser_install":
       return { ...state, playwrightBrowserInstall: ev.install };
     case "$ctx_breakdown": {
@@ -3771,6 +3776,7 @@ const TabRuntime = memo(function TabRuntime({
     mcpExtensionStatus: null,
     mcpExtensionCheck: null,
     mailAuth: null,
+    mcpAuth: null,
     playwrightBrowserInstall: null,
     sessionFiles: [],
     sessionEvents: [],
@@ -4002,6 +4008,18 @@ const TabRuntime = memo(function TabRuntime({
     [sendRpc],
   );
   const requestPlugins = useCallback(() => sendRpc({ cmd: "plugins_get" }), [sendRpc]);
+  const connectServer = useCallback(
+    (name: string) => sendRpc({ cmd: "mcp_auth_connect", name }),
+    [sendRpc],
+  );
+  const cancelServerSignIn = useCallback(
+    (name: string) => sendRpc({ cmd: "mcp_auth_cancel", name }),
+    [sendRpc],
+  );
+  const disconnectServer = useCallback(
+    (name: string) => sendRpc({ cmd: "mcp_auth_disconnect", name }),
+    [sendRpc],
+  );
   const installPlugin = useCallback(
     (source: string) => sendRpc({ cmd: "plugins_install", source }),
     [sendRpc],
@@ -5703,9 +5721,7 @@ const TabRuntime = memo(function TabRuntime({
             plugins={
               state.mcpSetup ? state.mcpSetup.plugins : (state.settings?.pluginPrefill ?? [])
             }
-            skills={
-              state.mcpSetup ? state.mcpSetup.skills : (state.settings?.skillPrefill ?? [])
-            }
+            skills={state.mcpSetup ? state.mcpSetup.skills : (state.settings?.skillPrefill ?? [])}
             subagents={
               state.mcpSetup ? state.mcpSetup.subagents : state.settings?.subagents === true
             }
@@ -5819,6 +5835,10 @@ const TabRuntime = memo(function TabRuntime({
             onConnectMail={connectMail}
             onCancelMail={cancelMail}
             onSignOutMail={signOutMail}
+            mcpAuth={state.mcpAuth}
+            onConnectServer={connectServer}
+            onCancelServerSignIn={cancelServerSignIn}
+            onDisconnectServer={disconnectServer}
           />
         ) : null}
 

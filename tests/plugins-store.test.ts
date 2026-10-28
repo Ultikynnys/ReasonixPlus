@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadGlobalPathAllowed, readConfig } from "../src/config.js";
+import { loadGlobalPathAllowed, readConfig, saveMcpOAuth } from "../src/config.js";
 import { unreadablePluginManifest } from "../src/plugins/manifest.js";
 import {
   installPlugin,
@@ -13,6 +13,7 @@ import {
   uninstallPlugin,
 } from "../src/plugins/store.js";
 import type { PluginState } from "../src/plugins/store.js";
+import { mcpCreds } from "./support/oauth-fixture.js";
 import { FIXTURE_SKILLS, copyTree, writePluginTree } from "./support/plugin-fixture.js";
 
 let work: string;
@@ -181,6 +182,27 @@ describe("uninstallPlugin", () => {
 
   it("refuses a slug that is not installed", () => {
     expect(() => uninstallPlugin("ghost", { homeDir: home, configPath })).toThrow(/not installed/);
+  });
+
+  it("takes the plugin's MCP sign-in with it, and only that one", async () => {
+    await install();
+    saveMcpOAuth("notfair", mcpCreds(), configPath);
+    saveMcpOAuth("github", mcpCreds({ accessToken: "gh", clientId: "client-2" }), configPath);
+
+    uninstallPlugin("notfair", { homeDir: home, configPath });
+
+    expect(readConfig(configPath).mcpOAuth?.notfair).toBeUndefined();
+    expect(readConfig(configPath).mcpOAuth?.github?.accessToken).toBe("gh");
+  });
+
+  it("drops the sign-in even when the installed manifest broke", async () => {
+    await install();
+    saveMcpOAuth("notfair", mcpCreds(), configPath);
+    writeFileSync(join(pluginsRoot(home), "notfair", ".codex-plugin", "plugin.json"), "{", "utf8");
+
+    uninstallPlugin("notfair", { homeDir: home, configPath });
+
+    expect(readConfig(configPath).mcpOAuth).toBeUndefined();
   });
 });
 

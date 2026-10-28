@@ -91,6 +91,10 @@ describe("VoiceInputSettings: models", () => {
     onConnectMail: vi.fn(),
     onCancelMail: vi.fn(),
     onSignOutMail: vi.fn(),
+    mcpAuth: null,
+    onConnectServer: vi.fn(),
+    onCancelServerSignIn: vi.fn(),
+    onDisconnectServer: vi.fn(),
     changelog: { releases: [], version: "", error: null, loaded: true },
     onRefreshChangelog: vi.fn(),
   };
@@ -459,9 +463,11 @@ describe("VoiceInputSettings: microphone", () => {
 
   it("enumerates microphones only when the user requests a refresh", async () => {
     setCachedAudioInputDevices([{ deviceId: "old-mic", label: "Old Microphone" }]);
-    const enumerateDevices = vi.fn().mockResolvedValue([
-      { kind: "audioinput", deviceId: "fresh-mic", label: "Fresh Microphone" },
-    ]);
+    const enumerateDevices = vi
+      .fn()
+      .mockResolvedValue([
+        { kind: "audioinput", deviceId: "fresh-mic", label: "Fresh Microphone" },
+      ]);
     Object.defineProperty(navigator, "mediaDevices", {
       value: {
         enumerateDevices,

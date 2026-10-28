@@ -13,8 +13,9 @@ import {
   sessionSetupMeta,
   syncSessionCapabilities,
 } from "../src/cli/commands/desktop.js";
-import { writeConfig } from "../src/config.js";
+import { saveMcpOAuth, writeConfig } from "../src/config.js";
 import { ensureSessionDir, loadSessionMeta, patchSessionMeta } from "../src/memory/session.js";
+import { mcpCreds } from "./support/oauth-fixture.js";
 import { stubPluginHome } from "./support/plugin-fixture.js";
 
 function tabWith(
@@ -24,15 +25,56 @@ function tabWith(
 }
 
 describe("pluginServerInfos", () => {
+  let home: string;
+  let root: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "reasonix-plugin-server-info-"));
+    root = mkdtempSync(join(tmpdir(), "reasonix-plugin-server-info-work-"));
+    configPath = join(root, "config.json");
+    stubPluginHome(home, configPath);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const signedIn = () =>
+    saveMcpOAuth(
+      "notfair",
+      mcpCreds({ expiresAt: Date.now() + 60_000, tokenEndpoint: "https://auth.example.com/token" }),
+      configPath,
+    );
+
   it("reports the live bridge state of an active plugin server", () => {
+    signedIn();
     const infos = pluginServerInfos(
       tabWith({ notfair: { kind: "connected", toolCount: 7 } }),
       { notfair: { url: "https://notfair.co/api/mcp/notfair", type: "http", plugin: "notfair" } },
       true,
     );
     expect(infos).toEqual([
-      { name: "notfair", transport: "streamable-http", status: "connected", toolCount: 7 },
+      {
+        name: "notfair",
+        transport: "streamable-http",
+        status: "connected",
+        toolCount: 7,
+        auth: "connected",
+      },
     ]);
+  });
+
+  it("says an HTTP server still needs a sign-in when no token is stored", () => {
+    const infos = pluginServerInfos(
+      tabWith({ notfair: { kind: "failed", reason: "401 Unauthorized" } }),
+      { notfair: { url: "https://notfair.co/api/mcp/notfair", type: "http", plugin: "notfair" } },
+      true,
+    );
+    expect(infos[0]).toMatchObject({ auth: "none", statusReason: "401 Unauthorized" });
   });
 
   it("surfaces a failed handshake with its reason", () => {

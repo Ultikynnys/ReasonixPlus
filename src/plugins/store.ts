@@ -215,20 +215,36 @@ export async function installPlugin(
   }
 }
 
-/** Remove a plugin: its files, its config record, its MCP entries and its read grant.
- *  The read grant is always revoked, so a failed config write cannot leave a plugin
- *  readable after its files are gone. */
+/** MCP entry names one plugin owns, read from the stamps it left in config. The manifest
+ *  is deliberately not consulted: a plugin whose manifest broke still loses its entries,
+ *  and with them its sign-ins. */
+function ownedServerNames(cfg: ReasonixConfig, slug: string): string[] {
+  return Object.entries(cfg.mcpServers ?? {})
+    .filter(([, entry]) => entry.plugin === slug)
+    .map(([name]) => name);
+}
+
+/** Remove a plugin: its files, its config record, its MCP entries, its sign-ins and its
+ *  read grant. The read grant is always revoked, so a failed config write cannot leave a
+ *  plugin readable after its files are gone. */
 export function uninstallPlugin(slug: string, opts: PluginStoreOptions = {}): void {
   const cfg = readConfig(opts.configPath);
   const dir = join(pluginsRoot(opts.homeDir), slug);
   if (!existsSync(dir) && !cfg.plugins?.[slug]) {
     throw new Error(`${slug} is not installed`);
   }
+  // A sign-in outlives the manifest rewrite that plugin sync performs, so it has to be
+  // dropped here or a reinstall would inherit a token minted for the old workspace.
+  const signedIn = ownedServerNames(cfg, slug);
   rmSync(dir, { recursive: true, force: true });
   try {
     if (cfg.plugins) {
       const remaining = Object.entries(cfg.plugins).filter(([key]) => key !== slug);
       cfg.plugins = remaining.length > 0 ? Object.fromEntries(remaining) : undefined;
+    }
+    if (cfg.mcpOAuth) {
+      for (const name of signedIn) delete cfg.mcpOAuth[name];
+      if (Object.keys(cfg.mcpOAuth).length === 0) cfg.mcpOAuth = undefined;
     }
     syncPluginServers(cfg, listPlugins({ homeDir: opts.homeDir, cfg }));
     writeConfig(cfg, opts.configPath);

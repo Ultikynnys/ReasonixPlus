@@ -1,4 +1,4 @@
-import { loadEffectiveMcpConfig } from "../../config.js";
+import { defaultConfigPath, loadEffectiveMcpConfig, readConfig } from "../../config.js";
 import { formatMcpLifecycleEvent } from "../../desktop/mcp-lifecycle.js";
 import type { McpLifecycleEvent } from "../../desktop/mcp-lifecycle.js";
 import { formatMcpSlowToast } from "../../desktop/mcp-toast.js";
@@ -8,6 +8,7 @@ import { McpClient } from "../../mcp/client.js";
 import { withPlaywrightWorkspaceProfile } from "../../mcp/extension.js";
 import { isGmailMailSpec, resolveGmailToken } from "../../mcp/gmail-mail.js";
 import { type InspectionReport, inspectMcpServer } from "../../mcp/inspect.js";
+import { cachedMcpOAuthHeaders, resolveMcpOAuthHeaders } from "../../mcp/oauth.js";
 import {
   OUTLOOK_ATTACHMENT_TOOLS,
   hydrateOutlookAttachments,
@@ -176,6 +177,28 @@ export function applyMcpSessionOverrides(
   });
 }
 
+/** Auth a server's transport needs: a live resolver wherever the bearer rotates (Gmail,
+ *  or a server the user signed in to), and a static snapshot for SSE, whose transport
+ *  takes no resolver. */
+export function mcpTransportAuth(
+  spec: McpServerSpec,
+  configPath: string = defaultConfigPath(),
+): { headers?: Record<string, string>; headersResolver?: () => Promise<Record<string, string>> } {
+  if (isGmailMailSpec(spec)) {
+    return {
+      headersResolver: async () => ({ authorization: `Bearer ${await resolveGmailToken()}` }),
+    };
+  }
+  const name = spec.name;
+  if (!name || spec.transport === "stdio") return {};
+  if (!readConfig(configPath).mcpOAuth?.[name]) return {};
+  if (spec.transport === "streamable-http") {
+    return { headersResolver: () => resolveMcpOAuthHeaders(name, configPath) };
+  }
+  const cached = cachedMcpOAuthHeaders(name, configPath);
+  return cached ? { headers: { ...(spec.headers ?? {}), ...cached } } : {};
+}
+
 export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
   const records = new Map<string, SpecRecord>();
   const insertionOrder: string[] = [];
@@ -249,16 +272,9 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
       // touches the browser, and surface the maintenance duty to the agent
       // via the bridge's first-call notice + description pointers.
       const playwrightTooling = isPlaywrightSpec(spec) ? ensurePlaywrightTooling() : undefined;
-      // Gmail rotates its bearer token, so it needs a live per-request resolver;
-      // every other spec carries its headers statically inside the spec.
-      const dynamicHeaders = isGmailMailSpec(spec)
-        ? {
-            headersResolver: async () => ({
-              authorization: `Bearer ${await resolveGmailToken()}`,
-            }),
-          }
-        : {};
-      // Every MCP server is daemon-global: one live client per configured spec,
+      // A rotating bearer token needs a live per-request resolver; static headers ride
+      // along inside the spec.
+      const dynamicHeaders = mcpTransportAuth(spec); // Every MCP server is daemon-global: one live client per configured spec,
       // shared by all tabs/workspaces (browser servers included), so a new tab
       // attaches to the running process instead of spawning a duplicate.
       let host: McpClientHost;

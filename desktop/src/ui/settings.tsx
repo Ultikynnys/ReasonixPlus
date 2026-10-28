@@ -35,12 +35,13 @@ import {
   providerForModelGroup,
 } from "../model-catalog";
 import { providerModelCost } from "../model-cost";
-import { useRateClock } from "../rate-clock";
 import type {
   FeedbackCueId,
   FeedbackCueSetting,
   MailAuthPhase,
   MailAuthState,
+  McpAuthState,
+  McpAuthStatus,
   McpExtensionCheck,
   McpExtensionStatus,
   McpSpecInfo,
@@ -50,8 +51,8 @@ import type {
   PlaywrightManagedBrowserInstallState,
   PlaywrightMcpConnectionMode,
   PluginInfo,
-  SkillInfo,
   SettingsPatch,
+  SkillInfo,
 } from "../protocol";
 import {
   MailProvider,
@@ -60,8 +61,15 @@ import {
   createQuickSendId,
   enforceQuickSendShorthand,
 } from "../protocol";
+import { useRateClock } from "../rate-clock";
 import { FONT_FAMILY, FONT_SCALE, type FontFamily, type FontScale } from "../theme";
 import { AudioRecorder } from "../voice/audio-recorder";
+import {
+  type BarkRuntimePhase,
+  type BarkRuntimeStatus,
+  barkRuntimeStatus,
+  removeBarkRuntime,
+} from "../voice/bark-engine";
 import {
   type AudioInputDevice,
   getCachedAudioInputDevices,
@@ -77,12 +85,6 @@ import {
   getActiveVoiceModelId,
   isVoiceModelDownloaded,
 } from "../voice/model-cache";
-import {
-  type BarkRuntimePhase,
-  type BarkRuntimeStatus,
-  barkRuntimeStatus,
-  removeBarkRuntime,
-} from "../voice/bark-engine";
 import { VOICE_ENGINES, VOICE_MODELS, type VoiceModelId } from "../voice/model-registry";
 import { speechTranscriber } from "../voice/transcriber";
 import { type ChangelogState, PageChangelog } from "./changelog";
@@ -229,6 +231,10 @@ export function SettingsModal({
   onConnectMail,
   onCancelMail,
   onSignOutMail,
+  mcpAuth,
+  onConnectServer,
+  onCancelServerSignIn,
+  onDisconnectServer,
   changelog,
   onRefreshChangelog,
 }: {
@@ -317,6 +323,11 @@ export function SettingsModal({
   onConnectMail: (provider: MailProvider) => void;
   onCancelMail: (provider: MailProvider) => void;
   onSignOutMail: (provider: MailProvider) => void;
+  /** Latest MCP sign-in event, if any: drives the per-server sign-in control. */
+  mcpAuth: McpAuthStatus | null;
+  onConnectServer: (name: string) => void;
+  onCancelServerSignIn: (name: string) => void;
+  onDisconnectServer: (name: string) => void;
   /** Repo commit history grouped per release, plus a forced-refetch trigger. */
   changelog: ChangelogState;
   onRefreshChangelog: (force?: boolean) => void;
@@ -487,6 +498,10 @@ export function SettingsModal({
                 onConnectMail={onConnectMail}
                 onCancelMail={onCancelMail}
                 onSignOutMail={onSignOutMail}
+                mcpAuth={mcpAuth}
+                onConnectServer={onConnectServer}
+                onCancelServerSignIn={onCancelServerSignIn}
+                onDisconnectServer={onDisconnectServer}
               />
             )}
             {page === "plugins" && (
@@ -495,6 +510,10 @@ export function SettingsModal({
                 onInstall={onInstallPlugin}
                 onUninstall={onUninstallPlugin}
                 onRequest={onRequestPlugins}
+                mcpAuth={mcpAuth}
+                onConnectServer={onConnectServer}
+                onCancelServerSignIn={onCancelServerSignIn}
+                onDisconnectServer={onDisconnectServer}
               />
             )}
             {page === "skills" && (
@@ -1336,7 +1355,6 @@ export function AudioInputDeviceTest({ deviceId }: { deviceId: string }) {
   );
 }
 
-
 /** Provisioning phases named while a host runtime installs, in order. */
 const RUNTIME_STAGE_KEY: Record<BarkRuntimePhase, TKey> = {
   installer: "settings.voiceRuntimeInstaller",
@@ -1507,9 +1525,7 @@ function VoiceModelList() {
                           ? t(RUNTIME_STAGE_KEY[downloadStage])
                           : downloadFile || t("settings.voiceDownloading")}
                       </span>
-                      {!downloadStage && (
-                        <span className="voice-pct">{downloadProgress}%</span>
-                      )}
+                      {!downloadStage && <span className="voice-pct">{downloadProgress}%</span>}
                     </div>
                     <div
                       className={`voice-progress-track${downloadStage ? " indeterminate" : ""}`}
@@ -2726,6 +2742,18 @@ const MAIL_UI: Record<
   },
 };
 
+/** Open a sign-in URL in the system browser once per distinct value. Both browser flows
+ *  hand their authorize URL to the UI, and landing the same one twice would open a second
+ *  consent tab. */
+function useAutoOpenUrl(url: string | undefined): void {
+  const opened = useRef<string | null>(null);
+  useEffect(() => {
+    if (!url || opened.current === url) return;
+    opened.current = url;
+    void openUrl(url).catch(() => undefined);
+  }, [url]);
+}
+
 /** Shared action row for a mail provider: primary (Configure/Sign out/Cancel/Connect),
  *  Test, and Open sign-in. `leading` renders provider-specific buttons first (Gmail's Save). */
 function MailActions({
@@ -2995,6 +3023,73 @@ function PageFallbacks({
   );
 }
 
+/** Sign-in control for one HTTP/SSE server. Shared by the MCP list and every plugin card,
+ *  so the two surfaces offer the same states and can never drift. */
+function ServerAuthRow({
+  name,
+  transport,
+  auth,
+  live,
+  onConnect,
+  onCancel,
+  onDisconnect,
+}: {
+  name: string;
+  transport: McpSpecInfo["transport"];
+  auth: McpAuthState | undefined;
+  live: McpAuthStatus | null;
+  onConnect: () => void;
+  onCancel: () => void;
+  onDisconnect: () => void;
+}) {
+  const event = live?.name === name ? live : null;
+  const browserUrl = event?.phase === "browser" ? event.verificationUrl : undefined;
+  useAutoOpenUrl(browserUrl);
+  if (transport === "stdio") return null;
+  const waiting = event?.phase === "starting" || event?.phase === "browser";
+  const signedIn = auth === "connected";
+  const label = waiting
+    ? t("settings.mcpSignInWaiting")
+    : signedIn
+      ? t("settings.mcpSignedIn")
+      : auth === "expired"
+        ? t("settings.mcpSignInExpired")
+        : null;
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span
+          style={{
+            fontSize: 11,
+            color: signedIn ? "var(--accent)" : "var(--muted)",
+          }}
+        >
+          {label}
+        </span>
+        <span className="grow" />
+        {waiting ? (
+          <button type="button" className="btn" onClick={onCancel}>
+            {t("settings.mcpSignInCancel")}
+          </button>
+        ) : signedIn ? (
+          <button type="button" className="btn ghost" onClick={onDisconnect}>
+            {t("settings.mcpSignOut")}
+          </button>
+        ) : (
+          <button type="button" className="btn" onClick={onConnect}>
+            {t("settings.mcpSignIn")}
+          </button>
+        )}
+      </div>
+      {event?.phase === "error" && event.message ? (
+        <div className="desc" style={{ color: "var(--danger)", marginTop: 4 }}>
+          {event.message}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function PageMCP({
   specs,
   bridged,
@@ -3017,6 +3112,10 @@ export function PageMCP({
   onConnectMail,
   onCancelMail,
   onSignOutMail,
+  mcpAuth,
+  onConnectServer,
+  onCancelServerSignIn,
+  onDisconnectServer,
 }: {
   specs: McpSpecInfo[];
   bridged: boolean;
@@ -3044,6 +3143,10 @@ export function PageMCP({
   onConnectMail: (provider: MailProvider) => void;
   onCancelMail: (provider: MailProvider) => void;
   onSignOutMail: (provider: MailProvider) => void;
+  mcpAuth: McpAuthStatus | null;
+  onConnectServer: (name: string) => void;
+  onCancelServerSignIn: (name: string) => void;
+  onDisconnectServer: (name: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [tokenDraft, setTokenDraft] = useState("");
@@ -3057,12 +3160,7 @@ export function PageMCP({
     mailProvider === MailProvider.Gmail && mail?.phase === "browser"
       ? mail.verificationUrl
       : undefined;
-  const openedGmailUrl = useRef<string | null>(null);
-  useEffect(() => {
-    if (!gmailBrowserUrl || openedGmailUrl.current === gmailBrowserUrl) return;
-    openedGmailUrl.current = gmailBrowserUrl;
-    void openUrl(gmailBrowserUrl).catch(() => undefined);
-  }, [gmailBrowserUrl]);
+  useAutoOpenUrl(gmailBrowserUrl);
   useEffect(() => {
     onRequestExtensionStatus();
     onRequestMailStatus(mailProvider);
@@ -3470,6 +3568,10 @@ export function PageMCP({
         {specs.map((s) => {
           const removable = s.name !== null && !s.builtin && !s.plugin;
           const canToggle = s.name !== null && !s.plugin;
+          const name = s.name;
+          const setDisabled = (disabled: boolean) => {
+            if (name !== null) onToggleServer(name, disabled);
+          };
           const headActions =
             removable || canToggle ? (
               <>
@@ -3482,18 +3584,10 @@ export function PageMCP({
                 ) : null}
                 {canToggle ? (
                   <div className="seg-ctrl">
-                    <button
-                      type="button"
-                      data-on={!s.disabled}
-                      onClick={() => onToggleServer(s.name as string, false)}
-                    >
+                    <button type="button" data-on={!s.disabled} onClick={() => setDisabled(false)}>
                       {t("settings.mcpEnable")}
                     </button>
-                    <button
-                      type="button"
-                      data-on={s.disabled}
-                      onClick={() => onToggleServer(s.name as string, true)}
-                    >
+                    <button type="button" data-on={s.disabled} onClick={() => setDisabled(true)}>
                       {t("settings.mcpDisable")}
                     </button>
                   </div>
@@ -3527,6 +3621,17 @@ export function PageMCP({
                 <div className="desc" style={{ color: "var(--muted)", marginTop: 4 }}>
                   {t("settings.mcpPluginHint", { name: s.plugin })}
                 </div>
+              ) : null}
+              {name !== null ? (
+                <ServerAuthRow
+                  name={name}
+                  transport={s.transport}
+                  auth={s.auth}
+                  live={mcpAuth}
+                  onConnect={() => onConnectServer(name)}
+                  onCancel={() => onCancelServerSignIn(name)}
+                  onDisconnect={() => onDisconnectServer(name)}
+                />
               ) : null}
               {s.parseError ? (
                 <div className="desc" style={{ color: "var(--danger)" }}>
@@ -3587,11 +3692,19 @@ export function PagePlugins({
   onInstall,
   onUninstall,
   onRequest,
+  mcpAuth,
+  onConnectServer,
+  onCancelServerSignIn,
+  onDisconnectServer,
 }: {
   plugins: PluginInfo[];
   onInstall: (source: string) => void;
   onUninstall: (name: string) => void;
   onRequest: () => void;
+  mcpAuth: McpAuthStatus | null;
+  onConnectServer: (name: string) => void;
+  onCancelServerSignIn: (name: string) => void;
+  onDisconnectServer: (name: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   useEffect(() => {
@@ -3612,7 +3725,8 @@ export function PagePlugins({
         </div>
         <div className="desc" style={{ marginBottom: 10, color: "var(--muted)" }}>
           {t("settings.capabilityRemovedNote")}
-        </div>        {plugins.length === 0 ? (
+        </div>{" "}
+        {plugins.length === 0 ? (
           <div
             style={{
               padding: 16,
@@ -3627,7 +3741,15 @@ export function PagePlugins({
           </div>
         ) : null}
         {plugins.map((plugin) => (
-          <PluginCard key={plugin.slug} plugin={plugin} onUninstall={onUninstall} />
+          <PluginCard
+            key={plugin.slug}
+            plugin={plugin}
+            onUninstall={onUninstall}
+            mcpAuth={mcpAuth}
+            onConnectServer={onConnectServer}
+            onCancelServerSignIn={onCancelServerSignIn}
+            onDisconnectServer={onDisconnectServer}
+          />
         ))}
       </section>
       <section className="section">
@@ -3662,9 +3784,17 @@ export function PagePlugins({
 function PluginCard({
   plugin,
   onUninstall,
+  mcpAuth,
+  onConnectServer,
+  onCancelServerSignIn,
+  onDisconnectServer,
 }: {
   plugin: PluginInfo;
   onUninstall: (name: string) => void;
+  mcpAuth: McpAuthStatus | null;
+  onConnectServer: (name: string) => void;
+  onCancelServerSignIn: (name: string) => void;
+  onDisconnectServer: (name: string) => void;
 }) {
   const byline = [plugin.author, plugin.license, plugin.source].filter(Boolean).join(" | ");
   const headActions = (
@@ -3735,11 +3865,22 @@ function PluginCard({
         plugin.servers.map((server) => {
           const status = serverStatusLabel(server.status, server.statusReason, server.toolCount);
           return (
-            <div key={server.name} style={{ display: "flex", gap: 8, marginTop: 6 }}>
-              <code style={{ fontSize: 11 }}>{server.name}</code>
-              <span style={{ fontSize: 11, color: "var(--muted)" }}>{server.transport}</span>
-              <span className="grow" />
-              <span style={{ fontSize: 11, color: status.color }}>{status.text}</span>
+            <div key={server.name}>
+              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                <code style={{ fontSize: 11 }}>{server.name}</code>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>{server.transport}</span>
+                <span className="grow" />
+                <span style={{ fontSize: 11, color: status.color }}>{status.text}</span>
+              </div>
+              <ServerAuthRow
+                name={server.name}
+                transport={server.transport}
+                auth={server.auth}
+                live={mcpAuth}
+                onConnect={() => onConnectServer(server.name)}
+                onCancel={() => onCancelServerSignIn(server.name)}
+                onDisconnect={() => onDisconnectServer(server.name)}
+              />
             </div>
           );
         })

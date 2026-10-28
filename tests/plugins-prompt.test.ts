@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { refreshTabSystemPrompt } from "../src/cli/commands/desktop.js";
-import { SKILLS_MAX_CHARS, codeSystemPrompt } from "../src/code/prompt.js";
+import { PLUGINS_MAX_CHARS, SKILLS_MAX_CHARS, codeSystemPrompt } from "../src/code/prompt.js";
 import { ensureSessionDir, patchSessionMeta } from "../src/memory/session.js";
 import { installPlugin } from "../src/plugins/store.js";
 import { installSkills } from "../src/skills/store.js";
@@ -107,6 +107,75 @@ describe("skill index", () => {
   });
 });
 
+describe("plugin inventory in the prompt", () => {
+  const root = () => mkdtempSync(join(tmpdir(), "reasonix-plugin-prompt-"));
+
+  it("stays out of the prompt when nothing is installed", () => {
+    const dir = root();
+    try {
+      expect(codeSystemPrompt(dir)).not.toContain("# Plugins");
+      expect(codeSystemPrompt(dir, { plugins: [] })).not.toContain("# Plugins");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("names each installed plugin, what it ships and whether this chat enabled it", () => {
+    const dir = root();
+    try {
+      const prompt = codeSystemPrompt(dir, {
+        plugins: [
+          {
+            name: "notfair",
+            displayName: "NotFair",
+            version: "0.27.17",
+            skillsRoots: ["/plugins/notfair/skills"],
+            skillCount: 48,
+            enabled: true,
+          },
+          {
+            name: "other",
+            displayName: "Other",
+            skillsRoots: [],
+            skillCount: 0,
+            enabled: false,
+          },
+        ],
+      });
+      expect(prompt).toContain("# Plugins");
+      expect(prompt).toContain("Settings > Plugins");
+      expect(prompt).toContain("- NotFair (notfair) 0.27.17 - enabled here. Ships 48 skills");
+      expect(prompt).toContain("`/plugins/notfair/skills`");
+      expect(prompt).toContain("- Other (other) - not enabled here. Ships 0 skills.");
+      expect(prompt).toContain("usable only in a chat whose start enabled it");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("caps the inventory and names how many it left out", () => {
+    const dir = root();
+    const plugins = Array.from({ length: 40 }, (_, index) => ({
+      name: `plugin-${index}`,
+      displayName: `Plugin ${index}`,
+      version: "1.0.0",
+      skillsRoots: ["/plugins/some/much/longer/skills/root/path"],
+      skillCount: 12,
+      enabled: false,
+    }));
+    try {
+      const prompt = codeSystemPrompt(dir, { plugins });
+      const section = prompt.slice(prompt.indexOf("# Plugins"));
+      const listed = section.slice(0, section.indexOf("more plugin(s)"));
+      expect(listed.length).toBeLessThan(PLUGINS_MAX_CHARS + 200);
+      expect(section).toMatch(/\d+ more plugin\(s\) installed/);
+      expect(section).not.toContain("Plugin 39");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("refreshTabSystemPrompt with installed skills", () => {
   let home: string;
   let root: string;
@@ -180,6 +249,16 @@ describe("refreshTabSystemPrompt with installed skills", () => {
     await installPlugin(fixture, { homeDir: home, configPath, copy: copyTree(() => fixture) });
     const tab = tabFor(frozenChat("without-plugin", []));
     refreshTabSystemPrompt(tab);
+    expect(tab.system).not.toContain("# Skills");
+  });
+
+  it("tells a chat about a plugin it did not enable, and withholds its skills", async () => {
+    await installPlugin(fixture, { homeDir: home, configPath, copy: copyTree(() => fixture) });
+    const tab = tabFor(frozenChat("inventory-only", []));
+    refreshTabSystemPrompt(tab);
+    expect(tab.system).toContain("# Plugins");
+    expect(tab.system).toContain("- NotFair (notfair) 0.27.17 - not enabled here. Ships 3 skills");
+    expect(tab.system).toContain(join(home, ".reasonix", "plugins", "notfair", "skills"));
     expect(tab.system).not.toContain("# Skills");
   });
 

@@ -49,6 +49,9 @@ import type {
   LoadedSegment,
   MailAuthEvent,
   MailAuthState,
+  McpAuthEvent,
+  McpAuthState,
+  McpAuthStatus,
   McpExtensionCheckEvent,
   McpExtensionStatus,
   McpExtensionStatusEvent,
@@ -118,7 +121,11 @@ import { fetchChangelog } from "../../changelog.js";
 import { normalizeBalance, pickPrimaryBalance } from "../../client.js";
 import { claimingSession, setLiveSessionProbe } from "../../code/plan-claim.js";
 import { type PlanRecord, planRepository } from "../../code/plans.js";
-import { type SkillIndexEntry, codeSystemPrompt } from "../../code/prompt.js";
+import {
+  type PluginPromptEntry,
+  type SkillIndexEntry,
+  codeSystemPrompt,
+} from "../../code/prompt.js";
 import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
 import { fetchCodexQuotaViaOAuth } from "../../codex-backend.js";
 import {
@@ -141,6 +148,7 @@ import {
   addRule,
   anyProviderConfigured,
   bridgeEndpointEnv,
+  clearMcpOAuth,
   clearMimoApiKey,
   copyWorkspaceRules,
   defaultConfigPath,
@@ -384,6 +392,7 @@ import {
   resolveGmailToken,
   signOutGmail,
 } from "../../mcp/gmail-mail.js";
+import { beginMcpOAuthFlow, mcpOAuthState } from "../../mcp/oauth.js";
 import {
   OUTLOOK_MAIL_ARGS,
   OUTLOOK_MAIL_SERVER_NAME,
@@ -643,6 +652,7 @@ export type EmittableEvent =
   | McpExtensionStatusEvent
   | McpExtensionCheckEvent
   | MailAuthEvent
+  | McpAuthEvent
   | PlaywrightBrowserInstallEvent
   | CtxBreakdownEvent
   | MemoryEvent
@@ -3985,6 +3995,20 @@ function sessionSkillIndex(name: string | undefined): SkillIndexEntry[] {
   ];
 }
 
+/** Every installed plugin in prompt shape: what it is, what it vendors, and whether this
+ *  chat enabled it. Skills roots are absolute so the agent can read one on request. */
+function pluginPromptEntries(name: string | undefined): PluginPromptEntry[] {
+  const chosen = new Set(sessionPlugins(name));
+  return listPlugins().map((state) => ({
+    name: state.slug,
+    displayName: pluginDisplayName(state.manifest),
+    ...(state.manifest.version ? { version: state.manifest.version } : {}),
+    skillsRoots: [...new Set(state.skills.map((skill) => skill.skillsRoot))],
+    skillCount: state.skills.length,
+    enabled: chosen.has(state.slug),
+  }));
+}
+
 /** Servers this chat may not bridge because their plugin was not frozen at its
  *  session-start confirm. */
 function pluginServerExclusions(slugs: readonly string[]): string[] {
@@ -4134,6 +4158,15 @@ function failSessionSetup(tab: Tab, err: unknown): void {
   armSessionGate(tab);
 }
 
+/** Sign-in state for one configured server. Only HTTP/SSE entries carry a token, so a
+ *  stdio server never grows a sign-in control. */
+function serverAuthState(
+  spec: Pick<McpServerSpec, "name" | "transport">,
+): McpAuthState | undefined {
+  if (!spec.name || spec.transport === "stdio") return undefined;
+  return mcpOAuthState(spec.name);
+}
+
 function emitMcpSpecs(tab: Tab): void {
   const normalized = loadEffectiveMcpConfig(tab.rootDir);
   // Session-scoped view: the chat's frozen server set plus any plugin it did not
@@ -4146,6 +4179,8 @@ function emitMcpSpecs(tab: Tab): void {
     base.disabled = spec.disabled === true;
     // Reasonix+ managed servers are built-in: disableable but not removable.
     base.builtin = isManagedMcpSpec(spec);
+    const auth = serverAuthState(spec);
+    if (auth) base.auth = auth;
     const sessionDisabled = disabledForSession
       ? Boolean(spec.name && disabledForSession.has(spec.name))
       : spec.disabled === true;
@@ -4182,6 +4217,7 @@ export function pluginServerInfos(
     .map((spec) => {
       const raw = specToRaw(spec);
       const disabled = !active || spec.disabled === true;
+      const auth = serverAuthState(spec);
       // A disabled server is not bridged, so it reports no live tool count.
       if (disabled) {
         return {
@@ -4189,6 +4225,7 @@ export function pluginServerInfos(
           transport: spec.transport,
           status: "disabled" as McpSpecStatus,
           disabled: true,
+          ...(auth ? { auth } : {}),
         };
       }
       const live = tab.mcpStatuses.get(raw) ?? tab.mcpStatuses.get(spec.name);
@@ -4198,6 +4235,7 @@ export function pluginServerInfos(
         status: live?.kind ?? "configured",
         ...(live?.reason ? { statusReason: live.reason } : {}),
         ...(live?.toolCount !== undefined ? { toolCount: live.toolCount } : {}),
+        ...(auth ? { auth } : {}),
       };
     });
 }
@@ -4679,6 +4717,102 @@ async function signOutMail(
 ): Promise<void> {
   if (provider === MailProvider.Gmail) return signOutGmailMail(tab);
   return signOutOutlookMail(tab, bridge);
+}
+
+/** One sign-in attempt per server: the controller, and the tab whose row is watching it,
+ *  so a superseded attempt can be told instead of waiting on a closed browser. */
+const mcpAuthRuns = new Map<string, { tab: Tab; controller: AbortController }>();
+
+/** Where one server's sign-in stands, for its row in Settings. */
+function emitMcpAuth(tab: Tab, auth: McpAuthStatus): void {
+  const ev: McpAuthEvent = { type: "$mcp_auth", auth };
+  emit(ev, tab.id);
+}
+
+/** Push the two inventories a sign-in changes. Called around the re-bridge so the row and
+ *  its live status never disagree. */
+function emitServerSurfaces(tab: Tab): void {
+  emitMcpSpecs(tab);
+  emitPlugins(tab);
+}
+
+/** Stop an in-flight sign-in for `name`. Returns true when one was running; `notify` tells
+ *  its tab, which otherwise waits on a browser nobody is listening to any more. */
+function cancelMcpAuth(name: string, notify: boolean): boolean {
+  const run = mcpAuthRuns.get(name);
+  if (!run) return false;
+  mcpAuthRuns.delete(name);
+  run.controller.abort();
+  if (notify) {
+    emitMcpAuth(run.tab, { name, phase: "disconnected", message: "Sign-in cancelled." });
+  }
+  return true;
+}
+
+/** Sign one HTTP MCP server in through the browser, then re-bridge so its tools land.
+ *  The token store keeps the result, so a reinstall or a config rewrite cannot drop it. */
+async function connectMcpServer(
+  tab: Tab,
+  name: string,
+  bridge: (tab: Tab) => Promise<void>,
+): Promise<void> {
+  cancelMcpAuth(name, true);
+  const spec = loadEffectiveMcpConfig(tab.rootDir).find((candidate) => candidate.name === name);
+  if (!spec || spec.name === null) {
+    emitMcpAuth(tab, {
+      name,
+      phase: "error",
+      message: `no MCP server named "${name}" is configured`,
+    });
+    return;
+  }
+  if (spec.transport === "stdio") {
+    emitMcpAuth(tab, {
+      name,
+      phase: "error",
+      message: `${name} is a stdio server and needs no sign-in`,
+    });
+    return;
+  }
+  const run = { tab, controller: new AbortController() };
+  mcpAuthRuns.set(name, run);
+  // A cancel or a second connect supersedes this attempt, so its late events are dropped.
+  const stale = () => run.controller.signal.aborted || mcpAuthRuns.get(name) !== run;
+  emitMcpAuth(tab, { name, phase: "starting" });
+  try {
+    const flow = await beginMcpOAuthFlow(name, spec.url);
+    if (stale()) {
+      flow.cancel();
+      return;
+    }
+    emitMcpAuth(tab, { name, phase: "browser", verificationUrl: flow.url });
+    const onAbort = () => flow.cancel();
+    run.controller.signal.addEventListener("abort", onAbort, { once: true });
+    await flow.done;
+    run.controller.signal.removeEventListener("abort", onAbort);
+    if (stale()) return;
+    emitMcpAuth(tab, { name, phase: "connected" });
+    emitServerSurfaces(tab);
+    void bridge(tab).then(() => emitServerSurfaces(tab));
+  } catch (error) {
+    if (stale()) return;
+    emitMcpAuth(tab, { name, phase: "error", message: messageOf(error) });
+  } finally {
+    if (mcpAuthRuns.get(name) === run) mcpAuthRuns.delete(name);
+  }
+}
+
+/** Forget one server's sign-in and re-bridge, so its tools drop out immediately. */
+function disconnectMcpServer(tab: Tab, name: string, bridge: (tab: Tab) => Promise<void>): void {
+  cancelMcpAuth(name, false);
+  const removed = clearMcpOAuth(name);
+  emitMcpAuth(tab, {
+    name,
+    phase: "disconnected",
+    ...(removed ? {} : { message: `no stored sign-in for ${name}` }),
+  });
+  emitServerSurfaces(tab);
+  void bridge(tab);
 }
 
 const playwrightBrowserInstalls = new Map<string, AbortController>();
@@ -5751,6 +5885,9 @@ export function refreshTabSystemPrompt(
     // Same rule for the skill index: skills are the set this chat froze at its
     // session-start confirm, so installing one never rewrites a live prefix.
     skills: sessionSkillIndex(tab.currentSession),
+    // Installed plugins, enabled or not: answering "what plugins do I have?" needs the
+    // inventory, and a plugin install or removal rebuilds this prompt anyway.
+    plugins: pluginPromptEntries(tab.currentSession),
   });
 }
 
@@ -9605,6 +9742,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "mcp_specs_get") {
       emitMcpSpecs(tab);
+      return;
+    }
+    if (msg.cmd === "mcp_auth_connect") {
+      void connectMcpServer(tab, msg.name, bridgeTabMcp);
+      return;
+    }
+    if (msg.cmd === "mcp_auth_cancel") {
+      if (!cancelMcpAuth(msg.name, true)) {
+        emitMcpAuth(tab, { name: msg.name, phase: "disconnected", message: "Sign-in cancelled." });
+      }
+      return;
+    }
+    if (msg.cmd === "mcp_auth_disconnect") {
+      disconnectMcpServer(tab, msg.name, bridgeTabMcp);
       return;
     }
     if (msg.cmd === "mcp_specs_add") {

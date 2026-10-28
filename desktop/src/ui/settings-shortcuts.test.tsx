@@ -80,6 +80,10 @@ const baseProps = {
   onConnectMail: vi.fn(),
   onCancelMail: vi.fn(),
   onSignOutMail: vi.fn(),
+  mcpAuth: null,
+  onConnectServer: vi.fn(),
+  onCancelServerSignIn: vi.fn(),
+  onDisconnectServer: vi.fn(),
   changelog: { releases: [], version: "", error: null, loaded: true },
   onRefreshChangelog: vi.fn(),
 };

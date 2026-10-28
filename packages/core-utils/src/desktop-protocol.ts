@@ -615,6 +615,9 @@ export interface TabsSnapshotEvent {
 
 export type McpSpecStatus = "configured" | "handshake" | "connected" | "failed" | "disabled";
 
+/** Browser sign-in state of one HTTP/SSE MCP server, read from the token store. */
+export type McpAuthState = "none" | "connected" | "expired";
+
 export interface McpSpecInfo {
   raw: string;
   name: string | null;
@@ -634,6 +637,8 @@ export interface McpSpecInfo {
   /** Slug of the plugin that bundles this server. Absent = standalone entry, so the
    *  list can tell the two apart and point the user at the plugin that owns it. */
   plugin?: string;
+  /** Sign-in state of an HTTP/SSE server, read from the token store. Absent for stdio. */
+  auth?: McpAuthState;
 }
 
 export interface McpSpecsEvent {
@@ -660,6 +665,8 @@ export interface PluginServerInfo {
   toolCount?: number;
   /** True while the plugin or the server entry is disabled. */
   disabled?: boolean;
+  /** Sign-in state of an HTTP/SSE server, read from the token store. Absent for stdio. */
+  auth?: McpAuthState;
 }
 
 /** One installed agent plugin (Codex `.codex-plugin` layout). */
@@ -867,6 +874,23 @@ export interface MailAuthState {
 export interface MailAuthEvent {
   type: "$mail_auth";
   state: MailAuthState;
+}
+
+export type McpAuthPhase = "starting" | "browser" | "connected" | "disconnected" | "error";
+
+/** Sanitized MCP sign-in state. Tokens never cross the desktop wire protocol. */
+export interface McpAuthStatus {
+  /** Server name the sign-in belongs to (the config entry key). */
+  name: string;
+  phase: McpAuthPhase;
+  /** Set while the browser is open: the authorize URL the UI offers. */
+  verificationUrl?: string;
+  message?: string;
+}
+
+export interface McpAuthEvent {
+  type: "$mcp_auth";
+  auth: McpAuthStatus;
 }
 
 export type PlaywrightBrowserInstall =
@@ -1838,6 +1862,10 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "mcp_specs_add"; spec: string }
   | { cmd: "mcp_specs_remove"; spec: string }
   | { cmd: "mcp_specs_toggle"; name: string; disabled: boolean }
+  /** Browser sign-in for one HTTP/SSE MCP server, its cancellation, and sign-out. */
+  | { cmd: "mcp_auth_connect"; name: string }
+  | { cmd: "mcp_auth_cancel"; name: string }
+  | { cmd: "mcp_auth_disconnect"; name: string }
   /** Plugin inventory for the Settings > Plugins page. */
   | { cmd: "plugins_get" }
   /** Install one plugin from `owner/repo`, a git URL, or a local directory path. */

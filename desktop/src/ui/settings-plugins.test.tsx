@@ -24,7 +24,11 @@ function plugin(overrides: Partial<PluginInfo> = {}): PluginInfo {
     defaultPrompt: ["Audit my Google Ads account."],
     active: true,
     skills: [
-      { name: "seo-analysis", description: "Full SEO audit.", path: "skills/seo-analysis/SKILL.md" },
+      {
+        name: "seo-analysis",
+        description: "Full SEO audit.",
+        path: "skills/seo-analysis/SKILL.md",
+      },
       { name: "meta-ads", description: "Meta Ads review.", path: "skills/meta-ads/SKILL.md" },
     ],
     servers: [
@@ -39,14 +43,20 @@ function plugin(overrides: Partial<PluginInfo> = {}): PluginInfo {
   };
 }
 
-function renderPage(plugins: PluginInfo[], overrides: Record<string, ReturnType<typeof vi.fn>> = {}) {
+function renderPage(
+  plugins: PluginInfo[],
+  overrides: Record<string, ReturnType<typeof vi.fn>> = {},
+) {
   const handlers = {
     onInstall: vi.fn(),
     onUninstall: vi.fn(),
     onRequest: vi.fn(),
+    onConnectServer: vi.fn(),
+    onCancelServerSignIn: vi.fn(),
+    onDisconnectServer: vi.fn(),
     ...overrides,
   };
-  const utils = render(<PagePlugins plugins={plugins} {...handlers} />);
+  const utils = render(<PagePlugins plugins={plugins} mcpAuth={null} {...handlers} />);
   return { ...utils, ...handlers };
 }
 
@@ -97,7 +107,10 @@ describe("PagePlugins", () => {
   });
 
   it("marks a plugin this chat enabled, and leaves the rest unmarked", () => {
-    renderPage([plugin({ active: true }), plugin({ slug: "other", displayName: "Other", active: false })]);
+    renderPage([
+      plugin({ active: true }),
+      plugin({ slug: "other", displayName: "Other", active: false }),
+    ]);
     expect(screen.getAllByText(/on in this chat/)).toHaveLength(1);
   });
 
@@ -116,5 +129,52 @@ describe("PagePlugins", () => {
     renderPage([plugin({ skills: [], servers: [] })]);
     expect(screen.getByText("This plugin ships no skills.")).toBeTruthy();
     expect(screen.getByText("This plugin declares no MCP servers.")).toBeTruthy();
+  });
+
+  it("offers a sign-in on an HTTP server that has none yet", () => {
+    const { onConnectServer } = renderPage([
+      plugin({
+        servers: [
+          { name: "notfair", transport: "streamable-http", status: "failed", auth: "none" },
+        ],
+      }),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(onConnectServer).toHaveBeenCalledWith("notfair");
+  });
+
+  it("shows the stored sign-in and offers sign-out", () => {
+    const { onDisconnectServer } = renderPage([
+      plugin({
+        servers: [
+          { name: "notfair", transport: "streamable-http", status: "connected", auth: "connected" },
+        ],
+      }),
+    ]);
+    expect(screen.getByText("Signed in")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(onDisconnectServer).toHaveBeenCalledWith("notfair");
+  });
+
+  it("marks an expired sign-in and offers a fresh one", () => {
+    renderPage([
+      plugin({
+        servers: [
+          { name: "notfair", transport: "streamable-http", status: "failed", auth: "expired" },
+        ],
+      }),
+    ]);
+    expect(screen.getByText("Sign-in expired")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+  });
+
+  it("offers no sign-in for a stdio server", () => {
+    renderPage([
+      plugin({
+        servers: [{ name: "local-tools", transport: "stdio", status: "connected", toolCount: 3 }],
+      }),
+    ]);
+    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
   });
 });

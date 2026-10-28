@@ -89,6 +89,10 @@ function renderCard(
       onConnectMail={onConnectMail}
       onCancelMail={vi.fn()}
       onSignOutMail={vi.fn()}
+      mcpAuth={null}
+      onConnectServer={vi.fn()}
+      onCancelServerSignIn={vi.fn()}
+      onDisconnectServer={vi.fn()}
     />,
   );
 }
@@ -445,7 +449,9 @@ describe("PageMCP — playwright connection status", () => {
   });
 
   it("labels a plugin-bundled server with the plugin that ships it", () => {
-    renderCard([spec({ raw: "notfair=https://notfair.co/api/mcp", name: "notfair", plugin: "notfair" })]);
+    renderCard([
+      spec({ raw: "notfair=https://notfair.co/api/mcp", name: "notfair", plugin: "notfair" }),
+    ]);
     expect(screen.getByText(/from plugin notfair/)).toBeTruthy();
     expect(screen.getByText(/Bundled with the notfair plugin/)).toBeTruthy();
   });
@@ -456,7 +462,9 @@ describe("PageMCP — playwright connection status", () => {
   });
 
   it("leaves a plugin server's lifecycle to the plugin", () => {
-    renderCard([spec({ raw: "notfair=https://notfair.co/api/mcp", name: "notfair", plugin: "notfair" })]);
+    renderCard([
+      spec({ raw: "notfair=https://notfair.co/api/mcp", name: "notfair", plugin: "notfair" }),
+    ]);
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Enable" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Disable" })).toBeNull();

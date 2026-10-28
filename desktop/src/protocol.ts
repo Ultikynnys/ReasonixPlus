@@ -8,6 +8,7 @@
 import type {
   BalanceEvent,
   BtwResultEvent,
+  CapabilityChoice,
   ChangelogEvent,
   CheckpointRequiredEvent,
   CheckpointVerdict,
@@ -46,6 +47,10 @@ import type {
   MailAuthEvent,
   MailAuthPhase,
   MailAuthState,
+  McpAuthEvent,
+  McpAuthPhase,
+  McpAuthState,
+  McpAuthStatus,
   McpExtensionCheck,
   McpExtensionCheckEvent,
   McpExtensionServerState,
@@ -56,15 +61,6 @@ import type {
   McpSpecInfo,
   McpSpecStatus,
   McpSpecsEvent,
-  CapabilityChoice,
-  PluginInfo,
-  PluginServerInfo,
-  PluginSetupEntry,
-  PluginSkillInfo,
-  PluginsEvent,
-  SkillInfo,
-  SkillSetupEntry,
-  SkillsEvent,
   MemoryDetailEvent,
   MemoryEntryDetail,
   MemoryEntryInfo,
@@ -93,6 +89,11 @@ import type {
   PlaywrightManagedBrowser,
   PlaywrightManagedBrowserInstallState,
   PlaywrightMcpConnectionMode,
+  PluginInfo,
+  PluginServerInfo,
+  PluginSetupEntry,
+  PluginSkillInfo,
+  PluginsEvent,
   ProtocolErrorEvent,
   ProviderUsage,
   ProviderUsageEvent,
@@ -114,6 +115,9 @@ import type {
   SettingsPatch,
   SettingsPayload,
   KernelErrorEvent as SharedKernelErrorEvent,
+  SkillInfo,
+  SkillSetupEntry,
+  SkillsEvent,
   StepCompletedEvent,
   TabClosedEvent,
   TabOpenedEvent,
@@ -173,6 +177,10 @@ export type {
   MailAuthEvent,
   MailAuthPhase,
   MailAuthState,
+  McpAuthEvent,
+  McpAuthPhase,
+  McpAuthState,
+  McpAuthStatus,
   PlaywrightBrowserInstall,
   PlaywrightBrowserInstallEvent,
   PlaywrightManagedBrowser,
@@ -312,6 +320,7 @@ export type IncomingEvent = { tabId?: string } & (
   | McpExtensionStatusEvent
   | McpExtensionCheckEvent
   | MailAuthEvent
+  | McpAuthEvent
   | PlaywrightBrowserInstallEvent
   | CtxBreakdownEvent
   | MemoryEvent
