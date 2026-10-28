@@ -9,16 +9,16 @@ const DEFAULT_CODE_MODEL = "deepseek-v4-flash";
 /** Cap on user-supplied prompt append text, matching project memory so one source cannot crowd out the rest. */
 export const SYSTEM_APPEND_MAX_CHARS = 8_000;
 
-/** Cap on the plugin-skill index: a large plugin must not crowd out the tool spec. */
-export const PLUGIN_SKILLS_MAX_CHARS = 6_000;
+/** Cap on the skill index: skills must not crowd out the tool spec. */
+export const SKILLS_MAX_CHARS = 6_000;
 /** Per-skill description budget in the index: enough to match a request, small enough
  *  that a 48-skill plugin still lists every skill inside the cap. */
-const PLUGIN_SKILL_DESC_CHARS = 96;
+const SKILL_DESC_CHARS = 96;
 
-/** One enabled plugin skill the prompt advertises; the agent reads the file on demand. */
-export interface PluginSkillEntry {
-  /** Plugin slug the skill belongs to. */
-  plugin: string;
+/** One skill the prompt advertises; the agent reads its SKILL.md on demand. */
+export interface SkillIndexEntry {
+  /** Plugin slug that ships the skill, or absent for a standalone one. */
+  owner?: string;
   name: string;
   /** First sentence of the skill's description. */
   description: string;
@@ -26,28 +26,34 @@ export interface PluginSkillEntry {
   skillsRoot: string;
 }
 
+/** Owner label a standalone skill's root is listed under. */
+const STANDALONE_SKILL_OWNER = "standalone";
+
 function clipDescription(text: string): string {
-  if (text.length <= PLUGIN_SKILL_DESC_CHARS) return text;
-  const cut = text.slice(0, PLUGIN_SKILL_DESC_CHARS);
+  if (text.length <= SKILL_DESC_CHARS) return text;
+  const cut = text.slice(0, SKILL_DESC_CHARS);
   const space = cut.lastIndexOf(" ");
-  return `${cut.slice(0, space > PLUGIN_SKILL_DESC_CHARS / 2 ? space : PLUGIN_SKILL_DESC_CHARS).trimEnd()}...`;
+  return `${cut.slice(0, space > SKILL_DESC_CHARS / 2 ? space : SKILL_DESC_CHARS).trimEnd()}...`;
 }
 
-function pluginSkillsSection(skills: readonly PluginSkillEntry[]): string {
+/** The skill index. Standalone skills and the ones a plugin ships share one section and
+ *  one cap, so the prompt cost is bounded no matter how many skills are installed. */
+function skillsSection(skills: readonly SkillIndexEntry[]): string {
   // A manifest may declare several skill roots, so collect them all: naming only the
   // first would hide every skill that lives in the second.
   const roots = new Map<string, Set<string>>();
   for (const skill of skills) {
-    const dirs = roots.get(skill.plugin) ?? new Set<string>();
+    const owner = skill.owner ?? STANDALONE_SKILL_OWNER;
+    const dirs = roots.get(owner) ?? new Set<string>();
     dirs.add(skill.skillsRoot);
-    roots.set(skill.plugin, dirs);
+    roots.set(owner, dirs);
   }
   const rootLines = [...roots]
-    .map(([plugin, dirs]) => `- ${plugin}: ${[...dirs].map((dir) => `\`${dir}\``).join(", ")}`)
+    .map(([owner, dirs]) => `- ${owner}: ${[...dirs].map((dir) => `\`${dir}\``).join(", ")}`)
     .join("\n");
-  const head = `# Plugin skills
+  const head = `# Skills
 
-Installed plugins ship workflow files. When a request matches a skill's description, read its SKILL.md completely and follow it: the file is authoritative over your own approach. Do not open one for work its description does not cover.
+Workflow files are installed with the app or shipped by a plugin. When a request matches a skill's description, read its SKILL.md completely and follow it: the file is authoritative over your own approach. Do not open one for work its description does not cover.
 
 Skill roots (one directory per skill, each holding its SKILL.md):
 
@@ -57,8 +63,9 @@ ${rootLines}
   let used = head.length;
   let dropped = 0;
   for (const skill of skills) {
-    const line = `- ${skill.name} (${skill.plugin}): ${clipDescription(skill.description)}`;
-    if (used + line.length + 1 > PLUGIN_SKILLS_MAX_CHARS) {
+    const owner = skill.owner ? ` (${skill.owner})` : "";
+    const line = `- ${skill.name}${owner}: ${clipDescription(skill.description)}`;
+    if (used + line.length + 1 > SKILLS_MAX_CHARS) {
       dropped += 1;
       continue;
     }
@@ -441,9 +448,10 @@ export interface CodeSystemPromptOptions {
   /** Whether the selected web search engine drives a managed browser. Only that engine
    *  offers the persistent page the matching section documents. */
   browserWebTools?: boolean;
-  /** Enabled plugin skills to index for the agent. Read at call time, so a plugin
-   *  installed or disabled mid-session reaches the next rebuilt prompt. */
-  pluginSkills?: readonly PluginSkillEntry[];
+  /** Skills this chat may use: the standalone ones its confirm froze, plus those the
+   *  plugins it froze ship. Read from the session's frozen meta at call time, so a skill
+   *  installed mid-chat reaches the next new chat, never a rebuilt prefix. */
+  skills?: readonly SkillIndexEntry[];
 }
 
 export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions = {}): string {
@@ -453,8 +461,8 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
     opts.browserWebTools === true,
   );
   const withSkills =
-    opts.pluginSkills && opts.pluginSkills.length > 0
-      ? `${codeBase}\n\n${pluginSkillsSection(opts.pluginSkills)}`
+    opts.skills && opts.skills.length > 0
+      ? `${codeBase}\n\n${skillsSection(opts.skills)}`
       : codeBase;
   const withMemory = applyMemoryStack(withSkills, rootDir, { homeDir: opts.homeDir });
   const gitignorePath = join(rootDir, ".gitignore");

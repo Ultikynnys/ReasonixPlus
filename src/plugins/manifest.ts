@@ -5,13 +5,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { messageOf } from "@reasonix/core-utils";
 import { z } from "zod";
+import { storeSlug } from "../install/source.js";
+import { DEFAULT_SKILLS_DIR } from "../skills/skill.js";
 
 export const CODEX_MANIFEST_DIR = ".codex-plugin";
 export const PLUGIN_MANIFEST_FILE = "plugin.json";
 /** Agent Plugins 1.0 host key whose `interface` block carries display metadata. */
 export const OPENAI_EXTENSION_KEY = "com.openai";
-/** Skills live here when the manifest declares no `skills` path. */
-export const DEFAULT_SKILLS_DIR = "skills";
 
 const authorSchema = z.union([
   z.string(),
@@ -89,11 +89,7 @@ export interface PluginManifest {
 
 /** Directory name and config key for a plugin: lowercase, dash-separated. */
 export function pluginSlug(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || "plugin";
+  return storeSlug(name) || "plugin";
 }
 
 /** Name to show for a plugin: its declared display name, else the manifest name. */

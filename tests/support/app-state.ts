@@ -51,6 +51,7 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     mcpSpecs: [],
     mcpBridged: false,
     plugins: [],
+    skills: [],
     mcpSetup: null,
     mcpSetupRevision: 0,
     mcpExtensionStatus: null,

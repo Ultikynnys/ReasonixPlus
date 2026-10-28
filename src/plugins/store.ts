@@ -1,9 +1,7 @@
 /** Agent plugin store: install, list and remove Codex-layout plugins under
  *  `~/.reasonix/plugins`, keeping their MCP entries and read access in step. */
 
-import { execFile } from "node:child_process";
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,7 +10,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import {
   type McpServerConfig,
   type PluginRecord,
@@ -22,6 +20,12 @@ import {
   removeGlobalPathAllowed,
   writeConfig,
 } from "../config.js";
+import {
+  type InstallCopy,
+  copyInstallSource,
+  isSafeStoreId,
+  normalizeInstallSource,
+} from "../install/source.js";
 import { reasonixHome } from "../reasonix-home.js";
 import {
   type PluginManifest,
@@ -31,69 +35,6 @@ import {
 } from "./manifest.js";
 import { pluginServerConfigs } from "./servers.js";
 import { type PluginSkill, indexPluginSkills } from "./skills.js";
-
-/** Clone budget: a plugin repository is small, but a cold clone on a slow link is not. */
-const CLONE_TIMEOUT_MS = 180_000;
-/** Local installs never carry build output or VCS history into the plugin store. */
-const LOCAL_COPY_SKIP = new Set([".git", "node_modules", ".turbo", "dist", "coverage"]);
-
-export type NormalizedPluginSource =
-  | { kind: "git"; url: string; label: string }
-  | { kind: "local"; path: string; label: string };
-
-/** Accept `owner/repo`, any git URL, or an existing local directory. */
-export function normalizePluginSource(source: string): NormalizedPluginSource {
-  const trimmed = source.trim();
-  if (!trimmed) throw new Error("enter a git URL, owner/repo, or a local directory");
-  const local = resolve(trimmed);
-  if (existsSync(local)) {
-    if (statSync(local).isDirectory()) return { kind: "local", path: local, label: local };
-    throw new Error(`not a directory: ${local}`);
-  }
-  if (/^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/i.test(trimmed)) {
-    return { kind: "git", url: trimmed, label: trimmed.replace(/\.git$/i, "") };
-  }
-  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(trimmed)) {
-    return {
-      kind: "git",
-      url: `https://github.com/${trimmed}.git`,
-      label: `https://github.com/${trimmed}`,
-    };
-  }
-  throw new Error(`not a git URL, owner/repo, or an existing directory: ${trimmed}`);
-}
-
-export type PluginCopy = (source: NormalizedPluginSource, target: string) => void | Promise<void>;
-
-/** Clone without blocking the daemon's event loop: a remote install can take a while. */
-function gitClone(source: { url: string; label: string }, target: string): Promise<void> {
-  return new Promise((resolveClone, rejectClone) => {
-    execFile(
-      "git",
-      ["clone", "--depth", "1", "--quiet", source.url, target],
-      { timeout: CLONE_TIMEOUT_MS, windowsHide: true },
-      (err, _stdout, stderr) => {
-        if (!err) {
-          resolveClone();
-          return;
-        }
-        const reason = stderr.trim() || err.message;
-        rejectClone(new Error(`git clone failed for ${source.label}: ${reason}`));
-      },
-    );
-  });
-}
-
-async function defaultCopy(source: NormalizedPluginSource, target: string): Promise<void> {
-  if (source.kind === "local") {
-    cpSync(source.path, target, {
-      recursive: true,
-      filter: (from) => !LOCAL_COPY_SKIP.has(from.split(/[\\/]/).pop() ?? ""),
-    });
-    return;
-  }
-  await gitClone(source, target);
-}
 
 export function pluginsRoot(homeDir?: string): string {
   return join(reasonixHome(homeDir), "plugins");
@@ -162,12 +103,10 @@ function configOf(opts: PluginLookupOptions): ReasonixConfig {
 
 /** Slugs with an installed directory, sorted. Unreadable entries are skipped. */
 function installedSlugs(root: string, only?: readonly string[]): string[] {
-  if (only) return [...new Set(only)].filter((slug) => slug && !slug.startsWith(".")).sort();
+  if (only) return [...new Set(only)].filter(isSafeStoreId).sort();
   if (!existsSync(root)) return [];
   try {
-    return readdirSync(root)
-      .filter((name) => !name.startsWith("."))
-      .sort();
+    return readdirSync(root).filter(isSafeStoreId).sort();
   } catch {
     return [];
   }
@@ -223,7 +162,7 @@ export interface PluginStoreOptions {
   homeDir?: string;
   configPath?: string;
   /** Injectable transfer step so tests never shell out to git. */
-  copy?: PluginCopy;
+  copy?: InstallCopy;
 }
 
 export interface InstalledPlugin {
@@ -241,14 +180,14 @@ export async function installPlugin(
   source: string,
   opts: PluginStoreOptions = {},
 ): Promise<InstalledPlugin> {
-  const normalized = normalizePluginSource(source);
+  const normalized = normalizeInstallSource(source);
   const cfg = readConfig(opts.configPath);
   const root = pluginsRoot(opts.homeDir);
   mkdirSync(root, { recursive: true });
   const staging = mkdtempSync(join(root, ".staging-"));
   let moved: string | undefined;
   try {
-    await (opts.copy ?? defaultCopy)(normalized, staging);
+    await (opts.copy ?? copyInstallSource)(normalized, staging);
     const manifest = readPluginManifest(staging);
     const slug = pluginSlug(manifest.name);
     const dir = join(root, slug);

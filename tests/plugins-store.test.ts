@@ -7,7 +7,6 @@ import { unreadablePluginManifest } from "../src/plugins/manifest.js";
 import {
   installPlugin,
   listPlugins,
-  normalizePluginSource,
   pluginSkills,
   pluginsRoot,
   syncPluginServers,
@@ -45,40 +44,6 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(work, { recursive: true, force: true });
-});
-
-describe("normalizePluginSource", () => {
-  it("expands a GitHub shorthand to a clone URL", () => {
-    expect(normalizePluginSource("nowork-studio/notfair-plugin")).toEqual({
-      kind: "git",
-      url: "https://github.com/nowork-studio/notfair-plugin.git",
-      label: "https://github.com/nowork-studio/notfair-plugin",
-    });
-  });
-
-  it("keeps a git URL and trims the .git suffix from its label", () => {
-    const source = normalizePluginSource("https://github.com/acme/plugin.git");
-    expect(source.kind).toBe("git");
-    expect(source.label).toBe("https://github.com/acme/plugin");
-  });
-
-  it("resolves an existing directory to a local copy", () => {
-    expect(normalizePluginSource(fixture)).toEqual({
-      kind: "local",
-      path: fixture,
-      label: fixture,
-    });
-  });
-
-  it("refuses input that is neither", () => {
-    expect(() => normalizePluginSource("not a source")).toThrow(/not a git URL/);
-  });
-
-  it("says a file is not a directory instead of guessing a git URL", () => {
-    const file = join(work, "not-a-plugin.txt");
-    writeFileSync(file, "x", "utf8");
-    expect(() => normalizePluginSource(file)).toThrow(/not a directory/);
-  });
 });
 
 describe("installPlugin", () => {

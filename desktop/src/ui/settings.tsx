@@ -50,6 +50,7 @@ import type {
   PlaywrightManagedBrowserInstallState,
   PlaywrightMcpConnectionMode,
   PluginInfo,
+  SkillInfo,
   SettingsPatch,
 } from "../protocol";
 import {
@@ -144,6 +145,7 @@ export type PageId =
   | "fallbacks"
   | "mcp"
   | "plugins"
+  | "skills"
   | "changelog"
   | "shortcuts";
 
@@ -155,6 +157,7 @@ export const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
   { id: "fallbacks", icon: "layers" },
   { id: "mcp", icon: "wrench" },
   { id: "plugins", icon: "plug" },
+  { id: "skills", icon: "bookmark" },
   { id: "changelog", icon: "history" },
   { id: "shortcuts", icon: "cpu" },
 ];
@@ -209,6 +212,10 @@ export function SettingsModal({
   mcpExtensionStatus,
   mcpExtensionCheck,
   playwrightBrowserInstall,
+  skills,
+  onInstallSkill,
+  onUninstallSkill,
+  onRequestSkills,
   onRequestMcpExtensionStatus,
   onConfigureMcpExtension,
   onCheckMcpExtension,
@@ -237,6 +244,8 @@ export function SettingsModal({
   mcpBridged: boolean;
   /** Installed agent plugins, mirrored from the daemon's `$plugins` snapshot. */
   plugins: PluginInfo[];
+  /** Installed standalone skills, mirrored from the daemon's `$skills` snapshot. */
+  skills: SkillInfo[];
   onClose: () => void;
   onSave: (patch: SettingsPatch) => void;
   /** Ollama chat endpoint (OpenAI-compatible) shown on the Models page. */
@@ -283,6 +292,10 @@ export function SettingsModal({
   onUninstallPlugin: (name: string) => void;
   /** Re-request the plugin inventory (the page calls this when it opens). */
   onRequestPlugins: () => void;
+  onInstallSkill: (source: string) => void;
+  onUninstallSkill: (name: string) => void;
+  /** Re-request the skill inventory (the Skills page calls this when it opens). */
+  onRequestSkills: () => void;
   mcpExtensionStatus: McpExtensionStatus | null;
   mcpExtensionCheck: McpExtensionCheck | null;
   playwrightBrowserInstall: PlaywrightBrowserInstall | null;
@@ -482,6 +495,15 @@ export function SettingsModal({
                 onInstall={onInstallPlugin}
                 onUninstall={onUninstallPlugin}
                 onRequest={onRequestPlugins}
+              />
+            )}
+            {page === "skills" && (
+              <PageSkills
+                skills={skills}
+                plugins={plugins}
+                onInstall={onInstallSkill}
+                onUninstall={onUninstallSkill}
+                onRequest={onRequestSkills}
               />
             )}
             {page === "changelog" && (
@@ -3446,17 +3468,18 @@ export function PageMCP({
           </div>
         ) : null}
         {specs.map((s) => {
-          const canToggle = s.name !== null;
+          const removable = s.name !== null && !s.builtin && !s.plugin;
+          const canToggle = s.name !== null && !s.plugin;
           const headActions =
-            canToggle || !s.builtin ? (
+            removable || canToggle ? (
               <>
-                {s.builtin ? null : (
+                {removable ? (
                   <div className="seg-ctrl">
                     <button type="button" className="mcp-remove" onClick={() => onRemove(s.raw)}>
                       {t("settings.mcpRemove")}
                     </button>
                   </div>
-                )}
+                ) : null}
                 {canToggle ? (
                   <div className="seg-ctrl">
                     <button
@@ -3489,12 +3512,22 @@ export function PageMCP({
                       · {t("settings.mcpBuiltinBadge")}
                     </span>
                   ) : null}
+                  {s.plugin ? (
+                    <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
+                      · {t("settings.mcpPluginBadge", { name: s.plugin })}
+                    </span>
+                  ) : null}
                 </>
               }
             >
               <div className="sub mcp-spec-summary" title={s.summary}>
                 {s.summary}
               </div>
+              {s.plugin ? (
+                <div className="desc" style={{ color: "var(--muted)", marginTop: 4 }}>
+                  {t("settings.mcpPluginHint", { name: s.plugin })}
+                </div>
+              ) : null}
               {s.parseError ? (
                 <div className="desc" style={{ color: "var(--danger)" }}>
                   {t("settings.parseError", { error: s.parseError })}
@@ -3574,10 +3607,12 @@ export function PagePlugins({
     <>
       <section className="section">
         <div className="stitle">{t("settings.pluginsInstalled", { count: plugins.length })}</div>
-        <div className="desc" style={{ marginBottom: 10 }}>
+        <div className="desc" style={{ marginBottom: 4 }}>
           {t("settings.pluginsPerSession")}
         </div>
-        {plugins.length === 0 ? (
+        <div className="desc" style={{ marginBottom: 10, color: "var(--muted)" }}>
+          {t("settings.capabilityRemovedNote")}
+        </div>        {plugins.length === 0 ? (
           <div
             style={{
               padding: 16,
@@ -3722,6 +3757,170 @@ function PluginCard({
           </button>
         </div>
       ) : null}
+    </HeadActionCard>
+  );
+}
+
+/** Settings > Skills: install standalone SKILL.md workflows, and see the ones installed
+ *  plugins ship. Only the standalone list is installable: a plugin's skills travel with
+ *  the plugin, so they cannot be switched on for a chat on their own. */
+export function PageSkills({
+  skills,
+  plugins,
+  onInstall,
+  onUninstall,
+  onRequest,
+}: {
+  skills: SkillInfo[];
+  /** Plugin inventory: their skills are listed read-only, grouped by plugin. */
+  plugins: PluginInfo[];
+  onInstall: (source: string) => void;
+  onUninstall: (name: string) => void;
+  onRequest: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  useEffect(() => {
+    onRequest();
+  }, [onRequest]);
+  const submit = () => {
+    const source = draft.trim();
+    if (!source) return;
+    onInstall(source);
+    setDraft("");
+  };
+  const pluginSkills = plugins.flatMap((plugin) =>
+    plugin.skills.map((skill) => ({ plugin, skill })),
+  );
+  const shipping = plugins.filter((plugin) => plugin.skills.length > 0).length;
+  return (
+    <>
+      <section className="section">
+        <div className="stitle">{t("settings.skillsInstalled", { count: skills.length })}</div>
+        <div className="desc" style={{ marginBottom: 4 }}>
+          {t("settings.skillsPerSession")}
+        </div>
+        <div className="desc" style={{ marginBottom: 10, color: "var(--muted)" }}>
+          {t("settings.capabilityRemovedNote")}
+        </div>
+        {skills.length === 0 ? (
+          <div
+            style={{
+              padding: 16,
+              background: "var(--card)",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              fontSize: 12,
+              color: "var(--muted)",
+            }}
+          >
+            {hintNodes(t("settings.skillsEmpty"))}
+          </div>
+        ) : null}
+        {skills.map((skill) => (
+          <SkillCard key={skill.id} skill={skill} onUninstall={onUninstall} />
+        ))}
+      </section>
+      <section className="section">
+        <div className="stitle">{t("settings.skillsInstallSection")}</div>
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.skillsInstallLabel")}</div>
+            <div className="h">{hintNodes(t("settings.skillsInstallHint"))}</div>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              className="field mono"
+              aria-label={t("settings.skillsInstallLabel")}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder={t("settings.skillsInstallPlaceholder")}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") submit();
+              }}
+            />
+            <button type="button" className="btn primary" disabled={!draft.trim()} onClick={submit}>
+              {t("settings.skillsInstallButton")}
+            </button>
+          </div>
+        </div>
+      </section>
+      <section className="section">
+        <div className="stitle">{t("settings.skillsFromPlugins", { count: shipping })}</div>
+        <div className="desc" style={{ marginBottom: 10 }}>
+          {t("settings.skillsFromPluginsHint")}
+        </div>
+        {pluginSkills.length === 0 ? (
+          <div className="desc">{t("settings.skillsNoPluginSkills")}</div>
+        ) : (
+          pluginSkills.map(({ plugin, skill }) => (
+            <HeadActionCard
+              key={`${plugin.slug}/${skill.name}`}
+              title={
+                <>
+                  {skill.name}
+                  <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
+                    - {plugin.displayName}
+                  </span>
+                  <span
+                    style={{
+                      color: plugin.active ? "var(--accent)" : "var(--muted)",
+                      marginLeft: 6,
+                      fontSize: 11,
+                    }}
+                  >
+                    - {t(plugin.active ? "settings.skillsActiveHere" : "settings.skillsPluginOff")}
+                  </span>
+                </>
+              }
+            >
+              <div className="sub">{skill.description || t("settings.skillsNoDescription")}</div>
+            </HeadActionCard>
+          ))
+        )}
+      </section>
+    </>
+  );
+}
+
+/** One installed standalone skill: what it declares, where it lives, and removal. */
+function SkillCard({
+  skill,
+  onUninstall,
+}: {
+  skill: SkillInfo;
+  onUninstall: (name: string) => void;
+}) {
+  const headActions = (
+    <div className="seg-ctrl">
+      <button type="button" className="mcp-remove" onClick={() => onUninstall(skill.id)}>
+        {t("settings.skillsRemove")}
+      </button>
+    </div>
+  );
+  return (
+    <HeadActionCard
+      title={
+        <>
+          {skill.name}
+          <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>- {skill.id}</span>
+          {skill.active ? (
+            <span style={{ color: "var(--accent)", marginLeft: 6, fontSize: 11 }}>
+              - {t("settings.skillsActiveHere")}
+            </span>
+          ) : null}
+        </>
+      }
+      headActions={headActions}
+    >
+      <div className="sub">{skill.description || t("settings.skillsNoDescription")}</div>
+      {skill.error ? (
+        <div className="desc" style={{ color: "var(--danger)" }}>
+          {t("settings.skillsReadError", { error: skill.error })}
+        </div>
+      ) : null}
+      <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }} title={skill.path}>
+        <code style={{ fontSize: 11 }}>{skill.path}</code>
+      </div>
     </HeadActionCard>
   );
 }

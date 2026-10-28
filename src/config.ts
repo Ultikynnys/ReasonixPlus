@@ -1609,7 +1609,9 @@ export function normalizeMcpConfig(cfg: ReasonixConfig, extraLegacy?: string[]):
   for (const [name, serverCfg] of Object.entries(cfg.mcpServers ?? {})) {
     if (!serverCfg || typeof serverCfg !== "object") continue;
     const transport = inferMcpTransport(serverCfg as McpServerConfig);
-    const disabled = (serverCfg as McpServerConfig).disabled === true;
+    // A plugin-declared server's enablement belongs to the chat's plugin set, so a
+    // config flag cannot express it: the session overlay is the only decider.
+    const disabled = !(serverCfg as McpServerConfig).plugin && serverCfg.disabled === true;
     if (transport === "stdio") {
       const env = normalizeStringRecord((serverCfg as McpServerConfig).env);
       const spec: McpServerSpec = {

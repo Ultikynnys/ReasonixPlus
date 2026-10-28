@@ -1536,6 +1536,7 @@ describe("Desktop App reducer — usage", () => {
           { name: "github", enabled: false, builtin: false },
         ],
         plugins: [{ name: "notfair", displayName: "NotFair", enabled: true }],
+        skills: [{ name: "churn-analysis", description: "Predicts churn.", enabled: false }],
         subagents: true,
       },
     });
@@ -1545,6 +1546,7 @@ describe("Desktop App reducer — usage", () => {
         { name: "github", enabled: false, builtin: false },
       ],
       plugins: [{ name: "notfair", displayName: "NotFair", enabled: true }],
+      skills: [{ name: "churn-analysis", description: "Predicts churn.", enabled: false }],
       subagents: true,
     });
 
@@ -1556,7 +1558,7 @@ describe("Desktop App reducer — usage", () => {
   it("$mcp_setup bumps the picker revision, so a re-armed gate remounts the dialog", () => {
     const gated = reduce(initialState(), {
       t: "incoming",
-      event: { type: "$mcp_setup", servers: [], plugins: [], subagents: false },
+      event: { type: "$mcp_setup", servers: [], plugins: [], skills: [], subagents: false },
     });
     expect(gated.mcpSetupRevision).toBe(initialState().mcpSetupRevision + 1);
 
@@ -1564,17 +1566,46 @@ describe("Desktop App reducer — usage", () => {
     // leave its own "starting" state and become answerable again.
     const rearmed = reduce(gated, {
       t: "incoming",
-      event: { type: "$mcp_setup", servers: [], plugins: [], subagents: false },
+      event: { type: "$mcp_setup", servers: [], plugins: [], skills: [], subagents: false },
     });
     expect(rearmed.mcpSetupRevision).toBe(gated.mcpSetupRevision + 1);
   });
 
-  it("$needs_setup also resolves the picker, so an uncredentialed chat is never stuck on it", () => {
-    const gated = reduce(initialState(), {
+  it("$skills replaces the standalone inventory", () => {
+    const listed = reduce(initialState(), {
       t: "incoming",
-      event: { type: "$mcp_setup", servers: [], plugins: [], subagents: false },
+      event: {
+        type: "$skills",
+        skills: [
+          {
+            id: "churn-analysis",
+            name: "churn-analysis",
+            description: "Predicts churn.",
+            path: "/skills/churn-analysis/SKILL.md",
+            active: true,
+          },
+        ],
+      },
     });
-    expect(gated.mcpSetup).toEqual({ servers: [], plugins: [], subagents: false });
+    expect(listed.skills).toEqual([
+      {
+        id: "churn-analysis",
+        name: "churn-analysis",
+        description: "Predicts churn.",
+        path: "/skills/churn-analysis/SKILL.md",
+        active: true,
+      },
+    ]);
+
+    const cleared = reduce(listed, { t: "incoming", event: { type: "$skills", skills: [] } });
+    expect(cleared.skills).toEqual([]);
+  });
+
+  it("$needs_setup also resolves the picker, so an uncredentialed chat is never stuck on it", () => {    const gated = reduce(initialState(), {
+      t: "incoming",
+      event: { type: "$mcp_setup", servers: [], plugins: [], skills: [], subagents: false },
+    });
+    expect(gated.mcpSetup).toEqual({ servers: [], plugins: [], skills: [], subagents: false });
 
     const resolved = reduce(gated, {
       t: "incoming",

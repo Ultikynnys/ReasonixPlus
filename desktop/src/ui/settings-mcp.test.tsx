@@ -444,6 +444,24 @@ describe("PageMCP — playwright connection status", () => {
     expect(screen.queryByText(/built-in/)).toBeNull();
   });
 
+  it("labels a plugin-bundled server with the plugin that ships it", () => {
+    renderCard([spec({ raw: "notfair=https://notfair.co/api/mcp", name: "notfair", plugin: "notfair" })]);
+    expect(screen.getByText(/from plugin notfair/)).toBeTruthy();
+    expect(screen.getByText(/Bundled with the notfair plugin/)).toBeTruthy();
+  });
+
+  it("leaves a standalone server unlabeled", () => {
+    renderCard([spec()]);
+    expect(screen.queryByText(/from plugin/)).toBeNull();
+  });
+
+  it("leaves a plugin server's lifecycle to the plugin", () => {
+    renderCard([spec({ raw: "notfair=https://notfair.co/api/mcp", name: "notfair", plugin: "notfair" })]);
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Enable" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Disable" })).toBeNull();
+  });
+
   it("puts Remove left of the Enable/Disable toggle", () => {
     renderCard([spec()]);
     const remove = screen.getByRole("button", { name: "Remove" });

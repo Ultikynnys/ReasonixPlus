@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { capabilityPrefill, sessionSetupMeta } from "../src/cli/commands/desktop.js";
+import {
+  type CapabilityAnswer,
+  capabilityAnswer,
+  capabilityPrefill,
+  sessionSetupMeta,
+  skillPrefill,
+} from "../src/cli/commands/desktop.js";
 import {
   ensureSessionDir,
   loadSessionMeta,
@@ -12,6 +18,18 @@ import {
 } from "../src/memory/session.js";
 
 const configured = ["ghidra", "blender", "playwright"];
+
+/** A capability answer over `configured`, with everything else off by default. */
+function answer(overrides: Partial<CapabilityAnswer> = {}): CapabilityAnswer {
+  return {
+    configuredServers: configured,
+    servers: [],
+    plugins: [],
+    skills: [],
+    subagents: false,
+    ...overrides,
+  };
+}
 
 describe("capabilityPrefill", () => {
   const specs = [
@@ -50,50 +68,130 @@ describe("capabilityPrefill", () => {
     const seed = { mcp: { disabledServers: ["blender"] }, subagents: true };
     const rows = capabilityPrefill(specs, seed);
     const frozen = sessionSetupMeta(
-      rows.map((row) => row.name),
-      rows.filter((row) => row.enabled).map((row) => row.name),
-      seed.subagents,
+      answer({
+        configuredServers: rows.map((row) => row.name),
+        servers: rows.filter((row) => row.enabled).map((row) => row.name),
+        subagents: seed.subagents,
+      }),
     );
-    expect(frozen).toEqual({ mcp: { disabledServers: ["blender"] }, subagents: true, plugins: [] });
+    expect(frozen).toEqual({
+      mcp: { disabledServers: ["blender"] },
+      subagents: true,
+      plugins: [],
+      skills: [],
+    });
+  });
+});
+
+describe("skillPrefill", () => {
+  const installed = [
+    { id: "churn-analysis", description: "Predicts churn." },
+    { id: "seo-audit", description: "" },
+  ];
+
+  it("offers every installed skill on for a new chat", () => {
+    expect(skillPrefill(installed)).toEqual([
+      { name: "churn-analysis", description: "Predicts churn.", enabled: true },
+      { name: "seo-audit", enabled: true },
+    ]);
+  });
+
+  it("pins a duplicate to its source session's frozen set", () => {
+    const rows = skillPrefill(installed, { skills: ["seo-audit"], subagents: false });
+    expect(rows.map((row) => row.enabled)).toEqual([false, true]);
+  });
+
+  it("leaves every skill off when the source chat picked none", () => {
+    const rows = skillPrefill(installed, { skills: [], subagents: false });
+    expect(rows.map((row) => row.enabled)).toEqual([false, false]);
+  });
+});
+
+describe("capabilityAnswer", () => {
+  it("reads the four sections off a confirm message", () => {
+    expect(
+      capabilityAnswer(["api"], {
+        enabled: ["api"],
+        plugins: ["notfair"],
+        skills: ["churn-analysis"],
+        subagents: true,
+      }),
+    ).toEqual({
+      configuredServers: ["api"],
+      servers: ["api"],
+      plugins: ["notfair"],
+      skills: ["churn-analysis"],
+      subagents: true,
+    });
+  });
+
+  it("treats a missing or malformed list as agreeing to none of that kind", () => {
+    const guarded = capabilityAnswer(["api"], {
+      enabled: "api",
+      plugins: [1, "notfair"],
+      skills: {},
+    });
+    expect(guarded).toEqual({
+      configuredServers: ["api"],
+      servers: [],
+      plugins: ["notfair"],
+      skills: [],
+      subagents: false,
+    });
   });
 });
 
 describe("sessionSetupMeta", () => {
   it("records every configured server the user did not enable as disabled", () => {
-    expect(sessionSetupMeta(configured, ["playwright"], true)).toEqual({
+    expect(sessionSetupMeta(answer({ servers: ["playwright"], subagents: true }))).toEqual({
       mcp: { disabledServers: ["blender", "ghidra"] },
       subagents: true,
       plugins: [],
+      skills: [],
     });
   });
 
   it("freezes no disable entry when the whole server list is confirmed", () => {
-    expect(sessionSetupMeta(configured, configured, false)).toEqual({
+    expect(sessionSetupMeta(answer({ servers: configured }))).toEqual({
       mcp: {},
       subagents: false,
       plugins: [],
+      skills: [],
     });
   });
 
   it("freezes nothing when no server is configured", () => {
-    expect(sessionSetupMeta([], [], false)).toEqual({ mcp: {}, subagents: false, plugins: [] });
+    expect(sessionSetupMeta(answer({ configuredServers: [] }))).toEqual({
+      mcp: {},
+      subagents: false,
+      plugins: [],
+      skills: [],
+    });
   });
 
   it("ignores an enabled name the workspace does not configure", () => {
-    expect(sessionSetupMeta(configured, ["nope"], true).mcp).toEqual({
+    expect(sessionSetupMeta(answer({ servers: ["nope"] })).mcp).toEqual({
       disabledServers: ["blender", "ghidra", "playwright"],
     });
   });
 
   it("de-duplicates and sorts the disabled list", () => {
-    expect(sessionSetupMeta(["b", "a", "b"], [], false).mcp).toEqual({
+    expect(sessionSetupMeta(answer({ configuredServers: ["b", "a", "b"] })).mcp).toEqual({
       disabledServers: ["a", "b"],
     });
   });
 
   it("coerces anything but a literal true to a disabled subagent flag", () => {
-    const coerced = sessionSetupMeta([], [], undefined as unknown as boolean);
+    const coerced = sessionSetupMeta(answer({ subagents: undefined as unknown as boolean }));
     expect(coerced.subagents).toBe(false);
+  });
+
+  it("de-duplicates the plugin and skill lists it freezes", () => {
+    const frozen = sessionSetupMeta(
+      answer({ plugins: ["notfair", "notfair"], skills: ["a", "a", "b"] }),
+    );
+    expect(frozen.plugins).toEqual(["notfair"]);
+    expect(frozen.skills).toEqual(["a", "b"]);
   });
 });
 
@@ -116,22 +214,34 @@ describe("session-start freeze round trip", () => {
     // the first write. Assert it: a stray real-home write is the failure to avoid.
     expect(sessionDir("gated-chat").startsWith(home)).toBe(true);
     ensureSessionDir("gated-chat");
-    patchSessionMeta("gated-chat", sessionSetupMeta(configured, ["ghidra"], true, ["notfair"]));
+    patchSessionMeta(
+      "gated-chat",
+      sessionSetupMeta(
+        answer({
+          servers: ["ghidra"],
+          plugins: ["notfair"],
+          skills: ["churn-analysis"],
+          subagents: true,
+        }),
+      ),
+    );
 
     const meta = loadSessionMeta("gated-chat");
     expect(meta.mcp).toEqual({ disabledServers: ["blender", "playwright"] });
     expect(meta.plugins).toEqual(["notfair"]);
+    expect(meta.skills).toEqual(["churn-analysis"]);
     expect(sessionSubagentsEnabled(meta)).toBe(true);
   });
 
   it("reads a confirm that left subagents off as disabled, never as inherited", () => {
     ensureSessionDir("plain-chat");
-    patchSessionMeta("plain-chat", sessionSetupMeta(configured, configured, false));
+    patchSessionMeta("plain-chat", sessionSetupMeta(answer({ servers: configured })));
 
     const meta = loadSessionMeta("plain-chat");
     expect(sessionSubagentsEnabled(meta)).toBe(false);
     expect(meta.mcp).toEqual({});
-    // A chat that answered the picker with no plugin is an answer, not a legacy meta.
+    // A chat that answered the picker with nothing is an answer, not a legacy meta.
     expect(meta.plugins).toEqual([]);
+    expect(meta.skills).toEqual([]);
   });
 });

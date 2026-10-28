@@ -631,6 +631,9 @@ export interface McpSpecInfo {
   /** Reasonix+-managed server (currently Playwright) — disableable and
    *  reconfigureable through its card, but never removable from the list. */
   builtin?: boolean;
+  /** Slug of the plugin that bundles this server. Absent = standalone entry, so the
+   *  list can tell the two apart and point the user at the plugin that owns it. */
+  plugin?: string;
 }
 
 export interface McpSpecsEvent {
@@ -692,6 +695,29 @@ export interface PluginsEvent {
   plugins: PluginInfo[];
 }
 
+/** One installed standalone skill (`~/.reasonix/skills/<id>/SKILL.md`). Skills a plugin
+ *  ships are listed inside `PluginInfo.skills` instead: they cannot be switched on
+ *  without their plugin. */
+export interface SkillInfo {
+  /** Directory key under the skills root — the value a session freezes. */
+  id: string;
+  /** Declared name, falling back to the id. */
+  name: string;
+  description: string;
+  /** Absolute path to its SKILL.md. */
+  path: string;
+  /** True when THIS chat froze the skill at its session-start confirm. Read-only:
+   *  enablement is chosen there, never from the settings page. */
+  active: boolean;
+  /** Read failure; the card still renders so the skill can be removed. */
+  error?: string;
+}
+
+export interface SkillsEvent {
+  type: "$skills";
+  skills: SkillInfo[];
+}
+
 /** One configured MCP server offered in the fresh-chat setup picker — `enabled`
  *  is the pre-filled state: the Settings default for a new chat, or the source
  *  session's frozen set for a duplicate. */
@@ -712,16 +738,44 @@ export interface PluginSetupEntry {
   enabled: boolean;
 }
 
+/** One installed standalone skill offered in the same picker. Plugin skills are never
+ *  offered here: enabling the plugin is what brings them, so the picker cannot grow one
+ *  row per skill a plugin ships. */
+export interface SkillSetupEntry {
+  /** Skill id — the value the confirm freezes. */
+  name: string;
+  /** One-line summary, so the row can say what the skill is for. */
+  description?: string;
+  /** Pre-filled state: on for a new chat, the source session's set for a duplicate. */
+  enabled: boolean;
+}
+
 /** Session-start setup prompt: the capabilities a fresh chat must confirm before it
- *  can run. The MCP set, the plugin set and the subagent flag are all frozen by that
- *  one answer. A new chat and a duplicated session both get this prompt. */
+ *  can run. The MCP set, the plugin set, the standalone skill set and the subagent flag
+ *  are all frozen by that one answer. A new chat and a duplicated session both get this
+ *  prompt. */
 export interface McpSetupEvent {
   type: "$mcp_setup";
   servers: McpSetupServer[];
-  /** Installed plugins, pre-filled for this chat. */
+  /** Installed plugins, pre-filled for this chat. Their skills and MCP servers arrive
+   *  with them, so they get no rows of their own. */
   plugins: PluginSetupEntry[];
+  /** Installed standalone skills, pre-filled for this chat. */
+  skills: SkillSetupEntry[];
   /** Pre-filled subagent flag: off for a new chat, inherited from the source session
    *  when the chat was opened by duplicating one. */
+  subagents: boolean;
+}
+
+/** What the capability dialog answers: exactly the four sections it shows. One shape for
+ *  both askers (the session-start gate and Duplicate), so a new capability cannot be
+ *  wired into one and forgotten in the other. Plugin skills and plugin servers are never
+ *  listed: they arrive with the plugin slug. */
+export interface CapabilityChoice {
+  /** Names of the MCP servers this chat may use. */
+  servers: string[];
+  plugins: string[];
+  skills: string[];
   subagents: boolean;
 }
 
@@ -1176,6 +1230,8 @@ export interface SettingsEvent {
   capabilityPrefill?: McpSetupServer[];
   /** Plugin rows for that same popover, from the chat's frozen plugin set. */
   pluginPrefill?: PluginSetupEntry[];
+  /** Standalone skill rows for that same popover, from the chat's frozen skill set. */
+  skillPrefill?: SkillSetupEntry[];
   baseUrl?: string;
   apiKeyPrefix?: string;
   workspaceDir: string;
@@ -1787,9 +1843,20 @@ export type OutgoingCommand = { tabId?: string } & (
   /** Install one plugin from `owner/repo`, a git URL, or a local directory path. */
   | { cmd: "plugins_install"; source: string }
   | { cmd: "plugins_uninstall"; name: string }
-  /** Confirm a fresh chat's capabilities — enabled MCP servers and the subagent flag —
-   *  freezing both in its session meta and unlocking it. */
-  | { cmd: "mcp_session_configure"; enabled: string[]; subagents: boolean; plugins: string[] }
+  /** Standalone skill inventory for the Settings > Skills page. */
+  | { cmd: "skills_get" }
+  /** Install one skill, or every skill of a repository's `skills/` tree. */
+  | { cmd: "skills_install"; source: string }
+  | { cmd: "skills_uninstall"; name: string }
+  /** Confirm a fresh chat's capabilities — enabled MCP servers, plugins, standalone skills
+   *  and the subagent flag — freezing them in its session meta and unlocking it. */
+  | {
+      cmd: "mcp_session_configure";
+      enabled: string[];
+      subagents: boolean;
+      plugins: string[];
+      skills: string[];
+    }
   /** Abandon a fresh chat before its MCP set is confirmed — deletes that session; its workspace tab stays. */
   | { cmd: "mcp_session_cancel" }
   | { cmd: "mcp_extension_status" }
@@ -1845,6 +1912,8 @@ export type OutgoingCommand = { tabId?: string } & (
       enabled?: string[];
       /** Slugs of the plugins the clone may use. */
       plugins?: string[];
+      /** Ids of the standalone skills the clone may use. */
+      skills?: string[];
       /** Whether the clone may spawn subagents. */
       subagents?: boolean;
       /** Answered like `new_chat`: the clone's mint, or the refusal that stopped it. */

@@ -1,5 +1,7 @@
 import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { vi } from "vitest";
+import { writeSkillDir } from "./skill-fixture.js";
 
 /** A Codex-layout plugin tree on disk: `.codex-plugin/plugin.json`, an `mcpServers` file
  *  and one `skills/<id>/SKILL.md` per id. Shared by the store, manifest and prompt tests
@@ -39,18 +41,11 @@ export function writePluginTree(dir: string, opts: PluginTreeOptions = {}): void
     );
   }
   for (const skill of opts.skills ?? FIXTURE_SKILLS) {
-    writeSkill(join(dir, "skills"), skill);
+    writeSkillDir(join(dir, "skills", skill), {
+      name: skill,
+      description: `Runs the ${skill} workflow.`,
+    });
   }
-}
-
-/** One `SKILL.md` with the frontmatter the indexer reads. */
-function writeSkill(skillsDir: string, id: string): void {
-  mkdirSync(join(skillsDir, id), { recursive: true });
-  writeFileSync(
-    join(skillsDir, id, "SKILL.md"),
-    `---\nname: ${id}\ndescription: Runs the ${id} workflow.\n---\n\n# ${id}\n`,
-    "utf8",
-  );
 }
 
 /** A `copy` hook for `installPlugin` that clones a fixture tree into the store. The path
@@ -60,4 +55,14 @@ export function copyTree(from: () => string): (source: { kind: string }, target:
     if (source.kind !== "local") throw new Error("tests only install local fixtures");
     cpSync(from(), target, { recursive: true });
   };
+}
+
+/** Point every store at a temp home and config for the duration of a test. The daemon
+ *  resolves its roots per call, so the stub must be in force before the first write. */
+export function stubPluginHome(home: string, configPath: string): void {
+  vi.stubEnv("REASONIX_CONFIG", configPath);
+  vi.stubEnv("HOME", home);
+  vi.stubEnv("USERPROFILE", home);
+  // CJS interop: an ESM namespace export cannot be spied on.
+  vi.spyOn(require("node:os"), "homedir").mockReturnValue(home);
 }

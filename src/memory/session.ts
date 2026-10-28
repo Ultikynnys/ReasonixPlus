@@ -172,6 +172,10 @@ export interface SessionMeta {
    *  install globally but switch on per chat: a live flip would rewrite the cached
    *  prompt prefix. Absent = the chat agreed to none. */
   plugins?: string[];
+  /** Standalone skill ids this chat may use, frozen by the same confirm. Skills a plugin
+   *  ships are absent here: they arrive with the plugin's slug in `plugins`, so one
+   *  answer cannot grant half a plugin. Absent = the chat agreed to none. */
+  skills?: string[];
 }
 
 /** Session-owned MCP enablement. Absolute, not a delta — a server is disabled iff
@@ -204,10 +208,10 @@ export function normalizeSessionMcpState(input: unknown): SessionMcpState | unde
   return { disabledServers };
 }
 
-/** Sanitize a stored/loaded `SessionMeta.plugins` — one deduped slug list, and
- *  `undefined` when nothing is left. A hand-edited meta cannot feed junk into the
- *  plugin lookup. */
-export function normalizeSessionPlugins(input: unknown): string[] | undefined {
+/** Sanitize a stored/loaded `SessionMeta.plugins` / `skills` — one deduped name list,
+ *  and `undefined` when nothing is left. A hand-edited meta cannot feed junk into a
+ *  store lookup. */
+export function normalizeSessionNameList(input: unknown): string[] | undefined {
   if (!Array.isArray(input)) return undefined;
   const clean = [
     ...new Set(input.filter((s): s is string => typeof s === "string" && s.length > 0)),

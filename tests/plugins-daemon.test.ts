@@ -1,17 +1,21 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { McpSpecStatus } from "@reasonix/core-utils";
+import type { McpSpecInfo, McpSpecStatus } from "@reasonix/core-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  freezeLegacySessionCapabilities,
+  type CapabilityAnswer,
+  labelPluginServers,
+  orphanedCapabilityPatch,
   pluginPrefill,
   pluginServerInfos,
   sessionMcpOverrides,
   sessionSetupMeta,
+  syncSessionCapabilities,
 } from "../src/cli/commands/desktop.js";
 import { writeConfig } from "../src/config.js";
 import { ensureSessionDir, loadSessionMeta, patchSessionMeta } from "../src/memory/session.js";
+import { stubPluginHome } from "./support/plugin-fixture.js";
 
 function tabWith(
   statuses: Record<string, { kind: McpSpecStatus; reason?: string; toolCount?: number }>,
@@ -59,19 +63,59 @@ describe("pluginServerInfos", () => {
   });
 });
 
+describe("labelPluginServers", () => {
+  const row = (name: string | null): McpSpecInfo => ({
+    raw: name ?? "",
+    name,
+    transport: "stdio",
+    summary: name ?? "",
+    status: "connected",
+  });
+
+  it("tags the rows a plugin declared with its slug", () => {
+    const rows = labelPluginServers(
+      [row("notfair"), row("github")],
+      new Map([["notfair", "notfair"]]),
+    );
+    expect(rows).toEqual([{ ...row("notfair"), plugin: "notfair" }, row("github")]);
+  });
+
+  it("leaves anonymous rows unlabeled", () => {
+    const [anonymous] = labelPluginServers([row(null)], new Map([["", "notfair"]]));
+    expect(anonymous.plugin).toBeUndefined();
+  });
+});
+
 describe("sessionSetupMeta", () => {
-  it("freezes the MCP set, the plugin set and the subagent flag together", () => {
-    const meta = sessionSetupMeta(["playwright", "github"], ["github"], true, [
-      "notfair",
-      "notfair",
-    ]);
+  const answer = (overrides: Partial<CapabilityAnswer> = {}): CapabilityAnswer => ({
+    configuredServers: [],
+    servers: [],
+    plugins: [],
+    skills: [],
+    subagents: false,
+    ...overrides,
+  });
+
+  it("freezes the MCP set, the plugins, the skills and the subagent flag together", () => {
+    const meta = sessionSetupMeta(
+      answer({
+        configuredServers: ["playwright", "github"],
+        servers: ["github"],
+        plugins: ["notfair", "notfair"],
+        skills: ["churn-analysis"],
+        subagents: true,
+      }),
+    );
     expect(meta.mcp).toEqual({ disabledServers: ["playwright"] });
     expect(meta.plugins).toEqual(["notfair"]);
+    expect(meta.skills).toEqual(["churn-analysis"]);
     expect(meta.subagents).toBe(true);
   });
 
-  it("records an explicit empty plugin set when the chat picked none", () => {
-    expect(sessionSetupMeta([], [], false, []).plugins).toEqual([]);
+  it("records explicit empty sets when the chat picked none", () => {
+    const meta = sessionSetupMeta(answer());
+    expect(meta.plugins).toEqual([]);
+    expect(meta.skills).toEqual([]);
   });
 });
 
@@ -112,11 +156,8 @@ describe("sessionMcpOverrides — plugin servers follow the session", () => {
     home = mkdtempSync(join(tmpdir(), "reasonix-plugin-home-"));
     root = mkdtempSync(join(tmpdir(), "reasonix-plugin-session-"));
     configPath = join(root, "config.json");
-    vi.stubEnv("REASONIX_CONFIG", configPath);
     // Sessions live under the home state dir, so it must be the temp one.
-    vi.stubEnv("HOME", home);
-    vi.stubEnv("USERPROFILE", home);
-    vi.spyOn(require("node:os"), "homedir").mockReturnValue(home);
+    stubPluginHome(home, configPath);
     writeConfig(
       {
         mcpServers: {
@@ -170,17 +211,56 @@ describe("sessionMcpOverrides — plugin servers follow the session", () => {
   });
 });
 
-describe("freezeLegacySessionCapabilities", () => {
+describe("orphanedCapabilityPatch", () => {
+  const installed = {
+    servers: new Set(["playwright", "github"]),
+    plugins: new Set(["notfair"]),
+    skills: new Set(["churn-analysis"]),
+  };
+
+  it("drops a plugin and a skill that are no longer installed", () => {
+    expect(
+      orphanedCapabilityPatch(
+        { mcp: {}, plugins: ["notfair", "gone"], skills: ["churn-analysis", "gone"] },
+        installed,
+      ),
+    ).toEqual({ plugins: ["notfair"], skills: ["churn-analysis"] });
+  });
+
+  it("drops a disabled server the workspace no longer configures", () => {
+    expect(
+      orphanedCapabilityPatch({ mcp: { disabledServers: ["github", "gone"] } }, installed),
+    ).toEqual({ mcp: { disabledServers: ["github"] } });
+  });
+
+  it("leaves an empty disable list as empty rather than undefined", () => {
+    expect(orphanedCapabilityPatch({ mcp: { disabledServers: ["gone"] } }, installed)).toEqual({
+      mcp: {},
+    });
+  });
+
+  it("reports nothing when every frozen name is installed", () => {
+    expect(
+      orphanedCapabilityPatch(
+        { mcp: { disabledServers: ["github"] }, plugins: ["notfair"], skills: ["churn-analysis"] },
+        installed,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("never adds a list the chat did not freeze", () => {
+    expect(orphanedCapabilityPatch({ mcp: {} }, installed)).toBeUndefined();
+  });
+});
+
+describe("syncSessionCapabilities", () => {
   let home: string;
   let root: string;
 
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), "reasonix-legacy-home-"));
-    root = mkdtempSync(join(tmpdir(), "reasonix-legacy-work-"));
-    vi.stubEnv("REASONIX_CONFIG", join(root, "config.json"));
-    vi.stubEnv("HOME", home);
-    vi.stubEnv("USERPROFILE", home);
-    vi.spyOn(require("node:os"), "homedir").mockReturnValue(home);
+    home = mkdtempSync(join(tmpdir(), "reasonix-sync-home-"));
+    root = mkdtempSync(join(tmpdir(), "reasonix-sync-work-"));
+    stubPluginHome(home, join(root, "config.json"));
   });
 
   afterEach(() => {
@@ -190,37 +270,57 @@ describe("freezeLegacySessionCapabilities", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  function legacyTab(): { rootDir: string; mcpSetupPending: boolean } {
-    return { rootDir: root, mcpSetupPending: false };
+  function tab(pending = false) {
+    return { id: "tab-1", rootDir: root, mcpSetupPending: pending };
   }
 
-  it("freezes an empty plugin set on a chat that predates plugins", () => {
-    ensureSessionDir("legacy");
-    freezeLegacySessionCapabilities(legacyTab(), "legacy");
+  function chat(name: string, meta: Record<string, unknown>): string {
+    ensureSessionDir(name);
+    patchSessionMeta(name, meta);
+    return name;
+  }
+
+  it("snapshots the Settings default on a chat that predates the frozen model", () => {
+    writeConfig({ mcpServers: { ghidra: { command: "npx", args: ["ghidra"], disabled: true } } });
+    chat("legacy", {});
+    syncSessionCapabilities(tab(), "legacy");
     const meta = loadSessionMeta("legacy");
-    expect(meta.mcp).toEqual({});
+    expect(meta.mcp).toEqual({ disabledServers: ["ghidra"] });
     expect(meta.plugins).toEqual([]);
+    expect(meta.skills).toEqual([]);
   });
 
-  it("never rewrites a plugin set the chat already froze", () => {
-    ensureSessionDir("partly-frozen");
-    patchSessionMeta("partly-frozen", { plugins: ["notfair"] });
-    freezeLegacySessionCapabilities(legacyTab(), "partly-frozen");
-    const meta = loadSessionMeta("partly-frozen");
-    expect(meta.plugins).toEqual(["notfair"]);
-    expect(meta.mcp).toEqual({});
+  it("drops a plugin that is no longer installed from a confirmed chat", () => {
+    chat("orphaned", { mcp: {}, plugins: ["gone"], skills: [] });
+    syncSessionCapabilities(tab(), "orphaned");
+    expect(loadSessionMeta("orphaned").plugins).toEqual([]);
   });
 
-  it("leaves a confirmed chat alone", () => {
-    ensureSessionDir("confirmed");
-    patchSessionMeta("confirmed", { mcp: {}, plugins: ["notfair"] });
-    freezeLegacySessionCapabilities(legacyTab(), "confirmed");
-    expect(loadSessionMeta("confirmed").plugins).toEqual(["notfair"]);
+  it("drops a skill that is no longer installed from a confirmed chat", () => {
+    chat("orphaned", { mcp: {}, plugins: [], skills: ["gone"] });
+    syncSessionCapabilities(tab(), "orphaned");
+    expect(loadSessionMeta("orphaned").skills).toEqual([]);
   });
 
-  it("skips a chat whose setup gate is still open", () => {
-    ensureSessionDir("gated");
-    freezeLegacySessionCapabilities({ rootDir: root, mcpSetupPending: true }, "gated");
+  it("drops a disabled server the workspace no longer configures", () => {
+    chat("orphaned", { mcp: { disabledServers: ["gone"] }, plugins: [], skills: [] });
+    syncSessionCapabilities(tab(), "orphaned");
+    expect(loadSessionMeta("orphaned").mcp).toEqual({});
+  });
+
+  it("writes nothing when the chat frozen set is intact", () => {
+    writeConfig({ mcpServers: { ghidra: { command: "npx", args: ["ghidra"] } } });
+    chat("intact", { mcp: { disabledServers: ["ghidra"] }, plugins: [], skills: [] });
+    const before = loadSessionMeta("intact");
+    syncSessionCapabilities(tab(), "intact");
+    expect(loadSessionMeta("intact")).toEqual(before);
+  });
+
+  it("leaves a chat whose setup gate is still open alone", () => {
+    chat("gated", { mcpPending: true });
+    syncSessionCapabilities(tab(true), "gated");
+    syncSessionCapabilities(tab(), "gated");
     expect(loadSessionMeta("gated").mcp).toBeUndefined();
+    expect(loadSessionMeta("gated").mcpPending).toBe(true);
   });
 });

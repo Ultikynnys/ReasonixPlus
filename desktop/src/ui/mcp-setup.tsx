@@ -1,6 +1,11 @@
 import { useState } from "react";
 import { I } from "../icons";
-import type { McpSetupServer, PluginSetupEntry } from "../protocol";
+import type {
+  CapabilityChoice,
+  McpSetupServer,
+  PluginSetupEntry,
+  SkillSetupEntry,
+} from "../protocol";
 import { Throbber } from "./throbber";
 
 /** The rows a capability dialog starts with switched on: the ones the daemon marked
@@ -9,8 +14,8 @@ function switchedOn(rows: readonly { name: string; enabled: boolean }[]): Set<st
   return new Set(rows.filter((row) => row.enabled).map((row) => row.name));
 }
 
-/** Flip one name in a switch-set. Servers and plugins share it so the two row kinds
- *  cannot answer a click differently. */
+/** Flip one name in a switch-set. Server, plugin and skill rows share it so the three
+ *  kinds cannot answer a click differently. */
 function flipped(current: Set<string>, name: string): Set<string> {
   const next = new Set(current);
   if (next.has(name)) next.delete(name);
@@ -27,6 +32,7 @@ export function CapabilityDialog({
   hint,
   servers,
   plugins,
+  skills,
   subagents,
   emptyHint,
   confirmLabel,
@@ -38,8 +44,11 @@ export function CapabilityDialog({
   title: string;
   hint: string;
   servers: McpSetupServer[];
-  /** Installed plugins, each switched on by the seed's frozen set. */
+  /** Installed plugins, each switched on by the seed's frozen set. Their MCP servers and
+   *  skills travel with them, so they get no rows of their own. */
   plugins: PluginSetupEntry[];
+  /** Installed standalone skills, switched on by the seed's frozen set. */
+  skills: SkillSetupEntry[];
   /** Which switches start on: the capability seed the caller opened with. */
   subagents: boolean;
   emptyHint?: string;
@@ -48,11 +57,12 @@ export function CapabilityDialog({
    *  dismisses on click, so there is no wait to report. */
   busyLabel?: string;
   dismissLabel: string;
-  onConfirm: (enabled: string[], plugins: string[], subagents: boolean) => void;
+  onConfirm: (answer: CapabilityChoice) => void;
   onCancel: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(() => switchedOn(servers));
   const [chosenPlugins, setChosenPlugins] = useState<Set<string>>(() => switchedOn(plugins));
+  const [chosenSkills, setChosenSkills] = useState<Set<string>>(() => switchedOn(skills));
   const [spawn, setSpawn] = useState(subagents);
   const [busy, setBusy] = useState(false);
   // Bridging the confirmed servers takes seconds and the gate stays up until $ready, so
@@ -113,11 +123,14 @@ export function CapabilityDialog({
           <CapabilityPicker
             servers={servers}
             plugins={plugins}
+            skills={skills}
             selected={selected}
             chosenPlugins={chosenPlugins}
+            chosenSkills={chosenSkills}
             subagents={spawn}
             onToggleServer={(name) => setSelected((prev) => flipped(prev, name))}
             onTogglePlugin={(name) => setChosenPlugins((prev) => flipped(prev, name))}
+            onToggleSkill={(name) => setChosenSkills((prev) => flipped(prev, name))}
             onToggleSubagents={() => setSpawn((on) => !on)}
             emptyHint={emptyHint}
           />
@@ -141,7 +154,12 @@ export function CapabilityDialog({
             aria-busy={confirming}
             onClick={() => {
               setBusy(true);
-              onConfirm([...selected], [...chosenPlugins], spawn);
+              onConfirm({
+                servers: [...selected],
+                plugins: [...chosenPlugins],
+                skills: [...chosenSkills],
+                subagents: spawn,
+              });
             }}
           >
             {confirming && busyLabel ? <Throbber label={busyLabel} /> : null}
@@ -153,28 +171,35 @@ export function CapabilityDialog({
   );
 }
 
-/** The capability rows themselves: the subagent switch, one switch per configured MCP
- *  server, and one per installed plugin. */
+/** The capability rows themselves: the subagent switch, one switch per installed plugin,
+ *  one per standalone skill, and one per configured MCP server. */
 function CapabilityPicker({
   servers,
   plugins,
+  skills,
   selected,
   chosenPlugins,
+  chosenSkills,
   subagents,
   onToggleServer,
   onTogglePlugin,
+  onToggleSkill,
   onToggleSubagents,
   emptyHint = "None configured. Add servers in Settings, then open a new chat.",
 }: {
   servers: McpSetupServer[];
   plugins: PluginSetupEntry[];
+  skills: SkillSetupEntry[];
   /** Names of the servers currently switched on. */
   selected: ReadonlySet<string>;
   /** Slugs of the plugins currently switched on. */
   chosenPlugins: ReadonlySet<string>;
+  /** Ids of the standalone skills currently switched on. */
+  chosenSkills: ReadonlySet<string>;
   subagents: boolean;
   onToggleServer: (name: string) => void;
   onTogglePlugin: (name: string) => void;
+  onToggleSkill: (name: string) => void;
   onToggleSubagents: () => void;
   emptyHint?: string;
 }) {
@@ -204,6 +229,28 @@ function CapabilityPicker({
         </p>
       )}
       <p className="mcp-setup-hint" style={{ margin: "12px 0 6px", opacity: 0.6 }}>
+        Skills
+      </p>
+      {skills.length > 0 ? (
+        <ul className="mcp-setup-list" style={{ listStyle: "none", margin: 0, padding: 0 }}>
+          {skills.map((skill, i) => (
+            <SetupRow
+              key={skill.name}
+              name={skill.name}
+              badge={skill.description || undefined}
+              on={chosenSkills.has(skill.name)}
+              onToggle={() => onToggleSkill(skill.name)}
+              striped={i % 2 === 1}
+            />
+          ))}
+        </ul>
+      ) : (
+        <p className="mcp-setup-hint" style={{ margin: 0, opacity: 0.6 }}>
+          No standalone skill installed. Install one in Settings, under Skills, then open a
+          new chat. Skills a plugin ships arrive with that plugin.
+        </p>
+      )}
+      <p className="mcp-setup-hint" style={{ margin: "12px 0 6px", opacity: 0.6 }}>
         MCP servers
       </p>
       {servers.length > 0 ? (
@@ -228,8 +275,8 @@ function CapabilityPicker({
   );
 }
 
-/** One switchable capability row. The subagent flag and each MCP server render through
- *  the same markup so the picker cannot drift between the two kinds. */
+/** One switchable capability row. The subagent flag, each plugin, each skill and each MCP
+ *  server render through the same markup so the picker cannot drift between the kinds. */
 function SetupRow({
   name,
   badge,

@@ -294,6 +294,20 @@ describe("mcp-normalize-config", () => {
       const fs = findByName(result, "fs")!;
       expect(fs.disabled).toBe(true);
     });
+
+    it("ignores disabled on a plugin-owned server: only the chat's plugin set decides", () => {
+      const cfg: ReasonixConfig = {
+        mcpServers: {
+          notfair: {
+            url: "https://notfair.co/api/mcp",
+            type: "http",
+            plugin: "notfair",
+            disabled: true,
+          },
+        },
+      };
+      expect(findByName(normalizeMcpConfig(cfg), "notfair")!.disabled).toBe(false);
+    });
   });
 
   describe("normalizeMcpConfig: env and headers", () => {

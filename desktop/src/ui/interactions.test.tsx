@@ -759,13 +759,20 @@ describe("mcp-setup", () => {
 
   const installedPlugins = [{ name: "notfair", displayName: "NotFair", enabled: true }];
 
+  const installedSkills = [
+    { name: "churn-analysis", description: "Predicts churn.", enabled: true },
+    { name: "seo-audit", enabled: false },
+  ];
+
   function renderDialog({
     list = servers,
     pluginList = installedPlugins,
+    skillList = installedSkills,
     subagents = false,
   }: {
     list?: typeof servers;
     pluginList?: typeof installedPlugins;
+    skillList?: typeof installedSkills;
     subagents?: boolean;
   } = {}) {
     const onConfirm = vi.fn();
@@ -776,6 +783,7 @@ describe("mcp-setup", () => {
         hint="Choose what this chat starts with. Every choice here is locked for the session, even after a restart."
         servers={list}
         plugins={pluginList}
+        skills={skillList}
         subagents={subagents}
         confirmLabel="Confirm and start"
         busyLabel="Starting session"
@@ -785,6 +793,16 @@ describe("mcp-setup", () => {
       />,
     );
     return { onConfirm, onCancel };
+  }
+
+  /** The answer the dialog reports, in the shape every caller consumes. */
+  function answerOf(onConfirm: ReturnType<typeof vi.fn>) {
+    return onConfirm.mock.calls[0]?.[0] as {
+      servers: string[];
+      plugins: string[];
+      skills: string[];
+      subagents: boolean;
+    };
   }
 
   describe("CapabilityDialog", () => {
@@ -797,28 +815,51 @@ describe("mcp-setup", () => {
     it("starts from the Settings defaults and reports the enabled set on confirm", () => {
       const { onConfirm } = renderDialog();
       fireEvent.click(screen.getByText("Confirm and start"));
-      expect(onConfirm).toHaveBeenCalledWith(["playwright"], ["notfair"], false);
+      expect(answerOf(onConfirm)).toEqual({
+        servers: ["playwright"],
+        plugins: ["notfair"],
+        skills: ["churn-analysis"],
+        subagents: false,
+      });
     });
 
     it("adds a toggled server to the confirmed set", () => {
       const { onConfirm } = renderDialog();
       fireEvent.click(screen.getByRole("switch", { name: "blender" }));
       fireEvent.click(screen.getByText("Confirm and start"));
-      const [enabled, plugins, subagents] = onConfirm.mock.calls[0] as [
-        string[],
-        string[],
-        boolean,
-      ];
-      expect([...enabled].sort()).toEqual(["blender", "playwright"]);
-      expect(plugins).toEqual(["notfair"]);
-      expect(subagents).toBe(false);
+      const answer = answerOf(onConfirm);
+      expect([...answer.servers].sort()).toEqual(["blender", "playwright"]);
+      expect(answer.plugins).toEqual(["notfair"]);
+      expect(answer.subagents).toBe(false);
     });
 
     it("drops a plugin the user switched off from the confirmed set", () => {
       const { onConfirm } = renderDialog();
       fireEvent.click(screen.getByRole("switch", { name: "NotFair" }));
       fireEvent.click(screen.getByText("Confirm and start"));
-      expect(onConfirm).toHaveBeenCalledWith(["playwright"], [], false);
+      expect(answerOf(onConfirm).plugins).toEqual([]);
+    });
+
+    it("reports the standalone skills that start switched on", () => {
+      const { onConfirm } = renderDialog();
+      fireEvent.click(screen.getByText("Confirm and start"));
+      expect(answerOf(onConfirm).skills).toEqual(["churn-analysis"]);
+    });
+
+    it("adds and drops a skill independently of the plugin set", () => {
+      const { onConfirm } = renderDialog();
+      fireEvent.click(screen.getByRole("switch", { name: "seo-audit" }));
+      fireEvent.click(screen.getByRole("switch", { name: "churn-analysis" }));
+      fireEvent.click(screen.getByText("Confirm and start"));
+      const answer = answerOf(onConfirm);
+      expect(answer.skills).toEqual(["seo-audit"]);
+      expect(answer.plugins).toEqual(["notfair"]);
+    });
+
+    it("says so when no standalone skill is installed and points at the plugin rule", () => {
+      renderDialog({ skillList: [] });
+      expect(screen.getByText(/No standalone skill installed/)).toBeTruthy();
+      expect(screen.getByText(/Skills a plugin ships arrive with that plugin/)).toBeTruthy();
     });
 
     it("says so when no plugin is installed", () => {
@@ -831,21 +872,17 @@ describe("mcp-setup", () => {
       const toggle = screen.getByRole("switch", { name: "Subagents" });
       expect(toggle.getAttribute("aria-checked")).toBe("true");
       fireEvent.click(screen.getByText("Confirm and start"));
-      expect(onConfirm).toHaveBeenCalledWith(["playwright"], ["notfair"], true);
+      expect(answerOf(onConfirm).subagents).toBe(true);
     });
 
     it("reports the subagent choice independently of the server set", () => {
       const { onConfirm } = renderDialog({ subagents: false });
       fireEvent.click(screen.getByRole("switch", { name: "Subagents" }));
       fireEvent.click(screen.getByText("Confirm and start"));
-      const [enabled, plugins, subagents] = onConfirm.mock.calls[0] as [
-        string[],
-        string[],
-        boolean,
-      ];
-      expect(enabled).toEqual(["playwright"]);
-      expect(plugins).toEqual(["notfair"]);
-      expect(subagents).toBe(true);
+      const answer = answerOf(onConfirm);
+      expect(answer.servers).toEqual(["playwright"]);
+      expect(answer.plugins).toEqual(["notfair"]);
+      expect(answer.subagents).toBe(true);
     });
 
     it("still offers the subagent switch when no MCP server is configured", () => {
@@ -853,7 +890,9 @@ describe("mcp-setup", () => {
       expect(screen.getByText(/None configured/)).toBeTruthy();
       fireEvent.click(screen.getByRole("switch", { name: "Subagents" }));
       fireEvent.click(screen.getByText("Confirm and start"));
-      expect(onConfirm).toHaveBeenCalledWith([], ["notfair"], true);
+      const answer = answerOf(onConfirm);
+      expect(answer.servers).toEqual([]);
+      expect(answer.subagents).toBe(true);
     });
 
     it("greys out the confirm button and throbs while the session starts", () => {
