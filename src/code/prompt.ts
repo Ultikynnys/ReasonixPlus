@@ -9,6 +9,69 @@ const DEFAULT_CODE_MODEL = "deepseek-v4-flash";
 /** Cap on user-supplied prompt append text, matching project memory so one source cannot crowd out the rest. */
 export const SYSTEM_APPEND_MAX_CHARS = 8_000;
 
+/** Cap on the plugin-skill index: a large plugin must not crowd out the tool spec. */
+export const PLUGIN_SKILLS_MAX_CHARS = 6_000;
+/** Per-skill description budget in the index: enough to match a request, small enough
+ *  that a 48-skill plugin still lists every skill inside the cap. */
+const PLUGIN_SKILL_DESC_CHARS = 96;
+
+/** One enabled plugin skill the prompt advertises; the agent reads the file on demand. */
+export interface PluginSkillEntry {
+  /** Plugin slug the skill belongs to. */
+  plugin: string;
+  name: string;
+  /** First sentence of the skill's description. */
+  description: string;
+  /** Absolute directory holding one subdirectory per skill. */
+  skillsRoot: string;
+}
+
+function clipDescription(text: string): string {
+  if (text.length <= PLUGIN_SKILL_DESC_CHARS) return text;
+  const cut = text.slice(0, PLUGIN_SKILL_DESC_CHARS);
+  const space = cut.lastIndexOf(" ");
+  return `${cut.slice(0, space > PLUGIN_SKILL_DESC_CHARS / 2 ? space : PLUGIN_SKILL_DESC_CHARS).trimEnd()}...`;
+}
+
+function pluginSkillsSection(skills: readonly PluginSkillEntry[]): string {
+  // A manifest may declare several skill roots, so collect them all: naming only the
+  // first would hide every skill that lives in the second.
+  const roots = new Map<string, Set<string>>();
+  for (const skill of skills) {
+    const dirs = roots.get(skill.plugin) ?? new Set<string>();
+    dirs.add(skill.skillsRoot);
+    roots.set(skill.plugin, dirs);
+  }
+  const rootLines = [...roots]
+    .map(([plugin, dirs]) => `- ${plugin}: ${[...dirs].map((dir) => `\`${dir}\``).join(", ")}`)
+    .join("\n");
+  const head = `# Plugin skills
+
+Installed plugins ship workflow files. When a request matches a skill's description, read its SKILL.md completely and follow it: the file is authoritative over your own approach. Do not open one for work its description does not cover.
+
+Skill roots (one directory per skill, each holding its SKILL.md):
+
+${rootLines}
+`;
+  const lines: string[] = [];
+  let used = head.length;
+  let dropped = 0;
+  for (const skill of skills) {
+    const line = `- ${skill.name} (${skill.plugin}): ${clipDescription(skill.description)}`;
+    if (used + line.length + 1 > PLUGIN_SKILLS_MAX_CHARS) {
+      dropped += 1;
+      continue;
+    }
+    lines.push(line);
+    used += line.length + 1;
+  }
+  const tail =
+    dropped > 0
+      ? `\n- ${dropped} more skill(s) are not indexed here: list the skill root with \`list_directory\`.`
+      : "";
+  return `${head}\n${lines.join("\n")}${tail}`;
+}
+
 /** Rendered only for a session minted with subagents on. A session without the tool
  *  gets no subagent text at all: instructions for a tool the model cannot see are
  *  worse than silence, and the section is dead weight in the cached prefix. */
@@ -378,6 +441,9 @@ export interface CodeSystemPromptOptions {
   /** Whether the selected web search engine drives a managed browser. Only that engine
    *  offers the persistent page the matching section documents. */
   browserWebTools?: boolean;
+  /** Enabled plugin skills to index for the agent. Read at call time, so a plugin
+   *  installed or disabled mid-session reaches the next rebuilt prompt. */
+  pluginSkills?: readonly PluginSkillEntry[];
 }
 
 export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions = {}): string {
@@ -386,7 +452,11 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
     opts.subagentsEnabled === true,
     opts.browserWebTools === true,
   );
-  const withMemory = applyMemoryStack(codeBase, rootDir, { homeDir: opts.homeDir });
+  const withSkills =
+    opts.pluginSkills && opts.pluginSkills.length > 0
+      ? `${codeBase}\n\n${pluginSkillsSection(opts.pluginSkills)}`
+      : codeBase;
+  const withMemory = applyMemoryStack(withSkills, rootDir, { homeDir: opts.homeDir });
   const gitignorePath = join(rootDir, ".gitignore");
   let result = withMemory;
   const gitignore = readCappedTextFile(gitignorePath, GITIGNORE_MAX_CHARS);

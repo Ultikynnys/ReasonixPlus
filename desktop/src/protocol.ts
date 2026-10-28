@@ -56,6 +56,11 @@ import type {
   McpSpecInfo,
   McpSpecStatus,
   McpSpecsEvent,
+  PluginInfo,
+  PluginServerInfo,
+  PluginSetupEntry,
+  PluginSkillInfo,
+  PluginsEvent,
   MemoryDetailEvent,
   MemoryEntryDetail,
   MemoryEntryInfo,
@@ -175,6 +180,11 @@ export type {
   McpSetupEvent,
   McpSetupServer,
   McpSpecStatus,
+  PluginInfo,
+  PluginServerInfo,
+  PluginSetupEntry,
+  PluginSkillInfo,
+  PluginsEvent,
   MemoryDetailEvent,
   MemoryEntryDetail,
   MemoryEntryInfo,
@@ -288,6 +298,7 @@ export type IncomingEvent = { tabId?: string } & (
   | WorkspaceInitializedEvent
   | TabsSnapshotEvent
   | McpSpecsEvent
+  | PluginsEvent
   | McpSetupEvent
   | McpExtensionStatusEvent
   | McpExtensionCheckEvent

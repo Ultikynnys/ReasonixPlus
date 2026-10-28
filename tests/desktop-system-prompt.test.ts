@@ -13,17 +13,26 @@ import { patchSessionMeta } from "../src/memory/session.js";
 import { ToolRegistry } from "../src/tools.js";
 
 describe("refreshTabSystemPrompt", () => {
+  let home: string;
   let root: string;
   let configPath: string;
 
   beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "reasonix-desktop-prompt-home-"));
     root = mkdtempSync(join(tmpdir(), "reasonix-desktop-prompt-"));
     configPath = join(root, "config.json");
-    process.env.REASONIX_CONFIG = configPath;
+    // The prompt reads installed plugins from the home state dir too, so the
+    // comparison below must see an empty plugin store, not the developer's.
+    vi.stubEnv("REASONIX_CONFIG", configPath);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    vi.spyOn(require("node:os"), "homedir").mockReturnValue(home);
   });
 
   afterEach(() => {
-    process.env.REASONIX_CONFIG = undefined;
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    rmSync(home, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   });
 

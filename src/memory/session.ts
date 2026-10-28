@@ -168,6 +168,10 @@ export interface SessionMeta {
   /** Whether this session runs with `spawn_subagent`. Frozen at mint (a session
    *  boundary is the only place it may change); absent = disabled. */
   subagents?: boolean;
+  /** Plugin slugs this chat may use, frozen by its session-start confirm. Plugins
+   *  install globally but switch on per chat: a live flip would rewrite the cached
+   *  prompt prefix. Absent = the chat agreed to none. */
+  plugins?: string[];
 }
 
 /** Session-owned MCP enablement. Absolute, not a delta — a server is disabled iff
@@ -198,6 +202,17 @@ export function normalizeSessionMcpState(input: unknown): SessionMcpState | unde
   }
   if (!disabledServers) return undefined;
   return { disabledServers };
+}
+
+/** Sanitize a stored/loaded `SessionMeta.plugins` — one deduped slug list, and
+ *  `undefined` when nothing is left. A hand-edited meta cannot feed junk into the
+ *  plugin lookup. */
+export function normalizeSessionPlugins(input: unknown): string[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const clean = [
+    ...new Set(input.filter((s): s is string => typeof s === "string" && s.length > 0)),
+  ];
+  return clean.length > 0 ? clean : undefined;
 }
 
 /** `sessionPath` keeps its historical name and now points at the chat transcript

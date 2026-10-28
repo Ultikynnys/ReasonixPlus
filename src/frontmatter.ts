@@ -1,6 +1,8 @@
 /** Tiny YAML-frontmatter parser shared by the memory loaders. Single source so BOM + folded + quoted handling stay consistent. */
 
 const KEY_RE = /^([a-zA-Z_][a-zA-Z0-9_-]*):\s*(.*)$/;
+/** A bare `>` / `|` opens a YAML block scalar: the value is the indented text that follows. */
+const BLOCK_SCALAR_RE = /^[|>][+-]?$/;
 /** Bracket-write guard — regex permits these as identifiers, but writing them would mutate Object.prototype. */
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
@@ -31,7 +33,8 @@ export function parseFrontmatter(raw: string): { data: Record<string, string>; b
     const m = line.match(KEY_RE);
     if (m?.[1] && !FORBIDDEN_KEYS.has(m[1])) {
       currentKey = m[1];
-      entries.set(currentKey, (m[2] ?? "").trim());
+      const inline = (m[2] ?? "").trim();
+      entries.set(currentKey, BLOCK_SCALAR_RE.test(inline) ? "" : inline);
     } else if (currentKey) {
       const cont = line.trim();
       const prev = entries.get(currentKey) ?? "";

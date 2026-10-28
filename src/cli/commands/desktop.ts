@@ -73,6 +73,10 @@ import type {
   PlanRestoredEvent,
   PlanStep,
   PlaywrightBrowserInstallEvent,
+  PluginInfo,
+  PluginServerInfo,
+  PluginSetupEntry,
+  PluginsEvent,
   RetryResultEvent,
   RevisionRequiredEvent,
   SessionBoundEvent,
@@ -135,6 +139,7 @@ import {
   bridgeEndpointEnv,
   clearMimoApiKey,
   copyWorkspaceRules,
+  defaultConfigPath,
   defaultReasoningEffortForModel,
   deriveNativeOllamaOrigin,
   hasOpencodeCredential,
@@ -193,6 +198,7 @@ import {
   mergeMcpServerEntry,
   modelAcceptsImages,
   modelUsableFor,
+  normalizeMcpConfig,
   pickFallbackModel,
   providerForModel,
   providerSettingFromStore,
@@ -294,6 +300,14 @@ import {
 } from "../../mcp/extension.js";
 import { ensureNpxAvailable } from "../../mcp/node-runtime.js";
 import { quoteArg } from "../../mcp/stdio.js";
+import {
+  type OwnedPluginSkill,
+  installPlugin,
+  listPlugins,
+  pluginDisplayName,
+  pluginSkills,
+  uninstallPlugin,
+} from "../../plugins/index.js";
 import { BUILTIN_ALLOWLIST } from "../../tools/shell/parse.js";
 import { coveredRuleScopes } from "../../tools/shell/rule-scope.js";
 
@@ -389,6 +403,7 @@ import {
   loadSessionNotices,
   migrateLegacyFlatSessions,
   normalizeSessionMcpState,
+  normalizeSessionPlugins,
   normalizeWorkspace,
   patchSessionMeta,
   patchSessionWorkspaceIfMissing,
@@ -611,6 +626,7 @@ export type EmittableEvent =
   | WorkspaceInitializedEvent
   | TabsSnapshotEvent
   | McpSpecsEvent
+  | PluginsEvent
   | import("@reasonix/core-utils").McpSetupEvent
   | McpExtensionStatusEvent
   | McpExtensionCheckEvent
@@ -1893,6 +1909,7 @@ function emitSettings(tab: Tab, opts: { turnReleased?: boolean } = {}): void {
         .map((spec) => spec.function.name)
         .filter((name) => toolsetTools.get(name)?.readOnly === true)
     : [];
+  const capabilitySeed = chatCapabilitySeed(tab);
   emit(
     {
       type: "$settings",
@@ -1908,10 +1925,8 @@ function emitSettings(tab: Tab, opts: { turnReleased?: boolean } = {}): void {
       subagents: tab.subagents,
       // What a clone of this chat starts from: the Duplicate popover offers these rows,
       // so the copy can run with a different set instead of guessing the source's.
-      capabilityPrefill: capabilityPrefill(
-        configuredMcpSpecs(tab.rootDir),
-        chatCapabilitySeed(tab),
-      ),
+      capabilityPrefill: capabilityPrefill(configuredMcpSpecs(tab.rootDir), capabilitySeed),
+      pluginPrefill: pluginPrefill(configuredPlugins(), capabilitySeed),
       elevationEnabled: loadElevationEnabled(),
       repetitionGuardEnabled:
         tab.runtime?.loop.repetitionGuardEnabled ?? loadRepetitionGuardEnabled(),
@@ -3591,7 +3606,7 @@ function loadSessionIntoTab(
   actions.abortTurn(tab);
   actions.cancelPendingGates(tab);
   tab.currentSession = name;
-  freezeLegacySessionMcp(tab, name);
+  freezeLegacySessionCapabilities(tab, name);
   actions.persistOpenTabs();
   // A conversation this channel is opening fresh has proved nothing yet about which
   // models run here, so the failover list starts every one of them again.
@@ -3686,10 +3701,29 @@ function summarizeMcpSpec(raw: string): McpSpecInfo {
   }
 }
 
-/** The named (non-anonymous) configured MCP servers for a workspace. */
+/** Server name -> owning plugin slug, for every plugin-declared server in config. One
+ *  read feeds both the picker projection and the per-session exclusion. */
+function pluginServerOwners(): Map<string, string> {
+  const cfg = readConfig();
+  const owners = new Map<string, string>();
+  for (const [name, entry] of Object.entries(cfg.mcpServers ?? {})) {
+    if (entry.plugin) owners.set(name, entry.plugin);
+  }
+  return owners;
+}
+
+/** Server names owned by an installed plugin. They follow their plugin's row in the
+ *  session picker, so they never appear as standalone server rows. */
+function pluginOwnedServerNames(): Set<string> {
+  return new Set(pluginServerOwners().keys());
+}
+
+/** The named (non-anonymous) configured MCP servers a chat picks row by row. */
 function namedMcpSpecs(rootDir: string): Array<McpServerSpec & { name: string }> {
-  return loadEffectiveMcpConfig(rootDir).filter((spec): spec is McpServerSpec & { name: string } =>
-    Boolean(spec.name),
+  const pluginOwned = pluginOwnedServerNames();
+  return loadEffectiveMcpConfig(rootDir).filter(
+    (spec): spec is McpServerSpec & { name: string } =>
+      Boolean(spec.name) && !pluginOwned.has(spec.name as string),
   );
 }
 
@@ -3708,18 +3742,19 @@ function sessionMcpFromConfig(rootDir: string): SessionMcpState {
   );
 }
 
-/** The capability set a session-start confirm freezes: every configured server the
- *  user did not enable is recorded disabled, and the subagent flag is exactly what was
- *  picked. One writer, so a session's two capabilities cannot disagree. */
+/** The capability set a session-start confirm freezes: the MCP set, the plugin slugs and
+ *  the subagent flag. One writer, so a chat's capabilities cannot disagree. */
 export function sessionSetupMeta(
   configuredServers: readonly string[],
   enabledServers: readonly string[],
   subagents: boolean,
-): Pick<SessionMeta, "mcp" | "subagents"> {
+  plugins: readonly string[] = [],
+): Pick<SessionMeta, "mcp" | "subagents" | "plugins"> {
   const enabled = new Set(enabledServers);
   return {
     mcp: makeSessionMcpState(configuredServers.filter((name) => !enabled.has(name))),
     subagents: subagents === true,
+    plugins: [...new Set(plugins)],
   };
 }
 
@@ -3728,6 +3763,8 @@ export function sessionSetupMeta(
  *  frozen set, so a clone starts faithful and the toggles are there to diverge from it. */
 export interface ChatCapabilitySeed {
   mcp?: SessionMcpState;
+  /** Plugin slugs; absent means "every installed plugin", the New-chat default. */
+  plugins?: string[];
   subagents: boolean;
 }
 
@@ -3754,6 +3791,28 @@ export function capabilityPrefill(
   }));
 }
 
+/** The picker's plugin rows for a capability seed: every installed plugin, on unless the
+ *  seed pins a session's frozen set. Same one-projection rule as the server rows. */
+export function pluginPrefill(
+  installed: readonly { slug: string; displayName: string }[],
+  seed?: ChatCapabilitySeed,
+): PluginSetupEntry[] {
+  const chosen = seed?.plugins ? new Set(seed.plugins) : undefined;
+  return installed.map((plugin) => ({
+    name: plugin.slug,
+    displayName: plugin.displayName,
+    enabled: chosen ? chosen.has(plugin.slug) : true,
+  }));
+}
+
+/** Every installed plugin in picker shape, sorted by slug. */
+function configuredPlugins(): { slug: string; displayName: string }[] {
+  return listPlugins().map((state) => ({
+    slug: state.slug,
+    displayName: pluginDisplayName(state.manifest),
+  }));
+}
+
 /** Every configured server name — the list a capability confirm freezes enablement
  *  against, so New chat's picker and the Duplicate popover answer the same question. */
 function configuredServerNames(rootDir: string): string[] {
@@ -3777,31 +3836,83 @@ function configuredMcpSpecs(
 function chatCapabilitySeed(tab: Tab): ChatCapabilitySeed {
   return {
     mcp: sessionMcpState(tab.currentSession) ?? sessionMcpFromConfig(tab.rootDir),
+    plugins: sessionPlugins(tab.currentSession),
     subagents: tab.subagents,
+  };
+}
+
+/** Everything a chat froze at its session-start confirm, read once. `mcp: undefined`
+ *  marks a chat that predates the field, which mirrors the Settings default. */
+interface SessionFreeze {
+  mcp: SessionMcpState | undefined;
+  plugins: string[];
+}
+
+function sessionFreeze(name: string | undefined): SessionFreeze {
+  if (!name) return { mcp: undefined, plugins: [] };
+  const meta = loadSessionMeta(name);
+  return {
+    mcp: meta.mcp === undefined ? undefined : (normalizeSessionMcpState(meta.mcp) ?? {}),
+    plugins: normalizeSessionPlugins(meta.plugins) ?? [],
   };
 }
 
 /** The active session's stored MCP state. `undefined` = a session created before
  *  the field existed — callers fall back to the config default. */
 function sessionMcpState(name: string): SessionMcpState | undefined {
-  if (!name) return undefined;
-  const meta = loadSessionMeta(name);
-  if (meta.mcp === undefined) return undefined;
-  return normalizeSessionMcpState(meta.mcp) ?? {};
+  return sessionFreeze(name).mcp;
 }
 
-/** Session overlay for the MCP runtime; `undefined` (legacy session) = use default. */
-function sessionMcpOverrides(name: string): McpSpecOverrides | undefined {
-  const state = sessionMcpState(name);
-  if (state === undefined) return undefined;
-  return {
-    disabledServers: new Set(state.disabledServers ?? []),
-  };
+/** Plugin slugs this chat may use — frozen by its session-start confirm. A chat with no
+ *  field never answered the picker (or predates plugins), so it gets none: nothing is
+ *  granted by an absent field. */
+function sessionPlugins(name: string | undefined): string[] {
+  return sessionFreeze(name).plugins;
 }
 
-/** Legacy sessions predate the frozen-MCP model: snapshot the current Settings
- *  default once so the session's server set stops tracking later edits. */
-function freezeLegacySessionMcp(tab: Tab, name: string): void {
+/** The skill index the prompt may advertise for this chat. */
+function sessionPluginSkills(name: string | undefined): OwnedPluginSkill[] {
+  const slugs = sessionPlugins(name);
+  return slugs.length > 0 ? pluginSkills({ only: slugs }) : [];
+}
+
+/** Servers this chat may not bridge because their plugin was not frozen at its
+ *  session-start confirm. */
+function pluginServerExclusions(slugs: readonly string[]): string[] {
+  const chosen = new Set(slugs);
+  return [...pluginServerOwners()].filter(([, owner]) => !chosen.has(owner)).map(([name]) => name);
+}
+
+/** Session overlay for the MCP runtime: the chat's frozen server set plus every server
+ *  owned by a plugin it did not enable. `undefined` (legacy session, no plugins) =
+ *  mirror the Settings default. */
+export function sessionMcpOverrides(
+  tab: Pick<Tab, "rootDir" | "currentSession">,
+): McpSpecOverrides | undefined {
+  const freeze = sessionFreeze(tab.currentSession);
+  const excluded = pluginServerExclusions(freeze.plugins);
+  if (freeze.mcp === undefined && excluded.length === 0) return undefined;
+  const base =
+    freeze.mcp === undefined
+      ? (sessionMcpFromConfig(tab.rootDir).disabledServers ?? [])
+      : (freeze.mcp.disabledServers ?? []);
+  return { disabledServers: new Set([...base, ...excluded]) };
+}
+
+/** The servers this chat may not use, or `undefined` when it mirrors the default. */
+function sessionDisabledServers(
+  tab: Pick<Tab, "rootDir" | "currentSession">,
+): ReadonlySet<string> | undefined {
+  return sessionMcpOverrides(tab)?.disabledServers;
+}
+
+/** Legacy sessions predate the frozen-capability model: snapshot the current Settings
+ *  defaults once so the session stops tracking later edits. A chat that answered the
+ *  picker (`mcp` present) is not legacy, and a frozen plugin list is never rewritten. */
+export function freezeLegacySessionCapabilities(
+  tab: Pick<Tab, "rootDir" | "mcpSetupPending">,
+  name: string,
+): void {
   if (tab.mcpSetupPending) return;
   try {
     const meta = loadSessionMeta(name);
@@ -3809,19 +3920,21 @@ function freezeLegacySessionMcp(tab: Tab, name: string): void {
     // sweep owns it; backfilling the default here would make it look configured.
     if (meta.mcpPending === true) return;
     if (meta.mcp !== undefined) return;
-    patchSessionMeta(name, { mcp: sessionMcpFromConfig(tab.rootDir) });
+    patchSessionMeta(name, {
+      mcp: sessionMcpFromConfig(tab.rootDir),
+      // A chat that predates plugins agreed to none; freezing that keeps a later
+      // install from drifting into its prompt.
+      ...(meta.plugins === undefined ? { plugins: [] } : {}),
+    });
   } catch (err) {
     /* best-effort — a failure leaves the session mirroring the default */
-    process.stderr.write(`reasonix: legacy session MCP freeze failed — ${messageOf(err)}\n`);
+    process.stderr.write(`reasonix: legacy session freeze failed — ${messageOf(err)}\n`);
   }
 }
 
 /** Config specs for a tab with the active session's MCP overlay applied. */
 function effectiveMcpSpecs(tab: Tab): McpServerSpec[] {
-  return applyMcpSessionOverrides(
-    loadEffectiveMcpConfig(tab.rootDir),
-    sessionMcpOverrides(tab.currentSession),
-  );
+  return applyMcpSessionOverrides(loadEffectiveMcpConfig(tab.rootDir), sessionMcpOverrides(tab));
 }
 
 /** Arm a session's setup gate: it withholds `$ready` until the picker is confirmed, and
@@ -3830,8 +3943,9 @@ function armSessionGate(tab: Tab): void {
   tab.mcpSetupPending = true;
   const seed = tab.capabilitySeed ?? { subagents: false };
   const servers = capabilityPrefill(configuredMcpSpecs(tab.rootDir), seed);
+  const plugins = pluginPrefill(configuredPlugins(), seed);
   emitTabDiagnostic(tab, "tab.setup.required", { reason: "mcp-setup" }, "info");
-  emit({ type: "$mcp_setup", servers, subagents: seed.subagents === true }, tab.id);
+  emit({ type: "$mcp_setup", servers, plugins, subagents: seed.subagents === true }, tab.id);
 }
 
 /** Report a failed confirm and re-arm the gate. The frontend dismisses the picker only
@@ -3848,8 +3962,9 @@ function failSessionSetup(tab: Tab, err: unknown): void {
 
 function emitMcpSpecs(tab: Tab): void {
   const normalized = loadEffectiveMcpConfig(tab.rootDir);
-  // Session-scoped view. A legacy session (undefined) mirrors the default.
-  const session = sessionMcpState(tab.currentSession);
+  // Session-scoped view: the chat's frozen server set plus any plugin it did not
+  // enable. A legacy session with no plugins mirrors the Settings default.
+  const disabledForSession = sessionDisabledServers(tab);
   const specs = normalized.map((spec) => {
     const raw = specToRaw(spec);
     const base = summarizeMcpSpec(raw);
@@ -3857,9 +3972,8 @@ function emitMcpSpecs(tab: Tab): void {
     base.disabled = spec.disabled === true;
     // Reasonix+ managed servers are built-in: disableable but not removable.
     base.builtin = isManagedMcpSpec(spec);
-    // Session enablement — frozen at chat creation; a legacy session mirrors the default.
-    const sessionDisabled = session
-      ? Boolean(spec.name && session.disabledServers?.includes(spec.name))
+    const sessionDisabled = disabledForSession
+      ? Boolean(spec.name && disabledForSession.has(spec.name))
       : spec.disabled === true;
     if (sessionDisabled) base.sessionDisabled = true;
     const live =
@@ -3878,6 +3992,72 @@ function emitMcpSpecs(tab: Tab): void {
     connected: specs.filter((spec) => spec.status === "connected").length,
     bridged,
   });
+}
+
+/** One plugin's MCP servers, resolved through the same normalizer the bridge uses so the
+ *  card can never report a transport the bridge disagrees with. `active` is this chat's
+ *  frozen decision: a plugin the chat never enabled bridges nothing. */
+export function pluginServerInfos(
+  tab: Pick<Tab, "mcpStatuses">,
+  servers: Record<string, McpServerConfig>,
+  active: boolean,
+): PluginServerInfo[] {
+  return normalizeMcpConfig({ mcpServers: servers })
+    .filter((spec): spec is McpServerSpec & { name: string } => Boolean(spec.name))
+    .map((spec) => {
+      const raw = specToRaw(spec);
+      const disabled = !active || spec.disabled === true;
+      // A disabled server is not bridged, so it reports no live tool count.
+      if (disabled) {
+        return {
+          name: spec.name,
+          transport: spec.transport,
+          status: "disabled" as McpSpecStatus,
+          disabled: true,
+        };
+      }
+      const live = tab.mcpStatuses.get(raw) ?? tab.mcpStatuses.get(spec.name);
+      return {
+        name: spec.name,
+        transport: spec.transport,
+        status: live?.kind ?? "configured",
+        ...(live?.reason ? { statusReason: live.reason } : {}),
+        ...(live?.toolCount !== undefined ? { toolCount: live.toolCount } : {}),
+      };
+    });
+}
+
+/** Plugin inventory for Settings > Plugins — the page renders this snapshot alone. */
+function emitPlugins(tab: Tab): void {
+  const chosen = new Set(sessionPlugins(tab.currentSession));
+  const plugins: PluginInfo[] = listPlugins().map((state) => {
+    const ui = state.manifest.ui;
+    const active = chosen.has(state.slug);
+    return {
+      slug: state.slug,
+      name: state.manifest.name,
+      displayName: pluginDisplayName(state.manifest),
+      category: ui.category ?? "Plugins",
+      ...(state.manifest.version ? { version: state.manifest.version } : {}),
+      ...(state.manifest.description ? { description: state.manifest.description } : {}),
+      ...(state.manifest.authorName ? { author: state.manifest.authorName } : {}),
+      ...(state.manifest.homepage ? { homepage: state.manifest.homepage } : {}),
+      ...(state.manifest.repository ? { repository: state.manifest.repository } : {}),
+      ...(state.manifest.license ? { license: state.manifest.license } : {}),
+      capabilities: ui.capabilities ?? [],
+      defaultPrompt: ui.defaultPrompt ?? [],
+      ...(state.record?.source ? { source: state.record.source } : {}),
+      active,
+      ...(state.error ? { error: state.error } : {}),
+      skills: state.skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        path: skill.relPath,
+      })),
+      servers: pluginServerInfos(tab, state.servers, active),
+    };
+  });
+  emit({ type: "$plugins", plugins }, tab.id);
 }
 
 /** Extension-integration state for the Settings card — pure so tests can pin it. */
@@ -5378,6 +5558,9 @@ export function refreshTabSystemPrompt(
     // Live config: the engine is read at call time, so the section that documents the
     // persistent page follows whichever engine is selected now.
     browserWebTools: webSearchDrivesBrowser(),
+    // Same rule for plugins: the index is the set this chat froze at its
+    // session-start confirm, so installing one never rewrites a live prefix.
+    pluginSkills: sessionPluginSkills(tab.currentSession),
   });
 }
 
@@ -6483,7 +6666,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       getMcpPrefix: () => undefined,
       getRequestedCount: () => requested,
       getWorkspaceDir: () => tab.rootDir,
-      getSpecOverrides: () => sessionMcpOverrides(tab.currentSession),
+      getSpecOverrides: () => sessionMcpOverrides(tab),
       progressSink: { current: null },
       browserRegistry,
     });
@@ -8346,7 +8529,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         try {
           if (sessionExists(restore.session)) {
             tab.currentSession = restore.session;
-            freezeLegacySessionMcp(tab, tab.currentSession);
+            freezeLegacySessionCapabilities(tab, tab.currentSession);
             restoreSessionModelPrefs(tab, loadSessionMeta(tab.currentSession));
           }
         } catch (err) {
@@ -9048,6 +9231,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         for (const t of tabs.values()) {
           emitTabOpened(t, t.id === lastActiveTabId);
           emitSettings(t);
+          emitPlugins(t);
           if (!t.pending) {
             emitMcpSpecs(t);
             if (!tabHasCredential(t)) emitNeedsSetup(t);
@@ -9291,6 +9475,17 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           changed = true;
         }
         const parsedName = parsedSpec?.name ?? null;
+        const pluginOwner = parsedName ? readConfig().mcpServers?.[parsedName]?.plugin : undefined;
+        if (parsedName && pluginOwner) {
+          emit(
+            {
+              type: "$error",
+              message: `mcp_specs_remove: "${parsedName}" belongs to the ${pluginOwner} plugin. Manage it from Settings > Plugins.`,
+            },
+            tab.id,
+          );
+          return;
+        }
         if (parsedName && cfg.mcpServers && parsedName in cfg.mcpServers) {
           delete cfg.mcpServers[parsedName];
           changed = true;
@@ -9334,16 +9529,78 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       }
       return;
     }
+    // A plugin mutation rewrites config, the MCP view and the prompt together; the
+    // handler re-bridges the tab's servers afterwards.
+    const refreshAfterPluginChange = (): void => {
+      emitPlugins(tab);
+      emitMcpConfigChanged(tab);
+      refreshTabSystemPrompt(tab);
+      tab.runtime?.loop.prefix.replaceSystem(tab.system);
+    };
+
+    if (msg.cmd === "plugins_get") {
+      emitPlugins(tab);
+      return;
+    }
+    if (msg.cmd === "plugins_install") {
+      const source = msg.source.trim();
+      if (!source) {
+        emit({ type: "$error", message: "plugins_install: source is empty" }, tab.id);
+        return;
+      }
+      void (async () => {
+        try {
+          const installed = await installPlugin(source);
+          refreshAfterPluginChange();
+          void bridgeTabMcp(tab);
+          const label = pluginDisplayName(installed.manifest);
+          emit(
+            {
+              type: "$notice",
+              text: `Installed ${label}${installed.manifest.version ? ` ${installed.manifest.version}` : ""}`,
+              severity: "success",
+            },
+            tab.id,
+          );
+        } catch (err) {
+          emitDiagnosticError("plugin.install.failed", err, {
+            tabId: tab.id,
+            details: { sourceChars: source.length },
+          });
+          emit({ type: "$error", message: `plugins_install: ${messageOf(err)}` }, tab.id);
+        }
+      })();
+      return;
+    }
+    if (msg.cmd === "plugins_uninstall") {
+      try {
+        uninstallPlugin(msg.name);
+        refreshAfterPluginChange();
+        void bridgeTabMcp(tab);
+      } catch (err) {
+        emitDiagnosticError("plugin.uninstall.failed", err, {
+          tabId: tab.id,
+          details: { name: msg.name },
+        });
+        emit({ type: "$error", message: `plugins_uninstall: ${messageOf(err)}` }, tab.id);
+      }
+      return;
+    }
     if (msg.cmd === "mcp_session_configure") {
       // Only a chat still awaiting setup may be configured; a repeat/duplicate
       // confirm is a no-op because the first call already cleared the flag.
       if (!tab.currentSession || !tab.mcpSetupPending) return;
       try {
-        // Freeze this chat's capabilities — the MCP set and the subagent flag.
-        // Immutable from here on.
+        // Freeze this chat's capabilities — the MCP set, the plugin set and the
+        // subagent flag. Immutable from here on.
         const subagents = msg.subagents === true;
         patchSessionMeta(tab.currentSession, {
-          ...sessionSetupMeta(configuredServerNames(tab.rootDir), msg.enabled, subagents),
+          ...sessionSetupMeta(
+            configuredServerNames(tab.rootDir),
+            Array.isArray(msg.enabled) ? msg.enabled : [],
+            subagents,
+            Array.isArray(msg.plugins) ? msg.plugins : [],
+          ),
           // An explicit `undefined` is dropped on write, clearing the pending marker.
           mcpPending: undefined,
         });
@@ -9934,10 +10191,15 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       // in-chat picker — pre-filled with this session's own frozen capabilities, so a
       // faithful copy is one confirm away and the toggles are there to diverge.
       const frozen = Array.isArray(msg.enabled)
-        ? sessionSetupMeta(configuredServerNames(tab.rootDir), msg.enabled, msg.subagents === true)
+        ? sessionSetupMeta(
+            configuredServerNames(tab.rootDir),
+            msg.enabled,
+            msg.subagents === true,
+            Array.isArray(msg.plugins) ? msg.plugins : [],
+          )
         : undefined;
       const answer: ChatCapabilitySeed | undefined = frozen
-        ? { mcp: frozen.mcp, subagents: frozen.subagents === true }
+        ? { mcp: frozen.mcp, plugins: frozen.plugins, subagents: frozen.subagents === true }
         : undefined;
       openFreshChat(tab, {
         origin: "duplicate",

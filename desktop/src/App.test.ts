@@ -1535,6 +1535,7 @@ describe("Desktop App reducer — usage", () => {
           { name: "playwright", enabled: true, builtin: true },
           { name: "github", enabled: false, builtin: false },
         ],
+        plugins: [{ name: "notfair", displayName: "NotFair", enabled: true }],
         subagents: true,
       },
     });
@@ -1543,6 +1544,7 @@ describe("Desktop App reducer — usage", () => {
         { name: "playwright", enabled: true, builtin: true },
         { name: "github", enabled: false, builtin: false },
       ],
+      plugins: [{ name: "notfair", displayName: "NotFair", enabled: true }],
       subagents: true,
     });
 
@@ -1554,7 +1556,7 @@ describe("Desktop App reducer — usage", () => {
   it("$mcp_setup bumps the picker revision, so a re-armed gate remounts the dialog", () => {
     const gated = reduce(initialState(), {
       t: "incoming",
-      event: { type: "$mcp_setup", servers: [], subagents: false },
+      event: { type: "$mcp_setup", servers: [], plugins: [], subagents: false },
     });
     expect(gated.mcpSetupRevision).toBe(initialState().mcpSetupRevision + 1);
 
@@ -1562,7 +1564,7 @@ describe("Desktop App reducer — usage", () => {
     // leave its own "starting" state and become answerable again.
     const rearmed = reduce(gated, {
       t: "incoming",
-      event: { type: "$mcp_setup", servers: [], subagents: false },
+      event: { type: "$mcp_setup", servers: [], plugins: [], subagents: false },
     });
     expect(rearmed.mcpSetupRevision).toBe(gated.mcpSetupRevision + 1);
   });
@@ -1570,9 +1572,9 @@ describe("Desktop App reducer — usage", () => {
   it("$needs_setup also resolves the picker, so an uncredentialed chat is never stuck on it", () => {
     const gated = reduce(initialState(), {
       t: "incoming",
-      event: { type: "$mcp_setup", servers: [], subagents: false },
+      event: { type: "$mcp_setup", servers: [], plugins: [], subagents: false },
     });
-    expect(gated.mcpSetup).toEqual({ servers: [], subagents: false });
+    expect(gated.mcpSetup).toEqual({ servers: [], plugins: [], subagents: false });
 
     const resolved = reduce(gated, {
       t: "incoming",

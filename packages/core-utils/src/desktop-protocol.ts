@@ -639,6 +639,59 @@ export interface McpSpecsEvent {
   bridged: boolean;
 }
 
+/** One workflow file a plugin ships — the prompt index the agent reads on demand. */
+export interface PluginSkillInfo {
+  name: string;
+  /** First sentence of the SKILL.md description. */
+  description: string;
+  /** SKILL.md path relative to the plugin directory. */
+  path: string;
+}
+
+/** One MCP server a plugin declared, with its live bridge state. */
+export interface PluginServerInfo {
+  name: string;
+  transport: McpSpecInfo["transport"];
+  status: McpSpecStatus;
+  statusReason?: string;
+  toolCount?: number;
+  /** True while the plugin or the server entry is disabled. */
+  disabled?: boolean;
+}
+
+/** One installed agent plugin (Codex `.codex-plugin` layout). */
+export interface PluginInfo {
+  /** Directory key and config record key. */
+  slug: string;
+  name: string;
+  /** Manifest display name, falling back to `name`. */
+  displayName: string;
+  /** Manifest category, falling back to "Plugins". */
+  category: string;
+  version?: string;
+  description?: string;
+  author?: string;
+  homepage?: string;
+  repository?: string;
+  license?: string;
+  capabilities: string[];
+  defaultPrompt: string[];
+  /** Install source as recorded (git URL or local path). */
+  source?: string;
+  /** True when THIS chat froze the plugin at its session-start confirm. Read-only:
+   *  enablement is chosen there, never from the settings page. */
+  active: boolean;
+  /** Manifest read failure; the card still renders so the plugin can be removed. */
+  error?: string;
+  skills: PluginSkillInfo[];
+  servers: PluginServerInfo[];
+}
+
+export interface PluginsEvent {
+  type: "$plugins";
+  plugins: PluginInfo[];
+}
+
 /** One configured MCP server offered in the fresh-chat setup picker — `enabled`
  *  is the pre-filled state: the Settings default for a new chat, or the source
  *  session's frozen set for a duplicate. */
@@ -648,12 +701,25 @@ export interface McpSetupServer {
   builtin: boolean;
 }
 
+/** One installed plugin offered in the same picker. Plugin enablement is a session
+ *  capability like the MCP set: chosen once at chat start and frozen in the session
+ *  meta, because flipping it mid-chat would rewrite the cached prompt prefix. */
+export interface PluginSetupEntry {
+  /** Plugin slug — the value the confirm freezes. */
+  name: string;
+  displayName: string;
+  /** Pre-filled state: on for a new chat, the source session's set for a duplicate. */
+  enabled: boolean;
+}
+
 /** Session-start setup prompt: the capabilities a fresh chat must confirm before it
- *  can run. Both the MCP set and the subagent flag are frozen by that one answer.
- *  A new chat and a duplicated session both get this prompt. */
+ *  can run. The MCP set, the plugin set and the subagent flag are all frozen by that
+ *  one answer. A new chat and a duplicated session both get this prompt. */
 export interface McpSetupEvent {
   type: "$mcp_setup";
   servers: McpSetupServer[];
+  /** Installed plugins, pre-filled for this chat. */
+  plugins: PluginSetupEntry[];
   /** Pre-filled subagent flag: off for a new chat, inherited from the source session
    *  when the chat was opened by duplicating one. */
   subagents: boolean;
@@ -1108,6 +1174,8 @@ export interface SettingsEvent {
    *  projection (`capabilityPrefill`), so the Duplicate popover cannot drift from what
    *  the clone's session meta freezes. */
   capabilityPrefill?: McpSetupServer[];
+  /** Plugin rows for that same popover, from the chat's frozen plugin set. */
+  pluginPrefill?: PluginSetupEntry[];
   baseUrl?: string;
   apiKeyPrefix?: string;
   workspaceDir: string;
@@ -1714,9 +1782,14 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "mcp_specs_add"; spec: string }
   | { cmd: "mcp_specs_remove"; spec: string }
   | { cmd: "mcp_specs_toggle"; name: string; disabled: boolean }
+  /** Plugin inventory for the Settings > Plugins page. */
+  | { cmd: "plugins_get" }
+  /** Install one plugin from `owner/repo`, a git URL, or a local directory path. */
+  | { cmd: "plugins_install"; source: string }
+  | { cmd: "plugins_uninstall"; name: string }
   /** Confirm a fresh chat's capabilities — enabled MCP servers and the subagent flag —
    *  freezing both in its session meta and unlocking it. */
-  | { cmd: "mcp_session_configure"; enabled: string[]; subagents: boolean }
+  | { cmd: "mcp_session_configure"; enabled: string[]; subagents: boolean; plugins: string[] }
   /** Abandon a fresh chat before its MCP set is confirmed — deletes that session; its workspace tab stays. */
   | { cmd: "mcp_session_cancel" }
   | { cmd: "mcp_extension_status" }
@@ -1770,6 +1843,8 @@ export type OutgoingCommand = { tabId?: string } & (
       markdown: string;
       /** Names of the configured MCP servers the clone may use. */
       enabled?: string[];
+      /** Slugs of the plugins the clone may use. */
+      plugins?: string[];
       /** Whether the clone may spawn subagents. */
       subagents?: boolean;
       /** Answered like `new_chat`: the clone's mint, or the refusal that stopped it. */

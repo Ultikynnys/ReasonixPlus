@@ -49,6 +49,7 @@ import type {
   PlaywrightManagedBrowser,
   PlaywrightManagedBrowserInstallState,
   PlaywrightMcpConnectionMode,
+  PluginInfo,
   SettingsPatch,
 } from "../protocol";
 import {
@@ -142,6 +143,7 @@ export type PageId =
   | "search"
   | "fallbacks"
   | "mcp"
+  | "plugins"
   | "changelog"
   | "shortcuts";
 
@@ -152,6 +154,7 @@ export const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
   { id: "search", icon: "search" },
   { id: "fallbacks", icon: "layers" },
   { id: "mcp", icon: "wrench" },
+  { id: "plugins", icon: "plug" },
   { id: "changelog", icon: "history" },
   { id: "shortcuts", icon: "cpu" },
 ];
@@ -167,6 +170,10 @@ export function SettingsModal({
   initialPage,
   mcpSpecs,
   mcpBridged,
+  plugins,
+  onInstallPlugin,
+  onUninstallPlugin,
+  onRequestPlugins,
   onClose,
   onSave,
   oauthWaiting,
@@ -228,6 +235,8 @@ export function SettingsModal({
   initialPage?: PageId;
   mcpSpecs: McpSpecInfo[];
   mcpBridged: boolean;
+  /** Installed agent plugins, mirrored from the daemon's `$plugins` snapshot. */
+  plugins: PluginInfo[];
   onClose: () => void;
   onSave: (patch: SettingsPatch) => void;
   /** Ollama chat endpoint (OpenAI-compatible) shown on the Models page. */
@@ -270,6 +279,10 @@ export function SettingsModal({
   onAddMcpSpec: (spec: string) => void;
   onRemoveMcpSpec: (spec: string) => void;
   onToggleMcpServer: (name: string, disabled: boolean) => void;
+  onInstallPlugin: (source: string) => void;
+  onUninstallPlugin: (name: string) => void;
+  /** Re-request the plugin inventory (the page calls this when it opens). */
+  onRequestPlugins: () => void;
   mcpExtensionStatus: McpExtensionStatus | null;
   mcpExtensionCheck: McpExtensionCheck | null;
   playwrightBrowserInstall: PlaywrightBrowserInstall | null;
@@ -463,6 +476,14 @@ export function SettingsModal({
                 onSignOutMail={onSignOutMail}
               />
             )}
+            {page === "plugins" && (
+              <PagePlugins
+                plugins={plugins}
+                onInstall={onInstallPlugin}
+                onUninstall={onUninstallPlugin}
+                onRequest={onRequestPlugins}
+              />
+            )}
             {page === "changelog" && (
               <PageChangelog changelog={changelog} onRefresh={onRefreshChangelog} />
             )}
@@ -549,6 +570,32 @@ const MODE_LABEL_KEYS: Record<PlaywrightMcpConnectionMode, TKey> = {
 
 function modeLabel(mode: PlaywrightMcpConnectionMode): string {
   return t(MODE_LABEL_KEYS[mode]);
+}
+
+/** Status copy for one bridged server, shared by the MCP card and the plugin cards. */
+function serverStatusLabel(
+  status: McpSpecInfo["status"],
+  reason?: string,
+  toolCount?: number,
+): { text: string; color: string } {
+  switch (status) {
+    case "disabled":
+      return { text: t("settings.mcpConnDisabled"), color: "var(--muted)" };
+    case "connected":
+      return {
+        text: t("settings.mcpConnConnected", { count: toolCount ?? 0 }),
+        color: "var(--accent)",
+      };
+    case "handshake":
+      return { text: t("settings.mcpConnHandshake"), color: "var(--muted)" };
+    case "failed":
+      return {
+        text: t("settings.mcpConnFailed", { reason: reason ?? "" }),
+        color: "var(--danger)",
+      };
+    default:
+      return { text: t("settings.mcpConnIdle"), color: "var(--muted)" };
+  }
 }
 
 /** Copy for each install state a managed build can report. */
@@ -3018,23 +3065,11 @@ export function PageMCP({
   const playwrightSpec = specs.find((s) => s.name === "playwright");
   let connection: { text: string; color: string } | null = null;
   if (playwrightSpec) {
-    if (playwrightSpec.disabled || playwrightSpec.status === "disabled") {
-      connection = { text: t("settings.mcpConnDisabled"), color: "var(--muted)" };
-    } else if (playwrightSpec.status === "connected") {
-      connection = {
-        text: t("settings.mcpConnConnected", { count: playwrightSpec.toolCount ?? 0 }),
-        color: "var(--accent)",
-      };
-    } else if (playwrightSpec.status === "handshake") {
-      connection = { text: t("settings.mcpConnHandshake"), color: "var(--muted)" };
-    } else if (playwrightSpec.status === "failed") {
-      connection = {
-        text: t("settings.mcpConnFailed", { reason: playwrightSpec.statusReason ?? "" }),
-        color: "var(--danger)",
-      };
-    } else {
-      connection = { text: t("settings.mcpConnIdle"), color: "var(--muted)" };
-    }
+    connection = serverStatusLabel(
+      playwrightSpec.disabled ? "disabled" : playwrightSpec.status,
+      playwrightSpec.statusReason,
+      playwrightSpec.toolCount,
+    );
   }
   const playwrightSettings = (
     <div className="scard">
@@ -3505,6 +3540,189 @@ export function PageMCP({
         </div>
       </section>
     </>
+  );
+}
+
+/** The manifest's own marketplace category, shown as the card's qualifier. */
+function pluginQualifier(plugin: PluginInfo): string {
+  return [plugin.category, plugin.version].filter(Boolean).join(" - ");
+}
+
+/** Settings > Plugins: install Codex-layout plugins and inspect what each one ships. */
+export function PagePlugins({
+  plugins,
+  onInstall,
+  onUninstall,
+  onRequest,
+}: {
+  plugins: PluginInfo[];
+  onInstall: (source: string) => void;
+  onUninstall: (name: string) => void;
+  onRequest: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  useEffect(() => {
+    onRequest();
+  }, [onRequest]);
+  const submit = () => {
+    const source = draft.trim();
+    if (!source) return;
+    onInstall(source);
+    setDraft("");
+  };
+  return (
+    <>
+      <section className="section">
+        <div className="stitle">{t("settings.pluginsInstalled", { count: plugins.length })}</div>
+        <div className="desc" style={{ marginBottom: 10 }}>
+          {t("settings.pluginsPerSession")}
+        </div>
+        {plugins.length === 0 ? (
+          <div
+            style={{
+              padding: 16,
+              background: "var(--card)",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              fontSize: 12,
+              color: "var(--muted)",
+            }}
+          >
+            {t("settings.pluginsEmpty")}
+          </div>
+        ) : null}
+        {plugins.map((plugin) => (
+          <PluginCard key={plugin.slug} plugin={plugin} onUninstall={onUninstall} />
+        ))}
+      </section>
+      <section className="section">
+        <div className="stitle">{t("settings.pluginsInstallSection")}</div>
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.pluginsInstallLabel")}</div>
+            <div className="h">{hintNodes(t("settings.pluginsInstallHint"))}</div>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              className="field mono"
+              aria-label={t("settings.pluginsInstallLabel")}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder={t("settings.pluginsInstallPlaceholder")}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") submit();
+              }}
+            />
+            <button type="button" className="btn primary" disabled={!draft.trim()} onClick={submit}>
+              {t("settings.pluginsInstallButton")}
+            </button>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+/** One installed plugin: its manifest facts, skills and MCP servers, plus removal. */
+function PluginCard({
+  plugin,
+  onUninstall,
+}: {
+  plugin: PluginInfo;
+  onUninstall: (name: string) => void;
+}) {
+  const byline = [plugin.author, plugin.license, plugin.source].filter(Boolean).join(" | ");
+  const headActions = (
+    <div className="seg-ctrl">
+      <button type="button" className="mcp-remove" onClick={() => onUninstall(plugin.slug)}>
+        {t("settings.pluginsRemove")}
+      </button>
+    </div>
+  );
+  return (
+    <HeadActionCard
+      title={
+        <>
+          {plugin.displayName}
+          <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
+            - {pluginQualifier(plugin)}
+          </span>
+          {plugin.active ? (
+            <span style={{ color: "var(--accent)", marginLeft: 6, fontSize: 11 }}>
+              - {t("settings.pluginsActiveHere")}
+            </span>
+          ) : null}
+        </>
+      }
+      headActions={headActions}
+    >
+      <div className="sub">{plugin.description ?? t("settings.pluginsNoDescription")}</div>
+      {plugin.error ? (
+        <div className="desc" style={{ color: "var(--danger)" }}>
+          {t("settings.pluginsManifestError", { error: plugin.error })}
+        </div>
+      ) : null}
+      {byline ? (
+        <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>{byline}</div>
+      ) : null}
+      {plugin.capabilities.length > 0 ? (
+        <div className="tools-list">
+          {plugin.capabilities.map((capability) => (
+            <span key={capability}>{capability}</span>
+          ))}
+        </div>
+      ) : null}
+      <div className="stitle" style={{ marginTop: 14 }}>
+        {t("settings.pluginsSkills", { count: plugin.skills.length })}
+      </div>
+      {plugin.skills.length === 0 ? (
+        <div className="desc">{t("settings.pluginsNoSkills")}</div>
+      ) : (
+        <div style={{ maxHeight: 190, overflowY: "auto", marginTop: 6 }}>
+          {plugin.skills.map((skill) => (
+            <div key={skill.name} style={{ marginBottom: 8 }}>
+              <code style={{ fontSize: 11 }} title={skill.path}>
+                {skill.name}
+              </code>
+              <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
+                {skill.description}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="stitle" style={{ marginTop: 14 }}>
+        {t("settings.pluginsServers", { count: plugin.servers.length })}
+      </div>
+      {plugin.servers.length === 0 ? (
+        <div className="desc">{t("settings.pluginsNoServers")}</div>
+      ) : (
+        plugin.servers.map((server) => {
+          const status = serverStatusLabel(server.status, server.statusReason, server.toolCount);
+          return (
+            <div key={server.name} style={{ display: "flex", gap: 8, marginTop: 6 }}>
+              <code style={{ fontSize: 11 }}>{server.name}</code>
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>{server.transport}</span>
+              <span className="grow" />
+              <span style={{ fontSize: 11, color: status.color }}>{status.text}</span>
+            </div>
+          );
+        })
+      )}
+      {plugin.homepage ? (
+        <div className="actions">
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => {
+              void openUrl(plugin.homepage as string).catch(() => undefined);
+            }}
+          >
+            {t("settings.pluginsOpenHomepage")}
+          </button>
+        </div>
+      ) : null}
+    </HeadActionCard>
   );
 }
 

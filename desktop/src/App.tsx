@@ -82,6 +82,8 @@ import {
   type PlaywrightExtensionBrowser,
   type PlaywrightManagedBrowser,
   type PlaywrightMcpConnectionMode,
+  type PluginInfo,
+  type PluginSetupEntry,
   type ProviderUsage,
   type RevisionVerdict,
   type SessionEventRecord,
@@ -637,9 +639,11 @@ type State = {
   mentionPreview: MentionPreviewState | null;
   mcpSpecs: McpSpecInfo[];
   mcpBridged: boolean;
+  /** Installed agent plugins ($plugins) — the Settings > Plugins inventory. */
+  plugins: PluginInfo[];
   /** The session-start picker ($mcp_setup): the configured servers plus the subagent
    *  pre-fill; null when this chat is not gating. */
-  mcpSetup: { servers: McpSetupServer[]; subagents: boolean } | null;
+  mcpSetup: { servers: McpSetupServer[]; plugins: PluginSetupEntry[]; subagents: boolean } | null;
   /** Bumped per `$mcp_setup` so the picker remounts on a re-issued gate (a failed
    *  confirm re-arms it) instead of sitting on its own "starting" state. */
   mcpSetupRevision: number;
@@ -2750,6 +2754,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         ...state,
         mcpSetup: {
           servers: Array.isArray(ev.servers) ? ev.servers : [],
+          plugins: Array.isArray(ev.plugins) ? ev.plugins : [],
           subagents: ev.subagents === true,
         },
         mcpSetupRevision: state.mcpSetupRevision + 1,
@@ -2760,6 +2765,8 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         mcpSpecs: Array.isArray(ev.specs) ? ev.specs : [],
         mcpBridged: Boolean(ev.bridged),
       };
+    case "$plugins":
+      return { ...state, plugins: Array.isArray(ev.plugins) ? ev.plugins : [] };
     case "$mcp_extension_status":
       return { ...state, mcpExtensionStatus: ev.status };
     case "$mcp_extension_check":
@@ -3744,6 +3751,7 @@ const TabRuntime = memo(function TabRuntime({
     mentionPreview: null,
     mcpSpecs: [],
     mcpBridged: false,
+    plugins: [],
     mcpSetup: null,
     mcpSetupRevision: 0,
     mcpExtensionStatus: null,
@@ -3977,6 +3985,15 @@ const TabRuntime = memo(function TabRuntime({
   );
   const toggleMcpServer = useCallback(
     (name: string, disabled: boolean) => sendRpc({ cmd: "mcp_specs_toggle", name, disabled }),
+    [sendRpc],
+  );
+  const requestPlugins = useCallback(() => sendRpc({ cmd: "plugins_get" }), [sendRpc]);
+  const installPlugin = useCallback(
+    (source: string) => sendRpc({ cmd: "plugins_install", source }),
+    [sendRpc],
+  );
+  const uninstallPlugin = useCallback(
+    (name: string) => sendRpc({ cmd: "plugins_uninstall", name }),
     [sendRpc],
   );
   const requestMcpExtensionStatus = useCallback(
@@ -4895,7 +4912,7 @@ const TabRuntime = memo(function TabRuntime({
   // models and continues by itself: the popover already asked which MCP servers and
   // whether subagents the copy may use, so the daemon seeds it with that answer.
   const duplicateSession = useCallback(
-    (enabled: string[], subagents: boolean) => {
+    (enabled: string[], plugins: string[], subagents: boolean) => {
       // A create already in flight would stack a second session on the workspace.
       if (sessionsMutation !== null) return;
       const md = formatConversationMarkdown(state.messages, t("app.exportUserLabel"), {
@@ -4911,6 +4928,7 @@ const TabRuntime = memo(function TabRuntime({
         cmd: "duplicate_session",
         markdown: md,
         enabled,
+        plugins,
         subagents,
         requestId,
       }));
@@ -5652,11 +5670,14 @@ const TabRuntime = memo(function TabRuntime({
             title={state.mcpSetup ? "Set up this chat" : t("app.titlebar.duplicateSession")}
             hint={
               state.mcpSetup
-                ? "Choose what this chat starts with. Both choices are locked for the session, even after a restart."
+                ? "Choose what this chat starts with. Every choice here is locked for the session, even after a restart."
                 : t("app.duplicate.hint")
             }
             servers={
               state.mcpSetup ? state.mcpSetup.servers : (state.settings?.capabilityPrefill ?? [])
+            }
+            plugins={
+              state.mcpSetup ? state.mcpSetup.plugins : (state.settings?.pluginPrefill ?? [])
             }
             subagents={
               state.mcpSetup ? state.mcpSetup.subagents : state.settings?.subagents === true
@@ -5667,10 +5688,10 @@ const TabRuntime = memo(function TabRuntime({
             dismissLabel={state.mcpSetup ? "Cancel" : t("app.duplicate.back")}
             onConfirm={
               state.mcpSetup
-                ? (enabled, spawn) =>
-                    sendRpc({ cmd: "mcp_session_configure", enabled, subagents: spawn })
-                : (enabled, spawn) => {
-                    duplicateSession(enabled, spawn);
+                ? (enabled, plugins, spawn) =>
+                    sendRpc({ cmd: "mcp_session_configure", enabled, plugins, subagents: spawn })
+                : (enabled, plugins, spawn) => {
+                    duplicateSession(enabled, plugins, spawn);
                     setDuplicateAsk(false);
                   }
             }
@@ -5695,6 +5716,10 @@ const TabRuntime = memo(function TabRuntime({
             initialPage={settingsPage}
             mcpSpecs={state.mcpSpecs}
             mcpBridged={state.mcpBridged}
+            plugins={state.plugins}
+            onInstallPlugin={installPlugin}
+            onUninstallPlugin={uninstallPlugin}
+            onRequestPlugins={requestPlugins}
             onClose={() => setSettingsOpen(false)}
             onSave={saveSettings}
             ollamaModels={ollamaModels}

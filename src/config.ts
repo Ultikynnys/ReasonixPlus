@@ -718,6 +718,21 @@ export interface McpServerConfig {
   url?: string;
   headers?: Record<string, string>;
   disabled?: boolean;
+  /** Slug of the plugin that installed this entry. Plugin-owned servers are managed from
+   *  Settings > Plugins, so the MCP list refuses to remove them on their own. */
+  plugin?: string;
+}
+
+/** One installed agent plugin. The manifest on disk stays authoritative for names, skills
+ *  and MCP declarations; this records provenance only. Whether a chat may use it is
+ *  frozen per session (SessionMeta.plugins), never stored here. */
+export interface PluginRecord {
+  /** Where it came from: git URL, `owner/repo`, or a local directory path. */
+  source: string;
+  /** Manifest version at install time. */
+  version?: string;
+  /** Install epoch milliseconds. */
+  installedAt: number;
 }
 
 export interface RateLimitConfig {
@@ -863,6 +878,8 @@ export interface ReasonixConfig {
   mcpEnv?: Record<string, Record<string, string>>;
   /** Canonical MCP server configuration — merges with and overrides legacy `mcp`/`mcpEnv`/`mcpDisabled`. */
   mcpServers?: Record<string, McpServerConfig>;
+  /** Installed agent plugins, keyed by slug — one record per `~/.reasonix/plugins/<slug>`. */
+  plugins?: Record<string, PluginRecord>;
   session?: string | null;
   setupCompleted?: boolean;
   questionTimer?: boolean;
@@ -1420,6 +1437,30 @@ function sanitizeAntigravityOAuthField(cfg: Record<string, unknown>): void {
   }
 }
 
+/** Drop plugin records without a source or an install stamp: the store resolves the rest
+ *  from the plugin directory, so a partial record is never worth keeping. */
+function sanitizePluginsField(cfg: Record<string, unknown>): void {
+  const raw = cfg.plugins;
+  if (raw === undefined) return;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    cfg.plugins = undefined;
+    return;
+  }
+  const cleaned: Record<string, PluginRecord> = {};
+  for (const [slug, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!slug.trim() || !value || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    if (typeof entry.source !== "string" || !entry.source.trim()) continue;
+    const record: PluginRecord = {
+      source: entry.source,
+      installedAt: typeof entry.installedAt === "number" ? entry.installedAt : 0,
+    };
+    if (typeof entry.version === "string" && entry.version.trim()) record.version = entry.version;
+    cleaned[slug] = record;
+  }
+  cfg.plugins = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
 export function readConfig(path: string = defaultConfigPath()): ReasonixConfig {
   let fd: number | undefined;
   try {
@@ -1451,6 +1492,7 @@ export function readConfig(path: string = defaultConfigPath()): ReasonixConfig {
       sanitizeModelsField(cfg);
       sanitizeModelContextTokensField(cfg);
       sanitizeAntigravityOAuthField(cfg);
+      sanitizePluginsField(cfg);
       migrateProviderSettings(cfg);
       migrateSearchSettings(cfg);
       if (cfg.mailProvider !== MailProvider.Outlook && cfg.mailProvider !== MailProvider.Gmail) {

@@ -54,7 +54,7 @@ describe("capabilityPrefill", () => {
       rows.filter((row) => row.enabled).map((row) => row.name),
       seed.subagents,
     );
-    expect(frozen).toEqual({ mcp: { disabledServers: ["blender"] }, subagents: true });
+    expect(frozen).toEqual({ mcp: { disabledServers: ["blender"] }, subagents: true, plugins: [] });
   });
 });
 
@@ -63,6 +63,7 @@ describe("sessionSetupMeta", () => {
     expect(sessionSetupMeta(configured, ["playwright"], true)).toEqual({
       mcp: { disabledServers: ["blender", "ghidra"] },
       subagents: true,
+      plugins: [],
     });
   });
 
@@ -70,11 +71,12 @@ describe("sessionSetupMeta", () => {
     expect(sessionSetupMeta(configured, configured, false)).toEqual({
       mcp: {},
       subagents: false,
+      plugins: [],
     });
   });
 
   it("freezes nothing when no server is configured", () => {
-    expect(sessionSetupMeta([], [], false)).toEqual({ mcp: {}, subagents: false });
+    expect(sessionSetupMeta([], [], false)).toEqual({ mcp: {}, subagents: false, plugins: [] });
   });
 
   it("ignores an enabled name the workspace does not configure", () => {
@@ -109,15 +111,16 @@ describe("session-start freeze round trip", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  it("lands both capabilities in the session meta so a resume reads them back", () => {
+  it("lands every capability in the session meta so a resume reads them back", () => {
     // The store resolves its directory per call, so the stub must be in force before
     // the first write. Assert it: a stray real-home write is the failure to avoid.
     expect(sessionDir("gated-chat").startsWith(home)).toBe(true);
     ensureSessionDir("gated-chat");
-    patchSessionMeta("gated-chat", sessionSetupMeta(configured, ["ghidra"], true));
+    patchSessionMeta("gated-chat", sessionSetupMeta(configured, ["ghidra"], true, ["notfair"]));
 
     const meta = loadSessionMeta("gated-chat");
     expect(meta.mcp).toEqual({ disabledServers: ["blender", "playwright"] });
+    expect(meta.plugins).toEqual(["notfair"]);
     expect(sessionSubagentsEnabled(meta)).toBe(true);
   });
 
@@ -128,5 +131,7 @@ describe("session-start freeze round trip", () => {
     const meta = loadSessionMeta("plain-chat");
     expect(sessionSubagentsEnabled(meta)).toBe(false);
     expect(meta.mcp).toEqual({});
+    // A chat that answered the picker with no plugin is an answer, not a legacy meta.
+    expect(meta.plugins).toEqual([]);
   });
 });

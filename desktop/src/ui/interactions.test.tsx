@@ -757,17 +757,25 @@ describe("mcp-setup", () => {
     { name: "blender", enabled: false, builtin: false },
   ];
 
+  const installedPlugins = [{ name: "notfair", displayName: "NotFair", enabled: true }];
+
   function renderDialog({
     list = servers,
+    pluginList = installedPlugins,
     subagents = false,
-  }: { list?: typeof servers; subagents?: boolean } = {}) {
+  }: {
+    list?: typeof servers;
+    pluginList?: typeof installedPlugins;
+    subagents?: boolean;
+  } = {}) {
     const onConfirm = vi.fn();
     const onCancel = vi.fn();
     render(
       <CapabilityDialog
         title="Set up this chat"
-        hint="Choose what this chat starts with. Both choices are locked for the session, even after a restart."
+        hint="Choose what this chat starts with. Every choice here is locked for the session, even after a restart."
         servers={list}
+        plugins={pluginList}
         subagents={subagents}
         confirmLabel="Confirm and start"
         busyLabel="Starting session"
@@ -789,16 +797,33 @@ describe("mcp-setup", () => {
     it("starts from the Settings defaults and reports the enabled set on confirm", () => {
       const { onConfirm } = renderDialog();
       fireEvent.click(screen.getByText("Confirm and start"));
-      expect(onConfirm).toHaveBeenCalledWith(["playwright"], false);
+      expect(onConfirm).toHaveBeenCalledWith(["playwright"], ["notfair"], false);
     });
 
     it("adds a toggled server to the confirmed set", () => {
       const { onConfirm } = renderDialog();
       fireEvent.click(screen.getByRole("switch", { name: "blender" }));
       fireEvent.click(screen.getByText("Confirm and start"));
-      const [enabled, subagents] = onConfirm.mock.calls[0] as [string[], boolean];
+      const [enabled, plugins, subagents] = onConfirm.mock.calls[0] as [
+        string[],
+        string[],
+        boolean,
+      ];
       expect([...enabled].sort()).toEqual(["blender", "playwright"]);
+      expect(plugins).toEqual(["notfair"]);
       expect(subagents).toBe(false);
+    });
+
+    it("drops a plugin the user switched off from the confirmed set", () => {
+      const { onConfirm } = renderDialog();
+      fireEvent.click(screen.getByRole("switch", { name: "NotFair" }));
+      fireEvent.click(screen.getByText("Confirm and start"));
+      expect(onConfirm).toHaveBeenCalledWith(["playwright"], [], false);
+    });
+
+    it("says so when no plugin is installed", () => {
+      renderDialog({ pluginList: [] });
+      expect(screen.getByText(/No plugin installed/)).toBeTruthy();
     });
 
     it("pre-fills the subagent switch from the session default", () => {
@@ -806,15 +831,20 @@ describe("mcp-setup", () => {
       const toggle = screen.getByRole("switch", { name: "Subagents" });
       expect(toggle.getAttribute("aria-checked")).toBe("true");
       fireEvent.click(screen.getByText("Confirm and start"));
-      expect(onConfirm).toHaveBeenCalledWith(["playwright"], true);
+      expect(onConfirm).toHaveBeenCalledWith(["playwright"], ["notfair"], true);
     });
 
     it("reports the subagent choice independently of the server set", () => {
       const { onConfirm } = renderDialog({ subagents: false });
       fireEvent.click(screen.getByRole("switch", { name: "Subagents" }));
       fireEvent.click(screen.getByText("Confirm and start"));
-      const [enabled, subagents] = onConfirm.mock.calls[0] as [string[], boolean];
+      const [enabled, plugins, subagents] = onConfirm.mock.calls[0] as [
+        string[],
+        string[],
+        boolean,
+      ];
       expect(enabled).toEqual(["playwright"]);
+      expect(plugins).toEqual(["notfair"]);
       expect(subagents).toBe(true);
     });
 
@@ -823,7 +853,7 @@ describe("mcp-setup", () => {
       expect(screen.getByText(/None configured/)).toBeTruthy();
       fireEvent.click(screen.getByRole("switch", { name: "Subagents" }));
       fireEvent.click(screen.getByText("Confirm and start"));
-      expect(onConfirm).toHaveBeenCalledWith([], true);
+      expect(onConfirm).toHaveBeenCalledWith([], ["notfair"], true);
     });
 
     it("greys out the confirm button and throbs while the session starts", () => {
