@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { refreshTabSystemPrompt } from "../src/cli/commands/desktop.js";
-import { PLUGINS_MAX_CHARS, SKILLS_MAX_CHARS, codeSystemPrompt } from "../src/code/prompt.js";
+import {
+  PLUGINS_MAX_CHARS,
+  SKILLS_MAX_CHARS,
+  codeSystemPrompt,
+  compactRoots,
+} from "../src/code/prompt.js";
 import { ensureSessionDir, patchSessionMeta } from "../src/memory/session.js";
 import { installPlugin } from "../src/plugins/store.js";
 import { installSkills } from "../src/skills/store.js";
@@ -80,6 +85,23 @@ describe("skill index", () => {
       });
       expect(prompt).toContain(
         "- notfair: `/plugins/notfair/skills`, `/plugins/notfair/vendor-skills`",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("names one root for a plugin whose skills sit in sibling directories", () => {
+    const root = mkdtempSync(join(tmpdir(), "reasonix-skill-prompt-"));
+    try {
+      const skills = Array.from({ length: 20 }, (_, index) =>
+        entry({ name: `skill-${index}`, skillsRoot: `/plugins/unifapi/skills/group-${index}` }),
+      );
+      const prompt = codeSystemPrompt(root, { skills });
+      const rootLine = prompt.split("\n").find((row) => row.startsWith("- notfair: "));
+      expect(rootLine).toBe("- notfair: `/plugins/unifapi/skills`");
+      expect(prompt).toContain(
+        "Skill roots (a directory of skill directories, or a single skill directory)",
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -173,6 +195,60 @@ describe("plugin inventory in the prompt", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("compacts a plugin that lists one directory per skill into its common parent", () => {
+    const dir = root();
+    const roots = Array.from(
+      { length: 24 },
+      (_, index) => `/plugins/unifapi/skills/agent-${index}`,
+    ).concat("/plugins/unifapi/skills");
+    try {
+      const prompt = codeSystemPrompt(dir, {
+        plugins: [
+          {
+            name: "unifapi",
+            displayName: "UnifAPI",
+            version: "1.0.0",
+            skillsRoots: roots,
+            skillCount: 47,
+            enabled: false,
+          },
+          {
+            name: "rayfin",
+            displayName: "Rayfin",
+            version: "0.4.2",
+            skillsRoots: ["/plugins/rayfin/skills"],
+            skillCount: 1,
+            enabled: false,
+          },
+        ],
+      });
+      const lines = prompt.split("\n").filter((row) => row.startsWith("- "));
+      const unifapi = lines.find((row) => row.includes("(unifapi)"))!;
+      expect(unifapi).toContain("`/plugins/unifapi/skills`");
+      expect(unifapi).not.toContain("agent-1");
+      expect(unifapi.length).toBeLessThan(160);
+      // The second plugin still gets its own line: one long plugin cannot hide the rest.
+      expect(lines.some((row) => row.includes("(rayfin)"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps unrelated roots apart and nested ones folded", () => {
+    expect(
+      compactRoots([join("/p", "skills"), join("/p", "skills", "one"), join("/p", "vendor")]),
+    ).toEqual([join("/p", "skills"), join("/p", "vendor")]);
+    // A hand-written manifest can mix separators; both count as nesting.
+    expect(compactRoots(["/p/skills", "/p/skills/one", "/p/vendor"])).toEqual([
+      "/p/skills",
+      "/p/vendor",
+    ]);
+    expect(compactRoots(Array.from({ length: 9 }, (_, i) => `/p/skills/g${i}`))).toEqual([
+      "/p/skills",
+    ]);
+    expect(compactRoots([])).toEqual([]);
   });
 });
 

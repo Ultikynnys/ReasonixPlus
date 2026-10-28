@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { type EditMode, loadEditMode } from "../config.js";
 import { applyMemoryBlock, readCappedTextFile, truncateWithMarker } from "../memory/read-capped.js";
 import { applyMemoryStack } from "../memory/user.js";
@@ -22,12 +22,52 @@ export interface SkillIndexEntry {
   name: string;
   /** First sentence of the skill's description. */
   description: string;
-  /** Absolute directory holding one subdirectory per skill. */
+  /** Absolute directory the skill was found under; sections compact these before printing. */
   skillsRoot: string;
 }
 
 /** Owner label a standalone skill's root is listed under. */
 const STANDALONE_SKILL_OWNER = "standalone";
+
+/** Roots one section prints for a single owner. Beyond this, the common ancestor stands in
+ *  so a plugin that declares one directory per skill cannot flood the section. */
+const ROOTS_PER_OWNER = 4;
+
+/** True when `child` sits strictly below `parent`, under either separator: roots arrive from
+ *  native joins, and a hand-written manifest can mix the two. */
+function isBelow(child: string, parent: string): boolean {
+  if (!child.startsWith(parent) || child.length <= parent.length) return false;
+  const next = child[parent.length];
+  return next === "/" || next === "\\";
+}
+
+/** The directory above `path`, or `path` itself at the filesystem root. */
+function parentDir(path: string): string {
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return cut > 0 ? path.slice(0, cut) : path;
+}
+
+/** Fewest directories that still cover every root: nested ones collapse into their
+ *  ancestor, and a long sibling list collapses into the directory they share. */
+export function compactRoots(roots: Iterable<string>, max = ROOTS_PER_OWNER): string[] {
+  const unique = [...new Set(roots)].sort();
+  const pruned = unique.filter((root) => !unique.some((other) => isBelow(root, other)));
+  if (pruned.length <= max) return pruned;
+  let common = pruned[0] as string;
+  while (pruned.some((root) => !isBelow(root, common) && root !== common)) {
+    const parent = parentDir(common);
+    if (parent === common) return pruned.slice(0, max);
+    common = parent;
+  }
+  return [common];
+}
+
+/** Roots rendered for the prompt: backticked, and already compacted. */
+function rootList(roots: Iterable<string>): string {
+  return compactRoots(roots)
+    .map((root) => `\`${root}\``)
+    .join(", ");
+}
 
 /** One installed agent plugin, as the prompt describes it. Installed plugins are listed
  *  even when this chat did not enable them: the user still expects the agent to know what
@@ -37,7 +77,7 @@ export interface PluginPromptEntry {
   name: string;
   displayName: string;
   version?: string;
-  /** Skill roots the plugin ships, absolute and forward-slashed by the caller. */
+  /** Skill roots the plugin ships, absolute, as the store reports them. */
   skillsRoots: readonly string[];
   skillCount: number;
   /** True when this chat enabled the plugin at its session-start confirm. */
@@ -56,10 +96,7 @@ Installed agent plugins (Settings > Plugins). You cannot install, remove or enab
   let dropped = 0;
   for (const plugin of plugins) {
     const skills = plugin.skillCount === 1 ? "1 skill" : `${plugin.skillCount} skills`;
-    const roots =
-      plugin.skillsRoots.length > 0
-        ? ` under ${plugin.skillsRoots.map((root) => `\`${root}\``).join(", ")}`
-        : "";
+    const roots = plugin.skillsRoots.length > 0 ? ` under ${rootList(plugin.skillsRoots)}` : "";
     const version = plugin.version ? ` ${plugin.version}` : "";
     const state = plugin.enabled ? "enabled here" : "not enabled here";
     const line = `- ${plugin.displayName} (${plugin.name})${version} - ${state}. Ships ${skills}${roots}.`;
@@ -96,14 +133,12 @@ function skillsSection(skills: readonly SkillIndexEntry[]): string {
     dirs.add(skill.skillsRoot);
     roots.set(owner, dirs);
   }
-  const rootLines = [...roots]
-    .map(([owner, dirs]) => `- ${owner}: ${[...dirs].map((dir) => `\`${dir}\``).join(", ")}`)
-    .join("\n");
+  const rootLines = [...roots].map(([owner, dirs]) => `- ${owner}: ${rootList(dirs)}`).join("\n");
   const head = `# Skills
 
 Workflow files are installed with the app or shipped by a plugin. When a request matches a skill's description, read its SKILL.md completely and follow it: the file is authoritative over your own approach. Do not open one for work its description does not cover.
 
-Skill roots (one directory per skill, each holding its SKILL.md):
+Skill roots (a directory of skill directories, or a single skill directory):
 
 ${rootLines}
 `;

@@ -3996,14 +3996,14 @@ function sessionSkillIndex(name: string | undefined): SkillIndexEntry[] {
 }
 
 /** Every installed plugin in prompt shape: what it is, what it vendors, and whether this
- *  chat enabled it. Skills roots are absolute so the agent can read one on request. */
+ *  chat enabled it. Roots are passed as found; the prompt section compacts and dedupes. */
 function pluginPromptEntries(name: string | undefined): PluginPromptEntry[] {
   const chosen = new Set(sessionPlugins(name));
   return listPlugins().map((state) => ({
     name: state.slug,
     displayName: pluginDisplayName(state.manifest),
     ...(state.manifest.version ? { version: state.manifest.version } : {}),
-    skillsRoots: [...new Set(state.skills.map((skill) => skill.skillsRoot))],
+    skillsRoots: state.skills.map((skill) => skill.skillsRoot),
     skillCount: state.skills.length,
     enabled: chosen.has(state.slug),
   }));

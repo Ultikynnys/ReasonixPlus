@@ -76,7 +76,8 @@ export interface PluginManifest {
   repository?: string;
   license?: string;
   keywords: string[];
-  /** Skill roots relative to the plugin directory, forward-slashed. */
+  /** Declared skill paths relative to the plugin directory, forward-slashed. Each is read as
+   *  a collection of skill directories or as one skill directory; see `indexPluginSkills`. */
   skillsDirs: string[];
   /** Manifest-declared MCP file (relative to the plugin directory), when it names one. */
   mcpServersFile?: string;

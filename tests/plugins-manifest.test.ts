@@ -183,6 +183,62 @@ describe("indexPluginSkills", () => {
     expect(indexPluginSkills(root, { skillsDirs: ["skills"] })).toEqual([]);
   });
 
+  it("indexes a manifest that lists one directory per skill", () => {
+    writeSkill("first", "---\nname: first\ndescription: Listed on its own.\n---\n");
+    mkdirSync(join(root, "nested", "second"), { recursive: true });
+    writeFileSync(
+      join(root, "nested", "second", "SKILL.md"),
+      "---\nname: second\ndescription: Nested one level deeper.\n---\n",
+      "utf8",
+    );
+    const skills = indexPluginSkills(root, {
+      skillsDirs: ["skills/first", "nested/second"],
+    });
+    expect(skills.map((skill) => skill.name)).toEqual(["first", "second"]);
+    expect(skills.map((skill) => skill.relPath)).toEqual([
+      "skills/first/SKILL.md",
+      "nested/second/SKILL.md",
+    ]);
+    // Roots are the parents, so the prompt can name one directory instead of every skill.
+    expect(skills.map((skill) => skill.skillsRoot)).toEqual([
+      join(root, "skills"),
+      join(root, "nested"),
+    ]);
+  });
+
+  it("indexes both shapes in one manifest, and collapses a duplicate name", () => {
+    writeSkill("collection-skill", "---\nname: collection-skill\ndescription: From a root.\n---\n");
+    writeSkill("listed-skill", "---\nname: listed-skill\ndescription: Listed too.\n---\n");
+    const skills = indexPluginSkills(root, {
+      skillsDirs: ["skills", "skills/listed-skill", "skills/collection-skill"],
+    });
+    expect(skills.map((skill) => skill.name)).toEqual(["collection-skill", "listed-skill"]);
+    expect(skills.every((skill) => skill.skillsRoot === join(root, "skills"))).toBe(true);
+  });
+
+  it("counts a directory that is both a skill and a collection", () => {
+    mkdirSync(join(root, "skills", "outer"), { recursive: true });
+    writeFileSync(
+      join(root, "skills", "outer", "SKILL.md"),
+      "---\nname: outer\ndescription: The outer skill.\n---\n",
+      "utf8",
+    );
+    mkdirSync(join(root, "skills", "outer", "inner"), { recursive: true });
+    writeFileSync(
+      join(root, "skills", "outer", "inner", "SKILL.md"),
+      "---\nname: inner\ndescription: The inner skill.\n---\n",
+      "utf8",
+    );
+    // Declared as a path, the directory is indexed as a skill and scanned for children.
+    expect(
+      indexPluginSkills(root, { skillsDirs: ["skills/outer"] }).map((skill) => skill.name),
+    ).toEqual(["outer", "inner"]);
+    // A collection scan reads one level, so a nested skill needs its own declared path.
+    expect(indexPluginSkills(root, { skillsDirs: ["skills"] }).map((skill) => skill.name)).toEqual([
+      "outer",
+    ]);
+  });
+
   it("caps a long summary and keeps it on one line", () => {
     const long = `${"word ".repeat(60)}end`;
     const summary = skillSummary(long, 40);
