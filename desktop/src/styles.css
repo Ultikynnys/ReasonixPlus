@@ -7796,6 +7796,15 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .provider-col {
   min-width: 0;
 }
+/* Plugin card skill list: one heading per directory a plugin's skills live in. */
+.skill-root {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 2px 0 4px;
+}
+.skill-root code {
+  font-size: 11px;
+}
 .provider-models-head {
   display: flex;
   align-items: center;

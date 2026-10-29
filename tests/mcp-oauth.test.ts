@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +7,7 @@ import { mcpTransportAuth } from "../src/cli/commands/mcp-runtime.js";
 import { clearMcpOAuth, readConfig, saveMcpOAuth } from "../src/config.js";
 import {
   MCP_OAUTH_CALLBACK_PATH,
+  MCP_OAUTH_CALLBACK_PORT,
   authorizationServerCandidates,
   beginMcpOAuthFlow,
   cachedMcpOAuthHeaders,
@@ -71,6 +73,26 @@ describe("metadata URLs", () => {
     );
   });
 });
+
+/** Hold the preferred callback port, so the flow has to move. `owned` is false when the port
+ *  was already taken by something else, which satisfies the same precondition. */
+async function occupyPreferredPort(): Promise<{ owned: boolean; close: () => Promise<void> }> {
+  const server = createServer((_req, res) => {
+    res.writeHead(204).end();
+  });
+  const listening = await new Promise<boolean>((resolve) => {
+    server.once("error", () => resolve(false));
+    server.listen(MCP_OAUTH_CALLBACK_PORT, () => resolve(true));
+  });
+  if (!listening) return { owned: false, close: async () => {} };
+  return {
+    owned: true,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+  };
+}
 
 describe("discovery and sign-in", () => {
   let fixture: AuthFixture;
@@ -241,6 +263,29 @@ describe("discovery and sign-in", () => {
     expect(flow.redirectUri).toContain(MCP_OAUTH_CALLBACK_PATH);
     flow.cancel();
     await expect(flow.done).rejects.toThrow(/cancelled/);
+  });
+
+  it("moves to a free port when the preferred one is taken, and registers that one", async () => {
+    const occupier = await occupyPreferredPort();
+    try {
+      const flow = await beginMcpOAuthFlow("notfair", `${fixture.base}/api/mcp/notfair`, {
+        port: MCP_OAUTH_CALLBACK_PORT,
+        save: false,
+      });
+      const registered = new URL(fixture.registeredRedirect as string);
+      expect(flow.redirectUri).toBe(fixture.registeredRedirect);
+      expect(registered.pathname).toBe(MCP_OAUTH_CALLBACK_PATH);
+      if (occupier.owned) {
+        expect(Number(registered.port)).not.toBe(MCP_OAUTH_CALLBACK_PORT);
+      }
+      // The authorize URL must carry the same redirect the client was registered for.
+      const url = new URL(flow.url);
+      expect(url.searchParams.get("redirect_uri")).toBe(flow.redirectUri);
+      flow.cancel();
+      await expect(flow.done).rejects.toThrow(/cancelled/);
+    } finally {
+      await occupier.close();
+    }
   });
 
   it("refuses a server whose authorization server cannot register clients", async () => {

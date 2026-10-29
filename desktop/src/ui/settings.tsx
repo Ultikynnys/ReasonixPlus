@@ -51,6 +51,7 @@ import type {
   PlaywrightManagedBrowserInstallState,
   PlaywrightMcpConnectionMode,
   PluginInfo,
+  PluginSkillInfo,
   SettingsPatch,
   SkillInfo,
 } from "../protocol";
@@ -519,7 +520,6 @@ export function SettingsModal({
             {page === "skills" && (
               <PageSkills
                 skills={skills}
-                plugins={plugins}
                 onInstall={onInstallSkill}
                 onUninstall={onUninstallSkill}
                 onRequest={onRequestSkills}
@@ -3182,7 +3182,10 @@ export function PageMCP({
   const extensionMode = mode === "extension";
   const installRunning = browserInstall?.phase === "running";
   const installingBrowser = installRunning ? browserInstall.browser : null;
-  const playwrightSpec = specs.find((s) => s.name === "playwright");
+  // Servers a plugin ships are listed on that plugin's card in Settings > Plugins, so the
+  // flat list stays the servers someone configured here.
+  const ownSpecs = specs.filter((s) => !s.plugin);
+  const playwrightSpec = ownSpecs.find((s) => s.name === "playwright");
   let connection: { text: string; color: string } | null = null;
   if (playwrightSpec) {
     connection = serverStatusLabel(
@@ -3540,7 +3543,7 @@ export function PageMCP({
     <>
       <section className="section">
         <div className="stitle">
-          {t("settings.mcpConfigured", { count: specs.length })}
+          {t("settings.mcpConfigured", { count: ownSpecs.length })}
           {bridged ? (
             <span style={{ color: "var(--accent)", marginLeft: 8, fontSize: 11 }}>
               {t("settings.mcpBridged")}
@@ -3551,7 +3554,7 @@ export function PageMCP({
             </span>
           )}
         </div>
-        {specs.length === 0 ? (
+        {ownSpecs.length === 0 ? (
           <div
             style={{
               padding: 16,
@@ -3562,12 +3565,12 @@ export function PageMCP({
               color: "var(--muted)",
             }}
           >
-            {t("settings.mcpEmpty")}
+            {t(specs.length > 0 ? "settings.mcpOnlyPluginServers" : "settings.mcpEmpty")}
           </div>
         ) : null}
-        {specs.map((s) => {
-          const removable = s.name !== null && !s.builtin && !s.plugin;
-          const canToggle = s.name !== null && !s.plugin;
+        {ownSpecs.map((s) => {
+          const removable = s.name !== null && !s.builtin;
+          const canToggle = s.name !== null;
           const name = s.name;
           const setDisabled = (disabled: boolean) => {
             if (name !== null) onToggleServer(name, disabled);
@@ -3606,22 +3609,12 @@ export function PageMCP({
                       · {t("settings.mcpBuiltinBadge")}
                     </span>
                   ) : null}
-                  {s.plugin ? (
-                    <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
-                      · {t("settings.mcpPluginBadge", { name: s.plugin })}
-                    </span>
-                  ) : null}
                 </>
               }
             >
               <div className="sub mcp-spec-summary" title={s.summary}>
                 {s.summary}
               </div>
-              {s.plugin ? (
-                <div className="desc" style={{ color: "var(--muted)", marginTop: 4 }}>
-                  {t("settings.mcpPluginHint", { name: s.plugin })}
-                </div>
-              ) : null}
               {name !== null ? (
                 <ServerAuthRow
                   name={name}
@@ -3645,12 +3638,12 @@ export function PageMCP({
             </HeadActionCard>
           );
         })}
-        {!specs.some((s) => s.name === "playwright") ? (
+        {!ownSpecs.some((s) => s.name === "playwright") ? (
           <HeadActionCard title={t("settings.mcpBrowserTitle")}>
             {playwrightSettings}
           </HeadActionCard>
         ) : null}
-        {!specs.some((s) => s.name !== null && /mail/i.test(s.name)) ? (
+        {!ownSpecs.some((s) => s.name !== null && /mail/i.test(s.name)) ? (
           <HeadActionCard title={t("settings.mailTitle")}>{mailSettings}</HeadActionCard>
         ) : null}
       </section>
@@ -3843,18 +3836,7 @@ function PluginCard({
       {plugin.skills.length === 0 ? (
         <div className="desc">{t("settings.pluginsNoSkills")}</div>
       ) : (
-        <div style={{ maxHeight: 190, overflowY: "auto", marginTop: 6 }}>
-          {plugin.skills.map((skill) => (
-            <div key={skill.name} style={{ marginBottom: 8 }}>
-              <code style={{ fontSize: 11 }} title={skill.path}>
-                {skill.name}
-              </code>
-              <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
-                {skill.description}
-              </div>
-            </div>
-          ))}
-        </div>
+        <PluginSkillList skills={plugin.skills} />
       )}
       <div className="stitle" style={{ marginTop: 14 }}>
         {t("settings.pluginsServers", { count: plugin.servers.length })}
@@ -3902,19 +3884,49 @@ function PluginCard({
   );
 }
 
-/** Settings > Skills: install standalone SKILL.md workflows, and see the ones installed
- *  plugins ship. Only the standalone list is installable: a plugin's skills travel with
- *  the plugin, so they cannot be switched on for a chat on their own. */
+/** One plugin's skills, grouped by the directory that holds them, so a plugin shipping
+ *  a hundred of them reads as a few groups instead of a hundred rows. */
+function PluginSkillList({ skills }: { skills: PluginSkillInfo[] }) {
+  const groups = new Map<string, PluginSkillInfo[]>();
+  for (const skill of skills) {
+    const bucket = groups.get(skill.root);
+    if (bucket) bucket.push(skill);
+    else groups.set(skill.root, [skill]);
+  }
+  return (
+    <div style={{ maxHeight: 190, overflowY: "auto", marginTop: 6 }}>
+      {[...groups.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([root, group]) => (
+          <div key={root || "."}>
+            <div className="skill-root" title={root}>
+              {root ? <code>{root}</code> : t("settings.pluginsSkillRoot")}
+            </div>
+            {group.map((skill) => (
+              <div key={skill.name} style={{ marginBottom: 8 }}>
+                <code style={{ fontSize: 11 }} title={skill.path}>
+                  {skill.name}
+                </code>
+                <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
+                  {skill.description}
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+    </div>
+  );
+}
+
+/** Settings > Skills: install standalone SKILL.md workflows. A plugin's skills travel with
+ *  the plugin, so they appear on that plugin's card instead of here. */
 export function PageSkills({
   skills,
-  plugins,
   onInstall,
   onUninstall,
   onRequest,
 }: {
   skills: SkillInfo[];
-  /** Plugin inventory: their skills are listed read-only, grouped by plugin. */
-  plugins: PluginInfo[];
   onInstall: (source: string) => void;
   onUninstall: (name: string) => void;
   onRequest: () => void;
@@ -3929,10 +3941,6 @@ export function PageSkills({
     onInstall(source);
     setDraft("");
   };
-  const pluginSkills = plugins.flatMap((plugin) =>
-    plugin.skills.map((skill) => ({ plugin, skill })),
-  );
-  const shipping = plugins.filter((plugin) => plugin.skills.length > 0).length;
   return (
     <>
       <section className="section">
@@ -3984,40 +3992,6 @@ export function PageSkills({
             </button>
           </div>
         </div>
-      </section>
-      <section className="section">
-        <div className="stitle">{t("settings.skillsFromPlugins", { count: shipping })}</div>
-        <div className="desc" style={{ marginBottom: 10 }}>
-          {t("settings.skillsFromPluginsHint")}
-        </div>
-        {pluginSkills.length === 0 ? (
-          <div className="desc">{t("settings.skillsNoPluginSkills")}</div>
-        ) : (
-          pluginSkills.map(({ plugin, skill }) => (
-            <HeadActionCard
-              key={`${plugin.slug}/${skill.name}`}
-              title={
-                <>
-                  {skill.name}
-                  <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
-                    - {plugin.displayName}
-                  </span>
-                  <span
-                    style={{
-                      color: plugin.active ? "var(--accent)" : "var(--muted)",
-                      marginLeft: 6,
-                      fontSize: 11,
-                    }}
-                  >
-                    - {t(plugin.active ? "settings.skillsActiveHere" : "settings.skillsPluginOff")}
-                  </span>
-                </>
-              }
-            >
-              <div className="sub">{skill.description || t("settings.skillsNoDescription")}</div>
-            </HeadActionCard>
-          ))
-        )}
       </section>
     </>
   );

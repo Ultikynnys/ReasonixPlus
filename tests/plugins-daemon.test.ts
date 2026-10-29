@@ -9,14 +9,17 @@ import {
   orphanedCapabilityPatch,
   pluginPrefill,
   pluginServerInfos,
+  pluginSkillInfos,
   sessionMcpOverrides,
   sessionSetupMeta,
   syncSessionCapabilities,
 } from "../src/cli/commands/desktop.js";
 import { saveMcpOAuth, writeConfig } from "../src/config.js";
 import { ensureSessionDir, loadSessionMeta, patchSessionMeta } from "../src/memory/session.js";
+import { indexPluginSkills } from "../src/plugins/skills.js";
 import { mcpCreds } from "./support/oauth-fixture.js";
 import { stubPluginHome } from "./support/plugin-fixture.js";
+import { writeSkillDir } from "./support/skill-fixture.js";
 
 function tabWith(
   statuses: Record<string, { kind: McpSpecStatus; reason?: string; toolCount?: number }>,
@@ -158,6 +161,46 @@ describe("sessionSetupMeta", () => {
     const meta = sessionSetupMeta(answer());
     expect(meta.plugins).toEqual([]);
     expect(meta.skills).toEqual([]);
+  });
+});
+
+describe("pluginSkillInfos", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "reasonix-plugin-skill-infos-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("names the folder each skill lives under, relative to the plugin directory", () => {
+    // One declared collection, plus one declared skill directory two levels down.
+    writeSkillDir(join(root, "skills", "meta-ads"), { name: "meta-ads", description: "Meta." });
+    writeSkillDir(join(root, "skills", "seo-agent", "audit"), {
+      name: "audit",
+      description: "SEO.",
+    });
+    const infos = pluginSkillInfos({
+      dir: root,
+      skills: indexPluginSkills(root, {
+        skillsDirs: ["skills/meta-ads", "skills/seo-agent/audit"],
+      }),
+    });
+    expect(infos.map((info) => [info.name, info.root, info.path])).toEqual([
+      ["meta-ads", "skills", "skills/meta-ads/SKILL.md"],
+      ["audit", "skills/seo-agent", "skills/seo-agent/audit/SKILL.md"],
+    ]);
+  });
+
+  it("keeps the group heading relative to the plugin directory", () => {
+    writeSkillDir(join(root, "holder", "solo"), { name: "solo", description: "Solo." });
+    const infos = pluginSkillInfos({
+      dir: root,
+      skills: indexPluginSkills(root, { skillsDirs: ["holder"] }),
+    });
+    expect(infos.map((info) => info.root)).toEqual(["holder"]);
   });
 });
 

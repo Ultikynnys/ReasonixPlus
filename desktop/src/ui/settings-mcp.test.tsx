@@ -26,6 +26,17 @@ function spec(overrides: Partial<McpSpecInfo> = {}): McpSpecInfo {
   };
 }
 
+/** A server a plugin ships: the plugin card owns it, so this page must not list it. */
+function pluginSpec(overrides: Partial<McpSpecInfo> = {}): McpSpecInfo {
+  return spec({
+    raw: "notfair=https://notfair.co/api/mcp",
+    name: "notfair",
+    transport: "streamable-http",
+    plugin: "notfair",
+    ...overrides,
+  });
+}
+
 function extensionStatus(): McpExtensionStatus {
   return {
     storeUrl: "https://chromewebstore.google.com/detail/playwright-extension",
@@ -448,26 +459,18 @@ describe("PageMCP — playwright connection status", () => {
     expect(screen.queryByText(/built-in/)).toBeNull();
   });
 
-  it("labels a plugin-bundled server with the plugin that ships it", () => {
-    renderCard([
-      spec({ raw: "notfair=https://notfair.co/api/mcp", name: "notfair", plugin: "notfair" }),
-    ]);
-    expect(screen.getByText(/from plugin notfair/)).toBeTruthy();
-    expect(screen.getByText(/Bundled with the notfair plugin/)).toBeTruthy();
+  it("keeps a plugin's server out of the flat list and counts only this page's own", () => {
+    renderCard([spec({ raw: "github=npx -y @smithery/cli", name: "github" }), pluginSpec()]);
+    expect(screen.getByText("Configured · 1")).toBeTruthy();
+    expect(screen.getByText("github")).toBeTruthy();
+    expect(screen.queryByText("notfair")).toBeNull();
   });
 
-  it("leaves a standalone server unlabeled", () => {
-    renderCard([spec()]);
-    expect(screen.queryByText(/from plugin/)).toBeNull();
-  });
-
-  it("leaves a plugin server's lifecycle to the plugin", () => {
-    renderCard([
-      spec({ raw: "notfair=https://notfair.co/api/mcp", name: "notfair", plugin: "notfair" }),
-    ]);
-    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Enable" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Disable" })).toBeNull();
+  it("says the list is empty when every server comes from a plugin", () => {
+    renderCard([pluginSpec()]);
+    expect(screen.getByText("Configured · 0")).toBeTruthy();
+    expect(screen.getByText(/Every server here comes from a plugin/)).toBeTruthy();
+    expect(screen.queryByText(/server connected/)).toBeNull();
   });
 
   it("puts Remove left of the Enable/Disable toggle", () => {

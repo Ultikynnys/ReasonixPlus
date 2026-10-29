@@ -654,6 +654,9 @@ export interface PluginSkillInfo {
   description: string;
   /** SKILL.md path relative to the plugin directory. */
   path: string;
+  /** Directory holding this skill, relative to the plugin directory and forward-slashed;
+   *  empty for a skill sitting at the plugin root. Settings groups skills by it. */
+  root: string;
 }
 
 /** One MCP server a plugin declared, with its live bridge state. */

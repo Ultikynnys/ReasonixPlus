@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PluginInfo, SkillInfo } from "../protocol";
+import type { SkillInfo } from "../protocol";
 import { PageSkills } from "./settings";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
@@ -20,35 +20,14 @@ function skill(overrides: Partial<SkillInfo> = {}): SkillInfo {
   };
 }
 
-function plugin(overrides: Partial<PluginInfo> = {}): PluginInfo {
-  return {
-    slug: "notfair",
-    name: "notfair",
-    displayName: "NotFair",
-    category: "Productivity",
-    capabilities: [],
-    defaultPrompt: [],
-    active: true,
-    skills: [
-      { name: "seo-analysis", description: "Full SEO audit.", path: "skills/seo-analysis/SKILL.md" },
-    ],
-    servers: [],
-    ...overrides,
-  };
-}
-
-function renderPage(
-  skills: SkillInfo[],
-  plugins: PluginInfo[] = [],
-  overrides: Record<string, ReturnType<typeof vi.fn>> = {},
-) {
+function renderPage(skills: SkillInfo[], overrides: Record<string, ReturnType<typeof vi.fn>> = {}) {
   const handlers = {
     onInstall: vi.fn(),
     onUninstall: vi.fn(),
     onRequest: vi.fn(),
     ...overrides,
   };
-  const utils = render(<PageSkills skills={skills} plugins={plugins} {...handlers} />);
+  const utils = render(<PageSkills skills={skills} {...handlers} />);
   return { ...utils, ...handlers };
 }
 
@@ -103,27 +82,6 @@ describe("PageSkills", () => {
     const { onUninstall } = renderPage([skill()]);
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(onUninstall).toHaveBeenCalledWith("churn-analysis");
-  });
-
-  it("lists a plugin's skills as read-only rows that follow the plugin", () => {
-    renderPage([], [plugin()]);
-    expect(screen.getByText("From plugins (1)")).toBeTruthy();
-    expect(screen.getByText("seo-analysis")).toBeTruthy();
-    expect(screen.getByText(/Full SEO audit\./)).toBeTruthy();
-    // The only switches the page offers are removal of standalone skills, and the
-    // plugin-owned row has none of its own.
-    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
-    expect(screen.queryByRole("switch")).toBeNull();
-  });
-
-  it("reports a plugin's per-chat state beside its skills", () => {
-    renderPage([], [plugin({ active: false })]);
-    expect(screen.getByText(/off in this chat/)).toBeTruthy();
-  });
-
-  it("says when no installed plugin ships a skill", () => {
-    renderPage([], [plugin({ skills: [] })]);
-    expect(screen.getByText("No installed plugin ships a skill.")).toBeTruthy();
   });
 
   it("shows a read failure instead of hiding the card", () => {

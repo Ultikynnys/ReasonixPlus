@@ -47,7 +47,9 @@ export function indexPluginSkills(
     const base = join(rootDir, dir);
     if (!isDirectory(base)) continue;
     const own = readSkillDeclaration(base, basename(base));
-    if (own) add(own, base, dirname(base));
+    // A declared path that is the plugin root itself stays its own root: stepping to the
+    // parent would point the prompt at the plugins store instead of this plugin.
+    if (own) add(own, base, base === rootDir ? rootDir : dirname(base));
     let entries: string[];
     try {
       entries = readdirSync(base).sort();

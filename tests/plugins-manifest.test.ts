@@ -216,6 +216,21 @@ describe("indexPluginSkills", () => {
     expect(skills.every((skill) => skill.skillsRoot === join(root, "skills"))).toBe(true);
   });
 
+  it("keeps the root of a plugin that is itself a skill inside the plugin", () => {
+    writeFileSync(
+      join(root, "SKILL.md"),
+      "---\nname: solo\ndescription: The plugin is one skill.\n---\n",
+      "utf8",
+    );
+    for (const declared of [".", ""]) {
+      const [skill] = indexPluginSkills(root, { skillsDirs: [declared] });
+      expect(skill?.name).toBe("solo");
+      // The parent of the plugin is the plugins store: naming it would hand the agent
+      // every installed plugin instead of this one.
+      expect(skill?.skillsRoot).toBe(root);
+    }
+  });
+
   it("counts a directory that is both a skill and a collection", () => {
     mkdirSync(join(root, "skills", "outer"), { recursive: true });
     writeFileSync(

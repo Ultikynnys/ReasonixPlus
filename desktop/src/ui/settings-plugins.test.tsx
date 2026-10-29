@@ -28,8 +28,14 @@ function plugin(overrides: Partial<PluginInfo> = {}): PluginInfo {
         name: "seo-analysis",
         description: "Full SEO audit.",
         path: "skills/seo-analysis/SKILL.md",
+        root: "skills",
       },
-      { name: "meta-ads", description: "Meta Ads review.", path: "skills/meta-ads/SKILL.md" },
+      {
+        name: "meta-ads",
+        description: "Meta Ads review.",
+        path: "skills/meta-ads/SKILL.md",
+        root: "skills",
+      },
     ],
     servers: [
       {
@@ -83,6 +89,33 @@ describe("PagePlugins", () => {
     expect(screen.getByText("MCP servers (1)")).toBeTruthy();
     expect(screen.getByText("server connected · 12 tools live")).toBeTruthy();
     expect(screen.getByText(/github\.com\/nowork-studio\/notfair-plugin/)).toBeTruthy();
+  });
+
+  it("folds a plugin's skills into folder headings, not one row per skill", () => {
+    const { container } = renderPage([
+      plugin({
+        skills: [
+          { name: "top-level", description: "Sits at the root.", path: "SKILL.md", root: "" },
+          {
+            name: "audit",
+            description: "Sits under a folder.",
+            path: "skills/seo-agent/audit/SKILL.md",
+            root: "skills/seo-agent",
+          },
+          {
+            name: "meta-ads",
+            description: "Meta Ads review.",
+            path: "skills/meta-ads/SKILL.md",
+            root: "skills",
+          },
+        ],
+      }),
+    ]);
+    const roots = [...container.querySelectorAll(".skill-root")].map((el) => el.textContent);
+    expect(roots).toEqual(["Plugin root", "skills", "skills/seo-agent"]);
+    expect(screen.getByText("Skills (3)")).toBeTruthy();
+    expect(screen.getByText("top-level")).toBeTruthy();
+    expect(screen.getByText("audit")).toBeTruthy();
   });
 
   it("installs from the source field", () => {

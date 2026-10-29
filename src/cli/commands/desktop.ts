@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { stdin } from "node:process";
 import { createInterface } from "node:readline";
 import {
@@ -80,6 +80,7 @@ import type {
   PluginInfo,
   PluginServerInfo,
   PluginSetupEntry,
+  PluginSkillInfo,
   PluginsEvent,
   RetryResultEvent,
   RevisionRequiredEvent,
@@ -110,6 +111,7 @@ import type {
   ZaiQuota,
   ZaiQuotaWindow,
 } from "@reasonix/core-utils";
+import { toPosixPath } from "@reasonix/core-utils/path-utils";
 import {
   type FileWithStats,
   listDirectory,
@@ -314,6 +316,7 @@ import { ensureNpxAvailable } from "../../mcp/node-runtime.js";
 import { quoteArg } from "../../mcp/stdio.js";
 import {
   type OwnedPluginSkill,
+  type PluginState,
   installPlugin,
   listPlugins,
   pluginDisplayName,
@@ -4240,6 +4243,17 @@ export function pluginServerInfos(
     });
 }
 
+/** Plugin skills as Settings shows them: the folder each one lives under, relative to the
+ *  plugin directory, so a card groups a hundred skills into a few headings. */
+export function pluginSkillInfos(state: Pick<PluginState, "dir" | "skills">): PluginSkillInfo[] {
+  return state.skills.map((skill) => ({
+    name: skill.name,
+    description: skill.description,
+    path: skill.relPath,
+    root: toPosixPath(relative(state.dir, skill.skillsRoot)),
+  }));
+}
+
 /** Plugin inventory for Settings > Plugins — the page renders this snapshot alone. */
 function emitPlugins(tab: Tab): void {
   const chosen = new Set(sessionPlugins(tab.currentSession));
@@ -4262,11 +4276,7 @@ function emitPlugins(tab: Tab): void {
       ...(state.record?.source ? { source: state.record.source } : {}),
       active,
       ...(state.error ? { error: state.error } : {}),
-      skills: state.skills.map((skill) => ({
-        name: skill.name,
-        description: skill.description,
-        path: skill.relPath,
-      })),
+      skills: pluginSkillInfos(state),
       servers: pluginServerInfos(tab, state.servers, active),
     };
   });

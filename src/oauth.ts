@@ -216,19 +216,18 @@ export async function beginOAuthFlow(
   const { verifier, challenge } = pkcePair();
   const envRedirect = process.env.OPENAI_OAUTH_REDIRECT_URI?.trim();
   const port = envRedirect ? redirectPort(envRedirect) : OAUTH_CALLBACK_PORT;
-  const redirectUri = envRedirect ?? `http://localhost:${port}${OAUTH_CALLBACK_PATH}`;
   return beginLocalhostOAuthFlow<OpenAIOAuthCreds>({
     callbackPath: OAUTH_CALLBACK_PATH,
-    redirectUri,
+    // An env-pinned redirect is fixed; otherwise the URI follows the bound port.
+    ...(envRedirect
+      ? { redirectUri: envRedirect }
+      : { redirectUriForPort: (p: number) => `http://localhost:${p}${OAUTH_CALLBACK_PATH}` }),
     port,
     timeoutMs: opts.timeoutMs,
     successTitle: "Signed in",
     successHeading: "Signed in to OpenAI",
     stateMismatchMessage: "State mismatch — this sign-in attempt is invalid. Retry from Reasonix+.",
     allowPortFallback: true,
-    redirectUriForPort: envRedirect
-      ? undefined
-      : (p) => `http://localhost:${p}${OAUTH_CALLBACK_PATH}`,
     buildUrl: (uri, state) =>
       buildAuthorizeUrl({
         clientId: openAIClientId(),

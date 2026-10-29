@@ -104,16 +104,23 @@ export async function fetchUserEmail(
 export interface LocalhostOAuthFlow<TCreds> {
   /** Authorize URL to open in the system browser. */
   url: string;
+  /** Redirect URI the callback server actually uses, which is what the client was
+   *  registered for when the port was not the preferred one. */
+  redirectUri: string;
   /** Resolves with exchanged tokens; rejects on error / cancel / timeout. */
   done: Promise<TCreds>;
   cancel: () => void;
 }
 
-export interface LocalhostOAuthFlowOptions<TCreds> {
+/** Where a flow's redirect URI comes from: fixed before the server starts, or recomputed
+ *  from the port it binds. Exactly one applies, so a caller cannot supply two answers. */
+export type CallbackRedirect =
+  | { redirectUri: string; redirectUriForPort?: undefined }
+  | { redirectUri?: undefined; redirectUriForPort: (port: number) => string };
+
+export type LocalhostOAuthFlowOptions<TCreds> = CallbackRedirect & {
   /** Callback path, e.g. "/auth/callback". */
   callbackPath: string;
-  /** Redirect URI to try first (already includes the desired port). */
-  redirectUri: string;
   /** Port to bind the callback server on. */
   port: number;
   /** Bind host. Undefined = dual-stack bind (both localhost and 127.0.0.1). */
@@ -127,28 +134,28 @@ export interface LocalhostOAuthFlowOptions<TCreds> {
    *  upstream allowlist is best-effort). False: throw a bind error instead
    *  (Antigravity, whose client only accepts its registered callback). */
   allowPortFallback: boolean;
-  /** Recompute the effective redirect URI from the bound port. Used with
-   *  `allowPortFallback` when the redirect wasn't env-pinned. */
-  redirectUriForPort?: (port: number) => string;
-  /** Build the authorize URL for the effective redirect URI + state. */
-  buildUrl: (redirectUri: string, state: string) => string;
+  /** Build the authorize URL for the effective redirect URI + state. Async so a caller can
+   *  register its client against the port the server actually bound. */
+  buildUrl: (redirectUri: string, state: string) => string | Promise<string>;
   /** Exchange the callback code for credentials. */
   exchange: (code: string, redirectUri: string) => Promise<TCreds>;
   /** Message for the flow-timeout rejection. */
   timeoutMessage?: string;
   /** Error when the callback port can't bind and `allowPortFallback` is false. */
   bindErrorMessage?: string;
-}
+};
 
 export interface OneShotCallbackFlow<TCreds> {
   /** Authorize URL to open in the system browser. */
   url: string;
+  /** Redirect URI the callback server actually uses. */
+  redirectUri: string;
   /** Resolves with the handled result; rejects on error / cancel / timeout. */
   done: Promise<TCreds>;
   cancel: () => void;
 }
 
-export interface OneShotCallbackFlowOptions<TCreds> {
+export type OneShotCallbackFlowOptions<TCreds> = CallbackRedirect & {
   /** Handle one callback request. Answer the response, then call `resolve` or
    *  `reject` exactly once — either closes the server after the response flushes. */
   handle: (
@@ -162,18 +169,15 @@ export interface OneShotCallbackFlowOptions<TCreds> {
       reject: (error: Error) => void;
     },
   ) => void;
-  /** Authorize URL for the effective redirect URI. */
-  buildUrl: (redirectUri: string) => string;
-  /** Redirect URI for the fixed port (already includes the desired port). */
-  redirectUri?: string;
+  /** Authorize URL for the effective redirect URI (async: registering a client needs the
+   *  port the server actually bound). */
+  buildUrl: (redirectUri: string) => string | Promise<string>;
   /** Port to bind the callback server on. */
   port: number;
   /** Bind host. Undefined = dual-stack bind (both localhost and 127.0.0.1). */
   host?: string;
   /** True: fall back to an ephemeral port when `port` is taken. */
   allowPortFallback: boolean;
-  /** Recompute the effective redirect URI from the bound port. */
-  redirectUriForPort?: (port: number) => string;
   timeoutMs?: number;
   /** Message for the flow-timeout rejection. */
   timeoutMessage?: string;
@@ -181,7 +185,7 @@ export interface OneShotCallbackFlowOptions<TCreds> {
   cancelMessage?: string;
   /** Error when the callback port can't bind and `allowPortFallback` is false. */
   bindErrorMessage?: string;
-}
+};
 
 /** One-shot localhost callback server skeleton shared by every browser flow:
  *  dual-stack bind with optional port fallback, exactly-once settle that closes
@@ -264,7 +268,16 @@ export async function beginOneShotCallbackFlow<TCreds>(
   }
   if (opts.redirectUriForPort) boundRedirectUri = opts.redirectUriForPort(addr.port);
 
-  const url = opts.buildUrl(boundRedirectUri);
+  let url: string;
+  try {
+    url = await opts.buildUrl(boundRedirectUri);
+  } catch (err) {
+    // Nothing was handed to the caller, so the bound port is released instead of leaked.
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+    throw err as Error;
+  }
 
   timer = setTimeout(() => {
     settle(() => rejectDone(new Error(timeoutMessage)));
@@ -272,6 +285,7 @@ export async function beginOneShotCallbackFlow<TCreds>(
 
   return {
     url,
+    redirectUri: boundRedirectUri,
     done,
     cancel: () => settle(() => rejectDone(new Error(cancelMessage))),
   };
@@ -284,12 +298,14 @@ export async function beginLocalhostOAuthFlow<TCreds>(
   opts: LocalhostOAuthFlowOptions<TCreds>,
 ): Promise<LocalhostOAuthFlow<TCreds>> {
   const state = randomOAuthState();
+  const redirectSource: CallbackRedirect = opts.redirectUriForPort
+    ? { redirectUriForPort: opts.redirectUriForPort }
+    : { redirectUri: opts.redirectUri as string };
   return beginOneShotCallbackFlow<TCreds>({
-    redirectUri: opts.redirectUri,
+    ...redirectSource,
     port: opts.port,
     host: opts.host,
     allowPortFallback: opts.allowPortFallback,
-    redirectUriForPort: opts.redirectUriForPort,
     timeoutMs: opts.timeoutMs,
     timeoutMessage: opts.timeoutMessage,
     bindErrorMessage: opts.bindErrorMessage,

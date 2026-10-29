@@ -1,7 +1,6 @@
 /** Browser OAuth for HTTP MCP servers: protected-resource discovery, dynamic client
  *  registration, PKCE on a loopback port, and a per-request bearer resolver. */
 
-import { createServer } from "node:http";
 import type { McpOAuthCreds } from "../config.js";
 import { defaultConfigPath, readConfig, saveMcpOAuth } from "../config.js";
 import { singleFlight } from "../core/lazy.js";
@@ -300,19 +299,6 @@ function toCreds(
 export interface McpOAuthFlow extends LocalhostOAuthFlow<McpOAuthCreds> {
   /** Authorization server the flow registered with, for diagnostics. */
   authorizationServer: string;
-  /** Redirect URI that was registered. */
-  redirectUri: string;
-}
-
-/** A loopback port that is free right now. Only used when a caller asks for an
- *  ephemeral one (`port: 0`); the default flow always uses the registered constant. */
-async function freeLoopbackPort(): Promise<number> {
-  const probe = createServer();
-  await new Promise<void>((resolve) => probe.listen(0, resolve));
-  const address = probe.address();
-  const port = address && typeof address !== "string" ? address.port : MCP_OAUTH_CALLBACK_PORT;
-  await new Promise<void>((resolve) => probe.close(() => resolve()));
-  return port;
 }
 
 /** Registration endpoint for a discovery result, or the reason there is none. */
@@ -331,11 +317,12 @@ export interface BeginMcpOAuthOptions {
   configPath?: string;
   /** Persist the result. Defaults to true; tests pass false to inspect the shape. */
   save?: boolean;
-  /** Override the loopback port (tests). */
+  /** Preferred loopback port. A busy one falls back to whichever port is free. */
   port?: number;
   timeoutMs?: number;
   /** Injectable discovery/registration for tests. */
   discovery?: McpAuthDiscovery;
+  /** Skip dynamic registration and use this client id (a pre-registered host). */
   clientId?: string;
   clientName?: string;
 }
@@ -347,39 +334,38 @@ export async function beginMcpOAuthFlow(
   endpoint: string,
   opts: BeginMcpOAuthOptions = {},
 ): Promise<McpOAuthFlow> {
-  const port = opts.port === 0 ? await freeLoopbackPort() : (opts.port ?? MCP_OAUTH_CALLBACK_PORT);
-  const redirectUri = `http://localhost:${port}${MCP_OAUTH_CALLBACK_PATH}`;
+  const preferredPort = opts.port ?? MCP_OAUTH_CALLBACK_PORT;
   const discovery = opts.discovery ?? (await discoverMcpAuth(endpoint));
-  const clientId =
-    opts.clientId ??
-    (await registerMcpClient(registrationEndpointOf(discovery), redirectUri, {
-      clientName: opts.clientName,
-    }));
   const { verifier, challenge } = makePkcePair(64);
   const scope = discovery.scope;
   const resource = endpoint;
-  const base = {
-    tokenEndpoint: discovery.metadata.tokenEndpoint,
-    clientId,
-    ...(scope ? { scope } : {}),
-    resource,
+  // One registration per attempt, memoized so the exchange can await it without assuming
+  // buildUrl already ran, and without registering twice.
+  let registration: Promise<string> | undefined;
+  const clientIdFor = (uri: string): Promise<string> => {
+    registration ??= opts.clientId
+      ? Promise.resolve(opts.clientId)
+      : registerMcpClient(registrationEndpointOf(discovery), uri, {
+          clientName: opts.clientName,
+        });
+    return registration;
   };
 
   const flow = await beginLocalhostOAuthFlow<McpOAuthCreds>({
     callbackPath: MCP_OAUTH_CALLBACK_PATH,
-    redirectUri,
-    port,
-    // The redirect URI is part of the registration, so it cannot move to another port.
-    allowPortFallback: false,
-    bindErrorMessage: `MCP sign-in needs port ${port} for its callback; free it and retry`,
+    port: preferredPort,
+    // The port is a preference, not a requirement: the client is registered against the
+    // port the server actually bound, so a taken port costs one registration, not a retry.
+    allowPortFallback: true,
+    redirectUriForPort: (port) => `http://localhost:${port}${MCP_OAUTH_CALLBACK_PATH}`,
     timeoutMs: opts.timeoutMs,
     successTitle: "Signed in",
     successHeading: `Signed in to ${serverName}`,
     stateMismatchMessage: "State mismatch - this sign-in attempt is invalid. Retry from Settings.",
-    buildUrl: (uri, flowState) =>
+    buildUrl: async (uri, flowState) =>
       mcpAuthorizeUrl({
         authorizationEndpoint: discovery.metadata.authorizationEndpoint,
-        clientId,
+        clientId: await clientIdFor(uri),
         redirectUri: uri,
         state: flowState,
         codeChallenge: challenge,
@@ -387,6 +373,7 @@ export async function beginMcpOAuthFlow(
         ...(scope ? { scope } : {}),
       }),
     exchange: async (code, uri) => {
+      const clientId = await clientIdFor(uri);
       const body = new URLSearchParams({
         grant_type: "authorization_code",
         client_id: clientId,
@@ -395,13 +382,18 @@ export async function beginMcpOAuthFlow(
         code_verifier: verifier,
         resource,
       });
-      const creds = toCreds(await postTokenForm(discovery.metadata.tokenEndpoint, body), base);
+      const creds = toCreds(await postTokenForm(discovery.metadata.tokenEndpoint, body), {
+        tokenEndpoint: discovery.metadata.tokenEndpoint,
+        clientId,
+        ...(scope ? { scope } : {}),
+        resource,
+      });
       if (opts.save !== false) saveMcpOAuth(serverName, creds, opts.configPath);
       return creds;
     },
     timeoutMessage: `MCP sign-in for ${serverName} timed out. Retry from Settings.`,
   });
-  return { ...flow, authorizationServer: discovery.authorizationServer, redirectUri };
+  return { ...flow, authorizationServer: discovery.authorizationServer };
 }
 
 /** One refresh in flight per server. A single shared slot would hand one server's fresh
