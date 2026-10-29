@@ -1,8 +1,7 @@
 import {
-  DEFAULT_FEEDBACK_AUDIO,
-  type FeedbackCueAudioSetting,
   type FeedbackCueAudioSettings,
   type FeedbackCueId,
+  resolveFeedbackCueAudio,
 } from "@reasonix/core-utils";
 import type { FeedbackSoundPlayer } from "./feedback-sounds";
 import { t } from "./i18n";
@@ -125,13 +124,21 @@ export function totalPending(snapshot: ApprovalSnapshot): number {
   );
 }
 
-/** Resolve one cue's audio through the shared defaults: an absent entry means off, so
- *  the whole feature is opt-in per pack. */
-export function cueAudio(entry: FeedbackCueAudioSetting | undefined): FeedbackCueAudioSetting {
-  return {
-    enabled: entry?.enabled === true,
-    volume: typeof entry?.volume === "number" ? entry.volume : DEFAULT_FEEDBACK_AUDIO.volume,
-  };
+/** The end of a turn long enough to have been worth waiting for, on a successful outcome:
+ *  the one moment task-completion feedback is due. The cue, the desktop notification and
+ *  the in-thread notice all read it here, so they cannot drift apart. */
+function isCompletionMoment(args: {
+  wasBusy: boolean;
+  isBusy: boolean;
+  busyDurationMs: number;
+  outcome?: TurnOutcome | null;
+}): boolean {
+  return (
+    isSuccessfulOutcome(args.outcome) &&
+    args.wasBusy &&
+    !args.isBusy &&
+    args.busyDurationMs >= COMPLETION_NOTIFY_MIN_MS
+  );
 }
 
 /** Play one cue's sound when the active pack enables it and its volume is audible —
@@ -143,22 +150,23 @@ export function playEnabledCue(
   player: FeedbackSoundPlayer,
   packId: string | undefined,
 ): void {
-  const setting = cueAudio(audio?.[id]);
+  const setting = resolveFeedbackCueAudio(audio?.[id]);
   if (setting.enabled && setting.volume > 0) player.play(id, setting.volume, packId);
 }
 
-/** Does this cue raise a desktop notification? One list for the whole app: switching
- *  sound packs must never silence notifications. */
-export function notifyEnabled(
-  notify: readonly FeedbackCueId[] | null | undefined,
+/** Is this cue switched on for the active pack? The one gate sounds and desktop
+ *  notifications share: a cue the pack leaves off neither plays nor notifies. Volume stays
+ *  audio-only, so a cue at 0% still notifies. */
+export function cueEnabled(
+  audio: FeedbackCueAudioSettings | null | undefined,
   id: FeedbackCueId,
 ): boolean {
-  return notify?.includes(id) === true;
+  return resolveFeedbackCueAudio(audio?.[id]).enabled;
 }
 
 /** Cue ids whose sound is driven by turn/plan state (not a dedicated wire
- *  event): task completion and plan completion. Focus and the notify toggle are
- *  irrelevant to sounds — the caller gates playback on `enabled`. */
+ *  event): task completion and plan completion. Focus is irrelevant to sounds —
+ *  the caller gates playback on the pack's switch. */
 export function deriveStateCueSounds(args: {
   wasBusy: boolean;
   isBusy: boolean;
@@ -168,23 +176,13 @@ export function deriveStateCueSounds(args: {
   currentPlan?: PlanFeedbackState | null;
 }): FeedbackCueId[] {
   const cues: FeedbackCueId[] = [];
-  if (
-    isSuccessfulOutcome(args.outcome) &&
-    args.wasBusy &&
-    !args.isBusy &&
-    args.busyDurationMs >= COMPLETION_NOTIFY_MIN_MS
-  ) {
+  if (isCompletionMoment(args)) {
     cues.push("taskComplete");
   }
   if (isPlanCompletionTransition(args.previousPlan, args.currentPlan)) {
     cues.push("planComplete");
   }
   return cues;
-}
-
-/** No cue notifies? Then the whole derivation costs one length check. */
-function anyCueEnabled(notify: readonly FeedbackCueId[] | null | undefined): boolean {
-  return (notify?.length ?? 0) > 0;
 }
 
 export function deriveDesktopNotifications(args: {
@@ -196,8 +194,9 @@ export function deriveDesktopNotifications(args: {
   focused: boolean;
   /** Terminal outcome of the finished turn — non-success suppresses completion noise. */
   outcome?: TurnOutcome | null;
-  /** Cues that raise a desktop notification; absent = none. */
-  notify?: readonly FeedbackCueId[] | null;
+  /** The active pack's cue matrix: a notification follows the same switch its sound does,
+   *  so an absent entry notifies nothing. */
+  audio?: FeedbackCueAudioSettings | null;
   /** Plan rail state on the previous and current render, for the completion cue. */
   previousPlan?: PlanFeedbackState | null;
   /** Plan rail state on the current render. */
@@ -208,21 +207,13 @@ export function deriveDesktopNotifications(args: {
 }): DesktopNotification[] {
   const notifications: DesktopNotification[] = [];
   if (args.focused) return notifications;
-  if (!anyCueEnabled(args.notify)) {
-    return notifications;
-  }
 
   if (totalPending(args.current) > totalPending(args.previous)) {
     const approval = newestApproval(args.current);
     if (approval) notifications.push(approval);
   }
 
-  if (
-    isSuccessfulOutcome(args.outcome) &&
-    args.wasBusy &&
-    !args.isBusy &&
-    args.busyDurationMs >= COMPLETION_NOTIFY_MIN_MS
-  ) {
+  if (isCompletionMoment(args)) {
     notifications.push({
       kind: "turn_complete",
       cue: "taskComplete",
@@ -249,7 +240,7 @@ export function deriveDesktopNotifications(args: {
     });
   }
 
-  return notifications;
+  return notifications.filter((note) => cueEnabled(args.audio, note.cue));
 }
 
 export function shouldAppendCompletionNotice(args: {
@@ -260,20 +251,13 @@ export function shouldAppendCompletionNotice(args: {
   /** Terminal outcome of the finished turn — non-success suppresses the success notice. */
   outcome?: TurnOutcome | null;
 }): boolean {
-  return (
-    isSuccessfulOutcome(args.outcome) &&
-    args.focused &&
-    args.wasBusy &&
-    !args.isBusy &&
-    args.busyDurationMs >= COMPLETION_NOTIFY_MIN_MS
-  );
+  return args.focused && isCompletionMoment(args);
 }
 
 let notificationPermissionAttempted = false;
 
 export async function dispatchDesktopNotifications(
   notifications: DesktopNotification[],
-  notify: readonly FeedbackCueId[] | null | undefined,
   deps: {
     isFocused: () => Promise<boolean>;
     isPermissionGranted: () => Promise<boolean>;
@@ -284,10 +268,6 @@ export async function dispatchDesktopNotifications(
   if (notifications.length === 0) return;
   const focused = await deps.isFocused().catch(() => true);
   if (focused) return;
-  // Only cues on the notify list reach the OS notification center; sounds are
-  // dispatched separately (feedback-sounds) and follow the active pack instead.
-  const notifiable = notifications.filter((n) => notifyEnabled(notify, n.cue));
-  if (notifiable.length === 0) return;
 
   let granted = await deps.isPermissionGranted().catch(() => false);
   if (!granted && !notificationPermissionAttempted) {
@@ -297,7 +277,7 @@ export async function dispatchDesktopNotifications(
   }
   if (!granted) return;
 
-  for (const note of notifiable) {
+  for (const note of notifications) {
     deps.sendNotification({ title: note.title, body: note.body });
   }
 }

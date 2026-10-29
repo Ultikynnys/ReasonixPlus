@@ -74,8 +74,6 @@ function renderPanel(
   );
 }
 
-
-
 describe("Session plan history", () => {
   const now = "2026-01-01T00:00:00.000Z";
 
@@ -158,10 +156,6 @@ describe("Session plan history", () => {
     );
   }
 
-  function ownerLine(container: HTMLElement) {
-    return container.querySelector(".ctx-plan-owner");
-  }
-
   it("opens on the session's own plan and shows the plan a row selects", () => {
     const onReadPlan = vi.fn();
     const onReadPlans = vi.fn();
@@ -216,7 +210,7 @@ describe("Session plan history", () => {
     expect(screen.queryByText("Original plan body")).toBeNull();
   });
 
-  it("names the session that owns the shown plan, and no owner once it is finished", () => {
+  it("names another session on its row and trims the shown plan to the plan itself", () => {
     const { container } = renderPlans({
       planSession: "mine",
       sessions: [
@@ -226,7 +220,7 @@ describe("Session plan history", () => {
       history: [
         plan({ id: "theirs-plan", summary: "Their work", ownerSession: "theirs" }),
         plan({ id: "mine-plan", summary: "My work", ownerSession: "mine" }),
-        // Still claimed on disk, but finished: it owns nothing and shows no owner.
+        // Still claimed on disk, but finished: it owns nothing and names nobody.
         plan({ id: "done-plan", summary: "Done work", status: "completed", ownerSession: "mine" }),
         plan({ id: "orphan-plan", summary: "Orphan work" }),
       ],
@@ -234,22 +228,16 @@ describe("Session plan history", () => {
     // The section opens on the plan THIS session owns, even though a newer active plan
     // in the same workspace belongs to another session.
     expect(shownPlan(container)).toBe("My work");
-    expect(ownerLine(container)?.getAttribute("data-owned")).toBe("this");
-    expect(ownerLine(container)?.textContent).toContain("My chat");
+    // The list beside it is the whole outline, so the shown plan carries no heading and
+    // no ownership line of its own.
+    expect(container.querySelector(".ctx-plan-owner")).toBeNull();
+    expect(container.querySelector(".ctx-plan-current .list-head")).toBeNull();
     // A row names the session working it, so a plan can be matched by eye.
     expect(rowTitled(container, "Their work").textContent).toContain("Their chat");
-
-    fireEvent.click(rowTitled(container, "Their work"));
-    expect(ownerLine(container)?.getAttribute("data-owned")).toBe("other");
-    expect(ownerLine(container)?.textContent).toContain("Their chat");
-
-    fireEvent.click(rowTitled(container, "Orphan work"));
-    expect(ownerLine(container)?.getAttribute("data-owned")).toBe("none");
-    expect(ownerLine(container)?.textContent).toContain("No owning session");
-
-    // Finishing a plan ends its ownership: the owner line disappears entirely.
-    fireEvent.click(rowTitled(container, "Done work"));
-    expect(ownerLine(container)).toBeNull();
+    // This session's own plan needs no name, and a finished or unclaimed plan has none.
+    expect(rowTitled(container, "My work").textContent).not.toContain("My chat");
+    expect(rowTitled(container, "Done work").textContent).not.toContain("My chat");
+    expect(rowTitled(container, "Orphan work").querySelector(".state")).toBeNull();
   });
 
   it("follows the session it switched to, and keeps the choice when that session owns none", () => {

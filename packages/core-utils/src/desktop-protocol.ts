@@ -504,6 +504,9 @@ export type PlanHistoryEvent = {
   items: PlanHistoryItem[];
 };
 export type PlanDetailEvent = { type: "$plan_detail"; sessionName: string; plan: PlanDetail };
+/** Seal the rail: the plan stopped being in flight (cancelled, aborted, or superseded by
+ *  history on load), so its card ends. A DELETED plan is never sealed; the projection
+ *  stops listing it, which is what removes the rail. */
 export type PlanClearedEvent = { type: "$plan_cleared" };
 
 /** Hydrate the client's active plan from persisted disk state on session load /
@@ -511,6 +514,9 @@ export type PlanClearedEvent = { type: "$plan_cleared" };
  *  ContextPanel and rail can rebuild the plan without a live turn. */
 export interface PlanRestoredEvent {
   type: "$plan_restored";
+  /** The store record this rail shows, so a later projection can tell a plan that still
+   *  exists from one that was deleted under it. */
+  planId: string;
   /** Markdown body; empty string for a pure-structured plan. */
   plan: string;
   summary?: string;
@@ -1240,12 +1246,26 @@ export interface FeedbackCueAudioSetting {
 /** Audio settings of one sound pack. A cue absent here plays nothing. */
 export type FeedbackCueAudioSettings = Partial<Record<FeedbackCueId, FeedbackCueAudioSetting>>;
 
-/** Audio settings per sound pack, keyed by pack id. A pack with no entry plays
- *  nothing until the user turns its cues on. */
+/** Audio settings per sound pack, keyed by pack id. A pack with no entry plays nothing
+ *  until the user turns its cues on. A cue a pack switches on also raises that cue's
+ *  desktop notification, so no second notification matrix exists. */
 export type FeedbackAudioByPack = Record<string, FeedbackCueAudioSettings>;
 
 /** What a cue missing from persisted config plays: nothing, at the shared volume. */
 export const DEFAULT_FEEDBACK_AUDIO: FeedbackCueAudioSetting = { enabled: false, volume: 0.5 };
+
+/** One cue's audio with the shared defaults filled in. Both fields come from
+ *  {@link DEFAULT_FEEDBACK_AUDIO}, so the sound pass, the notification gate, the settings
+ *  switches and the legacy migration cannot disagree about what an absent or partial cue
+ *  means. */
+export function resolveFeedbackCueAudio(
+  entry?: Partial<FeedbackCueAudioSetting>,
+): FeedbackCueAudioSetting {
+  return {
+    enabled: typeof entry?.enabled === "boolean" ? entry.enabled : DEFAULT_FEEDBACK_AUDIO.enabled,
+    volume: typeof entry?.volume === "number" ? entry.volume : DEFAULT_FEEDBACK_AUDIO.volume,
+  };
+}
 
 /** Id of the pack the desktop declares in code rather than from a folder: it plays no
  *  audio at all, and it is the default selection. */
@@ -1274,9 +1294,6 @@ export interface SettingsEvent {
   editMode: EditMode;
   /** Audio settings per sound pack (Settings -> Sound). Absent = every pack silent. */
   feedbackAudio?: FeedbackAudioByPack;
-  /** Cues that also raise a desktop notification (Settings -> Sound). Not per pack:
-   *  switching packs must not change which events notify. Absent = none. */
-  feedbackNotify?: FeedbackCueId[];
   /** Packs the user created, listed after the shipped ones. Absent = none. */
   soundPacks?: UserSoundPack[];
   /** Id of the sound pack cues play through (Settings -> Sound); absent or unknown
@@ -1752,8 +1769,6 @@ export interface SettingsPatch {
   editMode?: EditMode;
   /** Audio settings per sound pack (Settings -> Sound). */
   feedbackAudio?: FeedbackAudioByPack;
-  /** Cues that also raise a desktop notification. */
-  feedbackNotify?: FeedbackCueId[];
   /** Id of the sound pack cues should play through. */
   soundPackId?: string;
   quickSends?: QuickSend[];
@@ -2003,11 +2018,12 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "jobs_stop_all" }
   | { cmd: "plan_history_get" }
   | { cmd: "plan_detail_get"; planId: string }
-  /** Delete a plan for good, whatever its status. Replies with a fresh $plan_history
-   *  (and $plan_cleared when the removed plan was the active one). */
+  /** Delete a plan for good, whatever its status. Replies with a fresh $plan_history to
+   *  every tab of the workspace: a tab whose rail showed that plan clears it, because the
+   *  projection no longer lists it. */
   | { cmd: "plan_remove"; planId: string }
-  /** Delete every plan in the workspace. Replies with a fresh $plan_history (and
-   *  $plan_cleared to each tab whose own plan was among them). */
+  /** Delete every plan in the workspace. Same reply as plan_remove, and an empty
+   *  projection leaves no plan for any rail in the workspace to show. */
   | { cmd: "plan_clear" }
   /** Move a plan to the top of the workspace history. Replies with a fresh
    *  $plan_history; nothing about the plan itself changes. */

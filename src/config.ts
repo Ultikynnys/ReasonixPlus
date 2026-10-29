@@ -677,10 +677,10 @@ export function loadOllamaEndpoint(path: string = defaultConfigPath()): Resolved
 }
 
 import {
-  DEFAULT_FEEDBACK_AUDIO,
   FEEDBACK_CUE_IDS,
   REASONING_EFFORT_ORDER,
   modelReasoningEfforts,
+  resolveFeedbackCueAudio,
   resolveReasoningEffort,
 } from "@reasonix/core-utils";
 import type {
@@ -876,10 +876,8 @@ export interface ReasonixConfig {
   /** Audio settings per sound pack. Absent = every pack silent (sounds stay off
    *  until the user opts in for a pack). */
   feedbackAudio?: FeedbackAudioByPack;
-  /** Cues that also raise a desktop notification. Absent = none. */
-  feedbackNotify?: FeedbackCueId[];
-  /** Pre-packs cue matrix, read only to migrate `feedbackAudio` / `feedbackNotify`
-   *  and dropped on the next save. */
+  /** Pre-packs cue matrix, read only to migrate `feedbackAudio` and dropped on the next
+   *  save. Its notify flags are not migrated: the pack switch governs notifications. */
   feedbackCues?: LegacyFeedbackCues;
   /** Sound pack cues play through, as declared by a folder under the desktop's
    *  public/sound-packs/. Absent or unknown = the pack that plays nothing. */
@@ -3013,40 +3011,17 @@ export function saveFeedbackAudio(
   writeConfig(cfg, path);
 }
 
-/** The old global matrix, projected onto one pack's audio: the notify flags are not
- *  audio and move to `feedbackNotify` instead. */
+/** The old global matrix, projected onto one pack's audio. Its notify flags are dropped:
+ *  the cue's pack switch is what decides whether it also raises a notification. */
 function legacyFeedbackAudio(cues: LegacyFeedbackCues | undefined): FeedbackCueAudioSettings {
   const audio: FeedbackCueAudioSettings = {};
   for (const [cue, entry] of Object.entries(cues ?? {})) {
     if (!entry || !isFeedbackCueId(cue)) continue;
-    audio[cue] = {
-      enabled: entry.enabled === true,
-      volume: typeof entry.volume === "number" ? entry.volume : DEFAULT_FEEDBACK_AUDIO.volume,
-    };
+    audio[cue] = resolveFeedbackCueAudio(entry);
   }
   return audio;
 }
 
-/** Persisted notification switches: the cues that also raise a desktop notification.
- *  Deliberately not per pack, so switching packs cannot silence notifications. */
-export function loadFeedbackNotify(path: string = defaultConfigPath()): FeedbackCueId[] {
-  const cfg = readConfig(path);
-  if (cfg.feedbackNotify) return cfg.feedbackNotify.filter(isFeedbackCueId);
-  return Object.entries(cfg.feedbackCues ?? {})
-    .filter(([, entry]) => entry?.notify === true)
-    .map(([cue]) => cue)
-    .filter(isFeedbackCueId);
-}
-
-export function saveFeedbackNotify(
-  notify: readonly FeedbackCueId[],
-  path: string = defaultConfigPath(),
-): void {
-  const cfg = readConfig(path);
-  cfg.feedbackNotify = [...new Set(notify)];
-  cfg.feedbackCues = undefined;
-  writeConfig(cfg, path);
-}
 /** Persisted sound pack selection. Absent means the default pack: the pack ids are
  *  declared by folders in the desktop bundle, so the daemon stores whatever the
  *  settings UI sent and only the UI resolves it. */

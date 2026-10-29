@@ -55,8 +55,22 @@ import {
   workspaceTabRepresentatives,
   writeStamp,
 } from "./App";
-import type { ModelTurnStartedEvent } from "./protocol";
+import type { ModelTurnStartedEvent, PlanHistoryItem } from "./protocol";
 import { getThreadMaxWidth } from "./ui/thread-layout";
+
+/** One workspace plan-history row, as a $plan_history projection carries it. */
+function planHistoryRow(id: string, overrides: Partial<PlanHistoryItem> = {}): PlanHistoryItem {
+  return {
+    id,
+    status: "active",
+    createdAt: null,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: null,
+    totalSteps: 1,
+    completedSteps: 1,
+    ...overrides,
+  };
+}
 
 function initialState(): Parameters<typeof reduce>[0] {
   return baseAppState({ ready: false, model: undefined, currentSession: undefined });
@@ -1944,7 +1958,7 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
     expect(defaults.settings?.autoCompactTrigger).toBeNull();
   });
 
-  it("stores the per-pack audio settings and notification list from $settings", () => {
+  it("stores the per-pack audio settings from $settings", () => {
     const audio = {
       halo: {
         inputRequired: { enabled: true, volume: 0.25 },
@@ -1963,14 +1977,12 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
         recentWorkspaces: [],
         model: "deepseek-v4-pro",
         feedbackAudio: audio,
-        feedbackNotify: ["inputRequired"],
         version: "0.50.1",
       },
     });
     expect(state.settings?.feedbackAudio).toEqual(audio);
-    expect(state.settings?.feedbackNotify).toEqual(["inputRequired"]);
 
-    // Absent fields fall back to no pack settings and no notifications.
+    // Absent fields fall back to no pack settings: every pack silent.
     const defaults = reduce(initialState(), {
       t: "incoming",
       event: {
@@ -1986,7 +1998,30 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
       },
     });
     expect(defaults.settings?.feedbackAudio).toEqual({});
-    expect(defaults.settings?.feedbackNotify).toEqual([]);
+  });
+
+  it("carries a picked sound pack from the UI patch to the settings_save body", () => {
+    const withSettings = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$settings",
+        reasoningEffort: "high",
+        editMode: "follow",
+        quickSendId: "proceed",
+        quickSends: [],
+        workspaceDir: "/workspace",
+        recentWorkspaces: [],
+        model: "deepseek-v4-pro",
+        version: "0.50.1",
+      },
+    });
+    const patch = { soundPackId: "halo" };
+
+    // One object is both the optimistic state and the `settings_save` body, so the pack
+    // the user sees marked Active is the pack the daemon is told to store.
+    expect(sanitizeSettingsPatch(patch)).toEqual(patch);
+    const next = reduce(withSettings, { t: "settings_patch", patch });
+    expect(next.settings?.soundPackId).toBe("halo");
   });
 
   it("carries the pack, bounds, duplicate controls and prefill rows from $settings", () => {
@@ -5202,6 +5237,7 @@ describe("Desktop App reducer — plan restore", () => {
       t: "incoming",
       event: {
         type: "$plan_restored",
+        planId: "plan-body",
         plan: "# Body",
         summary: "Resume me",
         steps: [
@@ -5227,6 +5263,7 @@ describe("Desktop App reducer — plan restore", () => {
       t: "incoming",
       event: {
         type: "$plan_restored",
+        planId: "plan-b",
         plan: "b",
         steps: [{ id: "step-1", title: "t", action: "a" }],
         completedStepIds: [],
@@ -5251,19 +5288,117 @@ describe("Desktop App reducer — plan restore", () => {
   });
 });
 
+describe("Desktop App reducer — a deleted plan leaves no rail behind", () => {
+  const restored = {
+    type: "$plan_restored" as const,
+    planId: "plan-a",
+    plan: "body",
+    summary: "Cover the largest unsuited bodies with fixtures",
+    steps: [{ id: "step-1", title: "fixtures", action: "write them" }],
+    completedStepIds: ["step-1"],
+  };
+
+  function railWithPendingGates() {
+    const hydrated = reduce(initialState(), { t: "incoming", event: restored });
+    return reduce(hydrated, {
+      t: "incoming",
+      event: {
+        type: "$checkpoint_required",
+        id: 1,
+        stepId: "step-1",
+        result: "done",
+        completed: 1,
+        total: 1,
+      },
+    });
+  }
+
+  it("drops the rail and its pending gates when the workspace has no plan left", () => {
+    // Delete-all empties the store, so the projection lists nothing. Nothing can keep
+    // showing a plan that no longer exists anywhere.
+    const cleared = reduce(railWithPendingGates(), {
+      t: "incoming",
+      event: { type: "$plan_history", sessionName: "mine", items: [] },
+    });
+    expect(cleared.activePlan).toBeNull();
+    expect(cleared.pendingCheckpoints).toEqual([]);
+  });
+
+  it("drops a sealed rail showing a finished plan", () => {
+    // A finished plan is sealed, not removed, so it stays on screen with every step ticked.
+    // Once the plan is deleted that sealed rail is an orphan like any other.
+    const sealed = reduce(railWithPendingGates(), {
+      t: "incoming",
+      event: { type: "$plan_cleared" },
+    });
+    expect(sealed.activePlan?.status).toBe("finished");
+    const cleared = reduce(sealed, {
+      t: "incoming",
+      event: { type: "$plan_history", sessionName: "mine", items: [] },
+    });
+    expect(cleared.activePlan).toBeNull();
+  });
+
+  it("drops the rail when the projection no longer lists its plan", () => {
+    // Another session's delete, in a workspace that still holds other plans: this tab's
+    // rail showed the deleted one, so it goes with it.
+    const cleared = reduce(railWithPendingGates(), {
+      t: "incoming",
+      event: { type: "$plan_history", sessionName: "other", items: [planHistoryRow("plan-z")] },
+    });
+    expect(cleared.activePlan).toBeNull();
+  });
+
+  it("keeps the rail while the projection still lists its plan", () => {
+    const rail = railWithPendingGates();
+    const kept = reduce(rail, {
+      t: "incoming",
+      event: { type: "$plan_history", sessionName: "mine", items: [planHistoryRow("plan-a")] },
+    });
+    expect(kept.activePlan).toBe(rail.activePlan);
+    expect(kept.pendingCheckpoints).toHaveLength(1);
+  });
+
+  it("keeps an unhydrated rail until the workspace is empty, then drops it", () => {
+    // A rail built from the approval carries no id until the daemon hydrates it, so the
+    // only proof it is gone is a workspace with nothing left to show.
+    const pending = reduce(initialState(), {
+      t: "incoming",
+      event: {
+        type: "$plan_required",
+        id: 7,
+        plan: "Implement the timeline",
+        summary: "Chronological plan",
+        callId: "plan-call-42",
+        steps: [{ id: "step-1", title: "Anchor the card", action: "Render it." }],
+      },
+    });
+    const approved = reduce(pending, { t: "resolve_plan", id: 7, verdict: { type: "approve" } });
+    expect(approved.activePlan?.planId).toBeUndefined();
+
+    const stillThere = reduce(approved, {
+      t: "incoming",
+      event: { type: "$plan_history", sessionName: "mine", items: [planHistoryRow("plan-z")] },
+    });
+    expect(stillThere.activePlan).toBe(approved.activePlan);
+
+    const cleared = reduce(approved, {
+      t: "incoming",
+      event: { type: "$plan_history", sessionName: "mine", items: [] },
+    });
+    expect(cleared.activePlan).toBeNull();
+  });
+});
+
 describe("Desktop App reducer — plan labels are workspace-scoped", () => {
   const items = [
-    {
-      id: "plan-1",
+    planHistoryRow("plan-1", {
       status: "active",
-      createdAt: null,
-      updatedAt: "2026-01-01T00:00:00.000Z",
-      finishedAt: null,
       totalSteps: 2,
       completedSteps: 0,
       ownerSession: "background",
       summary: "Ship it",
-    },
+    }),
   ];
 
   /** The tab is showing `foreground`; the plan belongs to another session. */

@@ -128,12 +128,13 @@ describe("Sound settings page", () => {
   });
 
   it("is the page the sound settings live on, not the General page", () => {
-    const { container, unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);
-    expect(container.querySelector(".feedback-cues-table")).toBeNull();
+    const { unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);
+    expect(screen.queryByRole("button", { name: /New pack/ })).toBeNull();
     unmount();
 
-    const sound = render(<SettingsModal {...baseProps} initialPage="sound" />).container;
-    expect(sound.querySelector(".feedback-cues-table")).toBeTruthy();
+    render(<SettingsModal {...baseProps} initialPage="sound" />);
+    expect(screen.getByRole("button", { name: /New pack/ })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sound" })).toBeTruthy();
   });
 
   it("lists the silent pack first, active on a fresh install, with no cue table", () => {
@@ -244,44 +245,40 @@ describe("Sound settings page", () => {
     expect(play).toHaveBeenCalledWith("taskComplete", 0.7, "halo");
   });
 
-  it("keeps the notification switches in one list, outside the packs", () => {
+  it("offers no second cue matrix: one Off/On per pack per cue, nothing global", () => {
     const onSave = vi.fn();
     const settings: Settings = {
       ...baseSettings,
-      feedbackNotify: ["planComplete"],
+      feedbackAudio: { halo: { planComplete: { enabled: true, volume: 0.4 } } },
     };
     render(
       <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="sound" />,
     );
 
-    // Exactly one Notify table exists, and no pack table carries a Notify column.
-    const notifyTables = screen
-      .getAllByRole("table")
-      .filter((table) => table.textContent?.includes("Notify"));
-    expect(notifyTables).toHaveLength(1);
-    const notifyTable = notifyTables[0] as HTMLElement;
+    // The pack's own switch is the only per-cue toggle set: no table carries a Notify column
+    // and no copy promises a notification list above the packs.
+    const halo = packTable("Halo");
+    expect(Array.from(halo.querySelectorAll("th")).map((th) => th.textContent)).toEqual([
+      "Cue",
+      "Sound",
+      "Volume",
+      "Test",
+    ]);
+    for (const table of screen.getAllByRole("table")) {
+      expect(table.textContent ?? "").not.toContain("Notify");
+    }
+    expect(screen.queryByRole("button", { name: /notifications for/ })).toBeNull();
 
-    expect(
-      within(cueRow(notifyTable, "Plan complete"))
-        .getByRole("button", { name: "Enable notifications for Plan complete" })
-        .getAttribute("data-on"),
-    ).toBe("true");
-
+    // And the switch that remains is the notification gate, so flipping it is the only
+    // thing there is to flip.
     fireEvent.click(
-      within(cueRow(notifyTable, "Input required")).getByRole("button", {
-        name: "Enable notifications for Input required",
+      within(cueRow(halo, "Plan complete")).getByRole("button", {
+        name: "Disable sound for Plan complete",
       }),
     );
     expect(onSave).toHaveBeenCalledWith({
-      feedbackNotify: ["inputRequired", "planComplete"],
+      feedbackAudio: { halo: { planComplete: { enabled: false, volume: 0.4 } } },
     });
-
-    fireEvent.click(
-      within(cueRow(notifyTable, "Plan complete")).getByRole("button", {
-        name: "Disable notifications for Plan complete",
-      }),
-    );
-    expect(onSave).toHaveBeenLastCalledWith({ feedbackNotify: [] });
   });
 
   it("opens the pack wizard from the New pack button", () => {

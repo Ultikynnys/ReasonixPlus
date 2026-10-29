@@ -50,6 +50,7 @@ describe("desktop plan projection", () => {
 
     const ev = restorePlanForTab(tab("s1"), true);
     expect(ev?.type).toBe("$plan_restored");
+    expect(ev?.planId).toBe(plan.id);
     expect(ev?.steps.map((s) => s.id)).toEqual(["step-1", "step-2"]);
     expect(ev?.completedStepIds).toEqual(["step-1"]);
     expect(ev?.stepResults).toEqual({ "step-1": "r1" });
@@ -78,6 +79,24 @@ describe("desktop plan projection", () => {
     expect(restorePlanForTab(tab("s4"), true)).toBeNull();
     // The completed attempt remains an inspectable history record.
     expect(repo.list()[0]?.status).toBe("completed");
+  });
+
+  it("leaves neither a restore target nor a history row once a plan is deleted", () => {
+    // A delete republishes one thing: the workspace history. A tab drops the rail of a plan
+    // that projection no longer lists, so an emptied store is what removes every rail.
+    const { repo, plan } = startPlan("s5", "b");
+    repo.remove(plan.id);
+    expect(restorePlanForTab(tab("s5"), true)).toBeNull();
+    expect(repo.list()).toEqual([]);
+  });
+
+  it("empties the projection for every session when the workspace is cleared", () => {
+    const { repo } = startPlan("/repo/cleared", "b", [{ id: "s-1", title: "t", action: "a" }]);
+    startPlan("/repo/cleared", "second", [{ id: "s-2", title: "t2", action: "b" }]);
+    expect(repo.list()).toHaveLength(2);
+    repo.clear();
+    expect(repo.list()).toEqual([]);
+    expect(restorePlanForTab(tab("/repo/cleared"), true)).toBeNull();
   });
 
   it("scopes projection per workspace", () => {

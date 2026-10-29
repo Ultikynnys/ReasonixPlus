@@ -451,6 +451,7 @@ export {
   enforceQuickSendShorthand,
   isQuickSend,
   resolveActiveQuickSend,
+  resolveFeedbackCueAudio,
 } from "./desktop-protocol.js";
 export {
   PLAN_WORKING_STATUSES,

@@ -44,7 +44,6 @@ import {
   loadEndpointForModel,
   loadExperientialApiKey,
   loadFeedbackAudio,
-  loadFeedbackNotify,
   loadFilesystemOutlineThresholdBytes,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
@@ -89,7 +88,6 @@ import {
   saveDuplicateSessionTokens,
   saveEditMode,
   saveFeedbackAudio,
-  saveFeedbackNotify,
   saveModel,
   saveOllamaGenerationPatch,
   saveOpenAIApiKey,
@@ -1427,17 +1425,6 @@ describe("config", () => {
     expect(readConfig(path).feedbackAudio).toEqual(audio);
   });
 
-  it("feedbackNotify defaults to none and round-trips the cue list", () => {
-    expect(loadFeedbackNotify(path)).toEqual([]);
-
-    saveFeedbackNotify(["inputRequired", "guardTriggered"], path);
-    expect(loadFeedbackNotify(path)).toEqual(["inputRequired", "guardTriggered"]);
-    expect(readConfig(path).feedbackNotify).toEqual(["inputRequired", "guardTriggered"]);
-
-    saveFeedbackNotify(["inputRequired", "inputRequired"], path);
-    expect(loadFeedbackNotify(path)).toEqual(["inputRequired"]);
-  });
-
   it("migrates the pre-packs cue matrix onto the selected pack", () => {
     const write = (cfg: Record<string, unknown>) => writeFileSync(path, JSON.stringify(cfg));
     write({
@@ -1454,7 +1441,6 @@ describe("config", () => {
         guardTriggered: { enabled: false, volume: 0.8 },
       },
     });
-    expect(loadFeedbackNotify(path)).toEqual(["inputRequired"]);
 
     // Saving the new shape drops the legacy key so the migration runs once.
     saveFeedbackAudio({ halo: { taskComplete: { enabled: true, volume: 1 } } }, path);

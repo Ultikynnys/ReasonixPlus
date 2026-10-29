@@ -3514,9 +3514,6 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   padding: 0 4px;
   font-size: 11px;
 }
-.ctx-plan-col .ctx-plan-owner {
-  margin: 0;
-}
 .ctx-plan-rows {
   display: flex;
   flex-direction: column;
@@ -3579,36 +3576,6 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .ctx-filter .ctx-select {
   margin: 0;
-}
-.ctx-plan-owner {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin: 0 0 10px;
-  /* The owner name can be a long session title; the label stays put and the
-   * name ellipsizes instead of wrapping the header. */
-  min-width: 0;
-  font-size: 11px;
-}
-.ctx-plan-owner .key {
-  flex-shrink: 0;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.ctx-plan-owner .name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg-2);
-}
-.ctx-plan-owner[data-owned="this"] .name {
-  color: var(--accent);
-}
-.ctx-plan-owner[data-owned="none"] .name {
-  color: var(--muted);
-  font-style: italic;
 }
 .ctx-plan-list {
   list-style: none;

@@ -10,6 +10,7 @@ import {
   providerDefaultEndpoint,
   providerSpec,
   providerString,
+  resolveFeedbackCueAudio,
   searchSharedCredential,
 } from "@reasonix/core-utils";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -36,7 +37,6 @@ import {
   providerForModelGroup,
 } from "../model-catalog";
 import { providerModelCost } from "../model-cost";
-import { cueAudio } from "../notifications";
 import type {
   FeedbackCueAudioSetting,
   FeedbackCueId,
@@ -4241,7 +4241,7 @@ function PackCueTable({
         {FEEDBACK_CUES.map(({ id, label }) => {
           const cueName = t(label);
           const shipped = pack.sounds[id] !== undefined;
-          const { enabled, volume } = cueAudio(stored[id]);
+          const { enabled, volume } = resolveFeedbackCueAudio(stored[id]);
           const test = t("settings.soundPackAudition", { cue: cueName, pack: pack.label });
           return (
             <tr key={id}>
@@ -4302,79 +4302,10 @@ function PackCueTable({
 }
 
 /** The desktop-notification switches. One list for the whole app: notifications are not
- *  audio, so choosing another sound pack can never silence them. */
-function NotifySection({
-  settings,
-  onSave,
-}: {
-  settings: SettingsType;
-  onSave: (patch: SettingsPatch) => void;
-}) {
-  const notify = settings.feedbackNotify ?? [];
-  const setNotify = (id: FeedbackCueId, on: boolean) => {
-    onSave({
-      feedbackNotify: FEEDBACK_CUES.map((cue) => cue.id).filter((cue) =>
-        cue === id ? on : notify.includes(cue),
-      ),
-    });
-  };
-  return (
-    <section className="section">
-      <div className="stitle">{t("settings.feedbackNotifySection")}</div>
-      <div className="h" style={{ marginBottom: 12 }}>
-        {t("settings.feedbackNotifySectionHint")}
-      </div>
-      <table className="feedback-cues-table">
-        <thead>
-          <tr>
-            <th>{t("settings.feedbackCueColCue")}</th>
-            <th>{t("settings.feedbackCueColNotify")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {FEEDBACK_CUES.map(({ id, label, hint }) => {
-            const cueName = t(label);
-            const on = notify.includes(id);
-            return (
-              <tr key={id}>
-                <td className="feedback-cue-name">
-                  <div className="n">{cueName}</div>
-                  <div className="h">{t(hint)}</div>
-                </td>
-                <td>
-                  <div className="seg-ctrl">
-                    <button
-                      type="button"
-                      aria-pressed={!on}
-                      aria-label={t("settings.feedbackCueNotifyDisable", { cue: cueName })}
-                      data-on={!on}
-                      onClick={() => setNotify(id, false)}
-                    >
-                      {t("settings.feedbackCueOff")}
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={on}
-                      aria-label={t("settings.feedbackCueNotifyEnable", { cue: cueName })}
-                      data-on={on}
-                      onClick={() => setNotify(id, true)}
-                    >
-                      {t("settings.feedbackCueOn")}
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </section>
-  );
-}
-
-/** Settings > Sound: the pack cues play through, each card holding that pack's own cue
- *  audio, then the notification switches. Packs render from the shipped folders, the
- *  implicit silent pack and the ones this user created, so a new pack adds a card. */
+ *  audio, so choosing another sound pack can never silence them. *//** Settings > Sound: the pack cues play through, each card holding that pack's own cue
+ *  audio. Packs render from the shipped folders, the implicit silent pack and the ones this
+ *  user created, so a new pack adds a card. That switch is also the notification gate: one
+ *  Off/On per pack per cue, no second matrix above it. */
 function PageSound({
   settings,
   onSave,
@@ -4426,7 +4357,6 @@ function PageSound({
           />
         ))}
       </section>
-      <NotifySection settings={settings} onSave={onSave} />
       <PackWizard
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}

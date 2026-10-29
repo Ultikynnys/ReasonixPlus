@@ -446,8 +446,8 @@ function CtxPlanHistory({
   onReorderPlan?: (id: string) => void;
   onClearPlans?: () => void;
   fallback?: ActivePlan | null;
-  /** The session this panel belongs to — the plan list is workspace-wide, so the
-   *  owner label needs it to say "this session" instead of repeating the name. */
+  /** The session this panel belongs to. The plan list is workspace-wide, so this is what
+   *  tells the session's own plan from another session's in the same workspace. */
   currentSession?: string;
   sessions?: readonly SessionInfo[];
 }) {
@@ -469,23 +469,17 @@ function CtxPlanHistory({
       new Map((sessions ?? []).map((session) => [session.name, sessionTitle(session)] as const)),
     [sessions],
   );
-  // The owner of a plan, or null when there is no owner to name: ownership only
-  // exists while a session works the plan, so a finished plan gets no line at all
-  // rather than the session that once claimed it.
-  const ownerOf = (
+  // How a plan is held right now: none for a finished plan, a name only for another
+  // session, since this session's own plans need no line saying so.
+  const ownershipOf = (
     plan?: PlanHistoryItem,
-  ): { text: string; state: "this" | "other" | "none" } | null => {
+  ): { state: "this" | "other" | "none"; name?: string } | null => {
     if (!plan || !isWorkingPlanStatus(plan.status)) return null;
     const sessionName = plan.ownerSession;
-    if (!sessionName) return { text: t("contextPanel.planOwnerNone"), state: "none" };
-    const title = sessionTitles.get(sessionName) ?? sessionTitle({ name: sessionName });
-    const isThisSession = sessionName === currentSession;
-    return {
-      text: isThisSession ? t("contextPanel.planOwnerThis", { session: title }) : title,
-      state: isThisSession ? "this" : "other",
-    };
+    if (!sessionName) return { state: "none" };
+    const name = sessionTitles.get(sessionName) ?? sessionTitle({ name: sessionName });
+    return { state: sessionName === currentSession ? "this" : "other", name };
   };
-  const owner = ownerOf(selectedPlan);
   const readPlans = useRef(onReadPlans);
   const readPlan = useRef(onReadPlan);
   readPlans.current = onReadPlans;
@@ -508,15 +502,6 @@ function CtxPlanHistory({
     <div className="ctx-plan-split">
       {hasCurrent ? (
         <section className="ctx-plan-col ctx-plan-current">
-          <div className="list-head">
-            <span>{t("contextPanel.planCurrentTitle")}</span>
-          </div>
-          {owner ? (
-            <div className="ctx-plan-owner" data-owned={owner.state}>
-              <span className="key">{t("contextPanel.planOwnerLabel")}</span>
-              <span className="name">{owner.text}</span>
-            </div>
-          ) : null}
           {detail ? (
             <CtxPlan plan={activePlanFromDetail(detail)} />
           ) : selectedPlan ? (
@@ -557,7 +542,7 @@ function CtxPlanHistory({
         ) : (
           <div className="ctx-plan-rows">
             {history.map((plan, index) => {
-              const planOwner = ownerOf(plan);
+              const planOwner = ownershipOf(plan);
               const title = plan.summary ?? t("contextPanel.planUntitled");
               // The dot marks work a session holds right now. `state: "none"` is a
               // working plan nobody owns, so it gets no dot.
@@ -585,10 +570,10 @@ function CtxPlanHistory({
                       </span>
                       <span className="sep">·</span>
                       <span>{plan.status}</span>
-                      {planOwner?.state === "other" ? (
+                      {planOwner?.state === "other" && planOwner.name ? (
                         <>
                           <span className="sep">·</span>
-                          <span>{planOwner.text}</span>
+                          <span>{planOwner.name}</span>
                         </>
                       ) : null}
                     </span>

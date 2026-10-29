@@ -186,7 +186,6 @@ import {
   loadExaApiKey,
   loadFallbackModels,
   loadFeedbackAudio,
-  loadFeedbackNotify,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
   loadMaxOutputTokens,
@@ -247,7 +246,6 @@ import {
   saveEnabledModels,
   saveFallbackModels,
   saveFeedbackAudio,
-  saveFeedbackNotify,
   saveGmailOAuth,
   saveMailProvider,
   saveMimoCredential,
@@ -1272,6 +1270,7 @@ export function restorePlanForTab(
   if (!active || active.steps.length === 0) return null;
   return {
     type: "$plan_restored",
+    planId: active.id,
     plan: active.body,
     summary: active.summary,
     steps: active.steps,
@@ -1327,24 +1326,12 @@ function emitPlanHistory(tab: Tab): void {
   }
 }
 
-/** Tabs of this workspace whose own plan `doomed` selects. Read it BEFORE the removal:
- *  the store is workspace-scoped, so deleting here ends the plan another tab shows. */
-function planHolders(tab: Tab, doomed: (plan: PlanRecord) => boolean): Tab[] {
-  return (workspaceTabs?.(tab.rootDir) ?? [tab]).filter((target) => {
-    const active = activePlanForTab(target);
-    return active !== null && doomed(active);
-  });
-}
-
-/** Resync after plans are deleted: republish the workspace history and clear the rail of
- *  every tab that lost its own plan. A tab that lost nothing keeps its rail, so a delete
- *  never blanks a plan that is still in flight elsewhere. */
-function republishPlans(tab: Tab, cleared: readonly Tab[]): void {
+/** Resync after plans are deleted. The history projection is the whole answer: each tab
+ *  drops the rail of a plan it no longer lists, including one left showing a finished
+ *  plan, and re-derives its progress, since a delete anywhere can end any tab's plan. */
+function republishPlans(tab: Tab): void {
   emitPlanHistory(tab);
-  for (const target of cleared) {
-    refreshPlanSummary(target);
-    emit({ type: "$plan_cleared" }, target.id);
-  }
+  for (const target of workspaceTabs?.(tab.rootDir) ?? [tab]) refreshPlanSummary(target);
 }
 
 function emit(ev: EmittableEvent, tabId?: string): void {
@@ -2021,7 +2008,6 @@ function emitSettings(tab: Tab, opts: { turnReleased?: boolean } = {}): void {
       quickSends: loadCustomQuickSends(),
       quickSendId: loadQuickSendId(),
       feedbackAudio: loadFeedbackAudio(),
-      feedbackNotify: loadFeedbackNotify(),
       soundPacks: listSoundPacks(),
       soundPackId: loadSoundPackId(),
       contextTokens: servedWindowTotal(tab.currentModel) ?? tab.ctxMaxOverride ?? null,
@@ -11273,10 +11259,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           saveFeedbackAudio(msg.feedbackAudio);
           for (const openTab of tabs.values()) emitSettings(openTab);
         }
-        if (msg.feedbackNotify !== undefined) {
-          saveFeedbackNotify(msg.feedbackNotify);
-          for (const openTab of tabs.values()) emitSettings(openTab);
-        }
         if (msg.soundPackId !== undefined) {
           saveSoundPackId(msg.soundPackId);
           for (const openTab of tabs.values()) emitSettings(openTab);
@@ -11527,9 +11509,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "plan_remove") {
       try {
-        const cleared = planHolders(tab, (plan) => plan.id === msg.planId);
         planRepository(tab.rootDir).remove(msg.planId);
-        republishPlans(tab, cleared);
+        republishPlans(tab);
       } catch (err) {
         // A stale/unknown plan id or a missing workspace must not throw out of the
         // stdin line handler — surface it as an error event instead.
@@ -11539,9 +11520,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "plan_clear") {
       try {
-        const cleared = planHolders(tab, () => true);
         planRepository(tab.rootDir).clear();
-        republishPlans(tab, cleared);
+        republishPlans(tab);
       } catch (err) {
         // A missing workspace must not throw out of the stdin line handler.
         emit({ type: "$error", message: `plan_clear failed: ${(err as Error).message}` }, tab.id);

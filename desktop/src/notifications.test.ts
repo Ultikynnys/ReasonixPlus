@@ -1,13 +1,12 @@
-import type { FeedbackCueAudioSetting, FeedbackCueId } from "@reasonix/core-utils";
+import type { FeedbackCueAudioSettings, FeedbackCueId } from "@reasonix/core-utils";
 import { describe, expect, it } from "vitest";
 import type { FeedbackSoundPlayer } from "./feedback-sounds";
 import {
   type ApprovalSnapshot,
   COMPLETION_NOTIFY_MIN_MS,
-  cueAudio,
+  cueEnabled,
   deriveDesktopNotifications,
   deriveStateCueSounds,
-  notifyEnabled,
   playEnabledCue,
 } from "./notifications";
 
@@ -28,6 +27,12 @@ function emptySnapshotWithConfirm(): ApprovalSnapshot {
   return snapshot;
 }
 
+/** One pack's matrix with the named cues switched on: the single gate a cue's sound and
+ *  its notification share. */
+function packOn(...cues: FeedbackCueId[]): FeedbackCueAudioSettings {
+  return Object.fromEntries(cues.map((cue) => [cue, { enabled: true, volume: 0.5 }]));
+}
+
 describe("desktop notifications", () => {
   it("notifies when a new approval request appears while unfocused", () => {
     const notifications = deriveDesktopNotifications({
@@ -37,7 +42,7 @@ describe("desktop notifications", () => {
       isBusy: true,
       busyDurationMs: 1_000,
       focused: false,
-      notify: ["inputRequired"],
+      audio: packOn("inputRequired"),
     });
 
     expect(notifications).toEqual([
@@ -61,7 +66,7 @@ describe("desktop notifications", () => {
       isBusy: true,
       busyDurationMs: 1_000,
       focused: true,
-      notify: ["inputRequired"],
+      audio: packOn("inputRequired"),
     });
 
     expect(notifications).toEqual([]);
@@ -75,7 +80,7 @@ describe("desktop notifications", () => {
       isBusy: false,
       busyDurationMs: COMPLETION_NOTIFY_MIN_MS,
       focused: false,
-      notify: ["taskComplete"],
+      audio: packOn("taskComplete"),
     });
 
     expect(notifications).toEqual([
@@ -96,7 +101,7 @@ describe("desktop notifications", () => {
       isBusy: false,
       busyDurationMs: COMPLETION_NOTIFY_MIN_MS - 1,
       focused: false,
-      notify: ["taskComplete"],
+      audio: packOn("taskComplete"),
     });
 
     expect(notifications).toEqual([]);
@@ -111,13 +116,13 @@ describe("desktop notifications", () => {
       busyDurationMs: COMPLETION_NOTIFY_MIN_MS,
       focused: false,
       outcome: "stopped",
-      notify: ["taskComplete"],
+      audio: packOn("taskComplete"),
     });
 
     expect(notifications).toEqual([]);
   });
 
-  it("treats an absent notify list as none: nothing is derived even unfocused", () => {
+  it("derives nothing for a chat whose pack has no entry at all", () => {
     const notifications = deriveDesktopNotifications({
       previous: emptySnapshot(),
       current: emptySnapshotWithConfirm(),
@@ -130,7 +135,7 @@ describe("desktop notifications", () => {
     expect(notifications).toEqual([]);
   });
 
-  it("derives no notifications from an empty notify list", () => {
+  it("derives nothing for a pack that switches every cue off", () => {
     const notifications = deriveDesktopNotifications({
       previous: emptySnapshot(),
       current: emptySnapshotWithConfirm(),
@@ -138,13 +143,13 @@ describe("desktop notifications", () => {
       isBusy: false,
       busyDurationMs: COMPLETION_NOTIFY_MIN_MS,
       focused: false,
-      notify: [],
+      audio: packOn(),
     });
 
     expect(notifications).toEqual([]);
   });
 
-  it("notifies a cue whose sound is off: notifications are not audio", () => {
+  it("never notifies a cue the pack leaves off, even when another cue is on", () => {
     const notifications = deriveDesktopNotifications({
       previous: emptySnapshot(),
       current: emptySnapshotWithConfirm(),
@@ -152,7 +157,21 @@ describe("desktop notifications", () => {
       isBusy: true,
       busyDurationMs: 1_000,
       focused: false,
-      notify: ["inputRequired"],
+      audio: packOn("taskComplete"),
+    });
+
+    expect(notifications).toEqual([]);
+  });
+
+  it("notifies a cue the pack switched on at 0% volume: volume is audio only", () => {
+    const notifications = deriveDesktopNotifications({
+      previous: emptySnapshot(),
+      current: emptySnapshotWithConfirm(),
+      wasBusy: true,
+      isBusy: true,
+      busyDurationMs: 1_000,
+      focused: false,
+      audio: { inputRequired: { enabled: true, volume: 0 } },
     });
 
     expect(notifications.map((note) => note.cue)).toEqual(["inputRequired"]);
@@ -166,7 +185,7 @@ describe("desktop notifications", () => {
       isBusy: false,
       busyDurationMs: COMPLETION_NOTIFY_MIN_MS,
       focused: false,
-      notify: ["planComplete"],
+      audio: packOn("planComplete"),
       previousPlan: { status: "active", totalSteps: 3, completedSteps: 2 },
       currentPlan: { status: "finished", totalSteps: 3, completedSteps: 3 },
       outcome: "stopped",
@@ -190,7 +209,7 @@ describe("desktop notifications", () => {
       isBusy: false,
       busyDurationMs: COMPLETION_NOTIFY_MIN_MS,
       focused: false,
-      notify: ["planComplete"] as FeedbackCueId[],
+      audio: packOn("planComplete"),
       outcome: "stopped" as const,
     };
 
@@ -218,7 +237,7 @@ describe("desktop notifications", () => {
       isBusy: true,
       busyDurationMs: 1_000,
       focused: false,
-      notify: ["guardTriggered"],
+      audio: packOn("guardTriggered"),
       guardWarnings: [{ cause: "repetition-guard" }],
     });
 
@@ -232,7 +251,7 @@ describe("desktop notifications", () => {
     ]);
   });
 
-  it("keeps a focused window silent even with every cue notifying", () => {
+  it("keeps a focused window silent even with every cue switched on", () => {
     const notifications = deriveDesktopNotifications({
       previous: emptySnapshot(),
       current: emptySnapshotWithConfirm(),
@@ -240,7 +259,7 @@ describe("desktop notifications", () => {
       isBusy: false,
       busyDurationMs: COMPLETION_NOTIFY_MIN_MS,
       focused: true,
-      notify: ["inputRequired", "taskComplete", "planComplete", "guardTriggered"],
+      audio: packOn("inputRequired", "taskComplete", "planComplete", "guardTriggered"),
       previousPlan: { status: "active", totalSteps: 1, completedSteps: 0 },
       currentPlan: { status: "finished", totalSteps: 1, completedSteps: 1 },
       guardWarnings: [{ cause: "repetition-guard" }],
@@ -249,20 +268,15 @@ describe("desktop notifications", () => {
     expect(notifications).toEqual([]);
   });
 
-  it("cueAudio resolves absent entries to silent", () => {
-    expect(cueAudio(undefined)).toEqual({ enabled: false, volume: 0.5 });
-    expect(cueAudio({ enabled: true, volume: 0.8 })).toEqual({ enabled: true, volume: 0.8 });
-    // Persisted JSON may omit `volume` (hand-edited / older config): the resolver
-    // must fall back to the shared default, not crash.
-    const partial = { enabled: true } as FeedbackCueAudioSetting;
-    expect(cueAudio(partial)).toEqual({ enabled: true, volume: 0.5 });
-  });
-
-  it("notifyEnabled reads the shared cue list", () => {
-    expect(notifyEnabled(undefined, "inputRequired")).toBe(false);
-    expect(notifyEnabled([], "inputRequired")).toBe(false);
-    expect(notifyEnabled(["inputRequired"], "inputRequired")).toBe(true);
-    expect(notifyEnabled(["inputRequired"], "guardTriggered")).toBe(false);
+  it("cueEnabled reads the pack's own switch, not its volume", () => {
+    expect(cueEnabled(undefined, "inputRequired")).toBe(false);
+    expect(cueEnabled({}, "inputRequired")).toBe(false);
+    expect(cueEnabled(packOn("inputRequired"), "inputRequired")).toBe(true);
+    expect(cueEnabled(packOn("inputRequired"), "guardTriggered")).toBe(false);
+    expect(cueEnabled({ inputRequired: { enabled: true, volume: 0 } }, "inputRequired")).toBe(true);
+    expect(cueEnabled({ inputRequired: { enabled: false, volume: 1 } }, "inputRequired")).toBe(
+      false,
+    );
   });
 });
 
@@ -346,7 +360,12 @@ describe("playEnabledCue — the single sound gate", () => {
 
   it("plays only cues this pack enables with an audible volume", () => {
     const { calls, player } = recorder();
-    playEnabledCue({ taskComplete: { enabled: true, volume: 0.4 } }, "taskComplete", player, "halo");
+    playEnabledCue(
+      { taskComplete: { enabled: true, volume: 0.4 } },
+      "taskComplete",
+      player,
+      "halo",
+    );
     playEnabledCue(
       { taskComplete: { enabled: false, volume: 0.4 } },
       "taskComplete",
@@ -360,7 +379,12 @@ describe("playEnabledCue — the single sound gate", () => {
 
   it("stays silent for a cue the pack has no entry for", () => {
     const { calls, player } = recorder();
-    playEnabledCue({ planComplete: { enabled: true, volume: 0.6 } }, "taskComplete", player, "halo");
+    playEnabledCue(
+      { planComplete: { enabled: true, volume: 0.6 } },
+      "taskComplete",
+      player,
+      "halo",
+    );
     expect(calls).toEqual([]);
   });
 
@@ -368,7 +392,12 @@ describe("playEnabledCue — the single sound gate", () => {
     const { calls, player } = recorder();
     // `nothing` has no audio entry at all, so a pack configured elsewhere cannot
     // make the silent pack play.
-    playEnabledCue({ taskComplete: { enabled: true, volume: 0.9 } }, "taskComplete", player, "nothing");
+    playEnabledCue(
+      { taskComplete: { enabled: true, volume: 0.9 } },
+      "taskComplete",
+      player,
+      "nothing",
+    );
     expect(calls).toEqual([["taskComplete", 0.9, "nothing"]]);
   });
 });

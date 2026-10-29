@@ -81,6 +81,10 @@ import type {
   PathAccessRequiredEvent,
   PersistedNotice,
   PlanClearedEvent,
+  PlanDetail,
+  PlanDetailEvent,
+  PlanHistoryEvent,
+  PlanHistoryItem,
   PlanRequiredEvent,
   PlanRestoredEvent,
   PlanStep,
@@ -221,8 +225,12 @@ export type {
   PathAccessRequiredEvent,
   PersistedNotice,
   PlanClearedEvent,
-  PlanRestoredEvent,
+  PlanDetail,
+  PlanDetailEvent,
+  PlanHistoryEvent,
+  PlanHistoryItem,
   PlanRequiredEvent,
+  PlanRestoredEvent,
   PlanStep,
   PlanVerdict,
   ProtocolErrorEvent,
@@ -309,8 +317,8 @@ export type IncomingEvent = { tabId?: string } & (
   | RevisionRequiredEvent
   | StepCompletedEvent
   | PlanClearedEvent
-  | import("@reasonix/core-utils").PlanHistoryEvent
-  | import("@reasonix/core-utils").PlanDetailEvent
+  | PlanHistoryEvent
+  | PlanDetailEvent
   | PlanRestoredEvent
   | MentionResultsEvent
   | MentionPreviewEvent

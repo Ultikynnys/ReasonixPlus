@@ -85,6 +85,8 @@ import {
   type MemoryEntryInfo,
   type OutgoingCommand,
   type PersistedNotice,
+  type PlanDetail,
+  type PlanHistoryItem,
   type PlanStep,
   type PlanVerdict,
   type PlaywrightBrowserInstall,
@@ -456,6 +458,10 @@ export type PendingPlan = PickerWindow & {
 };
 
 export type ActivePlan = {
+  /** The store record the rail shows, so a plan deleted underneath it can be told from one
+   *  that still exists. Absent only on a rail built from an approval the daemon has not
+   *  hydrated yet. */
+  planId?: string;
   plan: string;
   summary?: string;
   steps: PlanStep[];
@@ -634,8 +640,8 @@ type State = {
   pendingCheckpoints: PendingCheckpoint[];
   pendingRevisions: PendingRevision[];
   activePlan: ActivePlan | null;
-  planHistory?: import("@reasonix/core-utils").PlanHistoryItem[];
-  planDetails?: Record<string, import("@reasonix/core-utils").PlanDetail>;
+  planHistory?: PlanHistoryItem[];
+  planDetails?: Record<string, PlanDetail>;
   usage: UsageStats;
   /** True while the loaded transcript is only the newest page: the transcript then
    *  offers a load-older control instead of silently hiding the rest. */
@@ -1804,6 +1810,16 @@ export function activePlanForMessage(
     : undefined;
 }
 
+/** Whether the rail is showing a plan the workspace projection still lists. A rail built
+ *  from an approval carries no id until the daemon hydrates it, so it can only be called
+ *  gone once the workspace has no plan left to be showing. */
+function railPlanExists(
+  activePlan: ActivePlan,
+  listed: ReadonlyMap<string, PlanHistoryItem>,
+): boolean {
+  return activePlan.planId ? listed.has(activePlan.planId) : listed.size > 0;
+}
+
 /** Memoized assistant row — props are stable for unchanged messages, so a
  *  streaming frame re-renders only the changed row; countFileStats runs for
  *  that row alone, not the whole transcript. */
@@ -2762,14 +2778,24 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // screen. Applying it whatever session this tab happens to show is what keeps a
       // background session's badge current. Only a workspace switch invalidates the map.
       const items = Array.isArray(ev.items) ? ev.items : [];
+      // One index for this projection: the rail and the detail cache both ask it whether
+      // their plan is still listed, and at the version they hold.
+      const listed = new Map(items.map((item) => [item.id, item] as const));
+      // The projection is also the authority on what still exists, so the rail follows it:
+      // a deleted plan, deleted here or from another tab of the workspace, leaves no rail
+      // behind, and a plan still listed keeps the rail it already has.
+      const dropped = state.activePlan !== null && !railPlanExists(state.activePlan, listed);
       return {
         ...state,
         planHistory: items,
         planDetails: Object.fromEntries(
-          Object.entries(state.planDetails ?? {}).filter(([id, detail]) =>
-            items.some((item) => item.id === id && item.updatedAt === detail.updatedAt),
-          ),
+          Object.entries(state.planDetails ?? {}).filter(([id, detail]) => {
+            const item = listed.get(id);
+            return item !== undefined && item.updatedAt === detail.updatedAt;
+          }),
         ),
+        activePlan: dropped ? null : state.activePlan,
+        ...(dropped ? { pendingCheckpoints: [], pendingRevisions: [] } : {}),
       };
     }
     case "$plan_detail":
@@ -2779,6 +2805,7 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       return {
         ...state,
         activePlan: {
+          planId: ev.planId,
           plan: ev.plan,
           summary: ev.summary,
           steps,
@@ -2934,7 +2961,6 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           autoCompactTrigger: snapshot.autoCompactTrigger ?? null,
           questionTimerEnabled: snapshot.questionTimerEnabled ?? false,
           feedbackAudio: snapshot.feedbackAudio ?? {},
-          feedbackNotify: snapshot.feedbackNotify ?? [],
           soundPacks: snapshot.soundPacks ?? [],
           mailProvider: snapshot.mailProvider ?? MailProvider.Outlook,
         },
@@ -4697,7 +4723,6 @@ const TabRuntime = memo(function TabRuntime({
 
     const packId = soundPackRef.current;
     const audio = audioRef.current;
-    const notify = state.settings?.feedbackNotify;
 
     // Sounds for state-driven cues fire regardless of window focus (a cue is
     // the user's opt-in acknowledgment); the focus-gated OS notification path
@@ -4736,12 +4761,14 @@ const TabRuntime = memo(function TabRuntime({
           busyDurationMs,
           focused,
           outcome: state.lastTurnOutcome,
-          notify,
+          // The same pack matrix the sound pass just read: one switch per cue decides
+          // both halves, so nothing notifies a cue this chat's pack leaves off.
+          audio,
           previousPlan,
           currentPlan,
           guardWarnings,
         });
-        void dispatchDesktopNotifications(notifications, notify, {
+        void dispatchDesktopNotifications(notifications, {
           isFocused: async () => focused,
           isPermissionGranted: isNotificationPermissionGranted,
           requestPermission: requestNotificationPermission,
@@ -4760,7 +4787,6 @@ const TabRuntime = memo(function TabRuntime({
     state.pendingPlans,
     state.pendingRevisions,
     state.settings?.feedbackAudio,
-    state.settings?.feedbackNotify,
     state.settings?.soundPackId,
   ]);
 
