@@ -1,12 +1,14 @@
-/** add_mcp_server / list_mcp_bridges — temp configPath so the tool never touches the real config. */
+/** add_mcp_server / remove_mcp_server / list_mcp_bridges — temp configPath so the tool never
+ *  touches the real config. */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readConfig, writeConfig } from "../src/config.js";
+import { readConfig, saveMcpOAuth, writeConfig } from "../src/config.js";
 import { ToolRegistry } from "../src/tools.js";
 import { registerScaffoldTools } from "../src/tools/scaffold.js";
+import { mcpCreds } from "./support/oauth-fixture.js";
 
 interface Setup {
   home: string;
@@ -331,7 +333,6 @@ describe("list_mcp_bridges", () => {
     );
     const live = new ToolRegistry();
     registerScaffoldTools(live, {
-      homeDir: s.home,
       projectRoot: s.projectRoot,
       configPath: s.configPath,
       getMcpSpecs: () => [
@@ -356,5 +357,189 @@ describe("list_mcp_bridges", () => {
     expect(r.bridges[0].disabled).toBe(true);
     expect(r.bridges[0].status).toBe("connected");
     expect(r.bridges[0].tool_count).toBe(1);
+  });
+});
+
+describe("remove_mcp_server", () => {
+  let s: Setup;
+  beforeEach(() => {
+    s = setup();
+  });
+  afterEach(() => {
+    teardown(s);
+  });
+
+  it("drops a legacy mcp spec entry", async () => {
+    writeConfig({ mcp: ["a=node a.js", "b=node b.js"] }, s.configPath);
+
+    const r = await call(s.reg, "remove_mcp_server", { name: "a" });
+
+    expect(r.success).toBe(true);
+    expect(r.removed).toEqual(["mcp spec"]);
+    expect(readConfig(s.configPath).mcp).toEqual(["b=node b.js"]);
+  });
+
+  it("drops the object entry with its env overlay, flag and sign-in", async () => {
+    writeConfig(
+      {
+        mcpServers: { blender: { command: "uvx", args: ["blender-mcp"], disabled: true } },
+        mcpDisabled: ["blender"],
+        mcpEnv: { blender: { TOKEN: "t" } },
+      },
+      s.configPath,
+    );
+    saveMcpOAuth("blender", mcpCreds(), s.configPath);
+
+    const r = await call(s.reg, "remove_mcp_server", { name: "blender" });
+
+    expect(r.success).toBe(true);
+    expect(r.removed).toEqual(["mcpServers entry", "env overlay", "sign-in", "disabled flag"]);
+    const cfg = readConfig(s.configPath);
+    expect(cfg.mcpServers).toBeUndefined();
+    expect(cfg.mcpEnv).toBeUndefined();
+    expect(cfg.mcpOAuth).toBeUndefined();
+    expect(cfg.mcpDisabled).toBeUndefined();
+  });
+
+  it("keeps the other servers and their sign-ins", async () => {
+    writeConfig(
+      {
+        mcpServers: {
+          keep: { command: "node", args: ["keep.js"] },
+          drop: { command: "node", args: ["drop.js"] },
+        },
+      },
+      s.configPath,
+    );
+    saveMcpOAuth("keep", mcpCreds({ accessToken: "keep-token" }), s.configPath);
+    saveMcpOAuth("drop", mcpCreds({ accessToken: "drop-token" }), s.configPath);
+
+    await call(s.reg, "remove_mcp_server", { name: "drop" });
+
+    const cfg = readConfig(s.configPath);
+    expect(Object.keys(cfg.mcpServers ?? {})).toEqual(["keep"]);
+    expect(cfg.mcpOAuth?.drop).toBeUndefined();
+    expect(cfg.mcpOAuth?.keep?.accessToken).toBe("keep-token");
+  });
+
+  it("names the configured servers when the name is unknown", async () => {
+    writeConfig({ mcp: ["a=node a.js"] }, s.configPath);
+
+    const r = await call(s.reg, "remove_mcp_server", { name: "ghost" });
+
+    expect(r.error).toMatch(/no MCP server named "ghost"/);
+    expect(r.error).toMatch(/Configured: a/);
+    expect(readConfig(s.configPath).mcp).toEqual(["a=node a.js"]);
+  });
+
+  it("says nothing is configured when the config is empty", async () => {
+    const r = await call(s.reg, "remove_mcp_server", { name: "ghost" });
+    expect(r.error).toMatch(/None are configured/);
+  });
+
+  it("points at the config for a spec with no name prefix", async () => {
+    writeConfig({ mcp: ["node anon.js"] }, s.configPath);
+
+    const r = await call(s.reg, "remove_mcp_server", { name: "ghost" });
+
+    expect(r.error).toMatch(/no name prefix cannot be removed by name/);
+  });
+
+  it("treats an inherited object key as no server at all", async () => {
+    writeConfig(
+      { mcpServers: { blender: { command: "uvx", args: ["blender-mcp"] } } },
+      s.configPath,
+    );
+
+    const r = await call(s.reg, "remove_mcp_server", { name: "__proto__" });
+
+    expect(r.error).toMatch(/no MCP server named "__proto__"/);
+    expect(readConfig(s.configPath).mcpServers?.blender).toBeDefined();
+  });
+
+  it("refuses a server the project .mcp.json declares", async () => {
+    writeFileSync(
+      join(s.projectRoot, ".mcp.json"),
+      JSON.stringify({ mcpServers: { project_srv: { command: "npx", args: ["-y", "proj"] } } }),
+      "utf8",
+    );
+
+    const r = await call(s.reg, "remove_mcp_server", { name: "project_srv" });
+
+    expect(r.error).toMatch(/\.mcp\.json/);
+    expect(existsSync(s.configPath)).toBe(false);
+  });
+
+  it("refuses an app-managed integration", async () => {
+    writeConfig(
+      {
+        mcpServers: { pw: { transport: "stdio", command: "npx", args: ["-y", "@playwright/mcp"] } },
+      },
+      s.configPath,
+    );
+
+    const r = await call(s.reg, "remove_mcp_server", { name: "pw" });
+
+    expect(r.error).toMatch(/Settings/);
+    expect(Object.keys(readConfig(s.configPath).mcpServers ?? {})).toEqual(["pw"]);
+  });
+
+  it("refuses a server a plugin declares", async () => {
+    writeConfig(
+      {
+        mcpServers: {
+          notfair: { url: "https://notfair.co/api/mcp/notfair", type: "http", plugin: "notfair" },
+        },
+      },
+      s.configPath,
+    );
+
+    const r = await call(s.reg, "remove_mcp_server", { name: "notfair" });
+
+    expect(r.error).toMatch(/uninstall_plugin/);
+    expect(readConfig(s.configPath).mcpServers?.notfair).toBeDefined();
+  });
+
+  it("requires a name", async () => {
+    const r = await call(s.reg, "remove_mcp_server", { name: "  " });
+    expect(r.error).toMatch(/requires 'name'/);
+  });
+
+  it("tells a host to refresh after the write", async () => {
+    writeConfig({ mcp: ["a=node a.js"] }, s.configPath);
+    const changes: string[] = [];
+    const live = new ToolRegistry();
+    registerScaffoldTools(live, {
+      projectRoot: s.projectRoot,
+      configPath: s.configPath,
+      onCapabilitiesChanged: (kind, change) => changes.push(`${kind}:${change}`),
+    });
+
+    await call(live, "remove_mcp_server", { name: "a" });
+    await call(live, "add_mcp_server", { name: "b", transport: "stdio", command: "node" });
+
+    expect(changes).toEqual(["mcp:removed", "mcp:installed"]);
+  });
+
+  it("promises the new server to a new chat, never to this one", async () => {
+    const r = await call(s.reg, "add_mcp_server", {
+      name: "later",
+      transport: "stdio",
+      command: "node",
+    });
+
+    expect(r.success).toBe(true);
+    expect(r.enabled_in_this_chat).toBe(false);
+    expect(r.note).toMatch(/chats created after this one/);
+  });
+
+  it("is refused in Read only mode because it writes the config", async () => {
+    writeConfig({ mcp: ["a=node a.js"] }, s.configPath);
+    s.reg.setPlanMode(true);
+
+    const r = await call(s.reg, "remove_mcp_server", { name: "a" });
+
+    expect(r.rejectedReason).toBe("read-only");
+    expect(readConfig(s.configPath).mcp).toEqual(["a=node a.js"]);
   });
 });

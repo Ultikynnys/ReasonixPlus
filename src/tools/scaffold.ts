@@ -2,19 +2,24 @@
 
 import { defaultConfigPath, loadEffectiveMcpConfig, readConfig, writeConfig } from "../config.js";
 import { MCP_CATALOG, catalogStdioCommand } from "../mcp/catalog.js";
+import { DOT_MCP_JSON, loadDotMcpJson } from "../mcp/dot-mcp-json.js";
+import { isManagedMcpSpec } from "../mcp/managed.js";
 import { preflightStdioSpec } from "../mcp/preflight.js";
-import { type McpServerSpec, type McpSpec, parseMcpSpec, specToRaw } from "../mcp/spec.js";
+import { type McpSpec, parseMcpSpec, specToRaw } from "../mcp/spec.js";
 import type { ToolRegistry } from "../tools.js";
+import {
+  type CapabilityChange,
+  type CapabilityKind,
+  type ServerRowOptions,
+  freezeNote,
+  notifyHost,
+  serverRows,
+} from "./capability-rows.js";
 
-export interface ScaffoldToolsOptions {
-  projectRoot?: string;
-  /** Override config path — tests point this at a tmp file. */
-  configPath?: string;
-  /** Live spec provider (config + per-session overlay). When set, list_mcp_bridges
-   *  reflects the session's toggle state instead of re-reading config. */
-  getMcpSpecs?: () => McpServerSpec[];
-  /** Tools a bridge refused (name owned elsewhere) or deferred (spec budget). */
-  getMcpToolSkips?: () => Array<{ server: string; name: string; reason: string }>;
+export interface ScaffoldToolsOptions extends ServerRowOptions {
+  /** Fired after a config write so a host refreshes its MCP projections. A host must not
+   *  bridge an install into the writing chat: the user alone decides a chat's set. */
+  onCapabilitiesChanged?: (kind: CapabilityKind, change: CapabilityChange) => void;
 }
 
 const VALID_SERVER_NAME = /^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/;
@@ -28,7 +33,7 @@ export function registerScaffoldTools(
   registry.register({
     name: "add_mcp_server",
     description:
-      'Register a new MCP server in the user\'s config (`mcp` array). Takes effect next session. Use stdio for local commands, sse/streamable-http for remote. Pass `from_catalog` (e.g. "filesystem", "github") to auto-fill command+args from the bundled catalog. Refuses name collisions.',
+      'Register a new MCP server in the user\'s config (`mcp` array). A chat freezes its server set when it starts, so the server is usable in chats created after this one, where the user turns it on. Use stdio for local commands, sse/streamable-http for remote. Pass `from_catalog` (e.g. "filesystem", "github") to auto-fill command+args from the bundled catalog. Refuses name collisions.',
     parameters: {
       type: "object",
       properties: {
@@ -119,6 +124,7 @@ export function registerScaffoldTools(
       const existing = cfg.mcp ?? [];
       cfg.mcp = [...existing, specStr.spec];
       writeConfig(cfg, configPath);
+      notifyHost(opts.onCapabilitiesChanged, "mcp", "installed");
       return JSON.stringify({
         success: true,
         name,
@@ -126,7 +132,8 @@ export function registerScaffoldTools(
         spec: specStr.spec,
         ...(specStr.note ? { install_note: specStr.note } : {}),
         config_path: configPath,
-        active_on_next_launch: true,
+        enabled_in_this_chat: false,
+        note: freezeNote("mcp"),
       });
     },
   });
@@ -147,41 +154,9 @@ export function registerScaffoldTools(
     },
     fn: async (args: { name?: unknown }) => {
       const filterName = typeof args.name === "string" ? args.name.trim() : undefined;
-      const configured =
-        opts.getMcpSpecs?.() ?? loadEffectiveMcpConfig(opts.projectRoot, configPath);
-      const registeredSpecs = registry.specs();
-      const skippedTools = opts.getMcpToolSkips?.() ?? [];
-      const bridges = configured
-        .filter((s) => !filterName || s.name === filterName)
-        .map((s) => {
-          const prefix = s.name ? `${s.name}_` : "";
-          const tools = prefix
-            ? registeredSpecs
-                .filter((spec) => spec.function.name.startsWith(prefix))
-                .map((spec) => ({
-                  name: spec.function.name,
-                  description: spec.function.description ?? "",
-                }))
-            : [];
-          const skippedForServer = skippedTools.filter((k) => k.server === (s.name ?? "anon"));
-          const isBridged = tools.length > 0;
-          // Live wins: a registered tool means the bridge is usable, even if the
-          // config default marked the server disabled (a session enabled it).
-          const status = isBridged ? "connected" : s.disabled ? "disabled" : "configured";
-          return {
-            name: s.name ?? "anon",
-            transport: s.transport,
-            status,
-            disabled: s.disabled === true,
-            ...(s.transport === "stdio"
-              ? { command: s.command, args: s.args ?? [] }
-              : { url: s.url }),
-            tool_count: tools.length,
-            tools,
-            ...(skippedForServer.length > 0 ? { skipped_tools: skippedForServer } : {}),
-          };
-        });
-
+      const bridges = serverRows(registry, opts).filter(
+        (row) => !filterName || row.name === filterName,
+      );
       return JSON.stringify({
         count: bridges.length,
         bridges,
@@ -189,7 +164,111 @@ export function registerScaffoldTools(
     },
   });
 
+  registry.register({
+    name: "remove_mcp_server",
+    description:
+      "Remove one MCP server from the user's config, with its env overlay, disabled flag and stored sign-in. Refuses an app-managed integration (playwright, the mail servers), a server a plugin declares, and one that lives in the project `.mcp.json`.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Server name exactly as list_mcp_bridges reports it.",
+        },
+      },
+      required: ["name"],
+    },
+    fn: async (args: { name?: unknown }) => {
+      const name = typeof args.name === "string" ? args.name.trim() : "";
+      if (!name) return JSON.stringify({ error: "remove_mcp_server requires 'name'" });
+
+      const cfg = readConfig(configPath);
+      // Parsed once: the name a spec string declares decides both whether this call targets
+      // it and which strings a removal drops.
+      const legacy = (cfg.mcp ?? []).map((raw) => ({ raw, name: specName(raw) }));
+      const servers = cfg.mcpServers ?? {};
+      const env = cfg.mcpEnv ?? {};
+      const oauth = cfg.mcpOAuth ?? {};
+      // An inherited key (`__proto__`, `constructor`) is not a configured server, so every
+      // lookup is an own-key test rather than a truthiness test.
+      const entry = Object.hasOwn(servers, name) ? servers[name] : undefined;
+      if (!legacy.some((spec) => spec.name === name) && !entry) {
+        const project = opts.projectRoot ? loadDotMcpJson(opts.projectRoot) : undefined;
+        if (project && Object.hasOwn(project, name)) {
+          return JSON.stringify({
+            error: `${name} is declared in the project's ${DOT_MCP_JSON}, not in the user's config. Edit that file to remove it.`,
+          });
+        }
+        const configured = loadEffectiveMcpConfig(opts.projectRoot, configPath);
+        const names = configured
+          .map((candidate) => candidate.name)
+          .filter((value): value is string => Boolean(value));
+        // An anonymous spec declares no prefix, so no name can target it: say that rather
+        // than listing "anon" as a server the caller could remove.
+        const anonymous = configured.length > names.length;
+        return JSON.stringify({
+          error: `no MCP server named ${JSON.stringify(name)}.${
+            names.length > 0 ? ` Configured: ${names.join(", ")}.` : " None are configured."
+          }${anonymous ? " A spec with no name prefix cannot be removed by name; edit the config." : ""}`,
+        });
+      }
+
+      const spec = loadEffectiveMcpConfig(opts.projectRoot, configPath).find(
+        (candidate) => candidate.name === name,
+      );
+      if (spec && isManagedMcpSpec(spec)) {
+        return JSON.stringify({
+          error: `${name} is an integration the app manages. Turn it off in Settings instead of removing it.`,
+        });
+      }
+      if (entry?.plugin) {
+        return JSON.stringify({
+          error: `${name} is declared by the ${entry.plugin} plugin. Use uninstall_plugin to remove it.`,
+        });
+      }
+
+      const removed: string[] = [];
+      if (legacy.some((spec) => spec.name === name)) {
+        const rest = legacy.filter((spec) => spec.name !== name).map((spec) => spec.raw);
+        cfg.mcp = rest.length > 0 ? rest : undefined;
+        removed.push("mcp spec");
+      }
+      if (entry) {
+        delete servers[name];
+        cfg.mcpServers = Object.keys(servers).length > 0 ? servers : undefined;
+        removed.push("mcpServers entry");
+      }
+      if (Object.hasOwn(env, name)) {
+        delete env[name];
+        cfg.mcpEnv = Object.keys(env).length > 0 ? env : undefined;
+        removed.push("env overlay");
+      }
+      if (Object.hasOwn(oauth, name)) {
+        delete oauth[name];
+        cfg.mcpOAuth = Object.keys(oauth).length > 0 ? oauth : undefined;
+        removed.push("sign-in");
+      }
+      const stillDisabled = (cfg.mcpDisabled ?? []).filter((raw) => raw !== name);
+      if (stillDisabled.length !== (cfg.mcpDisabled ?? []).length) {
+        cfg.mcpDisabled = stillDisabled.length > 0 ? stillDisabled : undefined;
+        removed.push("disabled flag");
+      }
+      writeConfig(cfg, configPath);
+      notifyHost(opts.onCapabilitiesChanged, "mcp", "removed");
+      return JSON.stringify({ success: true, name, removed, config_path: configPath });
+    },
+  });
+
   return registry;
+}
+
+/** Name a `mcp` spec string declares, or null for one that cannot be parsed. */
+function specName(raw: string): string | null {
+  try {
+    return parseMcpSpec(raw).name;
+  } catch {
+    return null;
+  }
 }
 
 interface BuildSpecInput {

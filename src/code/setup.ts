@@ -19,6 +19,8 @@ import type { McpServerSpec } from "../mcp/spec.js";
 import { createModelClient } from "../model-client.js";
 import { hasOpenAIOAuthSession } from "../oauth.js";
 import { ToolRegistry } from "../tools.js";
+import { registerCapabilityTools } from "../tools/capabilities.js";
+import type { CapabilityChange, CapabilityKind } from "../tools/capability-rows.js";
 import { registerChoiceTool } from "../tools/choice.js";
 import { registerCodeQueryTools } from "../tools/code-query.js";
 import { registerComputerUseTool } from "../tools/computer-use.js";
@@ -71,6 +73,15 @@ export interface CodeToolsetOpts {
   getMcpSpecs?: () => McpServerSpec[];
   /** Tools a bridge refused or deferred, so list_mcp_bridges can name them. */
   getMcpToolSkips?: () => Array<{ server: string; name: string; reason: string }>;
+  /** Plugin slugs this SESSION froze at its start, so list_capabilities reports enablement
+   *  instead of the Settings default. */
+  getSessionPlugins?: () => readonly string[];
+  /** Standalone skill ids this SESSION froze at its start. */
+  getSessionSkills?: () => readonly string[];
+  /** Fired after a capability tool rewrites a store, so the host refreshes the projections
+   *  that read it. A host never bridges an install into the writing chat: only the user
+   *  decides what a chat may use, at its creation. */
+  onCapabilitiesChanged?: (kind: CapabilityKind, change: CapabilityChange) => void;
   /** Whether this SESSION was minted with `spawn_subagent`. The host reads it from the
    *  session's frozen meta; omitted means no spawn tool is registered. */
   subagentsEnabled?: boolean;
@@ -147,10 +158,20 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
   registerSeeImageTool(tools, { rootDir: opts.rootDir });
   registerScreenCaptureTool(tools, { rootDir: opts.rootDir });
   registerComputerUseTool(tools);
-  registerScaffoldTools(tools, {
+  // One options object feeds both capability modules: they read the same config, the same
+  // live specs and the same host callback, and must never disagree about them.
+  const capabilityOpts = {
     projectRoot: opts.rootDir,
+    configPath: opts.configPath,
     getMcpSpecs: opts.getMcpSpecs,
     getMcpToolSkips: opts.getMcpToolSkips,
+    onCapabilitiesChanged: opts.onCapabilitiesChanged,
+  };
+  registerScaffoldTools(tools, capabilityOpts);
+  registerCapabilityTools(tools, {
+    ...capabilityOpts,
+    getSessionPlugins: opts.getSessionPlugins,
+    getSessionSkills: opts.getSessionSkills,
   });
   // OAuth-only: image generation bills the user's ChatGPT/OpenAI plan, so it is
   // registered solely when an OpenAI OAuth session is present.

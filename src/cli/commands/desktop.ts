@@ -401,10 +401,10 @@ import {
   GMAIL_MCP_URL,
   GMAIL_OAUTH_REDIRECT_URI,
   beginGmailOAuthFlow,
-  isGmailMailSpec,
   resolveGmailToken,
   signOutGmail,
 } from "../../mcp/gmail-mail.js";
+import { isManagedMcpSpec } from "../../mcp/managed.js";
 import { beginMcpOAuthFlow, mcpOAuthState } from "../../mcp/oauth.js";
 import {
   OUTLOOK_MAIL_ARGS,
@@ -413,7 +413,6 @@ import {
   parseOutlookDeviceCode,
   parseOutlookLoginStatus,
 } from "../../mcp/outlook-mail.js";
-import { isPlaywrightSpec } from "../../mcp/playwright-tooling.js";
 import { SharedClientRegistry } from "../../mcp/shared-browser.js";
 import { type McpServerSpec, parseMcpSpec, specToRaw } from "../../mcp/spec.js";
 import {
@@ -504,6 +503,11 @@ import {
   servedWindowTotal,
 } from "../../telemetry/stats.js";
 import { countTokensBounded } from "../../tokenizer.js";
+import {
+  type CapabilityChange,
+  type CapabilityKind,
+  pluginServerOwners,
+} from "../../tools/capability-rows.js";
 import type { ChoiceOption } from "../../tools/choice.js";
 import type { StepCompletion } from "../../tools/plan.js";
 import type { ChatMessage, TurnImage } from "../../types.js";
@@ -3838,17 +3842,6 @@ function summarizeMcpSpec(raw: string): McpSpecInfo {
   }
 }
 
-/** Server name -> owning plugin slug, for every plugin-declared server in config. One
- *  read feeds both the picker projection and the per-session exclusion. */
-function pluginServerOwners(): Map<string, string> {
-  const cfg = readConfig();
-  const owners = new Map<string, string>();
-  for (const [name, entry] of Object.entries(cfg.mcpServers ?? {})) {
-    if (entry.plugin) owners.set(name, entry.plugin);
-  }
-  return owners;
-}
-
 /** Server names owned by an installed plugin. They follow their plugin's row in the
  *  session picker, so the picker never offers them as standalone rows. */
 function pluginOwnedServerNames(): Set<string> {
@@ -4515,9 +4508,9 @@ function beginMailAuthFlow(tab: Tab, provider: MailProvider): MailAuthFlow {
   };
 }
 
-export function isManagedMcpSpec(spec: McpServerSpec): boolean {
-  return isPlaywrightSpec(spec) || isOutlookMailSpec(spec) || isGmailMailSpec(spec);
-}
+/** Re-exported from mcp/managed.ts: an integration the app owns is not the user's to edit, so
+ *  the MCP list and the agent tools must answer that question from one predicate. */
+export { isManagedMcpSpec };
 
 function outlookMailConfigured(tab: Tab): boolean {
   return loadEffectiveMcpConfig(tab.rootDir).some(isOutlookMailSpec);
@@ -6062,6 +6055,18 @@ export function refreshTabSystemPrompt(
   tab.skillPromptTokens = countTokensForMeter(promptSections({ skills, plugins }).skills ?? "");
   tab.memoryPromptTokens = memoryTokenCost(built.memoryLayers);
 }
+
+/** Rebuild the prompt from current tab state and push it into the live prefix. `replaceSystem`
+ *  is a no-op when the text is unchanged, so this bills a cache miss only when it moved. */
+function applyTabSystemPrompt(tab: PromptTab): void {
+  refreshTabSystemPrompt(tab);
+  tab.runtime?.loop.prefix.replaceSystem(tab.system);
+}
+
+/** A tab whose prompt can be rebuilt: a built toolset, and an optional live loop. */
+type PromptTab = Parameters<typeof refreshTabSystemPrompt>[0] & {
+  runtime: { loop: { prefix: { replaceSystem: (system: string) => boolean } } } | null;
+};
 
 /** Whether the selected web search engine renders in a managed browser. Only that engine
  *  hands web_fetch the persistent page its prompt section documents. */
@@ -8576,12 +8581,43 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
   }
 
+  /** Refresh every projection a capability write feeds. An install re-bridges nothing: the
+   *  chat's set is the user's choice at creation, so a live chat must not gain the entry.
+   *  A removal does re-bridge, because tools that no longer exist must stop being offered. */
+  function refreshAfterCapabilityWrite(
+    tab: Tab,
+    kind: CapabilityKind,
+    change: CapabilityChange,
+  ): void {
+    // Pruning an orphan is the only session-meta write either path may make, and only a
+    // removal can create one.
+    if (change === "removed" && tab.currentSession) {
+      syncSessionCapabilities(tab, tab.currentSession);
+    }
+    // A skill only feeds its own list and the frozen skill index; nothing to bridge.
+    if (kind === "skill") {
+      emitSkills(tab);
+      applyTabSystemPrompt(tab);
+      return;
+    }
+    emitPlugins(tab);
+    emitSkills(tab);
+    emitMcpConfigChanged(tab);
+    applyTabSystemPrompt(tab);
+    if (change === "removed") void bridgeTabMcp(tab);
+  }
+
   /** The buildCodeToolset options shared by tab bootstrap and workspace switch. */
   function toolsetOptionsFor(tab: Tab, rootDir: string): Parameters<typeof buildCodeToolset>[0] {
     return {
       rootDir,
       getMcpSpecs: () => effectiveMcpSpecs(tab),
       getMcpToolSkips: () => tab.mcpRuntime?.toolSkips() ?? [],
+      // The chat's frozen sets, read at call time: the capability tools report what this
+      // session may use, never the Settings default.
+      getSessionPlugins: () => sessionPlugins(tab.currentSession),
+      getSessionSkills: () => sessionSkills(tab.currentSession),
+      onCapabilitiesChanged: (kind, change) => refreshAfterCapabilityWrite(tab, kind, change),
       subagentsEnabled: sessionSubagentsEnabled(tab),
       onJobsChanged: () => emitJobs(),
       onRulesChanged: () => emitSettingsToAllTabs(),
@@ -10050,8 +10086,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     const refreshAfterPluginChange = (): void => {
       emitPlugins(tab);
       emitMcpConfigChanged(tab);
-      refreshTabSystemPrompt(tab);
-      tab.runtime?.loop.prefix.replaceSystem(tab.system);
+      applyTabSystemPrompt(tab);
     };
 
     if (msg.cmd === "plugins_get") {
@@ -10154,8 +10189,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         uninstallSkill(msg.name);
         if (tab.currentSession) syncSessionCapabilities(tab, tab.currentSession);
         emitSkills(tab);
-        refreshTabSystemPrompt(tab);
-        tab.runtime?.loop.prefix.replaceSystem(tab.system);
+        applyTabSystemPrompt(tab);
       } catch (err) {
         // A skill a plugin ships is not in the standalone store, so the removal above
         // failed: name the plugin rather than reporting the id as simply absent.
@@ -11292,8 +11326,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           writeConfig(cfg);
           // The web-page section follows the engine, so a switch rewrites the prompt now
           // rather than at the next restart.
-          refreshTabSystemPrompt(tab);
-          tab.runtime?.loop.prefix.replaceSystem(tab.system);
+          applyTabSystemPrompt(tab);
         }
         if (msg.searchSettings !== undefined) {
           const { writes } = parseSearchSettingsPatch(msg.searchSettings);

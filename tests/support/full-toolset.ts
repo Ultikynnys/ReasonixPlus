@@ -3,6 +3,7 @@
 
 import { join } from "node:path";
 import { ToolRegistry } from "../../src/tools.js";
+import { registerCapabilityTools } from "../../src/tools/capabilities.js";
 import { registerChoiceTool } from "../../src/tools/choice.js";
 import { registerCodeQueryTools } from "../../src/tools/code-query.js";
 import { registerComputerUseTool } from "../../src/tools/computer-use.js";
@@ -43,7 +44,8 @@ export function registerAllBuiltins(root: string): FullToolset {
   registerSeeImageTool(tools, { rootDir: root });
   registerScreenCaptureTool(tools, { rootDir: root });
   registerComputerUseTool(tools);
-  registerScaffoldTools(tools, { projectRoot: root });
+  registerScaffoldTools(tools, { projectRoot: root, configPath });
+  registerCapabilityTools(tools, { projectRoot: root, configPath });
   registerImageGenTool(tools, { rootDir: root, configPath });
   registerWebTools(tools);
   registerSubagentTool(tools, {

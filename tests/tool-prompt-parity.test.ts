@@ -11,7 +11,6 @@ import { registerAllBuiltins } from "./support/full-toolset.js";
 /** Tools whose usage is carried by the spec alone. Adding a name here is a deliberate choice, not a default. */
 const PROMPT_SILENT_TOOLS = [
   "activate_plan",
-  "add_mcp_server",
   "computer_use",
   "copy_file",
   "create_directory",

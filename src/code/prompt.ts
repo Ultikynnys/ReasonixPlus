@@ -94,7 +94,7 @@ export const PLUGINS_MAX_CHARS = 2_000;
 function pluginsSection(plugins: readonly PluginPromptEntry[]): string {
   const head = `# Plugins
 
-Installed agent plugins (Settings > Plugins). You cannot install, remove or enable one yourself: send the user there. A plugin's skills are usable only in a chat whose start enabled it, so a plugin marked "not enabled here" contributes nothing to this chat until the user enables it for a new chat.`;
+Installed agent plugins (Settings > Plugins). A plugin's skills are usable only in a chat whose start enabled it, so a plugin marked "not enabled here" contributes nothing to this chat. \`install_plugin\` and \`uninstall_plugin\` manage this store; which chat may use a plugin is the user's call.`;
   const lines: string[] = [];
   let used = head.length;
   let dropped = 0;
@@ -140,7 +140,7 @@ function skillsSection(skills: readonly SkillIndexEntry[]): string {
   const rootLines = [...roots].map(([owner, dirs]) => `- ${owner}: ${rootList(dirs)}`).join("\n");
   const head = `# Skills
 
-Workflow files are installed with the app or shipped by a plugin. When a request matches a skill's description, read its SKILL.md completely and follow it: the file is authoritative over your own approach. Do not open one for work its description does not cover.
+Workflow files come from a standalone skill or from a plugin. \`install_skill\` and \`uninstall_skill\` manage the standalone store; the index below is this chat's own frozen set. When a request matches a skill's description, read its SKILL.md completely and follow it: the file is authoritative over your own approach. Do not open one for work its description does not cover.
 
 Skill roots (a directory of skill directories, or a single skill directory):
 
@@ -270,6 +270,14 @@ MCP availability can change during a session. Call \`list_mcp_bridges\` when cur
 Every bridged MCP tool takes an optional \`timeoutSec\` (seconds, default 60) that overrides one call's deadline and is stripped before dispatch. When a server tool declares its own \`timeoutSec\`, the deadline argument is \`_mcpTimeoutSec\`, with extra leading underscores until the name is free.
 
 Prefer suitable installed MCP tools. Fall back to built-in tools when necessary.
+
+# Capabilities
+
+Plugins, skills and MCP servers are the three ways this harness gains abilities.
+
+- \`list_capabilities\` reports every installed plugin, standalone skill and MCP server, and which of them this chat may use. \`list_mcp_bridges\` names the tools bridged behind each server.
+- \`install_plugin\` / \`uninstall_plugin\`, \`install_skill\` / \`uninstall_skill\`, and \`add_mcp_server\` / \`remove_mcp_server\` change what is installed. They write the user's config or store directly, and a refusal names the tool the case needs.
+- **Enabling is never yours.** The user alone decides which plugins, skills and servers a chat may use, and fixes that set when the chat is created. No tool changes it: an install lands in chats created afterwards, where the user picks it, and a removal only takes away. Never claim a capability works in this chat because you installed it, and never edit config.json, a session's meta or a store directory by hand to get around that.
 
 # Task execution
 
