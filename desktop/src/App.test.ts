@@ -1989,6 +1989,52 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
     expect(defaults.settings?.feedbackNotify).toEqual([]);
   });
 
+  it("carries the pack, bounds, duplicate controls and prefill rows from $settings", () => {
+    // The daemon owns every one of these values, so its echo has to reach state: the pack
+    // the Sound page marks active, the slider range it allows, the Duplicate controls it
+    // seeds, and the capability rows the start-of-chat picker offers.
+    const bounds = { min: 32_000, max: 128_000 };
+    const echo = {
+      type: "$settings" as const,
+      reasoningEffort: "high" as const,
+      editMode: "follow" as const,
+      quickSendId: "proceed",
+      quickSends: [],
+      workspaceDir: "/workspace",
+      recentWorkspaces: [],
+      model: "deepseek-v4-pro",
+      soundPackId: "halo",
+      contextTokensBounds: bounds,
+      duplicateSessionTokens: 24_000,
+      duplicateSessionAutoProceed: false,
+      pluginPrefill: [{ name: "seo-agent", displayName: "SEO Agent", enabled: true }],
+      skillPrefill: [{ name: "churn-analysis", description: "Predicts churn.", enabled: false }],
+      version: "0.50.1",
+    };
+    const state = reduce(initialState(), { t: "incoming", event: echo });
+    // Every field the echo carries reaches state; the wire controls are the only exclusions
+    // and the UI defaults the only additions, so a field the reducer forgets to name fails
+    // here instead of reverting its control in the app.
+    for (const [key] of Object.entries(echo)) {
+      if (key === "type" || key === "turnReleased") continue;
+      expect(state.settings, key).toHaveProperty(key);
+    }
+    expect(state.settings?.soundPackId).toBe("halo");
+    expect(state.settings?.contextTokensBounds).toEqual(bounds);
+    expect(state.settings?.duplicateSessionTokens).toBe(24_000);
+    expect(state.settings?.duplicateSessionAutoProceed).toBe(false);
+    expect(state.settings?.pluginPrefill).toEqual([
+      { name: "seo-agent", displayName: "SEO Agent", enabled: true },
+    ]);
+    expect(state.settings?.skillPrefill).toEqual([
+      { name: "churn-analysis", description: "Predicts churn.", enabled: false },
+    ]);
+
+    // A cleared selection reaches the UI the same way, instead of being left behind.
+    const cleared = reduce(state, { t: "incoming", event: { ...echo, soundPackId: undefined } });
+    expect(cleared.settings?.soundPackId).toBeUndefined();
+  });
+
   it("appends a $notice event below the turn as a notice card", () => {
     const base = {
       ...initialState(),

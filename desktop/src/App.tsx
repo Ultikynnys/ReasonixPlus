@@ -2895,6 +2895,12 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       // running, so releasing on any model change settled a live turn, posted
       // "Task complete" over a running subagent and let the queue drain into it.
       const releaseTurn = wsChanged || ev.turnReleased === true;
+      // The echo is a full snapshot of the persisted settings, and the contract derives
+      // `Settings` from the event, so every field except the two wire controls (`type` and
+      // the per-echo `turnReleased` flag) belongs in state: carrying a hand-picked subset
+      // silently drops whichever field nobody listed, and the control it backs reverts to
+      // its default on the next echo.
+      const { type: _type, turnReleased: _turnReleased, ...snapshot } = ev;
       return {
         ...state,
         busy: releaseTurn ? false : state.busy,
@@ -2917,58 +2923,20 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
         sessionFiles: wsChanged ? [] : state.sessionFiles,
         retryNonce: wsChanged ? 0 : state.retryNonce,
         settings: {
-          reasoningEffort: ev.reasoningEffort,
-          editMode: ev.editMode,
-          quickSends: ev.quickSends,
-          quickSendId: ev.quickSendId,
-          contextTokens: ev.contextTokens ?? null,
+          ...snapshot,
+          contextTokens: snapshot.contextTokens ?? null,
           // Frozen per session, and absent reads as off: a daemon that predates the
           // field minted nothing with the tool, so there is no picker to keep.
-          subagents: ev.subagents ?? false,
-          // The Duplicate popover's rows: the daemon's one projection of what a copy of
-          // this chat may run with. Dropping it here reads as "no server configured".
-          capabilityPrefill: ev.capabilityPrefill,
-          elevationEnabled: ev.elevationEnabled ?? false,
-          repetitionGuardEnabled: ev.repetitionGuardEnabled ?? false,
-          autoCompact: ev.autoCompact ?? true,
-          autoCompactTrigger: ev.autoCompactTrigger ?? null,
-          questionTimerEnabled: ev.questionTimerEnabled ?? false,
-          feedbackAudio: ev.feedbackAudio ?? {},
-          feedbackNotify: ev.feedbackNotify ?? [],
-          soundPacks: ev.soundPacks ?? [],
-          baseUrl: ev.baseUrl,
-          apiKeyPrefix: ev.apiKeyPrefix,
-          workspaceDir: ev.workspaceDir,
-          recentWorkspaces: ev.recentWorkspaces,
-          reasonixLocalDir: ev.reasonixLocalDir,
-          model: ev.model,
-          providerCatalogs: ev.providerCatalogs,
-          enabledModels: ev.enabledModels,
-          fallbackModels: ev.fallbackModels,
-          webSearchEngine: ev.webSearchEngine,
-          searchSettings: ev.searchSettings,
-          providerSettings: ev.providerSettings,
-          subagentModel: ev.subagentModel,
-          ollamaGeneration: ev.ollamaGeneration,
-          ollamaGenerationOverrides: ev.ollamaGenerationOverrides,
-          ollamaModelDefaults: ev.ollamaModelDefaults,
-          statusBar: ev.statusBar,
-          modelEndpoint: ev.modelEndpoint,
-          subagentModelEndpoint: ev.subagentModelEndpoint,
-          openaiOAuth: ev.openaiOAuth,
-          antigravityOAuth: ev.antigravityOAuth,
-          opencodeOAuth: ev.opencodeOAuth,
-          mimoOAuth: ev.mimoOAuth,
-          mailProvider: ev.mailProvider ?? MailProvider.Outlook,
-          shellAllowedWorkspace: ev.shellAllowedWorkspace,
-          pathAllowedWorkspace: ev.pathAllowedWorkspace,
-          shellAllowedGlobal: ev.shellAllowedGlobal,
-          pathAllowedGlobal: ev.pathAllowedGlobal,
-          rules: ev.rules,
-          workspacesWithRules: ev.workspacesWithRules,
-          builtinShellAllowlist: ev.builtinShellAllowlist,
-          readOnlyTools: ev.readOnlyTools,
-          version: ev.version,
+          subagents: snapshot.subagents ?? false,
+          elevationEnabled: snapshot.elevationEnabled ?? false,
+          repetitionGuardEnabled: snapshot.repetitionGuardEnabled ?? false,
+          autoCompact: snapshot.autoCompact ?? true,
+          autoCompactTrigger: snapshot.autoCompactTrigger ?? null,
+          questionTimerEnabled: snapshot.questionTimerEnabled ?? false,
+          feedbackAudio: snapshot.feedbackAudio ?? {},
+          feedbackNotify: snapshot.feedbackNotify ?? [],
+          soundPacks: snapshot.soundPacks ?? [],
+          mailProvider: snapshot.mailProvider ?? MailProvider.Outlook,
         },
         oauthWaiting: ev.openaiOAuth?.signedIn ? false : state.oauthWaiting,
         antigravityOAuthWaiting: ev.antigravityOAuth?.signedIn
