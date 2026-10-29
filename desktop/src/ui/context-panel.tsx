@@ -146,6 +146,14 @@ export function ContextPanel({
     (spec) => spec.status === "connected" && !spec.sessionDisabled,
   ).length;
   const reserved = usage.reservedTokens;
+  // What the reserved bucket is made of. Prompt is the remainder, so the three always add
+  // up to `reserved` no matter which sections the prompt carries.
+  const skillTokens = usage.skillTokens;
+  const toolTokens = usage.toolTokens;
+  const promptTokens =
+    skillTokens !== undefined && toolTokens !== undefined
+      ? Math.max(0, reserved - skillTokens - toolTokens)
+      : undefined;
   const lastHit = usage.lastCallCacheHit ?? 0;
   const lastMiss = usage.lastCallCacheMiss ?? 0;
   const observedLog = Math.max(0, lastHit + lastMiss - reserved);
@@ -238,6 +246,22 @@ export function ContextPanel({
               {t("contextPanel.freeKey")} <span className="v">{free.toLocaleString()}</span>
             </span>
           </div>
+          {promptTokens !== undefined ? (
+            <div className="legend legend-sub" data-testid="ctx-reserved-breakdown">
+              <span className="l" title={t("contextPanel.skillsTooltip")}>
+                {t("contextPanel.skillsKey")}{" "}
+                <span className="v">{(skillTokens as number).toLocaleString()}</span>
+              </span>
+              <span className="l">
+                {t("contextPanel.toolsKey")}{" "}
+                <span className="v">{(toolTokens as number).toLocaleString()}</span>
+              </span>
+              <span className="l">
+                {t("contextPanel.promptKey")}{" "}
+                <span className="v">{promptTokens.toLocaleString()}</span>
+              </span>
+            </div>
+          ) : null}
         </div>
 
         <PanelErrorBoundary key={tab} label={tab}>

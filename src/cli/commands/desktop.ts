@@ -127,6 +127,7 @@ import {
   type PluginPromptEntry,
   type SkillIndexEntry,
   codeSystemPrompt,
+  promptSections,
 } from "../../code/prompt.js";
 import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
 import { fetchCodexQuotaViaOAuth } from "../../codex-backend.js";
@@ -5214,6 +5215,8 @@ function emitCtxBreakdown(tab: Tab): void {
   const ctxMax = resolveContextTokens(tab.currentModel, tabCtxMaxOverride(tab));
   emitTabDiagnostic(tab, "context.breakdown", {
     reservedTokens: sys + tools,
+    skillTokens: tab.skillPromptTokens ?? 0,
+    toolTokens: tools,
     logTokens,
     ctxMax,
   });
@@ -5222,6 +5225,9 @@ function emitCtxBreakdown(tab: Tab): void {
     {
       type: "$ctx_breakdown",
       reservedTokens: sys + tools,
+      // What the reserved bucket is made of, so the panel can show the skill index cost.
+      skillTokens: tab.skillPromptTokens ?? 0,
+      toolTokens: tools,
       logTokens,
       ctxMax,
       ...(shellTotals
@@ -5515,6 +5521,9 @@ interface Tab {
   toolset: Awaited<ReturnType<typeof buildCodeToolset>> | null;
   /** Empty while bootstrapping; populated together with `toolset`. */
   system: string;
+  /** Tokens the `# Skills` index occupies in `system`, so the context panel can show what
+   *  the skill set costs. Unset until the first prompt build. */
+  skillPromptTokens?: number;
   initialization: Promise<void> | null;
   initializationRevision: number;
   runtime: RuntimeState | null;
@@ -5879,10 +5888,15 @@ export function refreshTabSystemPrompt(
     currentSession?: string;
     /** Presence only: a tab whose toolset has not been built yet must not be rewritten. */
     toolset: object | null;
+    /** Cost of the skill index in this prompt, measured here because this is where the
+     *  section is built. The context panel reports it as part of the reserved tokens. */
+    skillPromptTokens?: number;
   },
   opts?: { editMode?: EditMode },
 ): void {
   if (!tab.toolset) return;
+  const skills = sessionSkillIndex(tab.currentSession);
+  const plugins = pluginPromptEntries(tab.currentSession);
   tab.system = codeSystemPrompt(tab.rootDir, {
     modelId: tab.currentModel,
     editMode: opts?.editMode,
@@ -5894,11 +5908,13 @@ export function refreshTabSystemPrompt(
     browserWebTools: webSearchDrivesBrowser(),
     // Same rule for the skill index: skills are the set this chat froze at its
     // session-start confirm, so installing one never rewrites a live prefix.
-    skills: sessionSkillIndex(tab.currentSession),
+    skills,
     // Installed plugins, enabled or not: answering "what plugins do I have?" needs the
     // inventory, and a plugin install or removal rebuilds this prompt anyway.
-    plugins: pluginPromptEntries(tab.currentSession),
+    plugins,
   });
+  // Same builders the prompt used, so the meter cannot drift from the text it measures.
+  tab.skillPromptTokens = countTokensForMeter(promptSections({ skills, plugins }).skills ?? "");
 }
 
 /** Whether the selected web search engine renders in a managed browser. Only that engine

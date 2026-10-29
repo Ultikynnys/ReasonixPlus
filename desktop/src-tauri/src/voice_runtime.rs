@@ -103,7 +103,11 @@ fn extract_uv(archive: &Path, exe: &Path) -> Result<(), String> {
         let mut entry = zip
             .by_index(index)
             .map_err(|e| format!("read uv archive entry: {e}"))?;
-        if !entry.name().ends_with("uv.exe") {
+        let is_uv_exe = entry
+            .name()
+            .map_err(|e| format!("read uv archive entry name: {e}"))?
+            .ends_with("uv.exe");
+        if !is_uv_exe {
             continue;
         }
         let mut out = std::fs::File::create(exe).map_err(|e| format!("create {exe:?}: {e}"))?;
@@ -287,5 +291,32 @@ mod tests {
         let root = std::env::temp_dir().join(format!("reasonix-uv-{}", std::process::id()));
         assert!(ensure_uv(&root, "../escape").is_err());
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn extract_uv_takes_only_the_installer_entry() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("reasonix-uv-extract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let archive = dir.join("uv.zip");
+        let stored =
+            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let deflated = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        {
+            let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).expect("archive"));
+            writer.start_file("uv.exe.sha256", stored).expect("entry");
+            writer.write_all(b"not the installer").expect("write");
+            writer
+                .start_file("uv-x86_64-pc-windows-msvc/uv.exe", deflated)
+                .expect("entry");
+            writer.write_all(b"MZ-stub").expect("write");
+            writer.finish().expect("finish");
+        }
+        let exe = dir.join("uv.exe");
+        extract_uv(&archive, &exe).expect("extract");
+        assert_eq!(std::fs::read(&exe).expect("read exe"), b"MZ-stub");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

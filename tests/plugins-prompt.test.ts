@@ -321,6 +321,17 @@ describe("refreshTabSystemPrompt with installed skills", () => {
     expect(tab.system).not.toContain("# Skills");
   });
 
+  it("reports the skill index cost so the context panel can show it", async () => {
+    await installStandalone("churn-analysis");
+    const withSkill = tabFor(frozenChat("cost-with", [], ["churn-analysis"]));
+    refreshTabSystemPrompt(withSkill);
+    expect(withSkill.skillPromptTokens).toBeGreaterThan(0);
+    // Absent section means no cost, not the whole prompt.
+    const without = tabFor(frozenChat("cost-without", []));
+    refreshTabSystemPrompt(without);
+    expect(without.skillPromptTokens).toBe(0);
+  });
+
   it("keeps the index out of a chat that enabled no plugin", async () => {
     await installPlugin(fixture, { homeDir: home, configPath, copy: copyTree(() => fixture) });
     const tab = tabFor(frozenChat("without-plugin", []));

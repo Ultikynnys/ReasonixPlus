@@ -50,11 +50,12 @@ function renderPanel(
   plan: ActivePlan | null = null,
   mcpSpecs: McpSpecInfo[] = [],
   active = true,
+  usageStats: UsageStats = usage,
 ) {
   return render(
     <ContextPanel
       settings={{ ...settings, ...overrides }}
-      usage={usage}
+      usage={usageStats}
       mcpSpecs={mcpSpecs}
       mcpBridged={false}
       sessionFiles={[{ path: "src/new-file.ts", status: "m" }]}
@@ -657,6 +658,27 @@ describe("ContextPanel files", () => {
 
     expect(screen.getByText("150 / 300,000")).toBeTruthy();
     expect(screen.getByText("100")).toBeTruthy();
+  });
+
+  it("breaks the reserved bucket into skills, tools and the rest of the prompt", () => {
+    renderPanel(undefined, null, [], true, {
+      ...usage,
+      reservedTokens: 15_975,
+      skillTokens: 5_727,
+      toolTokens: 8_000,
+    });
+    const breakdown = within(screen.getByTestId("ctx-reserved-breakdown"));
+    expect(breakdown.getByText("skills")).toBeTruthy();
+    expect(breakdown.getByText("5,727")).toBeTruthy();
+    expect(breakdown.getByText("tools")).toBeTruthy();
+    expect(breakdown.getByText("8,000")).toBeTruthy();
+    expect(breakdown.getByText("prompt")).toBeTruthy();
+    expect(breakdown.getByText("2,248")).toBeTruthy();
+  });
+
+  it("hides the breakdown until the daemon reports the parts", () => {
+    renderPanel(undefined, null, [], true, { ...usage, reservedTokens: 15_975 });
+    expect(screen.queryByTestId("ctx-reserved-breakdown")).toBeNull();
   });
 
   it("uses the configured context window as the meter denominator before the sidecar reports", () => {

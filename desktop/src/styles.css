@@ -5545,6 +5545,15 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .legend .v {
   color: var(--fg);
 }
+/* Second legend row: what the reserved bucket is made of (skills, tools, prompt). */
+.legend.legend-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  gap: 10px;
+}
+.legend.legend-sub .v {
+  color: var(--fg-2);
+}
 
 /* context window slider */
 .ctx-slider-container {

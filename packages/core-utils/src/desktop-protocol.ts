@@ -921,6 +921,10 @@ export interface PlaywrightBrowserInstallEvent {
 export interface CtxBreakdownEvent {
   type: "$ctx_breakdown";
   reservedTokens: number;
+  /** Part of `reservedTokens` the `# Skills` index occupies. */
+  skillTokens?: number;
+  /** Part of `reservedTokens` the tool specs occupy. */
+  toolTokens?: number;
   /** Current log token count (real-time). */
   logTokens?: number;
   /** Model context cap — denominator for the meter. */

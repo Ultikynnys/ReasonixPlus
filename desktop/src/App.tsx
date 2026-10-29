@@ -483,6 +483,10 @@ export type UsageStats = {
   lastCallCacheMiss: number | null;
   /** System prompt + tool specs — constant for the session, sent on tab open. */
   reservedTokens: number;
+  /** Part of `reservedTokens` the skill index occupies; undefined when unknown. */
+  skillTokens?: number;
+  /** Part of `reservedTokens` the tool specs occupy; undefined when unknown. */
+  toolTokens?: number;
   /** Current conversation log tokens, refreshed by the desktop sidecar. */
   liveLogTokens: number;
   /** Model context cap — meter denominator. */
@@ -2800,6 +2804,12 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       }
       if (typeof ev.ctxMax === "number") {
         next.ctxMax = ev.ctxMax;
+      }
+      if (typeof ev.skillTokens === "number") {
+        next.skillTokens = ev.skillTokens;
+      }
+      if (typeof ev.toolTokens === "number") {
+        next.toolTokens = ev.toolTokens;
       }
       // The shell-output totals arrive as a pair (or not at all — no telemetry).
       if (typeof ev.shellOutputRawTokens === "number") {

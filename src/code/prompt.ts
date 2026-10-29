@@ -162,6 +162,25 @@ ${rootLines}
   return `${head}\n${lines.join("\n")}${tail}`;
 }
 
+/** Sections the prompt appends, as built. Exposed so a context meter can attribute part
+ *  of the system prompt to the skill index instead of re-deriving the text. */
+export interface PromptSections {
+  /** The `# Skills` index, absent when the chat has no skills. */
+  skills?: string;
+  /** The `# Plugins` inventory, absent when no plugin is installed. */
+  plugins?: string;
+}
+
+/** Build the sections `codeSystemPrompt` appends, from the same two builders. */
+export function promptSections(
+  opts: Pick<CodeSystemPromptOptions, "skills" | "plugins">,
+): PromptSections {
+  return {
+    ...(opts.skills && opts.skills.length > 0 ? { skills: skillsSection(opts.skills) } : {}),
+    ...(opts.plugins && opts.plugins.length > 0 ? { plugins: pluginsSection(opts.plugins) } : {}),
+  };
+}
+
 /** Rendered only for a session minted with subagents on. A session without the tool
  *  gets no subagent text at all: instructions for a tool the model cannot see are
  *  worse than silence, and the section is dead weight in the cached prefix. */
@@ -547,15 +566,10 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
     opts.subagentsEnabled === true,
     opts.browserWebTools === true,
   );
-  const withSkills =
-    opts.skills && opts.skills.length > 0
-      ? `${codeBase}\n\n${skillsSection(opts.skills)}`
-      : codeBase;
-  const withPlugins =
-    opts.plugins && opts.plugins.length > 0
-      ? `${withSkills}\n\n${pluginsSection(opts.plugins)}`
-      : withSkills;
-  const withMemory = applyMemoryStack(withPlugins, rootDir, { homeDir: opts.homeDir });
+  const sections = promptSections(opts);
+  const appended = [sections.skills, sections.plugins].filter(Boolean).join("\n\n");
+  const withSkills = appended ? `${codeBase}\n\n${appended}` : codeBase;
+  const withMemory = applyMemoryStack(withSkills, rootDir, { homeDir: opts.homeDir });
   const gitignorePath = join(rootDir, ".gitignore");
   let result = withMemory;
   const gitignore = readCappedTextFile(gitignorePath, GITIGNORE_MAX_CHARS);

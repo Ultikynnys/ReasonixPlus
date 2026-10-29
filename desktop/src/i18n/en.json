@@ -759,6 +759,10 @@
   "contextPanel": {
     "reservedKey": "reserved",
     "usedKey": "used",
+    "skillsKey": "skills",
+    "skillsTooltip": "Tokens the skill index costs in this chat's prompt",
+    "toolsKey": "tools",
+    "promptKey": "prompt",
     "filesTab": "Files",
     "parametersTab": "Parameters",
     "mcpTab": "MCP",
