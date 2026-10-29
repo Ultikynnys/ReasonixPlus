@@ -179,6 +179,7 @@ export function SettingsModal({
   plugins,
   onInstallPlugin,
   onUninstallPlugin,
+  onTogglePlugin,
   onRequestPlugins,
   onClose,
   onSave,
@@ -297,6 +298,8 @@ export function SettingsModal({
   onToggleMcpServer: (name: string, disabled: boolean) => void;
   onInstallPlugin: (source: string) => void;
   onUninstallPlugin: (name: string) => void;
+  /** Edit one plugin's Settings default: what a new chat's picker starts from. */
+  onTogglePlugin: (slug: string, disabled: boolean) => void;
   /** Re-request the plugin inventory (the page calls this when it opens). */
   onRequestPlugins: () => void;
   onInstallSkill: (source: string) => void;
@@ -510,6 +513,7 @@ export function SettingsModal({
                 plugins={plugins}
                 onInstall={onInstallPlugin}
                 onUninstall={onUninstallPlugin}
+                onToggle={onTogglePlugin}
                 onRequest={onRequestPlugins}
                 mcpAuth={mcpAuth}
                 onConnectServer={onConnectServer}
@@ -2035,6 +2039,56 @@ function HeadActionCard({
         </div>
       ) : null}
     </section>
+  );
+}
+
+/** A card-title qualifier: the short note a Settings card appends to its title, in the
+ *  two tones the card titles use. */
+function TitleNote({ tone, children }: { tone?: "accent"; children: ReactNode }) {
+  return (
+    <span
+      style={{
+        color: tone === "accent" ? "var(--accent)" : "var(--muted)",
+        marginLeft: 6,
+        fontSize: 11,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** The destructive segment a Settings card uses to drop a capability, shared by the MCP
+ *  server, plugin and skill cards so all three remove the same way. */
+function RemoveAction({ label, onRemove }: { label: string; onRemove: () => void }) {
+  return (
+    <div className="seg-ctrl">
+      <button type="button" className="mcp-remove" onClick={onRemove}>
+        {label}
+      </button>
+    </div>
+  );
+}
+
+/** The Enable/Disable pair a Settings card uses to flip a capability's DEFAULT: an MCP
+ *  server and a plugin answer the same click the same way, and a new chat's picker reads
+ *  whichever one wrote it. */
+function DefaultToggle({
+  disabled,
+  onChange,
+}: {
+  disabled: boolean;
+  onChange: (disabled: boolean) => void;
+}) {
+  return (
+    <div className="seg-ctrl">
+      <button type="button" data-on={!disabled} onClick={() => onChange(false)}>
+        {t("settings.mcpEnable")}
+      </button>
+      <button type="button" data-on={disabled} onClick={() => onChange(true)}>
+        {t("settings.mcpDisable")}
+      </button>
+    </div>
   );
 }
 
@@ -3579,21 +3633,10 @@ export function PageMCP({
             removable || canToggle ? (
               <>
                 {removable ? (
-                  <div className="seg-ctrl">
-                    <button type="button" className="mcp-remove" onClick={() => onRemove(s.raw)}>
-                      {t("settings.mcpRemove")}
-                    </button>
-                  </div>
+                  <RemoveAction label={t("settings.mcpRemove")} onRemove={() => onRemove(s.raw)} />
                 ) : null}
                 {canToggle ? (
-                  <div className="seg-ctrl">
-                    <button type="button" data-on={!s.disabled} onClick={() => setDisabled(false)}>
-                      {t("settings.mcpEnable")}
-                    </button>
-                    <button type="button" data-on={s.disabled} onClick={() => setDisabled(true)}>
-                      {t("settings.mcpDisable")}
-                    </button>
-                  </div>
+                  <DefaultToggle disabled={s.disabled === true} onChange={setDisabled} />
                 ) : null}
               </>
             ) : null;
@@ -3604,11 +3647,7 @@ export function PageMCP({
               title={
                 <>
                   {s.name ?? "(anonymous)"}
-                  {s.builtin ? (
-                    <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
-                      · {t("settings.mcpBuiltinBadge")}
-                    </span>
-                  ) : null}
+                  {s.builtin ? <TitleNote>· {t("settings.mcpBuiltinBadge")}</TitleNote> : null}
                 </>
               }
             >
@@ -3684,6 +3723,7 @@ export function PagePlugins({
   plugins,
   onInstall,
   onUninstall,
+  onToggle,
   onRequest,
   mcpAuth,
   onConnectServer,
@@ -3693,6 +3733,8 @@ export function PagePlugins({
   plugins: PluginInfo[];
   onInstall: (source: string) => void;
   onUninstall: (name: string) => void;
+  /** Edit one plugin's Settings default: what a new chat's picker starts from. */
+  onToggle: (slug: string, disabled: boolean) => void;
   onRequest: () => void;
   mcpAuth: McpAuthStatus | null;
   onConnectServer: (name: string) => void;
@@ -3738,6 +3780,7 @@ export function PagePlugins({
             key={plugin.slug}
             plugin={plugin}
             onUninstall={onUninstall}
+            onToggle={onToggle}
             mcpAuth={mcpAuth}
             onConnectServer={onConnectServer}
             onCancelServerSignIn={onCancelServerSignIn}
@@ -3773,10 +3816,12 @@ export function PagePlugins({
   );
 }
 
-/** One installed plugin: its manifest facts, skills and MCP servers, plus removal. */
+/** One installed plugin: its manifest facts, skills and MCP servers, plus its Settings
+ *  default and removal. */
 function PluginCard({
   plugin,
   onUninstall,
+  onToggle,
   mcpAuth,
   onConnectServer,
   onCancelServerSignIn,
@@ -3784,6 +3829,7 @@ function PluginCard({
 }: {
   plugin: PluginInfo;
   onUninstall: (name: string) => void;
+  onToggle: (slug: string, disabled: boolean) => void;
   mcpAuth: McpAuthStatus | null;
   onConnectServer: (name: string) => void;
   onCancelServerSignIn: (name: string) => void;
@@ -3791,24 +3837,23 @@ function PluginCard({
 }) {
   const byline = [plugin.author, plugin.license, plugin.source].filter(Boolean).join(" | ");
   const headActions = (
-    <div className="seg-ctrl">
-      <button type="button" className="mcp-remove" onClick={() => onUninstall(plugin.slug)}>
-        {t("settings.pluginsRemove")}
-      </button>
-    </div>
+    <>
+      <RemoveAction label={t("settings.pluginsRemove")} onRemove={() => onUninstall(plugin.slug)} />
+      <DefaultToggle
+        disabled={plugin.disabled === true}
+        onChange={(disabled) => onToggle(plugin.slug, disabled)}
+      />
+    </>
   );
   return (
     <HeadActionCard
       title={
         <>
           {plugin.displayName}
-          <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>
-            - {pluginQualifier(plugin)}
-          </span>
+          <TitleNote>- {pluginQualifier(plugin)}</TitleNote>
+          {plugin.disabled ? <TitleNote>- {t("settings.pluginsOffByDefault")}</TitleNote> : null}
           {plugin.active ? (
-            <span style={{ color: "var(--accent)", marginLeft: 6, fontSize: 11 }}>
-              - {t("settings.pluginsActiveHere")}
-            </span>
+            <TitleNote tone="accent">- {t("settings.pluginsActiveHere")}</TitleNote>
           ) : null}
         </>
       }
@@ -4006,22 +4051,16 @@ function SkillCard({
   onUninstall: (name: string) => void;
 }) {
   const headActions = (
-    <div className="seg-ctrl">
-      <button type="button" className="mcp-remove" onClick={() => onUninstall(skill.id)}>
-        {t("settings.skillsRemove")}
-      </button>
-    </div>
+    <RemoveAction label={t("settings.skillsRemove")} onRemove={() => onUninstall(skill.id)} />
   );
   return (
     <HeadActionCard
       title={
         <>
           {skill.name}
-          <span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 11 }}>- {skill.id}</span>
+          <TitleNote>- {skill.id}</TitleNote>
           {skill.active ? (
-            <span style={{ color: "var(--accent)", marginLeft: 6, fontSize: 11 }}>
-              - {t("settings.skillsActiveHere")}
-            </span>
+            <TitleNote tone="accent">- {t("settings.skillsActiveHere")}</TitleNote>
           ) : null}
         </>
       }

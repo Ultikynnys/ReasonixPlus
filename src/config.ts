@@ -900,6 +900,9 @@ export interface ReasonixConfig {
   mcpOAuth?: Record<string, McpOAuthCreds>;
   /** Installed agent plugins, keyed by slug — one record per `~/.reasonix/plugins/<slug>`. */
   plugins?: Record<string, PluginRecord>;
+  /** Slugs switched off by default in Settings > Plugins. A new chat's capability picker
+   *  starts them off; a chat that already froze its set is unaffected. */
+  pluginsDisabled?: string[];
   session?: string | null;
   setupCompleted?: boolean;
   questionTimer?: boolean;
@@ -1376,6 +1379,7 @@ export function defaultConfigPath(): string {
 const STRING_ARRAY_FIELDS: Array<readonly string[]> = [
   ["mcp"],
   ["mcpDisabled"],
+  ["pluginsDisabled"],
   ["enabledModels"],
   ["fallbackModels"],
   ["recentWorkspaces"],

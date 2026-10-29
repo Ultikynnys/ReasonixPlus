@@ -2014,6 +2014,32 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
     });
   });
 
+  it("shows a $toast as a popover and never touches the transcript", () => {
+    const base = {
+      ...initialState(),
+      messages: [{ kind: "user" as const, text: "test?", clientId: "1", turn: 1 }],
+    };
+    const next = reduce(base, {
+      t: "incoming",
+      event: { type: "$toast", text: "skills_install: no SKILL.md in /tmp/x", severity: "error" },
+    });
+    expect(next.messages).toEqual(base.messages);
+    expect(next.toasts).toHaveLength(1);
+    expect(next.toasts[0]).toMatchObject({
+      text: "skills_install: no SKILL.md in /tmp/x",
+      severity: "error",
+    });
+    expect(reduce(next, { t: "dismiss_toast", id: next.toasts[0]?.id ?? 0 }).toasts).toEqual([]);
+  });
+
+  it("keeps the state object for a $toast that carries nothing", () => {
+    const base = initialState();
+    expect(reduce(base, { t: "incoming", event: { type: "$toast", text: "  ", severity: "info" } })).toBe(
+      base,
+    );
+    expect(reduce(base, { t: "dismiss_toast", id: 404 })).toBe(base);
+  });
+
   it("stores the per-tab subagent model from $settings and settings_patch", () => {
     // Each tab has its own reducer state — this locks in that the subagent
     // model is a per-tab field (not global), so different tabs can hold

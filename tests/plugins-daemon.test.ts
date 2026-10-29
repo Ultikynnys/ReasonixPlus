@@ -217,6 +217,30 @@ describe("pluginPrefill", () => {
     ]);
   });
 
+  it("starts a plugin Settings switched off off for a new chat", () => {
+    expect(
+      pluginPrefill(
+        [
+          { slug: "notfair", displayName: "NotFair", disabled: true },
+          { slug: "other", displayName: "Other", disabled: false },
+        ],
+        { subagents: false },
+      ),
+    ).toEqual([
+      { name: "notfair", displayName: "NotFair", enabled: false },
+      { name: "other", displayName: "Other", enabled: true },
+    ]);
+  });
+
+  it("lets a duplicate's frozen set win over the Settings default", () => {
+    expect(
+      pluginPrefill([{ slug: "notfair", displayName: "NotFair", disabled: true }], {
+        subagents: false,
+        plugins: ["notfair"],
+      }),
+    ).toEqual([{ name: "notfair", displayName: "NotFair", enabled: true }]);
+  });
+
   it("pins a duplicate to its source session's frozen set", () => {
     expect(pluginPrefill(installed, { subagents: false, plugins: ["notfair"] })).toEqual([
       { name: "notfair", displayName: "NotFair", enabled: true },

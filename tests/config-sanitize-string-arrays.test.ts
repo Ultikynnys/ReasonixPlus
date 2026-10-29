@@ -49,6 +49,12 @@ describe("readConfig — string[] field sanitization", () => {
     expect(cfg.mcpDisabled).toEqual(["fs", "remote"]);
   });
 
+  it("sanitizes pluginsDisabled[] the same way", () => {
+    writeFileSync(path, JSON.stringify({ pluginsDisabled: ["notfair", null, 3, "skills-pack"] }));
+    const cfg = readConfig(path);
+    expect(cfg.pluginsDisabled).toEqual(["notfair", "skills-pack"]);
+  });
+
   it("sanitizes recentWorkspaces[]", () => {
     writeFileSync(path, JSON.stringify({ recentWorkspaces: ["/a", 7, "/b"] }));
     const cfg = readConfig(path);

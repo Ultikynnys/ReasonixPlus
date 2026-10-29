@@ -8,12 +8,77 @@ import {
   deletableSessionNames,
   missingSessionRefusal,
   newAnsweredMutationLog,
+  runSessionClear,
   sessionRunningRefusal,
   sessionsWithLiveTurn,
   shouldDetachDeletedSession,
   skeletonSessionFor,
   tabNeedsWorkspace,
 } from "../src/cli/commands/desktop.js";
+
+describe("bulk session clear", () => {
+  it("answers requested deletions before a slow scan and clears each name once", async () => {
+    let finishScan!: (names: string[]) => void;
+    const scan = new Promise<string[]>((resolve) => {
+      finishScan = resolve;
+    });
+    const batches: string[][] = [];
+    const answers: string[] = [];
+    const clear = runSessionClear({
+      requested: ["a", "a", "running"],
+      list: () => scan,
+      clear: async (names) => {
+        batches.push(clearSessionPlan(names, new Set(["running"]), ["promised"]).doomed);
+      },
+      answer: () => answers.push("answered"),
+      failed: () => {
+        throw new Error("unexpected failure");
+      },
+    });
+    await Promise.resolve();
+    expect(batches).toEqual([["a"]]);
+    expect(answers).toEqual(["answered"]);
+    finishScan(["a", "b", "b", "running", "promised"]);
+    await clear;
+    expect(batches).toEqual([["a"], ["b"]]);
+    expect(answers).toEqual(["answered"]);
+  });
+
+  it("settles and reports failures in both phases", async () => {
+    const failures: string[] = [];
+    let answered = 0;
+    await runSessionClear({
+      requested: ["a"],
+      list: async () => {
+        throw new Error("scan failed");
+      },
+      clear: async () => {
+        throw new Error("delete failed");
+      },
+      answer: () => {
+        answered += 1;
+      },
+      failed: (stage, error) => failures.push(`${stage}: ${(error as Error).message}`),
+    });
+    expect(answered).toBe(1);
+    expect(failures).toEqual(["clear: delete failed", "list: scan failed"]);
+  });
+
+  it("reports a failed later batch after answering the requested batch", async () => {
+    const events: string[] = [];
+    await runSessionClear({
+      requested: ["a"],
+      list: async () => ["b"],
+      clear: async (names) => {
+        events.push(`clear ${names.join(",")}`);
+        if (names.includes("b")) throw new Error("denied");
+      },
+      answer: () => events.push("answer"),
+      failed: (stage) => events.push(`failed ${stage}`),
+    });
+    expect(events).toEqual(["clear a", "answer", "clear b", "failed clear"]);
+  });
+});
 
 describe("desktop session deletion synchronization", () => {
   it("detaches the backend-bound session after deleting the active session", () => {
@@ -147,7 +212,7 @@ describe("desktop — a row whose session is gone cannot be opened", () => {
       src.indexOf("function patchSessionMetaAndResync("),
     );
     expect(open).toContain("if (!sessionExists(name)) {");
-    expect(open).toContain("emitSessionsForWorkspace(tab.rootDir);");
+    expect(open).toContain("emitSessionsForWorkspace(tab.rootDir, undefined, { force: true });");
     expect(open.indexOf("if (!sessionExists(name))")).toBeLessThan(open.indexOf("bootstrapTab("));
   });
 });
@@ -264,6 +329,20 @@ describe("desktop — a session mutation owns its workspace while it settles", (
     expect(clear).toContain(".catch((err) => {");
     expect(clear.match(/publishSessionAnswer\(tab, \{ requestId \}\)/g)).toHaveLength(2);
     expect(clear).toContain("publishSessionAnswer(tab, known);");
+  });
+
+  it("processes requested sessions before the workspace sweep and suppresses concurrent retries", () => {
+    const clear = daemon.slice(
+      daemon.indexOf('if (msg.cmd === "session_clear") {'),
+      daemon.indexOf('if (msg.cmd === "session_rename") {'),
+    );
+    expect(clear.indexOf("if (clearingMutations.has(requestId)) return;")).toBeLessThan(
+      clear.indexOf("clearingMutations.add(requestId);"),
+    );
+    expect(clear).toContain("await runSessionClear({");
+    expect(clear).toContain("clearingMutations.delete(requestId);");
+    expect(clear).toContain("clearSessionPlan(candidates, running, declaredKeep)");
+    expect(clear).toContain("session_clear ${stage} failed:");
   });
 
   it("never lets a workspace refresh carry an answer, so a request answers once", () => {

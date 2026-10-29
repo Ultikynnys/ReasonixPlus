@@ -23,6 +23,7 @@ import { timestampSuffix } from "../memory/session.js";
 import { OPENCODE_REQUIRED_TOOL } from "../opencode-identity.js";
 import {
   NEGATIVE_CLAIM_RULE,
+  SHARED_WORKSPACE_SAFETY,
   TUI_FORMATTING_RULES,
   escalationContract,
 } from "../prompt-fragments.js";
@@ -724,7 +725,7 @@ export function registerSubagentTool(
   parentRegistry: ToolRegistry,
   opts: SubagentToolOptions,
 ): ToolRegistry {
-  const baseSystem = opts.defaultSystem ?? SUBAGENT_BASE_SYSTEM;
+  const baseSystem = `${opts.defaultSystem ?? SUBAGENT_BASE_SYSTEM}\n\n${SHARED_WORKSPACE_SAFETY}`;
   // Bake project memory into the default once — re-reading on every
   // spawn would (a) make the child prefix unstable when REASONIX.md
   // changes mid-session, defeating cache reuse across multiple

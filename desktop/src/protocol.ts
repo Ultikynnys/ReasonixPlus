@@ -71,6 +71,7 @@ import type {
   MentionResultsEvent,
   ModelEndpointInfo,
   NeedsSetupEvent,
+  NoticeSeverity,
   OllamaGenerationPatch,
   OllamaGenerationSettings,
   OllamaModelsEvent,
@@ -123,6 +124,7 @@ import type {
   TabOpenedEvent,
   TabStatusEvent,
   TabsSnapshotEvent,
+  ToastEvent,
   TurnCompleteEvent,
   TurnOutcome,
   TurnStartedEvent,
@@ -278,7 +280,8 @@ export type IncomingEvent = { tabId?: string } & (
   | ConnectedEvent
   | ReadyEvent
   | ProtocolErrorEvent
-  | { type: "$notice"; text: string; severity: "info" | "success" | "warning" | "error" }
+  | { type: "$notice"; text: string; severity: NoticeSeverity }
+  | ToastEvent
   | TurnCompleteEvent
   | TurnStartedEvent
   | TabStatusEvent

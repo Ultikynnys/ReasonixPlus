@@ -145,6 +145,10 @@ export interface StatusBarToggles {
 export type ConnectedEvent = { type: "$connected" };
 export type ReadyEvent = { type: "$ready" };
 export type ProtocolErrorEvent = { type: "$error"; message: string };
+/** Outcome of a Settings-owned action (install, uninstall, MCP spec edit). Shown as a
+ *  transient popover over the shell: the Settings page asked, so the chat transcript
+ *  must not receive the answer. */
+export type ToastEvent = { type: "$toast"; text: string; severity: NoticeSeverity };
 /** Terminal outcome of a turn. Drives whether the desktop shows success feedback
  *  or an explanatory stop card. */
 export type TurnOutcome = "success" | "stopped" | "failed" | "aborted";
@@ -527,6 +531,7 @@ export interface SessionMutationAnswer {
 
 export interface SessionsEvent {
   type: "$sessions";
+  workspaceDir?: string;
   /** Identifies the daemon lifetime that produced this snapshot. Shared by every
    *  channel of every workspace, so an epoch change means the daemon restarted. */
   epoch: string;
@@ -537,6 +542,9 @@ export interface SessionsEvent {
    *  initialise a workspace the client has never listed, and never advances
    *  `revision`, so a cache read can never outrank a settled snapshot. */
   primed?: boolean;
+  /** The scan failed and these rows are the last list the daemon knows. They settle
+   *  answers like any snapshot, but nothing in them was re-verified against the store. */
+  stale?: boolean;
   /** The requests whose outcome this snapshot publishes. This is the ONLY thing that
    *  settles a delete, clear or create the client asked for: a listing that merely
    *  omits or still holds a hidden name is some other request's truth, never this one's. */
@@ -666,7 +674,7 @@ export interface PluginServerInfo {
   status: McpSpecStatus;
   statusReason?: string;
   toolCount?: number;
-  /** True while the plugin or the server entry is disabled. */
+  /** True while this chat did not enable the plugin, or the server entry itself is off. */
   disabled?: boolean;
   /** Sign-in state of an HTTP/SSE server, read from the token store. Absent for stdio. */
   auth?: McpAuthState;
@@ -691,9 +699,12 @@ export interface PluginInfo {
   defaultPrompt: string[];
   /** Install source as recorded (git URL or local path). */
   source?: string;
-  /** True when THIS chat froze the plugin at its session-start confirm. Read-only:
-   *  enablement is chosen there, never from the settings page. */
+  /** True when THIS chat froze the plugin at its session-start confirm. Read-only here:
+   *  the card's Enable/Disable edits the default for later chats instead. */
   active: boolean;
+  /** Settings default, edited by the card's Enable/Disable control: true switches the
+   *  plugin off for chats created from now on. A chat's frozen set still decides. */
+  disabled?: boolean;
   /** Manifest read failure; the card still renders so the plugin can be removed. */
   error?: string;
   skills: PluginSkillInfo[];
@@ -744,7 +755,8 @@ export interface PluginSetupEntry {
   /** Plugin slug — the value the confirm freezes. */
   name: string;
   displayName: string;
-  /** Pre-filled state: on for a new chat, the source session's set for a duplicate. */
+  /** Pre-filled state: the Settings default for a new chat, or the source session's
+   *  frozen set for a duplicate. */
   enabled: boolean;
 }
 
@@ -1878,6 +1890,9 @@ export type OutgoingCommand = { tabId?: string } & (
   /** Install one plugin from `owner/repo`, a git URL, or a local directory path. */
   | { cmd: "plugins_install"; source: string }
   | { cmd: "plugins_uninstall"; name: string }
+  /** Edit one plugin's Settings default: the enablement a NEW chat starts from. A live
+   *  chat's frozen set is untouched, exactly like `mcp_specs_toggle`. */
+  | { cmd: "plugins_toggle"; slug: string; disabled: boolean }
   /** Standalone skill inventory for the Settings > Skills page. */
   | { cmd: "skills_get" }
   /** Install one skill, or every skill of a repository's `skills/` tree. */

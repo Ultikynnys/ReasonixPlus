@@ -5385,6 +5385,15 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   align-items: center;
   gap: 8px;
 }
+.ctx-memory-counts {
+  display: inline-flex;
+  flex-direction: column;
+  vertical-align: middle;
+  margin-left: 5px;
+  font-size: 9px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
 .ctx-tab:hover {
   color: var(--fg);
 }
@@ -11040,4 +11049,73 @@ html[data-platform="macos"] .splash {
   --spin-on: currentColor;
   --spin-off: color-mix(in oklch, currentColor 35%, transparent);
   flex-shrink: 0;
+}
+
+/* Settings-owned outcomes (install, uninstall, MCP spec edits): a popover stack over the
+   shell. The chat transcript is not the surface that asked for them. */
+.toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 48px;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.toast[data-tone="danger"] {
+  border-left-color: var(--danger);
+}
+
+.toast[data-tone="warning"] {
+  border-left-color: var(--warning);
+}
+
+.toast[data-tone="success"] {
+  border-left-color: var(--success);
+}
+
+.toast-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.toast-dismiss {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.toast-dismiss:hover {
+  background: var(--panel);
+  color: var(--text);
 }

@@ -145,6 +145,10 @@ export function ContextPanel({
   const enabledMcpServers = mcpSpecs.filter(
     (spec) => spec.status === "connected" && !spec.sessionDisabled,
   ).length;
+  const memoryCounts = { global: 0, project: 0 };
+  for (const entry of memory) {
+    if (entry.scope === "global" || entry.scope === "project") memoryCounts[entry.scope]++;
+  }
   const reserved = usage.reservedTokens;
   // What the reserved bucket is made of. Prompt is the remainder, so the three always add
   // up to `reserved` no matter which sections the prompt carries.
@@ -194,6 +198,18 @@ export function ContextPanel({
               </span>
             )}
             {t(tb.label)}
+            {tb.id === "memory" && (
+              <span className="ctx-memory-counts">
+                {(["global", "project"] as const).map((scope) => {
+                  const label = t(scope === "global" ? "contextPanel.scopeGlobal" : "contextPanel.scopeProject");
+                  return (
+                    <span key={scope} title={label} aria-label={`${label}: ${memoryCounts[scope]}`}>
+                      {memoryCounts[scope]}
+                    </span>
+                  );
+                })}
+              </span>
+            )}
           </div>
         ))}
       </div>

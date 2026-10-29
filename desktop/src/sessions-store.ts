@@ -36,6 +36,7 @@ export interface SessionsEntry {
   revision: number;
   /** True once an authoritative snapshot (not a primed cache read) landed. */
   confirmed: boolean;
+  retiredEpochs: ReadonlySet<string>;
   intents: readonly SessionIntent[];
 }
 
@@ -49,6 +50,7 @@ export interface SessionsSnapshot {
   items: readonly SessionInfo[];
   /** A cache read, not a scan: it may only be the first word on a workspace. */
   primed?: boolean;
+  stale?: boolean;
   /** The requests this snapshot answers. The daemon emits one per mutation. */
   answers?: readonly SessionMutationAnswer[];
 }
@@ -113,6 +115,7 @@ const EMPTY_ENTRY: SessionsEntry = {
   epoch: "",
   revision: 0,
   confirmed: false,
+  retiredEpochs: new Set(),
   intents: [],
 };
 
@@ -403,9 +406,12 @@ export function applySessionsSnapshot(
 ): SnapshotResult {
   const key = normalizeWorkspacePath(workspaceDir);
   const entry = entryFor(store, key);
+  if (entry.retiredEpochs.has(snapshot.epoch)) return { store, changed: false, answered: [] };
 
   if (snapshot.primed === true) {
-    if (entry.confirmed) return { store, changed: false, answered: [] };
+    if (entry.revision > 0 || (entry.epoch && entry.epoch !== snapshot.epoch)) {
+      return { store, changed: false, answered: [] };
+    }
     const items = keepRows(entry.items, snapshot.items, entry.intents);
     const sameEpoch = entry.epoch === snapshot.epoch;
     const sameRaw = sameSessionRows(entry.raw, snapshot.items);
@@ -430,7 +436,7 @@ export function applySessionsSnapshot(
         const answer = answers.get(intent.requestId);
         return answer === undefined ? [] : [{ request: intent.request, answer }];
       });
-  const newer = epochChanged || !entry.confirmed || snapshot.revision > entry.revision;
+  const newer = epochChanged || snapshot.revision > entry.revision;
   if (!newer && answered.length === 0) {
     return { store, changed: false, answered: [] };
   }
@@ -442,18 +448,28 @@ export function applySessionsSnapshot(
       if (!settled.has(intent.requestId)) openIntents.push(intent);
     }
   }
-  const items = keepRows(entry.items, snapshot.items, openIntents);
+  const useSnapshot = newer && (!snapshot.stale || entry.revision === 0 || epochChanged);
+  const raw = useSnapshot ? [...snapshot.items] : entry.raw;
+  const items = keepRows(entry.items, raw, openIntents);
+  const confirmed = newer ? snapshot.stale !== true : entry.confirmed;
   const next: SessionsEntry = {
-    raw: [...snapshot.items],
+    raw,
     items,
     epoch: snapshot.epoch,
-    revision: Math.max(entry.revision, snapshot.revision),
-    confirmed: true,
+    revision: epochChanged ? snapshot.revision : Math.max(entry.revision, snapshot.revision),
+    confirmed,
+    retiredEpochs:
+      epochChanged && entry.epoch
+        ? new Set([...entry.retiredEpochs, entry.epoch])
+        : entry.retiredEpochs,
     intents: openIntents,
   };
   return {
     store: writeEntry(store, key, next),
-    changed: items !== entry.items || !sameIntentIdentity(entry.intents, openIntents),
+    changed:
+      items !== entry.items ||
+      entry.confirmed !== confirmed ||
+      !sameIntentIdentity(entry.intents, openIntents),
     answered,
   };
 }

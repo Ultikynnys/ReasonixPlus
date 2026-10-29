@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginInfo } from "../protocol";
 import { PagePlugins } from "./settings";
@@ -56,6 +56,7 @@ function renderPage(
   const handlers = {
     onInstall: vi.fn(),
     onUninstall: vi.fn(),
+    onToggle: vi.fn(),
     onRequest: vi.fn(),
     onConnectServer: vi.fn(),
     onCancelServerSignIn: vi.fn(),
@@ -137,6 +138,37 @@ describe("PagePlugins", () => {
     const { onUninstall } = renderPage([plugin()]);
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(onUninstall).toHaveBeenCalledWith("notfair");
+  });
+
+  it("edits the Settings default from the card, the way an MCP server card does", () => {
+    const { onToggle } = renderPage([plugin()]);
+    fireEvent.click(screen.getByRole("button", { name: "Disable" }));
+    expect(onToggle).toHaveBeenLastCalledWith("notfair", true);
+    fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+    expect(onToggle).toHaveBeenLastCalledWith("notfair", false);
+  });
+
+  it("marks the segment the stored default selects", () => {
+    renderPage([plugin({ disabled: true, active: false })]);
+    expect(screen.getByRole("button", { name: "Disable" }).getAttribute("data-on")).toBe("true");
+    expect(screen.getByRole("button", { name: "Enable" }).getAttribute("data-on")).toBe("false");
+  });
+
+  it("sends the slug of the card that was clicked, not the first one", () => {
+    const { onToggle, container } = renderPage([
+      plugin({ slug: "notfair", displayName: "NotFair" }),
+      plugin({ slug: "other", displayName: "Other" }),
+    ]);
+    const cards = container.querySelectorAll(".provider-card");
+    fireEvent.click(within(cards[1] as HTMLElement).getByRole("button", { name: "Disable" }));
+    expect(onToggle).toHaveBeenLastCalledWith("other", true);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("says a plugin is off by default", () => {
+    renderPage([plugin({ disabled: true, active: false })]);
+    expect(screen.getByText(/off by default/)).toBeTruthy();
+    expect(screen.queryByText(/on in this chat/)).toBeNull();
   });
 
   it("marks a plugin this chat enabled, and leaves the rest unmarked", () => {

@@ -2,9 +2,10 @@
  *  a SKILL.md. Installation is global; a chat's enablement lives in its session meta. */
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { addGlobalPathAllowed, removeGlobalPathAllowed } from "../config.js";
 import {
+  INSTALL_SKIP_DIRS,
   type InstallCopy,
   type InstallSource,
   copyInstallSource,
@@ -20,6 +21,7 @@ import {
   isDirectory,
   isFile,
   readSkillDeclaration,
+  readSkillEntry,
 } from "./skill.js";
 
 export function skillsRoot(homeDir?: string): string {
@@ -105,6 +107,21 @@ function sourceName(source: InstallSource): string {
   return tail.replace(/\.git$/i, "");
 }
 
+/** A path inside a fetched tree, always slash-separated: the source label may be a URL, so
+ *  a platform separator would read as a mangled link in a failure message. */
+function treeRelative(path: string): string {
+  return path
+    .split(/[\\/]+/)
+    .filter(Boolean)
+    .join("/");
+}
+
+/** That path under the source's own label. */
+function treePath(label: string, path: string): string {
+  const rel = treeRelative(path);
+  return rel ? `${label.replace(/[\\/]+$/, "")}/${rel}` : label;
+}
+
 /** Skill directories inside a fetched tree: the tree itself when it holds a SKILL.md,
  *  otherwise one directory per skill under `skills/`. */
 function skillDirsIn(tree: string): string[] {
@@ -119,6 +136,48 @@ function skillDirsIn(tree: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** How deep below the source root a diagnostic scan looks: the root itself, a skill one
+ *  level down, and the grandchildren a `skills/` collection would hold. */
+const HINT_SCAN_DEPTH = 2;
+/** How many findings one failure message names before it stops being readable. */
+const HINT_LIMIT = 3;
+const ENTRY_LOOKALIKE = /^skill\.md/i;
+
+/** A directory the install never treats as a skill tree: what the copy already dropped
+ *  (build output, dependencies, VCS history) plus any dot-directory of its own. */
+function skippedTreeEntry(entry: string): boolean {
+  return INSTALL_SKIP_DIRS.has(entry) || entry.startsWith(".");
+}
+
+/** What a fetched tree holds instead of a usable entry file: a mistyped name, or a skill
+ *  one level too deep. Naming it turns "not there" into an instruction. */
+function missingEntryHints(dir: string, base: string, depth = 0): string[] {
+  if (depth > HINT_SCAN_DEPTH) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const hints: string[] = [];
+  for (const entry of entries) {
+    const path = join(dir, entry);
+    const rel = treeRelative(relative(base, path));
+    if (isDirectory(path)) {
+      if (!skippedTreeEntry(entry)) hints.push(...missingEntryHints(path, base, depth + 1));
+      continue;
+    }
+    if (entry === SKILL_ENTRY_FILE) {
+      if (depth > 0) {
+        hints.push(`${rel} (nested; point the source at ${treeRelative(relative(base, dir))})`);
+      }
+      continue;
+    }
+    if (ENTRY_LOOKALIKE.test(entry)) hints.push(`${rel} (rename it to ${SKILL_ENTRY_FILE})`);
+  }
+  return hints.slice(0, HINT_LIMIT);
 }
 
 /** Install one skill (a directory or repo holding SKILL.md) or a whole `skills/` tree.
@@ -136,15 +195,20 @@ export async function installSkills(
     await (opts.copy ?? copyInstallSource)(normalized, staging);
     const dirs = skillDirsIn(staging);
     if (dirs.length === 0) {
+      const hints = missingEntryHints(staging, staging);
       throw new Error(
-        `no ${SKILL_ENTRY_FILE} in ${normalized.label} (expected one at the root, or one per directory under ${DEFAULT_SKILLS_DIR}/)`,
+        hints.length > 0
+          ? `no ${SKILL_ENTRY_FILE} in ${normalized.label}; found ${hints.join(", ")}`
+          : `no ${SKILL_ENTRY_FILE} in ${normalized.label} (expected one at the root, or one per directory under ${DEFAULT_SKILLS_DIR}/)`,
       );
     }
     const targets = dirs.map((dir) => {
       const fallback = dir === staging ? sourceName(normalized) : basename(dir);
-      const declared = readSkillDeclaration(dir, storeSlug(fallback) || "skill");
-      if (!declared) throw new Error(`${join(dir, SKILL_ENTRY_FILE)} cannot be read`);
-      return { dir, id: storeSlug(declared.name) || storeSlug(fallback) || "skill" };
+      const entryPath = treePath(normalized.label, relative(staging, join(dir, SKILL_ENTRY_FILE)));
+      const entry = readSkillEntry(dir, storeSlug(fallback) || "skill");
+      if (!entry) throw new Error(`${entryPath} cannot be read`);
+      if (entry.empty) throw new Error(`${entryPath} is empty; write what the skill does`);
+      return { dir, id: storeSlug(entry.declaration.name) || storeSlug(fallback) || "skill" };
     });
     const ids = new Set<string>();
     for (const target of targets) {

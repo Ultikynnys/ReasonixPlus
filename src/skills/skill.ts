@@ -59,9 +59,17 @@ export function isFile(path: string): boolean {
   }
 }
 
+/** One skill directory's entry file, read once: what it declares, and whether it says
+ *  anything at all. */
+export interface SkillEntry {
+  declaration: SkillDeclaration;
+  /** SKILL.md holds only whitespace, so nothing can be advertised or followed. */
+  empty: boolean;
+}
+
 /** Read one skill directory's SKILL.md. `null` when the directory holds no entry file or
  *  it cannot be read: a broken skill is skipped, never fatal to its siblings. */
-export function readSkillDeclaration(entryDir: string, id: string): SkillDeclaration | null {
+export function readSkillEntry(entryDir: string, id: string): SkillEntry | null {
   const entryFile = join(entryDir, SKILL_ENTRY_FILE);
   if (!isFile(entryFile)) return null;
   let head: string;
@@ -72,7 +80,15 @@ export function readSkillDeclaration(entryDir: string, id: string): SkillDeclara
   }
   const { data, body } = parseFrontmatter(head);
   return {
-    name: (data.name ?? "").trim() || id,
-    description: skillSummary((data.description ?? "").trim() || firstBodyLine(body)),
+    declaration: {
+      name: (data.name ?? "").trim() || id,
+      description: skillSummary((data.description ?? "").trim() || firstBodyLine(body)),
+    },
+    empty: head.trim() === "",
   };
+}
+
+/** The facts alone, for the readers that do not care whether the file has content. */
+export function readSkillDeclaration(entryDir: string, id: string): SkillDeclaration | null {
+  return readSkillEntry(entryDir, id)?.declaration ?? null;
 }

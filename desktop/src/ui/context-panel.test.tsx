@@ -464,6 +464,51 @@ describe("ContextPanel MCP tab count", () => {
   });
 });
 
+describe("ContextPanel memory counts", () => {
+  it("shows global and project counts and updates them when entries change", () => {
+    const props = {
+      settings,
+      usage,
+      mcpSpecs: [],
+      mcpBridged: false,
+      sessionFiles: [],
+      memoryDetail: null,
+      memoryResult: null,
+      onReadMemory: () => {},
+      onWriteMemory: () => {},
+      onDeleteMemory: () => {},
+      onDismissMemoryResult: () => {},
+    };
+    const global = {
+      kind: "global_file" as const,
+      scope: "global" as const,
+      name: "one",
+      path: "/one",
+      description: "one",
+      type: "freeform",
+    };
+    const project = {
+      kind: "structured" as const,
+      scope: "project" as const,
+      name: "two",
+      path: "/two",
+      description: "two",
+      type: "project",
+    };
+    const { container, rerender } = render(
+      <ContextPanel {...props} memory={[global, project, { ...project, path: "/three" }]} />,
+    );
+    const counts = container.querySelector(".ctx-memory-counts");
+    expect(counts?.children[0]).toBe(screen.getByLabelText("global: 1"));
+    expect(counts?.children[1]).toBe(screen.getByLabelText("project: 2"));
+    fireEvent.click(counts as Element);
+    expect(screen.getByText("one")).toBeTruthy();
+    rerender(<ContextPanel {...props} memory={[]} />);
+    expect(screen.getByLabelText("global: 0").textContent).toBe("0");
+    expect(screen.getByLabelText("project: 0").textContent).toBe("0");
+  });
+});
+
 describe("ContextPanel MCP list", () => {
   it("lists only the servers enabled for this session, hiding session-disabled ones", () => {
     const spec = (name: string, patch: Partial<McpSpecInfo> = {}): McpSpecInfo => ({
@@ -493,7 +538,7 @@ describe("ContextPanel plan tab", () => {
       "Files",
       "Parameters",
       "MCP",
-      "Memory",
+      "Memory00",
       "Rules",
       "Plan",
       "Events",

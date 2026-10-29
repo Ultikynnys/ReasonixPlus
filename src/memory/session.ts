@@ -14,7 +14,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { dirname, join, posix as posixPath, win32 as win32Path } from "node:path";
 import {
   DAY_MS,
@@ -832,7 +832,15 @@ export async function listSessionNamesForWorkspaceAsync(
 ): Promise<string[]> {
   const want = normalizeWorkspace(workspace);
   const legacyPrefix = legacySessionPrefixForWorkspace(workspace);
-  const names = listSessionDirs().map(({ name }) => name);
+  let names: string[];
+  try {
+    names = (await readdir(sessionsDir(), { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+      .map((entry) => entry.name);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
   const out: string[] = [];
   for (let start = 0; start < names.length; start += chunkSize) {
     const chunk = names.slice(start, start + chunkSize);
@@ -922,14 +930,19 @@ function toWorkspaceSessions(
     .sort(sortSessionsDescending);
 }
 
-export function listSessionsForWorkspaceAsync(workspace: string): {
+export function listSessionsForWorkspaceAsync(
+  workspace: string,
+  force = false,
+): {
   value: Promise<SessionInfo[]>;
   /** Last-known list read from the index cache without revalidating, or null when
    *  no cache exists. Lets a caller paint the sidebar before the scan finishes. */
   cached: Promise<SessionInfo[] | null>;
   cache: "hit" | "refresh" | "inflight";
 } {
-  const request = sessionDirectoryIndex.load();
+  const request = force
+    ? { cache: "refresh" as const, value: sessionDirectoryIndex.forceLoad() }
+    : sessionDirectoryIndex.load();
   const want = normalizeWorkspace(workspace);
   const legacyPrefix = legacySessionPrefixForWorkspace(workspace);
   return {
@@ -950,6 +963,21 @@ export async function listSessionsForWorkspaceCurrent(workspace: string): Promis
   const want = normalizeWorkspace(workspace);
   const legacyPrefix = legacySessionPrefixForWorkspace(workspace);
   return toWorkspaceSessions(await sessionDirectoryIndex.currentList(), want, legacyPrefix);
+}
+
+/** One workspace's last-known list for a listing that could not revalidate: the records
+ *  this process already indexed, else the persisted cache. Null means there is nothing
+ *  to show, which is the only case that deserves an error. */
+export async function listSessionsForWorkspaceLastKnown(
+  workspace: string,
+): Promise<SessionInfo[] | null> {
+  const records = await sessionDirectoryIndex.snapshot();
+  if (records === null) return null;
+  return toWorkspaceSessions(
+    records,
+    normalizeWorkspace(workspace),
+    legacySessionPrefixForWorkspace(workspace),
+  );
 }
 
 export function legacySessionPrefixForWorkspace(workspace: string): string {

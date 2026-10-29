@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +17,7 @@ import {
   listPlugins,
   pluginSkills,
   pluginsRoot,
+  setPluginDisabled,
   syncPluginServers,
   uninstallPlugin,
 } from "../src/plugins/store.js";
@@ -33,6 +42,17 @@ function escapeRegExp(value: string): string {
 
 function install(source = fixture, copy = copyFixture) {
   return installPlugin(source, { homeDir: home, configPath, copy });
+}
+
+/** Install a second, serverless plugin under its own name, so a test can tell two
+ *  slugs apart. */
+async function installNamed(name: string) {
+  const source = join(work, name);
+  writePluginTree(source, { name, servers: false });
+  return install(
+    source,
+    copyTree(() => source),
+  );
 }
 
 beforeEach(() => {
@@ -131,14 +151,63 @@ describe("listPlugins", () => {
   });
 });
 
+describe("setPluginDisabled", () => {
+  it("records the slug and lets a new chat's picker start it off", async () => {
+    await install();
+    expect(setPluginDisabled("notfair", true, { homeDir: home, configPath })).toBe(true);
+    expect(readConfig(configPath).pluginsDisabled).toEqual(["notfair"]);
+    expect(listPlugins({ homeDir: home, configPath })[0]?.disabled).toBe(true);
+  });
+
+  it("clears the entry when the plugin is switched back on", async () => {
+    await install();
+    setPluginDisabled("notfair", true, { homeDir: home, configPath });
+    expect(setPluginDisabled("notfair", false, { homeDir: home, configPath })).toBe(true);
+    expect(readConfig(configPath).pluginsDisabled).toBeUndefined();
+    expect(listPlugins({ homeDir: home, configPath })[0]?.disabled).toBe(false);
+  });
+
+  it("refuses a slug nothing is installed under", () => {
+    expect(setPluginDisabled("ghost", true, { homeDir: home, configPath })).toBe(false);
+    expect(readConfig(configPath).pluginsDisabled).toBeUndefined();
+  });
+
+  it("keys the default on the on-disk slug, not on a caller's casing", async () => {
+    await install();
+    expect(setPluginDisabled("NotFair", true, { homeDir: home, configPath })).toBe(false);
+    expect(readConfig(configPath).pluginsDisabled).toBeUndefined();
+  });
+
+  it("answers a default already in force without rewriting the config", async () => {
+    await install();
+    // Compact JSON stays compact only if nothing writes the file: writeConfig indents.
+    const compact = JSON.stringify(readConfig(configPath));
+    writeFileSync(configPath, compact);
+    expect(setPluginDisabled("notfair", false, { homeDir: home, configPath })).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(compact);
+  });
+
+  it("keeps the other plugins' defaults when one changes", async () => {
+    await install();
+    await installNamed("second");
+    setPluginDisabled("notfair", true, { homeDir: home, configPath });
+    setPluginDisabled("second", true, { homeDir: home, configPath });
+    setPluginDisabled("notfair", false, { homeDir: home, configPath });
+    expect(readConfig(configPath).pluginsDisabled).toEqual(["second"]);
+  });
+
+  it("drops the default with the plugin, so a reinstall starts enabled", async () => {
+    await install();
+    setPluginDisabled("notfair", true, { homeDir: home, configPath });
+    uninstallPlugin("notfair", { homeDir: home, configPath });
+    expect(readConfig(configPath).pluginsDisabled).toBeUndefined();
+  });
+});
+
 describe("pluginSkills", () => {
   it("returns only the skills of the slugs a session froze", async () => {
     await install();
-    writePluginTree(join(work, "second"), { name: "second", servers: false });
-    await install(
-      join(work, "second"),
-      copyTree(() => join(work, "second")),
-    );
+    await installNamed("second");
     const chosen = pluginSkills({ homeDir: home, configPath, only: ["notfair"] });
     expect(chosen.map((skill) => skill.plugin)).toEqual(SKILLS.map(() => "notfair"));
     expect(chosen.map((skill) => skill.name)).toEqual(SKILLS);
@@ -155,11 +224,7 @@ describe("pluginSkills", () => {
 
   it("never reads a plugin the session did not freeze, even a broken one", async () => {
     await install();
-    writePluginTree(join(work, "broken"), { name: "broken", servers: false });
-    await install(
-      join(work, "broken"),
-      copyTree(() => join(work, "broken")),
-    );
+    await installNamed("broken");
     writeFileSync(join(pluginsRoot(home), "broken", ".codex-plugin", "plugin.json"), "{", "utf8");
     const chosen = pluginSkills({ homeDir: home, configPath, only: ["notfair"] });
     expect(chosen.map((skill) => skill.plugin)).toEqual(SKILLS.map(() => "notfair"));
@@ -215,6 +280,7 @@ describe("syncPluginServers", () => {
       skills: [],
       servers: { [slug]: { url: "https://example.com/mcp", type: "http", plugin: slug } },
       record: undefined,
+      disabled: false,
     };
   }
 

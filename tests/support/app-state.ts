@@ -64,6 +64,7 @@ export function baseAppState(overrides: Partial<AppState> = {}): AppState {
     memory: [],
     memoryDetail: null,
     memoryResult: null,
+    toasts: [],
     jobs: [],
     lastTurnOutcome: null,
     queuedSends: [],

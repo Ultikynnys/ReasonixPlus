@@ -41,7 +41,8 @@ export function pluginsRoot(homeDir?: string): string {
 }
 
 /** One installed plugin as the store sees it: manifest, skills and MCP entries.
- *  Enablement is a session capability, so it is deliberately absent here. */
+ *  Whether a chat may use it is frozen per session, so `disabled` here is only the
+ *  Settings default a new chat's picker starts from. */
 export interface PluginState {
   slug: string;
   dir: string;
@@ -50,11 +51,18 @@ export interface PluginState {
   /** Config entries this plugin owns, keyed by namespaced server name. */
   servers: Record<string, McpServerConfig>;
   record: PluginRecord | undefined;
+  /** Settings default: true while the plugin is switched off for chats created later. */
+  disabled: boolean;
   /** Set when the manifest or its MCP file could not be read. */
   error?: string;
 }
 
-function stateOf(slug: string, dir: string, record: PluginRecord | undefined): PluginState | null {
+function stateOf(
+  slug: string,
+  dir: string,
+  record: PluginRecord | undefined,
+  disabled: boolean,
+): PluginState | null {
   let manifest: PluginManifest;
   try {
     manifest = readPluginManifest(dir);
@@ -66,6 +74,7 @@ function stateOf(slug: string, dir: string, record: PluginRecord | undefined): P
       skills: [],
       servers: {},
       record,
+      disabled,
       error: (err as Error).message,
     };
   }
@@ -83,6 +92,7 @@ function stateOf(slug: string, dir: string, record: PluginRecord | undefined): P
     skills: indexPluginSkills(dir, manifest),
     servers,
     record,
+    disabled,
     ...(error ? { error } : {}),
   };
 }
@@ -101,9 +111,13 @@ function configOf(opts: PluginLookupOptions): ReasonixConfig {
   return opts.cfg ?? readConfig(opts.configPath);
 }
 
-/** Slugs with an installed directory, sorted. Unreadable entries are skipped. */
-function installedSlugs(root: string, only?: readonly string[]): string[] {
-  if (only) return [...new Set(only)].filter(isSafeStoreId).sort();
+/** Slugs Settings switched off: the enablement a new chat's picker starts from. */
+function disabledSlugs(cfg: ReasonixConfig): Set<string> {
+  return new Set(cfg.pluginsDisabled ?? []);
+}
+
+/** Names under the plugin root that could be slugs, sorted. */
+function storeNames(root: string): string[] {
   if (!existsSync(root)) return [];
   try {
     return readdirSync(root).filter(isSafeStoreId).sort();
@@ -112,19 +126,30 @@ function installedSlugs(root: string, only?: readonly string[]): string[] {
   }
 }
 
+/** A real plugin directory, not a stray file that happens to be named like one. */
+function isPluginDir(dir: string): boolean {
+  try {
+    return statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Slugs with an installed plugin directory: the ONE definition of "installed" the
+ *  inventory, the Settings default and a session's skill index all decide by. */
+function installedSlugs(root: string, only?: readonly string[]): string[] {
+  const names = only ? [...new Set(only)].filter(isSafeStoreId).sort() : storeNames(root);
+  return names.filter((name) => isPluginDir(join(root, name)));
+}
+
 /** Every plugin on disk, sorted by slug. Records the store no longer knows are ignored. */
 export function listPlugins(opts: PluginLookupOptions = {}): PluginState[] {
   const cfg = configOf(opts);
+  const disabled = disabledSlugs(cfg);
   const root = pluginsRoot(opts.homeDir);
   const states: PluginState[] = [];
   for (const name of installedSlugs(root, opts.only)) {
-    const dir = join(root, name);
-    try {
-      if (!statSync(dir).isDirectory()) continue;
-    } catch {
-      continue;
-    }
-    const state = stateOf(name, dir, cfg.plugins?.[name]);
+    const state = stateOf(name, join(root, name), cfg.plugins?.[name], disabled.has(name));
     if (state) states.push(state);
   }
   return states;
@@ -246,11 +271,35 @@ export function uninstallPlugin(slug: string, opts: PluginStoreOptions = {}): vo
       for (const name of signedIn) delete cfg.mcpOAuth[name];
       if (Object.keys(cfg.mcpOAuth).length === 0) cfg.mcpOAuth = undefined;
     }
+    // A stale default would silently switch off a reinstall under the same slug.
+    const off = cfg.pluginsDisabled?.filter((name) => name !== slug) ?? [];
+    cfg.pluginsDisabled = off.length > 0 ? off : undefined;
     syncPluginServers(cfg, listPlugins({ homeDir: opts.homeDir, cfg }));
     writeConfig(cfg, opts.configPath);
   } finally {
     removeGlobalPathAllowed(dir, opts.configPath);
   }
+}
+
+/** Edit one installed plugin's Settings default. Returns false for a slug nothing is
+ *  installed under, so a caller reports that instead of writing a stale entry. */
+export function setPluginDisabled(
+  slug: string,
+  disabled: boolean,
+  opts: PluginStoreOptions = {},
+): boolean {
+  const root = pluginsRoot(opts.homeDir);
+  // The exact on-disk name: a differently-cased slug would key an entry nothing reads.
+  if (!installedSlugs(root).includes(slug)) return false;
+  const cfg = readConfig(opts.configPath);
+  const off = disabledSlugs(cfg);
+  // An unchanged default writes nothing: a rewrite invalidates every reader's config cache.
+  if (off.has(slug) === disabled) return true;
+  if (disabled) off.add(slug);
+  else off.delete(slug);
+  cfg.pluginsDisabled = off.size > 0 ? [...off].sort() : undefined;
+  writeConfig(cfg, opts.configPath);
+  return true;
 }
 
 /** Skills a session's frozen plugin set contributes, in slug order. Only the chosen

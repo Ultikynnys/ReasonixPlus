@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as configModule from "../src/config.js";
 import { loadGlobalPathAllowed } from "../src/config.js";
-import { copyInstallSource } from "../src/install/source.js";
+import { type InstallCopy, copyInstallSource } from "../src/install/source.js";
 import {
   installSkills,
   listSkills,
@@ -80,6 +80,63 @@ describe("installSkills", () => {
 
     await expect(install(source)).rejects.toThrow(/no SKILL\.md/);
     expect(existsSync(skillsRoot(home)) ? listSkills({ homeDir: home }) : []).toEqual([]);
+  });
+
+  it("names a file that is not called SKILL.md", async () => {
+    const source = join(work, "note-folder");
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, "SKILL.md.txt"), "# a skill saved as text", "utf8");
+
+    await expect(install(source)).rejects.toThrow(/SKILL\.md\.txt \(rename it to SKILL\.md\)/);
+    expect(listSkills({ homeDir: home })).toEqual([]);
+  });
+
+  it("names a skill that sits one level too deep", async () => {
+    const source = join(work, "notes");
+    writeSkillDir(join(source, "job-search"), { name: "job-search" });
+
+    await expect(install(source)).rejects.toThrow(
+      /job-search[\\/]SKILL\.md \(nested; point the source at job-search\)/,
+    );
+    expect(listSkills({ homeDir: home })).toEqual([]);
+  });
+
+  it("refuses an empty SKILL.md and leaves nothing behind", async () => {
+    const source = join(work, "blank");
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, "SKILL.md"), "  \n\n", "utf8");
+
+    await expect(install(source)).rejects.toThrow(/SKILL\.md is empty/);
+    expect(listSkills({ homeDir: home })).toEqual([]);
+  });
+
+  it("names an empty entry the way a git source was typed, URL intact", async () => {
+    const copy: InstallCopy = (_source, target) => {
+      mkdirSync(join(target, "skills", "job-search"), { recursive: true });
+      writeFileSync(join(target, "skills", "job-search", "SKILL.md"), "\n", "utf8");
+    };
+
+    await expect(install("owner/repo", copy)).rejects.toThrow(
+      /https:\/\/github\.com\/owner\/repo\/skills\/job-search\/SKILL\.md is empty/,
+    );
+  });
+
+  it("names a mistyped entry inside a skills/ tree", async () => {
+    const repo = join(work, "repo");
+    mkdirSync(join(repo, "skills", "seo"), { recursive: true });
+    writeFileSync(join(repo, "skills", "seo", "SKILL.md.txt"), "# saved as text", "utf8");
+
+    await expect(install(repo)).rejects.toThrow(
+      /skills[\\/]seo[\\/]SKILL\.md\.txt \(rename it to SKILL\.md\)/,
+    );
+  });
+
+  it("does not mine a clone's .git for lookalikes", async () => {
+    const repo = join(work, "repo");
+    mkdirSync(join(repo, ".git", "hooks"), { recursive: true });
+    writeFileSync(join(repo, ".git", "hooks", "SKILL.md.sample"), "x", "utf8");
+
+    await expect(install(repo)).rejects.toThrow(/expected one at the root/);
   });
 
   it("refuses an id that is already installed and installs none of the batch", async () => {

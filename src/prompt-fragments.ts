@@ -18,6 +18,8 @@ export function escalationContract(modelId: string): string {
 /** Backward-compatible export retained for public API consumers. */
 export const ESCALATION_CONTRACT = escalationContract("deepseek-v4-flash");
 
+export const SHARED_WORKSPACE_SAFETY = `Multiple agents or the user may change the same workspace concurrently. Treat unexpected changes, including files appearing or disappearing, as someone else's work unless verified otherwise. Preserve them and use minimal, non-destructive edits against current file contents. Never use git stash or git stash pop. Do not revert, reset, clean, overwrite, or delete unrelated work. If a conflict prevents a safe edit, stop and ask the user.`;
+
 export const NEGATIVE_CLAIM_RULE = `Negative claims ("X is missing", "Y isn't implemented") are the #1 hallucination shape: they feel safe because no citation seems possible, which is exactly why they must not be instinct.
 
 With a search tool (\`search_content\`, \`grep\`, web search), search FIRST:

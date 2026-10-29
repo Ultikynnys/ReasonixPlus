@@ -13,6 +13,10 @@ const PARALLEL_READS = 32;
 /** How many times to rescan a session file that keeps changing under us (its own
  *  live turn appending) before recording the best-effort count. */
 const SESSION_CHANGE_RETRIES = 3;
+/** Attempts at reading one session before its record is carried over unchanged. A
+ *  descriptor a filter driver or a concurrent delete invalidated usually works on the
+ *  next tick, and one unreadable folder must never fail the whole listing. */
+const SESSION_READ_ATTEMPTS = 2;
 
 export interface SessionFileIdentity {
   dev: string;
@@ -133,6 +137,16 @@ function toRecord<M>(record: PersistedSessionIndexRecord<M>): SessionDirectoryRe
   };
 }
 
+/** Releases a transcript handle without failing its caller: a descriptor that was
+ *  already released underneath the scan says nothing about the bytes it read. */
+async function closeQuietly(handle: Awaited<ReturnType<typeof open>>): Promise<void> {
+  try {
+    await handle.close();
+  } catch (error) {
+    process.stderr.write(`reasonix: session handle release failed: ${messageOf(error)}\n`);
+  }
+}
+
 async function countLines(
   handle: Awaited<ReturnType<typeof open>>,
   start: number,
@@ -183,6 +197,7 @@ export class SessionDirectoryIndex<M> {
   private editSeq = 0;
   private settling: Promise<readonly SessionDirectoryRecord<M>[]> | null = null;
   private persistQueued = false;
+  private forcedRefresh: Promise<readonly SessionDirectoryRecord<M>[]> | null = null;
 
   constructor(
     private readonly directory: () => string,
@@ -223,6 +238,19 @@ export class SessionDirectoryIndex<M> {
     });
     this.inflight = { generation, value: request };
     return { value: request, cache: "refresh" };
+  }
+
+  forceLoad(): Promise<readonly SessionDirectoryRecord<M>[]> {
+    if (this.forcedRefresh) return this.forcedRefresh;
+    const work = (async () => {
+      if (this.inflight) await this.inflight.value.catch(() => undefined);
+      this.invalidate();
+      return this.load().value;
+    })();
+    this.forcedRefresh = work.finally(() => {
+      this.forcedRefresh = null;
+    });
+    return this.forcedRefresh;
   }
 
   /** What is already known without revalidating: the in-memory set once loaded,
@@ -319,18 +347,9 @@ export class SessionDirectoryIndex<M> {
     await Promise.all(
       reread.map(async (name) => {
         const path = this.messagesPath(name);
-        try {
-          this.records.set(path, await this.readRecord(path, name, this.records.get(path)));
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") this.records.delete(path);
-          // One unreadable session must not fail the listing the caller asked for:
-          // its previous record already describes it as well as the walk would.
-          else {
-            process.stderr.write(
-              `reasonix: session index update skipped for "${name}": ${messageOf(error)}\n`,
-            );
-          }
-        }
+        const record = await this.readRecordLenient(path, name);
+        if (record === null) this.records.delete(path);
+        else this.records.set(path, record);
       }),
     );
     // Edits recorded while this pass ran stay pending for the next one.
@@ -382,12 +401,8 @@ export class SessionDirectoryIndex<M> {
         if (index >= files.length) return;
         const name = files[index]!;
         const path = join(this.directory(), name, SESSION_MESSAGES_FILENAME);
-        try {
-          results[index] = await this.readRecord(path, name, this.records.get(path));
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-          throw error;
-        }
+        const record = await this.readRecordLenient(path, name);
+        if (record !== null) results[index] = record;
       }
     });
     await Promise.all(workers);
@@ -508,6 +523,29 @@ export class SessionDirectoryIndex<M> {
     this.records = records;
     this.refreshedAt = this.now();
     this.loaded = true;
+  }
+
+  /** Reads one session without letting it fail the listing: an unreadable transcript keeps
+   *  its previous record, and one the index never saw returns null. */
+  private async readRecordLenient(
+    path: string,
+    name: string,
+  ): Promise<SessionDirectoryRecord<M> | null> {
+    const previous = this.records.get(path);
+    let failure: unknown;
+    for (let attempt = 0; attempt < SESSION_READ_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.readRecord(path, name, previous);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        failure = error;
+        if (attempt + 1 < SESSION_READ_ATTEMPTS) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      }
+    }
+    process.stderr.write(`reasonix: session index skipped for "${name}": ${messageOf(failure)}\n`);
+    return previous ?? null;
   }
 
   private async readRecord(
@@ -644,7 +682,7 @@ export class SessionDirectoryIndex<M> {
         metaIdentity: nextMetaIdentity,
       };
     } finally {
-      await handle.close();
+      await closeQuietly(handle);
     }
   }
 }

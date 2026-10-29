@@ -322,7 +322,8 @@
     "pluginsInstallButton": "Install",
     "pluginsRemove": "Remove",
     "pluginsActiveHere": "on in this chat",
-    "pluginsPerSession": "Plugins install here for every workspace. Which ones a chat may use is chosen when that chat starts, like MCP servers: the choice is frozen for the session so installing or removing one never invalidates a running conversation's cache.",
+    "pluginsOffByDefault": "off by default",
+    "pluginsPerSession": "Plugins install here for every workspace. Enable or Disable sets the default a new chat starts from; like MCP servers, the set a chat may use is chosen when that chat starts, and the choice is frozen for the session so installing or removing one never invalidates a running conversation's cache.",
     "pluginsNoDescription": "No description declared",
     "pluginsManifestError": "manifest error: {error}",
     "pluginsSkills": "Skills ({count})",
@@ -507,7 +508,9 @@
       "subagentModelSwitched": "Subagent model → {model}",
       "effortSwitched": "Effort → {effort}",
       "modeSwitched": "Mode: {mode}",
-      "taskComplete": "Task complete"
+      "taskComplete": "Task complete",
+      "region": "Settings notifications",
+      "dismiss": "Dismiss notification"
     },
     "neverAskRules": {
       "toast": "Never Ask: operations auto-run without a prompt (Outlook sends still ask)"
@@ -590,6 +593,7 @@
     },
     "deleteRunningRefused": "That session is running. Stop its agent first, then delete it.",
     "sessionMutationUnconfirmed": "The backend never confirmed that session change. The list may be out of date; try again.",
+    "sessionsUnconfirmed": "Session list is not verified.",
     "workspaceBusyNotice": "A session here is being created or deleted. Wait for it to finish, then change the workspace.",
     "creatingSession": "Creating session…",
     "setup": {

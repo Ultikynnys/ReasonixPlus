@@ -67,6 +67,36 @@ afterEach(async () => {
   );
 });
 
+describe("SessionDirectoryIndex forced reconciliation", () => {
+  it("observes external additions and removals within the cache TTL", async () => {
+    const dir = await fixture();
+    await seedSession(dir, "one", "a\n");
+    const index = new SessionDirectoryIndex(
+      () => dir,
+      () => ({}),
+      60_000,
+    );
+    expect((await index.load().value).map((record) => record.name)).toEqual(["one"]);
+    await rm(join(dir, "one"), { recursive: true, force: true });
+    await seedSession(dir, "two", "b\n");
+    expect((await index.load().value).map((record) => record.name)).toEqual(["one"]);
+    expect((await index.forceLoad()).map((record) => record.name)).toEqual(["two"]);
+  });
+
+  it("coalesces simultaneous forced scans", async () => {
+    const dir = await fixture();
+    await seedSession(dir, "one", "a\n");
+    const index = new SessionDirectoryIndex(
+      () => dir,
+      () => ({}),
+      60_000,
+    );
+    const first = index.forceLoad();
+    expect(index.forceLoad()).toBe(first);
+    expect((await first).map((record) => record.name)).toEqual(["one"]);
+  });
+});
+
 describe("SessionDirectoryIndex concurrent-write resilience", () => {
   it("does not fail the listing when a live session appends mid-scan", async () => {
     const dir = await fixture();

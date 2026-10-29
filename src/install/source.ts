@@ -7,8 +7,16 @@ import { resolve } from "node:path";
 
 /** Clone budget: an install source is small, but a cold clone on a slow link is not. */
 const CLONE_TIMEOUT_MS = 180_000;
-/** Local installs never carry build output or VCS history into a store. */
-const LOCAL_COPY_SKIP = new Set([".git", "node_modules", ".turbo", "dist", "coverage"]);
+/** Directories an install never carries into a store: VCS history, build output, and the
+ *  dependency trees a skill or plugin never needs. The one list both the local copy and a
+ *  store's tree scan skip, so neither can inspect what the other dropped. */
+export const INSTALL_SKIP_DIRS: ReadonlySet<string> = new Set([
+  ".git",
+  "node_modules",
+  ".turbo",
+  "dist",
+  "coverage",
+]);
 
 export type InstallSource =
   | { kind: "git"; url: string; label: string }
@@ -75,7 +83,7 @@ export async function copyInstallSource(source: InstallSource, target: string): 
   if (source.kind === "local") {
     cpSync(source.path, target, {
       recursive: true,
-      filter: (from) => !LOCAL_COPY_SKIP.has(from.split(/[\\/]/).pop() ?? ""),
+      filter: (from) => !INSTALL_SKIP_DIRS.has(from.split(/[\\/]/).pop() ?? ""),
     });
     return;
   }

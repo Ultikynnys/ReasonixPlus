@@ -194,6 +194,7 @@ import {
   UserMsg,
 } from "./ui/thread";
 import { getThreadMaxWidth } from "./ui/thread-layout";
+import { type ToastNotice, ToastStack, dismissToast, pushToast } from "./ui/toasts";
 import {
   type JumpTarget,
   callAnchor,
@@ -677,6 +678,9 @@ type State = {
   memoryDetail: MemoryDetail | null;
   /** Outcome of the last memory write/delete/import RPC — shown as a transient banner in the memory panel. */
   memoryResult: { ok: boolean; message: string } | null;
+  /** Settings-owned action outcomes, shown as a popover over the shell. Never transcript
+   *  content: the Settings page asked for them, not the chat. */
+  toasts: readonly ToastNotice[];
   jobs: JobInfo[];
   /** Terminal outcome of the most recent turn — gates success feedback and stop cards. */
   lastTurnOutcome: TurnOutcome | null;
@@ -749,7 +753,8 @@ type Action =
   | { t: "mimo_oauth_waiting"; waiting: boolean }
   | { t: "plan_usage_refreshing" }
   | { t: "release_stale_send" }
-  | { t: "push_notice"; text: string; severity?: NoticeSeverity };
+  | { t: "push_notice"; text: string; severity?: NoticeSeverity }
+  | { t: "dismiss_toast"; id: number };
 
 export function sanitizeSettingsPatch(patch: SettingsPatch): Partial<Settings> {
   // Engine and provider settings carry secrets: they stay out of the optimistic
@@ -1573,6 +1578,10 @@ export function reduceAction(state: State, action: Action): State {
     }
     case "dismiss_memory_result":
       return { ...state, memoryResult: null };
+    case "dismiss_toast": {
+      const toasts = dismissToast(state.toasts, action.id);
+      return toasts === state.toasts ? state : { ...state, toasts };
+    }
     case "mention_results":
       return { ...state, mentionResults: action.results };
     case "mention_preview":
@@ -3483,6 +3492,12 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       );
       return { ...state, messages: appendNoticeMessage(base, notice), sessionEvents };
     }
+    case "$toast": {
+      // A Settings-owned outcome never reaches the transcript: the popover stack is its
+      // only surface.
+      const toasts = pushToast(state.toasts, ev.text, ev.severity);
+      return toasts === state.toasts ? state : { ...state, toasts };
+    }
     case "$notice": {
       // Manual compaction's completion signal — settles its card in place.
       const runningIdx = state.messages.findIndex(
@@ -3705,7 +3720,12 @@ const TabRuntime = memo(function TabRuntime({
   registerDispatch,
   onWorkspaceInitialized,
   onNewTab,
-  sessionView: { items: sessions, mutation: sessionsMutation, pendingDeleteCount },
+  sessionView: {
+    items: sessions,
+    mutation: sessionsMutation,
+    pendingDeleteCount,
+    confirmed: sessionsConfirmed,
+  },
   onSessionIntent,
   onSessionIntentFailed,
   onSessionPatch,
@@ -3793,6 +3813,7 @@ const TabRuntime = memo(function TabRuntime({
     memory: [],
     memoryDetail: null,
     memoryResult: null,
+    toasts: [],
     jobs: [],
     lastTurnOutcome: null,
     ...clearedQueue(),
@@ -4036,6 +4057,10 @@ const TabRuntime = memo(function TabRuntime({
   );
   const uninstallPlugin = useCallback(
     (name: string) => sendRpc({ cmd: "plugins_uninstall", name }),
+    [sendRpc],
+  );
+  const togglePlugin = useCallback(
+    (slug: string, disabled: boolean) => sendRpc({ cmd: "plugins_toggle", slug, disabled }),
     [sendRpc],
   );
   const requestSkills = useCallback(() => sendRpc({ cmd: "skills_get" }), [sendRpc]);
@@ -5242,6 +5267,7 @@ const TabRuntime = memo(function TabRuntime({
     [sendRpc],
   );
   const dismissMemoryResult = useCallback(() => dispatch({ t: "dismiss_memory_result" }), []);
+  const dismissToastNotice = useCallback((id: number) => dispatch({ t: "dismiss_toast", id }), []);
   const compactContext = useCallback(() => sendRpc({ cmd: "context_compact" }), [sendRpc]);
   const readPlans = useCallback(() => {
     void rpcSend({ cmd: "plan_history_get", tabId });
@@ -5327,6 +5353,9 @@ const TabRuntime = memo(function TabRuntime({
               <span className="spin" aria-hidden="true" />
               <span>{sessionMutationLabel(sessionsMutation, pendingDeleteCount)}</span>
             </div>
+          ) : null}
+          {active && sessionsMutation === null && (!sessionsConfirmed || !backendConnected) && sessions.length > 0 ? (
+            <div className="main-progress" role="status">{t("app.sessionsUnconfirmed")}</div>
           ) : null}
           {state.settings != null && !state.settings.workspaceDir ? (
             <PendingWorkspaceView
@@ -5829,6 +5858,7 @@ const TabRuntime = memo(function TabRuntime({
             onAddMcpSpec={addMcpSpec}
             onRemoveMcpSpec={removeMcpSpec}
             onToggleMcpServer={toggleMcpServer}
+            onTogglePlugin={togglePlugin}
             mcpExtensionStatus={state.mcpExtensionStatus}
             mcpExtensionCheck={state.mcpExtensionCheck}
             playwrightBrowserInstall={state.playwrightBrowserInstall}
@@ -5861,6 +5891,7 @@ const TabRuntime = memo(function TabRuntime({
         />
 
         {splashOn ? <Splash onDone={() => setSplashOn(false)} /> : null}
+        <ToastStack toasts={state.toasts} onDismiss={dismissToastNotice} />
       </div>
     </WorkspaceProvider>
   );
@@ -7549,11 +7580,13 @@ export function App() {
                   epoch: ev.epoch,
                   revision: ev.revision,
                   answers: ev.answers?.length ?? 0,
+                  stale: ev.stale === true,
                 },
               });
               // The store is the ONLY handler: no channel keeps its own copy, so one
               // snapshot updates every channel of the workspace at once.
-              const ws = tabsRef.current.find((t) => t.id === tabId)?.workspaceDir;
+              const ws =
+                ev.workspaceDir ?? tabsRef.current.find((t) => t.id === tabId)?.workspaceDir;
               if (ws) {
                 const result = applySessionsSnapshot(sessionsStoreRef.current, ws, ev);
                 commitSessionsStore(result.store, result.changed);
@@ -7699,8 +7732,25 @@ export function App() {
       lastFocusRefreshRef.current = now;
       requestSessionList(activeTabId);
     };
+    const reconcile = () => {
+      const seen = new Set<string>();
+      for (const tab of tabsRef.current) {
+        const key = normalizeWorkspacePath(tab.workspaceDir);
+        if (
+          !tab.workspaceDir ||
+          seen.has(key) ||
+          mutationFor(sessionsStoreRef.current, tab.workspaceDir)
+        ) continue;
+        seen.add(key);
+        requestSessionList(tab.id);
+      }
+    };
+    const timer = window.setInterval(reconcile, 30_000);
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
   }, [activeTabId]);
 
   // Tracks each tab's running-agent flag so the tab dot can show how many

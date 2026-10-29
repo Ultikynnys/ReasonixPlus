@@ -31,6 +31,7 @@ const baseProps = {
   plugins: [],
   onInstallPlugin: vi.fn(),
   onUninstallPlugin: vi.fn(),
+  onTogglePlugin: vi.fn(),
   onRequestPlugins: vi.fn(),
   skills: [],
   onInstallSkill: vi.fn(),

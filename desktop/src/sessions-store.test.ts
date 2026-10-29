@@ -39,6 +39,7 @@ function snap(
   extra: {
     epoch?: string;
     primed?: boolean;
+    stale?: boolean;
     answers?: SessionMutationAnswer[];
   } = {},
 ) {
@@ -47,6 +48,7 @@ function snap(
     revision,
     items,
     primed: extra.primed,
+    stale: extra.stale,
     answers: extra.answers,
   };
 }
@@ -123,6 +125,41 @@ describe("snapshot acceptance", () => {
     );
     expect(pendingSessionRequests(rebooted.store)).toEqual([]);
     expect(names(visibleSessions(rebooted.store, WORKSPACE))).toEqual(["a"]);
+  });
+
+  it("accepts new revisions after a daemon restart", () => {
+    const old = confirmed([A], 100);
+    const restarted = applySessionsSnapshot(old, WORKSPACE, snap(1, [A], { epoch: "daemon-2" }));
+    const next = applySessionsSnapshot(restarted.store, WORKSPACE, snap(2, [B], { epoch: "daemon-2" }));
+    expect(names(visibleSessions(next.store, WORKSPACE))).toEqual(["b"]);
+    expect(next.store.byWorkspace.get(WORKSPACE)!.revision).toBe(2);
+  });
+
+  it("marks failed scans unconfirmed without replacing verified rows", () => {
+    const store = confirmed([A], 4);
+    const degraded = applySessionsSnapshot(store, WORKSPACE, snap(5, [B], { stale: true }));
+    expect(names(visibleSessions(degraded.store, WORKSPACE))).toEqual(["a"]);
+    expect(degraded.store.byWorkspace.get(WORKSPACE)!.confirmed).toBe(false);
+    const recovered = applySessionsSnapshot(degraded.store, WORKSPACE, snap(6, [B]));
+    expect(names(visibleSessions(recovered.store, WORKSPACE))).toEqual(["b"]);
+    expect(recovered.store.byWorkspace.get(WORKSPACE)!.confirmed).toBe(true);
+  });
+
+  it("rejects delayed snapshots from a retired daemon epoch", () => {
+    const old = confirmed([A], 100);
+    const restarted = applySessionsSnapshot(old, WORKSPACE, snap(1, [B], { epoch: "daemon-2" }));
+    const delayed = applySessionsSnapshot(restarted.store, WORKSPACE, snap(101, [A]));
+    expect(names(visibleSessions(delayed.store, WORKSPACE))).toEqual(["b"]);
+    expect(delayed.store.byWorkspace.get(WORKSPACE)!.epoch).toBe("daemon-2");
+  });
+
+  it("preserves verified rows through repeated degraded snapshots and primed caches", () => {
+    let store = confirmed([A], 4);
+    store = applySessionsSnapshot(store, WORKSPACE, snap(5, [B], { stale: true })).store;
+    store = applySessionsSnapshot(store, WORKSPACE, snap(6, [B], { stale: true })).store;
+    store = applySessionsSnapshot(store, WORKSPACE, snap(7, [B], { primed: true })).store;
+    expect(names(visibleSessions(store, WORKSPACE))).toEqual(["a"]);
+    expect(store.byWorkspace.get(WORKSPACE)!.confirmed).toBe(false);
   });
 
   it("keeps the previous items array when a newer snapshot lists the same rows", () => {
@@ -223,9 +260,7 @@ describe("delete intents", () => {
     expect(names(visibleSessions(refused.store, WORKSPACE))).toEqual(["b", "a"]);
   });
 
-  it("answers with a listing the client already rejected as stale", () => {
-    // An answer is the daemon's word about this request and lands after it, so it
-    // is applied even when its revision no longer outranks what the entry holds.
+  it("settles an older answer without replacing a newer list", () => {
     const store = beginIntent(confirmed([A, B], 5), WORKSPACE, {
       requestId: "r1",
       kind: "delete",
@@ -238,7 +273,7 @@ describe("delete intents", () => {
     );
     expect(answeredIds(answered)).toEqual(["r1"]);
     expect(hidden(answered.store)).toEqual([]);
-    expect(names(visibleSessions(answered.store, WORKSPACE))).toEqual(["b"]);
+    expect(names(visibleSessions(answered.store, WORKSPACE))).toEqual(["b", "a"]);
     expect(answered.store.byWorkspace.get(WORKSPACE)!.revision).toBe(5);
   });
 

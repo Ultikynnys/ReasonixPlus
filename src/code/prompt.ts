@@ -2,7 +2,11 @@ import { dirname, join, sep } from "node:path";
 import { type EditMode, loadEditMode } from "../config.js";
 import { applyMemoryBlock, readCappedTextFile, truncateWithMarker } from "../memory/read-capped.js";
 import { applyMemoryStack } from "../memory/user.js";
-import { TUI_FORMATTING_RULES, escalationContract } from "../prompt-fragments.js";
+import {
+  SHARED_WORKSPACE_SAFETY,
+  TUI_FORMATTING_RULES,
+  escalationContract,
+} from "../prompt-fragments.js";
 
 const DEFAULT_CODE_MODEL = "deepseek-v4-flash";
 
@@ -338,6 +342,8 @@ replacement content
 - Verify applied changes before continuing.
 
 Prefer minimal, localized changes. Preserve unrelated behavior, formatting, comments, and code unless modification is necessary.
+
+${SHARED_WORKSPACE_SAFETY}
 
 Do not remove functioning code solely to simplify an implementation.
 

@@ -164,6 +164,26 @@ describe("desktop — no-session main-area state", () => {
     expect(screen.queryByText(/No conversations yet/)).toBeNull();
   });
 
+  it("routes a delayed snapshot to the workspace it scanned", async () => {
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await startupWithSessionA();
+    await feed(
+      {
+        type: "$sessions",
+        workspaceDir: "C:\\other",
+        epoch: "e1",
+        revision: 2,
+        items: [{ name: "FOREIGN-SESSION", messageCount: 1, mtime: new Date(2).toISOString() }],
+      },
+      "t1",
+    );
+    expect(screen.queryByText("FOREIGN-SESSION")).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete session" })).toBeTruthy();
+  });
+
   it("keeps the composer, not a prompt, once the last session is gone", async () => {
     render(<App />);
     await act(async () => {

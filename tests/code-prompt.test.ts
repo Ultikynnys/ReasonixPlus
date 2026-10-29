@@ -93,6 +93,19 @@ describe("codeSystemPrompt", () => {
     expect(CODE_SYSTEM_PROMPT).toMatch(/Preserve all user requirements, prohibitions, and scope/);
   });
 
+  it("protects concurrent workspace changes", () => {
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "Multiple agents or the user may change the same workspace concurrently",
+    );
+    expect(CODE_SYSTEM_PROMPT).toContain("Never use git stash or git stash pop");
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "Do not revert, reset, clean, overwrite, or delete unrelated work",
+    );
+    expect(CODE_SYSTEM_PROMPT).toContain(
+      "If a conflict prevents a safe edit, stop and ask the user",
+    );
+  });
+
   it("states where commands run and how to pass paths", () => {
     expect(CODE_SYSTEM_PROMPT).toMatch(/\n# Filesystem and exploration\n/);
     expect(CODE_SYSTEM_PROMPT).toMatch(/executes from the project root/);

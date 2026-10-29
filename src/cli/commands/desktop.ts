@@ -67,6 +67,7 @@ import type {
   MiMoQuota,
   ModelEndpointInfo,
   NeedsSetupEvent,
+  NoticeSeverity,
   OllamaModelsEvent,
   OpencodeModelsEvent,
   OpencodeQuota,
@@ -103,6 +104,7 @@ import type {
   TabOpenedEvent,
   TabStatusEvent,
   TabsSnapshotEvent,
+  ToastEvent,
   TurnCompleteEvent,
   TurnOutcome,
   TurnStartedEvent,
@@ -322,6 +324,7 @@ import {
   listPlugins,
   pluginDisplayName,
   pluginSkills,
+  setPluginDisabled,
   uninstallPlugin,
 } from "../../plugins/index.js";
 import {
@@ -420,6 +423,7 @@ import {
   listSessionNamesForWorkspaceAsync,
   listSessionsForWorkspaceAsync,
   listSessionsForWorkspaceCurrent,
+  listSessionsForWorkspaceLastKnown,
   loadSessionEvents,
   loadSessionMessages,
   loadSessionMessagesAsync,
@@ -608,7 +612,8 @@ export type EmittableEvent =
   | { type: "$connected" }
   | { type: "$ready" }
   | { type: "$error"; message: string }
-  | { type: "$notice"; text: string; severity: "info" | "success" | "warning" | "error" }
+  | { type: "$notice"; text: string; severity: NoticeSeverity }
+  | ToastEvent
   | TurnCompleteEvent
   | TurnStartedEvent
   | TabStatusEvent
@@ -754,6 +759,44 @@ export function clearSessionPlan(
     kept: names.filter((name) => unremovable.has(name)),
     unremovable,
   };
+}
+
+export async function runSessionClear(options: {
+  requested: readonly string[];
+  list: () => Promise<readonly string[]>;
+  clear: (names: readonly string[]) => Promise<void>;
+  answer: () => void;
+  failed: (stage: "clear" | "list", error: unknown) => void;
+}): Promise<void> {
+  let listing: Promise<{ names: readonly string[] } | { error: unknown }>;
+  try {
+    listing = options.list().then(
+      (names) => ({ names }),
+      (error: unknown) => ({ error }),
+    );
+  } catch (error) {
+    listing = Promise.resolve({ error });
+  }
+  const processed = new Set(options.requested);
+  try {
+    await options.clear([...processed]);
+  } catch (error) {
+    options.failed("clear", error);
+  } finally {
+    options.answer();
+  }
+  const result = await listing;
+  if ("error" in result) {
+    options.failed("list", result.error);
+    return;
+  }
+  const remaining = [...new Set(result.names)].filter((name) => !processed.has(name));
+  if (remaining.length === 0) return;
+  try {
+    await options.clear(remaining);
+  } catch (error) {
+    options.failed("clear", error);
+  }
 }
 
 /** Why a delete was refused, in one wording every delete path shares. */
@@ -3536,23 +3579,25 @@ async function emitSessions(
     answers?: SessionMutationAnswer[];
     primeFromCache?: boolean;
     revalidate?: boolean;
+    force?: boolean;
   } = {},
 ): Promise<void> {
   const startedAt = performance.now();
   const answers = options.answers;
+  const workspaceDir = tab.rootDir;
   // Stamped before the first await so a slow scan can never publish under a newer
   // revision than a fast one. An answering emit re-stamps at send (see below).
   const epoch = DESKTOP_SESSIONS_EPOCH;
-  const requestRevision = nextSessionsRevision(tab.rootDir);
+  const requestRevision = nextSessionsRevision(workspaceDir);
   // A snapshot that answers a mutation the user just made reports that mutation and
   // nothing else: the edit is already folded into the index, and re-walking every
   // session folder on top of it is what made a create or a delete take seconds.
   const revalidate = options.revalidate ?? answers === undefined;
   const source = revalidate
-    ? listSessionsForWorkspaceAsync(tab.rootDir)
+    ? listSessionsForWorkspaceAsync(workspaceDir, options.force)
     : {
         cache: "hit" as const,
-        value: listSessionsForWorkspaceCurrent(tab.rootDir),
+        value: listSessionsForWorkspaceCurrent(workspaceDir),
         cached: Promise.resolve(null),
       };
   const request = {
@@ -3572,6 +3617,7 @@ async function emitSessions(
         emit(
           {
             type: "$sessions",
+            workspaceDir,
             epoch,
             revision: requestRevision,
             primed: true,
@@ -3590,10 +3636,11 @@ async function emitSessions(
     const items = await request.value;
     // An answering snapshot re-stamps: its payload already reflects the mutation, so
     // it must never look older than a scan that started before it finished.
-    const revision = answers === undefined ? requestRevision : nextSessionsRevision(tab.rootDir);
+    const revision = answers === undefined ? requestRevision : nextSessionsRevision(workspaceDir);
     emit(
       {
         type: "$sessions",
+        workspaceDir,
         epoch,
         revision,
         items,
@@ -3607,11 +3654,41 @@ async function emitSessions(
       primed: primed !== null,
       durationMs: Number((performance.now() - startedAt).toFixed(3)),
     });
+    sessionsListFailureNotified.delete(tab.id);
   } catch (err) {
     emitDiagnosticError("sessions.list.failed", err, {
       tabId: tab.id,
       details: { ...tabDiagnosticState(tab), cache: request.cache },
     });
+    // A listing that cannot revalidate is not a broken store: keep the sidebar on the
+    // last list this process knows and leave the failure to diagnostics. Only a store
+    // with nothing to show at all is worth a card, and only one per channel — a store
+    // that stays unreadable must not fill the transcript with the same error on every
+    // retry.
+    const lastKnown = await listSessionsForWorkspaceLastKnown(workspaceDir).catch(() => null);
+    const items = lastKnown === null ? [] : toSessionListItems(lastKnown);
+    emit(
+      {
+        type: "$sessions",
+        workspaceDir,
+        epoch,
+        revision: answers === undefined ? requestRevision : nextSessionsRevision(workspaceDir),
+        items,
+        stale: true,
+        ...(answers === undefined ? {} : { answers }),
+      },
+      tab.id,
+    );
+    if (lastKnown !== null) {
+      emitTabDiagnostic(tab, "sessions.list.degraded", {
+        count: items.length,
+        cache: request.cache,
+        durationMs: Number((performance.now() - startedAt).toFixed(3)),
+      });
+      return;
+    }
+    if (sessionsListFailureNotified.has(tab.id)) return;
+    sessionsListFailureNotified.add(tab.id);
     emit({ type: "$error", message: `session_list failed: ${(err as Error).message}` }, tab.id);
   }
 }
@@ -3829,7 +3906,7 @@ export function capabilityAnswer(
  *  frozen set, so a clone starts faithful and the toggles are there to diverge from it. */
 export interface ChatCapabilitySeed {
   mcp?: SessionMcpState;
-  /** Plugin slugs; absent means "every installed plugin", the New-chat default. */
+  /** Plugin slugs; absent means "whatever Settings enabled", the New-chat default. */
   plugins?: string[];
   /** Standalone skill ids; absent means "every installed skill", the New-chat default. */
   skills?: string[];
@@ -3859,25 +3936,27 @@ export function capabilityPrefill(
   }));
 }
 
-/** The picker's plugin rows for a capability seed: every installed plugin, on unless the
- *  seed pins a session's frozen set. Same one-projection rule as the server rows. */
+/** The picker's plugin rows for a capability seed: every installed plugin, on unless
+ *  Settings switched it off, and following the seed when it pins a session's frozen set.
+ *  Same one-projection rule as the server rows. */
 export function pluginPrefill(
-  installed: readonly { slug: string; displayName: string }[],
+  installed: readonly { slug: string; displayName: string; disabled?: boolean }[],
   seed?: ChatCapabilitySeed,
 ): PluginSetupEntry[] {
   const chosen = seed?.plugins ? new Set(seed.plugins) : undefined;
   return installed.map((plugin) => ({
     name: plugin.slug,
     displayName: plugin.displayName,
-    enabled: chosen ? chosen.has(plugin.slug) : true,
+    enabled: chosen ? chosen.has(plugin.slug) : plugin.disabled !== true,
   }));
 }
 
 /** Every installed plugin in picker shape, sorted by slug. */
-function configuredPlugins(): { slug: string; displayName: string }[] {
+function configuredPlugins(): { slug: string; displayName: string; disabled: boolean }[] {
   return listPlugins().map((state) => ({
     slug: state.slug,
     displayName: pluginDisplayName(state.manifest),
+    disabled: state.disabled,
   }));
 }
 
@@ -4276,6 +4355,7 @@ function emitPlugins(tab: Tab): void {
       defaultPrompt: ui.defaultPrompt ?? [],
       ...(state.record?.source ? { source: state.record.source } : {}),
       active,
+      ...(state.disabled ? { disabled: true } : {}),
       ...(state.error ? { error: state.error } : {}),
       skills: pluginSkillInfos(state),
       servers: pluginServerInfos(tab, state.servers, active),
@@ -4297,6 +4377,21 @@ function emitSkills(tab: Tab): void {
     ...(skill.error ? { error: skill.error } : {}),
   }));
   emit({ type: "$skills", skills }, tab.id);
+}
+
+/** Answer a Settings-owned action (install, uninstall, MCP spec edit) in the popover that
+ *  asked for it. The chat transcript is deliberately not a destination: those commands
+ *  are sent from the Settings page, not from the conversation. */
+function emitToast(tab: Tab, text: string, severity: ToastEvent["severity"] = "error"): void {
+  emit({ type: "$toast", text, severity }, tab.id);
+}
+
+/** Names for a popover line: a `skills/` tree can hold dozens, so the first few are named
+ *  and the rest counted, keeping the toast one glanceable line. */
+function namedList(items: readonly string[], max = 5): string {
+  const shown = items.slice(0, max).join(", ");
+  const extra = items.length - max;
+  return extra > 0 ? `${shown} +${extra} more` : shown;
 }
 
 /** Extension-integration state for the Settings card — pure so tests can pin it. */
@@ -4834,10 +4929,7 @@ async function installPlaywrightBrowser(
   onInstalled: () => void,
 ): Promise<void> {
   if (!isPlaywrightManagedBrowser(browser)) {
-    emit(
-      { type: "$error", message: "playwright_browser_install: unsupported managed browser" },
-      tab.id,
-    );
+    emitToast(tab, "playwright_browser_install: unsupported managed browser");
     return;
   }
   if (playwrightBrowserInstalls.has(browser)) {
@@ -5668,6 +5760,10 @@ function sameWorkspaceDir(a: string, b: string): boolean {
 /** One epoch per daemon lifetime. A per-tab epoch made a freshly opened channel
  *  look like a restarted daemon, which dropped the frontend's optimistic deletes. */
 const DESKTOP_SESSIONS_EPOCH = randomUUID();
+
+/** Channels already told a session listing failed. A store that stays unreadable is
+ *  retried on every resync, and each retry must not open another identical card. */
+const sessionsListFailureNotified = new Set<string>();
 
 /** Revisions are per workspace: every channel serving one directory receives the
  *  same snapshots, so their revisions have to be comparable. */
@@ -6634,7 +6730,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   function emitSessionsForWorkspace(
     workspaceDir: string,
     answers?: SessionMutationAnswer[],
-    options: { exceptTabId?: string; revalidate?: boolean } = {},
+    options: { exceptTabId?: string; revalidate?: boolean; force?: boolean } = {},
   ): void {
     const channels = tabsInWorkspace(workspaceDir).filter((t) => t.id !== options.exceptTabId);
     // Prefer the channel the user is looking at, so the answer rides the surface that
@@ -8305,7 +8401,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (!sessionExists(name)) {
       emitTabDiagnostic(tab, "session.open.missing", { session: name }, "warn");
       emit({ type: "$error", message: missingSessionRefusal(op, name) }, tab.id);
-      emitSessionsForWorkspace(tab.rootDir);
+      emitSessionsForWorkspace(tab.rootDir, undefined, { force: true });
       return;
     }
     const home = sessionWorkspaceOf(name, tab.rootDir);
@@ -9098,6 +9194,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   /** Requests already answered in this daemon lifetime: a re-send of one is answered
    *  from here rather than deleting a second time. */
   const answeredMutations = newAnsweredMutationLog();
+  const clearingMutations = new Set<string>();
 
   /** True while this workspace is minting or removing a session: the window in
    *  which switching away from it or forgetting it is undocumented behaviour. */
@@ -9787,13 +9884,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (msg.cmd === "mcp_specs_add") {
       const spec = msg.spec.trim();
       if (!spec) {
-        emit({ type: "$error", message: "mcp_specs_add: spec is empty" }, tab.id);
+        emitToast(tab, "mcp_specs_add: spec is empty");
         return;
       }
       try {
         parseMcpSpec(spec);
       } catch (err) {
-        emit({ type: "$error", message: `mcp_specs_add: ${(err as Error).message}` }, tab.id);
+        emitToast(tab, `mcp_specs_add: ${(err as Error).message}`);
         return;
       }
       try {
@@ -9810,7 +9907,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           tabId: tab.id,
           details: { specChars: spec.length, ...tabDiagnosticState(tab) },
         });
-        emit({ type: "$error", message: `mcp_specs_add: ${(err as Error).message}` }, tab.id);
+        emitToast(tab, `mcp_specs_add: ${(err as Error).message}`);
       }
       return;
     }
@@ -9826,13 +9923,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           });
         }
         if (parsedSpec && isManagedMcpSpec(parsedSpec)) {
-          emit(
-            {
-              type: "$error",
-              message: "mcp_specs_remove: Reasonix+ managed MCP servers can't be removed",
-            },
-            tab.id,
-          );
+          emitToast(tab, "mcp_specs_remove: Reasonix+ managed MCP servers can't be removed");
           return;
         }
         const cfg = readConfig();
@@ -9845,12 +9936,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         const parsedName = parsedSpec?.name ?? null;
         const pluginOwner = parsedName ? pluginServerOwners().get(parsedName) : undefined;
         if (parsedName && pluginOwner) {
-          emit(
-            {
-              type: "$error",
-              message: `mcp_specs_remove: "${parsedName}" belongs to the ${pluginOwner} plugin. Manage it from Settings > Plugins.`,
-            },
-            tab.id,
+          emitToast(
+            tab,
+            `mcp_specs_remove: "${parsedName}" belongs to the ${pluginOwner} plugin. Manage it from Settings > Plugins.`,
           );
           return;
         }
@@ -9871,7 +9959,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           tabId: tab.id,
           details: { specChars: msg.spec.length, ...tabDiagnosticState(tab) },
         });
-        emit({ type: "$error", message: `mcp_specs_remove: ${(err as Error).message}` }, tab.id);
+        emitToast(tab, `mcp_specs_remove: ${(err as Error).message}`);
       }
       return;
     }
@@ -9884,22 +9972,16 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // chat, so a default here would be a second, contradictory owner.
         const owner = pluginServerOwners().get(msg.name);
         if (owner) {
-          emit(
-            {
-              type: "$error",
-              message: `mcp_specs_toggle: "${msg.name}" is bundled with the ${owner} plugin. Choose the plugin per chat instead.`,
-            },
-            tab.id,
+          emitToast(
+            tab,
+            `mcp_specs_toggle: "${msg.name}" is bundled with the ${owner} plugin. Choose the plugin per chat instead.`,
           );
           return;
         }
         const cfg = readConfig();
         const ok = setMcpServerDisabled(cfg, msg.name, msg.disabled);
         if (!ok) {
-          emit(
-            { type: "$error", message: `mcp_specs_toggle: unknown server "${msg.name}"` },
-            tab.id,
-          );
+          emitToast(tab, `mcp_specs_toggle: unknown server "${msg.name}"`);
           return;
         }
         writeConfig(cfg);
@@ -9909,7 +9991,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           tabId: tab.id,
           details: { name: msg.name, disabled: msg.disabled },
         });
-        emit({ type: "$error", message: `mcp_specs_toggle: ${(err as Error).message}` }, tab.id);
+        emitToast(tab, `mcp_specs_toggle: ${(err as Error).message}`);
       }
       return;
     }
@@ -9929,7 +10011,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (msg.cmd === "plugins_install") {
       const source = msg.source.trim();
       if (!source) {
-        emit({ type: "$error", message: "plugins_install: source is empty" }, tab.id);
+        emitToast(tab, "plugins_install: source is empty");
         return;
       }
       void (async () => {
@@ -9938,20 +10020,17 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           refreshAfterPluginChange();
           void bridgeTabMcp(tab);
           const label = pluginDisplayName(installed.manifest);
-          emit(
-            {
-              type: "$notice",
-              text: `Installed ${label}${installed.manifest.version ? ` ${installed.manifest.version}` : ""}`,
-              severity: "success",
-            },
-            tab.id,
+          emitToast(
+            tab,
+            `Installed ${label}${installed.manifest.version ? ` ${installed.manifest.version}` : ""}`,
+            "success",
           );
         } catch (err) {
           emitDiagnosticError("plugin.install.failed", err, {
             tabId: tab.id,
             details: { sourceChars: source.length },
           });
-          emit({ type: "$error", message: `plugins_install: ${messageOf(err)}` }, tab.id);
+          emitToast(tab, `plugins_install: ${messageOf(err)}`);
         }
       })();
       return;
@@ -9969,7 +10048,25 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           tabId: tab.id,
           details: { name: msg.name },
         });
-        emit({ type: "$error", message: `plugins_uninstall: ${messageOf(err)}` }, tab.id);
+        emitToast(tab, `plugins_uninstall: ${messageOf(err)}`);
+      }
+      return;
+    }
+    if (msg.cmd === "plugins_toggle") {
+      // Edits the Settings DEFAULT, like mcp_specs_toggle: only chats created later read
+      // it. A live chat's plugin set is frozen, so nothing here re-bridges or re-prompts.
+      try {
+        if (!setPluginDisabled(msg.slug, msg.disabled)) {
+          emitToast(tab, `plugins_toggle: unknown plugin "${msg.slug}"`);
+          return;
+        }
+        emitPlugins(tab);
+      } catch (err) {
+        emitDiagnosticError("plugin.toggle.failed", err, {
+          tabId: tab.id,
+          details: { slug: msg.slug, disabled: msg.disabled },
+        });
+        emitToast(tab, `plugins_toggle: ${messageOf(err)}`);
       }
       return;
     }
@@ -9980,28 +10077,24 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (msg.cmd === "skills_install") {
       const source = msg.source.trim();
       if (!source) {
-        emit({ type: "$error", message: "skills_install: source is empty" }, tab.id);
+        emitToast(tab, "skills_install: source is empty");
         return;
       }
       void (async () => {
         try {
           const installed = await installSkills(source);
           emitSkills(tab);
-          const label = installed.ids.join(", ");
-          emit(
-            {
-              type: "$notice",
-              text: `Installed ${installed.ids.length} skill(s): ${label}`,
-              severity: "success",
-            },
-            tab.id,
+          emitToast(
+            tab,
+            `Installed ${installed.ids.length} skill(s): ${namedList(installed.ids)}`,
+            "success",
           );
         } catch (err) {
           emitDiagnosticError("skill.install.failed", err, {
             tabId: tab.id,
             details: { sourceChars: source.length },
           });
-          emit({ type: "$error", message: `skills_install: ${messageOf(err)}` }, tab.id);
+          emitToast(tab, `skills_install: ${messageOf(err)}`);
         }
       })();
       return;
@@ -10020,12 +10113,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           state.skills.some((skill) => skill.name === msg.name),
         )?.slug;
         if (owner) {
-          emit(
-            {
-              type: "$error",
-              message: `skills_uninstall: "${msg.name}" ships with the ${owner} plugin. Remove the plugin instead.`,
-            },
-            tab.id,
+          emitToast(
+            tab,
+            `skills_uninstall: "${msg.name}" ships with the ${owner} plugin. Remove the plugin instead.`,
           );
           return;
         }
@@ -10033,7 +10123,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           tabId: tab.id,
           details: { name: msg.name },
         });
-        emit({ type: "$error", message: `skills_uninstall: ${messageOf(err)}` }, tab.id);
+        emitToast(tab, `skills_uninstall: ${messageOf(err)}`);
       }
       return;
     }
@@ -10310,7 +10400,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "session_list") {
-      void emitSessions(tab);
+      void emitSessions(tab, { force: true });
       return;
     }
     if (msg.cmd === "session_delete") {
@@ -10374,6 +10464,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         publishSessionAnswer(tab, known);
         return;
       }
+      if (clearingMutations.has(requestId)) return;
+      clearingMutations.add(requestId);
       const requested = Array.isArray(msg.names)
         ? msg.names.filter((n): n is string => typeof n === "string" && n.length > 0)
         : [];
@@ -10384,82 +10476,80 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         : [];
       // Book the workspace for the whole chunked pass: a switch or forget now
       // would re-target or close the tab this settle belongs to.
-      const releaseClearBooking = sessionWork.begin(tab.rootDir);
+      const workspaceDir = tab.rootDir;
+      const releaseClearBooking = sessionWork.begin(workspaceDir);
       void (async () => {
-        const candidateNames = new Set(requested);
-        try {
-          // Names only, and off the reader thread: the sync twin walked and
-          // parsed the whole store on one tick, freezing the daemon's RPC loop.
-          for (const name of await listSessionNamesForWorkspaceAsync(tab.rootDir)) {
-            candidateNames.add(name);
+        const clearNames = async (candidates: readonly string[]): Promise<void> => {
+          const running = sessionsWithLiveTurn(tabs.values());
+          const plan = clearSessionPlan(candidates, running, declaredKeep);
+          const keptRunning = plan.kept.filter((name) => running.has(name));
+          if (keptRunning.length > 0) {
+            emitTabDiagnostic(
+              tab,
+              "session.clear.kept_running",
+              { kept: keptRunning.length },
+              "info",
+            );
+            emit(
+              {
+                type: "$error",
+                message: `Kept ${keptRunning.length} running session(s): stop their agents, then delete them.`,
+              },
+              tab.id,
+            );
           }
-        } catch (err) {
-          emitDiagnosticError("session.clear.list.failed", err, { tabId: tab.id });
-        }
-        // A session holding live work is never cleared: the user is waiting on
-        // that work, so it stays on disk and keeps its row.
-        const running = sessionsWithLiveTurn(tabs.values());
-        const plan = clearSessionPlan(candidateNames, running, declaredKeep);
-        const keptRunning = plan.kept.filter((name) => running.has(name));
-        if (keptRunning.length > 0) {
-          emitTabDiagnostic(
-            tab,
-            "session.clear.kept_running",
-            { kept: keptRunning.length },
-            "info",
+          const keptAsPromised = plan.kept.filter((name) => !running.has(name));
+          if (keptAsPromised.length > 0) {
+            emitTabDiagnostic(
+              tab,
+              "session.clear.kept_declared",
+              { kept: keptAsPromised.length },
+              "info",
+            );
+          }
+          let affectedTabs: Tab[] = [];
+          let settledDeletes: { name: string; removed: boolean }[];
+          try {
+            affectedTabs = detachDoomedSessionWriters(new Set(plan.doomed));
+            settledDeletes = await deleteSessions(plan.doomed);
+            settledDeletes.push(...plan.kept.map((name) => ({ name, removed: false })));
+          } catch (err) {
+            emitDiagnosticError("session.clear.failed", err, { tabId: tab.id });
+            emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
+            restoreUntouchedRuntimes(affectedTabs, new Set());
+            settledDeletes = [];
+          }
+          const removed = new Set(
+            settledDeletes.filter((result) => result.removed).map((result) => result.name),
           );
-          emit(
-            {
-              type: "$error",
-              message: `Kept ${keptRunning.length} running session(s): stop their agents, then delete them.`,
-            },
-            tab.id,
+          const failed = settledDeletes.filter(
+            (result) => !result.removed && !plan.unremovable.has(result.name),
           );
-        }
-        const keptAsPromised = plan.kept.filter((name) => !running.has(name));
-        if (keptAsPromised.length > 0) {
-          emitTabDiagnostic(
-            tab,
-            "session.clear.kept_declared",
-            { kept: keptAsPromised.length },
-            "info",
-          );
-        }
-        let affectedTabs: Tab[] = [];
-        let settledDeletes: { name: string; removed: boolean }[];
-        try {
-          affectedTabs = detachDoomedSessionWriters(new Set(plan.doomed));
-          // Chunked batch: each name settles independently, the directory index
-          // drops each chunk as it goes, and the event loop breathes between chunks.
-          settledDeletes = await deleteSessions(plan.doomed);
-          // The kept names are answered too: their rows were never touched, and an
-          // unanswered hide would strand them.
-          settledDeletes.push(...plan.kept.map((name) => ({ name, removed: false })));
-        } catch (err) {
-          emitDiagnosticError("session.clear.failed", err, { tabId: tab.id });
-          emit({ type: "$error", message: `session_clear failed: ${messageOf(err)}` }, tab.id);
-          restoreUntouchedRuntimes(affectedTabs, new Set());
-          // Nothing is known to be gone, so the answer is a listing that still holds
-          // whatever survived, and the rows come back.
-          settledDeletes = [];
-        }
-        const removed = new Set(
-          settledDeletes.filter((result) => result.removed).map((result) => result.name),
-        );
-        // A protected session is a refusal, not a failure: reporting it as one
-        // would restore a runtime that was never torn down.
-        const failed = settledDeletes.filter(
-          (result) => !result.removed && !plan.unremovable.has(result.name),
-        );
-        if (failed.length > 0) {
-          emit(
-            { type: "$error", message: `session_clear failed for ${failed.length} session(s)` },
-            tab.id,
-          );
-          restoreUntouchedRuntimes(affectedTabs, removed);
-        }
-        resyncAfterDeletes((t) => removed.has(t.currentSession));
-        publishSessionAnswer(tab, { requestId });
+          if (failed.length > 0) {
+            emit(
+              { type: "$error", message: `session_clear failed for ${failed.length} session(s)` },
+              tab.id,
+            );
+            restoreUntouchedRuntimes(affectedTabs, removed);
+          }
+          resyncAfterDeletes((t) => removed.has(t.currentSession));
+        };
+        await runSessionClear({
+          requested,
+          list: () => listSessionNamesForWorkspaceAsync(workspaceDir),
+          clear: clearNames,
+          answer: () => {
+            publishSessionAnswer(tab, { requestId });
+            releaseClearBooking();
+          },
+          failed: (stage, err) => {
+            emitDiagnosticError(`session.clear.${stage}.failed`, err, { tabId: tab.id });
+            emit(
+              { type: "$error", message: `session_clear ${stage} failed: ${messageOf(err)}` },
+              tab.id,
+            );
+          },
+        });
       })()
         .catch((err) => {
           // Belt and braces: an unhandled rejection here would take the whole
@@ -10470,7 +10560,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
           resyncAfterDeletes(() => false);
           publishSessionAnswer(tab, { requestId });
         })
-        .finally(releaseClearBooking);
+        .finally(() => {
+          clearingMutations.delete(requestId);
+          releaseClearBooking();
+        });
       return;
     }
     if (msg.cmd === "session_rename") {

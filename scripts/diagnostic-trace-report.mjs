@@ -13,7 +13,7 @@ const FANOUT_WINDOW_MS = 250;
 const BUCKETS = [50, 100, 200, 500, 1000];
 const LONG_TASK = "longtask";
 const WIRE = "wire.emit";
-const LIST_EVENTS = ["sessions.list.started", "sessions.list.completed"];
+const LIST_EVENTS = ["sessions.list.started", "sessions.list.completed", "sessions.list.degraded"];
 
 function bucketFor(durationMs) {
   for (const limit of BUCKETS) if (durationMs < limit) return `<${limit}`;

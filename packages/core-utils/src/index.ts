@@ -332,6 +332,7 @@ export type {
   TabClosedEvent,
   WorkspaceInitializedEvent,
   TabsSnapshotEvent,
+  ToastEvent,
   McpSpecStatus,
   McpSpecInfo,
   McpSpecsEvent,

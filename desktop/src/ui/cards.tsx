@@ -1,4 +1,4 @@
-import { modelDisplayLabel, sanitizeTerminalText } from "@reasonix/core-utils";
+import { type NoticeSeverity, modelDisplayLabel, sanitizeTerminalText } from "@reasonix/core-utils";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { type CSSProperties, type ReactNode, memo, useContext, useMemo, useState } from "react";
@@ -13,7 +13,7 @@ import { RowScroll, liveFollowKey } from "./row-scroll";
 import { Shortcut } from "./shortcut";
 import { StopButton, usePendingStop } from "./stop-button";
 
-type Tone = "default" | "success" | "warning" | "danger" | "accent" | "violet";
+export type Tone = "default" | "success" | "warning" | "danger" | "accent" | "violet";
 
 /** A tool call's args, and how they parsed: `object` is a usable record, `json` was
  *  JSON but not an object (an array or scalar, so there is no argument to name),
@@ -956,7 +956,9 @@ export function DiffCard({
 
 // ---- Timeline notices ----
 
-export type NoticeSeverity = "info" | "success" | "warning" | "error";
+/** Notice and popover tone vocabulary, declared once on the wire so a card and a toast
+ *  cannot drift. */
+export type { NoticeSeverity };
 
 export function noticeName(severity: NoticeSeverity): string {
   switch (severity) {
@@ -968,6 +970,21 @@ export function noticeName(severity: NoticeSeverity): string {
       return t("cards.errorName");
     default:
       return t("cards.noticeName");
+  }
+}
+
+/** The card tone a severity paints: one map for every surface that shows a notice (the
+ *  transcript card and the Settings popover), so the two can never disagree. */
+export function noticeTone(severity: NoticeSeverity): Tone {
+  switch (severity) {
+    case "error":
+      return "danger";
+    case "warning":
+      return "warning";
+    case "success":
+      return "success";
+    default:
+      return "accent";
   }
 }
 
@@ -988,14 +1005,7 @@ export function NoticeCard({
   anchor?: string;
 }) {
   useLang();
-  const tone: Tone =
-    severity === "error"
-      ? "danger"
-      : severity === "warning"
-        ? "warning"
-        : severity === "success"
-          ? "success"
-          : "accent";
+  const tone = noticeTone(severity);
   const icon =
     severity === "success" ? (
       <I.check size={12} />
