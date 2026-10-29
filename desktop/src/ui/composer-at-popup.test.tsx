@@ -16,6 +16,7 @@ import { menuPopLeft } from "./menu-pop";
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 afterEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 function renderComposer(props?: Partial<React.ComponentProps<typeof Composer>>) {
@@ -37,6 +38,10 @@ function renderComposer(props?: Partial<React.ComponentProps<typeof Composer>>) 
 
 describe("desktop Composer model catalog", () => {
   it("scores each Ollama row by the provider's declared multipliers", () => {
+    // Ollama's peak window runs 12:00-18:00 UTC on billing weekdays and two rows reprice
+    // inside it, so the clock is pinned off-peak: every literal below states one period.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(Date.UTC(2026, 0, 1, 9, 0)));
     const { container } = renderComposer({
       ollamaModels: ["deepseek-v4.1-flash:1017", "deepseek-v4-pro", "gemma4", "clef"],
       enabledModels: [
@@ -58,15 +63,15 @@ describe("desktop Composer model catalog", () => {
     // Flash reads 0.5x off-peak and 1.1x inside the peak window; nothing divides it by
     // another model, so the badge states the row's own weighted cost over the divisor.
     expect(badgeOf("deepseek-v4.1-flash")).not.toBeNull();
-    expect(badgeOf("deepseek-v4.1-flash")?.textContent).toMatch(/^(0\.5|1\.1)x$/);
-    // Pro reprices with the same calendar, so its multiple follows the clock too.
-    expect(badgeOf("deepseek-v4-pro")?.textContent).toMatch(/^(2\.6|5\.2)x$/);
+    expect(badgeOf("deepseek-v4.1-flash")?.textContent).toBe("0.5x");
+    // Pro reprices with the same calendar, so off-peak it reads its own multiple.
+    expect(badgeOf("deepseek-v4-pro")?.textContent).toBe("2.6x");
     // A column a row leaves out charges nothing, so clef still reads a multiple.
     expect(badgeOf("clef")?.textContent).toBe("0.5x");
     expect(badgeOf("gemma4")?.textContent).toBe("2.4x");
     // The tooltip states the multiple and names what charged it, without repeating the declared numbers.
-    expect(badgeOf("deepseek-v4-pro")?.getAttribute("title")).toMatch(
-      /(2\.6|5\.2)x, charging input, cached input and output by the declared multipliers/,
+    expect(badgeOf("deepseek-v4-pro")?.getAttribute("title")).toBe(
+      "deepseek-v4-pro: 2.6x, charging input, cached input and output by the declared multipliers and divisor",
     );
     // The multiple rides in the same badge box the vision flag uses, and carries its ramp
     // position so the stylesheet can tint it green to red.
