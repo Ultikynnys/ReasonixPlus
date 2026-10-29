@@ -204,6 +204,12 @@ jobs:
         working-directory: desktop
         run: npm run bundle:node
 
+      # The dependencies are bundled for, but not proven against, this runtime:
+      # the verify job runs on the runner's Node. Load the HTTP client on the
+      # exact node.exe the installer ships before building anything.
+      - name: Dependencies load on the bundled Node runtime
+        run: desktop/src-tauri/binaries/node.exe -e "require('undici')"
+
       # tauri-action defaults releaseCommitish to github.sha, which by release
       # time is the pre-push dispatched tip: no longer a branch head and not
       # tagged. Releasing a ref-less SHA while the repo carries

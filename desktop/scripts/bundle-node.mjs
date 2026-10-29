@@ -7,7 +7,7 @@ import https from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const NODE_VERSION = "22.13.0";
+const NODE_VERSION = "22.23.4";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const binDir = join(here, "..", "src-tauri", "binaries");

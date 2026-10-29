@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/Ultikynnys/ReasonixPlus/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/Ultikynnys/ReasonixPlus/release.yml?style=flat-square&label=release&labelColor=161b22&logo=githubactions&logoColor=white" alt="Release"/></a>
   <a href="./LICENSE"><img src="https://img.shields.io/github/license/Ultikynnys/ReasonixPlus.svg?style=flat-square&color=8b949e&labelColor=161b22" alt="license"/></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&labelColor=161b22" alt="Node >= 22"/>
+  <img src="https://img.shields.io/badge/node-%3E%3D22.19.0-339933?style=flat-square&labelColor=161b22" alt="Node >= 22.19.0"/>
   <img src="https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&labelColor=161b22" alt="Platform: Windows"/>
 </p>
 

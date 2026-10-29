@@ -49,7 +49,7 @@
   },
   "homepage": "https://github.com/Ultikynnys/ReasonixPlus#readme",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "os": [
     "win32"

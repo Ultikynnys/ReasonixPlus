@@ -15,7 +15,7 @@ import {
   decideHeapTargetMb,
 } from "../src/cli/heap-limit.js";
 import {
-  MIN_NODE_MAJOR,
+  MIN_NODE_VERSION,
   isSupportedNodeVersion,
   unsupportedNodeMessage,
 } from "../src/cli/node-version.js";
@@ -1410,15 +1410,41 @@ describe("node-runtime", () => {
 
 describe("node-version", () => {
   describe("CLI Node runtime guard (#1698)", () => {
-    it("rejects Node 18 before the CLI loads heavier startup modules", () => {
+    function bundledNodeVersion(): string {
+      const bundler = readFileSync("desktop/scripts/bundle-node.mjs", "utf8");
+      const version = /const NODE_VERSION = "([^"]+)"/.exec(bundler)?.[1];
+      expect(version).toBeDefined();
+      return version as string;
+    }
+
+    it("rejects a runtime below the floor before the CLI loads heavier startup modules", () => {
       expect(isSupportedNodeVersion("18.17.0")).toBe(false);
-      expect(unsupportedNodeMessage("18.17.0")).toContain(`Node ${MIN_NODE_MAJOR}+`);
+      expect(isSupportedNodeVersion("22.16.0")).toBe(false);
+      expect(unsupportedNodeMessage("18.17.0")).toContain(`Node ${MIN_NODE_VERSION}+`);
       expect(unsupportedNodeMessage("18.17.0")).toContain("18.17.0");
     });
 
-    it("accepts Node 22 and later", () => {
-      expect(isSupportedNodeVersion("22.16.0")).toBe(true);
+    it("accepts the floor and later", () => {
+      expect(isSupportedNodeVersion(MIN_NODE_VERSION)).toBe(true);
       expect(isSupportedNodeVersion("24.14.1")).toBe(true);
+    });
+
+    it("keeps package.json engines and the bundled runtime at the floor", () => {
+      const pkg = JSON.parse(readFileSync("package.json", "utf8")) as {
+        engines?: { node?: string };
+      };
+      expect(pkg.engines?.node).toBe(`>=${MIN_NODE_VERSION}`);
+      expect(isSupportedNodeVersion(bundledNodeVersion())).toBe(true);
+    });
+
+    it("clears every bundled dependency's engines floor", () => {
+      const undici = JSON.parse(readFileSync("node_modules/undici/package.json", "utf8")) as {
+        engines?: { node?: string };
+      };
+      const floor = /^>=\s*(\d+\.\d+\.\d+)$/.exec(undici.engines?.node ?? "")?.[1];
+      expect(floor).toBeDefined();
+      expect(isSupportedNodeVersion(MIN_NODE_VERSION, floor as string)).toBe(true);
+      expect(isSupportedNodeVersion(bundledNodeVersion(), floor as string)).toBe(true);
     });
 
     it("runs before the heap-limit re-exec hook", () => {
