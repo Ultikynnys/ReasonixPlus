@@ -1,0 +1,12 @@
+{
+  "id": "default",
+  "label": "Default Pack",
+  "description": "Crisp interface tones from Kenney's Interface Sounds set. Short, neutral and easy to ignore on repeat.",
+  "order": 0,
+  "sounds": {
+    "inputRequired": "question_001.ogg",
+    "taskComplete": "confirmation_001.ogg",
+    "planComplete": "confirmation_002.ogg",
+    "guardTriggered": "error_001.ogg"
+  }
+}

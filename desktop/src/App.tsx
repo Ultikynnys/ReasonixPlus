@@ -15,6 +15,7 @@ import {
   modelAcceptsImages,
   modelDisplayLabel,
   sanitizeFilename,
+  SOUND_PACK_AUDIO_EXTENSIONS,
 } from "@reasonix/core-utils";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -41,7 +42,12 @@ import {
 import { WorkspaceProvider } from "./Markdown";
 import { type AbortDraftSource, nextAbortDraftCandidate, restoreAbortedDraft } from "./abort-draft";
 import { recordFrontendFailure } from "./diagnostics";
-import { type FeedbackSoundPlayer, feedbackSounds, primeFeedbackSounds } from "./feedback-sounds";
+import {
+  type FeedbackSoundPlayer,
+  feedbackSounds,
+  preloadSoundPack,
+  primeFeedbackSounds,
+} from "./feedback-sounds";
 import { formatBytes } from "./format";
 import { t, useLang } from "./i18n";
 import { I } from "./icons";
@@ -63,8 +69,8 @@ import {
   type ChoiceVerdict,
   type ConfirmationChoice,
   type CtxMemoryTokens,
+  type FeedbackCueAudioSettings,
   type FeedbackCueId,
-  type FeedbackCueSettings,
   type IncomingEvent,
   type JobInfo,
   type LoadedMessage,
@@ -122,6 +128,7 @@ import {
   visibleSessions,
 } from "./sessions-store";
 import { keepStable, sameStringSet } from "./stable-identity";
+import { BUILTIN_SOUND_PACKS, resolveSoundPackId, setSoundPackCatalog } from "./sound-packs";
 import { StartupTimingTracker } from "./startup-timing";
 import { StreamRateTracker, SubagentRateFolder } from "./stream-rate";
 import {
@@ -209,7 +216,9 @@ import { useDisableTextAssist } from "./ui/useDisableTextAssist";
 import { useIsScrollable } from "./ui/useIsScrollable";
 import { useResizable } from "./ui/useResizable";
 import { useTurnWatchdog } from "./ui/useTurnWatchdog";
+import type { SoundPackDraft } from "./ui/pack-wizard";
 import { WorkdirPop } from "./ui/workdir-pop";
+import { mergeSoundPacks } from "./user-sound-packs";
 import { anyVoiceModelDownloaded } from "./voice/model-cache";
 import { areWorkspacesLoaded, isWorkspaceRevealReady } from "./workspace-loading";
 import { normalizeWorkspacePath, toWorkspaceRelative } from "./workspace-path";
@@ -2133,7 +2142,8 @@ export function cueIdForEvent(ev: IncomingEvent): FeedbackCueId | null {
  *  notification pass can surface one OS notification per unfocused burst. */
 function handleCueForEvent(
   ev: IncomingEvent,
-  cues: FeedbackCueSettings | null | undefined,
+  audio: FeedbackCueAudioSettings | null | undefined,
+  packId: string | undefined,
   player: FeedbackSoundPlayer,
   guardSink?: { cause?: string }[],
 ): void {
@@ -2142,7 +2152,7 @@ function handleCueForEvent(
   if (id === "guardTriggered") {
     guardSink?.push({ cause: ev.type === "warning" ? ev.cause : undefined });
   }
-  playEnabledCue(cues, id, player);
+  playEnabledCue(audio, id, player, packId);
 }
 
 // The turn a notice belongs to (the one in flight, else the last completed
@@ -2923,7 +2933,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
           autoCompact: ev.autoCompact ?? true,
           autoCompactTrigger: ev.autoCompactTrigger ?? null,
           questionTimerEnabled: ev.questionTimerEnabled ?? false,
-          feedbackCues: ev.feedbackCues ?? {},
+          feedbackAudio: ev.feedbackAudio ?? {},
+          feedbackNotify: ev.feedbackNotify ?? [],
+          soundPacks: ev.soundPacks ?? [],
           baseUrl: ev.baseUrl,
           apiKeyPrefix: ev.apiKeyPrefix,
           workspaceDir: ev.workspaceDir,
@@ -3903,11 +3915,27 @@ const TabRuntime = memo(function TabRuntime({
   }, []);
 
   // Feedback cue plumbing. Sounds and notifications fire from event delivery
-  // (not the reducer): the reducer must stay pure, and the cue matrix lives in
+  // (not the reducer): the reducer must stay pure, and the cue settings live in
   // settings state the reducer does not reduce. The wrapper sees every action
   // exactly once, in arrival order.
-  const cuesRef = useRef<FeedbackCueSettings | null | undefined>(null);
-  cuesRef.current = state.settings?.feedbackCues;
+  // One catalog for this tab: the shipped packs plus the ones this user created, so the
+  // player resolves exactly the packs the Sound page shows.
+  const soundPacks = useMemo(
+    () => mergeSoundPacks(state.settings?.soundPacks),
+    [state.settings?.soundPacks],
+  );
+  const soundPackRef = useRef<string>(resolveSoundPackId(state.settings?.soundPackId, soundPacks));
+  soundPackRef.current = resolveSoundPackId(state.settings?.soundPackId, soundPacks);
+  // The active pack's own cue matrix, kept beside the pack for the same reason: the
+  // event path reads it without waiting for a re-render.
+  const audioRef = useRef<FeedbackCueAudioSettings | null | undefined>(null);
+  audioRef.current = state.settings?.feedbackAudio?.[soundPackRef.current];
+  // Register the catalog the player reads and warm the selected pack, so a cue fired
+  // before any Settings visit still plays instead of only decoding after it was dropped.
+  useEffect(() => {
+    setSoundPackCatalog(soundPacks);
+    preloadSoundPack(soundPackRef.current);
+  }, [soundPacks]);
   // The daemon broadcasts `$settings` after every save — once per open tab, so
   // this tab also receives echoes triggered by OTHER tabs' saves. Each echo is a
   // full snapshot of the persisted state, so a snapshot older than the user's
@@ -3920,7 +3948,13 @@ const TabRuntime = memo(function TabRuntime({
   const settingsOverridesExpireAtRef = useRef(0);
   const cueDispatch = useCallback((action: TabAction) => {
     if (action.t === "incoming") {
-      handleCueForEvent(action.event, cuesRef.current, feedbackSounds, guardWarningsRef.current);
+      handleCueForEvent(
+        action.event,
+        audioRef.current,
+        soundPackRef.current,
+        feedbackSounds,
+        guardWarningsRef.current,
+      );
       dispatch(action);
       if (action.event.type === "$settings") {
         const overrides = settingsOverridesRef.current;
@@ -4076,6 +4110,34 @@ const TabRuntime = memo(function TabRuntime({
   );
   const uninstallSkill = useCallback(
     (name: string) => sendRpc({ cmd: "skills_uninstall", name }),
+    [sendRpc],
+  );
+  const pickSoundFile = useCallback(async (): Promise<string | null> => {
+    try {
+      const picked = await openDialog({
+        multiple: false,
+        title: t("settings.packWizardTitle"),
+        filters: [{ name: "Audio", extensions: [...SOUND_PACK_AUDIO_EXTENSIONS] }],
+      });
+      return typeof picked === "string" ? picked : null;
+    } catch {
+      return null;
+    }
+  }, []);
+  const createSoundPack = useCallback(
+    (draft: SoundPackDraft) =>
+      sendRpc({
+        cmd: "sound_pack_create",
+        label: draft.label,
+        sounds: draft.sounds,
+        // The daemon cannot read the shipped pack folders, so it is told which ids they
+        // own: a created pack must never shadow one.
+        reserved: BUILTIN_SOUND_PACKS.map((pack) => pack.id),
+      }),
+    [sendRpc],
+  );
+  const removeSoundPack = useCallback(
+    (id: string) => sendRpc({ cmd: "sound_pack_remove", id }),
     [sendRpc],
   );
   const requestMcpExtensionStatus = useCallback(
@@ -4665,7 +4727,9 @@ const TabRuntime = memo(function TabRuntime({
     previousApprovalSnapshotRef.current = currentSnapshot;
     wasBusyRef.current = state.busy;
 
-    const cues = state.settings?.feedbackCues;
+    const packId = soundPackRef.current;
+    const audio = audioRef.current;
+    const notify = state.settings?.feedbackNotify;
 
     // Sounds for state-driven cues fire regardless of window focus (a cue is
     // the user's opt-in acknowledgment); the focus-gated OS notification path
@@ -4678,7 +4742,7 @@ const TabRuntime = memo(function TabRuntime({
       previousPlan,
       currentPlan,
     })) {
-      playEnabledCue(cues, id, feedbackSounds);
+      playEnabledCue(audio, id, feedbackSounds, packId);
     }
 
     void getCurrentWindow()
@@ -4704,12 +4768,12 @@ const TabRuntime = memo(function TabRuntime({
           busyDurationMs,
           focused,
           outcome: state.lastTurnOutcome,
-          cues,
+          notify,
           previousPlan,
           currentPlan,
           guardWarnings,
         });
-        void dispatchDesktopNotifications(notifications, cues, {
+        void dispatchDesktopNotifications(notifications, notify, {
           isFocused: async () => focused,
           isPermissionGranted: isNotificationPermissionGranted,
           requestPermission: requestNotificationPermission,
@@ -4727,7 +4791,9 @@ const TabRuntime = memo(function TabRuntime({
     state.pendingPathAccess,
     state.pendingPlans,
     state.pendingRevisions,
-    state.settings?.feedbackCues,
+    state.settings?.feedbackAudio,
+    state.settings?.feedbackNotify,
+    state.settings?.soundPackId,
   ]);
 
   const resolveConfirm = useCallback(
@@ -5275,21 +5341,21 @@ const TabRuntime = memo(function TabRuntime({
   const dismissMemoryResult = useCallback(() => dispatch({ t: "dismiss_memory_result" }), []);
   const dismissToastNotice = useCallback((id: number) => dispatch({ t: "dismiss_toast", id }), []);
   const compactContext = useCallback(() => sendRpc({ cmd: "context_compact" }), [sendRpc]);
-  const readPlans = useCallback(() => {
-    void rpcSend({ cmd: "plan_history_get", tabId });
-  }, [tabId]);
-  const readPlan = useCallback(
-    (planId: string) => {
-      void rpcSend({ cmd: "plan_detail_get", planId, tabId });
-    },
-    [tabId],
-  );
-  const removePlan = useCallback(
-    (planId: string) => {
-      void rpcSend({ cmd: "plan_remove", planId, tabId });
-    },
-    [tabId],
-  );
+  // The plan tab speaks one language: every request is the same tab-scoped send with a
+  // different plan command, so the set is derived from the wire union instead of being
+  // restated as five near-identical callbacks.
+  const planRequests = useMemo(() => {
+    const send = (cmd: Extract<OutgoingCommand, { cmd: `plan_${string}` }>) => {
+      void sendRpc(cmd);
+    };
+    return {
+      readAll: () => send({ cmd: "plan_history_get" }),
+      read: (planId: string) => send({ cmd: "plan_detail_get", planId }),
+      remove: (planId: string) => send({ cmd: "plan_remove", planId }),
+      reorder: (planId: string) => send({ cmd: "plan_reorder", planId }),
+      clear: () => send({ cmd: "plan_clear" }),
+    };
+  }, [sendRpc]);
 
   return (
     <WorkspaceProvider value={{ dir: state.settings?.workspaceDir }}>
@@ -5703,9 +5769,11 @@ const TabRuntime = memo(function TabRuntime({
           planDetails={view.planDetails}
           planSession={view.currentSession}
           sessions={sessions}
-          onReadPlans={readPlans}
-          onReadPlan={readPlan}
-          onRemovePlan={removePlan}
+          onReadPlans={planRequests.readAll}
+          onReadPlan={planRequests.read}
+          onRemovePlan={planRequests.remove}
+          onReorderPlan={planRequests.reorder}
+          onClearPlans={planRequests.clear}
           messages={panelMessages}
           sessionEvents={view.sessionEvents}
           onJumpToEvent={jumpToEvent}
@@ -5822,6 +5890,9 @@ const TabRuntime = memo(function TabRuntime({
             onInstallSkill={installSkill}
             onUninstallSkill={uninstallSkill}
             onRequestSkills={requestSkills}
+            onPickSound={pickSoundFile}
+            onCreateSoundPack={createSoundPack}
+            onRemoveSoundPack={removeSoundPack}
             onClose={() => setSettingsOpen(false)}
             onSave={saveSettings}
             ollamaModels={ollamaModels}

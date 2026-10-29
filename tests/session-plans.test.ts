@@ -223,3 +223,42 @@ it("removes a plan for good in every state and refuses an unknown id", () => {
   expect(new PlanRepository("remove").list()).toEqual([]);
   expect(() => repo.remove("does-not-exist")).toThrow("Unknown plan ID");
 });
+it("moves a plan to the top of the list without touching the record", () => {
+  const repo = new PlanRepository("reorder");
+  const first = repo.propose("First");
+  const second = repo.propose("Second");
+  const third = repo.propose("Third");
+  // Newest first, as every surface lists it.
+  expect(repo.list().map((p) => p.id)).toEqual([third.id, second.id, first.id]);
+
+  expect(repo.reorder(first.id)).toBe(true);
+  expect(repo.list().map((p) => p.id)).toEqual([first.id, third.id, second.id]);
+  // Ordering only: the plan the session works and the record itself are unchanged.
+  expect(repo.open(first.id)).toMatchObject({ status: "proposed", body: "First" });
+  // The new order is on disk, not only in the cache.
+  expect(new PlanRepository("reorder").list().map((p) => p.id)).toEqual([
+    first.id,
+    third.id,
+    second.id,
+  ]);
+  // Repeating the request moves nothing, so it reports no write and keeps the order.
+  expect(repo.reorder(first.id)).toBe(false);
+  expect(repo.list().map((p) => p.id)).toEqual([first.id, third.id, second.id]);
+  expect(() => repo.reorder("does-not-exist")).toThrow("Unknown plan ID");
+});
+it("clears the whole workspace history in one write", () => {
+  const repo = new PlanRepository("clear");
+  const active = repo.propose("Active", steps);
+  repo.verdict(active.id, "active");
+  repo.propose("Proposed");
+  const cancelled = repo.propose("Cancelled");
+  repo.verdict(cancelled.id, "cancelled");
+  expect(repo.list()).toHaveLength(3);
+  repo.clear();
+  expect(repo.list()).toEqual([]);
+  expect(repo.activeFor("clear")).toBeNull();
+  // The wipe is on disk, not only in the cache: a fresh reader sees an empty history.
+  expect(new PlanRepository("clear").list()).toEqual([]);
+  // An empty history has nothing left to remove, and clearing it again stays legal.
+  expect(() => repo.clear()).not.toThrow();
+});

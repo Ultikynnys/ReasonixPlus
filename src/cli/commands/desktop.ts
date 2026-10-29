@@ -185,7 +185,8 @@ import {
   loadEndpointForModel,
   loadExaApiKey,
   loadFallbackModels,
-  loadFeedbackCues,
+  loadFeedbackAudio,
+  loadFeedbackNotify,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
   loadMaxOutputTokens,
@@ -209,6 +210,7 @@ import {
   loadRules,
   loadSearchApiKeys,
   loadSearchSetting,
+  loadSoundPackId,
   loadSyntheticApiKey,
   loadTavilyApiKey,
   loadWorkspaceDir,
@@ -244,7 +246,8 @@ import {
   saveElevationEnabled,
   saveEnabledModels,
   saveFallbackModels,
-  saveFeedbackCues,
+  saveFeedbackAudio,
+  saveFeedbackNotify,
   saveGmailOAuth,
   saveMailProvider,
   saveMimoCredential,
@@ -257,6 +260,7 @@ import {
   saveQuickSendId,
   saveReasoningEffort,
   saveRepetitionGuardEnabled,
+  saveSoundPackId,
   saveWorkspaceDir,
   searchSettingFromConfig,
   setMcpServerDisabled,
@@ -335,6 +339,7 @@ import {
   skillsRoot,
   uninstallSkill,
 } from "../../skills/index.js";
+import { createSoundPack, listSoundPacks, removeSoundPack } from "../../sound-packs/store.js";
 import { BUILTIN_ALLOWLIST } from "../../tools/shell/parse.js";
 import { coveredRuleScopes } from "../../tools/shell/rule-scope.js";
 
@@ -1318,6 +1323,26 @@ function emitPlanHistory(tab: Tab): void {
   }
 }
 
+/** Tabs of this workspace whose own plan `doomed` selects. Read it BEFORE the removal:
+ *  the store is workspace-scoped, so deleting here ends the plan another tab shows. */
+function planHolders(tab: Tab, doomed: (plan: PlanRecord) => boolean): Tab[] {
+  return (workspaceTabs?.(tab.rootDir) ?? [tab]).filter((target) => {
+    const active = activePlanForTab(target);
+    return active !== null && doomed(active);
+  });
+}
+
+/** Resync after plans are deleted: republish the workspace history and clear the rail of
+ *  every tab that lost its own plan. A tab that lost nothing keeps its rail, so a delete
+ *  never blanks a plan that is still in flight elsewhere. */
+function republishPlans(tab: Tab, cleared: readonly Tab[]): void {
+  emitPlanHistory(tab);
+  for (const target of cleared) {
+    refreshPlanSummary(target);
+    emit({ type: "$plan_cleared" }, target.id);
+  }
+}
+
 function emit(ev: EmittableEvent, tabId?: string): void {
   writeEvent(ev, tabId);
   // Model deltas are streamed at token/chunk frequency. They are already
@@ -1991,7 +2016,10 @@ function emitSettings(tab: Tab, opts: { turnReleased?: boolean } = {}): void {
       editMode,
       quickSends: loadCustomQuickSends(),
       quickSendId: loadQuickSendId(),
-      feedbackCues: loadFeedbackCues(),
+      feedbackAudio: loadFeedbackAudio(),
+      feedbackNotify: loadFeedbackNotify(),
+      soundPacks: listSoundPacks(),
+      soundPackId: loadSoundPackId(),
       contextTokens: servedWindowTotal(tab.currentModel) ?? tab.ctxMaxOverride ?? null,
       contextTokensBounds: contextWindowBounds(tab.currentModel),
       // The session's frozen capability: it is what the composer's subagent model
@@ -11207,8 +11235,16 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
             emitSettings(openTab);
           }
         }
-        if (msg.feedbackCues !== undefined) {
-          saveFeedbackCues(msg.feedbackCues);
+        if (msg.feedbackAudio !== undefined) {
+          saveFeedbackAudio(msg.feedbackAudio);
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
+        if (msg.feedbackNotify !== undefined) {
+          saveFeedbackNotify(msg.feedbackNotify);
+          for (const openTab of tabs.values()) emitSettings(openTab);
+        }
+        if (msg.soundPackId !== undefined) {
+          saveSoundPackId(msg.soundPackId);
           for (const openTab of tabs.values()) emitSettings(openTab);
         }
         if (msg.questionTimerEnabled !== undefined) {
@@ -11325,6 +11361,33 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       }
       return;
     }
+    if (msg.cmd === "sound_pack_create") {
+      try {
+        const created = createSoundPack({
+          label: msg.label,
+          ...(msg.description !== undefined ? { description: msg.description } : {}),
+          sounds: msg.sounds,
+          ...(msg.reserved !== undefined ? { reserved: msg.reserved } : {}),
+        });
+        // Every tab lists packs from its own $settings snapshot, so a pack created in one
+        // window has to reach the others.
+        for (const openTab of tabs.values()) emitSettings(openTab);
+        emitToast(tab, `Created the "${created.label}" sound pack`, "success");
+      } catch (err) {
+        emitToast(tab, `sound_pack_create: ${messageOf(err)}`);
+      }
+      return;
+    }
+    if (msg.cmd === "sound_pack_remove") {
+      try {
+        removeSoundPack(msg.id);
+        for (const openTab of tabs.values()) emitSettings(openTab);
+        emitToast(tab, `Removed the "${msg.id}" sound pack`, "success");
+      } catch (err) {
+        emitToast(tab, `sound_pack_remove: ${messageOf(err)}`);
+      }
+      return;
+    }
     if (msg.cmd === "mention_query") {
       const nonce = msg.nonce;
       const query = msg.query;
@@ -11431,17 +11494,35 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "plan_remove") {
       try {
-        const repository = planRepository(tab.rootDir);
-        const wasActive = activePlanForTab(tab)?.id === msg.planId;
-        repository.remove(msg.planId);
-        refreshPlanSummary(tab);
-        emitPlanHistory(tab);
-        // A removed active plan must stop driving the rail and the loop's plan context.
-        if (wasActive) emit({ type: "$plan_cleared" }, tab.id);
+        const cleared = planHolders(tab, (plan) => plan.id === msg.planId);
+        planRepository(tab.rootDir).remove(msg.planId);
+        republishPlans(tab, cleared);
       } catch (err) {
         // A stale/unknown plan id or a missing workspace must not throw out of the
         // stdin line handler — surface it as an error event instead.
         emit({ type: "$error", message: `plan_remove failed: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "plan_clear") {
+      try {
+        const cleared = planHolders(tab, () => true);
+        planRepository(tab.rootDir).clear();
+        republishPlans(tab, cleared);
+      } catch (err) {
+        // A missing workspace must not throw out of the stdin line handler.
+        emit({ type: "$error", message: `plan_clear failed: ${(err as Error).message}` }, tab.id);
+      }
+      return;
+    }
+    if (msg.cmd === "plan_reorder") {
+      try {
+        // A plan already on top moves nowhere, so nothing is republished for it.
+        if (planRepository(tab.rootDir).reorder(msg.planId)) emitPlanHistory(tab);
+      } catch (err) {
+        // A stale/unknown plan id or a missing workspace must not throw out of the
+        // stdin line handler.
+        emit({ type: "$error", message: `plan_reorder failed: ${(err as Error).message}` }, tab.id);
       }
       return;
     }

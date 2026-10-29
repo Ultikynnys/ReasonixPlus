@@ -92,6 +92,19 @@ describe("PagePlugins", () => {
     expect(screen.getByText(/github\.com\/nowork-studio\/notfair-plugin/)).toBeTruthy();
   });
 
+  it("insets the skills and server lists on their own darker surface", () => {
+    const { container } = renderPage([plugin()]);
+    const panels = [...container.querySelectorAll(".plugin-subpanel")];
+    // Skills first, servers second: the two sub-sections of one plugin card.
+    expect(panels).toHaveLength(2);
+    // Only the skills list is clamped, so only it carries the scroll class.
+    expect(panels.map((panel) => panel.classList.contains("plugin-subpanel-scroll"))).toEqual([
+      true,
+      false,
+    ]);
+    expect(within(panels[1] as HTMLElement).getByText("notfair")).toBeTruthy();
+  });
+
   it("folds a plugin's skills into folder headings, not one row per skill", () => {
     const { container } = renderPage([
       plugin({

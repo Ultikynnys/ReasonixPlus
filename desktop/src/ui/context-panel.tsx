@@ -1,4 +1,5 @@
 import {
+  type CtxMemoryTokens,
   type MemoryWriteOptions,
   type PlanDetail,
   type PlanHistoryItem,
@@ -32,6 +33,7 @@ import { EventsPanel } from "./events";
 import { FileMenu } from "./file-menu";
 import { useInventoryRequest } from "./inventory-request";
 import { activationHandler } from "./keyboard";
+import { ListControl } from "./list-controls";
 import { pluginQualifier } from "./plugin-labels";
 import { sessionTitle } from "./session-title";
 import type { JumpTarget } from "./transcript-jump";
@@ -68,6 +70,17 @@ function fmtCompact(n: number): string {
   }
   return n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n));
 }
+
+/** Each memory scope's row wording, keyed by the wire record so a scope added to
+ *  `CtxMemoryTokens` cannot reach the legend unlabeled: `memoryTotal` counts it. */
+const MEMORY_SCOPE_TEXT: Record<keyof CtxMemoryTokens, { label: TKey; title: TKey }> = {
+  global: { label: "contextPanel.scopeGlobal", title: "contextPanel.memoryGlobalTooltip" },
+  project: { label: "contextPanel.scopeProject", title: "contextPanel.memoryProjectTooltip" },
+  priority: {
+    label: "contextPanel.memoryPriorityKey",
+    title: "contextPanel.memoryPriorityTooltip",
+  },
+};
 
 /** One token-legend item: an optional colour swatch, the label, and its count. */
 function LegendItem({
@@ -122,6 +135,8 @@ export function ContextPanel({
   onReadPlans,
   onReadPlan,
   onRemovePlan,
+  onReorderPlan,
+  onClearPlans,
   messages = [],
   sessionEvents = [],
   onJumpToEvent,
@@ -171,6 +186,10 @@ export function ContextPanel({
   onReadPlans?: () => void;
   onReadPlan?: (id: string) => void;
   onRemovePlan?: (id: string) => void;
+  /** Move a plan to the top of the workspace history. */
+  onReorderPlan?: (id: string) => void;
+  /** Delete every plan in the workspace. */
+  onClearPlans?: () => void;
   /** The live transcript: the Events tab reads its user turns as event rows. */
   messages?: readonly TranscriptRecord[];
   /** Gate/fold verdicts recorded for this session, persisted with it. */
@@ -310,27 +329,24 @@ export function ContextPanel({
                 title={t("contextPanel.skillsTooltip")}
               />
               <LegendItem label={t("contextPanel.toolsKey")} value={reservedParts.tools} />
-              {memoryTokens ? (
-                <LegendItem
-                  label={t("contextPanel.memoryKey")}
-                  value={memoryTotal}
-                  title={t("contextPanel.memoryTooltip")}
-                />
-              ) : null}
+              {/* Memory costs are listed by scope rather than as one aggregate: the scopes
+                  already sum to the total. Both session scopes always show, so the row
+                  still adds up to `reserved`; the high-priority block is a rare overlay,
+                  so its empty row stays out. */}
+              {memoryTokens && memoryTotal > 0
+                ? (Object.entries(memoryTokens) as Array<[keyof CtxMemoryTokens, number]>).map(
+                    ([scope, tokens]) =>
+                      scope === "priority" && tokens === 0 ? null : (
+                        <LegendItem
+                          key={scope}
+                          label={t(MEMORY_SCOPE_TEXT[scope].label)}
+                          value={tokens}
+                          title={t(MEMORY_SCOPE_TEXT[scope].title)}
+                        />
+                      ),
+                  )
+                : null}
               <LegendItem label={t("contextPanel.promptKey")} value={reservedParts.prompt} />
-            </div>
-          ) : null}
-          {/* Splitting zeros is noise: the per-scope row appears once memory costs something. */}
-          {memoryTokens && memoryTotal > 0 ? (
-            <div className="legend legend-sub legend-nested" data-testid="ctx-memory-breakdown">
-              <LegendItem label={t("contextPanel.scopeGlobal")} value={memoryTokens.global} />
-              <LegendItem label={t("contextPanel.scopeProject")} value={memoryTokens.project} />
-              {memoryTokens.priority > 0 ? (
-                <LegendItem
-                  label={t("contextPanel.memoryPriorityKey")}
-                  value={memoryTokens.priority}
-                />
-              ) : null}
             </div>
           ) : null}
         </div>
@@ -384,6 +400,8 @@ export function ContextPanel({
               onReadPlans={onReadPlans}
               onReadPlan={onReadPlan}
               onRemovePlan={onRemovePlan}
+              onReorderPlan={onReorderPlan}
+              onClearPlans={onClearPlans}
               fallback={activePlan}
             />
           ) : null}
@@ -396,13 +414,16 @@ export function ContextPanel({
   );
 }
 
-/** A denied or failed dialog must never read as approval, so errors mean "no". */
-async function dialogConfirmed(message: string): Promise<boolean> {
+/** Ask, then run `action` only on a real yes: a denied or failed dialog must never read
+ *  as approval. */
+async function confirmThen(message: string, action: () => void): Promise<void> {
+  let confirmed = false;
   try {
-    return await confirmDialog(message);
+    confirmed = await confirmDialog(message);
   } catch {
-    return false;
+    return;
   }
+  if (confirmed) action();
 }
 
 function CtxPlanHistory({
@@ -411,6 +432,8 @@ function CtxPlanHistory({
   onReadPlans,
   onReadPlan,
   onRemovePlan,
+  onReorderPlan,
+  onClearPlans,
   fallback,
   currentSession,
   sessions,
@@ -420,13 +443,15 @@ function CtxPlanHistory({
   onReadPlans?: () => void;
   onReadPlan?: (id: string) => void;
   onRemovePlan?: (id: string) => void;
+  onReorderPlan?: (id: string) => void;
+  onClearPlans?: () => void;
   fallback?: ActivePlan | null;
   /** The session this panel belongs to — the plan list is workspace-wide, so the
    *  owner label needs it to say "this session" instead of repeating the name. */
   currentSession?: string;
   sessions?: readonly SessionInfo[];
 }) {
-  // The plan this session works is the dropdown's default: the history is
+  // The plan this session works is what the section opens on: the history is
   // workspace-wide, so the first active plan may belong to another session.
   const ownedId = planIdForSession(history, currentSession);
   const [selection, setSelection] = useState(ownedId ?? "");
@@ -476,92 +501,155 @@ function CtxPlanHistory({
   useEffect(() => {
     if (selected && !detail) readPlan.current?.(selected);
   }, [selected, detail]);
-  if (!history.length)
-    return fallback ? (
-      <CtxPlan plan={fallback} />
-    ) : (
-      <div className="ctx-empty">{t("contextPanel.planHistoryEmpty")}</div>
-    );
+  // Two columns: the plan this session shows, then every plan in the workspace. The grid
+  // drops to a single column by itself when the panel is narrow or the left is empty.
+  const hasCurrent = Boolean(selectedPlan || fallback);
   return (
-    <div className="ctx-plan">
-      <div className="ctx-section-head">
-        <div className="ctx-section-title">{t("contextPanel.planHistoryTitle")}</div>
-        <div className="ctx-plan-progress">{history.length}</div>
-      </div>
-      <div className="ctx-plan-picker">
-        <select
-          className="ctx-select"
-          aria-label={t("contextPanel.planHistoryAria")}
-          value={selected}
-          onChange={(event) => setSelection(event.target.value)}
-        >
-          {history.map((plan, index) => {
-            const planOwner = ownerOf(plan);
-            return (
-              <option key={plan.id} value={plan.id}>
-                {index + 1}. {plan.summary ?? t("contextPanel.planUntitled")} · {plan.status} ·{" "}
-                {plan.completedSteps}/{plan.totalSteps}
-                {planOwner ? ` · ${planOwner.text}` : ""}
-              </option>
-            );
-          })}
-        </select>
-        {onRemovePlan && selected ? (
-          <button
-            type="button"
-            className="mini-btn"
-            title={t("contextPanel.planRemove")}
-            aria-label={t("contextPanel.planRemove")}
-            onClick={() => {
-              const planId = selected;
-              void dialogConfirmed(t("contextPanel.planRemoveConfirm")).then((confirmed) => {
-                if (confirmed) onRemovePlan(planId);
-              });
-            }}
-          >
-            <I.trash size={12} />
-          </button>
-        ) : null}
-      </div>
-      {owner ? (
-        <div className="ctx-plan-owner" data-owned={owner.state}>
-          <span className="key">{t("contextPanel.planOwnerLabel")}</span>
-          <span className="name">{owner.text}</span>
-        </div>
-      ) : null}
-      {detail ? (
-        <CtxPlan
-          plan={{
-            plan: detail.body,
-            summary: detail.summary,
-            steps: detail.steps,
-            completedStepIds: Object.keys(detail.completions),
-            stepResults: Object.fromEntries(
-              Object.entries(detail.completions).map(([id, completion]) => [id, completion.result]),
-            ),
-            status:
-              detail.status === "active"
-                ? "active"
-                : detail.status === "completed"
-                  ? "finished"
-                  : "cancelled",
-          }}
-        />
-      ) : (
-        // Keep the summary + progress header from the history item, so a slow or
-        // failed detail fetch never leaves the panel blank.
-        <div className="ctx-plan">
-          <div className="ctx-section-head">
-            <div className="ctx-section-title">
-              {selectedPlan?.summary ?? t("contextPanel.planUntitled")}
-            </div>
-            <div className="ctx-plan-progress">
-              {selectedPlan?.completedSteps ?? 0}/{selectedPlan?.totalSteps ?? 0}
-            </div>
+    <div className="ctx-plan-split">
+      {hasCurrent ? (
+        <section className="ctx-plan-col ctx-plan-current">
+          <div className="list-head">
+            <span>{t("contextPanel.planCurrentTitle")}</span>
           </div>
-          <div className="ctx-empty">{t("contextPanel.planDetailsLoading")}</div>
+          {owner ? (
+            <div className="ctx-plan-owner" data-owned={owner.state}>
+              <span className="key">{t("contextPanel.planOwnerLabel")}</span>
+              <span className="name">{owner.text}</span>
+            </div>
+          ) : null}
+          {detail ? (
+            <CtxPlan plan={activePlanFromDetail(detail)} />
+          ) : selectedPlan ? (
+            // Keep the summary + progress header from the history item, so a slow or
+            // failed detail fetch never leaves the panel blank.
+            <div className="ctx-plan">
+              <PlanHead
+                title={selectedPlan.summary ?? t("contextPanel.planUntitled")}
+                done={selectedPlan.completedSteps}
+                total={selectedPlan.totalSteps}
+              />
+              <div className="ctx-empty">{t("contextPanel.planDetailsLoading")}</div>
+            </div>
+          ) : fallback ? (
+            <CtxPlan plan={fallback} />
+          ) : null}
+        </section>
+      ) : null}
+      <section className="ctx-plan-col ctx-plan-all">
+        <div className="list-head">
+          <span>{t("contextPanel.planListTitle")}</span>
+          <span className="count">{history.length}</span>
+          {onClearPlans && history.length > 0 ? (
+            <ListControl
+              kind="clear"
+              label={t("contextPanel.planClearAll")}
+              onAct={() => {
+                void confirmThen(
+                  t("contextPanel.planClearAllConfirm", { count: history.length }),
+                  onClearPlans,
+                );
+              }}
+            />
+          ) : null}
         </div>
-      )}
+        {history.length === 0 ? (
+          <div className="ctx-empty">{t("contextPanel.planListEmpty")}</div>
+        ) : (
+          <div className="ctx-plan-rows">
+            {history.map((plan, index) => {
+              const planOwner = ownerOf(plan);
+              const title = plan.summary ?? t("contextPanel.planUntitled");
+              // The dot marks work a session holds right now. `state: "none"` is a
+              // working plan nobody owns, so it gets no dot.
+              const live = planOwner !== null && planOwner.state !== "none";
+              return (
+                <div
+                  key={plan.id}
+                  className="list-row ctx-plan-row"
+                  data-active={plan.id === selected}
+                  data-current={plan.id === ownedId}
+                  role="button"
+                  tabIndex={0}
+                  title={title}
+                  onClick={() => setSelection(plan.id)}
+                  onKeyDown={activationHandler(() => setSelection(plan.id))}
+                >
+                  {live ? <span className="state" aria-hidden="true" /> : null}
+                  <div className="body">
+                    <span className="title">
+                      {index + 1}. {title}
+                    </span>
+                    <span className="meta">
+                      <span>
+                        {plan.completedSteps}/{plan.totalSteps}
+                      </span>
+                      <span className="sep">·</span>
+                      <span>{plan.status}</span>
+                      {planOwner?.state === "other" ? (
+                        <>
+                          <span className="sep">·</span>
+                          <span>{planOwner.text}</span>
+                        </>
+                      ) : null}
+                    </span>
+                  </div>
+                  {onReorderPlan ? (
+                    <ListControl
+                      kind="reorder"
+                      label={t("sidebarPanel.moveToTop")}
+                      onAct={() => onReorderPlan(plan.id)}
+                    />
+                  ) : null}
+                  {onRemovePlan ? (
+                    <ListControl
+                      kind="remove"
+                      label={t("contextPanel.planRemove")}
+                      onAct={() => {
+                        const planId = plan.id;
+                        void confirmThen(t("contextPanel.planRemoveConfirm"), () =>
+                          onRemovePlan(planId),
+                        );
+                      }}
+                    />
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/** A stored plan's detail as the checklist shape `CtxPlan` renders. */
+function activePlanFromDetail(detail: PlanDetail): ActivePlan {
+  return {
+    plan: detail.body,
+    summary: detail.summary,
+    steps: detail.steps,
+    completedStepIds: Object.keys(detail.completions),
+    stepResults: Object.fromEntries(
+      Object.entries(detail.completions).map(([id, completion]) => [id, completion.result]),
+    ),
+    status:
+      detail.status === "active"
+        ? "active"
+        : detail.status === "completed"
+          ? "finished"
+          : "cancelled",
+  };
+}
+
+/** The title and progress of a plan, above its steps. Shared by the loaded plan and the
+ *  placeholder shown while its detail is still in flight. */
+function PlanHead({ title, done, total }: { title: string; done: number; total: number }) {
+  return (
+    <div className="ctx-section-head">
+      <div className="ctx-section-title">{title}</div>
+      <div className="ctx-plan-progress">
+        {done}/{total}
+      </div>
     </div>
   );
 }
@@ -572,12 +660,11 @@ function CtxPlan({ plan }: { plan: ActivePlan }) {
   const runningId = plan.steps.find((step) => !done.has(step.id))?.id;
   return (
     <div className="ctx-plan">
-      <div className="ctx-section-head">
-        <div className="ctx-section-title">{plan.summary ?? t("contextPanel.activePlanTitle")}</div>
-        <div className="ctx-plan-progress">
-          {finished}/{plan.steps.length}
-        </div>
-      </div>
+      <PlanHead
+        title={plan.summary ?? t("contextPanel.activePlanTitle")}
+        done={finished}
+        total={plan.steps.length}
+      />
       {plan.steps.length === 0 ? (
         <div className="ctx-empty">{t("contextPanel.activePlanEmpty")}</div>
       ) : (

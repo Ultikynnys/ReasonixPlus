@@ -13,6 +13,7 @@ import type {
   ProviderUsageWindowLabel,
 } from "./provider-registry.js";
 import type { SearchEngineID } from "./search-engines.generated.js";
+import soundPackContract from "./sound-pack-contract.json";
 
 /** Trust dial: 3 settings, not 4.
  *  - `read-only`  : no writes, no shell (registry plan-mode blocks mutating tools).
@@ -1217,36 +1218,70 @@ export interface RuleRecord {
   match?: "pattern" | "regex";
 }
 
-/** One user-facing trigger the desktop can acknowledge with a sound cue and/or
- *  a system notification. Values persist in config as `feedbackCues` and ride
- *  the wire inside $settings / settings_save. All off by default. */
-export type FeedbackCueId = "planComplete" | "guardTriggered" | "inputRequired" | "taskComplete";
+/** Every user-facing trigger the desktop can acknowledge with a sound cue and/or a
+ *  system notification, in Settings table order. This array is the source of the
+ *  `FeedbackCueId` union and of every cue list the desktop derives. */
+export const FEEDBACK_CUE_IDS = [
+  "inputRequired",
+  "taskComplete",
+  "planComplete",
+  "guardTriggered",
+] as const;
 
-/** One toggle + volume entry of the per-type sound/notification matrix. */
-export interface FeedbackCueSetting {
+export type FeedbackCueId = (typeof FEEDBACK_CUE_IDS)[number];
+
+/** One cue's audio inside one pack: whether it plays and how loud. */
+export interface FeedbackCueAudioSetting {
   enabled: boolean;
   /** 0..1 playback gain, applied by the WebAudio player. */
   volume: number;
-  /** Desktop system notification alongside the cue (input-required types). */
-  notify: boolean;
 }
 
-export type FeedbackCueSettings = Partial<Record<FeedbackCueId, FeedbackCueSetting>>;
+/** Audio settings of one sound pack. A cue absent here plays nothing. */
+export type FeedbackCueAudioSettings = Partial<Record<FeedbackCueId, FeedbackCueAudioSetting>>;
 
-/** Defaults used whenever a cue is missing from persisted config: everything off. */
-export const DEFAULT_FEEDBACK_CUES: FeedbackCueSettings = {
-  planComplete: { enabled: false, volume: 0.5, notify: false },
-  guardTriggered: { enabled: false, volume: 0.5, notify: false },
-  inputRequired: { enabled: false, volume: 0.5, notify: false },
-  taskComplete: { enabled: false, volume: 0.5, notify: false },
-};
+/** Audio settings per sound pack, keyed by pack id. A pack with no entry plays
+ *  nothing until the user turns its cues on. */
+export type FeedbackAudioByPack = Record<string, FeedbackCueAudioSettings>;
+
+/** What a cue missing from persisted config plays: nothing, at the shared volume. */
+export const DEFAULT_FEEDBACK_AUDIO: FeedbackCueAudioSetting = { enabled: false, volume: 0.5 };
+
+/** Id of the pack the desktop declares in code rather than from a folder: it plays no
+ *  audio at all, and it is the default selection. */
+export const NOTHING_SOUND_PACK_ID: string = soundPackContract.nothingPackId;
+
+/** Pack ids the app owns, so neither a manifest folder nor a user-created pack can claim
+ *  one and render a second card under the same id. */
+export const RESERVED_SOUND_PACK_IDS: readonly string[] = [NOTHING_SOUND_PACK_ID];
+
+/** Audio a pack may hold: what the webview decodes and the store accepts. */
+export const SOUND_PACK_AUDIO_EXTENSIONS: readonly string[] = soundPackContract.audioExtensions;
+
+/** One user-created sound pack as the daemon reports it: its manifest fields plus the
+ *  absolute path of every cue's audio, which the webview turns into an asset URL. */
+export interface UserSoundPack {
+  id: string;
+  label: string;
+  description?: string;
+  /** Absolute audio path per cue; a cue absent here plays nothing in this pack. */
+  sounds: Partial<Record<FeedbackCueId, string>>;
+}
 
 export interface SettingsEvent {
   type: "$settings";
   reasoningEffort: ReasoningEffort;
   editMode: EditMode;
-  /** Per-type sound/notification cue matrix (Settings → Behavior). Absent = all off. */
-  feedbackCues?: FeedbackCueSettings;
+  /** Audio settings per sound pack (Settings -> Sound). Absent = every pack silent. */
+  feedbackAudio?: FeedbackAudioByPack;
+  /** Cues that also raise a desktop notification (Settings -> Sound). Not per pack:
+   *  switching packs must not change which events notify. Absent = none. */
+  feedbackNotify?: FeedbackCueId[];
+  /** Packs the user created, listed after the shipped ones. Absent = none. */
+  soundPacks?: UserSoundPack[];
+  /** Id of the sound pack cues play through (Settings -> Sound); absent or unknown
+   *  = the pack that plays nothing. */
+  soundPackId?: string;
   /** Id of the quick send the composer dropdown marks as the default. Optional:
    *  a daemon that predates the persisted default omits it. */
   quickSendId?: string;
@@ -1715,8 +1750,12 @@ export type SearchSettingsMap = Record<string, Record<string, string>>;
 export interface SettingsPatch {
   reasoningEffort?: ReasoningEffort;
   editMode?: EditMode;
-  /** Per-type sound/notification cue matrix (Settings → Behavior). */
-  feedbackCues?: FeedbackCueSettings;
+  /** Audio settings per sound pack (Settings -> Sound). */
+  feedbackAudio?: FeedbackAudioByPack;
+  /** Cues that also raise a desktop notification. */
+  feedbackNotify?: FeedbackCueId[];
+  /** Id of the sound pack cues should play through. */
+  soundPackId?: string;
   quickSends?: QuickSend[];
   /** Id of the quick send the composer should mark as the default. */
   quickSendId?: string;
@@ -1908,6 +1947,18 @@ export type OutgoingCommand = { tabId?: string } & (
   /** Install one skill, or every skill of a folder that holds skill directories. */
   | { cmd: "skills_install"; source: string }
   | { cmd: "skills_uninstall"; name: string }
+  /** Create a sound pack from audio the user picked in Settings > Sound. `reserved`
+   *  carries the pack ids the UI already shows (the shipped folder packs); the daemon
+   *  cannot read them, and a created pack must not shadow one. */
+  | {
+      cmd: "sound_pack_create";
+      label: string;
+      description?: string;
+      /** Cue to the absolute path of the audio the user chose for it. */
+      sounds: Partial<Record<FeedbackCueId, string>>;
+      reserved?: string[];
+    }
+  | { cmd: "sound_pack_remove"; id: string }
   /** Confirm a fresh chat's capabilities — enabled MCP servers, plugins, standalone skills
    *  and the subagent flag — freezing them in its session meta and unlocking it. */
   | {
@@ -1955,6 +2006,12 @@ export type OutgoingCommand = { tabId?: string } & (
   /** Delete a plan for good, whatever its status. Replies with a fresh $plan_history
    *  (and $plan_cleared when the removed plan was the active one). */
   | { cmd: "plan_remove"; planId: string }
+  /** Delete every plan in the workspace. Replies with a fresh $plan_history (and
+   *  $plan_cleared to each tab whose own plan was among them). */
+  | { cmd: "plan_clear" }
+  /** Move a plan to the top of the workspace history. Replies with a fresh
+   *  $plan_history; nothing about the plan itself changes. */
+  | { cmd: "plan_reorder"; planId: string }
   /** Fold/summarize the conversation to reclaim context space (manual
    *  compaction). Refused while a turn is in flight. */
   | { cmd: "context_compact" }

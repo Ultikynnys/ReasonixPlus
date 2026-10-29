@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Generates one barrel per declaration directory: providers/*.json and
- * search-engines/*.json under packages/core-utils, and voice models/*.json
- * under desktop/src/voice.
+ * search-engines/*.json under packages/core-utils, voice models/*.json under
+ * desktop/src/voice, and the sound pack folders under desktop/public/sound-packs.
  *
  * The barrels exist because JSON imports widen to `string` (so a literal id
  * union cannot be inferred from the JSON) and because the registries are
@@ -24,6 +24,20 @@ const defaultSearchOutputPath = join(
 );
 const defaultVoiceModelsDir = join(repoRoot, "desktop/src/voice/models");
 const defaultVoiceOutputPath = join(repoRoot, "desktop/src/voice/models.generated.ts");
+const defaultSoundPacksDir = join(repoRoot, "desktop/public/sound-packs");
+const defaultSoundPacksOutputPath = join(repoRoot, "desktop/src/sound-packs.generated.ts");
+
+/** The pack contract both sides share (reserved id, decodable audio extensions). The build
+ *  script cannot import the TypeScript module that re-exports it, so it reads the same file
+ *  the runtime imports: one copy of each fact. */
+const soundPackContract = JSON.parse(
+  readFileSync(join(repoRoot, "packages/core-utils/src/sound-pack-contract.json"), "utf8"),
+);
+/** Dotted form, because a manifest is validated with endsWith. */
+const SOUND_EXTENSIONS = soundPackContract.audioExtensions.map((ext) => `.${ext}`);
+/** Ids the desktop declares in code, so a folder of that name would render a second card
+ *  under the same id. */
+const RESERVED_SOUND_PACK_IDS = [soundPackContract.nothingPackId];
 
 /** A provider identifier as a JS binding: `deepseek` → `deepseek`, `my-provider` → `my_provider`. */
 function importName(id, taken) {
@@ -250,16 +264,126 @@ export type VoiceModelId = [(typeof VOICE_MODEL_IDS)[number]] extends [never]
 `;
 }
 
+/** Reads every sound-packs/<dir>/pack.json, sorted by folder name, failing loudly per
+ *  folder. A manifest that is not valid JSON, names a different id than its folder,
+ *  uses a reserved id, or names an audio file the folder does not hold stops the sync
+ *  instead of shipping a pack the player cannot resolve. */
+export function readSoundPackDocuments(dir = defaultSoundPacksDir) {
+  const folders = readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  return folders.map((folder) => {
+    const where = `sound-packs/${folder}`;
+    if (RESERVED_SOUND_PACK_IDS.includes(folder)) {
+      throw new Error(`${where}: this id is reserved for the pack the desktop declares itself`);
+    }
+    let document;
+    try {
+      document = JSON.parse(readFileSync(join(dir, folder, "pack.json"), "utf8"));
+    } catch (error) {
+      throw new Error(`${where}/pack.json: ${error instanceof Error ? error.message : error}`);
+    }
+    if (document?.id !== folder) {
+      throw new Error(`${where}/pack.json: "id" must equal the folder name ("${folder}")`);
+    }
+    const files = readdirSync(join(dir, folder))
+      .filter((name) => name !== "pack.json")
+      .sort();
+    const sounds = document.sounds;
+    if (!sounds || typeof sounds !== "object" || Array.isArray(sounds)) {
+      throw new Error(`${where}/pack.json: "sounds" must map cue ids to file names`);
+    }
+    for (const [cue, file] of Object.entries(sounds)) {
+      if (typeof file !== "string") {
+        throw new Error(`${where}/pack.json: sound "${cue}" must be a file name`);
+      }
+      if (!SOUND_EXTENSIONS.some((ext) => file.toLowerCase().endsWith(ext))) {
+        throw new Error(
+          `${where}/pack.json: sound "${cue}" must name one of ${SOUND_EXTENSIONS.join(", ")}`,
+        );
+      }
+      if (!files.includes(file)) {
+        throw new Error(`${where}/pack.json: sound "${cue}" names missing file "${file}"`);
+      }
+    }
+    return { dir: folder, id: folder, files, document };
+  });
+}
+
+/** Pack ids in card order - the source of `SoundPackID`. */
+function soundPackIds(entries) {
+  return [...entries]
+    .sort(
+      (a, b) =>
+        Number(a.document.order ?? 0) - Number(b.document.order ?? 0) || a.id.localeCompare(b.id),
+    )
+    .map((entry) => entry.id);
+}
+
+/** Renders desktop/src/sound-packs.generated.ts as text. The manifests are inlined
+ *  rather than imported: they live under public/, which Vite copies verbatim, so an
+ *  import would bundle a second copy that could drift from the served one. */
+export function renderSoundPackRegistry(dir = defaultSoundPacksDir) {
+  const entries = readSoundPackDocuments(dir);
+  const documents = entries
+    .map(
+      ({ dir: folder, files, document }) => `  {
+    dir: ${JSON.stringify(folder)},
+    files: [
+${files.map((file) => `      ${JSON.stringify(file)},`).join("\n")}
+    ],
+    document: ${JSON.stringify(document, null, 2).replace(/\n/g, "\n    ")},
+  },`,
+    )
+    .join("\n");
+  const ids = soundPackIds(entries)
+    .map((id) => `  ${JSON.stringify(id)},`)
+    .join("\n");
+
+  return `// Generated by scripts/generate-provider-registry.mjs - do not edit by hand.
+// Run \`npm run providers:sync\` after adding or removing a sound-packs/<id>/ folder.
+
+/** A sound pack folder, its manifest and the audio files beside it. */
+export interface SoundPackDocumentSource {
+  /** Folder name under public/sound-packs/, e.g. \`halo\`. */
+  dir: string;
+  /** Audio files the folder holds, sorted, excluding pack.json. */
+  files: string[];
+  document: unknown;
+}
+
+/** Every pack folder, one per sound-packs/<id>/pack.json, sorted by folder name. */
+export const SOUND_PACK_DOCUMENTS: readonly SoundPackDocumentSource[] = [
+${documents}
+];
+
+/** Pack ids in card order, derived from each manifest's \`order\`. */
+export const SOUND_PACK_NAMES = [
+${ids}
+] as const;
+
+/** Falls back to string when no pack is declared, so an empty set still builds. */
+export type SoundPackID = [(typeof SOUND_PACK_NAMES)[number]] extends [never]
+  ? string
+  : (typeof SOUND_PACK_NAMES)[number];
+`;
+}
+
 function main() {
   writeFileSync(defaultOutputPath, renderRegistry());
   writeFileSync(defaultSearchOutputPath, renderSearchRegistry());
   writeFileSync(defaultVoiceOutputPath, renderVoiceRegistry());
+  writeFileSync(defaultSoundPacksOutputPath, renderSoundPackRegistry());
   console.log(`Synced ${readProviderDocuments().length} provider files → ${defaultOutputPath}`);
   console.log(
     `Synced ${readSearchEngineDocuments().length} search engines → ${defaultSearchOutputPath}`,
   );
   console.log(
     `Synced ${readVoiceModelDocuments().length} voice models → ${defaultVoiceOutputPath}`,
+  );
+  console.log(
+    `Synced ${readSoundPackDocuments().length} sound packs → ${defaultSoundPacksOutputPath}`,
   );
 }
 

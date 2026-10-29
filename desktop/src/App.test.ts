@@ -1944,10 +1944,12 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
     expect(defaults.settings?.autoCompactTrigger).toBeNull();
   });
 
-  it("stores the feedback cue matrix from $settings (never dropped by the whitelist)", () => {
-    const cues = {
-      inputRequired: { enabled: true, volume: 0.25, notify: true },
-      guardTriggered: { enabled: false, volume: 0.8, notify: false },
+  it("stores the per-pack audio settings and notification list from $settings", () => {
+    const audio = {
+      halo: {
+        inputRequired: { enabled: true, volume: 0.25 },
+        guardTriggered: { enabled: false, volume: 0.8 },
+      },
     };
     const state = reduce(initialState(), {
       t: "incoming",
@@ -1960,13 +1962,15 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
         workspaceDir: "/workspace",
         recentWorkspaces: [],
         model: "deepseek-v4-pro",
-        feedbackCues: cues,
+        feedbackAudio: audio,
+        feedbackNotify: ["inputRequired"],
         version: "0.50.1",
       },
     });
-    expect(state.settings?.feedbackCues).toEqual(cues);
+    expect(state.settings?.feedbackAudio).toEqual(audio);
+    expect(state.settings?.feedbackNotify).toEqual(["inputRequired"]);
 
-    // Absent field falls back to an empty matrix (everything off).
+    // Absent fields fall back to no pack settings and no notifications.
     const defaults = reduce(initialState(), {
       t: "incoming",
       event: {
@@ -1981,7 +1985,8 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
         version: "0.50.1",
       },
     });
-    expect(defaults.settings?.feedbackCues).toEqual({});
+    expect(defaults.settings?.feedbackAudio).toEqual({});
+    expect(defaults.settings?.feedbackNotify).toEqual([]);
   });
 
   it("appends a $notice event below the turn as a notice card", () => {

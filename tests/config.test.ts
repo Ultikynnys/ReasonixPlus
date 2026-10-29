@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { providerDeclared, searchEngineDeclared } from "@reasonix/core-utils";
@@ -43,7 +43,8 @@ import {
   loadEndpoint,
   loadEndpointForModel,
   loadExperientialApiKey,
-  loadFeedbackCues,
+  loadFeedbackAudio,
+  loadFeedbackNotify,
   loadFilesystemOutlineThresholdBytes,
   loadGlobalPathAllowed,
   loadGlobalShellAllowed,
@@ -62,6 +63,7 @@ import {
   loadReasoningEffort,
   loadRecentWorkspaces,
   loadResolvedModelEndpoint,
+  loadSoundPackId,
   loadTheme,
   loadToolRateLimit,
   loadZaiApiKey,
@@ -86,13 +88,15 @@ import {
   saveDuplicateSessionAutoProceed,
   saveDuplicateSessionTokens,
   saveEditMode,
-  saveFeedbackCues,
+  saveFeedbackAudio,
+  saveFeedbackNotify,
   saveModel,
   saveOllamaGenerationPatch,
   saveOpenAIApiKey,
   saveOpenAIOAuth,
   saveQuestionTimerEnabled,
   saveReasoningEffort,
+  saveSoundPackId,
   saveTheme,
   searchEnabled,
   webSearchEngine,
@@ -1411,16 +1415,74 @@ describe("config", () => {
     expect(readConfig(path).questionTimerEnabled).toBe(true);
   });
 
-  it("feedbackCues defaults to empty (all off) and round-trips the cue matrix", () => {
-    expect(loadFeedbackCues(path)).toEqual({});
+  it("feedbackAudio defaults to empty (every pack silent) and round-trips per pack", () => {
+    expect(loadFeedbackAudio(path)).toEqual({});
 
-    const cues = {
-      inputRequired: { enabled: true, volume: 0.25, notify: true },
-      guardTriggered: { enabled: false, volume: 0.8, notify: false },
+    const audio = {
+      halo: { inputRequired: { enabled: true, volume: 0.25 } },
+      default: { guardTriggered: { enabled: false, volume: 0.8 } },
     };
-    saveFeedbackCues(cues, path);
-    expect(loadFeedbackCues(path)).toEqual(cues);
-    expect(readConfig(path).feedbackCues).toEqual(cues);
+    saveFeedbackAudio(audio, path);
+    expect(loadFeedbackAudio(path)).toEqual(audio);
+    expect(readConfig(path).feedbackAudio).toEqual(audio);
+  });
+
+  it("feedbackNotify defaults to none and round-trips the cue list", () => {
+    expect(loadFeedbackNotify(path)).toEqual([]);
+
+    saveFeedbackNotify(["inputRequired", "guardTriggered"], path);
+    expect(loadFeedbackNotify(path)).toEqual(["inputRequired", "guardTriggered"]);
+    expect(readConfig(path).feedbackNotify).toEqual(["inputRequired", "guardTriggered"]);
+
+    saveFeedbackNotify(["inputRequired", "inputRequired"], path);
+    expect(loadFeedbackNotify(path)).toEqual(["inputRequired"]);
+  });
+
+  it("migrates the pre-packs cue matrix onto the selected pack", () => {
+    const write = (cfg: Record<string, unknown>) => writeFileSync(path, JSON.stringify(cfg));
+    write({
+      soundPackId: "halo",
+      feedbackCues: {
+        inputRequired: { enabled: true, volume: 0.25, notify: true },
+        guardTriggered: { enabled: false, volume: 0.8, notify: false },
+      },
+    });
+
+    expect(loadFeedbackAudio(path)).toEqual({
+      halo: {
+        inputRequired: { enabled: true, volume: 0.25 },
+        guardTriggered: { enabled: false, volume: 0.8 },
+      },
+    });
+    expect(loadFeedbackNotify(path)).toEqual(["inputRequired"]);
+
+    // Saving the new shape drops the legacy key so the migration runs once.
+    saveFeedbackAudio({ halo: { taskComplete: { enabled: true, volume: 1 } } }, path);
+    expect(readConfig(path).feedbackCues).toBeUndefined();
+    expect(readConfig(path).feedbackAudio).toEqual({
+      halo: { taskComplete: { enabled: true, volume: 1 } },
+    });
+  });
+
+  it("migrates a legacy matrix with no selected pack onto the shipped default pack", () => {
+    writeFileSync(
+      path,
+      JSON.stringify({ feedbackCues: { taskComplete: { enabled: true, volume: 0.5 } } }),
+    );
+    expect(loadFeedbackAudio(path)).toEqual({
+      default: { taskComplete: { enabled: true, volume: 0.5 } },
+    });
+  });
+
+  it("soundPackId is unset until chosen and then round-trips", () => {
+    expect(loadSoundPackId(path)).toBeUndefined();
+
+    saveSoundPackId("halo", path);
+    expect(loadSoundPackId(path)).toBe("halo");
+    expect(readConfig(path).soundPackId).toBe("halo");
+
+    saveSoundPackId("default", path);
+    expect(loadSoundPackId(path)).toBe("default");
   });
 
   it("loadReasoningEffort defaults to 'high' when unset (safe for vLLM / Azure)", () => {

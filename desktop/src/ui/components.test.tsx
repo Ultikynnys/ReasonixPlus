@@ -2,7 +2,9 @@
 // Consolidated from 8 per-module test files; each source keeps its own
 // describe() wrapper so its helpers stay file-scoped. Test bodies are unchanged.
 
-import { type ChangelogRelease, groupReleases } from "@reasonix/core-utils";
+import { type ChangelogRelease, SESSION_EVENT_TYPES, groupReleases } from "@reasonix/core-utils";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Settings, UsageStats } from "../App";
@@ -1138,6 +1140,25 @@ describe("events", () => {
       // No count/filter bar: the type is each row's own tag.
       expect(labels).toEqual(["User", "Plan", "Choice", "User"]);
       expect(document.querySelector(".ctx-evt-types")).toBeNull();
+    });
+
+    it("gives every event type its own badge colour", () => {
+      // jsdom serves `import.meta.url` over http, so the stylesheet is located from the
+      // test file's own path instead of the module URL.
+      const testPath = expect.getState().testPath;
+      expect(testPath, "vitest must report the running test file").toBeTruthy();
+      const css = readFileSync(resolve(dirname(testPath ?? ""), "../styles.css"), "utf8");
+      const kinds = ["turn", ...SESSION_EVENT_TYPES];
+      const colours = kinds.map((kind) => {
+        const rule = new RegExp(`\\.ctx-evt\\[data-kind="${kind}"\\][^{]*\\{([^}]*)\\}`).exec(
+          css,
+        );
+        expect(rule, `styles.css has no badge colour rule for "${kind}"`).not.toBeNull();
+        return /--evt-kind:\s*([^;]+);/.exec(rule?.[1] ?? "")?.[1].trim();
+      });
+      expect(new Set(colours).size, `event types share a badge colour: ${colours.join(", ")}`).toBe(
+        kinds.length,
+      );
     });
 
     it("shows a subagent spawn as its own row, tagged and jumpable", () => {

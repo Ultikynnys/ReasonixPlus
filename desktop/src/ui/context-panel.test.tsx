@@ -5,8 +5,10 @@ import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ActivePlan, Settings, UsageStats } from "../App";
+import type { ActivePlan, SessionInfo, Settings, UsageStats } from "../App";
+import type { PlanDetail, PlanHistoryItem } from "@reasonix/core-utils";
 import type { McpSpecInfo, PluginInfo, SkillInfo } from "../protocol";
+import { I } from "../icons";
 import { ContextPanel } from "./context-panel";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -72,264 +74,277 @@ function renderPanel(
   );
 }
 
+
+
 describe("Session plan history", () => {
-  it("selects discarded plans and loads complete details on demand", async () => {
-    const onReadPlan = vi.fn();
-    const onReadPlans = vi.fn();
-    const now = "2026-01-01T00:00:00.000Z";
-    render(
-      <ContextPanel
-        settings={settings}
-        usage={usage}
-        mcpSpecs={[]}
-        mcpBridged={false}
-        sessionFiles={[]}
-        memory={[]}
-        memoryDetail={null}
-        memoryResult={null}
-        onReadMemory={() => {}}
-        onWriteMemory={() => {}}
-        onDeleteMemory={() => {}}
-        onDismissMemoryResult={() => {}}
-        onReadPlans={onReadPlans}
-        onReadPlan={onReadPlan}
-        planSession="test"
-        planHistory={[
-          {
-            id: "old",
-            summary: "Discarded",
-            status: "superseded",
-            createdAt: now,
-            updatedAt: now,
-            finishedAt: null,
-            totalSteps: 2,
-            completedSteps: 1,
-          },
-          {
-            id: "new",
-            summary: "Current",
-            status: "active",
-            createdAt: now,
-            updatedAt: now,
-            finishedAt: null,
-            totalSteps: 1,
-            completedSteps: 0,
-          },
-        ]}
-        planDetails={{
-          old: {
-            id: "old",
-            summary: "Discarded",
-            status: "superseded",
-            createdAt: now,
-            updatedAt: now,
-            finishedAt: null,
-            body: "Original plan body",
-            steps: [{ id: "one", title: "Accepted first step", action: "First action" }],
-            completions: {
-              one: {
-                stepId: "one",
-                result: "Verified work",
-                notes: "Retained notes",
-                evidence: [{ kind: "verification", summary: "Passed" }],
-              },
-            },
-            revisions: [],
-          },
-        }}
-      />,
-    );
-    fireEvent.click(screen.getByText("Plan"));
-    expect(onReadPlans).toHaveBeenCalledTimes(1);
-    expect(onReadPlan).toHaveBeenCalledWith("new");
-    expect(screen.getByText("Plan history")).toBeTruthy();
-    const select = screen.getByRole("combobox", { name: "Session plan history" });
-    // Every plan in the session appears in the dropdown.
-    expect(within(select).getAllByRole("option")).toHaveLength(2);
-    expect(within(select).getByRole("option", { name: /Discarded/ })).toBeTruthy();
-    expect(within(select).getByRole("option", { name: /Current/ })).toBeTruthy();
-    fireEvent.change(select, { target: { value: "old" } });
-    // The selected plan renders as a formatted checklist (no raw detail lines).
-    expect(screen.getByText("Accepted first step")).toBeTruthy();
-    expect(screen.getByText("Verified work")).toBeTruthy();
-    expect(screen.queryByText("Full plan")).toBeNull();
-  });
+  const now = "2026-01-01T00:00:00.000Z";
 
-  it("names the session that owns the selected plan, and no owner once it is finished", () => {
-    const now = "2026-01-01T00:00:00.000Z";
-    const base = {
+  /** One plan-history row with the fields every case cares about defaulted. */
+  function plan(overrides: Partial<PlanHistoryItem> & { id: string }): PlanHistoryItem {
+    return {
+      summary: "Plan",
+      status: "active",
       createdAt: now,
       updatedAt: now,
       finishedAt: null,
       totalSteps: 1,
       completedSteps: 0,
+      ...overrides,
     };
-    const { container } = render(
-      <ContextPanel
-        settings={settings}
-        usage={usage}
-        mcpSpecs={[]}
-        mcpBridged={false}
-        sessionFiles={[]}
-        memory={[]}
-        memoryDetail={null}
-        memoryResult={null}
-        onReadMemory={() => {}}
-        onWriteMemory={() => {}}
-        onDeleteMemory={() => {}}
-        onDismissMemoryResult={() => {}}
-        planSession="mine"
-        sessions={[
-          { name: "mine", summary: "My chat", messageCount: 1, mtime: now },
-          { name: "theirs", summary: "Their chat", messageCount: 1, mtime: now },
-        ]}
-        planHistory={[
-          {
-            ...base,
-            id: "theirs-plan",
-            summary: "Their work",
-            status: "active",
-            ownerSession: "theirs",
-          },
-          { ...base, id: "mine-plan", summary: "My work", status: "active", ownerSession: "mine" },
-          // Still claimed on disk, but finished: it owns nothing and shows no owner.
-          {
-            ...base,
-            id: "done-plan",
-            summary: "Done work",
-            status: "completed",
-            ownerSession: "mine",
-          },
-          { ...base, id: "orphan-plan", summary: "Orphan work", status: "active" },
-        ]}
-        planDetails={{}}
-      />,
-    );
-    fireEvent.click(screen.getByText("Plan"));
-    const select = screen.getByRole("combobox", { name: "Session plan history" });
-    // A working plan names its owner, including "nobody" for an unclaimed one.
-    expect(within(select).getByRole("option", { name: /Their chat/ })).toBeTruthy();
-    expect(within(select).getByRole("option", { name: /My chat · this session/ })).toBeTruthy();
-    expect(within(select).getByRole("option", { name: /No owning session/ })).toBeTruthy();
-    // A finished plan carries no owner text at all, not even a placeholder.
-    const finished = within(select).getByRole("option", { name: /Done work/ });
-    expect(finished.textContent).not.toContain("My chat");
-    expect(finished.textContent).not.toContain("owning");
-
-    const ownerName = () => container.querySelector(".ctx-plan-owner .name")?.textContent;
-    // The dropdown opens on the plan THIS session owns, even though a newer active
-    // plan in the same workspace belongs to another session.
-    expect((select as HTMLSelectElement).value).toBe("mine-plan");
-    expect(ownerName()).toBe("My chat · this session");
-    expect(container.querySelector(".ctx-plan-owner")?.getAttribute("data-owned")).toBe("this");
-
-    fireEvent.change(select, { target: { value: "theirs-plan" } });
-    expect(ownerName()).toBe("Their chat");
-    expect(container.querySelector(".ctx-plan-owner")?.getAttribute("data-owned")).toBe("other");
-
-    fireEvent.change(select, { target: { value: "orphan-plan" } });
-    expect(ownerName()).toBe("No owning session");
-    expect(container.querySelector(".ctx-plan-owner")?.getAttribute("data-owned")).toBe("none");
-
-    // Finishing a plan ends its ownership: the owner line disappears entirely.
-    fireEvent.change(select, { target: { value: "done-plan" } });
-    expect(container.querySelector(".ctx-plan-owner")).toBeNull();
-  });
-
-  it("selects the plan of the session it switched to, and keeps the choice when it has none", () => {
-    const now = "2026-01-01T00:00:00.000Z";
-    const base = {
-      createdAt: now,
-      updatedAt: now,
-      finishedAt: null,
-      totalSteps: 1,
-      completedSteps: 0,
-    };
-    const history = [
-      { ...base, id: "a-plan", summary: "Work in A", status: "active", ownerSession: "a" },
-      { ...base, id: "b-plan", summary: "Work in B", status: "active", ownerSession: "b" },
-      { ...base, id: "c-plan", summary: "Work in C", status: "active", ownerSession: "c" },
-    ];
-    const panel = (planSession: string, items: typeof history) => (
-      <ContextPanel
-        settings={settings}
-        usage={usage}
-        mcpSpecs={[]}
-        mcpBridged={false}
-        sessionFiles={[]}
-        memory={[]}
-        memoryDetail={null}
-        memoryResult={null}
-        onReadMemory={() => {}}
-        onWriteMemory={() => {}}
-        onDeleteMemory={() => {}}
-        onDismissMemoryResult={() => {}}
-        planSession={planSession}
-        planHistory={items}
-        planDetails={{}}
-      />
-    );
-    const picker = () =>
-      screen.getByRole("combobox", { name: "Session plan history" }) as HTMLSelectElement;
-    const { rerender } = render(panel("b", history));
-    fireEvent.click(screen.getByText("Plan"));
-    // Opening on B selects B's plan, not the newest active plan in the workspace.
-    expect(picker().value).toBe("b-plan");
-
-    rerender(panel("a", history));
-    expect(picker().value).toBe("a-plan");
-
-    // A session that owns no plan has nothing to select, so the choice stands.
-    rerender(panel("planless", history));
-    expect(picker().value).toBe("a-plan");
-
-    // The plan of a session is selected once its history arrives, not only at mount.
-    rerender(panel("c", []));
-    expect(screen.queryByRole("combobox", { name: "Session plan history" })).toBeNull();
-    rerender(panel("c", history));
-    expect(picker().value).toBe("c-plan");
-  });
-
-  function renderRemovablePlan(onRemovePlan: (id: string) => void) {
-    const now = "2026-01-01T00:00:00.000Z";
-    render(
-      <ContextPanel
-        settings={settings}
-        usage={usage}
-        mcpSpecs={[]}
-        mcpBridged={false}
-        sessionFiles={[]}
-        memory={[]}
-        memoryDetail={null}
-        memoryResult={null}
-        onReadMemory={() => {}}
-        onWriteMemory={() => {}}
-        onDeleteMemory={() => {}}
-        onDismissMemoryResult={() => {}}
-        planSession="test"
-        planHistory={[
-          {
-            id: "doomed",
-            summary: "Doomed plan",
-            status: "superseded",
-            createdAt: now,
-            updatedAt: now,
-            finishedAt: null,
-            totalSteps: 1,
-            completedSteps: 0,
-          },
-        ]}
-        onRemovePlan={onRemovePlan}
-      />,
-    );
-    fireEvent.click(screen.getByText("Plan"));
-    return screen.getByRole("button", { name: "Remove plan" });
   }
 
-  it("keeps the plan when the confirm dialog is cancelled", async () => {
+  type PlanPanelProps = {
+    history?: PlanHistoryItem[];
+    details?: Record<string, PlanDetail>;
+    planSession?: string;
+    sessions?: SessionInfo[];
+    onReadPlans?: () => void;
+    onReadPlan?: (id: string) => void;
+    onRemovePlan?: (id: string) => void;
+    onReorderPlan?: (id: string) => void;
+    onClearPlans?: () => void;
+  };
+
+  function planPanel(props: PlanPanelProps) {
+    return (
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onDismissMemoryResult={() => {}}
+        planHistory={props.history ?? []}
+        planDetails={props.details ?? {}}
+        planSession={props.planSession}
+        sessions={props.sessions}
+        onReadPlans={props.onReadPlans}
+        onReadPlan={props.onReadPlan}
+        onRemovePlan={props.onRemovePlan}
+        onReorderPlan={props.onReorderPlan}
+        onClearPlans={props.onClearPlans}
+      />
+    );
+  }
+
+  function renderPlans(props: PlanPanelProps = {}) {
+    const view = render(planPanel(props));
+    fireEvent.click(screen.getByText("Plan"));
+    return view;
+  }
+
+  function rows(container: HTMLElement): HTMLElement[] {
+    return Array.from(container.querySelectorAll<HTMLElement>(".ctx-plan-row"));
+  }
+
+  function rowTitled(container: HTMLElement, title: string): HTMLElement {
+    const row = rows(container).find((candidate) =>
+      candidate.querySelector(".title")?.textContent?.includes(title),
+    );
+    if (!row) throw new Error(`no plan row titled ${title}`);
+    return row;
+  }
+
+  /** What the left column currently shows as its plan title. */
+  function shownPlan(container: HTMLElement): string | undefined {
+    return (
+      container.querySelector(".ctx-plan-current .ctx-section-title")?.textContent ?? undefined
+    );
+  }
+
+  function ownerLine(container: HTMLElement) {
+    return container.querySelector(".ctx-plan-owner");
+  }
+
+  it("opens on the session's own plan and shows the plan a row selects", () => {
+    const onReadPlan = vi.fn();
+    const onReadPlans = vi.fn();
+    const { container } = renderPlans({
+      onReadPlan,
+      onReadPlans,
+      planSession: "test",
+      history: [
+        plan({ id: "new", summary: "Current", ownerSession: "test" }),
+        plan({
+          id: "old",
+          summary: "Discarded",
+          status: "superseded",
+          totalSteps: 2,
+          completedSteps: 1,
+        }),
+      ],
+      details: {
+        old: {
+          id: "old",
+          summary: "Discarded",
+          status: "superseded",
+          createdAt: now,
+          updatedAt: now,
+          finishedAt: null,
+          body: "Original plan body",
+          steps: [{ id: "one", title: "Accepted first step", action: "First action" }],
+          completions: {
+            one: {
+              stepId: "one",
+              result: "Verified work",
+              notes: "Retained notes",
+              evidence: [{ kind: "verification", summary: "Passed" }],
+            },
+          },
+          revisions: [],
+        },
+      },
+    });
+    expect(onReadPlans).toHaveBeenCalledTimes(1);
+    // The left column opens on this session's plan and asks for its details.
+    expect(shownPlan(container)).toBe("Current");
+    expect(onReadPlan).toHaveBeenCalledWith("new");
+    expect(screen.getByText("Plans")).toBeTruthy();
+    // Every plan of the workspace is listed beside it.
+    expect(rows(container)).toHaveLength(2);
+    // Selecting a row shows that plan's checklist, not the raw plan body.
+    fireEvent.click(rowTitled(container, "Discarded"));
+    expect(shownPlan(container)).toBe("Discarded");
+    expect(screen.getByText("Accepted first step")).toBeTruthy();
+    expect(screen.getByText("Verified work")).toBeTruthy();
+    expect(screen.queryByText("Original plan body")).toBeNull();
+  });
+
+  it("names the session that owns the shown plan, and no owner once it is finished", () => {
+    const { container } = renderPlans({
+      planSession: "mine",
+      sessions: [
+        { name: "mine", summary: "My chat", messageCount: 1, mtime: now },
+        { name: "theirs", summary: "Their chat", messageCount: 1, mtime: now },
+      ],
+      history: [
+        plan({ id: "theirs-plan", summary: "Their work", ownerSession: "theirs" }),
+        plan({ id: "mine-plan", summary: "My work", ownerSession: "mine" }),
+        // Still claimed on disk, but finished: it owns nothing and shows no owner.
+        plan({ id: "done-plan", summary: "Done work", status: "completed", ownerSession: "mine" }),
+        plan({ id: "orphan-plan", summary: "Orphan work" }),
+      ],
+    });
+    // The section opens on the plan THIS session owns, even though a newer active plan
+    // in the same workspace belongs to another session.
+    expect(shownPlan(container)).toBe("My work");
+    expect(ownerLine(container)?.getAttribute("data-owned")).toBe("this");
+    expect(ownerLine(container)?.textContent).toContain("My chat");
+    // A row names the session working it, so a plan can be matched by eye.
+    expect(rowTitled(container, "Their work").textContent).toContain("Their chat");
+
+    fireEvent.click(rowTitled(container, "Their work"));
+    expect(ownerLine(container)?.getAttribute("data-owned")).toBe("other");
+    expect(ownerLine(container)?.textContent).toContain("Their chat");
+
+    fireEvent.click(rowTitled(container, "Orphan work"));
+    expect(ownerLine(container)?.getAttribute("data-owned")).toBe("none");
+    expect(ownerLine(container)?.textContent).toContain("No owning session");
+
+    // Finishing a plan ends its ownership: the owner line disappears entirely.
+    fireEvent.click(rowTitled(container, "Done work"));
+    expect(ownerLine(container)).toBeNull();
+  });
+
+  it("follows the session it switched to, and keeps the choice when that session owns none", () => {
+    const history = [
+      plan({ id: "a-plan", summary: "Work in A", ownerSession: "a" }),
+      plan({ id: "b-plan", summary: "Work in B", ownerSession: "b" }),
+      plan({ id: "c-plan", summary: "Work in C", ownerSession: "c" }),
+    ];
+    const view = renderPlans({ planSession: "b", history });
+    expect(shownPlan(view.container)).toBe("Work in B");
+
+    view.rerender(planPanel({ planSession: "a", history }));
+    expect(shownPlan(view.container)).toBe("Work in A");
+
+    // A session that owns no plan has nothing to follow, so the choice stands.
+    view.rerender(planPanel({ planSession: "planless", history }));
+    expect(shownPlan(view.container)).toBe("Work in A");
+
+    // An empty workspace shows one column, and the plan arrives with the history.
+    view.rerender(planPanel({ planSession: "c", history: [] }));
+    expect(rows(view.container)).toHaveLength(0);
+    expect(shownPlan(view.container)).toBeUndefined();
+    view.rerender(planPanel({ planSession: "c", history }));
+    expect(shownPlan(view.container)).toBe("Work in C");
+  });
+
+  it("dots the plans a live session is working and outlines this session's own", () => {
+    const { container } = renderPlans({
+      planSession: "mine",
+      history: [
+        plan({ id: "mine-plan", summary: "My work", ownerSession: "mine" }),
+        plan({ id: "orphan-plan", summary: "Orphan work" }),
+        plan({ id: "done-plan", summary: "Done work", status: "completed", ownerSession: "mine" }),
+      ],
+    });
+    // The dot is the row's state element: only work a session holds right now has one.
+    expect(rowTitled(container, "My work").querySelector(".state")).toBeTruthy();
+    expect(rowTitled(container, "Orphan work").querySelector(".state")).toBeNull();
+    expect(rowTitled(container, "Done work").querySelector(".state")).toBeNull();
+    // The outline marks this session's plan, and no other row wears it.
+    const outlined = rows(container).filter((row) => row.dataset.current === "true");
+    expect(outlined).toHaveLength(1);
+    expect(outlined[0]?.querySelector(".title")?.textContent).toContain("My work");
+  });
+
+  it("moves a plan to the top from its own row without changing what is shown", () => {
+    const onReorderPlan = vi.fn();
+    const { container } = renderPlans({
+      planSession: "mine",
+      history: [
+        plan({ id: "mine-plan", summary: "My work", ownerSession: "mine" }),
+        plan({ id: "older", summary: "Older work", status: "superseded" }),
+      ],
+      onReorderPlan,
+    });
+    fireEvent.click(
+      within(rowTitled(container, "Older work")).getByRole("button", { name: "Move to top" }),
+    );
+    expect(onReorderPlan).toHaveBeenCalledWith("older");
+    // The row control acts on its own plan only: the click does not select it.
+    expect(shownPlan(container)).toBe("My work");
+  });
+
+  it("gives each plan the X and the whole list the trash", () => {
+    const { container } = renderPlans({
+      history: [plan({ id: "one", summary: "Only plan" })],
+      onRemovePlan: vi.fn(),
+      onClearPlans: vi.fn(),
+    });
+    const glyph = (root: ParentNode) => root.querySelector("path")?.getAttribute("d");
+    const xGlyph = glyph(render(<I.x />).container);
+    const trashGlyph = glyph(render(<I.trash />).container);
+    const removeButton = within(rows(container)[0] as HTMLElement).getByRole("button", {
+      name: "Remove plan",
+    });
+    expect(glyph(removeButton)).toBe(xGlyph);
+    expect(glyph(screen.getByRole("button", { name: "Delete all plans" }))).toBe(trashGlyph);
+  });
+
+  it("keeps the plan when the remove confirm is cancelled", async () => {
     const onRemovePlan = vi.fn();
     vi.mocked(confirmDialog).mockResolvedValue(false);
-    fireEvent.click(renderRemovablePlan(onRemovePlan));
+    const { container } = renderPlans({
+      planSession: "mine",
+      history: [
+        plan({ id: "mine-plan", summary: "My work", ownerSession: "mine" }),
+        plan({ id: "doomed", summary: "Doomed plan", status: "superseded" }),
+      ],
+      onRemovePlan,
+    });
+    fireEvent.click(
+      within(rowTitled(container, "Doomed plan")).getByRole("button", { name: "Remove plan" }),
+    );
+    // The row control acts on its own plan: removing it does not also select it.
+    expect(shownPlan(container)).toBe("My work");
     await waitFor(() =>
       expect(confirmDialog).toHaveBeenCalledWith(
         "Remove this plan permanently? This cannot be undone.",
@@ -338,11 +353,42 @@ describe("Session plan history", () => {
     expect(onRemovePlan).not.toHaveBeenCalled();
   });
 
-  it("removes the plan only after the confirm dialog resolves true", async () => {
+  it("removes the plan only after the remove confirm resolves true", async () => {
     const onRemovePlan = vi.fn();
     vi.mocked(confirmDialog).mockResolvedValue(true);
-    fireEvent.click(renderRemovablePlan(onRemovePlan));
+    const { container } = renderPlans({
+      planSession: "mine",
+      history: [
+        plan({ id: "mine-plan", summary: "My work", ownerSession: "mine" }),
+        plan({ id: "doomed", summary: "Doomed plan", status: "superseded" }),
+      ],
+      onRemovePlan,
+    });
+    fireEvent.click(
+      within(rowTitled(container, "Doomed plan")).getByRole("button", { name: "Remove plan" }),
+    );
     await waitFor(() => expect(onRemovePlan).toHaveBeenCalledWith("doomed"));
+  });
+
+  it("keeps every plan when the clear-all confirm is cancelled", async () => {
+    const onClearPlans = vi.fn();
+    vi.mocked(confirmDialog).mockResolvedValue(false);
+    renderPlans({ history: [plan({ id: "doomed", summary: "Doomed plan" })], onClearPlans });
+    fireEvent.click(screen.getByRole("button", { name: "Delete all plans" }));
+    await waitFor(() =>
+      expect(confirmDialog).toHaveBeenCalledWith(
+        "Delete all 1 plan(s) in this workspace? This cannot be undone.",
+      ),
+    );
+    expect(onClearPlans).not.toHaveBeenCalled();
+  });
+
+  it("clears every plan only after the clear-all confirm resolves true", async () => {
+    const onClearPlans = vi.fn();
+    vi.mocked(confirmDialog).mockResolvedValue(true);
+    renderPlans({ history: [plan({ id: "doomed", summary: "Doomed plan" })], onClearPlans });
+    fireEvent.click(screen.getByRole("button", { name: "Delete all plans" }));
+    await waitFor(() => expect(onClearPlans).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -906,7 +952,7 @@ describe("ContextPanel files", () => {
     expect(screen.queryByTestId("ctx-reserved-breakdown")).toBeNull();
   });
 
-  it("attributes part of the reserved bucket to memory, split by scope", () => {
+  it("lists memory costs by scope inside the reserved row", () => {
     renderPanel(undefined, null, [], true, {
       ...usage,
       reservedTokens: 15_975,
@@ -915,16 +961,14 @@ describe("ContextPanel files", () => {
       memoryTokens: { global: 400, project: 248, priority: 0 },
     });
     const breakdown = within(screen.getByTestId("ctx-reserved-breakdown"));
-    expect(breakdown.getByText("memory")).toBeTruthy();
-    expect(breakdown.getByText("648")).toBeTruthy();
+    expect(breakdown.queryByText("memory")).toBeNull();
+    expect(breakdown.getByText("global")).toBeTruthy();
+    expect(breakdown.getByText("400")).toBeTruthy();
+    expect(breakdown.getByText("project")).toBeTruthy();
+    expect(breakdown.getByText("248")).toBeTruthy();
     // Memory is charged against the prompt remainder, so the parts still sum to `reserved`.
     expect(breakdown.getByText("1,600")).toBeTruthy();
-    const split = within(screen.getByTestId("ctx-memory-breakdown"));
-    expect(split.getByText("global")).toBeTruthy();
-    expect(split.getByText("400")).toBeTruthy();
-    expect(split.getByText("project")).toBeTruthy();
-    expect(split.getByText("248")).toBeTruthy();
-    expect(split.queryByText("high priority")).toBeNull();
+    expect(breakdown.queryByText("high priority")).toBeNull();
   });
 
   it("shows the high-priority memory layer only when it costs something", () => {
@@ -936,13 +980,12 @@ describe("ContextPanel files", () => {
       memoryTokens: { global: 400, project: 248, priority: 120 },
     });
     const breakdown = within(screen.getByTestId("ctx-reserved-breakdown"));
-    expect(breakdown.getByText("768")).toBeTruthy();
-    const split = within(screen.getByTestId("ctx-memory-breakdown"));
-    expect(split.getByText("high priority")).toBeTruthy();
-    expect(split.getByText("120")).toBeTruthy();
+    expect(breakdown.getByText("high priority")).toBeTruthy();
+    expect(breakdown.getByText("120")).toBeTruthy();
+    expect(breakdown.getByText("1,480")).toBeTruthy();
   });
 
-  it("keeps the memory item at zero without showing a split row", () => {
+  it("omits the memory scopes while they cost nothing", () => {
     renderPanel(undefined, null, [], true, {
       ...usage,
       reservedTokens: 15_975,
@@ -950,8 +993,10 @@ describe("ContextPanel files", () => {
       toolTokens: 8_000,
       memoryTokens: { global: 0, project: 0, priority: 0 },
     });
-    expect(within(screen.getByTestId("ctx-reserved-breakdown")).getByText("memory")).toBeTruthy();
-    expect(screen.queryByTestId("ctx-memory-breakdown")).toBeNull();
+    const breakdown = within(screen.getByTestId("ctx-reserved-breakdown"));
+    expect(breakdown.queryByText("global")).toBeNull();
+    expect(breakdown.queryByText("project")).toBeNull();
+    expect(breakdown.getByText("2,248")).toBeTruthy();
   });
 
   it("uses the configured context window as the meter denominator before the sidecar reports", () => {

@@ -1,0 +1,12 @@
+{
+  "id": "halo",
+  "label": "Halo",
+  "description": "Halo voice lines for every cue, so the app answers in character instead of a tone.",
+  "order": 1,
+  "sounds": {
+    "inputRequired": "InputRequired.ogg",
+    "taskComplete": "TaskComplete.ogg",
+    "planComplete": "PlanComplete.ogg",
+    "guardTriggered": "RepetitionDetected.ogg"
+  }
+}

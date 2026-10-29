@@ -57,6 +57,13 @@ body[data-drag-over="1"]::after {
 
 /* ---------- THEME TOKENS ---------- */
 
+/* Marks plans a live session is working: fixed orange in every theme, since it reports
+   work in flight rather than following the theme's accent. */
+:root {
+  --plan-live: oklch(70% 0.18 52);
+  --plan-live-soft: oklch(70% 0.18 52 / 0.18);
+}
+
 :root,
 [data-theme="dark"],
 [data-theme-style="graphite"] {
@@ -1611,7 +1618,9 @@ html[data-platform="macos"] .titlebar .tb-left {
   flex-direction: column;
   gap: 1px;
 }
-.side-section .label {
+/* A list's section header: the sidebar's recent sessions and the plan tab's columns
+   share it, so both surfaces read as one list design. */
+.list-head {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1622,7 +1631,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   text-transform: uppercase;
   color: var(--muted);
 }
-.side-section .label .count {
+.list-head .count {
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0;
@@ -1634,13 +1643,13 @@ html[data-platform="macos"] .titlebar .tb-left {
 }
 /* No RECENT-header throbber: in-flight session work is shown only by the
    main-area pill, so this surface has no second indicator to style. */
-.side-section .label .clear-all-btn:disabled {
+.list-head .clear-all-btn:disabled {
   opacity: 0.5;
   cursor: default;
   background: transparent;
   color: var(--muted);
 }
-.side-section .label .clear-all-btn {
+.list-head .clear-all-btn {
   margin-left: auto;
   flex-shrink: 0;
   display: inline-flex;
@@ -1655,16 +1664,21 @@ html[data-platform="macos"] .titlebar .tb-left {
   border-radius: 4px;
   transition: background 120ms, color 120ms;
 }
-.side-section .label .clear-all-btn:hover {
+.list-head .clear-all-btn:hover {
   background: var(--panel-2, rgba(255, 80, 80, 0.12));
   color: var(--danger, #e25555);
 }
-.side-section .label .clear-all-btn:focus-visible {
+.list-head .clear-all-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
-.session-item {
+/* One row design for every compact list: the sidebar's sessions and the plan tab's
+   plans. The element classes (`session-item`, `ctx-plan-row`) add only surface
+   specifics on top of it. */
+.list-row {
+  /* One square per row control, so a floating control can be offset from it. */
+  --row-action-size: 22px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1674,19 +1688,19 @@ html[data-platform="macos"] .titlebar .tb-left {
   color: var(--fg-2);
   position: relative;
 }
-.session-item:hover {
+.list-row:hover {
   background: var(--panel);
 }
-.session-item:focus-visible {
+.list-row:focus-visible {
   outline: none;
   background: var(--panel);
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
-.session-item[data-active="true"] {
+.list-row[data-active="true"] {
   background: var(--panel);
   color: var(--fg);
 }
-.session-item[data-active="true"]::before {
+.list-row[data-active="true"]::before {
   content: "";
   position: absolute;
   inset: 5px auto 5px 0;
@@ -1694,43 +1708,43 @@ html[data-platform="macos"] .titlebar .tb-left {
   border-radius: 999px;
   background: var(--accent);
 }
-.session-item .state {
+.list-row .state {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
-  /* Reserved for RUNNING agents only — the element is not rendered at all
-   * when the session's agent is idle, so no gray "idle" dot exists. */
+  /* Reserved for work in flight only — the element is not rendered at all when the
+   * row's agent or owning session is idle, so no gray "idle" dot exists. */
   background: var(--accent);
 }
-.session-item[data-active="true"] .state {
+.list-row[data-active="true"] .state {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.session-item .body {
+.list-row .body {
   min-width: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
 }
-.session-item .body .title {
+.list-row .body .title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 14px;
   font-weight: 500;
 }
-.session-item .body .title-row {
+.list-row .body .title-row {
   display: flex;
   align-items: center;
   gap: 6px;
   /* min-width 0 lets the title ellipsize while the plan label never shrinks. */
   min-width: 0;
 }
-.session-item .body .title-row .title {
+.list-row .body .title-row .title {
   flex: 1;
   min-width: 0;
 }
-.session-item .body .plan-tag {
+.list-row .body .plan-tag {
   flex-shrink: 0;
   padding: 1px 5px;
   border: 1px solid var(--border-strong);
@@ -1741,15 +1755,15 @@ html[data-platform="macos"] .titlebar .tb-left {
   line-height: 1.4;
   white-space: nowrap;
 }
-.session-item .body .plan-tag[data-plan="live"] {
+.list-row .body .plan-tag[data-plan="live"] {
   border-color: var(--accent);
   color: var(--accent);
 }
-.session-item .body .plan-tag[data-plan="none"] {
+.list-row .body .plan-tag[data-plan="none"] {
   border-style: dashed;
   color: var(--muted-2);
 }
-.session-item .body .meta {
+.list-row .body .meta {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1757,20 +1771,22 @@ html[data-platform="macos"] .titlebar .tb-left {
   font-size: 12px;
   color: var(--muted);
 }
-.session-item .body .meta .sep {
+.list-row .body .meta .sep {
   color: var(--border-strong);
 }
-.session-item .body .meta .rate {
+.list-row .body .meta .rate {
   color: var(--accent);
   font-variant-numeric: tabular-nums;
   /* Never wrap or shrink the figure — it's short and must stay legible. */
   white-space: nowrap;
   flex-shrink: 0;
 }
-.session-item .delete-btn {
+.list-row .delete-btn,
+.list-row .rename-btn,
+.list-row .reorder-btn {
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
+  width: var(--row-action-size);
+  height: var(--row-action-size);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1782,64 +1798,48 @@ html[data-platform="macos"] .titlebar .tb-left {
   opacity: 0;
   transition: opacity 120ms, background 120ms, color 120ms;
 }
-.session-item .rename-btn,
-.session-item .reorder-btn {
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 120ms, background 120ms, color 120ms;
-}
-.session-item:hover .delete-btn,
-.session-item:focus-within .delete-btn,
-.session-item .delete-btn:focus-visible,
-.session-item:hover .rename-btn,
-.session-item:focus-within .rename-btn,
-.session-item .rename-btn:focus-visible,
-.session-item:hover .reorder-btn,
-.session-item:focus-within .reorder-btn,
-.session-item .reorder-btn:focus-visible {
+.list-row:hover .delete-btn,
+.list-row:focus-within .delete-btn,
+.list-row .delete-btn:focus-visible,
+.list-row:hover .rename-btn,
+.list-row:focus-within .rename-btn,
+.list-row .rename-btn:focus-visible,
+.list-row:hover .reorder-btn,
+.list-row:focus-within .reorder-btn,
+.list-row .reorder-btn:focus-visible {
   opacity: 1;
 }
-.session-item .delete-btn:hover {
+.list-row .delete-btn:hover {
   background: var(--panel-2, rgba(255, 80, 80, 0.12));
   color: var(--danger, #e25555);
 }
-.session-item .delete-btn:focus-visible {
+.list-row .delete-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 /* Locked delete control: visible but plainly inert. Declared after the hover
    rules because the row-hover opacity outranks the global button:disabled. */
-.session-item .delete-btn:disabled,
-.session-item .delete-btn:disabled:hover {
+.list-row .delete-btn:disabled,
+.list-row .delete-btn:disabled:hover {
   opacity: 0.35;
   background: transparent;
   color: var(--muted);
   box-shadow: none;
 }
-.session-item .rename-btn:hover,
-.session-item .reorder-btn:hover {
+.list-row .rename-btn:hover,
+.list-row .reorder-btn:hover {
   background: var(--panel-2, rgba(255, 255, 255, 0.06));
   color: var(--fg);
 }
-.session-item .rename-btn:focus-visible,
-.session-item .reorder-btn:focus-visible {
+.list-row .rename-btn:focus-visible,
+.list-row .reorder-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
-.session-item[data-editing="true"] {
+.list-row[data-editing="true"] {
   cursor: default;
 }
-.session-item .body .title-edit {
+.list-row .body .title-edit {
   width: 100%;
   font: inherit;
   color: var(--fg);
@@ -1849,11 +1849,55 @@ html[data-platform="macos"] .titlebar .tb-left {
   padding: 2px 6px;
   outline: none;
 }
-.session-item .body .title-edit:focus {
+.list-row .body .title-edit:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
+/* ---- plan rows (shared row design, tighter than a session row) ---- */
+/* Each plan column is about half the panel, so the two controls float over the row's
+   right edge rather than taking the width the title needs. */
+.ctx-plan-row .reorder-btn,
+.ctx-plan-row .delete-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.ctx-plan-row .reorder-btn {
+  right: calc(var(--row-action-size) + 4px);
+}
+.ctx-plan-row .delete-btn {
+  right: 2px;
+}
+/* The dot on a plan a live session is working stays orange in every theme: it marks
+   work in flight, not the theme's accent. */
+.ctx-plan-row .state {
+  background: var(--plan-live);
+}
+.ctx-plan-row[data-active="true"] .state {
+  box-shadow: 0 0 0 3px var(--plan-live-soft);
+}
+/* This session's plan wears the accent as an outline. */
+.ctx-plan-row[data-current="true"] {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+/* One box-shadow cannot stack declarations, so the outlined row restates the focus
+   ring the outline would otherwise swallow. */
+.ctx-plan-row[data-current="true"]:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 2px var(--accent-soft);
+}
+.ctx-plan-row .body .meta {
+  min-width: 0;
+}
+.ctx-plan-row .body .meta > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A column is half the panel, so a plan row is set one step denser than a session row. */
+.ctx-plan-row .body .title {
+  font-size: 13px;
+}
 /* ---- right-click session menu ---- */
 .session-menu {
   position: fixed;
@@ -3428,6 +3472,56 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .ctx-plan {
   padding: 12px;
 }
+/* Two columns: the plan this session shows, then every plan in the workspace. Each
+   column needs roughly this much for a row's title and status, so a narrower panel
+   stacks them instead of eliding every title; a lone column takes the whole width. */
+.ctx-plan-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(118px, 100%), 1fr));
+  gap: 12px;
+  padding: 0;
+  align-items: start;
+}
+/* The plan tab's columns need the width the scrollbar gutter otherwise keeps to itself. */
+.ctx-body:has(> .ctx-plan-split) {
+  padding-right: 12px;
+  margin-right: 4px;
+}
+.ctx-plan-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* The columns supply the spacing, so a plan block inside one starts flush. */
+.ctx-plan-col .ctx-plan {
+  padding: 0;
+}
+.ctx-plan-col .list-head {
+  /* A column is half the panel: the head shrinks to keep the count and trash beside the
+     label instead of wrapping. */
+  padding: 0 0 2px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.ctx-plan-col .list-head > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-plan-col .list-head .count {
+  padding: 0 4px;
+  font-size: 11px;
+}
+.ctx-plan-col .ctx-plan-owner {
+  margin: 0;
+}
+.ctx-plan-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
 .ctx-section-head {
   display: flex;
   align-items: center;
@@ -3443,6 +3537,10 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   color: var(--muted);
   font-family: "Geist Mono", monospace;
   font-size: 12px;
+}
+/* The header trash removes every plan, so it hovers danger like the rows' X. */
+.ctx-plan-split .clear-all-btn:hover {
+  color: var(--danger);
 }
 .ctx-select {
   width: 100%;
@@ -3473,19 +3571,6 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .ctx-select option {
   background: var(--bg-2);
   color: var(--fg);
-}
-.ctx-plan-picker {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 4px 0 10px;
-}
-.ctx-plan-picker .ctx-select {
-  flex: 1;
-  margin: 0;
-}
-.ctx-plan-picker .mini-btn:hover {
-  color: var(--danger);
 }
 /* Source picker above an inventory that spans several plugins or the user's own skills. */
 .ctx-filter {
@@ -3539,6 +3624,16 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .ctx-plan-step:last-child {
   border-bottom: 0;
+}
+/* An identifier or path in a step has no break opportunity of its own, so it must not be
+   able to push a step wider than the column it lives in. */
+.ctx-plan-step > div {
+  min-width: 0;
+}
+.ctx-plan-title,
+.ctx-plan-action,
+.ctx-plan-result {
+  overflow-wrap: anywhere;
 }
 .ctx-plan-check {
   width: 16px;
@@ -5562,7 +5657,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .legend .v {
   color: var(--fg);
 }
-/* Second legend row: what the reserved bucket is made of (skills, tools, memory, prompt). */
+/* Second legend row: what the reserved bucket is made of (skills, tools, memory scopes, prompt). */
 .legend.legend-sub {
   margin-top: 2px;
   font-size: 12px;
@@ -5571,11 +5666,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .legend.legend-sub .v {
   color: var(--fg-2);
 }
-/* Third row: the memory segment's own split, indented under the item it explains. */
-.legend.legend-sub.legend-nested {
-  padding-left: 10px;
-}
-
 /* context window slider */
 .ctx-slider-container {
   display: flex;
@@ -5859,6 +5949,24 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--muted-2);
   font-variant-numeric: tabular-nums;
 }
+/* One badge colour per event type, so a row's type reads before its word does.
+ *  The list is complete over EventKind: a kind without a line here falls back to
+ *  the muted default below and its row looks identical to every other kind. */
+.ctx-evt[data-kind="turn"] {
+  --evt-kind: var(--fg);
+}
+.ctx-evt[data-kind="plan"] {
+  --evt-kind: var(--accent);
+}
+.ctx-evt[data-kind="choice"] {
+  --evt-kind: var(--violet);
+}
+.ctx-evt[data-kind="compaction"] {
+  --evt-kind: var(--warning);
+}
+.ctx-evt[data-kind="subagent"] {
+  --evt-kind: var(--success);
+}
 /* The row's own type label — replaces a separate count/filter bar. */
 .ctx-evt-kind {
   flex-shrink: 0;
@@ -5871,17 +5979,8 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   letter-spacing: 0.04em;
   text-transform: uppercase;
   line-height: 1.5;
-  color: var(--muted);
+  color: var(--evt-kind, var(--muted));
   opacity: 0.85;
-}
-.ctx-evt[data-kind="plan"] .ctx-evt-kind {
-  color: var(--accent);
-}
-.ctx-evt[data-kind="choice"] .ctx-evt-kind {
-  color: var(--violet);
-}
-.ctx-evt[data-kind="compaction"] .ctx-evt-kind {
-  color: var(--warning);
 }
 .ctx-evt-label {
   flex: 1;
@@ -7829,6 +7928,91 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--muted);
   font-size: 13px;
 }
+/* Create-a-pack wizard: a dialog over the Settings modal, so it stacks above it. */
+.pack-wizard-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: oklch(0% 0 0 / 0.45);
+}
+.pack-wizard {
+  width: min(520px, calc(100vw - 48px));
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  padding: 16px 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--fg);
+  font-size: 14px;
+}
+.pack-wizard-head {
+  margin-bottom: 12px;
+}
+.pack-wizard-head .n {
+  font-size: 15px;
+  font-weight: 600;
+}
+.pack-wizard-head .h,
+.pack-wizard-field .h {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.pack-wizard-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pack-wizard-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.pack-wizard-row:last-of-type {
+  border-bottom: none;
+}
+.pack-wizard-row .l {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pack-wizard-row .l .n {
+  font-size: 14px;
+  font-weight: 500;
+}
+.pack-wizard-row .l .h {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.pack-wizard-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.pack-wizard-file {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pack-wizard-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
 .provider-caret {
   display: inline-flex;
   align-items: center;
@@ -7851,6 +8035,19 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .provider-col {
   min-width: 0;
+}
+/* Plugin card sub-sections (skills, MCP servers): an inset surface darker than the card,
+   so the region a scrollbar governs is bounded before the bar is touched. */
+.plugin-subpanel {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.plugin-subpanel-scroll {
+  max-height: 190px;
+  overflow-y: auto;
 }
 /* Plugin card skill list: one heading per directory a plugin's skills live in. */
 .skill-root {

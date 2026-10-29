@@ -428,12 +428,18 @@ export type {
   StatusBarToggles,
 } from "./desktop-protocol.js";
 export type {
+  FeedbackAudioByPack,
+  FeedbackCueAudioSetting,
+  FeedbackCueAudioSettings,
   FeedbackCueId,
-  FeedbackCueSetting,
-  FeedbackCueSettings,
+  UserSoundPack,
 } from "./desktop-protocol.js";
 export {
-  DEFAULT_FEEDBACK_CUES,
+  DEFAULT_FEEDBACK_AUDIO,
+  FEEDBACK_CUE_IDS,
+  NOTHING_SOUND_PACK_ID,
+  RESERVED_SOUND_PACK_IDS,
+  SOUND_PACK_AUDIO_EXTENSIONS,
   BUILTIN_QUICK_SENDS,
   PLAYWRIGHT_MANAGED_BROWSERS,
   QUICK_SEND_SHORTHAND_MAX_LENGTH,

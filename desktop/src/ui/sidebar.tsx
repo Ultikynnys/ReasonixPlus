@@ -9,6 +9,7 @@ import { clearPartition } from "../sessions-store";
 import { formatTokensPerSecond } from "../stream-rate";
 import { useClampedPopupPosition } from "./file-menu";
 import { activationHandler } from "./keyboard";
+import { ListControl } from "./list-controls";
 import { sessionTitle } from "./session-title";
 import { Shortcut } from "./shortcut";
 
@@ -208,24 +209,19 @@ export function Sidebar({
 
       <div className="session-list">
         <div className="side-section">
-          <div className="label">
+          <div className="list-head">
             <span>{t("sidebarPanel.recent")}</span>
             <span className="count">{filtered.length}</span>
             {sessions.length > 0 ? (
-              <button
-                type="button"
-                className="clear-all-btn"
-                title={t("sidebarPanel.clearAllSessions")}
-                aria-label={t("sidebarPanel.clearAllSessions")}
+              <ListControl
+                kind="clear"
+                label={t("sidebarPanel.clearAllSessions")}
                 disabled={busy || deletableCount === 0}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const rect = e.currentTarget.getBoundingClientRect();
+                onAct={(button) => {
+                  const rect = button.getBoundingClientRect();
                   setPendingClear({ x: rect.right, y: rect.bottom });
                 }}
-              >
-                <I.trash size={12} />
-              </button>
+              />
             ) : null}
           </div>
           {sessions.length === 0 ? (
@@ -263,7 +259,7 @@ export function Sidebar({
             return (
               <div
                 key={s.name}
-                className="session-item"
+                className="session-item list-row"
                 data-active={active}
                 onClick={() => {
                   // Skip the round-trip when clicking the already-loaded
@@ -274,9 +270,9 @@ export function Sidebar({
                 role="button"
                 tabIndex={0}
                 title={running ? t("sidebarPanel.runningSessionRow", { name: s.name }) : s.name}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && s.name !== activeName) onLoadSession(s.name);
-                }}
+                onKeyDown={activationHandler(() => {
+                  if (s.name !== activeName) onLoadSession(s.name);
+                })}
               >
                 {running ? <span className="state" /> : null}
                 <div className="body">
@@ -318,30 +314,14 @@ export function Sidebar({
                     ) : null}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  className="reorder-btn"
-                  title={t("sidebarPanel.moveToTop")}
-                  aria-label={t("sidebarPanel.moveToTop")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onReorderSession?.(s.name);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
-                  }}
-                >
-                  <I.arrowUp size={12} />
-                </button>
-                <button
-                  type="button"
-                  className="delete-btn"
-                  title={
-                    running
-                      ? t("sidebarPanel.deleteRunningBlocked")
-                      : t("sidebarPanel.deleteSession")
-                  }
-                  aria-label={
+                <ListControl
+                  kind="reorder"
+                  label={t("sidebarPanel.moveToTop")}
+                  onAct={() => onReorderSession?.(s.name)}
+                />
+                <ListControl
+                  kind="remove"
+                  label={
                     running
                       ? t("sidebarPanel.deleteRunningBlocked")
                       : t("sidebarPanel.deleteSession")
@@ -349,9 +329,8 @@ export function Sidebar({
                   // Locked while a delete is in flight (no double action) and for a
                   // running session, which the daemon refuses to delete anyway.
                   disabled={busy || running}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const rect = e.currentTarget.getBoundingClientRect();
+                  onAct={(button) => {
+                    const rect = button.getBoundingClientRect();
                     setPendingDelete({
                       name: s.name,
                       pretty: sessionTitle(s),
@@ -359,12 +338,7 @@ export function Sidebar({
                       y: rect.bottom,
                     });
                   }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
-                  }}
-                >
-                  <I.x size={12} />
-                </button>
+                />
               </div>
             );
           })}

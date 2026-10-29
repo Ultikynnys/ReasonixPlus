@@ -254,12 +254,18 @@ export const I = {
       <path d="M7 5v14l12-7Z" />
     </Ic>
   ),
+  volume: (p: IconProps) => (
+    <Ic {...p}>
+      <path d="M11 5 6 9H3v6h3l5 4Z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+      <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+    </Ic>
+  ),
   pin: (p: IconProps) => (
     <Ic {...p}>
       <path d="M15 3 9 9l-4 1 9 9 1-4 6-6ZM4 20l5-5" />
     </Ic>
-  ),
-  rotate: (p: IconProps) => (
+  ),  rotate: (p: IconProps) => (
     <Ic {...p}>
       <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
       <path d="M3 3v5h5" />

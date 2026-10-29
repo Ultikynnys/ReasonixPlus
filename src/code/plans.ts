@@ -592,6 +592,28 @@ export class PlanRepository {
     });
   }
 
+  /** Moves a plan to the top of the history list: the store keeps creation order and
+   *  {@link list} reverses it, so the top is the end of the array. Ordering only; answers
+   *  whether the plan moved, so a repeat request writes and republishes nothing. */
+  reorder(id: string): boolean {
+    if (this.load().plans.at(-1)?.id === id) return false;
+    this.mutate((history) => {
+      const index = history.plans.findIndex((plan) => plan.id === id);
+      if (index === -1) throw new Error(`Unknown plan ID: ${id}`);
+      const [plan] = history.plans.splice(index, 1);
+      if (plan) history.plans.push(plan);
+    });
+    return true;
+  }
+
+  /** Delete every plan in the workspace. The bulk form of {@link remove}: same finality,
+   *  so it is only for an explicit user action. */
+  clear(): void {
+    this.mutate((history) => {
+      history.plans = [];
+    });
+  }
+
   private find(history: History, id: string): PlanRecord {
     const plan = history.plans.find((p) => p.id === id);
     if (!plan) throw new Error(`Unknown plan ID: ${id}`);

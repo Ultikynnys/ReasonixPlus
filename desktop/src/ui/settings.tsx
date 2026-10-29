@@ -18,11 +18,12 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import type { Settings as SettingsType } from "../App";
-import { feedbackSounds } from "../feedback-sounds";
+import { feedbackSounds, preloadSoundPack } from "../feedback-sounds";
 import { formatBytes } from "../format";
 import { type TKey, t } from "../i18n";
 import { I } from "../icons";
@@ -35,9 +36,10 @@ import {
   providerForModelGroup,
 } from "../model-catalog";
 import { providerModelCost } from "../model-cost";
+import { cueAudio } from "../notifications";
 import type {
+  FeedbackCueAudioSetting,
   FeedbackCueId,
-  FeedbackCueSetting,
   MailAuthPhase,
   MailAuthState,
   McpAuthState,
@@ -63,7 +65,9 @@ import {
   enforceQuickSendShorthand,
 } from "../protocol";
 import { useRateClock } from "../rate-clock";
+import { NOTHING_SOUND_PACK_ID, type SoundPackSpec, resolveSoundPackId } from "../sound-packs";
 import { FONT_FAMILY, FONT_SCALE, type FontFamily, type FontScale } from "../theme";
+import { mergeSoundPacks } from "../user-sound-packs";
 import { AudioRecorder } from "../voice/audio-recorder";
 import {
   type BarkRuntimePhase,
@@ -90,9 +94,11 @@ import { VOICE_ENGINES, VOICE_MODELS, type VoiceModelId } from "../voice/model-r
 import { speechTranscriber } from "../voice/transcriber";
 import { type ChangelogState, PageChangelog } from "./changelog";
 import { CostBadge } from "./cost-badge";
+import { FEEDBACK_CUES } from "./feedback-cue-copy";
 import { FitText } from "./fit-text";
 import { useInventoryRequest } from "./inventory-request";
 import { activationHandler, escapeHandler } from "./keyboard";
+import { PackWizard, type SoundPackDraft } from "./pack-wizard";
 import { pluginQualifier } from "./plugin-labels";
 import { Shortcut, type ShortcutKey, localizeShortcutText } from "./shortcut";
 
@@ -144,6 +150,7 @@ function moveInList<T>(list: readonly T[], from: number, to: number): T[] {
 
 export type PageId =
   | "general"
+  | "sound"
   | "quickSend"
   | "models"
   | "search"
@@ -156,6 +163,7 @@ export type PageId =
 
 export const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
   { id: "general", icon: "cog" },
+  { id: "sound", icon: "volume" },
   { id: "quickSend", icon: "zap" },
   { id: "models", icon: "brain" },
   { id: "search", icon: "search" },
@@ -222,6 +230,9 @@ export function SettingsModal({
   onInstallSkill,
   onUninstallSkill,
   onRequestSkills,
+  onPickSound,
+  onCreateSoundPack,
+  onRemoveSoundPack,
   onRequestMcpExtensionStatus,
   onConfigureMcpExtension,
   onCheckMcpExtension,
@@ -308,6 +319,10 @@ export function SettingsModal({
   onUninstallSkill: (name: string) => void;
   /** Re-request the skill inventory (the Skills page calls this when it opens). */
   onRequestSkills: () => void;
+  /** Opens the desktop file dialog for one cue's audio, for the pack wizard. */
+  onPickSound: () => Promise<string | null>;
+  onCreateSoundPack: (draft: SoundPackDraft) => void;
+  onRemoveSoundPack: (id: string) => void;
   mcpExtensionStatus: McpExtensionStatus | null;
   mcpExtensionCheck: McpExtensionCheck | null;
   playwrightBrowserInstall: PlaywrightBrowserInstall | null;
@@ -413,17 +428,24 @@ export function SettingsModal({
           <div className="settings-body">
             {page === "general" && (
               <PageGeneral
-                settings={settings}
                 fontScale={fontScale}
                 onSetFontScale={onSetFontScale}
                 fontFamily={fontFamily}
                 onSetFontFamily={onSetFontFamily}
                 customFontFamily={customFontFamily}
                 onSetCustomFontFamily={onSetCustomFontFamily}
-                onSave={onSave}
               />
             )}
             {page === "quickSend" && <PageQuickSend settings={settings} onSave={onSave} />}
+            {page === "sound" && (
+              <PageSound
+                settings={settings}
+                onSave={onSave}
+                onPickSound={onPickSound}
+                onCreatePack={onCreateSoundPack}
+                onRemovePack={onRemoveSoundPack}
+              />
+            )}
             {page === "search" && (
               <PageSearch
                 settings={settings}
@@ -703,7 +725,7 @@ function SearchEngineCard({
       defaultOpen={active}
       headActions={
         active ? (
-          <span className="card-active-pill">✓ {t("settings.searchEngineActive")}</span>
+          <span className="card-active-pill">✓ {t("settings.activePill")}</span>
         ) : (
           <button
             type="button"
@@ -798,23 +820,19 @@ function PageSearch({
 }
 
 function PageGeneral({
-  settings,
   fontScale,
   onSetFontScale,
   fontFamily,
   onSetFontFamily,
   customFontFamily,
   onSetCustomFontFamily,
-  onSave,
 }: {
-  settings: SettingsType;
   fontScale: FontScale;
   onSetFontScale: (scale: FontScale) => void;
   fontFamily: FontFamily;
   onSetFontFamily: (family: FontFamily) => void;
   customFontFamily: string;
   onSetCustomFontFamily: (family: string) => void;
-  onSave: (patch: SettingsPatch) => void;
 }) {
   const [customFontDraft, setCustomFontDraft] = useState(customFontFamily);
   useEffect(() => {
@@ -917,11 +935,6 @@ function PageGeneral({
             />
           </div>
         )}
-      </section>
-
-      <section className="section">
-        <div className="stitle">{t("settings.behaviorSection")}</div>
-        <FeedbackCuesSection settings={settings} onSave={onSave} />
       </section>
 
       <VoiceInputSettings />
@@ -3884,28 +3897,30 @@ function PluginCard({
       {plugin.servers.length === 0 ? (
         <div className="desc">{t("settings.pluginsNoServers")}</div>
       ) : (
-        plugin.servers.map((server) => {
-          const status = serverStatusLabel(server.status, server.statusReason, server.toolCount);
-          return (
-            <div key={server.name}>
-              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                <code style={{ fontSize: 11 }}>{server.name}</code>
-                <span style={{ fontSize: 11, color: "var(--muted)" }}>{server.transport}</span>
-                <span className="grow" />
-                <span style={{ fontSize: 11, color: status.color }}>{status.text}</span>
+        <div className="plugin-subpanel">
+          {plugin.servers.map((server) => {
+            const status = serverStatusLabel(server.status, server.statusReason, server.toolCount);
+            return (
+              <div key={server.name}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <code style={{ fontSize: 11 }}>{server.name}</code>
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>{server.transport}</span>
+                  <span className="grow" />
+                  <span style={{ fontSize: 11, color: status.color }}>{status.text}</span>
+                </div>
+                <ServerAuthRow
+                  name={server.name}
+                  transport={server.transport}
+                  auth={server.auth}
+                  live={mcpAuth}
+                  onConnect={() => onConnectServer(server.name)}
+                  onCancel={() => onCancelServerSignIn(server.name)}
+                  onDisconnect={() => onDisconnectServer(server.name)}
+                />
               </div>
-              <ServerAuthRow
-                name={server.name}
-                transport={server.transport}
-                auth={server.auth}
-                live={mcpAuth}
-                onConnect={() => onConnectServer(server.name)}
-                onCancel={() => onCancelServerSignIn(server.name)}
-                onDisconnect={() => onDisconnectServer(server.name)}
-              />
-            </div>
-          );
-        })
+            );
+          })}
+        </div>
       )}
       {plugin.homepage ? (
         <div className="actions">
@@ -3934,7 +3949,7 @@ function PluginSkillList({ skills }: { skills: PluginSkillInfo[] }) {
     else groups.set(skill.root, [skill]);
   }
   return (
-    <div style={{ maxHeight: 190, overflowY: "auto", marginTop: 6 }}>
+    <div className="plugin-subpanel plugin-subpanel-scroll">
       {[...groups.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([root, group]) => (
@@ -4107,30 +4122,7 @@ function SectionRow({ nm, keys }: { nm: string; keys: ShortcutKey[] }): ReactNod
   );
 }
 
-/** The cue rows, in stable display order — one table pairing each id with its
- *  label and hint keys so a new cue can't be added to two of three lists. */
-const FEEDBACK_CUES: { id: FeedbackCueId; label: TKey; hint: TKey }[] = [
-  {
-    id: "inputRequired",
-    label: "settings.feedbackCueInputRequired",
-    hint: "settings.feedbackCueInputRequiredHint",
-  },
-  {
-    id: "taskComplete",
-    label: "settings.feedbackCueTaskComplete",
-    hint: "settings.feedbackCueTaskCompleteHint",
-  },
-  {
-    id: "planComplete",
-    label: "settings.feedbackCuePlanComplete",
-    hint: "settings.feedbackCuePlanCompleteHint",
-  },
-  {
-    id: "guardTriggered",
-    label: "settings.feedbackCueGuardTriggered",
-    hint: "settings.feedbackCueGuardTriggeredHint",
-  },
-];
+
 
 /** Range input with a local draft: dragging updates instantly and the value is
  *  committed once, on release. A fully controlled slider re-rendered from the
@@ -4140,10 +4132,12 @@ const FEEDBACK_CUES: { id: FeedbackCueId; label: TKey; hint: TKey }[] = [
 function CueVolumeSlider({
   label,
   value,
+  disabled,
   onCommit,
 }: {
   label: string;
   value: number;
+  disabled?: boolean;
   onCommit: (volume: number) => void;
 }) {
   const [draft, setDraft] = useState(value);
@@ -4159,6 +4153,7 @@ function CueVolumeSlider({
         max={1}
         step={0.05}
         value={draft}
+        disabled={disabled}
         aria-label={label}
         onChange={(e) => setDraft(Number(e.target.value))}
         onPointerUp={(e) => commit(e.currentTarget)}
@@ -4170,44 +4165,176 @@ function CueVolumeSlider({
   );
 }
 
-/** The per-type cue matrix as a table — one row per cue, columns for the sound
- *  on/off switch, its volume, and the desktop-notification switch, so every cue
- *  is toggled and tuned the same way. Each control patches the whole
- *  feedbackCues object (the sidecar persists it atomically). */
-function FeedbackCuesSection({
+/** One card per sound pack: the pack's own copy sits inside, and the header carries the
+ *  Active marker or the button that makes it the pack cues play through. Same shape as the
+ *  search-engine cards. Only a pack the user created offers Remove; the shipped ones stay. */
+function SoundPackCard({
+  pack,
+  active,
+  onSelect,
+  onRemove,
+  settings,
+  onSave,
+}: {
+  pack: SoundPackSpec;
+  active: boolean;
+  onSelect: () => void;
+  onRemove: () => void;
+  settings: SettingsType;
+  onSave: (patch: SettingsPatch) => void;
+}) {
+  return (
+    <HeadActionCard
+      title={pack.label}
+      defaultOpen={active}
+      headActions={
+        <>
+          {active ? (
+            <span className="card-active-pill">✓ {t("settings.activePill")}</span>
+          ) : (
+            <button type="button" className="btn small" onClick={onSelect}>
+              {t("settings.soundPackUse")}
+            </button>
+          )}
+          {pack.removable ? (
+            <RemoveAction label={t("settings.soundPackRemove")} onRemove={onRemove} />
+          ) : null}
+        </>
+      }
+    >
+      {pack.description ? <div className="card-hint">{pack.description}</div> : null}
+      {pack.id === NOTHING_SOUND_PACK_ID ? null : (
+        <PackCueTable pack={pack} settings={settings} onSave={onSave} />
+      )}
+    </HeadActionCard>
+  );
+}
+
+/** One pack's own cue audio, edited in place: the pack keeps its sound switch and
+ *  volume per cue, so switching packs restores that pack's tuning. A cue the pack does
+ *  not ship stays listed but inert, so its coverage reads off the card. */
+function PackCueTable({
+  pack,
+  settings,
+  onSave,
+}: {
+  pack: SoundPackSpec;
+  settings: SettingsType;
+  onSave: (patch: SettingsPatch) => void;
+}) {
+  const byPack = settings.feedbackAudio ?? {};
+  const stored = byPack[pack.id] ?? {};
+  const patchCue = (id: FeedbackCueId, entry: FeedbackCueAudioSetting) => {
+    onSave({ feedbackAudio: { ...byPack, [pack.id]: { ...stored, [id]: entry } } });
+  };
+  return (
+    <table className="feedback-cues-table">
+      <thead>
+        <tr>
+          <th>{t("settings.feedbackCueColCue")}</th>
+          <th>{t("settings.feedbackCueColSound")}</th>
+          <th>{t("settings.feedbackCueColVolume")}</th>
+          <th>{t("settings.feedbackCueColTest")}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {FEEDBACK_CUES.map(({ id, label }) => {
+          const cueName = t(label);
+          const shipped = pack.sounds[id] !== undefined;
+          const { enabled, volume } = cueAudio(stored[id]);
+          const test = t("settings.soundPackAudition", { cue: cueName, pack: pack.label });
+          return (
+            <tr key={id}>
+              <td className="feedback-cue-name">
+                <div className="n">{cueName}</div>
+                {shipped ? null : <div className="h">{t("settings.soundPackCueMissing")}</div>}
+              </td>
+              <td>
+                <div className="seg-ctrl">
+                  <button
+                    type="button"
+                    disabled={!shipped}
+                    aria-pressed={!enabled}
+                    aria-label={t("settings.feedbackCueSoundDisable", { cue: cueName })}
+                    data-on={!enabled}
+                    onClick={() => patchCue(id, { enabled: false, volume })}
+                  >
+                    {t("settings.feedbackCueOff")}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!shipped}
+                    aria-pressed={enabled}
+                    aria-label={t("settings.feedbackCueSoundEnable", { cue: cueName })}
+                    data-on={enabled}
+                    onClick={() => patchCue(id, { enabled: true, volume })}
+                  >
+                    {t("settings.feedbackCueOn")}
+                  </button>
+                </div>
+              </td>
+              <td className="feedback-cue-volume">
+                <CueVolumeSlider
+                  label={t("settings.feedbackCueVolume", { cue: cueName })}
+                  value={volume}
+                  disabled={!shipped}
+                  onCommit={(next) => patchCue(id, { enabled, volume: next })}
+                />
+              </td>
+              <td>
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={!shipped}
+                  title={test}
+                  aria-label={test}
+                  onClick={() => feedbackSounds.play(id, volume, pack.id)}
+                >
+                  <I.play size={13} />
+                </button>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+/** The desktop-notification switches. One list for the whole app: notifications are not
+ *  audio, so choosing another sound pack can never silence them. */
+function NotifySection({
   settings,
   onSave,
 }: {
   settings: SettingsType;
   onSave: (patch: SettingsPatch) => void;
 }) {
-  const stored: Partial<Record<FeedbackCueId, FeedbackCueSetting>> = settings.feedbackCues ?? {};
-  const patchCue = (id: FeedbackCueId, entry: FeedbackCueSetting) => {
-    onSave({ feedbackCues: { ...stored, [id]: entry } });
+  const notify = settings.feedbackNotify ?? [];
+  const setNotify = (id: FeedbackCueId, on: boolean) => {
+    onSave({
+      feedbackNotify: FEEDBACK_CUES.map((cue) => cue.id).filter((cue) =>
+        cue === id ? on : notify.includes(cue),
+      ),
+    });
   };
   return (
     <section className="section">
-      <div className="stitle">{t("settings.feedbackCuesSection")}</div>
+      <div className="stitle">{t("settings.feedbackNotifySection")}</div>
       <div className="h" style={{ marginBottom: 12 }}>
-        {t("settings.feedbackCuesSectionHint")}
+        {t("settings.feedbackNotifySectionHint")}
       </div>
       <table className="feedback-cues-table">
         <thead>
           <tr>
             <th>{t("settings.feedbackCueColCue")}</th>
-            <th>{t("settings.feedbackCueColSound")}</th>
-            <th>{t("settings.feedbackCueColVolume")}</th>
             <th>{t("settings.feedbackCueColNotify")}</th>
-            <th>{t("settings.feedbackCueColTest")}</th>
           </tr>
         </thead>
         <tbody>
           {FEEDBACK_CUES.map(({ id, label, hint }) => {
-            const cue = stored[id];
-            const enabled = cue?.enabled === true;
-            const notify = cue?.notify === true;
-            const volume = typeof cue?.volume === "number" ? cue.volume : 0.5;
             const cueName = t(label);
+            const on = notify.includes(id);
             return (
               <tr key={id}>
                 <td className="feedback-cue-name">
@@ -4218,63 +4345,23 @@ function FeedbackCuesSection({
                   <div className="seg-ctrl">
                     <button
                       type="button"
-                      aria-pressed={!enabled}
-                      aria-label={t("settings.feedbackCueSoundDisable", { cue: cueName })}
-                      data-on={!enabled}
-                      onClick={() => patchCue(id, { enabled: false, volume, notify })}
-                    >
-                      {t("settings.feedbackCueOff")}
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={enabled}
-                      aria-label={t("settings.feedbackCueSoundEnable", { cue: cueName })}
-                      data-on={enabled}
-                      onClick={() => patchCue(id, { enabled: true, volume, notify })}
-                    >
-                      {t("settings.feedbackCueOn")}
-                    </button>
-                  </div>
-                </td>
-                <td className="feedback-cue-volume">
-                  <CueVolumeSlider
-                    label={t("settings.feedbackCueVolume", { cue: cueName })}
-                    value={volume}
-                    onCommit={(next) => patchCue(id, { enabled, volume: next, notify })}
-                  />
-                </td>
-                <td>
-                  <div className="seg-ctrl">
-                    <button
-                      type="button"
-                      aria-pressed={!notify}
+                      aria-pressed={!on}
                       aria-label={t("settings.feedbackCueNotifyDisable", { cue: cueName })}
-                      data-on={!notify}
-                      onClick={() => patchCue(id, { enabled, volume, notify: false })}
+                      data-on={!on}
+                      onClick={() => setNotify(id, false)}
                     >
                       {t("settings.feedbackCueOff")}
                     </button>
                     <button
                       type="button"
-                      aria-pressed={notify}
+                      aria-pressed={on}
                       aria-label={t("settings.feedbackCueNotifyEnable", { cue: cueName })}
-                      data-on={notify}
-                      onClick={() => patchCue(id, { enabled, volume, notify: true })}
+                      data-on={on}
+                      onClick={() => setNotify(id, true)}
                     >
                       {t("settings.feedbackCueOn")}
                     </button>
                   </div>
-                </td>
-                <td>
-                  <button
-                    type="button"
-                    className="btn sm"
-                    title={t("settings.feedbackCueTestSound", { cue: cueName })}
-                    aria-label={t("settings.feedbackCueTestSound", { cue: cueName })}
-                    onClick={() => feedbackSounds.play(id, volume)}
-                  >
-                    <I.play size={13} />
-                  </button>
                 </td>
               </tr>
             );
@@ -4284,3 +4371,74 @@ function FeedbackCuesSection({
     </section>
   );
 }
+
+/** Settings > Sound: the pack cues play through, each card holding that pack's own cue
+ *  audio, then the notification switches. Packs render from the shipped folders, the
+ *  implicit silent pack and the ones this user created, so a new pack adds a card. */
+function PageSound({
+  settings,
+  onSave,
+  onPickSound,
+  onCreatePack,
+  onRemovePack,
+}: {
+  settings: SettingsType;
+  onSave: (patch: SettingsPatch) => void;
+  /** Opens the desktop file dialog for one cue's audio. */
+  onPickSound: () => Promise<string | null>;
+  onCreatePack: (draft: SoundPackDraft) => void;
+  onRemovePack: (id: string) => void;
+}) {
+  const packs = useMemo(() => mergeSoundPacks(settings.soundPacks), [settings.soundPacks]);
+  const activeId = resolveSoundPackId(settings.soundPackId, packs);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  // Every card tests its own cues, so warm all packs on open: a test then plays on the
+  // first click instead of only decoding the audio after it.
+  useEffect(() => {
+    for (const pack of packs) preloadSoundPack(pack.id);
+  }, [packs]);
+  return (
+    <>
+      <section className="section">
+        <div className="stitle">{t("settings.soundSection")}</div>
+        <div className="setting-row">
+          <div className="l">
+            <div className="h">{t("settings.soundSectionHint")}</div>
+          </div>
+          <button type="button" className="btn small" onClick={() => setWizardOpen(true)}>
+            <I.plus size={12} /> {t("settings.soundPackNew")}
+          </button>
+        </div>
+        {packs.map((pack) => (
+          <SoundPackCard
+            key={pack.id}
+            pack={pack}
+            active={pack.id === activeId}
+            settings={settings}
+            onSave={onSave}
+            onSelect={() => onSave({ soundPackId: pack.id })}
+            onRemove={() => {
+              onRemovePack(pack.id);
+              // The silent pack is the fallback the daemon resolves a dead selection to, so
+              // make the UI show that immediately instead of on the next echo.
+              if (pack.id === activeId) onSave({ soundPackId: NOTHING_SOUND_PACK_ID });
+            }}
+          />
+        ))}
+      </section>
+      <NotifySection settings={settings} onSave={onSave} />
+      <PackWizard
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        onPickSound={onPickSound}
+        onCreate={onCreatePack}
+      />
+    </>
+  );
+}
+
+
+
+
+
+

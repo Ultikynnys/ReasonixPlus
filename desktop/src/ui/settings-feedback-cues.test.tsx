@@ -37,6 +37,9 @@ const baseProps = {
   onInstallSkill: vi.fn(),
   onUninstallSkill: vi.fn(),
   onRequestSkills: vi.fn(),
+  onPickSound: vi.fn(async () => null),
+  onCreateSoundPack: vi.fn(),
+  onRemoveSoundPack: vi.fn(),
   onClose: vi.fn(),
   onSave: vi.fn(),
   onSaveApiKey: vi.fn(),
@@ -84,93 +87,270 @@ const baseProps = {
   onRefreshChangelog: vi.fn(),
 };
 
-/** Locate the table row for a cue by its name cell. */
-function cueRow(name: string): HTMLElement {
-  const row = screen.getByText(name).closest("tr");
+/** A pack the wizard would create: no folder in the bundle, audio in the user's store. */
+const userPack = {
+  id: "night-shift",
+  label: "Night Shift",
+  sounds: { taskComplete: "/home/u/.reasonix/sound-packs/night-shift/done.ogg" },
+};
+
+/** Locate a pack's card by its header title. */
+function packCard(label: string): HTMLElement {
+  const card = screen.getByText(label).closest(".provider-card");
+  if (!card) throw new Error(`no card for pack ${label}`);
+  return card as HTMLElement;
+}
+
+/** The cue table inside one pack's card. A card that is not the selected pack starts
+ *  collapsed, so expand it first the way a user would. */
+function packTable(label: string): HTMLElement {
+  const card = packCard(label);
+  if (!card.querySelector(".feedback-cues-table")) {
+    const toggle = card.querySelector(".provider-head-toggle");
+    if (toggle) fireEvent.click(toggle);
+  }
+  const table = card.querySelector(".feedback-cues-table");
+  if (!table) throw new Error(`no cue table in pack ${label}`);
+  return table as HTMLElement;
+}
+
+/** Locate a cue row within a table by its name cell. */
+function cueRow(table: HTMLElement, name: string): HTMLElement {
+  const row = within(table).getByText(name).closest("tr");
   if (!row) throw new Error(`no row for cue ${name}`);
   return row;
 }
 
-describe("Feedback cues table", () => {
+describe("Sound settings page", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
   });
 
-  it("renders every cue as a row with Sound / Volume / Notify / Test columns", () => {
-    const { container } = render(<SettingsModal {...baseProps} initialPage="general" />);
-    const table = container.querySelector(".feedback-cues-table");
-    expect(table).toBeTruthy();
-    const headers = Array.from(table!.querySelectorAll("th")).map((th) => th.textContent);
-    expect(headers).toEqual(["Cue", "Sound", "Volume", "Notify", "Test"]);
-    expect(table!.querySelectorAll("tbody tr")).toHaveLength(4);
-    for (const name of ["Input required", "Task complete", "Plan complete", "Repetition guard"]) {
-      expect(within(cueRow(name)).getAllByRole("button")).toHaveLength(5);
+  it("is the page the sound settings live on, not the General page", () => {
+    const { container, unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);
+    expect(container.querySelector(".feedback-cues-table")).toBeNull();
+    unmount();
+
+    const sound = render(<SettingsModal {...baseProps} initialPage="sound" />).container;
+    expect(sound.querySelector(".feedback-cues-table")).toBeTruthy();
+  });
+
+  it("lists the silent pack first, active on a fresh install, with no cue table", () => {
+    render(<SettingsModal {...baseProps} initialPage="sound" />);
+    const nothing = packCard("Nothing");
+    expect(within(nothing).getByText(/Active/)).toBeTruthy();
+    expect(nothing.querySelector(".feedback-cues-table")).toBeNull();
+    expect(
+      within(packCard("Default Pack")).getByRole("button", { name: "Use this pack" }),
+    ).toBeTruthy();
+  });
+
+  it("selects a pack persistently through onSave", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="sound" />);
+    fireEvent.click(within(packCard("Halo")).getByRole("button", { name: "Use this pack" }));
+    expect(onSave).toHaveBeenCalledWith({ soundPackId: "halo" });
+  });
+
+  it("marks the stored selection active instead of the silent pack", () => {
+    render(
+      <SettingsModal
+        {...baseProps}
+        settings={{ ...baseSettings, soundPackId: "halo" }}
+        initialPage="sound"
+      />,
+    );
+    expect(within(packCard("Halo")).getByText(/Active/)).toBeTruthy();
+    expect(
+      within(packCard("Nothing")).getByRole("button", { name: "Use this pack" }),
+    ).toBeTruthy();
+  });
+
+  it("gives every folder pack its own Sound / Volume / Test table", () => {
+    render(<SettingsModal {...baseProps} initialPage="sound" />);
+    for (const label of ["Default Pack", "Halo"]) {
+      const headers = Array.from(packTable(label).querySelectorAll("th")).map(
+        (th) => th.textContent,
+      );
+      expect(headers).toEqual(["Cue", "Sound", "Volume", "Test"]);
+      expect(packTable(label).querySelectorAll("tbody tr")).toHaveLength(4);
     }
   });
 
-  it("enables a cue's sound from the Sound column, preserving volume/notify", () => {
+  it("stores a cue's sound and volume on the pack it belongs to", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="general" />);
+    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="sound" />);
+
     fireEvent.click(
-      within(cueRow("Input required")).getByRole("button", {
+      within(cueRow(packTable("Halo"), "Input required")).getByRole("button", {
         name: "Enable sound for Input required",
       }),
     );
     expect(onSave).toHaveBeenCalledWith({
-      feedbackCues: { inputRequired: { enabled: true, volume: 0.5, notify: false } },
+      feedbackAudio: { halo: { inputRequired: { enabled: true, volume: 0.5 } } },
+    });
+
+    const slider = within(cueRow(packTable("Halo"), "Task complete")).getByRole("slider", {
+      name: "Volume for Task complete",
+    });
+    fireEvent.change(slider, { target: { value: "0.8" } });
+    expect(onSave).toHaveBeenCalledTimes(1);
+    fireEvent.pointerUp(slider);
+    expect(onSave).toHaveBeenLastCalledWith({
+      feedbackAudio: { halo: { taskComplete: { enabled: false, volume: 0.8 } } },
     });
   });
 
-  it("reflects stored state and patches volume and notify", () => {
+  it("keeps one pack's settings from overwriting another's", () => {
     const onSave = vi.fn();
     const settings: Settings = {
       ...baseSettings,
-      feedbackCues: { planComplete: { enabled: true, volume: 0.5, notify: false } },
+      feedbackAudio: { default: { taskComplete: { enabled: true, volume: 0.7 } } },
     };
     render(
-      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="general" />,
+      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="sound" />,
     );
-    const row = cueRow("Plan complete");
-
-    // The enabled cue shows its On button pressed and its volume percent.
+    const row = cueRow(packTable("Halo"), "Task complete");
     expect(
-      within(row)
-        .getByRole("button", { name: "Enable sound for Plan complete" })
-        .getAttribute("data-on"),
-    ).toBe("true");
-    expect(within(row).getByText("50%")).toBeTruthy();
+      within(row).getByRole("button", { name: "Enable sound for Task complete" }).getAttribute(
+        "data-on",
+      ),
+    ).toBe("false");
 
-    // Dragging updates a local draft; the value is committed on release.
-    const slider = within(row).getByRole("slider", { name: "Volume for Plan complete" });
-    fireEvent.change(slider, { target: { value: "0.8" } });
-    expect(onSave).not.toHaveBeenCalled();
-    fireEvent.pointerUp(slider);
-    expect(onSave).toHaveBeenCalledWith({
-      feedbackCues: { planComplete: { enabled: true, volume: 0.8, notify: false } },
-    });
-
-    // Notify on/off is a separate column.
     fireEvent.click(
-      within(row).getByRole("button", { name: "Enable notifications for Plan complete" }),
+      within(row).getByRole("button", { name: "Enable sound for Task complete" }),
     );
-    expect(onSave).toHaveBeenLastCalledWith({
-      feedbackCues: { planComplete: { enabled: true, volume: 0.5, notify: true } },
+    expect(onSave).toHaveBeenCalledWith({
+      feedbackAudio: {
+        default: { taskComplete: { enabled: true, volume: 0.7 } },
+        halo: { taskComplete: { enabled: true, volume: 0.5 } },
+      },
     });
   });
 
-  it("plays a cue's sound from the Test column at its volume, even while the sound switch is off", () => {
+  it("tests a cue through the pack on that card", () => {
     const play = vi.spyOn(feedbackSounds, "play").mockReturnValue(true);
     const settings: Settings = {
       ...baseSettings,
-      feedbackCues: { guardTriggered: { enabled: false, volume: 0.8, notify: false } },
+      feedbackAudio: { halo: { taskComplete: { enabled: true, volume: 0.7 } } },
     };
-    render(<SettingsModal {...baseProps} settings={settings} initialPage="general" />);
+    render(<SettingsModal {...baseProps} settings={settings} initialPage="sound" />);
     fireEvent.click(
-      within(cueRow("Repetition guard")).getByRole("button", {
-        name: "Test the Repetition guard sound",
+      within(cueRow(packTable("Halo"), "Task complete")).getByRole("button", {
+        name: "Play the Task complete line from Halo",
       }),
     );
-    expect(play).toHaveBeenCalledWith("guardTriggered", 0.8);
+    expect(play).toHaveBeenCalledWith("taskComplete", 0.7, "halo");
+  });
+
+  it("keeps the notification switches in one list, outside the packs", () => {
+    const onSave = vi.fn();
+    const settings: Settings = {
+      ...baseSettings,
+      feedbackNotify: ["planComplete"],
+    };
+    render(
+      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="sound" />,
+    );
+
+    // Exactly one Notify table exists, and no pack table carries a Notify column.
+    const notifyTables = screen
+      .getAllByRole("table")
+      .filter((table) => table.textContent?.includes("Notify"));
+    expect(notifyTables).toHaveLength(1);
+    const notifyTable = notifyTables[0] as HTMLElement;
+
+    expect(
+      within(cueRow(notifyTable, "Plan complete"))
+        .getByRole("button", { name: "Enable notifications for Plan complete" })
+        .getAttribute("data-on"),
+    ).toBe("true");
+
+    fireEvent.click(
+      within(cueRow(notifyTable, "Input required")).getByRole("button", {
+        name: "Enable notifications for Input required",
+      }),
+    );
+    expect(onSave).toHaveBeenCalledWith({
+      feedbackNotify: ["inputRequired", "planComplete"],
+    });
+
+    fireEvent.click(
+      within(cueRow(notifyTable, "Plan complete")).getByRole("button", {
+        name: "Disable notifications for Plan complete",
+      }),
+    );
+    expect(onSave).toHaveBeenLastCalledWith({ feedbackNotify: [] });
+  });
+
+  it("opens the pack wizard from the New pack button", () => {
+    render(<SettingsModal {...baseProps} initialPage="sound" />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /New pack/ }));
+    expect(screen.getByRole("dialog", { name: "New pack" })).toBeTruthy();
+    expect(screen.getByText("Step 1 of 2: name")).toBeTruthy();
+  });
+
+  it("lists a pack the user created, and offers Remove only for that one", () => {
+    const onRemoveSoundPack = vi.fn();
+    render(
+      <SettingsModal
+        {...baseProps}
+        settings={{ ...baseSettings, soundPacks: [userPack] }}
+        onRemoveSoundPack={onRemoveSoundPack}
+        initialPage="sound"
+      />,
+    );
+
+    for (const shipped of ["Nothing", "Default Pack", "Halo"]) {
+      expect(
+        within(packCard(shipped)).queryByRole("button", { name: "Remove" }),
+        `${shipped} must not be removable`,
+      ).toBeNull();
+    }
+
+    const card = packCard("Night Shift");
+    // A created pack edits its own cue audio like the shipped ones.
+    expect(packTable("Night Shift").querySelectorAll("tbody tr")).toHaveLength(4);
+    fireEvent.click(within(card).getByRole("button", { name: "Remove" }));
+    expect(onRemoveSoundPack).toHaveBeenCalledWith("night-shift");
+  });
+
+  it("falls back to the silent pack when the active pack is removed", () => {
+    const onSave = vi.fn();
+    render(
+      <SettingsModal
+        {...baseProps}
+        settings={{ ...baseSettings, soundPackId: "night-shift", soundPacks: [userPack] }}
+        onSave={onSave}
+        initialPage="sound"
+      />,
+    );
+
+    fireEvent.click(within(packCard("Night Shift")).getByRole("button", { name: "Remove" }));
+    expect(onSave).toHaveBeenCalledWith({ soundPackId: "nothing" });
+  });
+
+  it("stores audio settings for a created pack under its own id", () => {
+    const onSave = vi.fn();
+    render(
+      <SettingsModal
+        {...baseProps}
+        settings={{ ...baseSettings, soundPacks: [userPack] }}
+        onSave={onSave}
+        initialPage="sound"
+      />,
+    );
+
+    fireEvent.click(
+      within(cueRow(packTable("Night Shift"), "Task complete")).getByRole("button", {
+        name: "Enable sound for Task complete",
+      }),
+    );
+    expect(onSave).toHaveBeenCalledWith({
+      feedbackAudio: { "night-shift": { taskComplete: { enabled: true, volume: 0.5 } } },
+    });
   });
 });
