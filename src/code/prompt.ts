@@ -1,7 +1,7 @@
 import { dirname, join, sep } from "node:path";
 import { type EditMode, loadEditMode } from "../config.js";
 import { applyMemoryBlock, readCappedTextFile, truncateWithMarker } from "../memory/read-capped.js";
-import { applyMemoryStack } from "../memory/user.js";
+import { type MemoryLayer, applyMemoryLayers, memoryStackLayers } from "../memory/user.js";
 import {
   SHARED_WORKSPACE_SAFETY,
   TUI_FORMATTING_RULES,
@@ -567,6 +567,19 @@ export interface CodeSystemPromptOptions {
 }
 
 export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions = {}): string {
+  return codeSystemPromptParts(rootDir, opts).prompt;
+}
+
+/** The prompt plus the memory blocks spliced into it, so a host can price memory on its own. */
+export interface CodeSystemPromptParts {
+  prompt: string;
+  memoryLayers: MemoryLayer[];
+}
+
+export function codeSystemPromptParts(
+  rootDir: string,
+  opts: CodeSystemPromptOptions = {},
+): CodeSystemPromptParts {
   const codeBase = codeSystemBase(
     opts.modelId ?? DEFAULT_CODE_MODEL,
     opts.subagentsEnabled === true,
@@ -575,7 +588,8 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
   const sections = promptSections(opts);
   const appended = [sections.skills, sections.plugins].filter(Boolean).join("\n\n");
   const withSkills = appended ? `${codeBase}\n\n${appended}` : codeBase;
-  const withMemory = applyMemoryStack(withSkills, rootDir, { homeDir: opts.homeDir });
+  const memoryLayers = memoryStackLayers(rootDir, { homeDir: opts.homeDir });
+  const withMemory = applyMemoryLayers(withSkills, memoryLayers);
   const gitignorePath = join(rootDir, ".gitignore");
   let result = withMemory;
   const gitignore = readCappedTextFile(gitignorePath, GITIGNORE_MAX_CHARS);
@@ -598,5 +612,8 @@ export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions 
   }
   // Live permission state goes LAST: a mode flip then rewrites only this tail,
   // and the freshest thing the model reads is always the current permissions.
-  return `${result}\n\n${permissionsLiveSection(opts.editMode ?? loadEditMode(opts.configPath))}`;
+  return {
+    prompt: `${result}\n\n${permissionsLiveSection(opts.editMode ?? loadEditMode(opts.configPath))}`,
+    memoryLayers,
+  };
 }

@@ -91,7 +91,9 @@ import { speechTranscriber } from "../voice/transcriber";
 import { type ChangelogState, PageChangelog } from "./changelog";
 import { CostBadge } from "./cost-badge";
 import { FitText } from "./fit-text";
+import { useInventoryRequest } from "./inventory-request";
 import { activationHandler, escapeHandler } from "./keyboard";
+import { pluginQualifier } from "./plugin-labels";
 import { Shortcut, type ShortcutKey, localizeShortcutText } from "./shortcut";
 
 /** Render i18n hint strings that embed `<code>…</code>` tags as styled fragments
@@ -3713,11 +3715,6 @@ export function PageMCP({
   );
 }
 
-/** The manifest's own marketplace category, shown as the card's qualifier. */
-function pluginQualifier(plugin: PluginInfo): string {
-  return [plugin.category, plugin.version].filter(Boolean).join(" - ");
-}
-
 /** Settings > Plugins: install Codex-layout plugins and inspect what each one ships. */
 export function PagePlugins({
   plugins,
@@ -3742,9 +3739,7 @@ export function PagePlugins({
   onDisconnectServer: (name: string) => void;
 }) {
   const [draft, setDraft] = useState("");
-  useEffect(() => {
-    onRequest();
-  }, [onRequest]);
+  useInventoryRequest(onRequest);
   const submit = () => {
     const source = draft.trim();
     if (!source) return;
@@ -3977,9 +3972,7 @@ export function PageSkills({
   onRequest: () => void;
 }) {
   const [draft, setDraft] = useState("");
-  useEffect(() => {
-    onRequest();
-  }, [onRequest]);
+  useInventoryRequest(onRequest);
   const submit = () => {
     const source = draft.trim();
     if (!source) return;

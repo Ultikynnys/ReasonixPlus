@@ -23,13 +23,13 @@ import { reasonixHome } from "../reasonix-home.js";
 import { BUILTIN_MEMORY_TYPES, type BuiltinMemoryType } from "./builtin-types.js";
 import {
   PROJECT_MEMORY_MAX_CHARS,
-  applyMemoryIfPresent,
-  applyProjectMemory,
   memoryEnabled,
+  memorySection,
+  projectMemorySection,
 } from "./project.js";
 import {
   type CappedPath,
-  applyMemoryBlock,
+  memoryBlock,
   readCappedFile,
   readCappedTextFile,
   truncateWithMarker,
@@ -311,14 +311,17 @@ export function readGlobalReasonixMemory(homeDir: string = reasonixHome()): Capp
   return readCappedFile(join(homeDir, "REASONIX.md"), PROJECT_MEMORY_MAX_CHARS);
 }
 
-export function applyGlobalReasonixMemory(basePrompt: string, homeDir?: string): string {
+export function globalReasonixMemorySection(homeDir?: string): string | null {
   const dir = homeDir ?? reasonixHome();
-  return applyMemoryIfPresent(
-    basePrompt,
+  return memorySection(
     () => readGlobalReasonixMemory(dir),
     "# Global memory (~/.reasonix/REASONIX.md)",
     "Cross-project notes the user pinned via `#g`. Authoritative, same trust as project memory.",
   );
+}
+
+export function applyGlobalReasonixMemory(basePrompt: string, homeDir?: string): string {
+  return `${basePrompt}${globalReasonixMemorySection(homeDir) ?? ""}`;
 }
 
 /** Read ~/.claude/CLAUDE.md — cross-project notes from Claude Code migration.
@@ -327,13 +330,16 @@ export function readGlobalClaudeMemory(homeDir: string = homedir()): CappedPath 
   return readCappedFile(join(homeDir, ".claude", "CLAUDE.md"), PROJECT_MEMORY_MAX_CHARS);
 }
 
-export function applyGlobalClaudeMemory(basePrompt: string, homeDir?: string): string {
-  return applyMemoryIfPresent(
-    basePrompt,
+export function globalClaudeMemorySection(homeDir?: string): string | null {
+  return memorySection(
     () => readGlobalClaudeMemory(homeDir),
     "# Global memory (~/.claude/CLAUDE.md)",
     "Cross-project notes from the user's Claude Code config. Authoritative, same trust level as project memory.",
   );
+}
+
+export function applyGlobalClaudeMemory(basePrompt: string, homeDir?: string): string {
+  return `${basePrompt}${globalClaudeMemorySection(homeDir) ?? ""}`;
 }
 
 /** Effective priority: entry's own field wins, else the config default for its type, else undefined. */
@@ -364,36 +370,88 @@ function highPriorityBlock(entries: MemoryEntry[], cfg?: ReasonixConfig): string
   return truncateWithMarker(lines.join("\n"), HIGH_PRIORITY_MAX_CHARS).content.trimEnd();
 }
 
+/** Which store a memory block comes from, so a host can price the layers apart. */
+export type MemoryLayerScope = "global" | "project" | "priority";
+
+/** One memory block exactly as the prefix carries it, tagged with the scope that owns it. */
+export interface MemoryLayer {
+  scope: MemoryLayerScope;
+  text: string;
+}
+
+/** Memory blocks the user stores contribute, in prefix order; empty when memory is disabled or unset. */
+export function userMemoryLayers(
+  opts: { homeDir?: string; projectRoot?: string; cfg?: ReasonixConfig } = {},
+): MemoryLayer[] {
+  if (!memoryEnabled()) return [];
+  const store = new MemoryStore(opts);
+  const global = store.loadIndex("global");
+  const project = store.hasProjectScope() ? store.loadIndex("project") : null;
+  const high = highPriorityBlock(store.list(), opts.cfg);
+  const layers: MemoryLayer[] = [];
+  if (high) layers.push({ scope: "priority", text: `\n\n${high}` });
+  if (global) {
+    layers.push({
+      scope: "global",
+      text: memoryBlock(
+        "# User memory: global (~/.reasonix/memory/global/MEMORY.md)",
+        "Cross-project facts and preferences from prior sessions. TREAT AS AUTHORITATIVE for user preferences and constraints; do not re-derive them. Verify current code behavior against source, including searches before absence claims. One-liners index detail files; call `recall_memory` for a full body only when the one-liner is not enough.",
+        global.content,
+      ),
+    });
+  }
+  if (project) {
+    layers.push({
+      scope: "project",
+      text: memoryBlock(
+        "# User memory: this project",
+        "Per-project facts from prior sessions, not in the repo. TREAT AS AUTHORITATIVE. Same recall pattern as global memory.",
+        project.content,
+      ),
+    });
+  }
+  return layers;
+}
+
 /** Empty index → omit the whole block (otherwise we'd add bytes to the prefix hash for nothing). */
 export function applyUserMemory(
   basePrompt: string,
   opts: { homeDir?: string; projectRoot?: string; cfg?: ReasonixConfig } = {},
 ): string {
-  if (!memoryEnabled()) return basePrompt;
-  const store = new MemoryStore(opts);
-  const global = store.loadIndex("global");
-  const project = store.hasProjectScope() ? store.loadIndex("project") : null;
-  const high = highPriorityBlock(store.list(), opts.cfg);
-  if (!global && !project && !high) return basePrompt;
+  return applyMemoryLayers(basePrompt, userMemoryLayers(opts));
+}
+
+export function applyMemoryLayers(basePrompt: string, layers: readonly MemoryLayer[]): string {
   let out = basePrompt;
-  if (high) out = `${out}\n\n${high}`;
-  if (global) {
-    out = applyMemoryBlock(
-      out,
-      "# User memory: global (~/.reasonix/memory/global/MEMORY.md)",
-      "Cross-project facts and preferences from prior sessions. TREAT AS AUTHORITATIVE for user preferences and constraints; do not re-derive them. Verify current code behavior against source, including searches before absence claims. One-liners index detail files; call `recall_memory` for a full body only when the one-liner is not enough.",
-      global.content,
-    );
-  }
-  if (project) {
-    out = applyMemoryBlock(
-      out,
-      "# User memory: this project",
-      "Per-project facts from prior sessions, not in the repo. TREAT AS AUTHORITATIVE. Same recall pattern as global memory.",
-      project.content,
-    );
-  }
+  for (const layer of layers) out += layer.text;
   return out;
+}
+
+/** Every memory block the prefix carries, in the order it carries them, each tagged by scope. */
+export function memoryStackLayers(
+  rootDir: string,
+  opts: { homeDir?: string; cfg?: ReasonixConfig } = {},
+): MemoryLayer[] {
+  const homeDir = opts.homeDir;
+  const layers: MemoryLayer[] = [];
+  const project = projectMemorySection(rootDir);
+  if (project) layers.push({ scope: "project", text: project });
+  const globalReasonix = globalReasonixMemorySection(
+    homeDir ? join(homeDir, ".reasonix") : undefined,
+  );
+  if (globalReasonix) layers.push({ scope: "global", text: globalReasonix });
+  const globalClaude = globalClaudeMemorySection(homeDir);
+  if (globalClaude) layers.push({ scope: "global", text: globalClaude });
+  // MemoryStore takes the STATE dir (~/.reasonix) while this option is the OS home: convert once, here,
+  // so a caller-supplied home reaches every layer instead of silently dropping the user-memory blocks.
+  layers.push(
+    ...userMemoryLayers({
+      projectRoot: rootDir,
+      homeDir: homeDir ? join(homeDir, ".reasonix") : undefined,
+      cfg: opts.cfg,
+    }),
+  );
+  return layers;
 }
 
 export function applyMemoryStack(
@@ -401,19 +459,5 @@ export function applyMemoryStack(
   rootDir: string,
   opts: { homeDir?: string; cfg?: ReasonixConfig } = {},
 ): string {
-  const homeDir = opts.homeDir;
-  const cfg = opts.cfg;
-  const withProject = applyProjectMemory(basePrompt, rootDir);
-  const withGlobal = applyGlobalReasonixMemory(
-    withProject,
-    homeDir ? join(homeDir, ".reasonix") : undefined,
-  );
-  const withGlobalClaude = applyGlobalClaudeMemory(withGlobal, homeDir);
-  // MemoryStore takes the STATE dir (~/.reasonix) while this option is the OS home: convert once, here,
-  // so a caller-supplied home reaches every layer instead of silently dropping the user-memory blocks.
-  return applyUserMemory(withGlobalClaude, {
-    projectRoot: rootDir,
-    homeDir: homeDir ? join(homeDir, ".reasonix") : undefined,
-    cfg,
-  });
+  return applyMemoryLayers(basePrompt, memoryStackLayers(rootDir, opts));
 }

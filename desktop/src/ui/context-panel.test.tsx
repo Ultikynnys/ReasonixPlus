@@ -6,7 +6,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivePlan, Settings, UsageStats } from "../App";
-import type { McpSpecInfo } from "../protocol";
+import type { McpSpecInfo, PluginInfo, SkillInfo } from "../protocol";
 import { ContextPanel } from "./context-panel";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -510,15 +510,16 @@ describe("ContextPanel memory counts", () => {
 });
 
 describe("ContextPanel MCP list", () => {
+  const spec = (name: string, patch: Partial<McpSpecInfo> = {}): McpSpecInfo => ({
+    raw: name,
+    name,
+    transport: "stdio",
+    summary: name,
+    status: "connected",
+    ...patch,
+  });
+
   it("lists only the servers enabled for this session, hiding session-disabled ones", () => {
-    const spec = (name: string, patch: Partial<McpSpecInfo> = {}): McpSpecInfo => ({
-      raw: name,
-      name,
-      transport: "stdio",
-      summary: name,
-      status: "connected",
-      ...patch,
-    });
     const { container } = renderPanel({}, null, [
       spec("mail"),
       spec("other"),
@@ -527,6 +528,140 @@ describe("ContextPanel MCP list", () => {
     fireEvent.click(screen.getByText("MCP"));
     const names = Array.from(container.querySelectorAll(".mcp-row .n")).map((n) => n.textContent);
     expect(names).toEqual(["mail", "other"]);
+  });
+
+  it("tags each server with where it came from", () => {
+    const { container } = renderPanel({}, null, [
+      spec("mine"),
+      spec("playwright", { builtin: true }),
+      spec("relay", { plugin: "notfair" }),
+    ]);
+    fireEvent.click(screen.getByText("MCP"));
+    const tags = Array.from(container.querySelectorAll(".mcp-row .ctx-tag")).map((tag) => ({
+      kind: tag.getAttribute("data-k"),
+      label: tag.textContent,
+    }));
+    expect(tags).toEqual([
+      { kind: "standalone", label: "standalone" },
+      { kind: "builtin", label: "builtin" },
+      { kind: "plugin", label: "plugin notfair" },
+    ]);
+  });
+});
+
+describe("ContextPanel skills and plugins tabs", () => {
+  const skill = (id: string, patch: Partial<SkillInfo> = {}): SkillInfo => ({
+    id,
+    name: id,
+    description: `${id} workflow`,
+    path: `/skills/${id}/SKILL.md`,
+    active: false,
+    ...patch,
+  });
+  const plugin = (slug: string, patch: Partial<PluginInfo> = {}): PluginInfo => ({
+    slug,
+    name: slug,
+    displayName: slug,
+    category: "Plugins",
+    capabilities: [],
+    defaultPrompt: [],
+    active: false,
+    skills: [],
+    servers: [],
+    ...patch,
+  });
+
+  function renderInventories(skills: SkillInfo[], plugins: PluginInfo[]) {
+    const onRequestSkills = vi.fn();
+    const onRequestPlugins = vi.fn();
+    const view = render(
+      <ContextPanel
+        settings={settings}
+        usage={usage}
+        mcpSpecs={[]}
+        mcpBridged={false}
+        sessionFiles={[]}
+        memory={[]}
+        memoryDetail={null}
+        memoryResult={null}
+        skills={skills}
+        plugins={plugins}
+        onRequestSkills={onRequestSkills}
+        onRequestPlugins={onRequestPlugins}
+        onReadMemory={() => {}}
+        onWriteMemory={() => {}}
+        onDeleteMemory={() => {}}
+        onDismissMemoryResult={() => {}}
+      />,
+    );
+    return { ...view, onRequestSkills, onRequestPlugins };
+  }
+
+  it("requests both inventories on open and separates standalone skills from a plugin's", () => {
+    const { container, onRequestSkills, onRequestPlugins } = renderInventories(
+      [skill("review", { active: true }), skill("release")],
+      [
+        plugin("notfair", {
+          active: true,
+          skills: [{ name: "seo", description: "seo", path: "skills/seo/SKILL.md", root: "skills" }],
+        }),
+        plugin("rayfin", {
+          skills: [
+            { name: "brand", description: "brand", path: "skills/brand/SKILL.md", root: "skills" },
+          ],
+        }),
+      ],
+    );
+    expect(onRequestSkills).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Skills"));
+    expect(onRequestSkills).toHaveBeenCalledTimes(1);
+    // Plugin skills ride the plugin snapshot, so the tab that lists them refreshes both.
+    expect(onRequestPlugins).toHaveBeenCalledTimes(1);
+    const names = Array.from(container.querySelectorAll(".mcp-row .n")).map((n) => n.textContent);
+    expect(names).toEqual(["release", "review", "seo", "brand"]);
+    const tags = Array.from(container.querySelectorAll(".mcp-row .ctx-tag")).map((tag) => [
+      tag.getAttribute("data-k"),
+      tag.textContent,
+    ]);
+    expect(tags).toEqual([
+      ["standalone", "standalone"],
+      ["standalone", "standalone"],
+      ["plugin", "plugin notfair"],
+      ["plugin", "plugin rayfin"],
+    ]);
+    const states = Array.from(container.querySelectorAll(".mcp-row .status")).map((d) =>
+      d.getAttribute("data-s"),
+    );
+    expect(states).toEqual(["off", "ok", "ok", "off"]);
+    expect(screen.getByText("2/4 on")).toBeTruthy();
+  });
+
+  it("requests the plugin inventory on open and shows what each plugin ships", () => {
+    const { container, onRequestPlugins } = renderInventories(
+      [],
+      [
+        plugin("notfair", {
+          displayName: "NotFair",
+          version: "1.0.0",
+          active: true,
+          skills: [
+            { name: "a", description: "a", path: "skills/a/SKILL.md", root: "skills" },
+            { name: "b", description: "b", path: "skills/b/SKILL.md", root: "skills" },
+          ],
+          servers: [{ name: "relay", transport: "stdio", status: "connected" }],
+        }),
+        plugin("rayfin", { disabled: true }),
+      ],
+    );
+    expect(onRequestPlugins).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Plugins"));
+    expect(onRequestPlugins).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("1/2 on")).toBeTruthy();
+    expect(screen.getByText("Plugins - 1.0.0 - skills: 2, servers: 1")).toBeTruthy();
+    const states = Array.from(container.querySelectorAll(".mcp-row .status")).map((d) =>
+      d.getAttribute("data-s"),
+    );
+    expect(states).toEqual(["ok", "off"]);
   });
 });
 
@@ -538,6 +673,8 @@ describe("ContextPanel plan tab", () => {
       "Files",
       "Parameters",
       "MCP",
+      "Skills",
+      "Plugins",
       "Memory00",
       "Rules",
       "Plan",
@@ -724,6 +861,54 @@ describe("ContextPanel files", () => {
   it("hides the breakdown until the daemon reports the parts", () => {
     renderPanel(undefined, null, [], true, { ...usage, reservedTokens: 15_975 });
     expect(screen.queryByTestId("ctx-reserved-breakdown")).toBeNull();
+  });
+
+  it("attributes part of the reserved bucket to memory, split by scope", () => {
+    renderPanel(undefined, null, [], true, {
+      ...usage,
+      reservedTokens: 15_975,
+      skillTokens: 5_727,
+      toolTokens: 8_000,
+      memoryTokens: { global: 400, project: 248, priority: 0 },
+    });
+    const breakdown = within(screen.getByTestId("ctx-reserved-breakdown"));
+    expect(breakdown.getByText("memory")).toBeTruthy();
+    expect(breakdown.getByText("648")).toBeTruthy();
+    // Memory is charged against the prompt remainder, so the parts still sum to `reserved`.
+    expect(breakdown.getByText("1,600")).toBeTruthy();
+    const split = within(screen.getByTestId("ctx-memory-breakdown"));
+    expect(split.getByText("global")).toBeTruthy();
+    expect(split.getByText("400")).toBeTruthy();
+    expect(split.getByText("project")).toBeTruthy();
+    expect(split.getByText("248")).toBeTruthy();
+    expect(split.queryByText("high priority")).toBeNull();
+  });
+
+  it("shows the high-priority memory layer only when it costs something", () => {
+    renderPanel(undefined, null, [], true, {
+      ...usage,
+      reservedTokens: 15_975,
+      skillTokens: 5_727,
+      toolTokens: 8_000,
+      memoryTokens: { global: 400, project: 248, priority: 120 },
+    });
+    const breakdown = within(screen.getByTestId("ctx-reserved-breakdown"));
+    expect(breakdown.getByText("768")).toBeTruthy();
+    const split = within(screen.getByTestId("ctx-memory-breakdown"));
+    expect(split.getByText("high priority")).toBeTruthy();
+    expect(split.getByText("120")).toBeTruthy();
+  });
+
+  it("keeps the memory item at zero without showing a split row", () => {
+    renderPanel(undefined, null, [], true, {
+      ...usage,
+      reservedTokens: 15_975,
+      skillTokens: 5_727,
+      toolTokens: 8_000,
+      memoryTokens: { global: 0, project: 0, priority: 0 },
+    });
+    expect(within(screen.getByTestId("ctx-reserved-breakdown")).getByText("memory")).toBeTruthy();
+    expect(screen.queryByTestId("ctx-memory-breakdown")).toBeNull();
   });
 
   it("uses the configured context window as the meter denominator before the sidecar reports", () => {

@@ -930,6 +930,14 @@ export interface PlaywrightBrowserInstallEvent {
   install: PlaywrightBrowserInstall;
 }
 
+/** What the prompt spends on memory, per layer scope. The high-priority block is its own
+ *  scope because one entry's constraint can override the rest of the stack. */
+export interface CtxMemoryTokens {
+  global: number;
+  project: number;
+  priority: number;
+}
+
 export interface CtxBreakdownEvent {
   type: "$ctx_breakdown";
   reservedTokens: number;
@@ -937,6 +945,8 @@ export interface CtxBreakdownEvent {
   skillTokens?: number;
   /** Part of `reservedTokens` the tool specs occupy. */
   toolTokens?: number;
+  /** Part of `reservedTokens` the memory blocks occupy, split by the scope that owns each. */
+  memoryTokens?: CtxMemoryTokens;
   /** Current log token count (real-time). */
   logTokens?: number;
   /** Model context cap — denominator for the meter. */

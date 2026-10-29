@@ -10,7 +10,10 @@ import {
 import { codeSystemPrompt } from "../src/code/prompt.js";
 import { writeConfig } from "../src/config.js";
 import { patchSessionMeta } from "../src/memory/session.js";
+import { MemoryStore } from "../src/memory/user.js";
 import { ToolRegistry } from "../src/tools.js";
+
+type TabForPrompt = Parameters<typeof refreshTabSystemPrompt>[0];
 
 describe("refreshTabSystemPrompt", () => {
   let home: string;
@@ -65,6 +68,47 @@ describe("refreshTabSystemPrompt", () => {
     refreshTabSystemPrompt(tab);
 
     expect(tab.system).toBe("stale");
+  });
+
+  it("prices the memory the prompt carries, per scope", () => {
+    writeFileSync(join(root, "REASONIX.md"), "Pinned project note\n", "utf8");
+    // refreshTabSystemPrompt resolves memory against the real home, which the setup stubs to `home`.
+    const store = new MemoryStore({ homeDir: join(home, ".reasonix"), projectRoot: root });
+    store.write({
+      name: "g_pref",
+      type: "user",
+      scope: "global",
+      description: "global pref",
+      body: "b",
+    });
+    const tab: TabForPrompt = {
+      rootDir: root,
+      currentModel: "deepseek-v4-flash",
+      system: "stale",
+      toolset: {},
+    };
+
+    refreshTabSystemPrompt(tab);
+
+    expect(tab.memoryPromptTokens?.global).toBeGreaterThan(0);
+    expect(tab.memoryPromptTokens?.project).toBeGreaterThan(0);
+    expect(tab.memoryPromptTokens?.priority).toBe(0);
+    expect(tab.system).toContain("# Project memory (REASONIX.md)");
+    expect(tab.system).toContain("# User memory: global");
+  });
+
+  it("reports zero memory cost when the prompt carries no memory", () => {
+    const tab: TabForPrompt = {
+      rootDir: root,
+      currentModel: "deepseek-v4-flash",
+      system: "stale",
+      toolset: {},
+    };
+
+    refreshTabSystemPrompt(tab);
+
+    expect(tab.memoryPromptTokens).toEqual({ global: 0, project: 0, priority: 0 });
+    expect(tab.system).not.toContain("# User memory");
   });
 });
 

@@ -20,30 +20,37 @@ import type {
   McpSpecInfo,
   MemoryDetail,
   MemoryEntryInfo,
+  PluginInfo,
   SessionEventRecord,
   SettingsPatch,
+  SkillInfo,
 } from "../protocol";
 import { toWorkspaceAbsolute } from "../workspace-path";
 import { PanelErrorBoundary } from "./error-boundary";
 import type { TranscriptRecord } from "./events";
 import { EventsPanel } from "./events";
 import { FileMenu } from "./file-menu";
+import { useInventoryRequest } from "./inventory-request";
 import { activationHandler } from "./keyboard";
+import { pluginQualifier } from "./plugin-labels";
 import { sessionTitle } from "./session-title";
 import type { JumpTarget } from "./transcript-jump";
 
-type Tab = "files" | "parameters" | "mcp" | "memory" | "rules" | "plan" | "events";
-
-/** Side-panel nav order and labels; the tab bar below maps over this one list. */
-const PANEL_TABS: ReadonlyArray<{ id: Tab; label: TKey }> = [
+/** Side-panel nav order and labels. Declared before `Tab` because the tab union derives from
+ *  it: a tab cannot reach the state without a nav entry, and the bar maps over one list. */
+const PANEL_TABS = [
   { id: "files", label: "contextPanel.filesTab" },
   { id: "parameters", label: "contextPanel.parametersTab" },
   { id: "mcp", label: "contextPanel.mcpTab" },
+  { id: "skills", label: "contextPanel.skillsTab" },
+  { id: "plugins", label: "contextPanel.pluginsTab" },
   { id: "memory", label: "contextPanel.memoryTab" },
   { id: "rules", label: "contextPanel.rulesTab" },
   { id: "plan", label: "contextPanel.planTab" },
   { id: "events", label: "contextPanel.eventsTab" },
-];
+] as const satisfies ReadonlyArray<{ id: string; label: TKey }>;
+
+type Tab = (typeof PANEL_TABS)[number]["id"];
 
 /** Rule effect and mode come straight off the wire type, so they cannot drift. */
 type RuleEffect = RuleRecord["effect"];
@@ -71,6 +78,10 @@ export function ContextPanel({
   memory,
   memoryDetail,
   memoryResult,
+  skills = [],
+  plugins = [],
+  onRequestSkills,
+  onRequestPlugins,
   onReadMemory,
   onWriteMemory,
   onDeleteMemory,
@@ -102,6 +113,15 @@ export function ContextPanel({
   memory: MemoryEntryInfo[];
   memoryDetail: MemoryDetail | null;
   memoryResult: { ok: boolean; message: string } | null;
+  /** Standalone skills installed for every workspace; a chat's enabled set is frozen at
+   *  its session-start confirm, so this inventory is read-only. */
+  skills?: SkillInfo[];
+  /** Installed plugins with what each ships; enablement is chosen per chat, not here. */
+  plugins?: PluginInfo[];
+  /** Re-request the skill inventory when the Skills tab opens. */
+  onRequestSkills?: () => void;
+  /** Re-request the plugin inventory when the Plugins tab opens. */
+  onRequestPlugins?: () => void;
   onReadMemory: (path: string) => void;
   onWriteMemory: (
     scope: "global" | "project",
@@ -150,13 +170,17 @@ export function ContextPanel({
     if (entry.scope === "global" || entry.scope === "project") memoryCounts[entry.scope]++;
   }
   const reserved = usage.reservedTokens;
-  // What the reserved bucket is made of. Prompt is the remainder, so the three always add
+  // What the reserved bucket is made of. Prompt is the remainder, so the parts always add
   // up to `reserved` no matter which sections the prompt carries.
   const skillTokens = usage.skillTokens;
   const toolTokens = usage.toolTokens;
+  const memoryTokens = usage.memoryTokens;
+  const memoryTotal = memoryTokens
+    ? memoryTokens.global + memoryTokens.project + memoryTokens.priority
+    : 0;
   const promptTokens =
     skillTokens !== undefined && toolTokens !== undefined
-      ? Math.max(0, reserved - skillTokens - toolTokens)
+      ? Math.max(0, reserved - skillTokens - toolTokens - memoryTotal)
       : undefined;
   const lastHit = usage.lastCallCacheHit ?? 0;
   const lastMiss = usage.lastCallCacheMiss ?? 0;
@@ -272,10 +296,34 @@ export function ContextPanel({
                 {t("contextPanel.toolsKey")}{" "}
                 <span className="v">{(toolTokens as number).toLocaleString()}</span>
               </span>
+              {memoryTokens ? (
+                <span className="l" title={t("contextPanel.memoryTooltip")}>
+                  {t("contextPanel.memoryKey")}{" "}
+                  <span className="v">{memoryTotal.toLocaleString()}</span>
+                </span>
+              ) : null}
               <span className="l">
                 {t("contextPanel.promptKey")}{" "}
                 <span className="v">{promptTokens.toLocaleString()}</span>
               </span>
+            </div>
+          ) : null}
+          {memoryTokens && memoryTotal > 0 ? (
+            <div className="legend legend-sub legend-nested" data-testid="ctx-memory-breakdown">
+              <span className="l">
+                {t("contextPanel.scopeGlobal")}{" "}
+                <span className="v">{memoryTokens.global.toLocaleString()}</span>
+              </span>
+              <span className="l">
+                {t("contextPanel.scopeProject")}{" "}
+                <span className="v">{memoryTokens.project.toLocaleString()}</span>
+              </span>
+              {memoryTokens.priority > 0 ? (
+                <span className="l">
+                  {t("contextPanel.memoryPriorityKey")}{" "}
+                  <span className="v">{memoryTokens.priority.toLocaleString()}</span>
+                </span>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -291,6 +339,15 @@ export function ContextPanel({
             <CtxParameters settings={settings} usage={usage} onSaveSettings={onSaveSettings} />
           )}
           {tab === "mcp" && <CtxMcp specs={mcpSpecs} bridged={mcpBridged} />}
+          {tab === "skills" && (
+            <CtxSkills
+              skills={skills}
+              plugins={plugins}
+              onRequest={onRequestSkills}
+              onRequestPlugins={onRequestPlugins}
+            />
+          )}
+          {tab === "plugins" && <CtxPlugins plugins={plugins} onRequest={onRequestPlugins} />}
           {tab === "memory" && (
             <CtxMemory
               entries={memory}
@@ -1590,67 +1647,262 @@ function CtxParameters({
   );
 }
 
+/** Where a capability came from: the user's own install, a Reasonix+ managed built-in, or a
+ *  plugin's bundle. */
+type Origin = "standalone" | "builtin" | "plugin";
+
+/** Provenance of one capability row. */
+function OriginTag({ origin, owner }: { origin: Origin; owner?: string }) {
+  const label =
+    origin === "plugin"
+      ? t("contextPanel.originPlugin", { name: owner ?? "" })
+      : t(origin === "builtin" ? "contextPanel.originBuiltin" : "contextPanel.originStandalone");
+  return (
+    <span className="ctx-tag" data-k={origin} title={label}>
+      {label}
+    </span>
+  );
+}
+
+/** One inventory row: an MCP server, a skill, or a plugin. */
+type CapabilityItem = {
+  key: string;
+  icon: ReactNode;
+  name: string;
+  /** Muted line under the name: transport and status, counts, or a description. */
+  meta: ReactNode;
+  /** Second muted line, only where there is more to say (a manifest or SKILL.md error). */
+  note?: ReactNode;
+  /** Omitted by rows that are the inventory itself rather than something installed into it. */
+  origin?: Origin;
+  owner?: string;
+  state: "ok" | "off" | "pending";
+  /** What the state dot means, for its hover title. */
+  stateTitle?: string;
+  /** Hover title for the whole row: a path, a plugin slug. */
+  title?: string;
+};
+
+/** The body shared by the MCP, Skills and Plugins tabs: a header pair, one line for an empty
+ *  inventory, then one row per item. */
+function CapabilityList({
+  title,
+  summary,
+  empty,
+  items,
+}: {
+  title: string;
+  summary: string;
+  empty: string;
+  items: CapabilityItem[];
+}) {
+  return (
+    <div className="ctx-block">
+      <div className="h">
+        <span>{title}</span>
+        <span className="right">{items.length === 0 ? "-" : summary}</span>
+      </div>
+      {items.length === 0 ? (
+        <div className="ctx-empty">{empty}</div>
+      ) : (
+        items.map((item) => (
+          <div key={item.key} style={{ marginBottom: 6 }} title={item.title}>
+            <div className="mcp-row" style={{ marginBottom: 6 }}>
+              <span className="ico">{item.icon}</span>
+              <div className="body">
+                <div className="n">{item.name}</div>
+                <div className="m">{item.meta}</div>
+                {item.note ? <div className="m">{item.note}</div> : null}
+              </div>
+              {item.origin ? <OriginTag origin={item.origin} owner={item.owner} /> : null}
+              <span className="status" data-s={item.state} title={item.stateTitle} />
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+/** A server's words after its transport: why it failed, or how far it got. */
+function mcpStatusSuffix(spec: McpSpecInfo): string {
+  if (spec.statusReason) return spec.statusReason;
+  if (spec.status === "connected") {
+    return typeof spec.toolCount === "number"
+      ? t("contextPanel.mcpTools", { count: spec.toolCount })
+      : t("contextPanel.mcpReady");
+  }
+  if (spec.status === "handshake") return t("contextPanel.mcpConnecting");
+  if (spec.status === "disabled") return t("contextPanel.mcpDisabled");
+  if (spec.status === "failed") return t("contextPanel.mcpFailed");
+  return t("contextPanel.mcpConfigured");
+}
+
+/** A server's dot state: live, refused, or still coming up. */
+function mcpState(spec: McpSpecInfo): CapabilityItem["state"] {
+  if (spec.status === "connected") return "ok";
+  return spec.status === "failed" || spec.parseError ? "off" : "pending";
+}
+
 function CtxMcp({ specs, bridged }: { specs: McpSpecInfo[]; bridged: boolean }) {
   // The config may list servers this session never enabled; show only the session's set.
   const sessionSpecs = specs.filter((s) => !s.sessionDisabled);
   const readyCount = sessionSpecs.filter((s) => s.status === "connected").length;
   return (
-    <>
-      <div className="ctx-block">
-        <div className="h">
-          <span>{t("contextPanel.mcpTitle")}</span>
-          <span className="right">
-            {sessionSpecs.length === 0
-              ? "-"
-              : bridged
-                ? t("contextPanel.mcpReadyAll", { count: sessionSpecs.length })
-                : t("contextPanel.mcpReadySome", { ready: readyCount, count: sessionSpecs.length })}
+    <CapabilityList
+      title={t("contextPanel.mcpTitle")}
+      summary={
+        bridged
+          ? t("contextPanel.mcpReadyAll", { count: sessionSpecs.length })
+          : t("contextPanel.mcpReadySome", { ready: readyCount, count: sessionSpecs.length })
+      }
+      empty={t("contextPanel.mcpEmpty")}
+      items={sessionSpecs.map((spec) => {
+        const status = mcpStatusSuffix(spec);
+        return {
+          key: spec.raw,
+          icon: <I.wrench size={12} />,
+          name: spec.name ?? spec.summary,
+          meta: `${spec.transport} · ${status}`,
+          origin: spec.builtin ? "builtin" : spec.plugin ? "plugin" : "standalone",
+          owner: spec.plugin,
+          state: mcpState(spec),
+          stateTitle: status,
+        };
+      })}
+    />
+  );
+}
+
+/** One row of the Skills inventory: a standalone skill or one a plugin ships. */
+type SkillRow = {
+  key: string;
+  name: string;
+  description: string;
+  path: string;
+  on: boolean;
+  origin: Exclude<Origin, "builtin">;
+  owner?: string;
+  error?: string;
+};
+
+/** Every skill the workspace can see: standalone ones first, then each plugin's bundle, so
+ *  the flat list still reads as one block per origin. */
+function skillRows(skills: SkillInfo[], plugins: PluginInfo[]): SkillRow[] {
+  const rows: SkillRow[] = skills.map((skill) => ({
+    key: `skill:${skill.id}`,
+    name: skill.name,
+    description: skill.description,
+    path: skill.path,
+    on: skill.active,
+    origin: "standalone",
+    ...(skill.error ? { error: skill.error } : {}),
+  }));
+  for (const plugin of plugins) {
+    for (const skill of plugin.skills) {
+      rows.push({
+        key: `plugin:${plugin.slug}:${skill.path}`,
+        name: skill.name,
+        description: skill.description,
+        path: `${plugin.slug}/${skill.path}`,
+        on: plugin.active,
+        origin: "plugin",
+        owner: plugin.slug,
+      });
+    }
+  }
+  const rank = (row: SkillRow): number => (row.origin === "standalone" ? 0 : 1);
+  return rows.sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      (a.owner ?? "").localeCompare(b.owner ?? "") ||
+      a.name.localeCompare(b.name),
+  );
+}
+
+/** The Skills inventory: what this chat enabled, and whether each entry is the user's own
+ *  install or part of a plugin. */
+function CtxSkills({
+  skills,
+  plugins,
+  onRequest,
+  onRequestPlugins,
+}: {
+  skills: SkillInfo[];
+  plugins: PluginInfo[];
+  onRequest?: () => void;
+  onRequestPlugins?: () => void;
+}) {
+  // This list spans both snapshots: standalone skills, and the bundle each plugin ships.
+  useInventoryRequest(onRequest);
+  useInventoryRequest(onRequestPlugins);
+  const rows = skillRows(skills, plugins);
+  const enabled = rows.filter((row) => row.on).length;
+  return (
+    <CapabilityList
+      title={t("contextPanel.skillsTab")}
+      summary={t("contextPanel.enabledCount", { enabled, count: rows.length })}
+      empty={t("contextPanel.skillsEmpty")}
+      items={rows.map((row) => ({
+        key: row.key,
+        icon: <I.bookmark size={12} />,
+        name: row.name,
+        meta: row.description || t("settings.skillsNoDescription"),
+        note: row.error ? (
+          <span style={{ color: "var(--danger)" }}>
+            {t("settings.skillsReadError", { error: row.error })}
           </span>
-        </div>
-        {sessionSpecs.length === 0 ? (
-          <div className="ctx-empty">{t("contextPanel.mcpEmpty")}</div>
+        ) : undefined,
+        origin: row.origin,
+        owner: row.owner,
+        state: row.on ? "ok" : "off",
+        stateTitle: t(row.on ? "settings.skillsActiveHere" : "contextPanel.notInChat"),
+        title: row.path,
+      }))}
+    />
+  );
+}
+
+/** Installed plugins, what each ships, and whether this chat runs it. */
+function CtxPlugins({ plugins, onRequest }: { plugins: PluginInfo[]; onRequest?: () => void }) {
+  useInventoryRequest(onRequest);
+  const enabled = plugins.filter((plugin) => plugin.active).length;
+  return (
+    <CapabilityList
+      title={t("contextPanel.pluginsTab")}
+      summary={t("contextPanel.enabledCount", { enabled, count: plugins.length })}
+      empty={t("contextPanel.pluginsEmpty")}
+      items={plugins.map((plugin) => ({
+        key: plugin.slug,
+        icon: <I.plug size={12} />,
+        name: plugin.displayName,
+        meta: [
+          pluginQualifier(plugin),
+          t("contextPanel.pluginShips", {
+            skills: plugin.skills.length,
+            servers: plugin.servers.length,
+          }),
+        ]
+          .filter(Boolean)
+          .join(" - "),
+        note: plugin.error ? (
+          <span style={{ color: "var(--danger)" }}>
+            {t("settings.pluginsManifestError", { error: plugin.error })}
+          </span>
         ) : (
-          sessionSpecs.map((s) => {
-            const dot =
-              s.status === "connected"
-                ? "ok"
-                : s.status === "failed" || s.parseError
-                  ? "off"
-                  : "pending";
-            const suffix = s.statusReason
-              ? ` · ${s.statusReason}`
-              : s.status === "connected"
-                ? typeof s.toolCount === "number"
-                  ? ` · ${t("contextPanel.mcpTools", { count: s.toolCount })}`
-                  : ` · ${t("contextPanel.mcpReady")}`
-                : s.status === "handshake"
-                  ? ` · ${t("contextPanel.mcpConnecting")}`
-                  : s.status === "disabled"
-                    ? ` · ${t("contextPanel.mcpDisabled")}`
-                    : s.status === "failed"
-                      ? ` · ${t("contextPanel.mcpFailed")}`
-                      : ` · ${t("contextPanel.mcpConfigured")}`;
-            return (
-              <div key={s.raw} style={{ marginBottom: 6 }}>
-                <div className="mcp-row" style={{ marginBottom: 6 }}>
-                  <span className="ico">
-                    <I.wrench size={12} />
-                  </span>
-                  <div className="body">
-                    <div className="n">{s.name ?? s.summary}</div>
-                    <div className="m">
-                      {s.transport}
-                      {suffix}
-                    </div>
-                  </div>
-                  <span className="status" data-s={dot} />
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-    </>
+          plugin.description || t("settings.pluginsNoDescription")
+        ),
+        state: plugin.active ? "ok" : plugin.disabled || plugin.error ? "off" : "pending",
+        stateTitle: t(
+          plugin.active
+            ? "settings.pluginsActiveHere"
+            : plugin.disabled
+              ? "settings.pluginsOffByDefault"
+              : "contextPanel.notInChat",
+        ),
+        title: plugin.slug,
+      }))}
+    />
   );
 }
 

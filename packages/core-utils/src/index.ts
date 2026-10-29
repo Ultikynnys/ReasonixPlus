@@ -365,6 +365,7 @@ export type {
   PlaywrightBrowserInstall,
   PlaywrightBrowserInstallEvent,
   CtxBreakdownEvent,
+  CtxMemoryTokens,
   MemoryEntryKind,
   MemoryEntryInfo,
   MemoryEntryDetail,

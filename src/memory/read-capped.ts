@@ -61,15 +61,20 @@ function longestBacktickRun(text: string): number {
   return longest;
 }
 
-/** Assemble a memory block (heading + intro + code fence) into the prompt prefix.
+/** A heading + intro + code fence with the two newlines that separate it from the block before.
  *  The fence is one backtick longer than the longest run inside `content`, so interpolated text
  *  can never close it early. Nothing is escaped or stripped, so the block stays byte-deterministic. */
+export function memoryBlock(heading: string, intro: string, content: string): string {
+  const fence = "`".repeat(Math.max(3, longestBacktickRun(content) + 1));
+  return `\n\n${[heading, "", intro, "", fence, content, fence].join("\n")}`;
+}
+
+/** Splice a memory block onto a prompt prefix: the block alone is the cost the splice adds. */
 export function applyMemoryBlock(
   basePrompt: string,
   heading: string,
   intro: string,
   content: string,
 ): string {
-  const fence = "`".repeat(Math.max(3, longestBacktickRun(content) + 1));
-  return [basePrompt, "", heading, "", intro, "", fence, content, fence].join("\n");
+  return `${basePrompt}${memoryBlock(heading, intro, content)}`;
 }

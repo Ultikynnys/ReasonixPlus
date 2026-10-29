@@ -12,6 +12,7 @@ import {
   applyGlobalReasonixMemory,
   applyMemoryStack,
   applyUserMemory,
+  memoryStackLayers,
   projectHash,
   sanitizeMemoryName,
 } from "../src/memory/user.js";
@@ -419,6 +420,68 @@ describe("user-memory", () => {
       expect(out).not.toMatch(/# Project memory/);
       expect(out).not.toMatch(/# User memory/);
       expect(out).not.toMatch(/# Global memory/);
+    });
+  });
+
+  describe("memoryStackLayers", () => {
+    it("tags each block with the scope that owns it and covers the whole delta", () => {
+      writeFileSync(join(projectRoot, "REASONIX.md"), "Pinned by REASONIX.md\n", "utf8");
+      // memoryStackLayers takes the OS home and appends .reasonix, so the store must write there.
+      const store = new MemoryStore({ homeDir: join(home, ".reasonix"), projectRoot });
+      store.write({
+        name: "g_pref",
+        type: "user",
+        scope: "global",
+        description: "global pref",
+        body: "b",
+      });
+      store.write({
+        name: "p_fact",
+        type: "project",
+        scope: "project",
+        description: "project fact",
+        body: "b",
+      });
+
+      const layers = memoryStackLayers(projectRoot, { homeDir: home });
+
+      expect(layers.map((layer) => layer.scope)).toEqual(["project", "global", "project"]);
+      // The layers are the whole memory delta: applying them is applying the stack.
+      expect(applyMemoryStack(BASE, projectRoot, { homeDir: home })).toBe(
+        BASE + layers.map((layer) => layer.text).join(""),
+      );
+      expect(layers[0]?.text).toContain("# Project memory (REASONIX.md)");
+      expect(layers[1]?.text).toContain("# User memory: global");
+      expect(layers[2]?.text).toContain("# User memory: this project");
+    });
+
+    it("gives the high-priority block its own scope ahead of the stores", () => {
+      // memoryStackLayers takes the OS home and appends .reasonix, so the store must write there.
+      const store = new MemoryStore({ homeDir: join(home, ".reasonix"), projectRoot });
+      store.write({
+        name: "must_do",
+        type: "user",
+        scope: "global",
+        description: "never prompt for npm test",
+        body: "b",
+        priority: "high",
+      });
+
+      const layers = memoryStackLayers(projectRoot, { homeDir: home });
+
+      expect(layers[0]?.scope).toBe("priority");
+      expect(layers[0]?.text).toContain("# HIGH PRIORITY constraints");
+    });
+
+    it("reports no layers when memory is disabled", () => {
+      writeFileSync(join(projectRoot, "REASONIX.md"), "Pinned\n", "utf8");
+      process.env.REASONIX_MEMORY = "off";
+      try {
+        expect(memoryStackLayers(projectRoot, { homeDir: home })).toEqual([]);
+      } finally {
+        // biome-ignore lint/performance/noDelete: env key must lose presence
+        delete process.env.REASONIX_MEMORY;
+      }
     });
   });
 

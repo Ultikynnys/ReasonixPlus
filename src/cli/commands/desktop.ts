@@ -39,6 +39,7 @@ import type {
   CodexQuota,
   ConfirmRequiredEvent,
   CtxBreakdownEvent,
+  CtxMemoryTokens,
   DesktopDiagnosticEvent,
   DirectKernelWireEvent,
   EditRequiredEvent,
@@ -128,7 +129,7 @@ import { type PlanRecord, planRepository } from "../../code/plans.js";
 import {
   type PluginPromptEntry,
   type SkillIndexEntry,
-  codeSystemPrompt,
+  codeSystemPromptParts,
   promptSections,
 } from "../../code/prompt.js";
 import { type CodeToolset, applyPlanMode, buildCodeToolset } from "../../code/setup.js";
@@ -5309,6 +5310,7 @@ function emitCtxBreakdown(tab: Tab): void {
     reservedTokens: sys + tools,
     skillTokens: tab.skillPromptTokens ?? 0,
     toolTokens: tools,
+    memoryTokens: tab.memoryPromptTokens,
     logTokens,
     ctxMax,
   });
@@ -5320,6 +5322,7 @@ function emitCtxBreakdown(tab: Tab): void {
       // What the reserved bucket is made of, so the panel can show the skill index cost.
       skillTokens: tab.skillPromptTokens ?? 0,
       toolTokens: tools,
+      memoryTokens: tab.memoryPromptTokens,
       logTokens,
       ctxMax,
       ...(shellTotals
@@ -5616,6 +5619,9 @@ interface Tab {
   /** Tokens the `# Skills` index occupies in `system`, so the context panel can show what
    *  the skill set costs. Unset until the first prompt build. */
   skillPromptTokens?: number;
+  /** Tokens the memory blocks occupy in `system`, per scope, so the context panel can show
+   *  what memory costs. Unset until the first prompt build. */
+  memoryPromptTokens?: CtxMemoryTokens;
   initialization: Promise<void> | null;
   initializationRevision: number;
   runtime: RuntimeState | null;
@@ -5987,13 +5993,17 @@ export function refreshTabSystemPrompt(
     /** Cost of the skill index in this prompt, measured here because this is where the
      *  section is built. The context panel reports it as part of the reserved tokens. */
     skillPromptTokens?: number;
+    /** Cost of the memory blocks in this prompt, split by the scope that owns each block.
+     *  Measured here for the same reason, and frozen with the prefix: a memory write lands
+     *  in the next chat, so the meter keeps describing the prompt this chat was billed. */
+    memoryPromptTokens?: CtxMemoryTokens;
   },
   opts?: { editMode?: EditMode },
 ): void {
   if (!tab.toolset) return;
   const skills = sessionSkillIndex(tab.currentSession);
   const plugins = pluginPromptEntries(tab.currentSession);
-  tab.system = codeSystemPrompt(tab.rootDir, {
+  const built = codeSystemPromptParts(tab.rootDir, {
     modelId: tab.currentModel,
     editMode: opts?.editMode,
     // The session's frozen flag, never live config: a settings edit must not
@@ -6009,8 +6019,13 @@ export function refreshTabSystemPrompt(
     // inventory, and a plugin install or removal rebuilds this prompt anyway.
     plugins,
   });
+  tab.system = built.prompt;
   // Same builders the prompt used, so the meter cannot drift from the text it measures.
   tab.skillPromptTokens = countTokensForMeter(promptSections({ skills, plugins }).skills ?? "");
+  const memoryTokens: CtxMemoryTokens = { global: 0, project: 0, priority: 0 };
+  for (const layer of built.memoryLayers)
+    memoryTokens[layer.scope] += countTokensForMeter(layer.text);
+  tab.memoryPromptTokens = memoryTokens;
 }
 
 /** Whether the selected web search engine renders in a managed browser. Only that engine

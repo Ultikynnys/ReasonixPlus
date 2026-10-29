@@ -2,7 +2,7 @@
 
 import { existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { type CappedPath, applyMemoryBlock, readCappedFile } from "./read-capped.js";
+import { type CappedPath, memoryBlock, readCappedFile } from "./read-capped.js";
 
 /** Default WRITE target — created when no candidate exists yet. */
 export const PROJECT_MEMORY_FILE = "REASONIX.md";
@@ -79,29 +79,31 @@ export function memoryEnabled(): boolean {
   return true;
 }
 
-/** Shared prefix-assembly guard for memory blocks: skip when memory is disabled or the file is missing; splice otherwise. */
-export function applyMemoryIfPresent(
-  basePrompt: string,
+/** One memory block as standalone text, or null when memory is disabled or the source is missing. */
+export function memorySection(
   read: () => CappedPath | null,
   heading: string,
   intro: string,
-): string {
-  if (!memoryEnabled()) return basePrompt;
+): string | null {
+  if (!memoryEnabled()) return null;
   const mem = read();
-  if (!mem) return basePrompt;
-  return applyMemoryBlock(basePrompt, heading, intro, mem.content);
+  return mem ? memoryBlock(heading, intro, mem.content) : null;
+}
+
+/** The repository's memory block as the prefix carries it; null when memory is off or absent. */
+export function projectMemorySection(rootDir: string): string | null {
+  const mem = readProjectMemory(rootDir);
+  if (!mem) return null;
+  const section = memorySection(
+    () => mem,
+    `# Project memory (${basename(mem.path)})`,
+    "Authoritative notes the user pinned for this project:",
+  );
+  // Trailing newline preserved so the prefix output stays byte-identical.
+  return section ? `${section}\n` : null;
 }
 
 /** Deterministic — same memory file always yields the same prefix hash. */
 export function applyProjectMemory(basePrompt: string, rootDir: string): string {
-  const mem = readProjectMemory(rootDir);
-  if (!mem || !memoryEnabled()) return basePrompt;
-  const filename = basename(mem.path);
-  // Trailing newline preserved so the prefix output stays byte-identical.
-  return `${applyMemoryIfPresent(
-    basePrompt,
-    () => mem,
-    `# Project memory (${filename})`,
-    "Authoritative notes the user pinned for this project:",
-  )}\n`;
+  return `${basePrompt}${projectMemorySection(rootDir) ?? ""}`;
 }

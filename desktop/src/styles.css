@@ -5554,7 +5554,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .legend .v {
   color: var(--fg);
 }
-/* Second legend row: what the reserved bucket is made of (skills, tools, prompt). */
+/* Second legend row: what the reserved bucket is made of (skills, tools, memory, prompt). */
 .legend.legend-sub {
   margin-top: 2px;
   font-size: 12px;
@@ -5562,6 +5562,10 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .legend.legend-sub .v {
   color: var(--fg-2);
+}
+/* Third row: the memory segment's own split, indented under the item it explains. */
+.legend.legend-sub.legend-nested {
+  padding-left: 10px;
 }
 
 /* context window slider */
@@ -6022,6 +6026,32 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .mcp-row .status[data-s="pending"] {
   background: var(--warning);
+}
+.ctx-tag {
+  flex-shrink: 0;
+  max-width: 104px;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-tag[data-k="builtin"] {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+}
+.ctx-tag[data-k="plugin"] {
+  background: var(--violet-soft);
+  border-color: transparent;
+  color: var(--violet);
 }
 
 /* rules / approvals */

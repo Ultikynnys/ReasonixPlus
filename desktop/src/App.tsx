@@ -62,6 +62,7 @@ import {
   type CheckpointVerdict,
   type ChoiceVerdict,
   type ConfirmationChoice,
+  type CtxMemoryTokens,
   type FeedbackCueId,
   type FeedbackCueSettings,
   type IncomingEvent,
@@ -488,6 +489,8 @@ export type UsageStats = {
   skillTokens?: number;
   /** Part of `reservedTokens` the tool specs occupy; undefined when unknown. */
   toolTokens?: number;
+  /** Part of `reservedTokens` the memory blocks occupy, split by scope; undefined when unknown. */
+  memoryTokens?: CtxMemoryTokens;
   /** Current conversation log tokens, refreshed by the desktop sidecar. */
   liveLogTokens: number;
   /** Model context cap — meter denominator. */
@@ -2819,6 +2822,9 @@ function applyIncomingInner(state: State, ev: IncomingEvent): State {
       }
       if (typeof ev.toolTokens === "number") {
         next.toolTokens = ev.toolTokens;
+      }
+      if (ev.memoryTokens) {
+        next.memoryTokens = ev.memoryTokens;
       }
       // The shell-output totals arrive as a pair (or not at all — no telemetry).
       if (typeof ev.shellOutputRawTokens === "number") {
@@ -5678,6 +5684,10 @@ const TabRuntime = memo(function TabRuntime({
           memory={view.memory}
           memoryDetail={view.memoryDetail}
           memoryResult={view.memoryResult}
+          skills={view.skills}
+          plugins={view.plugins}
+          onRequestSkills={requestSkills}
+          onRequestPlugins={requestPlugins}
           onReadMemory={readMemory}
           onWriteMemory={writeMemory}
           onDeleteMemory={deleteMemory}
