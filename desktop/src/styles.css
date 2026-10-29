@@ -3444,7 +3444,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   font-family: "Geist Mono", monospace;
   font-size: 12px;
 }
-.ctx-plan-select {
+.ctx-select {
   width: 100%;
   margin: 4px 0 10px;
   padding: 8px 30px 8px 10px;
@@ -3462,15 +3462,15 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   background-position: right 10px center;
   background-size: 12px;
 }
-.ctx-plan-select:hover {
+.ctx-select:hover {
   border-color: var(--border-strong);
 }
-.ctx-plan-select:focus {
+.ctx-select:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent-soft);
 }
-.ctx-plan-select option {
+.ctx-select option {
   background: var(--bg-2);
   color: var(--fg);
 }
@@ -3480,12 +3480,20 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 6px;
   margin: 4px 0 10px;
 }
-.ctx-plan-picker .ctx-plan-select {
+.ctx-plan-picker .ctx-select {
   flex: 1;
   margin: 0;
 }
 .ctx-plan-picker .mini-btn:hover {
   color: var(--danger);
+}
+/* Source picker above an inventory that spans several plugins or the user's own skills. */
+.ctx-filter {
+  display: flex;
+  margin: 0 0 10px;
+}
+.ctx-filter .ctx-select {
+  margin: 0;
 }
 .ctx-plan-owner {
   display: flex;

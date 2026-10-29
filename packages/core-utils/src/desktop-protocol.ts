@@ -1905,7 +1905,7 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "plugins_toggle"; slug: string; disabled: boolean }
   /** Standalone skill inventory for the Settings > Skills page. */
   | { cmd: "skills_get" }
-  /** Install one skill, or every skill of a repository's `skills/` tree. */
+  /** Install one skill, or every skill of a folder that holds skill directories. */
   | { cmd: "skills_install"; source: string }
   | { cmd: "skills_uninstall"; name: string }
   /** Confirm a fresh chat's capabilities — enabled MCP servers, plugins, standalone skills

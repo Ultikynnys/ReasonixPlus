@@ -2,7 +2,7 @@
  *  a SKILL.md. Installation is global; a chat's enablement lives in its session meta. */
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { addGlobalPathAllowed, removeGlobalPathAllowed } from "../config.js";
 import {
   INSTALL_SKIP_DIRS,
@@ -19,7 +19,7 @@ import {
   SKILL_ENTRY_FILE,
   type SkillDeclaration,
   isDirectory,
-  isFile,
+  isSkillDir,
   readSkillDeclaration,
   readSkillEntry,
 } from "./skill.js";
@@ -65,9 +65,8 @@ export function listSkills(opts: SkillLookupOptions = {}): SkillState[] {
   const states: SkillState[] = [];
   for (const id of skillIds(root, opts.only)) {
     const dir = join(root, id);
-    if (!isDirectory(dir)) continue;
+    if (!isSkillDir(dir)) continue;
     const path = join(dir, SKILL_ENTRY_FILE);
-    if (!isFile(path)) continue;
     const declared = readSkillDeclaration(dir, id);
     states.push({
       id,
@@ -122,66 +121,120 @@ function treePath(label: string, path: string): string {
   return rel ? `${label.replace(/[\\/]+$/, "")}/${rel}` : label;
 }
 
-/** Skill directories inside a fetched tree: the tree itself when it holds a SKILL.md,
- *  otherwise one directory per skill under `skills/`. */
-function skillDirsIn(tree: string): string[] {
-  if (isFile(join(tree, SKILL_ENTRY_FILE))) return [tree];
-  const collection = join(tree, DEFAULT_SKILLS_DIR);
-  if (!isDirectory(collection)) return [];
-  try {
-    return readdirSync(collection)
-      .sort()
-      .map((entry) => join(collection, entry))
-      .filter((dir) => isDirectory(dir) && isFile(join(dir, SKILL_ENTRY_FILE)));
-  } catch {
-    return [];
-  }
-}
-
-/** How deep below the source root a diagnostic scan looks: the root itself, a skill one
- *  level down, and the grandchildren a `skills/` collection would hold. */
-const HINT_SCAN_DEPTH = 2;
+/** How many levels below the source root an install scans for skill directories when the
+ *  tree declares no `skills/` collection: a folder whose own children are skills, and one
+ *  level under it. The shallowest depth holding skills wins, so it never mixes containers. */
+const COLLECTION_SCAN_DEPTH = 2;
+/** How deep below the source root a diagnostic scan looks: one level past the install scan,
+ *  so a skill that was not installed is still named. */
+const HINT_SCAN_DEPTH = COLLECTION_SCAN_DEPTH + 1;
 /** How many findings one failure message names before it stops being readable. */
 const HINT_LIMIT = 3;
 const ENTRY_LOOKALIKE = /^skill\.md/i;
 
-/** A directory the install never treats as a skill tree: what the copy already dropped
- *  (build output, dependencies, VCS history) plus any dot-directory of its own. */
-function skippedTreeEntry(entry: string): boolean {
-  return INSTALL_SKIP_DIRS.has(entry) || entry.startsWith(".");
+/** A directory the copy leaves behind, so neither the install nor a failure message reads
+ *  into it: build output, dependencies and VCS history. */
+function droppedByCopy(entry: string): boolean {
+  return INSTALL_SKIP_DIRS.has(entry);
 }
 
-/** What a fetched tree holds instead of a usable entry file: a mistyped name, or a skill
- *  one level too deep. Naming it turns "not there" into an instruction. */
-function missingEntryHints(dir: string, base: string, depth = 0): string[] {
-  if (depth > HINT_SCAN_DEPTH) return [];
-  let entries: string[];
+/** A dot-directory of the source's own: never one of the install's skill containers, because
+ *  a project root keeps junk in dozens of them. A failure message still reads into one, since
+ *  `.agents/skills` and `.claude/skills` hold exactly the skills a user came looking for. */
+function sourceDotDir(entry: string): boolean {
+  return entry.startsWith(".");
+}
+
+/** Entry names of `dir`, sorted, or none when it cannot be read: an unreadable directory
+ *  costs a scan the places it would have looked, never the whole install. */
+function readDirNames(dir: string): string[] {
   try {
-    entries = readdirSync(dir);
+    return readdirSync(dir).sort();
   } catch {
     return [];
   }
+}
+
+/** Every child of `dir` that is itself a skill, sorted. */
+function childSkillDirs(dir: string): string[] {
+  return readDirNames(dir)
+    .map((entry) => join(dir, entry))
+    .filter(isSkillDir);
+}
+
+/** Every child of `dir` the scan may step through: not something the copy dropped, and not a
+ *  skill, whose own subdirectories are that skill's files rather than further skills. */
+function scannableChildren(dir: string): string[] {
+  return readDirNames(dir)
+    .filter((entry) => !droppedByCopy(entry) && !sourceDotDir(entry))
+    .map((entry) => join(dir, entry))
+    .filter((path) => !isSkillDir(path));
+}
+
+/** Skills in the shallowest level below `tree` that holds any, sorted. A tree that ships
+ *  several containers installs the first level's worth and never mixes what sits deeper. */
+function skillDirsBeneath(tree: string): string[] {
+  let level = [tree];
+  for (let depth = 1; depth <= COLLECTION_SCAN_DEPTH; depth++) {
+    const skills = level.flatMap(childSkillDirs).sort();
+    if (skills.length > 0) return skills;
+    level = level.flatMap(scannableChildren);
+  }
+  return [];
+}
+
+/** Skill directories inside a fetched tree: the tree itself when it is one skill; otherwise
+ *  every skill of the first container that holds any, so a `skills/` collection wins over
+ *  loose folders and a folder of skills installs all of them whatever its name. */
+function skillDirsIn(tree: string): string[] {
+  if (isSkillDir(tree)) return [tree];
+  const declared = childSkillDirs(join(tree, DEFAULT_SKILLS_DIR));
+  return declared.length > 0 ? declared : skillDirsBeneath(tree);
+}
+
+/** Whether `dir` sits strictly below `base`, the source root a diagnostic is relative to. */
+function isBelow(base: string, dir: string): boolean {
+  const rel = relative(base, dir);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/** The widest folder the install would accept as a source for `skillDir`: naming it turns a
+ *  failure into one instruction that installs the skill's siblings too, instead of one skill
+ *  per line. Reads the same rule the install does, so the advice cannot drift from it. */
+function installableSource(base: string, skillDir: string): string {
+  let source = skillDir;
+  for (let dir = dirname(skillDir); isBelow(base, dir); dir = dirname(dir)) {
+    if (skillDirsIn(dir).includes(skillDir)) source = dir;
+  }
+  return source;
+}
+
+/** What a fetched tree holds instead of a usable entry file: a mistyped name, or a skill
+ *  deeper than the install scan reaches. Naming it turns "not there" into an instruction. */
+function missingEntryHints(dir: string, base: string, depth = 0): string[] {
+  if (depth > HINT_SCAN_DEPTH) return [];
   const hints: string[] = [];
-  for (const entry of entries) {
+  const at = (path: string): string => treeRelative(relative(base, path));
+  for (const entry of readDirNames(dir)) {
     const path = join(dir, entry);
-    const rel = treeRelative(relative(base, path));
     if (isDirectory(path)) {
-      if (!skippedTreeEntry(entry)) hints.push(...missingEntryHints(path, base, depth + 1));
+      if (!droppedByCopy(entry)) hints.push(...missingEntryHints(path, base, depth + 1));
       continue;
     }
     if (entry === SKILL_ENTRY_FILE) {
       if (depth > 0) {
-        hints.push(`${rel} (nested; point the source at ${treeRelative(relative(base, dir))})`);
+        hints.push(`${at(path)} (nested; point the source at ${at(installableSource(base, dir))})`);
       }
       continue;
     }
-    if (ENTRY_LOOKALIKE.test(entry)) hints.push(`${rel} (rename it to ${SKILL_ENTRY_FILE})`);
+    if (ENTRY_LOOKALIKE.test(entry)) hints.push(`${at(path)} (rename it to ${SKILL_ENTRY_FILE})`);
   }
   return hints.slice(0, HINT_LIMIT);
 }
 
-/** Install one skill (a directory or repo holding SKILL.md) or a whole `skills/` tree.
- *  All or nothing: a collision or an unreadable entry leaves the store untouched. */
+/** Install one skill (a directory or repo holding SKILL.md) or every skill a folder of
+ *  skill directories holds, a `skills/` collection included. All or nothing: a collision or
+ *  an unreadable entry leaves the store untouched. */
 export async function installSkills(
   source: string,
   opts: SkillInstallOptions = {},
@@ -199,16 +252,17 @@ export async function installSkills(
       throw new Error(
         hints.length > 0
           ? `no ${SKILL_ENTRY_FILE} in ${normalized.label}; found ${hints.join(", ")}`
-          : `no ${SKILL_ENTRY_FILE} in ${normalized.label} (expected one at the root, or one per directory under ${DEFAULT_SKILLS_DIR}/)`,
+          : `no ${SKILL_ENTRY_FILE} in ${normalized.label} (expected one at the root, or one per skill directory below it)`,
       );
     }
     const targets = dirs.map((dir) => {
       const fallback = dir === staging ? sourceName(normalized) : basename(dir);
+      const fallbackId = storeSlug(fallback) || "skill";
       const entryPath = treePath(normalized.label, relative(staging, join(dir, SKILL_ENTRY_FILE)));
-      const entry = readSkillEntry(dir, storeSlug(fallback) || "skill");
+      const entry = readSkillEntry(dir, fallbackId);
       if (!entry) throw new Error(`${entryPath} cannot be read`);
       if (entry.empty) throw new Error(`${entryPath} is empty; write what the skill does`);
-      return { dir, id: storeSlug(entry.declaration.name) || storeSlug(fallback) || "skill" };
+      return { dir, id: storeSlug(entry.declaration.name) || fallbackId };
     });
     const ids = new Set<string>();
     for (const target of targets) {
@@ -225,9 +279,10 @@ export async function installSkills(
     for (const dest of moved) addGlobalPathAllowed(dest, opts.configPath);
     return { ids: targets.map((target) => target.id) };
   } catch (err) {
-    rmSync(staging, { recursive: true, force: true });
     for (const dir of moved) rmSync(dir, { recursive: true, force: true });
     throw err;
+  } finally {
+    rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 

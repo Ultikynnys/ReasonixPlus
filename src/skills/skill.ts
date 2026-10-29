@@ -59,6 +59,12 @@ export function isFile(path: string): boolean {
   }
 }
 
+/** Whether `dir` is a skill directory: it holds the entry file. One definition for every
+ *  reader, so a store listing and an install scan agree on what counts as a skill. */
+export function isSkillDir(dir: string): boolean {
+  return isDirectory(dir) && isFile(join(dir, SKILL_ENTRY_FILE));
+}
+
 /** One skill directory's entry file, read once: what it declares, and whether it says
  *  anything at all. */
 export interface SkillEntry {

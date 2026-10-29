@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -79,7 +79,7 @@ describe("installSkills", () => {
     writeFileSync(join(source, "README.md"), "# nothing here", "utf8");
 
     await expect(install(source)).rejects.toThrow(/no SKILL\.md/);
-    expect(existsSync(skillsRoot(home)) ? listSkills({ homeDir: home }) : []).toEqual([]);
+    expect(readdirSync(skillsRoot(home))).toEqual([]);
   });
 
   it("names a file that is not called SKILL.md", async () => {
@@ -91,14 +91,85 @@ describe("installSkills", () => {
     expect(listSkills({ homeDir: home })).toEqual([]);
   });
 
-  it("names a skill that sits one level too deep", async () => {
+  it("installs every skill of a folder whose own children are skills", async () => {
+    const source = join(work, ".agents", "skills");
+    writeSkillDir(join(source, "rea-analysis-optimization"), { name: "rea-analysis-optimization" });
+    writeSkillDir(join(source, "rea-changelog-update"), { name: "rea-changelog-update" });
+    writeSkillDir(join(source, "rea-ci-tests-audit"), { name: "rea-ci-tests-audit" });
+
+    const installed = await install(source);
+
+    expect(installed.ids).toEqual([
+      "rea-analysis-optimization",
+      "rea-changelog-update",
+      "rea-ci-tests-audit",
+    ]);
+    expect(listSkills({ homeDir: home })).toHaveLength(3);
+  });
+
+  it("installs every skill of a collection nested one folder down", async () => {
+    const repo = join(work, "repo");
+    writeSkillDir(join(repo, "toolbox", "seo"), { name: "seo" });
+    writeSkillDir(join(repo, "toolbox", "meta-ads"), { name: "meta-ads" });
+    writeFileSync(join(repo, "README.md"), "# toolbox", "utf8");
+
+    const installed = await install(repo);
+
+    expect(installed.ids).toEqual(["meta-ads", "seo"]);
+  });
+
+  it("prefers the declared skills/ collection over loose folders", async () => {
+    const repo = join(work, "repo");
+    writeSkillsTree(repo, ["declared"]);
+    writeSkillDir(join(repo, "example-skill"), { name: "example-skill" });
+
+    const installed = await install(repo);
+
+    expect(installed.ids).toEqual(["declared"]);
+  });
+
+  it("installs only the shallowest level of a tree that holds skills at two", async () => {
+    const repo = join(work, "repo");
+    writeSkillDir(join(repo, "loose"), { name: "loose" });
+    writeSkillDir(join(repo, "toolbox", "seo"), { name: "seo" });
+
+    const installed = await install(repo);
+
+    expect(installed.ids).toEqual(["loose"]);
+  });
+
+  it("leaves no staging directory behind after installing a collection", async () => {
+    const repo = join(work, "repo");
+    writeSkillDir(join(repo, "toolbox", "seo"), { name: "seo" });
+    writeFileSync(join(repo, "README.md"), "# toolbox", "utf8");
+
+    await install(repo);
+
+    expect(readdirSync(skillsRoot(home))).toEqual(["seo"]);
+  });
+
+  it("names a skill below the scanned depth and the folder that installs it", async () => {
     const source = join(work, "notes");
-    writeSkillDir(join(source, "job-search"), { name: "job-search" });
+    writeSkillDir(join(source, "archive", "jobs", "job-search"), { name: "job-search" });
 
     await expect(install(source)).rejects.toThrow(
-      /job-search[\\/]SKILL\.md \(nested; point the source at job-search\)/,
+      /archive[\\/]jobs[\\/]job-search[\\/]SKILL\.md \(nested; point the source at archive\)/,
     );
     expect(listSkills({ homeDir: home })).toEqual([]);
+
+    expect((await install(join(source, "archive"))).ids).toEqual(["job-search"]);
+  });
+
+  it("advises the hidden container that holds a source's skills, siblings included", async () => {
+    const repo = join(work, "repo");
+    writeSkillDir(join(repo, ".agents", "skills", "one"), { name: "one" });
+    writeSkillDir(join(repo, ".agents", "skills", "two"), { name: "two" });
+
+    await expect(install(repo)).rejects.toThrow(
+      /\.agents[\\/]skills[\\/]one[\\/]SKILL\.md \(nested; point the source at \.agents\)/,
+    );
+
+    expect((await install(join(repo, ".agents"))).ids).toEqual(["one", "two"]);
   });
 
   it("refuses an empty SKILL.md and leaves nothing behind", async () => {

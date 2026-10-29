@@ -540,11 +540,12 @@ describe("ContextPanel MCP list", () => {
     const tags = Array.from(container.querySelectorAll(".mcp-row .ctx-tag")).map((tag) => ({
       kind: tag.getAttribute("data-k"),
       label: tag.textContent,
+      title: tag.getAttribute("title"),
     }));
     expect(tags).toEqual([
-      { kind: "standalone", label: "standalone" },
-      { kind: "builtin", label: "builtin" },
-      { kind: "plugin", label: "plugin notfair" },
+      { kind: "standalone", label: "standalone", title: "standalone" },
+      { kind: "builtin", label: "builtin", title: "builtin" },
+      { kind: "plugin", label: "notfair", title: "plugin notfair" },
     ]);
   });
 });
@@ -597,7 +598,7 @@ describe("ContextPanel skills and plugins tabs", () => {
     return { ...view, onRequestSkills, onRequestPlugins };
   }
 
-  it("requests both inventories on open and separates standalone skills from a plugin's", () => {
+  it("requests both inventories on open and lists only the skills this chat runs", () => {
     const { container, onRequestSkills, onRequestPlugins } = renderInventories(
       [skill("review", { active: true }), skill("release")],
       [
@@ -618,25 +619,57 @@ describe("ContextPanel skills and plugins tabs", () => {
     // Plugin skills ride the plugin snapshot, so the tab that lists them refreshes both.
     expect(onRequestPlugins).toHaveBeenCalledTimes(1);
     const names = Array.from(container.querySelectorAll(".mcp-row .n")).map((n) => n.textContent);
-    expect(names).toEqual(["release", "review", "seo", "brand"]);
+    expect(names).toEqual(["review", "seo"]);
     const tags = Array.from(container.querySelectorAll(".mcp-row .ctx-tag")).map((tag) => [
       tag.getAttribute("data-k"),
       tag.textContent,
     ]);
     expect(tags).toEqual([
       ["standalone", "standalone"],
-      ["standalone", "standalone"],
-      ["plugin", "plugin notfair"],
-      ["plugin", "plugin rayfin"],
+      ["plugin", "notfair"],
     ]);
-    const states = Array.from(container.querySelectorAll(".mcp-row .status")).map((d) =>
-      d.getAttribute("data-s"),
-    );
-    expect(states).toEqual(["off", "ok", "ok", "off"]);
-    expect(screen.getByText("2/4 on")).toBeTruthy();
+    // Every listed row is on, so no status dot competes with the source tag.
+    expect(container.querySelectorAll(".mcp-row .status")).toHaveLength(0);
+    expect(screen.getByText("2 on")).toBeTruthy();
   });
 
-  it("requests the plugin inventory on open and shows what each plugin ships", () => {
+  it("scopes a large inventory to one source instead of one flat list", () => {
+    const shipped = Array.from({ length: 25 }, (_, index) => ({
+      name: `build-${index}`,
+      description: "shipped",
+      path: `skills/build-${index}/SKILL.md`,
+      root: "skills",
+    }));
+    const { container } = renderInventories(
+      [skill("review", { active: true })],
+      [plugin("builder-skills", { displayName: "Builder Skills", active: true, skills: shipped })],
+    );
+    fireEvent.click(screen.getByText("Skills"));
+    const select = screen.getByLabelText("Skill source") as HTMLSelectElement;
+    // 26 rows is past a screenful, so the tab opens on the plugin that dominates the list.
+    expect(select.value).toBe("builder-skills");
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
+      "All sources (26)",
+      "Standalone (1)",
+      "Builder Skills (25)",
+    ]);
+    expect(container.querySelectorAll(".mcp-row")).toHaveLength(25);
+    expect(screen.getByText("25 on")).toBeTruthy();
+    // The picker already names the source, so no row repeats it in a tag.
+    expect(container.querySelectorAll(".mcp-row .ctx-tag")).toHaveLength(0);
+
+    fireEvent.change(select, { target: { value: "__standalone" } });
+    const names = Array.from(container.querySelectorAll(".mcp-row .n")).map((n) => n.textContent);
+    expect(names).toEqual(["review"]);
+    expect(screen.getByText("1 on")).toBeTruthy();
+
+    fireEvent.change(select, { target: { value: "__all" } });
+    expect(container.querySelectorAll(".mcp-row")).toHaveLength(26);
+    expect(container.querySelectorAll(".mcp-row .ctx-tag")).toHaveLength(26);
+    expect(screen.getByText("26 on")).toBeTruthy();
+  });
+
+  it("requests the plugin inventory on open and shows what each running plugin ships", () => {
     const { container, onRequestPlugins } = renderInventories(
       [],
       [
@@ -656,12 +689,22 @@ describe("ContextPanel skills and plugins tabs", () => {
     expect(onRequestPlugins).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("Plugins"));
     expect(onRequestPlugins).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("1/2 on")).toBeTruthy();
+    expect(screen.getByText("1 on")).toBeTruthy();
     expect(screen.getByText("Plugins - 1.0.0 - skills: 2, servers: 1")).toBeTruthy();
-    const states = Array.from(container.querySelectorAll(".mcp-row .status")).map((d) =>
-      d.getAttribute("data-s"),
-    );
-    expect(states).toEqual(["ok", "off"]);
+    const names = Array.from(container.querySelectorAll(".mcp-row .n")).map((n) => n.textContent);
+    expect(names).toEqual(["NotFair"]);
+    expect(container.querySelectorAll(".mcp-row .status")).toHaveLength(0);
+  });
+
+  it("says so when this chat runs no skill and no plugin", () => {
+    renderInventories([skill("review")], [plugin("notfair", { skills: [] })]);
+
+    fireEvent.click(screen.getByText("Skills"));
+    expect(screen.getByText("No skills on in this chat")).toBeTruthy();
+    expect(screen.queryByLabelText("Skill source")).toBeNull();
+
+    fireEvent.click(screen.getByText("Plugins"));
+    expect(screen.getByText("No plugins on in this chat")).toBeTruthy();
   });
 });
 
