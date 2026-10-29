@@ -449,6 +449,7 @@ import {
   writeSessionEvents,
   writeSessionNotices,
 } from "../../memory/session.js";
+import type { MemoryLayer, MemoryLayerScope } from "../../memory/user.js";
 import { type MiMoLoginFlow, beginMiMoLoginFlow, mimoPlatform } from "../../mimo-auth.js";
 import { fetchMiMoQuota, readMiMoConsoleSession } from "../../mimo-quota.js";
 import { createModelClient } from "../../model-client.js";
@@ -5200,6 +5201,15 @@ function countTokensForMeter(text: string): number {
   }
 }
 
+/** What each memory layer costs in the prompt, keyed the way the panel reads it. The
+ *  Record<MemoryLayerScope, ...> annotation keeps the wire shape and the layer scopes from
+ *  drifting apart: adding a scope to either side without the other fails to typecheck. */
+function memoryTokenCost(layers: readonly MemoryLayer[]): CtxMemoryTokens {
+  const cost: Record<MemoryLayerScope, number> = { global: 0, project: 0, priority: 0 };
+  for (const layer of layers) cost[layer.scope] += countTokensForMeter(layer.text);
+  return cost;
+}
+
 /** Reserved (system + tool specs) tokens per loop prefix. Keyed by prefix
  *  identity so emitCtxBreakdown stays O(1); length guards cover in-place
  *  addTool/removeTool (MCP hot-bridge). */
@@ -6022,10 +6032,7 @@ export function refreshTabSystemPrompt(
   tab.system = built.prompt;
   // Same builders the prompt used, so the meter cannot drift from the text it measures.
   tab.skillPromptTokens = countTokensForMeter(promptSections({ skills, plugins }).skills ?? "");
-  const memoryTokens: CtxMemoryTokens = { global: 0, project: 0, priority: 0 };
-  for (const layer of built.memoryLayers)
-    memoryTokens[layer.scope] += countTokensForMeter(layer.text);
-  tab.memoryPromptTokens = memoryTokens;
+  tab.memoryPromptTokens = memoryTokenCost(built.memoryLayers);
 }
 
 /** Whether the selected web search engine renders in a managed browser. Only that engine

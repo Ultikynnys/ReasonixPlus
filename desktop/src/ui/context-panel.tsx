@@ -69,6 +69,28 @@ function fmtCompact(n: number): string {
   return n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n));
 }
 
+/** One token-legend item: an optional colour swatch, the label, and its count. */
+function LegendItem({
+  label,
+  value,
+  title,
+  swatch,
+}: {
+  label: string;
+  value: number;
+  /** Hover explanation, for a figure whose name is not enough on its own. */
+  title?: string;
+  /** Meter colour of the swatch; the reserved-bucket rows carry none. */
+  swatch?: "r" | "c" | "u";
+}) {
+  return (
+    <span className="l" title={title}>
+      {swatch ? <span className={`sw ${swatch}`} /> : null}
+      {label} <span className="v">{value.toLocaleString()}</span>
+    </span>
+  );
+}
+
 export function ContextPanel({
   settings,
   usage,
@@ -175,12 +197,17 @@ export function ContextPanel({
   const skillTokens = usage.skillTokens;
   const toolTokens = usage.toolTokens;
   const memoryTokens = usage.memoryTokens;
+  // Summed from the record, so a scope added to the wire reaches the total without a second edit.
   const memoryTotal = memoryTokens
-    ? memoryTokens.global + memoryTokens.project + memoryTokens.priority
+    ? Object.values(memoryTokens).reduce((sum, part) => sum + part, 0)
     : 0;
-  const promptTokens =
+  const reservedParts =
     skillTokens !== undefined && toolTokens !== undefined
-      ? Math.max(0, reserved - skillTokens - toolTokens - memoryTotal)
+      ? {
+          skills: skillTokens,
+          tools: toolTokens,
+          prompt: Math.max(0, reserved - skillTokens - toolTokens - memoryTotal),
+        }
       : undefined;
   const lastHit = usage.lastCallCacheHit ?? 0;
   const lastMiss = usage.lastCallCacheMiss ?? 0;
@@ -270,59 +297,39 @@ export function ContextPanel({
             )}
           </div>
           <div className="legend">
-            <span className="l">
-              <span className="sw r" />
-              {t("contextPanel.reservedKey")} <span className="v">{reserved.toLocaleString()}</span>
-            </span>
-            <span className="l">
-              <span className="sw c" />
-              {t("contextPanel.cacheKey")} <span className="v">{cached.toLocaleString()}</span>
-            </span>
-            <span className="l">
-              <span className="sw u" />
-              {t("contextPanel.usedKey")} <span className="v">{used.toLocaleString()}</span>
-            </span>
-            <span className="l">
-              {t("contextPanel.freeKey")} <span className="v">{free.toLocaleString()}</span>
-            </span>
+            <LegendItem label={t("contextPanel.reservedKey")} value={reserved} swatch="r" />
+            <LegendItem label={t("contextPanel.cacheKey")} value={cached} swatch="c" />
+            <LegendItem label={t("contextPanel.usedKey")} value={used} swatch="u" />
+            <LegendItem label={t("contextPanel.freeKey")} value={free} />
           </div>
-          {promptTokens !== undefined ? (
+          {reservedParts ? (
             <div className="legend legend-sub" data-testid="ctx-reserved-breakdown">
-              <span className="l" title={t("contextPanel.skillsTooltip")}>
-                {t("contextPanel.skillsKey")}{" "}
-                <span className="v">{(skillTokens as number).toLocaleString()}</span>
-              </span>
-              <span className="l">
-                {t("contextPanel.toolsKey")}{" "}
-                <span className="v">{(toolTokens as number).toLocaleString()}</span>
-              </span>
+              <LegendItem
+                label={t("contextPanel.skillsKey")}
+                value={reservedParts.skills}
+                title={t("contextPanel.skillsTooltip")}
+              />
+              <LegendItem label={t("contextPanel.toolsKey")} value={reservedParts.tools} />
               {memoryTokens ? (
-                <span className="l" title={t("contextPanel.memoryTooltip")}>
-                  {t("contextPanel.memoryKey")}{" "}
-                  <span className="v">{memoryTotal.toLocaleString()}</span>
-                </span>
+                <LegendItem
+                  label={t("contextPanel.memoryKey")}
+                  value={memoryTotal}
+                  title={t("contextPanel.memoryTooltip")}
+                />
               ) : null}
-              <span className="l">
-                {t("contextPanel.promptKey")}{" "}
-                <span className="v">{promptTokens.toLocaleString()}</span>
-              </span>
+              <LegendItem label={t("contextPanel.promptKey")} value={reservedParts.prompt} />
             </div>
           ) : null}
+          {/* Splitting zeros is noise: the per-scope row appears once memory costs something. */}
           {memoryTokens && memoryTotal > 0 ? (
             <div className="legend legend-sub legend-nested" data-testid="ctx-memory-breakdown">
-              <span className="l">
-                {t("contextPanel.scopeGlobal")}{" "}
-                <span className="v">{memoryTokens.global.toLocaleString()}</span>
-              </span>
-              <span className="l">
-                {t("contextPanel.scopeProject")}{" "}
-                <span className="v">{memoryTokens.project.toLocaleString()}</span>
-              </span>
+              <LegendItem label={t("contextPanel.scopeGlobal")} value={memoryTokens.global} />
+              <LegendItem label={t("contextPanel.scopeProject")} value={memoryTokens.project} />
               {memoryTokens.priority > 0 ? (
-                <span className="l">
-                  {t("contextPanel.memoryPriorityKey")}{" "}
-                  <span className="v">{memoryTokens.priority.toLocaleString()}</span>
-                </span>
+                <LegendItem
+                  label={t("contextPanel.memoryPriorityKey")}
+                  value={memoryTokens.priority}
+                />
               ) : null}
             </div>
           ) : null}

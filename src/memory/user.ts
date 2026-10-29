@@ -433,24 +433,17 @@ export function memoryStackLayers(
   opts: { homeDir?: string; cfg?: ReasonixConfig } = {},
 ): MemoryLayer[] {
   const homeDir = opts.homeDir;
+  // MemoryStore takes the STATE dir (~/.reasonix) while this option is the OS home: convert once, here,
+  // so a caller-supplied home reaches every layer instead of silently dropping the user-memory blocks.
+  const stateDir = homeDir ? join(homeDir, ".reasonix") : undefined;
   const layers: MemoryLayer[] = [];
   const project = projectMemorySection(rootDir);
   if (project) layers.push({ scope: "project", text: project });
-  const globalReasonix = globalReasonixMemorySection(
-    homeDir ? join(homeDir, ".reasonix") : undefined,
-  );
+  const globalReasonix = globalReasonixMemorySection(stateDir);
   if (globalReasonix) layers.push({ scope: "global", text: globalReasonix });
   const globalClaude = globalClaudeMemorySection(homeDir);
   if (globalClaude) layers.push({ scope: "global", text: globalClaude });
-  // MemoryStore takes the STATE dir (~/.reasonix) while this option is the OS home: convert once, here,
-  // so a caller-supplied home reaches every layer instead of silently dropping the user-memory blocks.
-  layers.push(
-    ...userMemoryLayers({
-      projectRoot: rootDir,
-      homeDir: homeDir ? join(homeDir, ".reasonix") : undefined,
-      cfg: opts.cfg,
-    }),
-  );
+  layers.push(...userMemoryLayers({ projectRoot: rootDir, homeDir: stateDir, cfg: opts.cfg }));
   return layers;
 }
 
