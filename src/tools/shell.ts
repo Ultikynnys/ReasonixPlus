@@ -4,10 +4,10 @@ import * as pathMod from "node:path";
 import { tailLines } from "@reasonix/core-utils";
 import { addGlobalShellAllowed, addProjectShellAllowed } from "../config.js";
 import {
+  type PauseAskContext,
   type PauseAskOpts,
-  type PauseGate,
   type RuleScope,
-  pauseGate,
+  askUser,
 } from "../core/pause-gate.js";
 import { appendCommandOutputMetric, estimateOutputTokens } from "../telemetry/command-output.js";
 import type { ToolRegistry } from "../tools.js";
@@ -297,7 +297,7 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
         );
       }
       await confirmShellCommand(cmd, {
-        gate: ctx?.confirmationGate ?? pauseGate,
+        ctx,
         // Elevated runs are a privilege change: ALWAYS confirm, never allowlisted.
         isAllowed: runsSilently(cmd, elevate),
         denied: ruleVerdict(cmd) === "deny",
@@ -439,7 +439,7 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
       const persistent = args.persistent === true;
       const cwd = resolveCwdInsideRoot(rootDir, args.cwd);
       await confirmShellCommand(cmd, {
-        gate: ctx?.confirmationGate ?? pauseGate,
+        ctx,
         isAllowed: runsSilently(cmd, false),
         denied: ruleVerdict(cmd) === "deny",
         ask: {
@@ -618,7 +618,8 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
 async function confirmShellCommand<K extends "run_command" | "run_background">(
   cmd: string,
   opts: {
-    gate: PauseGate;
+    /** The calling tool's dispatch context: its gate and its quiet hold. */
+    ctx: PauseAskContext | undefined;
     isAllowed: boolean;
     /** A deny rule refuses the command outright: no prompt, no execution. */
     denied: boolean;
@@ -630,7 +631,7 @@ async function confirmShellCommand<K extends "run_command" | "run_background">(
     throw new Error(`${cmd}: blocked by your Never Ask rules`);
   }
   if (opts.isAllowed) return;
-  const choice = await opts.gate.ask(opts.ask);
+  const choice = await askUser(opts.ctx, opts.ask);
   if (choice.type === "deny") {
     throw new Error(`user denied: ${cmd}${choice.denyContext ? `: ${choice.denyContext}` : ""}`);
   }

@@ -1,5 +1,5 @@
 import { asRecord, messageOf } from "@reasonix/core-utils";
-import type { OutlookSendPreview, PauseGate } from "../core/pause-gate.js";
+import { type OutlookSendPreview, type PauseGate, askUser } from "../core/pause-gate.js";
 import type { McpClient } from "./client.js";
 import type { McpServerSpec } from "./spec.js";
 import type { CallToolResult, McpContentBlock } from "./types.js";
@@ -263,6 +263,8 @@ export async function confirmOutlookSend(opts: {
   args: Record<string, unknown>;
   client: McpClient;
   gate?: PauseGate;
+  /** Awaited before the preview is shown: nothing else may still be running. */
+  beforeAsk?: () => Promise<void>;
 }): Promise<string | null> {
   if (!isOutlookSendCapableTool(opts.toolName)) return null;
 
@@ -366,10 +368,10 @@ export async function confirmOutlookSend(opts: {
     });
   }
 
-  const verdict = await opts.gate.ask({
-    kind: "outlook_send",
-    payload: { ...partial, from: login.account },
-  });
+  const verdict = await askUser(
+    { confirmationGate: opts.gate, awaitQuietBeforeAsk: opts.beforeAsk },
+    { kind: "outlook_send", payload: { ...partial, from: login.account } },
+  );
   if (verdict.type !== "run_once") {
     return JSON.stringify({
       error: "Outlook email send cancelled by the user. Nothing was sent.",

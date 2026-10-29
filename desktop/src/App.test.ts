@@ -35,6 +35,7 @@ vi.mock("./theme", () => ({
 }));
 
 import { baseAppState } from "../../tests/support/app-state.js";
+import { interfaceFields } from "../../tests/support/protocol.js";
 import {
   activePlanForMessage,
   cueIdForEvent,
@@ -55,7 +56,7 @@ import {
   workspaceTabRepresentatives,
   writeStamp,
 } from "./App";
-import type { ModelTurnStartedEvent, PlanHistoryItem } from "./protocol";
+import type { IncomingEvent, ModelTurnStartedEvent, PlanHistoryItem } from "./protocol";
 import { getThreadMaxWidth } from "./ui/thread-layout";
 
 /** One workspace plan-history row, as a $plan_history projection carries it. */
@@ -2068,6 +2069,26 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
     // A cleared selection reaches the UI the same way, instead of being left behind.
     const cleared = reduce(state, { t: "incoming", event: { ...echo, soundPackId: undefined } });
     expect(cleared.settings?.soundPackId).toBeUndefined();
+  });
+
+  it("carries every field the settings contract declares", () => {
+    // The mirror of the settings_save parity net: that one keeps a patch field reaching the
+    // daemon, this one keeps an echo field reaching state. Both read the contract instead
+    // of listing fields, which is how a field nobody named stays wired.
+    const fields = interfaceFields("SettingsEvent").filter(
+      (field) => field !== "type" && field !== "turnReleased",
+    );
+    expect(fields.length).toBeGreaterThan(40);
+
+    const sentinel = (field: string): string => `<${field}>`;
+    const echo = Object.fromEntries(fields.map((field) => [field, sentinel(field)]));
+    const state = reduce(initialState(), {
+      t: "incoming",
+      event: { type: "$settings", ...echo } as unknown as IncomingEvent,
+    });
+
+    const settings = (state.settings ?? {}) as Record<string, unknown>;
+    expect(fields.filter((field) => settings[field] !== sentinel(field))).toEqual([]);
   });
 
   it("appends a $notice event below the turn as a notice card", () => {

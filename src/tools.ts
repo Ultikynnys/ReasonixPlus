@@ -1,5 +1,5 @@
 import { tryParseJson } from "./core/parse-json.js";
-import type { PauseGate } from "./core/pause-gate.js";
+import type { PauseAskContext } from "./core/pause-gate.js";
 import { truncateForModel, truncateForModelByTokens } from "./mcp/registry.js";
 import { analyzeSchema, flattenSchema, nestArguments } from "./repair/flatten.js";
 import {
@@ -12,7 +12,7 @@ import { USER_CANCEL_NOTE } from "./tools/shell.js";
 import { saveTruncatedResult, shouldSkipSave } from "./tools/truncated-result-saver.js";
 import type { JSONSchema, ToolSpec, UserContentPart } from "./types.js";
 
-export interface ToolCallContext {
+export interface ToolCallContext extends PauseAskContext {
   sessionName?: string;
   /** Turn abort signal — Esc/Stop fires this, ending the entire turn. */
   signal?: AbortSignal;
@@ -24,8 +24,6 @@ export interface ToolCallContext {
   waveSize?: number;
   /** Per-tool-call cancel signal — Ctrl+K or the desktop Stop button fires this to kill just the current running tool without aborting the turn. */
   cancelSignal?: AbortSignal;
-  /** Inject a mock PauseGate for tests. When absent, tools use the singleton. */
-  confirmationGate?: PauseGate;
   /** Per-session tracker of files the model has read. Filesystem tools mark on read/write, edit_file/multi_edit consult before mutating. */
   readTracker?: ReadTracker;
   /** Set by the first filesystem write in a call so a multi-path tool (multi_edit,
@@ -281,8 +279,10 @@ export class ToolRegistry {
       cancelSignal?: AbortSignal;
       maxResultChars?: number;
       maxResultTokens?: number;
-      /** Inject a mock PauseGate for tests. */
-      confirmationGate?: PauseGate;
+      /** Picker surface for this call: which gate to register on, and the hold that
+       *  keeps the request off the surface until earlier work has settled. */
+      confirmationGate?: PauseAskContext["confirmationGate"];
+      awaitQuietBeforeAsk?: PauseAskContext["awaitQuietBeforeAsk"];
       /** Session-scoped read tracker; filesystem tools mark on read/write, edit_file/multi_edit gate on it. */
       readTracker?: ReadTracker;
       /** Project root directory for saving truncated results. Defaults to process.cwd(). */
@@ -411,6 +411,7 @@ export class ToolRegistry {
         cancelSignal: opts.cancelSignal,
         sessionName: opts.sessionName,
         confirmationGate: opts.confirmationGate,
+        awaitQuietBeforeAsk: opts.awaitQuietBeforeAsk,
         readTracker: opts.readTracker,
         images: opts.images,
         rootDir: opts.rootDir,

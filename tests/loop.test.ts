@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DeepSeekClient, type ResolvedTransport, Usage } from "../src/client.js";
-import { type ConfirmationChoice, PauseGate } from "../src/core/pause-gate.js";
+import { type ConfirmationChoice, PauseGate, askUser } from "../src/core/pause-gate.js";
 import {
   CacheFirstLoop,
   PROVIDER_SERVER_ERROR_RETRY_DELAY_MS,
@@ -2053,11 +2053,11 @@ describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
   });
 
   describe("parallel tool dispatch", () => {
-    function makeMultiToolResponse(calls: Array<{ name: string; args: string }>) {
+    function makeMultiToolResponse(calls: Array<{ id?: string; name: string; args: string }>) {
       return {
         content: "",
         tool_calls: calls.map((c, i) => ({
-          id: `call_${i}`,
+          id: c.id ?? `call_${i}`,
           type: "function",
           function: { name: c.name, arguments: c.args },
         })),
@@ -2597,6 +2597,118 @@ describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
       const toolMsgs = second.messages.filter((m) => m.role === "tool");
       expect(toolMsgs).toHaveLength(1);
       expect(JSON.parse(String(toolMsgs[0]!.content))).toMatchObject({ cancelledByUser: true });
+    });
+
+    /** One loop, one forced-closed first turn, one inquiry on the second turn. Both hold
+     *  tests share it: what changes is how the second turn ends, not the fixture. */
+    function inquiryHoldFixture() {
+      // Distinct call ids per response: a fake model reusing one would collide with the
+      // abandoned call still holding its inflight id, which is what these tests watch.
+      const { client } = makeFakeClient(
+        [
+          makeMultiToolResponse([{ id: "call_spawn", name: "long_spawn", args: "{}" }]),
+          makeMultiToolResponse([{ id: "call_ask", name: "ask_choice", args: "{}" }]),
+          { content: "turn two ran cleanly" },
+        ],
+        { echoMessages: true },
+      );
+      const gate = new PauseGate();
+      const tools = new ToolRegistry();
+      const order: string[] = [];
+      let releaseSpawn = (): void => {};
+      const spawnRun = new Promise<void>((resolve) => {
+        releaseSpawn = resolve;
+      });
+      tools.register({
+        name: "long_spawn",
+        parallelSafe: true,
+        fn: async () => {
+          await spawnRun;
+          order.push("spawn-settled");
+          return "done";
+        },
+      });
+      tools.register({
+        name: "ask_choice",
+        userIntervention: true,
+        fn: async (_args, ctx) => {
+          order.push("ask-enter");
+          const verdict = await askUser(ctx, {
+            kind: "choice",
+            payload: { question: "which one?", options: [], allowCustom: true },
+          });
+          return `user picked: ${(verdict as { optionId?: string }).optionId}`;
+        },
+      });
+      gate.on((request) => {
+        order.push("inquiry-open");
+        gate.resolve(request.id, { type: "pick", optionId: "a" });
+      });
+      const loop = new CacheFirstLoop({
+        client,
+        prefix: new ImmutablePrefix({ system: "s", toolSpecs: tools.specs() }),
+        tools,
+        stream: false,
+        confirmationGate: gate,
+      });
+      /** Turn one, closed the way the desktop's Send now closes it: abort, drop the
+       *  generator, leave the dispatched call running. */
+      const forceCloseFirstTurn = async (): Promise<void> => {
+        const turnOne = loop.step("turn one");
+        void (async () => {
+          for await (const _ of turnOne) {
+            // drain
+          }
+        })().catch(() => undefined);
+        await vi.waitFor(() => expect(loop.inflight.size).toBe(1));
+        loop.abort();
+        void turnOne.return(undefined).catch(() => undefined);
+        await new Promise((r) => setTimeout(r, 20));
+      };
+      /** Opens turn two without draining it: a held inquiry never settles on its own. */
+      const openSecondTurn = async () => {
+        const turnTwo = loop.step("turn two");
+        const drained = (async () => {
+          for await (const _ of turnTwo) {
+            // drain
+          }
+        })().catch(() => undefined);
+        await new Promise((r) => setTimeout(r, 60));
+        return { turnTwo, drained };
+      };
+      return { loop, order, releaseSpawn, forceCloseFirstTurn, openSecondTurn };
+    }
+
+    it("holds an inquiry until the call a force-closed turn left running has settled", async () => {
+      const { loop, order, releaseSpawn, forceCloseFirstTurn, openSecondTurn } =
+        inquiryHoldFixture();
+      await forceCloseFirstTurn();
+
+      // The abandoned call still holds an inflight id: the next turn's inquiry has to
+      // wait for it, or the user answers a card sitting next to a card still moving.
+      expect(loop.inflight.size).toBe(1);
+      const { drained } = await openSecondTurn();
+      expect(order).toEqual(["ask-enter"]);
+
+      releaseSpawn();
+      await drained;
+      await vi.waitFor(() => expect(order).toEqual(["ask-enter", "spawn-settled", "inquiry-open"]));
+    });
+
+    it("drops a held inquiry when the turn is stopped instead of asking into an empty room", async () => {
+      const { loop, order, releaseSpawn, forceCloseFirstTurn, openSecondTurn } =
+        inquiryHoldFixture();
+      await forceCloseFirstTurn();
+      const { turnTwo } = await openSecondTurn();
+      expect(order).toEqual(["ask-enter"]);
+
+      loop.abort();
+      void turnTwo.return(undefined).catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 20));
+
+      // The stop released the hold and the request never reached the surface.
+      expect(order).toEqual(["ask-enter"]);
+      releaseSpawn();
     });
   });
 });

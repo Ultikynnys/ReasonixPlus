@@ -17,7 +17,7 @@ import {
   ruleModeFor,
   rulePatterns,
 } from "../config.js";
-import { type ConfirmationChoice, pauseGate as defaultPauseGate } from "../core/pause-gate.js";
+import { type ConfirmationChoice, askUser } from "../core/pause-gate.js";
 import { BINARY_FILE_EXTENSIONS, WALK_SKIP_DIR_NAMES } from "../ignore-dirs.js";
 import { memoryEnabled } from "../memory/project.js";
 import {
@@ -200,8 +200,9 @@ export function registerFilesystemTools(
     const allowPrefix = stat?.isDirectory() ? abs : pathMod.dirname(abs);
     let pending = inflightGate.get(allowPrefix);
     if (!pending) {
-      const gate = ctx?.confirmationGate ?? defaultPauseGate;
-      pending = gate.ask({
+      // The dir's first asker holds the only prompt; every later read of the same dir
+      // waits on it, and the quiet hold is part of that one request.
+      pending = askUser(ctx, {
         kind: "path_access",
         payload: {
           path: abs,
@@ -213,7 +214,9 @@ export function registerFilesystemTools(
         },
       });
       inflightGate.set(allowPrefix, pending);
-      void pending.finally(() => inflightGate.delete(allowPrefix));
+      // askUser settles as a rejection when no surface is listening, so the memo has to
+      // consume it; every caller still sees the same refusal.
+      void pending.catch(() => undefined).finally(() => inflightGate.delete(allowPrefix));
     }
     const choice = await pending;
     if (choice.type === "deny") {
@@ -249,7 +252,7 @@ export function registerFilesystemTools(
     }
     const allowPrefix = pathMod.dirname(abs);
     if (ctx) ctx.writeGateDone = true;
-    const choice = await gate.ask({
+    const choice = await askUser(ctx, {
       kind: "edit",
       payload: { path: abs, toolName, sandboxRoot: normRoot, allowPrefix },
     });

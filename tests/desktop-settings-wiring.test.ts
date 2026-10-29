@@ -1,39 +1,23 @@
 /** Parity net for settings persistence: a field the webview can send must have a
  *  `settings_save` branch in the daemon, or its control only ever changes the UI. */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { sourceFile } from "./support/css.js";
+import { interfaceFields } from "./support/protocol.js";
 
-const DAEMON = join(process.cwd(), "src/cli/commands/desktop.ts");
-const PROTOCOL = join(process.cwd(), "packages/core-utils/src/desktop-protocol.ts");
-
-/** Field names an interface body declares. Comments and nested literals cannot match,
- *  which is why the patch type keeps to named types. */
-function interfaceFields(source: string, name: string): string[] {
-  const start = source.indexOf(`export interface ${name} {`);
-  expect(start, `no interface ${name}`).toBeGreaterThanOrEqual(0);
-  const fields: string[] = [];
-  for (const line of source.slice(start).split("\n").slice(1)) {
-    if (line.startsWith("}")) break;
-    const declared = /^ {2}([A-Za-z0-9_]+)\??:/.exec(line);
-    if (declared?.[1]) fields.push(declared[1]);
-  }
-  return fields;
-}
+const daemonSource = sourceFile("src/cli/commands/desktop.ts");
 
 /** One command's branch: from its own `if` to the next command branch. */
 function commandBranch(command: string): string {
-  const source = readFileSync(DAEMON, "utf8");
-  const start = source.indexOf(`if (msg.cmd === "${command}")`);
+  const start = daemonSource.indexOf(`if (msg.cmd === "${command}")`);
   expect(start, `no ${command} branch in the daemon`).toBeGreaterThanOrEqual(0);
-  const next = source.indexOf('if (msg.cmd === "', start + 10);
-  return source.slice(start, next > 0 ? next : undefined);
+  const next = daemonSource.indexOf('if (msg.cmd === "', start + 10);
+  return daemonSource.slice(start, next > 0 ? next : undefined);
 }
 
 const branch = commandBranch("settings_save");
 const handled = new Set([...branch.matchAll(/msg\.([A-Za-z0-9_]+)/g)].map((match) => match[1]));
-const declared = interfaceFields(readFileSync(PROTOCOL, "utf8"), "SettingsPatch");
+const declared = interfaceFields("SettingsPatch");
 
 /** One field's own branch inside `settings_save`, from its guard to the next guard. */
 function fieldBranch(field: string): string {

@@ -321,6 +321,7 @@ export function createMcpRuntime(ctx: RuntimeContext): McpRuntime {
                   args,
                   client: host.client,
                   gate: toolContext?.confirmationGate,
+                  beforeAsk: toolContext?.awaitQuietBeforeAsk,
                 }),
               transformArgs: (toolName, args) =>
                 hydrateOutlookAttachments(toolName, args, { workspaceDir }),

@@ -797,6 +797,7 @@ export class CacheFirstLoop {
         cancelSignal: cancelController.signal,
         maxResultTokens: this.maxResultTokens,
         confirmationGate: this.confirmationGate,
+        awaitQuietBeforeAsk: () => this.quietBeforeInquiry(inflightId, signal),
         sessionName: this.sessionName ?? undefined,
         readTracker: this.readTracker,
         rootDir: this.hookCwd,
@@ -825,6 +826,13 @@ export class CacheFirstLoop {
         }
       }
     }
+  }
+
+  /** Hold a picker until work that started before this call settles: a call abandoned by
+   *  a force-closed turn keeps running and must not sit beside a card the user is asked. */
+  private async quietBeforeInquiry(ownId: string, signal: AbortSignal): Promise<void> {
+    await this._inflight.settledBefore(ownId, signal);
+    if (signal.aborted) throw new DOMException("Turn aborted", "AbortError");
   }
 
   /** Stable per-call id used as the inflight key AND threaded into tool_start / tool events so the UI matches them up. */

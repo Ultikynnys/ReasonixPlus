@@ -295,3 +295,24 @@ function safeCancelVerdict(kind: PauseKind): unknown {
 
 /** Singleton shared between tools and the App. */
 export const pauseGate = new PauseGate();
+
+/** What a picker needs from the call that is asking: the gate to register on, and the
+ *  hold that keeps the request off the surface until earlier work has settled. Declared
+ *  once here and inherited by ToolCallContext, so the two cannot drift apart. */
+export interface PauseAskContext {
+  /** Injected gate (tests) — absent means the singleton. */
+  confirmationGate?: PauseGate;
+  /** Awaited before the request reaches the surface. */
+  awaitQuietBeforeAsk?: () => Promise<void>;
+}
+
+/** The one path every tool asks the user through: let the turn's earlier work settle,
+ *  then open the picker. A card must never land beside work that is still running, so
+ *  the hold comes first and the request is only registered once it is over. */
+export async function askUser<K extends PauseKind>(
+  ctx: PauseAskContext | undefined,
+  opts: PauseAskOpts<K>,
+): Promise<PauseResponseMap[K]> {
+  await ctx?.awaitQuietBeforeAsk?.();
+  return (ctx?.confirmationGate ?? pauseGate).ask(opts);
+}

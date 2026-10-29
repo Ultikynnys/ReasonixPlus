@@ -1094,6 +1094,56 @@ describe("inflight", () => {
       expect(settled.map((r) => r.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
       expect(s.size).toBe(0);
     });
+
+    it("startedBefore reports only the ids inserted before it", () => {
+      const s = new InflightSet();
+      s.add("older");
+      s.add("self");
+      s.add("newer");
+      expect(s.startedBefore("self")).toEqual(["older"]);
+      // An id the set never saw has no predecessor boundary: everything running is older.
+      expect(s.startedBefore("untracked")).toEqual(["older", "self", "newer"]);
+    });
+
+    it("settledBefore waits for older work and ignores work that started later", async () => {
+      const s = new InflightSet();
+      s.add("older");
+      s.add("self");
+      s.add("newer");
+      let settled = false;
+      const waiting = s.settledBefore("self").then(() => {
+        settled = true;
+      });
+      // The asking call never holds itself open, and a newer sibling is not its problem.
+      s.delete("newer");
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      s.delete("older");
+      await waiting;
+      expect(settled).toBe(true);
+      expect(s.has("self")).toBe(true);
+    });
+
+    it("settledBefore resolves at once when nothing older is running", async () => {
+      const s = new InflightSet();
+      s.add("self");
+      await expect(s.settledBefore("self")).resolves.toBeUndefined();
+    });
+
+    it("settledBefore gives up on abort and leaves no listener behind", async () => {
+      const s = new InflightSet();
+      const ctl = new AbortController();
+      s.add("older");
+      s.add("self");
+      const waiting = s.settledBefore("self", ctl.signal);
+      ctl.abort();
+      await expect(waiting).resolves.toBeUndefined();
+      // The abandoned hold must not still be watching the set.
+      const sub = vi.fn();
+      s.subscribe(sub);
+      s.delete("older");
+      expect(sub).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

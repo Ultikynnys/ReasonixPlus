@@ -1,7 +1,7 @@
 /** Branching primitive separate from submit_plan; throws ChoiceRequestedError so the TUI can mount a picker and the model stops. */
 
 import type { ChoiceOption } from "@reasonix/core-utils";
-import { pauseGate } from "../core/pause-gate.js";
+import { askUser } from "../core/pause-gate.js";
 import type { ToolRegistry } from "../tools.js";
 import { ToolControlFlowError } from "./control-flow-error.js";
 export type { ChoiceOption };
@@ -122,7 +122,7 @@ export function registerChoiceTool(
       const allowCustom = args?.allowCustom !== false;
       opts.onChoiceRequested?.(question, options);
       // Block until the user picks an option, types custom text, or cancels
-      const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
+      const verdict = await askUser(ctx, {
         kind: "choice",
         payload: { question, options, allowCustom },
       });

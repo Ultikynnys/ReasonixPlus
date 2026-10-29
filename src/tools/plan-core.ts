@@ -1,6 +1,6 @@
 import { claimRefusalMessage, claimingSession } from "../code/plan-claim.js";
 import { type PlanRecord, type PlanRepository, planRepository } from "../code/plans.js";
-import { pauseGate } from "../core/pause-gate.js";
+import { askUser } from "../core/pause-gate.js";
 import type { ToolCallContext, ToolRegistry } from "../tools.js";
 import { coercePlanStep, sanitizeEvidence } from "./plan-sanitize.js";
 import type { PlanStep, StepCompletion, StepEvidence } from "./plan-types.js";
@@ -187,7 +187,7 @@ function registerSubmitPlan(registry: ToolRegistry, opts: PlanToolOptions): void
       const record = repository?.propose(plan, steps, summary, session);
       opts.onPlanSubmitted?.(plan, steps);
       // Block until the user approves, refines, or cancels
-      const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
+      const verdict = await askUser(ctx, {
         kind: "plan_proposed",
         payload: {
           plan,
@@ -310,7 +310,7 @@ function registerMarkStepComplete(registry: ToolRegistry, opts: PlanToolOptions)
       )
         throw new Error("mark_step_complete: complete the next unfinished step");
       // Block until the user continues, revises, or stops
-      const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
+      const verdict = await askUser(ctx, {
         kind: "plan_checkpoint",
         payload: {
           stepId,
@@ -392,7 +392,7 @@ function registerRevisePlan(registry: ToolRegistry, opts: PlanToolOptions): void
       if (rejection) return rejection;
       opts.onPlanRevisionProposed?.(reason, remainingSteps, summary);
       // Block until the user accepts, rejects, or cancels the revision
-      const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
+      const verdict = await askUser(ctx, {
         kind: "plan_revision",
         payload: {
           reason,
@@ -469,7 +469,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
           // Refuse before asking the user: a live session's plan is not ours to discard.
           const rejection = rejectionFor(repository, args.planId, session);
           if (rejection) return rejection;
-          const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
+          const verdict = await askUser(ctx, {
             kind: "choice",
             payload: {
               question: `Abandon plan "${planLabel(plan)}": ${args.reason}?`,
@@ -492,7 +492,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
         // user is prompted: accept means this session now owns it, reject names the holder.
         const rejection = rejectionFor(repository, args.planId, session);
         if (rejection) return rejection;
-        const verdict = await (ctx?.confirmationGate ?? pauseGate).ask({
+        const verdict = await askUser(ctx, {
           kind: "choice",
           payload: {
             question: `Set plan "${planLabel(plan)}" as the active plan?`,
