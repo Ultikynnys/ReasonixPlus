@@ -1,6 +1,6 @@
 use std::env;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::thread;
@@ -41,6 +41,24 @@ struct ExitEvent {
     code: Option<i32>,
 }
 
+/// Node's `realpathSync` chokes on verbatim (`\\?\`) paths: it derives the
+/// drive root as `C:` and throws `EISDIR: lstat 'C:'` before the entry point
+/// loads. `resource_dir()` can return a verbatim path, so hand Node the plain
+/// form.
+fn spawnable(path: &Path) -> String {
+    dunce::simplified(path).to_string_lossy().into_owned()
+}
+
+const HEAP_FLAG: &str = "--max-old-space-size=4096";
+
+/// How the daemon is invoked, shared by the packaged and the dev branch.
+fn launch_spec(node: &Path, cli: &Path) -> (String, Vec<String>) {
+    (
+        spawnable(node),
+        vec![HEAP_FLAG.to_string(), spawnable(cli), "desktop".to_string()],
+    )
+}
+
 fn resolve_cli(app: &AppHandle) -> Result<(String, Vec<String>)> {
     if let Ok(custom) = env::var("REASONIX_CLI") {
         let mut parts = custom.split_whitespace().map(String::from);
@@ -68,14 +86,7 @@ fn resolve_cli(app: &AppHandle) -> Result<(String, Vec<String>)> {
             .map(|m| m.len() > 1_000_000)
             .unwrap_or(false);
         if is_real_node && cli_path.exists() {
-            return Ok((
-                node_path.to_string_lossy().into_owned(),
-                vec![
-                    "--max-old-space-size=4096".to_string(),
-                    cli_path.to_string_lossy().into_owned(),
-                    "desktop".to_string(),
-                ],
-            ));
+            return Ok(launch_spec(&node_path, &cli_path));
         }
     }
     let _ = app;
@@ -96,14 +107,38 @@ fn resolve_cli(app: &AppHandle) -> Result<(String, Vec<String>)> {
     let node_path = find_real_node().context("node not found")?;
     eprintln!("[reasonix] resolved node: {}", node_path.display());
 
-    Ok((
-        node_path.to_string_lossy().into_owned(),
-        vec![
-            "--max-old-space-size=4096".to_string(),
-            entry.to_string_lossy().to_string(),
-            "desktop".to_string(),
-        ],
-    ))
+    Ok(launch_spec(&node_path, &entry))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HEAP_FLAG, launch_spec};
+    use std::path::Path;
+
+    #[test]
+    fn launch_spec_carries_the_heap_flag_and_the_subcommand() {
+        let (program, args) = launch_spec(Path::new("/app/node"), Path::new("/app/dist/cli/index.js"));
+        assert_eq!(program, "/app/node");
+        assert_eq!(
+            args,
+            vec![
+                HEAP_FLAG.to_string(),
+                "/app/dist/cli/index.js".to_string(),
+                "desktop".to_string(),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn launch_spec_strips_the_windows_verbatim_prefix() {
+        let (program, args) = launch_spec(
+            Path::new(r"\\?\C:\app\node.exe"),
+            Path::new(r"\\?\C:\app\dist\cli\index.js"),
+        );
+        assert_eq!(program, r"C:\app\node.exe");
+        assert_eq!(args[1], r"C:\app\dist\cli\index.js");
+    }
 }
 
 /// Walk every PATH match for `node` and return the first one that is
@@ -160,9 +195,9 @@ pub fn rpc_spawn(app: AppHandle, state: State<'_, RpcState>) -> Result<bool, Str
     }
 
     let (program, args) = resolve_cli(&app).map_err(|e| e.to_string())?;
-    let mut cmd = Command::new(program);
-    cmd.args(args);
-    cmd.env("NODE_OPTIONS", "--max-old-space-size=4096");
+    let mut cmd = Command::new(&program);
+    cmd.args(&args);
+    cmd.env("NODE_OPTIONS", HEAP_FLAG);
     cmd.env("REASONIX_HEAP_REEXEC", "1");
     if let Some(launch_id) = diagnostics::launch_id() {
         cmd.env("REASONIX_LAUNCH_ID", launch_id);
@@ -178,13 +213,15 @@ pub fn rpc_spawn(app: AppHandle, state: State<'_, RpcState>) -> Result<bool, Str
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
+    let mut launch_cwd: Option<PathBuf> = None;
     if let Ok(cwd) = env::current_dir() {
         let repo_root = cwd
             .ancestors()
             .find(|p| p.join("package.json").exists() && p.join("src/cli").exists())
             .unwrap_or(&cwd)
             .to_path_buf();
-        cmd.current_dir(repo_root);
+        cmd.current_dir(&repo_root);
+        launch_cwd = Some(repo_root);
     }
 
     let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
@@ -194,7 +231,10 @@ pub fn rpc_spawn(app: AppHandle, state: State<'_, RpcState>) -> Result<bool, Str
     let child_pid = child.id();
     diagnostics::record("info", "rpc.spawn_completed", serde_json::json!({
         "childPid": child_pid,
-        "durationMs": started.elapsed().as_secs_f64() * 1000.0
+        "durationMs": started.elapsed().as_secs_f64() * 1000.0,
+        "program": program,
+        "args": args,
+        "cwd": launch_cwd.as_ref().map(|p| p.to_string_lossy().into_owned())
     }))?;
 
     let child_shared = Arc::new(parking_lot::Mutex::new(Some(child)));

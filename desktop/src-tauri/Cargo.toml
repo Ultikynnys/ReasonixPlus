@@ -22,6 +22,7 @@ anyhow = "1"
 ureq = "2"
 which = "7"
 zip = { version = "9", default-features = false, features = ["deflate"] }
+dunce = "1"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
