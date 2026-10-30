@@ -7,10 +7,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   TAB_CLOSE_TIMEOUT_MS,
+  TURN_CLEANUP_WAIT_MS,
+  type TurnCleanupOutcome,
   settleTurnBeforeClose,
+  settleTurnCleanup,
   tabBusy,
   tabStatus,
   turnStartRejection,
+  unsettledTurnNotice,
 } from "../src/cli/commands/desktop.js";
 import type { TurnImage } from "../src/types.js";
 
@@ -265,6 +269,39 @@ describe("settleTurnBeforeClose: a closing tab never outlives its child", () => 
       await vi.advanceTimersByTimeAsync(1);
       await waiting;
       expect(done).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("turn cleanup: a stopped turn that never unwinds", () => {
+  it("reports a cleanup that finished cleanly", async () => {
+    expect(await settleTurnCleanup(undefined)).toEqual({ settled: true });
+    expect(await settleTurnCleanup(Promise.resolve())).toEqual({ settled: true });
+    expect(unsettledTurnNotice({ settled: true })).toBeNull();
+  });
+
+  it("keeps a failing cleanup visible instead of failing the next turn", async () => {
+    const boom = new Error("boom");
+    const outcome = await settleTurnCleanup(Promise.reject(boom));
+    expect(outcome).toEqual({ settled: true, error: boom });
+    expect(unsettledTurnNotice(outcome)).toContain("boom");
+  });
+
+  it("gives up after the bounded wait and names the reason", async () => {
+    vi.useFakeTimers();
+    try {
+      let outcome: TurnCleanupOutcome | undefined;
+      const waiting = settleTurnCleanup(new Promise<void>(() => undefined)).then((settled) => {
+        outcome = settled;
+      });
+      await vi.advanceTimersByTimeAsync(TURN_CLEANUP_WAIT_MS - 1);
+      expect(outcome).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await waiting;
+      expect(outcome).toEqual({ settled: false });
+      expect(unsettledTurnNotice({ settled: false })).toContain("still running");
     } finally {
       vi.useRealTimers();
     }

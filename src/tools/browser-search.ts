@@ -484,6 +484,27 @@ const RENDER_SETTLE_MS = 5_000;
  *  the page can fall back from this, where a navigation failure is the page's fault. */
 export class RenderUnavailableError extends Error {}
 
+/** A render context for a call that may be stopped mid-launch. Racing the launch and the
+ *  page creation is what makes a wedged browser a stopped call; a context that arrives
+ *  after the stop is closed rather than leaked, and the stop keeps its abort identity. */
+async function openRenderContext(
+  browser: SearchEngineBrowser,
+  bound: EngineCopy,
+  signal: AbortSignal | undefined,
+): Promise<PwContext> {
+  const opening = openContext(browser, bound, {
+    ...CONTEXT_OPTIONS,
+    viewport: RENDER_VIEWPORT,
+  });
+  try {
+    return await abortable(opening, signal);
+  } catch (err) {
+    void opening.then((context) => context.close()).catch(() => undefined);
+    if (messageOf(err) === ABORTED) throw err;
+    throw new RenderUnavailableError(messageOf(err));
+  }
+}
+
 /** Render `url` in a transient small window of the managed browser: its own context,
  *  closed before this returns, so nothing accumulates between fetches. */
 export async function renderManagedPage(
@@ -497,14 +518,9 @@ export async function renderManagedPage(
     throw new Error(bound("cannotReach", { message: ABORTED }));
   }
   const deadline = Date.now() + (opts.budgetMs ?? RENDER_BUDGET_MS);
-  const context = await openContext(browser, bound, {
-    ...CONTEXT_OPTIONS,
-    viewport: RENDER_VIEWPORT,
-  }).catch((err: unknown) => {
-    throw new RenderUnavailableError(messageOf(err));
-  });
+  const context = await openRenderContext(browser, bound, opts.signal);
   try {
-    const page = await context.newPage();
+    const page = await abortable(context.newPage(), opts.signal);
     await silencePage(page);
     try {
       await abortable(
@@ -770,20 +786,16 @@ export async function openPageSession(
 ): Promise<PageSession> {
   const bound = copyForBrowser(browser, copy);
   if (opts.signal?.aborted) throw new Error(bound("cannotReach", { message: ABORTED }));
-  const context = await openContext(browser, bound, {
-    ...CONTEXT_OPTIONS,
-    viewport: RENDER_VIEWPORT,
-  }).catch((err: unknown) => {
-    throw new RenderUnavailableError(messageOf(err));
-  });
+  const context = await openRenderContext(browser, bound, opts.signal);
   pinBrowser(browser);
   try {
-    const page = await context.newPage();
+    const page = await abortable(context.newPage(), opts.signal);
     await silencePage(page);
     return new ManagedPageSession(browser, bound, context, page);
   } catch (err) {
     unpinBrowser(browser);
     await context.close().catch(() => undefined);
+    if (messageOf(err) === ABORTED) throw err;
     throw new RenderUnavailableError(messageOf(err));
   }
 }

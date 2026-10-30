@@ -288,6 +288,49 @@ function isRepetitionGuardStop(cause: WarningCause | undefined): boolean {
   return cause === "repetition-guard";
 }
 
+/** Grace a stopped child gets to give back its pending step before the parent stops
+ *  waiting for it. Long enough for an aborted request to surface its own reason. */
+const ABANDON_GRACE_MS = 1_500;
+
+/** One child step, cut short by the parent's stop. A cooperative abort settles the step,
+ *  so the child's own reason survives; a tool call that ignores its abort would hold the
+ *  iterator open forever, so after the grace this resolves `null` and the run is closed. */
+function stepOrAbandon<T>(
+  steps: AsyncIterator<T>,
+  signal: AbortSignal | undefined,
+): Promise<IteratorResult<T> | null> {
+  const next = steps.next();
+  if (!signal) return next;
+  return new Promise((resolve, reject) => {
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const settle = (): void => {
+      if (grace) clearTimeout(grace);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      grace = setTimeout(() => {
+        settle();
+        resolve(null);
+      }, ABANDON_GRACE_MS);
+      grace.unref?.();
+    };
+    // An abort that landed before this step started still applies: a listener alone
+    // would never fire for a signal that is already aborted.
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    next.then(
+      (value) => {
+        settle();
+        resolve(value);
+      },
+      (err) => {
+        settle();
+        reject(err);
+      },
+    );
+  });
+}
+
 /** Errors captured in the result shape, never thrown — caller decides how to surface. */
 export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<SubagentResult> {
   const model = resolveSubagentModel(opts.model, opts.configPath);
@@ -492,8 +535,20 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   };
   const heartbeat = setInterval(heartbeatTick, HEARTBEAT_MS);
   heartbeat.unref?.();
+  /** The child's step iterator, driven one event at a time so a parent stop can cut a
+   *  step short instead of waiting for whatever is holding it. */
+  const steps = childLoop.step(opts.task)[Symbol.asyncIterator]();
+  /** Set when the parent stopped a step the child would not give back. */
+  let abandoned = false;
   try {
-    for await (const ev of childLoop.step(opts.task)) {
+    while (true) {
+      const next = await stepOrAbandon(steps, opts.parentSignal);
+      if (next === null) {
+        abandoned = true;
+        break;
+      }
+      if (next.done) break;
+      const ev = next.value;
       emit({ kind: "inner", runId, task: taskPreview, skillName, model, inner: ev });
 
       if (ev.role === "tool") {
@@ -583,6 +638,13 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   } finally {
     clearInterval(heartbeat);
     opts.parentSignal?.removeEventListener("abort", onParentAbort);
+    if (abandoned) {
+      // The child is still inside a step that outlived its own abort. Ask it to close and
+      // leave it there: the parent's turn must not wait on a tool call that never returns,
+      // and the run's own progress stops with the heartbeat above.
+      const closed = steps.return?.(undefined);
+      if (closed) void closed.catch(() => undefined);
+    }
   }
   // The loop yields `done` without an `error` event when its API call
   // is aborted mid-flight (intentional UX — see the matching catch in

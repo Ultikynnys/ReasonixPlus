@@ -2945,6 +2945,63 @@ describe("webFetch", () => {
     }
   });
 
+  /** A body that answers with headers and then never sends a byte: the case a
+   *  header-only deadline used to leave hanging forever. */
+  const stalledBody = (): ReadableStream<Uint8Array> =>
+    new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => undefined) });
+
+  it("stops reading a body that never arrives when the caller aborts", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(stalledBody(), {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        }),
+    ) as unknown as typeof fetch;
+    const ctl = new AbortController();
+    try {
+      const pending = webFetch("https://example.com/stall", { signal: ctl.signal });
+      ctl.abort();
+      await expect(pending).rejects.toThrow(/aborted/i);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("times out a body that stops arriving instead of waiting on it forever", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(stalledBody(), {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        }),
+    ) as unknown as typeof fetch;
+    try {
+      await expect(webFetch("https://example.com/stall", { timeoutMs: 40 })).rejects.toThrow(
+        /timed out after 40ms/,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("refuses a call that was already stopped before it started", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    const ctl = new AbortController();
+    ctl.abort();
+    try {
+      await expect(webFetch("https://example.com/late", { signal: ctl.signal })).rejects.toThrow(
+        /aborted/i,
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("surfaces non-2xx as a thrown error", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(

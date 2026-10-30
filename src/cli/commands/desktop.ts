@@ -5446,23 +5446,87 @@ export function tabStatus(tab: Tab): TabStatusEvent {
  *  or MCP close can never keep the tab (and $tab_closed) alive. */
 export const TAB_CLOSE_TIMEOUT_MS = 5_000;
 
+/** Marker for "the deadline fired first", distinct from a promise that resolved. */
+const PAST_DEADLINE = Symbol("past-deadline");
+
+/** Race one teardown step against a wall-clock deadline. The losing side can never
+ *  surface later as an unhandled rejection, and the work's own failure is rethrown. */
+async function raceDeadline<T>(work: Promise<T>, ms: number): Promise<T | typeof PAST_DEADLINE> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof PAST_DEADLINE>((resolve) => {
+    timer = setTimeout(() => resolve(PAST_DEADLINE), ms);
+    timer.unref?.();
+  });
+  const settled = work.then(
+    (value) => ({ value }) as const,
+    (error: unknown) => ({ error }) as const,
+  );
+  try {
+    const winner = await Promise.race([settled, deadline]);
+    if (winner === PAST_DEADLINE) return PAST_DEADLINE;
+    if ("error" in winner) throw winner.error;
+    return winner.value;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Wait for a closing tab's aborted turn to unwind. A turn mid-subagent owns a
  *  child loop with its own provider request; dropping the tab out from under it
  *  leaves that child running. Bounded and rejection-proof, so a close always ends. */
 export async function settleTurnBeforeClose(tab: Pick<Tab, "activeTurn">): Promise<void> {
   // A turn body that rejected must still free the close rather than skip it.
   const turn = tab.activeTurn?.catch(() => undefined);
-  if (!turn) return;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, TAB_CLOSE_TIMEOUT_MS);
-    timer.unref?.();
-  });
+  if (turn) await raceDeadline(turn, TAB_CLOSE_TIMEOUT_MS);
+}
+
+/** Upper bound on how long a new turn waits for a stopped turn's generator to unwind.
+ *  A tool call that ignores its abort never releases it, so an unbounded wait would
+ *  hold every later send behind a turn that can no longer finish. */
+export const TURN_CLEANUP_WAIT_MS = 3_000;
+
+export interface TurnCleanupOutcome {
+  /** False when the stopped turn's generator was still unwinding at the deadline. */
+  settled: boolean;
+  /** The generator's own failure, when it unwound by throwing. */
+  error?: unknown;
+}
+
+/** Wait for a stopped turn's generator cleanup, bounded: a cleanup that never unwinds
+ *  costs the caller one step, never the channel. Exported for tests. */
+export async function settleTurnCleanup(
+  cleanup: Promise<void> | undefined,
+): Promise<TurnCleanupOutcome> {
+  if (!cleanup) return { settled: true };
   try {
-    await Promise.race([turn, deadline]);
-  } finally {
-    if (timer) clearTimeout(timer);
+    const winner = await raceDeadline(cleanup, TURN_CLEANUP_WAIT_MS);
+    return winner === PAST_DEADLINE ? { settled: false } : { settled: true };
+  } catch (error) {
+    // The generator still released the turn it belonged to; say how it failed.
+    return { settled: true, error };
   }
+}
+
+/** The warning a channel owes when it moves on without a stopped turn. Null when the
+ *  turn's generator closed cleanly. */
+export function unsettledTurnNotice(outcome: TurnCleanupOutcome): string | null {
+  if (outcome.error !== undefined) {
+    return `The stopped turn could not be closed cleanly (${messageOf(outcome.error)}). Continuing without it.`;
+  }
+  return outcome.settled
+    ? null
+    : "A tool call from the stopped turn is still running. Continuing without waiting for it; its late result will be dropped.";
+}
+
+/** Say it on the channel's notice surface: the one place a turn, a fold and anything else
+ *  that waits on a turn's cleanup report the wait they gave up on. */
+function announceUnsettledTurn(
+  push: (ev: EmittableEvent, tabId?: string) => void,
+  tab: Pick<Tab, "id">,
+  outcome: TurnCleanupOutcome,
+): void {
+  const text = unsettledTurnNotice(outcome);
+  if (text) push({ type: "$notice", text, severity: "warning" }, tab.id);
 }
 
 /** Manual compaction for the desktop "Compact now" button: runs the loop's
@@ -5533,8 +5597,12 @@ export async function runManualCompact(
     }
     await stopWork?.();
     await tab.activeTurn;
-    // Cancellation acknowledgement precedes generator cleanup; wait for both.
-    await tab.turnCleanup;
+    // Cancellation acknowledgement precedes generator cleanup; wait for both. The cleanup
+    // is bounded like a turn's: a tool call that never unwinds must not keep the fold,
+    // and this tab's busy flag with it, waiting forever.
+    const cleanup = await settleTurnCleanup(tab.turnCleanup);
+    tab.turnCleanup = undefined;
+    announceUnsettledTurn(emitFn, tab, cleanup);
 
     const started = projectKernelEvent(
       runtime.eventizer.emitCompactionStarted(runtime.loop.currentTurn, "manual"),
@@ -7614,6 +7682,9 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         endTurn("failed", { reason });
       }
     } finally {
+      // `tabBusy` reads this marker, so a body that escaped without clearing it would
+      // pin the tab busy forever, queueing every later send behind a dead turn.
+      tab.aborter = null;
       // A session switch owns the tab's state via $session_loaded; the
       // stale-event suppression (#1217) wins over the release here.
       if (!settled && !tab.switching) endTurn("aborted");
@@ -7708,14 +7779,18 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       endTurn("aborted");
       return;
     }
-    await tab.turnCleanup;
+    // Minted BEFORE the cleanup wait: while this turn waits on a stopped one it is already
+    // this chat's live turn, so Stop reaches it and $tab_status reports it busy rather than
+    // idle. An idle story here is what made the next send look unacknowledged.
+    tab.aborter = new AbortController();
+    const cleanup = await settleTurnCleanup(tab.turnCleanup);
     tab.turnCleanup = undefined;
+    announceUnsettledTurn(emit, tab, cleanup);
     if (tab.compactingManual) {
       endTurn("aborted");
       return;
     }
     refreshPlanSummary(tab);
-    tab.aborter = new AbortController();
     if (turnStoppedByUser(tab)) {
       // The turn never started: nothing to settle beyond the busy flag, same
       // completion signal as the hook-blocked path above. A session switch

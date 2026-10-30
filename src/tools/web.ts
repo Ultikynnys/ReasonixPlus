@@ -1323,11 +1323,15 @@ export async function closeWebFetchPages(): Promise<void> {
   await Promise.all([...livePages.keys()].map((key) => closeLivePage(key)));
 }
 
-async function livePageFor(sessionName: string, browser: SearchEngineBrowser): Promise<LivePage> {
+async function livePageFor(
+  sessionName: string,
+  browser: SearchEngineBrowser,
+  signal?: AbortSignal,
+): Promise<LivePage> {
   const key = pageKey(sessionName, browser);
   const existing = livePages.get(key);
   if (existing) return existing;
-  const session = await openPageSession(browser, browserRenderCopy(browser));
+  const session = await openPageSession(browser, browserRenderCopy(browser), { signal });
   const entry: LivePage = { session, browser };
   livePages.set(key, entry);
   return entry;
@@ -1398,14 +1402,15 @@ async function withLivePage<T>(
   browser: SearchEngineBrowser,
   canReopen: boolean,
   work: (page: PageSession) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const entry = await livePageFor(sessionName, browser);
+  const entry = await livePageFor(sessionName, browser, signal);
   try {
     return await work(entry.session);
   } catch (err) {
     if (!canReopen || !DEAD_PAGE.test(messageOf(err))) throw err;
     await closeLivePage(pageKey(sessionName, browser));
-    const reopened = await livePageFor(sessionName, browser);
+    const reopened = await livePageFor(sessionName, browser, signal);
     return await work(reopened.session);
   }
 }
@@ -1460,13 +1465,20 @@ async function fetchDrivenPage(
     ...(control.selector ? { probes: [control.selector] } : {}),
   };
   const url = control.url;
-  const result = await withLivePage(sessionName, browser, Boolean(url), async (page) => {
-    const opened = url ? await page.navigate(url, step) : undefined;
-    if (action !== "read") return await actOnPage(page, control, step);
-    return opened ?? (await actOnPage(page, control, step));
-  });
+  const result = await withLivePage(
+    sessionName,
+    browser,
+    Boolean(url),
+    async (page) => {
+      const opened = url ? await page.navigate(url, step) : undefined;
+      if (action !== "read") return await actOnPage(page, control, step);
+      return opened ?? (await actOnPage(page, control, step));
+    },
+    opts.signal,
+  );
   return drivenResult(result, opts);
 }
+
 /** Parse SearXNG HTML search results using node-html-parser. */
 export function parseSearxngHtmlResults(html: string): SearchResult[] {
   const root = parseHtml(html);
@@ -1776,73 +1788,104 @@ export function parseDuckDuckGoResults(html: string): SearchResult[] {
 }
 
 export async function webFetch(url: string, opts: WebFetchOptions = {}): Promise<PageContent> {
+  // A call the user already stopped must not open a connection: the abort listener below
+  // only fires on a LATER abort, so an already-aborted signal would fetch anyway.
+  if (opts.signal?.aborted) throw abortError();
   const maxChars = opts.maxChars ?? DEFAULT_FETCH_MAX_CHARS;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   const ctl = new AbortController();
   // Track whether the abort came from our internal timer vs the caller's
   // signal — only the timer-driven abort should produce a "timed out" hint.
   let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    ctl.abort();
-  }, timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  /** (Re)arm the deadline. The request and the body read each get a window of their own:
+   *  a page whose headers took a while is not refused for being slow, and a body that
+   *  stops arriving cannot outlive the call. */
+  const arm = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timedOut = true;
+      ctl.abort();
+    }, timeoutMs);
+    timer.unref?.();
+  };
+  arm();
   // Forward the caller's abort too so an Esc during a long fetch is respected.
   const cancel = () => ctl.abort();
   opts.signal?.addEventListener("abort", cancel, { once: true });
-  let resp: Response;
   let currentUrl = url;
+  // The deadline and the caller's abort cover the BODY read as well as the request: a
+  // server that answers with headers and then stalls would otherwise hold the tool open
+  // with no deadline and ignore Stop, since the body is read after the request settles.
   try {
-    for (let redirects = 0; ; redirects++) {
-      const parsed = await assertPublicHttpUrl(currentUrl);
-      if (ctl.signal.aborted) throw new DOMException("aborted", "AbortError");
-      resp = await fetch(parsed, {
-        headers: { "User-Agent": USER_AGENT, Accept: "text/html,text/plain,*/*" },
-        signal: ctl.signal,
-        redirect: "manual",
-      });
-      const nextUrl = redirectLocation(resp, parsed.toString());
-      if (!nextUrl) break;
-      if (redirects >= FETCH_MAX_REDIRECTS) {
-        throw new Error(`web_fetch redirect limit exceeded for ${url}`);
+    let resp: Response;
+    try {
+      for (let redirects = 0; ; redirects++) {
+        const parsed = await assertPublicHttpUrl(currentUrl);
+        if (ctl.signal.aborted) throw abortError();
+        resp = await fetch(parsed, {
+          headers: { "User-Agent": USER_AGENT, Accept: "text/html,text/plain,*/*" },
+          signal: ctl.signal,
+          redirect: "manual",
+        });
+        const nextUrl = redirectLocation(resp, parsed.toString());
+        if (!nextUrl) break;
+        if (redirects >= FETCH_MAX_REDIRECTS) {
+          throw new Error(`web_fetch redirect limit exceeded for ${url}`);
+        }
+        currentUrl = nextUrl;
       }
-      currentUrl = nextUrl;
+    } catch (err) {
+      throw fetchFailure(err, timedOut, timeoutMs, url);
     }
-  } catch (err) {
-    if (timedOut) {
-      throw new Error(t("webErrors.fetchTimeout", { ms: timeoutMs, url }));
+    if (!resp.ok) {
+      const message = fetchStatusError(resp.status, url);
+      throw BLOCKED_FETCH_STATUSES.has(resp.status)
+        ? new FetchBlockedError(message, resp.status)
+        : new Error(message);
     }
-    throw err;
+    const contentType = resp.headers.get("content-type") ?? "";
+    // Pre-check Content-Length when the server provides it. Cheaper to
+    // refuse upfront than to start streaming a 1GB ISO.
+    const declaredLen = Number(resp.headers.get("content-length") ?? "");
+    if (Number.isFinite(declaredLen) && declaredLen > FETCH_MAX_BYTES) {
+      throw new Error(
+        t("webErrors.fetchTooLarge", { len: declaredLen, cap: FETCH_MAX_BYTES, url }),
+      );
+    }
+    // A fresh window for the body: the head's deadline covered only the head, and a body
+    // that stops arriving must not borrow the caller's patience either.
+    arm();
+    const raw = await readBodyCapped(resp, FETCH_MAX_BYTES, ctl.signal).catch((err: unknown) => {
+      throw fetchFailure(err, timedOut, timeoutMs, url);
+    });
+    const title = extractTitle(raw);
+    const isHtml = contentType.includes("text/html");
+    const text = isHtml ? htmlToText(raw) : raw;
+    return {
+      url: currentUrl,
+      title,
+      ...finishPageText(text, maxChars),
+      ...(isHtml ? { html: raw } : {}),
+    };
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", cancel);
   }
-  if (!resp.ok) {
-    const message = fetchStatusError(resp.status, url);
-    throw BLOCKED_FETCH_STATUSES.has(resp.status)
-      ? new FetchBlockedError(message, resp.status)
-      : new Error(message);
-  }
-  const contentType = resp.headers.get("content-type") ?? "";
-  // Pre-check Content-Length when the server provides it. Cheaper to
-  // refuse upfront than to start streaming a 1GB ISO.
-  const declaredLen = Number(resp.headers.get("content-length") ?? "");
-  if (Number.isFinite(declaredLen) && declaredLen > FETCH_MAX_BYTES) {
-    throw new Error(t("webErrors.fetchTooLarge", { len: declaredLen, cap: FETCH_MAX_BYTES, url }));
-  }
-  const raw = await readBodyCapped(resp, FETCH_MAX_BYTES);
-  const title = extractTitle(raw);
-  const isHtml = contentType.includes("text/html");
-  const text = isHtml ? htmlToText(raw) : raw;
-  return {
-    url: currentUrl,
-    title,
-    ...finishPageText(text, maxChars),
-    ...(isHtml ? { html: raw } : {}),
-  };
+}
+
+/** One fetch failure, named: the request's own timeout is the only abort that reads as
+ *  "too slow", while a caller's stop keeps its abort identity. */
+function fetchFailure(err: unknown, timedOut: boolean, timeoutMs: number, url: string): unknown {
+  return timedOut ? new Error(t("webErrors.fetchTimeout", { ms: timeoutMs, url })) : err;
 }
 
 /** Streams + caps so chunked responses (or servers lying about Content-Length) can't balloon the heap. */
-async function readBodyCapped(resp: Response, maxBytes: number): Promise<string> {
+async function readBodyCapped(
+  resp: Response,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<string> {
   if (!resp.body) return await resp.text();
   const reader = resp.body.getReader();
   const decoder = new TextDecoder("utf-8");
@@ -1850,15 +1893,11 @@ async function readBodyCapped(resp: Response, maxBytes: number): Promise<string>
   let out = "";
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const { value, done } = await readBodyChunk(reader, signal);
       if (done) break;
       total += value.byteLength;
       if (total > maxBytes) {
-        try {
-          await reader.cancel();
-        } catch {
-          /* already torn down */
-        }
+        cancelReader(reader);
         throw new Error(t("webErrors.fetchBodyTooLarge", { cap: maxBytes, seen: total }));
       }
       out += decoder.decode(value, { stream: true });
@@ -1872,6 +1911,52 @@ async function readBodyCapped(resp: Response, maxBytes: number): Promise<string>
     }
   }
   return out;
+}
+
+/** What one body read yields, so a chunk and the end of the stream stay distinguishable. */
+type BodyChunk = { done: false; value: Uint8Array } | { done: true; value?: undefined };
+
+/** Release a reader the caller is abandoning. A failed cancel is the same as an
+ *  already-released one, so it is never the caller's error. */
+function cancelReader(reader: { cancel(reason?: unknown): Promise<void> }): void {
+  void reader.cancel().catch(() => undefined);
+}
+
+/** One body chunk, interruptible: a body that stops arriving must not outlive the
+ *  request's own deadline or the caller's stop. Cancelling the reader releases the
+ *  pending read, so nothing is left holding the connection. */
+function readBodyChunk(
+  reader: { read(): Promise<BodyChunk>; cancel(reason?: unknown): Promise<void> },
+  signal: AbortSignal | undefined,
+): Promise<BodyChunk> {
+  const read = reader.read();
+  if (!signal) return read;
+  if (signal.aborted) {
+    cancelReader(reader);
+    return Promise.reject(abortError());
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      cancelReader(reader);
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    read.then(
+      (chunk) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(chunk);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+/** The failure a stopped call reports: an abort, not a transport fault. */
+function abortError(): DOMException {
+  return new DOMException("aborted", "AbortError");
 }
 
 /** Hard cap so the per-request HTML budget stays linear-time even on adversarial pages. */
@@ -2258,7 +2343,7 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
       const needsPage = browser !== null || Boolean(args.url);
       const live =
         needsPage && !signal?.aborted
-          ? await livePageFor(sessionName, browser ?? BROWSER_SEARCH_ENGINES[0]).catch(
+          ? await livePageFor(sessionName, browser ?? BROWSER_SEARCH_ENGINES[0], signal).catch(
               () => undefined,
             )
           : undefined;

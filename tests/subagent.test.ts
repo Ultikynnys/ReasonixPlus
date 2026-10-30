@@ -507,6 +507,49 @@ describe("registerSubagentTool", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it("closes a spawn whose child is stuck inside a tool call when the parent stops", async () => {
+    // A wedged tool (a browser render that never returns) used to outlive the Stop that
+    // aborted the turn: the spawn kept waiting on it, so the parent's tool dispatch, and
+    // the turn's cleanup behind it, never settled.
+    const parent = new ToolRegistry();
+    let entered = false;
+    parent.register({
+      name: "noop",
+      description: "blocks until the process ends",
+      parameters: { type: "object", properties: {} },
+      fn: () => {
+        entered = true;
+        return new Promise<string>(() => undefined);
+      },
+    });
+    const { sink, events } = makeSink();
+    const ctl = new AbortController();
+    const started = Date.now();
+    const run = spawnSubagent({
+      client: makeClient(makeToolCallResponses(1)),
+      parentRegistry: parent,
+      system: "review",
+      task: "review",
+      sink,
+      parentSignal: ctl.signal,
+    });
+    // The abort has to land while the child is INSIDE the call, not before it starts.
+    for (let waited = 0; waited < 300 && !entered; waited += 10) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(entered).toBe(true);
+    ctl.abort();
+    const result = await run;
+    const settledAt = events.length;
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/aborted/i);
+    // A run that waited on the hung call would only end with the process.
+    expect(Date.now() - started).toBeLessThan(10_000);
+    // and it stops reporting: a heartbeat after the end keeps a dead card spinning.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(events.slice(settledAt).filter((ev) => ev.kind === "stream-progress")).toEqual([]);
+  });
+
   it("aborts the child when the per-tool cancelSignal fires", async () => {
     const parent = new ToolRegistry();
     const client = new DeepSeekClient({
