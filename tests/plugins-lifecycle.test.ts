@@ -185,7 +185,7 @@ describe("capabilityRows", () => {
     expect(fresh.servers).toEqual([{ name: "github", enabled: true, builtin: false }]);
     expect(fresh.plugins).toEqual([{ name: "notfair", displayName: "NotFair", enabled: true }]);
     expect(fresh.skills).toEqual([
-      { name: "churn-analysis", description: "Predicts churn.", enabled: true },
+      { id: "churn-analysis", description: "Predicts churn.", source: skillDir, enabled: true },
     ]);
 
     // A seed that pins the source session's frozen set pre-fills every kind from it.

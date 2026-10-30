@@ -423,41 +423,74 @@ describe("desktop — session creation is answered like any other request", () =
 
   it("answers every path that will not mint", () => {
     const open = daemon.slice(
-      daemon.indexOf("function openFreshChat("),
+      daemon.indexOf("function openClaimedChat("),
       daemon.indexOf("// Restore the full tab set from the previous session"),
     );
-    // Re-send of an already answered request: republish, never mint twice.
-    expect(open.indexOf("const known = answeredMutations.get(spec.requestId);")).toBeGreaterThan(0);
-    expect(open.indexOf("const known = answeredMutations.get(spec.requestId);")).toBeLessThan(
-      open.indexOf("sessionCreationGate.tryEnter("),
+    // Re-send of an already answered request: republish, never mint twice, and never take
+    // the workspace's claim on the way.
+    const newChat = open.slice(open.indexOf("function openFreshChat("));
+    expect(newChat.indexOf("const known = answeredMutations.get(spec.requestId);")).toBeGreaterThan(
+      0,
     );
-    const refusals = open.match(/answerCreateRefusal\(tab, spec\.requestId\);/g) ?? [];
+    expect(newChat.indexOf("const known = answeredMutations.get(spec.requestId);")).toBeLessThan(
+      newChat.indexOf("openClaimedChat(tab, {"),
+    );
+    // No workspace, a blocked claim, and a bootstrap that threw: one answer each, and the
+    // claim protocol itself lives in exactly one place.
+    const refusals = open.match(/answerCreateRefusal\(/g) ?? [];
     expect(refusals).toHaveLength(3);
+    expect(daemon.match(/sessionCreationGate\.begin\(/g)).toHaveLength(1);
   });
 
   it("answers the mint on the listing that first contains it", () => {
-    const bootStart = daemon.indexOf("const createAnswer: SessionMutationAnswer | undefined");
+    const bootStart = daemon.indexOf("const createAnswer = unansweredCreateAnswer(tab);");
     expect(bootStart).toBeGreaterThan(0);
     const boot = daemon.slice(bootStart, daemon.indexOf("emitMemory(tab);", bootStart));
     expect(boot).toContain("...(createAnswer ? { answers: [createAnswer] } : {})");
-    expect(boot).toContain("created: tab.currentSession");
-    // The gate reopens where the answer lands, so the two cannot drift apart.
+    // The claim is handed back where the answer lands, so the two cannot drift apart.
     expect(boot.indexOf("answeredMutations.add(createAnswer)")).toBeLessThan(
-      boot.indexOf("sessionCreationGate.leave(tab.rootDir)"),
+      boot.indexOf("releaseCreation(tab)"),
     );
   });
 
-  it("answers a bootstrap that never lists its mint, and reopens the gate", () => {
-    const arm = daemon.slice(
-      daemon.indexOf("function armCreationRelease("),
-      daemon.indexOf("function bootstrapTab("),
+  it("answers a bootstrap that never lists its mint, and reopens the workspace", () => {
+    const owe = daemon.slice(
+      daemon.indexOf("function unansweredCreateAnswer("),
+      daemon.indexOf("function concludeCreation("),
     );
-    expect(arm).toContain("const requestId = tab.createRequestId;");
-    // The fallback goes through the same publisher, and only when the listing did not
-    // answer first: that guard is what keeps it to one answer per request.
-    expect(arm).toContain("answeredMutations.get(requestId) === undefined");
-    expect(arm).toContain("publishSessionAnswer(tab, {");
-    expect(arm).toContain("sessionCreationGate.leave(tab.rootDir);");
+    expect(owe).toContain("const requestId = tab.createRequestId;");
+    expect(owe).toContain("created: tab.currentSession");
+    // Only a request the listing did not answer: that guard is what keeps it to one
+    // answer per request.
+    expect(owe).toContain("answeredMutations.get(requestId) !== undefined");
+
+    const conclude = daemon.slice(
+      daemon.indexOf("function concludeCreation("),
+      daemon.indexOf(
+        "/** Announce a tab and start its deferred work",
+        daemon.indexOf("function concludeCreation("),
+      ),
+    );
+    // The fallback goes through the same publisher, then opens the workspace.
+    expect(conclude).toContain("publishSessionAnswer(tab, answer);");
+    expect(conclude).toContain("releaseCreation(tab);");
+  });
+
+  it("hands the claim back on every bootstrap exit, not only a clean one", () => {
+    const start = daemon.indexOf("void refreshFunds(tab);");
+    expect(start).toBeGreaterThan(0);
+    const settle = daemon.slice(
+      start,
+      daemon.indexOf("const sessionCreationGate = newSessionCreationGate();", start),
+    );
+    // The bootstrap settle path, which runs whether the channel listed its mint, threw
+    // before it could, or never settled its own gate at all.
+    expect(settle).toContain(".finally(() => {");
+    expect(settle).toContain("concludeCreation(tab);");
+    // One release path for the whole daemon: a bootstrap that throws before its listing,
+    // or a creation whose claim outlived its window, still reopens the workspace.
+    expect(daemon).not.toContain("armCreationRelease");
+    expect(daemon).not.toContain("sessionCreationGate.leave(");
   });
 
   it("sends no create flag on the wire: the click is the only source of the lock", () => {

@@ -458,3 +458,9 @@ export {
   type PlanWorkingStatus,
   isWorkingPlanStatus,
 } from "./plan-status.js";
+export {
+  type GroupableSkill,
+  type SkillGroup,
+  groupSkills,
+  skillSourceLabel,
+} from "./skill-groups.js";

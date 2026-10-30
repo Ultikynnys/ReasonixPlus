@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as configModule from "../src/config.js";
-import { loadGlobalPathAllowed } from "../src/config.js";
+import { loadGlobalPathAllowed, readConfig } from "../src/config.js";
 import { type InstallCopy, copyInstallSource } from "../src/install/source.js";
 import {
   installSkills,
@@ -11,6 +11,7 @@ import {
   skillsById,
   skillsRoot,
   uninstallSkill,
+  uninstallSkills,
 } from "../src/skills/store.js";
 import { writeSkillDir, writeSkillsTree } from "./support/skill-fixture.js";
 
@@ -250,6 +251,45 @@ describe("installSkills", () => {
   });
 });
 
+describe("install provenance", () => {
+  it("records the source one install delivered every skill from", async () => {
+    const repo = join(work, "repo");
+    writeSkillsTree(repo, ["meta-ads", "seo-analysis"]);
+
+    await install(repo);
+
+    expect(readConfig(configPath).skills).toEqual({
+      "meta-ads": { source: repo, installedAt: expect.any(Number) },
+      "seo-analysis": { source: repo, installedAt: expect.any(Number) },
+    });
+    expect(listSkills({ homeDir: home, configPath }).map((skill) => skill.source)).toEqual([
+      repo,
+      repo,
+    ]);
+  });
+
+  it("records a git source as it was resolved, not as it was typed", async () => {
+    const copy: InstallCopy = (_source, target) => {
+      writeSkillDir(join(target, "skills", "one"), { name: "one" });
+      writeSkillDir(join(target, "skills", "two"), { name: "two" });
+    };
+
+    await install("owner/repo", copy);
+
+    expect(readConfig(configPath).skills?.one?.source).toBe("https://github.com/owner/repo");
+  });
+
+  it("drops the record with the skill", async () => {
+    const source = join(work, "gone");
+    writeSkillDir(source, { name: "gone" });
+    await install(source);
+
+    uninstallSkill("gone", { homeDir: home, configPath });
+
+    expect(readConfig(configPath).skills).toBeUndefined();
+  });
+});
+
 describe("listSkills", () => {
   it("skips a directory without a SKILL.md", () => {
     mkdirSync(join(skillsRoot(home), "stray"), { recursive: true });
@@ -287,6 +327,34 @@ describe("uninstallSkill", () => {
 
     expect(existsSync(dir)).toBe(false);
     expect(loadGlobalPathAllowed(configPath)).not.toContain(dir);
+  });
+
+  it("removes a whole group in one call, records and grants included", async () => {
+    const repo = join(work, "repo");
+    writeSkillsTree(repo, ["meta-ads", "seo-analysis"]);
+    await install(repo);
+
+    expect(uninstallSkills(["meta-ads", "seo-analysis"], { homeDir: home, configPath })).toEqual([
+      "meta-ads",
+      "seo-analysis",
+    ]);
+
+    expect(listSkills({ homeDir: home, configPath })).toEqual([]);
+    expect(readConfig(configPath).skills).toBeUndefined();
+    expect(loadGlobalPathAllowed(configPath)).toEqual([]);
+  });
+
+  it("touches nothing when one id of the batch is not installed", async () => {
+    const source = join(work, "kept");
+    writeSkillDir(source, { name: "kept" });
+    await install(source);
+
+    expect(() => uninstallSkills(["kept", "missing"], { homeDir: home, configPath })).toThrow(
+      /missing is not installed/,
+    );
+
+    expect(listSkills({ homeDir: home, configPath }).map((skill) => skill.id)).toEqual(["kept"]);
+    expect(readConfig(configPath).skills?.kept?.source).toBe(source);
   });
 
   it("refuses a skill that is not installed", () => {

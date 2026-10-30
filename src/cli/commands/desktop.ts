@@ -335,7 +335,7 @@ import {
   listSkills,
   skillsById,
   skillsRoot,
-  uninstallSkill,
+  uninstallSkills,
 } from "../../skills/index.js";
 import { createSoundPack, listSoundPacks, removeSoundPack } from "../../sound-packs/store.js";
 import { BUILTIN_ALLOWLIST } from "../../tools/shell/parse.js";
@@ -831,30 +831,91 @@ export function missingSessionRefusal(op: string, name: string): string {
   return `${op}: "${name}" no longer exists. The session list has been refreshed.`;
 }
 
-/** Refusal for a second creation in a workspace that is already minting one. */
-export const SESSION_CREATION_IN_FLIGHT_MESSAGE =
-  "A session is already being created in this workspace. Wait for it to appear.";
+/** How long one creation may hold a workspace before the next attempt takes it over.
+ *  A mint is listed from the session index the moment its channel is announced, so a
+ *  claim this old belongs to a bootstrap that will never finish, not to a slow one. */
+export const SESSION_CREATION_STALE_MS = 60_000;
 
-/** One in-flight session creation per workspace. `tryEnter` refusing is the whole
- *  point: the second half of a double action must not mint a second session. */
-export function newSessionCreationGate(): {
-  tryEnter: (workspaceDir: string) => boolean;
-  leave: (workspaceDir: string) => void;
+/** What a refused creation reports about the creation holding the workspace. */
+export interface SessionCreationHolder {
+  /** What is opening, as a phrase: "a new chat", "a duplicated chat". */
+  label: string;
+  /** How long it has held the workspace, in ms. */
+  waitingMs: number;
+}
+
+/** Why a second creation was refused: what is actually in the way, and for how long.
+ *  Never a bare "wait for it to appear", which leaves "wait for what" unanswered. */
+export function sessionCreationInFlightMessage(holder: SessionCreationHolder): string {
+  const seconds = Math.max(1, Math.round(holder.waitingMs / 1000));
+  return `This workspace is still opening ${holder.label} (${seconds} s so far). It opens in its own tab when it lands.`;
+}
+
+/** Said when a claim that never settled is taken over, so the fresh tab is explained. */
+export const SESSION_CREATION_STALE_NOTICE =
+  "An earlier session creation here never finished. Opened a new chat instead.";
+
+/** What each creation reports as opening, so the refusal names the real thing. */
+const CREATION_LABELS: Record<"new-chat" | "duplicate", string> = {
+  "new-chat": "a new chat",
+  duplicate: "a duplicated chat",
+};
+
+/** What one creation attempt got: the claim it must hand back, or the creation already
+ *  holding the workspace. */
+export type SessionCreationClaim =
+  | { kind: "claimed"; release: () => void; tookOver: boolean }
+  | { kind: "blocked"; holder: SessionCreationHolder };
+
+/** One in-flight session creation per workspace: a double action must not mint two. A
+ *  claim hands back only ITS OWN release, and a claim past `staleAfterMs` stops blocking,
+ *  so a creation that never lands can neither strand nor hold its workspace. */
+export function newSessionCreationGate(
+  options: {
+    staleAfterMs?: number;
+    now?: () => number;
+  } = {},
+): {
+  begin: (workspaceDir: string, label: string) => SessionCreationClaim;
   isBusy: (workspaceDir: string) => boolean;
 } {
-  const inFlight = new Set<string>();
+  const staleAfterMs = options.staleAfterMs ?? SESSION_CREATION_STALE_MS;
+  const now = options.now ?? Date.now;
+  const inFlight = new Map<string, { label: string; since: number }>();
+  /** The claim on one workspace, and whether it has outlived `staleAfterMs`. A stale
+   *  claim keeps its map entry until it is taken over or released, so the attempt that
+   *  owns it can still retire exactly its own entry. */
+  const live = (key: string): { claim?: { label: string; since: number }; stale: boolean } => {
+    const claim = inFlight.get(key);
+    if (claim === undefined) return { stale: false };
+    return { claim, stale: now() - claim.since >= staleAfterMs };
+  };
   return {
-    tryEnter(workspaceDir) {
+    begin(workspaceDir, label) {
       const key = workspaceKey(workspaceDir);
-      if (inFlight.has(key)) return false;
-      inFlight.add(key);
-      return true;
-    },
-    leave(workspaceDir) {
-      inFlight.delete(workspaceKey(workspaceDir));
+      const { claim: previous, stale } = live(key);
+      if (previous && !stale) {
+        return {
+          kind: "blocked",
+          holder: { label: previous.label, waitingMs: now() - previous.since },
+        };
+      }
+      const claim = { label, since: now() };
+      inFlight.set(key, claim);
+      let released = false;
+      return {
+        kind: "claimed",
+        tookOver: previous !== undefined,
+        release: () => {
+          if (released) return;
+          released = true;
+          if (inFlight.get(key) === claim) inFlight.delete(key);
+        },
+      };
     },
     isBusy(workspaceDir) {
-      return inFlight.has(workspaceKey(workspaceDir));
+      const { claim, stale } = live(workspaceKey(workspaceDir));
+      return claim !== undefined && !stale;
     },
   };
 }
@@ -3973,20 +4034,25 @@ function configuredPlugins(): { slug: string; displayName: string; disabled: boo
  *  unless the seed pins a session's frozen set. Plugin skills get no rows of their own:
  *  the plugin's row already carries them. */
 export function skillPrefill(
-  installed: readonly { id: string; description: string }[],
+  installed: readonly { id: string; description: string; source?: string }[],
   seed?: ChatCapabilitySeed,
 ): SkillSetupEntry[] {
   const chosen = seed?.skills ? new Set(seed.skills) : undefined;
   return installed.map((skill) => ({
-    name: skill.id,
+    id: skill.id,
     ...(skill.description ? { description: skill.description } : {}),
+    ...(skill.source ? { source: skill.source } : {}),
     enabled: chosen ? chosen.has(skill.id) : true,
   }));
 }
 
 /** Every installed standalone skill in picker shape, sorted by id. */
-function configuredSkills(): { id: string; description: string }[] {
-  return listSkills().map((skill) => ({ id: skill.id, description: skill.description }));
+function configuredSkills(): { id: string; description: string; source?: string }[] {
+  return listSkills().map((skill) => ({
+    id: skill.id,
+    description: skill.description,
+    ...(skill.source ? { source: skill.source } : {}),
+  }));
 }
 
 /** Every configured server name — the list a capability confirm freezes enablement
@@ -4382,6 +4448,7 @@ function emitSkills(tab: Tab): void {
     name: skill.name,
     description: skill.description,
     path: skill.path,
+    ...(skill.source ? { source: skill.source } : {}),
     active: chosen.has(skill.id),
     ...(skill.error ? { error: skill.error } : {}),
   }));
@@ -5641,6 +5708,9 @@ interface Tab {
   memoryPromptTokens?: CtxMemoryTokens;
   initialization: Promise<void> | null;
   initializationRevision: number;
+  /** Hands back this channel's claim on its workspace's creation gate. Only the caller
+   *  that took the claim sets it, so every bootstrap exit can reopen the workspace. */
+  releaseCreation?: () => void;
   runtime: RuntimeState | null;
   aborter: AbortController | null;
   /** True while a manual compaction runs — repeat clicks no-op instead of
@@ -8027,17 +8097,22 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     if (!tab.pending && sameWorkspaceDir(target, tab.rootDir)) {
       // Re-opening the current workspace means "new session", never a second
       // workspace tab and never a destructive reload of this agent. It is a
-      // creation, so it takes the same one-at-a-time gate as New chat.
-      if (!sessionCreationGate.tryEnter(tab.rootDir)) {
-        refuseSessionMutation(SESSION_CREATION_IN_FLIGHT_MESSAGE, tab.id);
+      // creation, so it opens under the same one-at-a-time gate as New chat.
+      const opened = openClaimedChat(tab, {
+        label: CREATION_LABELS["new-chat"],
+        restore: { active: true, groupId: tab.groupId },
+        failed: (err) => {
+          emitDiagnosticError("workspace.switch.failed", err, {
+            tabId: tab.id,
+            details: tabDiagnosticState(tab),
+          });
+          emit({ type: "$error", message: `workspace switch failed: ${messageOf(err)}` }, tab.id);
+        },
+      });
+      if (!opened) {
         emitSettings(tab);
         return;
       }
-      const opened = bootstrapTab(tab.rootDir, {
-        active: true,
-        groupId: tab.groupId,
-      });
-      armCreationRelease(opened);
       lastActiveTabId = opened.id;
       persistOpenTabs();
       emitTabDiagnostic(tab, "workspace.switch.redirected", { reason: "same-workspace" });
@@ -8994,7 +9069,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
      *  popover asked): the mint freezes them and the channel never opens a picker. */
     capabilityAnswer?: ChatCapabilitySeed;
     /** Marks this channel as a just-minted session: its first listing must not revalidate
-     *  the whole store, and the workspace's creation gate stays shut until it lands. */
+     *  the whole store, and the claim it opened under stays held until it lands. Only
+     *  `openClaimedChat` sets it, because it is what the gate answers with. */
     creating?: boolean;
     /** The client's create request this channel's mint answers. */
     createRequestId?: string;
@@ -9173,23 +9249,25 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         restoredMessages: restoredMessages?.length ?? 0,
       });
       if (tab.currentSession) {
-        patchSessionWorkspaceIfMissing(tab.currentSession, tab.rootDir);
-        // Repair a session that materialized without a workspace stamp (see
-        // stampSessionWorkspace) so a restored ghost lists on the emitSessions below.
-        stampSessionWorkspace(tab.currentSession, tab.rootDir);
+        // Both repairs are best-effort disk writes: a store that refuses the stamp must
+        // not cost this channel its transcript, its session list or its creation claim.
+        try {
+          patchSessionWorkspaceIfMissing(tab.currentSession, tab.rootDir);
+          // Repair a session that materialized without a workspace stamp (see
+          // stampSessionWorkspace) so a restored ghost lists on the emitSessions below.
+          stampSessionWorkspace(tab.currentSession, tab.rootDir);
+        } catch (err) {
+          emitDiagnosticError("session.workspace_stamp.failed", err, {
+            tabId: tab.id,
+            details: tabDiagnosticState(tab),
+          });
+        }
       }
       // A freshly minted channel reports the session it just minted; its listing must not
       // also revalidate every folder in the store. That listing is also the answer to the
       // client's create request: it is the first message that contains the mint. Registering
       // it here, before the emit, is what stops the bootstrap fallback answering twice.
-      const createRequestId = restore?.createRequestId;
-      const createAnswer: SessionMutationAnswer | undefined =
-        createRequestId !== undefined && answeredMutations.get(createRequestId) === undefined
-          ? {
-              requestId: createRequestId,
-              ...(tab.currentSession ? { created: tab.currentSession } : {}),
-            }
-          : undefined;
+      const createAnswer = unansweredCreateAnswer(tab);
       if (createAnswer) answeredMutations.add(createAnswer);
       const sessionsInitialized = emitSessions(tab, {
         ...(createAnswer ? { answers: [createAnswer] } : {}),
@@ -9207,8 +9285,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       if (restore?.creating) {
         // The minted session is on the wire now, so every channel can see it and the
         // workspace accepts another creation. Both outcomes release: a failed listing
-        // must not keep the gate shut until the toolset build ends.
-        const release = () => sessionCreationGate.leave(tab.rootDir);
+        // must not keep the workspace shut until the rest of the bootstrap ends.
+        const release = () => releaseCreation(tab);
         void sessionsInitialized.then(release, release);
       }
       emitMemory(tab);
@@ -9245,14 +9323,20 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       emitRestoredPlan(tab, restoredMessages !== undefined);
       await emitWorkspaceInitialized(tab, sessionsInitialized);
       void refreshFunds(tab);
-    })().catch((err) => {
-      // This display work sits outside tab.initialization, so without a catch a
-      // throw here would vanish as an unhandled rejection instead of a diagnostic.
-      emitDiagnosticError("tab.bootstrap.display_failed", err, {
-        tabId: tab.id,
-        details: tabDiagnosticState(tab),
+    })()
+      .catch((err) => {
+        // This display work sits outside tab.initialization, so without a catch a
+        // throw here would vanish as an unhandled rejection instead of a diagnostic.
+        emitDiagnosticError("tab.bootstrap.display_failed", err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+      })
+      .finally(() => {
+        // Every exit from a channel's bootstrap comes through here: a creation that could
+        // not be listed still answers its requester and still reopens its workspace.
+        concludeCreation(tab);
       });
-    });
   }
 
   /** One session creation at a time per workspace: a second one started before the
@@ -9298,20 +9382,30 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     publishSessionAnswer(tab, { requestId });
   }
 
-  /** Arms the open gate's release for a just-bootstrapped channel. startTabInit answers the
-   *  client's create request and reopens the gate; if the bootstrap settles first, the
-   *  answer lands here instead, so a failed create never leaves an indicator running. */
-  function armCreationRelease(tab: Tab): void {
+  /** Hands this channel's creation claim back, once. The fast path (the mint is on the
+   *  wire) and the settle path (the bootstrap ended, well or badly) both come through
+   *  here, so no bootstrap exit can leave the workspace shut. */
+  function releaseCreation(tab: Tab): void {
+    const release = tab.releaseCreation;
+    tab.releaseCreation = undefined;
+    release?.();
+  }
+
+  /** The answer a create request still owes, or undefined once the channel's listing has
+   *  answered it. One shape, so the listing that carries the mint and the settle path that
+   *  publishes it later cannot disagree about what the client is told. */
+  function unansweredCreateAnswer(tab: Tab): SessionMutationAnswer | undefined {
     const requestId = tab.createRequestId;
-    void tab.initialization?.finally(() => {
-      if (requestId !== undefined && answeredMutations.get(requestId) === undefined) {
-        publishSessionAnswer(tab, {
-          requestId,
-          ...(tab.currentSession ? { created: tab.currentSession } : {}),
-        });
-      }
-      sessionCreationGate.leave(tab.rootDir);
-    });
+    if (requestId === undefined || answeredMutations.get(requestId) !== undefined) return undefined;
+    return { requestId, ...(tab.currentSession ? { created: tab.currentSession } : {}) };
+  }
+
+  /** Closes out a created channel: answers a create request that never reached its
+   *  listing, so the client stops waiting on an indicator, then opens the workspace. */
+  function concludeCreation(tab: Tab): void {
+    const answer = unansweredCreateAnswer(tab);
+    if (answer) publishSessionAnswer(tab, answer);
+    releaseCreation(tab);
   }
 
   /** Announce a tab and start its deferred work — every caller but the restored-
@@ -9366,6 +9460,52 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
   }
 
+  /** The ONE way a fresh channel opens under the workspace creation gate: the claim, the
+   *  announced mint, and the release no bootstrap exit may leak. It always mints and always
+   *  answers `requestId`, so a click is never left waiting on an indicator. */
+  function openClaimedChat(
+    asker: Tab,
+    spec: {
+      /** What the gate reports as opening, for the refusal wording. */
+      label: string;
+      restore: TabRestore;
+      /** The client's create request this mint answers, when the click carried one. */
+      requestId?: string;
+      /** Reports a bootstrap that never announced its channel. */
+      failed: (err: unknown) => void;
+    },
+  ): Tab | undefined {
+    const claim = sessionCreationGate.begin(asker.rootDir, spec.label);
+    if (claim.kind === "blocked") {
+      // Name what is opening and for how long. A claim past the gate's stale window never
+      // lands here: the next click takes the workspace over.
+      refuseSessionMutation(sessionCreationInFlightMessage(claim.holder), asker.id);
+      if (spec.requestId !== undefined) answerCreateRefusal(asker, spec.requestId);
+      return undefined;
+    }
+    let opened: Tab;
+    try {
+      opened = bootstrapTab(asker.rootDir, {
+        ...spec.restore,
+        // A fresh mint: its first listing must not revalidate the whole store, and that
+        // listing is what answers the client's create request.
+        creating: true,
+        ...(spec.requestId === undefined ? {} : { createRequestId: spec.requestId }),
+      });
+    } catch (err) {
+      // A bootstrap that never started must not leave the workspace locked.
+      claim.release();
+      spec.failed(err);
+      if (spec.requestId !== undefined) answerCreateRefusal(asker, spec.requestId);
+      return undefined;
+    }
+    // From here the channel's own bootstrap hands the claim back, whatever exit it takes.
+    opened.releaseCreation = claim.release;
+    // The tab that just opened is a fresh chat, not the one the user was still waiting on.
+    if (claim.tookOver) emitToast(asker, SESSION_CREATION_STALE_NOTICE, "info");
+    return opened;
+  }
+
   /** The ONE way a fresh chat is opened: workspace check, creation gate, announced mint,
    *  lock handoff. It mints nothing itself (the tab skeleton does) and always hands it a
    *  capability answer or a picker seed, so no caller can open a chat that skipped both. */
@@ -9384,13 +9524,10 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       answerCreateRefusal(tab, spec.requestId);
       return undefined;
     }
-    if (!sessionCreationGate.tryEnter(tab.rootDir)) {
-      refuseSessionMutation(SESSION_CREATION_IN_FLIGHT_MESSAGE, tab.id);
-      answerCreateRefusal(tab, spec.requestId);
-      return undefined;
-    }
-    try {
-      const opened = bootstrapTab(tab.rootDir, {
+    const opened = openClaimedChat(tab, {
+      label: CREATION_LABELS[spec.origin],
+      requestId: spec.requestId,
+      restore: {
         active: true,
         groupId: tab.groupId,
         model: spec.prefs.model,
@@ -9398,28 +9535,22 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         subagentModel: spec.prefs.subagentModel,
         capabilityAnswer: spec.answer,
         capabilitySeed: spec.capabilities,
-        // A fresh mint, whose first listing answers the client's create request.
-        creating: true,
-        createRequestId: spec.requestId,
-      });
-      // The mint is synchronous, so the channel already owns its session: seeding the
-      // transcript here lands it in the bootstrap's own session read.
-      if (opened.currentSession && spec.seed) seedFreshChat(opened, spec.seed);
-      armCreationRelease(opened);
-      lastActiveTabId = opened.id;
-      persistOpenTabs();
-      return opened;
-    } catch (err) {
-      // A bootstrap that never started must not leave the workspace locked.
-      sessionCreationGate.leave(tab.rootDir);
-      emitDiagnosticError(`session.${spec.origin}.failed`, err, {
-        tabId: tab.id,
-        details: tabDiagnosticState(tab),
-      });
-      emit({ type: "$error", message: `${spec.origin} failed: ${(err as Error).message}` }, tab.id);
-      answerCreateRefusal(tab, spec.requestId);
-      return undefined;
-    }
+      },
+      failed: (err) => {
+        emitDiagnosticError(`session.${spec.origin}.failed`, err, {
+          tabId: tab.id,
+          details: tabDiagnosticState(tab),
+        });
+        emit({ type: "$error", message: `${spec.origin} failed: ${messageOf(err)}` }, tab.id);
+      },
+    });
+    if (!opened) return undefined;
+    // The mint is synchronous, so the channel already owns its session: seeding the
+    // transcript here lands it in the bootstrap's own session read.
+    if (opened.currentSession && spec.seed) seedFreshChat(opened, spec.seed);
+    lastActiveTabId = opened.id;
+    persistOpenTabs();
+    return opened;
   }
 
   // Restore the full tab set from the previous session — workspace dir,
@@ -10172,7 +10303,11 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     }
     if (msg.cmd === "skills_uninstall") {
       try {
-        uninstallSkill(msg.name);
+        const removed = uninstallSkills(msg.names);
+        if (removed.length === 0) {
+          emitToast(tab, "skills_uninstall: no skill named");
+          return;
+        }
         if (tab.currentSession) syncSessionCapabilities(tab, tab.currentSession);
         emitSkills(tab);
         applyTabSystemPrompt(tab);
@@ -10180,18 +10315,18 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // A skill a plugin ships is not in the standalone store, so the removal above
         // failed: name the plugin rather than reporting the id as simply absent.
         const owner = listPlugins().find((state) =>
-          state.skills.some((skill) => skill.name === msg.name),
+          state.skills.some((skill) => msg.names.includes(skill.name)),
         )?.slug;
         if (owner) {
           emitToast(
             tab,
-            `skills_uninstall: "${msg.name}" ships with the ${owner} plugin. Remove the plugin instead.`,
+            `skills_uninstall: a skill this asked to remove ships with the ${owner} plugin. Remove the plugin instead.`,
           );
           return;
         }
         emitDiagnosticError("skill.uninstall.failed", err, {
           tabId: tab.id,
-          details: { name: msg.name },
+          details: { names: msg.names },
         });
         emitToast(tab, `skills_uninstall: ${messageOf(err)}`);
       }

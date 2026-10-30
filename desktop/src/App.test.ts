@@ -1551,7 +1551,7 @@ describe("Desktop App reducer — usage", () => {
           { name: "github", enabled: false, builtin: false },
         ],
         plugins: [{ name: "notfair", displayName: "NotFair", enabled: true }],
-        skills: [{ name: "churn-analysis", description: "Predicts churn.", enabled: false }],
+        skills: [{ id: "churn-analysis", description: "Predicts churn.", enabled: false }],
         subagents: true,
       },
     });
@@ -1561,7 +1561,7 @@ describe("Desktop App reducer — usage", () => {
         { name: "github", enabled: false, builtin: false },
       ],
       plugins: [{ name: "notfair", displayName: "NotFair", enabled: true }],
-      skills: [{ name: "churn-analysis", description: "Predicts churn.", enabled: false }],
+      skills: [{ id: "churn-analysis", description: "Predicts churn.", enabled: false }],
       subagents: true,
     });
 
@@ -2044,7 +2044,7 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
       duplicateSessionTokens: 24_000,
       duplicateSessionAutoProceed: false,
       pluginPrefill: [{ name: "seo-agent", displayName: "SEO Agent", enabled: true }],
-      skillPrefill: [{ name: "churn-analysis", description: "Predicts churn.", enabled: false }],
+      skillPrefill: [{ id: "churn-analysis", description: "Predicts churn.", enabled: false }],
       version: "0.50.1",
     };
     const state = reduce(initialState(), { t: "incoming", event: echo });
@@ -2063,7 +2063,7 @@ describe("Desktop App reducer — ApprovalPrompt integration", () => {
       { name: "seo-agent", displayName: "SEO Agent", enabled: true },
     ]);
     expect(state.settings?.skillPrefill).toEqual([
-      { name: "churn-analysis", description: "Predicts churn.", enabled: false },
+      { id: "churn-analysis", description: "Predicts churn.", enabled: false },
     ]);
 
     // A cleared selection reaches the UI the same way, instead of being left behind.

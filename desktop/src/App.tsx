@@ -4103,7 +4103,7 @@ const TabRuntime = memo(function TabRuntime({
     [sendRpc],
   );
   const uninstallSkill = useCallback(
-    (name: string) => sendRpc({ cmd: "skills_uninstall", name }),
+    (names: string[]) => sendRpc({ cmd: "skills_uninstall", names }),
     [sendRpc],
   );
   const pickSoundFile = useCallback(async (): Promise<string | null> => {

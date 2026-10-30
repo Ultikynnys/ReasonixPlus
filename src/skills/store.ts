@@ -3,7 +3,14 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
-import { addGlobalPathAllowed, removeGlobalPathAllowed } from "../config.js";
+import {
+  type ReasonixConfig,
+  type SkillRecord,
+  addGlobalPathAllowed,
+  readConfig,
+  removeGlobalPathAllowed,
+  writeConfig,
+} from "../config.js";
 import {
   INSTALL_SKIP_DIRS,
   type InstallCopy,
@@ -35,6 +42,9 @@ export interface SkillState extends SkillDeclaration {
   dir: string;
   /** Absolute path to its SKILL.md. */
   path: string;
+  /** Which install brought it in, when the store recorded one. Settings groups the skills
+   *  of one source by it, so a repository of twenty skills reads as one row. */
+  source?: string;
   /** Set when SKILL.md exists but cannot be read; the card still renders so it can be removed. */
   error?: string;
 }
@@ -42,8 +52,17 @@ export interface SkillState extends SkillDeclaration {
 export interface SkillLookupOptions {
   homeDir?: string;
   configPath?: string;
+  /** Config already loaded by a caller that is mid-write (install/uninstall). */
+  cfg?: ReasonixConfig;
   /** Restrict the scan to these ids, so an unrelated broken skill never reaches a prompt. */
   only?: readonly string[];
+}
+
+/** Provenance records, keyed by store id. A hand-edited or unreadable config simply means no
+ *  record, which costs the inventory a group, never a skill. */
+function skillRecords(opts: SkillLookupOptions): Record<string, SkillRecord> {
+  const cfg = opts.cfg ?? readConfig(opts.configPath);
+  return cfg.skills ?? {};
 }
 
 /** Ids present on disk, sorted. `only` is filtered rather than trusted: the ids arrive
@@ -62,18 +81,21 @@ function skillIds(root: string, only?: readonly string[]): string[] {
  *  skill and is skipped; one whose SKILL.md cannot be read is listed with its error. */
 export function listSkills(opts: SkillLookupOptions = {}): SkillState[] {
   const root = skillsRoot(opts.homeDir);
+  const records = skillRecords(opts);
   const states: SkillState[] = [];
   for (const id of skillIds(root, opts.only)) {
     const dir = join(root, id);
     if (!isSkillDir(dir)) continue;
     const path = join(dir, SKILL_ENTRY_FILE);
     const declared = readSkillDeclaration(dir, id);
+    const source = records[id]?.source?.trim();
     states.push({
       id,
       dir,
       path,
       name: declared?.name ?? id,
       description: declared?.description ?? "",
+      ...(source ? { source } : {}),
       ...(declared ? {} : { error: `unreadable ${SKILL_ENTRY_FILE}` }),
     });
   }
@@ -277,6 +299,11 @@ export async function installSkills(
       moved.push(dest);
     }
     for (const dest of moved) addGlobalPathAllowed(dest, opts.configPath);
+    recordInstalls(
+      targets.map((target) => target.id),
+      normalized.label,
+      opts.configPath,
+    );
     return { ids: targets.map((target) => target.id) };
   } catch (err) {
     for (const dir of moved) rmSync(dir, { recursive: true, force: true });
@@ -286,13 +313,64 @@ export async function installSkills(
   }
 }
 
-/** Remove one skill: its files and the read grant that let the agent open them. */
+/** Record which install delivered each id, in one config write. Settings reads it back to
+ *  group a collection, so the eighteen skills of one repository share a single row. */
+function recordInstalls(
+  ids: readonly string[],
+  source: string,
+  configPath: string | undefined,
+): void {
+  if (ids.length === 0) return;
+  const cfg = readConfig(configPath);
+  const installedAt = Date.now();
+  const records: Record<string, SkillRecord> = { ...(cfg.skills ?? {}) };
+  for (const id of ids) records[id] = { source, installedAt };
+  cfg.skills = records;
+  writeConfig(cfg, configPath);
+}
+
+/** Drop the provenance of removed ids, in one config write. */
+function forgetInstalls(ids: readonly string[], configPath: string | undefined): void {
+  const cfg = readConfig(configPath);
+  const records = cfg.skills;
+  if (!records) return;
+  let changed = false;
+  for (const id of ids) {
+    if (!records[id]) continue;
+    delete records[id];
+    changed = true;
+  }
+  if (!changed) return;
+  cfg.skills = Object.keys(records).length > 0 ? records : undefined;
+  writeConfig(cfg, configPath);
+}
+
+/** Remove several skills at once: every id is checked before the first file is touched, so a
+ *  refusal leaves the store whole. Files, records and read grants all go. */
+export function uninstallSkills(
+  ids: readonly string[],
+  opts: { homeDir?: string; configPath?: string } = {},
+): string[] {
+  const root = skillsRoot(opts.homeDir);
+  const wanted = [...new Set(ids)];
+  for (const id of wanted) {
+    if (!isSafeStoreId(id) || !existsSync(join(root, id))) {
+      throw new Error(`${id} is not installed`);
+    }
+  }
+  for (const id of wanted) rmSync(join(root, id), { recursive: true, force: true });
+  try {
+    forgetInstalls(wanted, opts.configPath);
+  } finally {
+    for (const id of wanted) removeGlobalPathAllowed(join(root, id), opts.configPath);
+  }
+  return wanted;
+}
+
+/** Remove one skill: its files, its record and the read grant that let the agent open them. */
 export function uninstallSkill(
   id: string,
   opts: { homeDir?: string; configPath?: string } = {},
 ): void {
-  const dir = join(skillsRoot(opts.homeDir), id);
-  if (!isSafeStoreId(id) || !existsSync(dir)) throw new Error(`${id} is not installed`);
-  rmSync(dir, { recursive: true, force: true });
-  removeGlobalPathAllowed(dir, opts.configPath);
+  uninstallSkills([id], opts);
 }

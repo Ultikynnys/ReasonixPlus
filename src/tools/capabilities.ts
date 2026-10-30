@@ -249,6 +249,7 @@ export function registerCapabilityTools(
             name: skill.name,
             description: skill.description,
             path: skill.path,
+            ...(skill.source ? { source: skill.source } : {}),
             ...(chosenSkills ? { enabled_here: chosenSkills.has(skill.id) } : {}),
             ...(skill.error ? { error: skill.error } : {}),
           }))

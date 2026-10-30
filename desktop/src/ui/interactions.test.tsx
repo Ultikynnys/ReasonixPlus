@@ -7,7 +7,7 @@ import { useCallback, useReducer, useRef } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { baseAppState } from "../../../tests/support/app-state.js";
 import { TabBar, reduce } from "../App";
-import type { IncomingEvent } from "../protocol";
+import type { IncomingEvent, SkillSetupEntry } from "../protocol";
 import { ZoomableImage } from "./image-preview";
 import { CapabilityDialog } from "./mcp-setup";
 import { TabMenu, getTabsToClear } from "./tab-menu";
@@ -760,8 +760,8 @@ describe("mcp-setup", () => {
   const installedPlugins = [{ name: "notfair", displayName: "NotFair", enabled: true }];
 
   const installedSkills = [
-    { name: "churn-analysis", description: "Predicts churn.", enabled: true },
-    { name: "seo-audit", enabled: false },
+    { id: "churn-analysis", description: "Predicts churn.", enabled: true },
+    { id: "seo-audit", enabled: false },
   ];
 
   function renderDialog({
@@ -772,7 +772,7 @@ describe("mcp-setup", () => {
   }: {
     list?: typeof servers;
     pluginList?: typeof installedPlugins;
-    skillList?: typeof installedSkills;
+    skillList?: SkillSetupEntry[];
     subagents?: boolean;
   } = {}) {
     const onConfirm = vi.fn();
@@ -860,6 +860,59 @@ describe("mcp-setup", () => {
       renderDialog({ skillList: [] });
       expect(screen.getByText(/No standalone skill installed/)).toBeTruthy();
       expect(screen.getByText(/Skills a plugin ships arrive with that plugin/)).toBeTruthy();
+    });
+
+    describe("skills one install delivered", () => {
+      const source = "https://github.com/LLMQuant/skills";
+      const repositorySkills: SkillSetupEntry[] = [
+        { id: "llmquant-commodities", description: "Commodities.", source, enabled: true },
+        { id: "llmquant-credit", description: "Credit.", source, enabled: true },
+        { id: "llmquant-crypto", description: "Crypto.", source, enabled: false },
+      ];
+
+      it("offers one switch for the repository, not one per skill", () => {
+        renderDialog({ skillList: repositorySkills });
+        expect(screen.getByRole("switch", { name: "LLMQuant/skills" })).toBeTruthy();
+        expect(screen.queryByRole("switch", { name: "llmquant-credit" })).toBeNull();
+        expect(screen.getByText("2/3 on")).toBeTruthy();
+      });
+
+      it("confirms the members that start switched on", () => {
+        const { onConfirm } = renderDialog({ skillList: repositorySkills });
+        fireEvent.click(screen.getByText("Confirm and start"));
+        expect(answerOf(onConfirm).skills).toEqual(["llmquant-commodities", "llmquant-credit"]);
+      });
+
+      it("switches the rest on from the group switch", () => {
+        const { onConfirm } = renderDialog({ skillList: repositorySkills });
+        fireEvent.click(screen.getByRole("switch", { name: "LLMQuant/skills" }));
+        expect(screen.getByText("3/3 on")).toBeTruthy();
+        fireEvent.click(screen.getByText("Confirm and start"));
+        expect([...answerOf(onConfirm).skills].sort()).toEqual([
+          "llmquant-commodities",
+          "llmquant-credit",
+          "llmquant-crypto",
+        ]);
+      });
+
+      it("switches the whole group off once every member is on", () => {
+        const { onConfirm } = renderDialog({ skillList: repositorySkills });
+        const group = () => screen.getByRole("switch", { name: "LLMQuant/skills" });
+        fireEvent.click(group());
+        fireEvent.click(group());
+        expect(screen.getByText("0/3 on")).toBeTruthy();
+        fireEvent.click(screen.getByText("Confirm and start"));
+        expect(answerOf(onConfirm).skills).toEqual([]);
+      });
+
+      it("keeps every member addressable behind the caret", () => {
+        const { onConfirm } = renderDialog({ skillList: repositorySkills });
+        fireEvent.click(screen.getByRole("button", { name: "Show 3 skills" }));
+        fireEvent.click(screen.getByRole("switch", { name: "llmquant-credit" }));
+        expect(screen.getByText("1/3 on")).toBeTruthy();
+        fireEvent.click(screen.getByText("Confirm and start"));
+        expect(answerOf(onConfirm).skills).toEqual(["llmquant-commodities"]);
+      });
     });
 
     it("says so when no plugin is installed", () => {

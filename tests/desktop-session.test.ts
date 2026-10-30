@@ -7,7 +7,6 @@ import { reduce } from "../desktop/src/App.js";
 import { areWorkspacesLoaded, isWorkspaceRevealReady } from "../desktop/src/workspace-loading";
 import * as desktopCommand from "../src/cli/commands/desktop.js";
 import {
-  SESSION_CREATION_IN_FLIGHT_MESSAGE,
   WORKSPACE_REMOVE_BLOCKED_MESSAGE,
   WORKSPACE_SWITCH_BLOCKED_MESSAGE,
   adoptableRestoredSession,
@@ -19,6 +18,7 @@ import {
   normalizeSessionTitle,
   projectKernelEvent,
   sessionCarryover,
+  sessionCreationInFlightMessage,
   shouldDeferRestoredBuild,
 } from "../src/cli/commands/desktop.js";
 import type { PlanSummary } from "../src/code/plans.js";
@@ -74,35 +74,73 @@ describe("desktop-session-create", () => {
   describe("desktop — one session creation at a time per workspace", () => {
     it("refuses the second half of a double action", () => {
       const gate = newSessionCreationGate();
-      expect(gate.tryEnter("/repo/alpha")).toBe(true);
-      expect(gate.tryEnter("/repo/alpha")).toBe(false);
+      expect(gate.begin("/repo/alpha", "a new chat").kind).toBe("claimed");
+      const second = gate.begin("/repo/alpha", "a new chat");
+      expect(second.kind).toBe("blocked");
+      expect(second.kind === "blocked" && second.holder.label).toBe("a new chat");
     });
 
     it("reopens as soon as the first creation has landed", () => {
       const gate = newSessionCreationGate();
-      expect(gate.tryEnter("/repo/alpha")).toBe(true);
-      gate.leave("/repo/alpha");
-      expect(gate.tryEnter("/repo/alpha")).toBe(true);
+      const claim = gate.begin("/repo/alpha", "a new chat");
+      expect(claim.kind).toBe("claimed");
+      if (claim.kind === "claimed") claim.release();
+      expect(gate.begin("/repo/alpha", "a new chat").kind).toBe("claimed");
     });
 
     it("only locks the workspace that is creating", () => {
       const gate = newSessionCreationGate();
-      expect(gate.tryEnter("/repo/alpha")).toBe(true);
-      expect(gate.tryEnter("/repo/beta")).toBe(true);
-      gate.leave("/repo/beta");
-      expect(gate.tryEnter("/repo/beta")).toBe(true);
+      const alpha = gate.begin("/repo/alpha", "a new chat");
+      const beta = gate.begin("/repo/beta", "a duplicate");
+      expect(alpha.kind).toBe("claimed");
+      expect(beta.kind).toBe("claimed");
+      if (beta.kind === "claimed") beta.release();
+      expect(gate.begin("/repo/beta", "a new chat").kind).toBe("claimed");
       // Releasing beta must not release the workspace still minting its session.
-      expect(gate.tryEnter("/repo/alpha")).toBe(false);
+      expect(gate.begin("/repo/alpha", "a new chat").kind).toBe("blocked");
     });
 
     it("treats a relative and an absolute path to the same workspace as one", () => {
       const gate = newSessionCreationGate();
-      expect(gate.tryEnter(".")).toBe(true);
-      expect(gate.tryEnter(process.cwd())).toBe(false);
+      expect(gate.begin(".", "a new chat").kind).toBe("claimed");
+      expect(gate.begin(process.cwd(), "a new chat").kind).toBe("blocked");
     });
 
-    it("shares one refusal wording that names the wait", () => {
-      expect(SESSION_CREATION_IN_FLIGHT_MESSAGE).toMatch(/already being created/i);
+    it("names what is opening and how long it has been opening", () => {
+      let clock = 0;
+      const gate = newSessionCreationGate({ staleAfterMs: 60_000, now: () => clock });
+      gate.begin("/repo/alpha", "a duplicated chat");
+      clock = 12_000;
+      const blocked = gate.begin("/repo/alpha", "a new chat");
+      if (blocked.kind !== "blocked") throw new Error("expected the workspace to be held");
+      const message = sessionCreationInFlightMessage(blocked.holder);
+      expect(message).toMatch(/duplicated chat/);
+      expect(message).toMatch(/12 s/);
+    });
+
+    it("takes a claim over once it outlives the stale window", () => {
+      let clock = 0;
+      const gate = newSessionCreationGate({ staleAfterMs: 60_000, now: () => clock });
+      const abandoned = gate.begin("/repo/alpha", "a new chat");
+      clock = 60_000;
+      // The workspace is open again the moment the claim is stale: a creation that
+      // never lands must not refuse every later click forever.
+      expect(gate.isBusy("/repo/alpha")).toBe(false);
+      const takeover = gate.begin("/repo/alpha", "a new chat");
+      expect(takeover.kind).toBe("claimed");
+      expect(takeover.kind === "claimed" && takeover.tookOver).toBe(true);
+      // The abandoned claim settling later must not open its successor's workspace.
+      if (abandoned.kind === "claimed") abandoned.release();
+      expect(gate.isBusy("/repo/alpha")).toBe(true);
+    });
+
+    it("reports a claim inside the stale window as held", () => {
+      let clock = 0;
+      const gate = newSessionCreationGate({ staleAfterMs: 60_000, now: () => clock });
+      expect(gate.begin("/repo/alpha", "a new chat").kind).toBe("claimed");
+      clock = 59_999;
+      expect(gate.isBusy("/repo/alpha")).toBe(true);
+      expect(gate.begin("/repo/alpha", "a new chat").kind).toBe("blocked");
     });
   });
 });
@@ -814,9 +852,9 @@ describe("desktop-workspace-lock", () => {
     it("counts a creation as work in the workspace the switch would leave", () => {
       const gate = newSessionCreationGate();
       expect(gate.isBusy("/repo/alpha")).toBe(false);
-      expect(gate.tryEnter("/repo/alpha")).toBe(true);
+      const claim = gate.begin("/repo/alpha", "a new chat");
       expect(gate.isBusy("/repo/alpha")).toBe(true);
-      gate.leave("/repo/alpha");
+      if (claim.kind === "claimed") claim.release();
       expect(gate.isBusy("/repo/alpha")).toBe(false);
     });
 

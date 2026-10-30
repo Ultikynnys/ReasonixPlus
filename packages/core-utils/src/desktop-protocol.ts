@@ -734,6 +734,9 @@ export interface SkillInfo {
   description: string;
   /** Absolute path to its SKILL.md. */
   path: string;
+  /** Which install brought it in, when the store recorded one. Settings groups the skills of
+   *  one source behind a single card and the picker behind a single switch. */
+  source?: string;
   /** True when THIS chat froze the skill at its session-start confirm. Read-only:
    *  enablement is chosen there, never from the settings page. */
   active: boolean;
@@ -772,9 +775,12 @@ export interface PluginSetupEntry {
  *  row per skill a plugin ships. */
 export interface SkillSetupEntry {
   /** Skill id — the value the confirm freezes. */
-  name: string;
+  id: string;
   /** One-line summary, so the row can say what the skill is for. */
   description?: string;
+  /** Which install brought it in, so the picker offers one switch per repository instead of
+   *  one per skill. Absent for an install that predates the record. */
+  source?: string;
   /** Pre-filled state: on for a new chat, the source session's set for a duplicate. */
   enabled: boolean;
 }
@@ -1961,7 +1967,8 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "skills_get" }
   /** Install one skill, or every skill of a folder that holds skill directories. */
   | { cmd: "skills_install"; source: string }
-  | { cmd: "skills_uninstall"; name: string }
+  /** Remove these skills in one pass: a Settings group drops whole, not id by id. */
+  | { cmd: "skills_uninstall"; names: string[] }
   /** Create a sound pack from audio the user picked in Settings > Sound. `reserved`
    *  carries the pack ids the UI already shows (the shipped folder packs); the daemon
    *  cannot read them, and a created pack must not shadow one. */

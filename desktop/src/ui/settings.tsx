@@ -4,6 +4,8 @@ import {
   SEARCH_ENGINE_SPECS,
   type SearchEngineSpec,
   type SearchSettingSpec,
+  type SkillGroup,
+  groupSkills,
   messageOf,
   modelDisplayLabel,
   modelWireName,
@@ -316,7 +318,8 @@ export function SettingsModal({
   /** Re-request the plugin inventory (the page calls this when it opens). */
   onRequestPlugins: () => void;
   onInstallSkill: (source: string) => void;
-  onUninstallSkill: (name: string) => void;
+  /** Remove these skills in one pass: a Settings group drops whole. */
+  onUninstallSkill: (names: string[]) => void;
   /** Re-request the skill inventory (the Skills page calls this when it opens). */
   onRequestSkills: () => void;
   /** Opens the desktop file dialog for one cue's audio, for the pack wizard. */
@@ -3983,7 +3986,8 @@ export function PageSkills({
 }: {
   skills: SkillInfo[];
   onInstall: (source: string) => void;
-  onUninstall: (name: string) => void;
+  /** Remove these skills: one id for a card, every member for an install that brought several. */
+  onUninstall: (names: string[]) => void;
   onRequest: () => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -4018,9 +4022,17 @@ export function PageSkills({
             {hintNodes(t("settings.skillsEmpty"))}
           </div>
         ) : null}
-        {skills.map((skill) => (
-          <SkillCard key={skill.id} skill={skill} onUninstall={onUninstall} />
-        ))}
+        {groupSkills(skills).map((group) =>
+          group.skills.length > 1 ? (
+            <SkillGroupCard key={group.key} group={group} onUninstall={onUninstall} />
+          ) : (
+            <SkillCard
+              key={group.key}
+              skill={group.skills[0] as SkillInfo}
+              onUninstall={onUninstall}
+            />
+          ),
+        )}
       </section>
       <section className="section">
         <div className="stitle">{t("settings.skillsInstallSection")}</div>
@@ -4050,16 +4062,84 @@ export function PageSkills({
   );
 }
 
+/** One install that delivered several skills: the source is the card, its skills are the rows
+ *  inside it, so a collection of twenty workflows is one card instead of twenty. */
+function SkillGroupCard({
+  group,
+  onUninstall,
+}: {
+  group: SkillGroup<SkillInfo>;
+  onUninstall: (names: string[]) => void;
+}) {
+  const count = group.skills.length;
+  const on = group.skills.filter((skill) => skill.active).length;
+  return (
+    <HeadActionCard
+      title={
+        <>
+          {group.label}
+          <TitleNote>- {t("settings.skillsGroupCount", { count })}</TitleNote>
+          {on > 0 ? (
+            <TitleNote tone="accent">- {t("settings.skillsGroupActive", { on, count })}</TitleNote>
+          ) : null}
+        </>
+      }
+      headActions={
+        <RemoveAction
+          label={t("settings.skillsRemoveGroup", { count })}
+          onRemove={() => onUninstall(group.skills.map((skill) => skill.id))}
+        />
+      }
+    >
+      <div className="sub">
+        {group.source
+          ? t("settings.skillsGroupSource", { source: group.source })
+          : t("settings.skillsGroupInferred")}
+      </div>
+      <div className="plugin-subpanel plugin-subpanel-scroll" style={{ marginTop: 8 }}>
+        {group.skills.map((skill) => (
+          <div key={skill.id} style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <code style={{ fontSize: 11 }}>{skill.name}</code>
+              {skill.active ? (
+                <span style={{ fontSize: 11, color: "var(--accent)" }}>
+                  {t("settings.skillsActiveHere")}
+                </span>
+              ) : null}
+              <span className="grow" />
+              <RemoveAction
+                label={t("settings.skillsRemove")}
+                onRemove={() => onUninstall([skill.id])}
+              />
+            </div>
+            <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
+              {skill.description || t("settings.skillsNoDescription")}
+            </div>
+            {skill.error ? (
+              <div style={{ fontSize: 11, color: "var(--danger)" }}>
+                {t("settings.skillsReadError", { error: skill.error })}
+              </div>
+            ) : null}
+            <div style={{ fontSize: 11, color: "var(--muted)" }} title={skill.path}>
+              <code style={{ fontSize: 11 }}>{skill.path}</code>
+            </div>
+          </div>
+        ))}
+      </div>
+    </HeadActionCard>
+  );
+}
+
 /** One installed standalone skill: what it declares, where it lives, and removal. */
 function SkillCard({
   skill,
   onUninstall,
 }: {
   skill: SkillInfo;
-  onUninstall: (name: string) => void;
+  onUninstall: (names: string[]) => void;
 }) {
   const headActions = (
-    <RemoveAction label={t("settings.skillsRemove")} onRemove={() => onUninstall(skill.id)} />
+    <RemoveAction label={t("settings.skillsRemove")} onRemove={() => onUninstall([skill.id])} />
   );
   return (
     <HeadActionCard
@@ -4121,8 +4201,6 @@ function SectionRow({ nm, keys }: { nm: string; keys: ShortcutKey[] }): ReactNod
     </>
   );
 }
-
-
 
 /** Range input with a local draft: dragging updates instantly and the value is
  *  committed once, on release. A fully controlled slider re-rendered from the
@@ -4366,9 +4444,3 @@ function PageSound({
     </>
   );
 }
-
-
-
-
-
-

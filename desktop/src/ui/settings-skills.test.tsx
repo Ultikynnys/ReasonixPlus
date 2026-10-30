@@ -81,12 +81,71 @@ describe("PageSkills", () => {
   it("removes a skill by id", () => {
     const { onUninstall } = renderPage([skill()]);
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
-    expect(onUninstall).toHaveBeenCalledWith("churn-analysis");
+    expect(onUninstall).toHaveBeenCalledWith(["churn-analysis"]);
   });
 
   it("shows a read failure instead of hiding the card", () => {
     renderPage([skill({ error: "unreadable SKILL.md" })]);
     expect(screen.getByText(/SKILL\.md error: unreadable SKILL\.md/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+  });
+});
+
+/** One install that delivered several skills, as the daemon reports it. */
+const SOURCE = "https://github.com/LLMQuant/skills";
+
+function repositorySkills(): SkillInfo[] {
+  return ["commodities", "credit", "crypto"].map((topic) => {
+    const id = `llmquant-${topic}`;
+    return skill({
+      id,
+      name: id,
+      description: `Router skill for ${topic} workflows.`,
+      path: `/home/.reasonix/skills/${id}/SKILL.md`,
+      source: SOURCE,
+    });
+  });
+}
+
+describe("PageSkills groups", () => {
+  it("reads one repository as one card instead of one card per skill", () => {
+    renderPage(repositorySkills());
+    expect(screen.getByText("LLMQuant/skills")).toBeTruthy();
+    expect(screen.getByText(/3 skills/)).toBeTruthy();
+    expect(screen.getByText(`Installed from ${SOURCE}`)).toBeTruthy();
+    expect(screen.getByText("Standalone skills (3)")).toBeTruthy();
+  });
+
+  it("says how many group members this chat runs", () => {
+    renderPage(repositorySkills().map((s) => ({ ...s, active: s.id !== "llmquant-credit" })));
+    expect(screen.getByText(/2 of 3 on in this chat/)).toBeTruthy();
+  });
+
+  it("removes the whole group in one click", () => {
+    const { onUninstall } = renderPage(repositorySkills());
+    fireEvent.click(screen.getByRole("button", { name: "Remove all" }));
+    expect(onUninstall).toHaveBeenCalledWith([
+      "llmquant-commodities",
+      "llmquant-credit",
+      "llmquant-crypto",
+    ]);
+  });
+
+  it("keeps every member removable on its own", () => {
+    const { onUninstall } = renderPage(repositorySkills());
+    const removes = screen.getAllByRole("button", { name: "Remove" });
+    expect(removes).toHaveLength(3);
+    fireEvent.click(removes[1] as HTMLElement);
+    expect(onUninstall).toHaveBeenCalledWith(["llmquant-credit"]);
+  });
+
+  it("names an inferred group by its shared prefix and says so", () => {
+    renderPage(
+      ["risk", "macro"].map((topic) =>
+        skill({ id: `llmquant-${topic}`, name: `llmquant-${topic}` }),
+      ),
+    );
+    expect(screen.getByText("llmquant-*")).toBeTruthy();
+    expect(screen.getByText(/Grouped by their shared id prefix/)).toBeTruthy();
   });
 });

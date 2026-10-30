@@ -739,6 +739,16 @@ export interface PluginRecord {
   installedAt: number;
 }
 
+/** One installed standalone skill. The SKILL.md on disk stays authoritative for the name and
+ *  description; this records which install brought it in, so a collection reads as one group.
+ *  Whether a chat may use it is frozen per session (SessionMeta.skills), never stored here. */
+export interface SkillRecord {
+  /** Where it came from: git URL, `owner/repo`, or a local directory path. */
+  source: string;
+  /** Install epoch milliseconds. */
+  installedAt: number;
+}
+
 export interface RateLimitConfig {
   /** Client-side self-throttle in requests/minute — paces outbound chat calls with a min-interval timer. NOT a DeepSeek-enforced limit: DeepSeek's actual cap is concurrency, not RPM (500 for v4-pro, 2500 for v4-flash, account-wide), surfaced as HTTP 429. Set this only to be a polite neighbor on shared infra; single-user CLI rarely needs it. */
   rpm?: number;
@@ -910,6 +920,10 @@ export interface ReasonixConfig {
   mcpOAuth?: Record<string, McpOAuthCreds>;
   /** Installed agent plugins, keyed by slug — one record per `~/.reasonix/plugins/<slug>`. */
   plugins?: Record<string, PluginRecord>;
+  /** Installed standalone skills, keyed by store id — one record per `~/.reasonix/skills/<id>`.
+   *  Provenance only: Settings groups the skills one install brought in, and a chat's own
+   *  set is frozen in its session meta. */
+  skills?: Record<string, SkillRecord>;
   /** Slugs switched off by default in Settings > Plugins. A new chat's capability picker
    *  starts them off; a chat that already froze its set is unaffected. */
   pluginsDisabled?: string[];

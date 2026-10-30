@@ -91,8 +91,22 @@ describe("skillPrefill", () => {
 
   it("offers every installed skill on for a new chat", () => {
     expect(skillPrefill(installed)).toEqual([
-      { name: "churn-analysis", description: "Predicts churn.", enabled: true },
-      { name: "seo-audit", enabled: true },
+      { id: "churn-analysis", description: "Predicts churn.", enabled: true },
+      { id: "seo-audit", enabled: true },
+    ]);
+  });
+
+  it("carries the install source, so the picker can offer one switch per repository", () => {
+    const rows = skillPrefill([
+      { id: "llmquant-risk", description: "Risk.", source: "https://github.com/LLMQuant/skills" },
+    ]);
+    expect(rows).toEqual([
+      {
+        id: "llmquant-risk",
+        description: "Risk.",
+        source: "https://github.com/LLMQuant/skills",
+        enabled: true,
+      },
     ]);
   });
 
