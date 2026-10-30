@@ -207,6 +207,16 @@ export function ContextPanel({
   const enabledMcpServers = mcpSpecs.filter(
     (spec) => spec.status === "connected" && !spec.sessionDisabled,
   ).length;
+  // What each capability tab actually runs, so the bar answers "how many are on" without
+  // opening a folded inventory. The skills count includes what a running plugin ships,
+  // since the Skills tab lists those rows too. One fold serves the Skills tab and its badge,
+  // memoized on the inventories so a streaming usage tick cannot rebuild it.
+  const skillTabs = useMemo(() => skillGroups(skills, plugins), [skills, plugins]);
+  const tabCounts: Partial<Record<Tab, { count: number; title: TKey }>> = {
+    mcp: { count: enabledMcpServers, title: "contextPanel.mcpEnabledServers" },
+    skills: { count: groupedSkillCount(skillTabs), title: "contextPanel.skillsEnabled" },
+    plugins: { count: runningPlugins(plugins).length, title: "contextPanel.pluginsEnabled" },
+  };
   const memoryCounts = { global: 0, project: 0 };
   for (const entry of memory) {
     if (entry.scope === "global" || entry.scope === "project") memoryCounts[entry.scope]++;
@@ -251,38 +261,38 @@ export function ContextPanel({
   return (
     <aside className="ctx">
       <div className="ctx-tabs">
-        {PANEL_TABS.map((tb) => (
-          <div
-            key={tb.id}
-            className="ctx-tab"
-            data-active={tab === tb.id}
-            onClick={() => setTab(tb.id)}
-            onKeyDown={activationHandler(() => setTab(tb.id))}
-          >
-            {tb.id === "mcp" && enabledMcpServers > 0 && (
-              <span
-                className="tab-active"
-                title={t("contextPanel.mcpEnabledServers", { count: enabledMcpServers })}
-              >
-                <span className="dot" data-state="running" aria-hidden="true" />
-                <span className="ctx-tab-count">{enabledMcpServers}</span>
-              </span>
-            )}
-            {t(tb.label)}
-            {tb.id === "memory" && (
-              <span className="ctx-memory-counts">
-                {(["global", "project"] as const).map((scope) => {
-                  const label = t(scope === "global" ? "contextPanel.scopeGlobal" : "contextPanel.scopeProject");
-                  return (
-                    <span key={scope} title={label} aria-label={`${label}: ${memoryCounts[scope]}`}>
-                      {memoryCounts[scope]}
-                    </span>
-                  );
-                })}
-              </span>
-            )}
-          </div>
-        ))}
+        {PANEL_TABS.map((tb) => {
+          const badge = tabCounts[tb.id];
+          return (
+            <div
+              key={tb.id}
+              className="ctx-tab"
+              data-active={tab === tb.id}
+              onClick={() => setTab(tb.id)}
+              onKeyDown={activationHandler(() => setTab(tb.id))}
+            >
+              {badge !== undefined && badge.count > 0 && (
+                <span className="tab-active" title={t(badge.title, { count: badge.count })}>
+                  <span className="dot" data-state="running" aria-hidden="true" />
+                  <span className="ctx-tab-count">{badge.count}</span>
+                </span>
+              )}
+              {t(tb.label)}
+              {tb.id === "memory" && (
+                <span className="ctx-memory-counts">
+                  {(["global", "project"] as const).map((scope) => {
+                    const label = t(scope === "global" ? "contextPanel.scopeGlobal" : "contextPanel.scopeProject");
+                    return (
+                      <span key={scope} title={label} aria-label={`${label}: ${memoryCounts[scope]}`}>
+                        {memoryCounts[scope]}
+                      </span>
+                    );
+                  })}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div className="ctx-body">
@@ -365,8 +375,7 @@ export function ContextPanel({
           {tab === "mcp" && <CtxMcp specs={mcpSpecs} bridged={mcpBridged} />}
           {tab === "skills" && (
             <CtxSkills
-              skills={skills}
-              plugins={plugins}
+              groups={skillTabs}
               onRequest={onRequestSkills}
               onRequestPlugins={onRequestPlugins}
             />
@@ -1950,6 +1959,18 @@ function skillItem(
   };
 }
 
+/** The plugins this chat froze on at its session-start confirm. The Plugins tab and its tab
+ *  badge both read the running set through here. */
+function runningPlugins(plugins: PluginInfo[]): PluginInfo[] {
+  return plugins.filter((plugin) => plugin.active);
+}
+
+/** Item total across the folds: the Skills tab summary and its tab badge share it, so the
+ *  two never disagree. */
+function groupedSkillCount(groups: CapabilityGroup[]): number {
+  return groups.reduce((sum, group) => sum + group.items.length, 0);
+}
+
 /** The skills this chat runs, folded the way they arrived: standalone ones by the install that
  *  delivered them, then one card per running plugin's bundle. A skill or plugin switched off in
  *  this chat stays out, exactly as a session-disabled MCP server does; Settings owns the full
@@ -1967,8 +1988,8 @@ function skillGroups(skills: SkillInfo[], plugins: PluginInfo[]): CapabilityGrou
       ),
     }),
   );
-  for (const plugin of plugins) {
-    if (!plugin.active || plugin.skills.length === 0) continue;
+  for (const plugin of runningPlugins(plugins)) {
+    if (plugin.skills.length === 0) continue;
     groups.push({
       key: `plugin:${plugin.slug}`,
       label: plugin.displayName,
@@ -1988,25 +2009,21 @@ function skillGroups(skills: SkillInfo[], plugins: PluginInfo[]): CapabilityGrou
 /** The Skills inventory: what this chat enabled, one fold per install or plugin, so a
  *  repository of twenty skills cannot bury the rest of the list. */
 function CtxSkills({
-  skills,
-  plugins,
+  groups,
   onRequest,
   onRequestPlugins,
 }: {
-  skills: SkillInfo[];
-  plugins: PluginInfo[];
+  groups: CapabilityGroup[];
   onRequest?: () => void;
   onRequestPlugins?: () => void;
 }) {
   // This list spans both snapshots: standalone skills, and the bundle each plugin ships.
   useInventoryRequest(onRequest);
   useInventoryRequest(onRequestPlugins);
-  const groups = skillGroups(skills, plugins);
-  const total = groups.reduce((sum, group) => sum + group.items.length, 0);
   return (
     <CapabilityList
       title={t("contextPanel.skillsTab")}
-      summary={t("contextPanel.enabledTotal", { count: total })}
+      summary={t("contextPanel.enabledTotal", { count: groupedSkillCount(groups) })}
       empty={t("contextPanel.skillsEmpty")}
       groups={groups}
     />
@@ -2017,7 +2034,7 @@ function CtxSkills({
  *  same rule the MCP tab applies to session-disabled servers. */
 function CtxPlugins({ plugins, onRequest }: { plugins: PluginInfo[]; onRequest?: () => void }) {
   useInventoryRequest(onRequest);
-  const running = plugins.filter((plugin) => plugin.active);
+  const running = runningPlugins(plugins);
   return (
     <CapabilityList
       title={t("contextPanel.pluginsTab")}

@@ -470,7 +470,7 @@ describe("ContextPanel MCP tab count", () => {
     expect(indicator?.lastElementChild).toBe(badge);
     expect(tab?.firstChild).toBe(indicator);
     expect(tab?.textContent).toBe("1MCP");
-    expect(indicator?.getAttribute("title")).toBe("1 enabled MCP servers in this session");
+    expect(indicator?.getAttribute("title")).toBe("1 enabled MCP servers in this chat");
     fireEvent.click(screen.getByText("MCP"));
     expect(tab?.getAttribute("data-active")).toBe("true");
   });
@@ -606,10 +606,15 @@ describe("ContextPanel skills and plugins tabs", () => {
     ...patch,
   });
 
-  function renderInventories(skills: SkillInfo[], plugins: PluginInfo[]) {
-    const onRequestSkills = vi.fn();
-    const onRequestPlugins = vi.fn();
-    const view = render(
+  /** The panel as this describe mounts it: both inventories supplied, both requests recorded
+   *  by the caller so each case can assert what opening a tab asked for. */
+  function inventoriesElement(
+    skills: SkillInfo[],
+    plugins: PluginInfo[],
+    onRequestSkills: () => void,
+    onRequestPlugins: () => void,
+  ) {
+    return (
       <ContextPanel
         settings={settings}
         usage={usage}
@@ -627,8 +632,14 @@ describe("ContextPanel skills and plugins tabs", () => {
         onWriteMemory={() => {}}
         onDeleteMemory={() => {}}
         onDismissMemoryResult={() => {}}
-      />,
+      />
     );
+  }
+
+  function renderInventories(skills: SkillInfo[], plugins: PluginInfo[]) {
+    const onRequestSkills = vi.fn();
+    const onRequestPlugins = vi.fn();
+    const view = render(inventoriesElement(skills, plugins, onRequestSkills, onRequestPlugins));
     return { ...view, onRequestSkills, onRequestPlugins };
   }
 
@@ -745,6 +756,77 @@ describe("ContextPanel skills and plugins tabs", () => {
 
     fireEvent.click(screen.getByText("Plugins"));
     expect(screen.getByText("No plugins on in this chat")).toBeTruthy();
+  });
+
+  it("badges the Skills and Plugins tabs with how many this chat runs", () => {
+    renderInventories(
+      [skill("review", { active: true }), skill("release")],
+      [
+        plugin("notfair", {
+          active: true,
+          skills: [
+            { name: "seo", description: "seo", path: "skills/seo/SKILL.md", root: "skills" },
+            { name: "copy", description: "copy", path: "skills/copy/SKILL.md", root: "skills" },
+          ],
+        }),
+        plugin("rayfin", {
+          skills: [{ name: "brand", description: "brand", path: "skills/brand/SKILL.md", root: "skills" }],
+        }),
+      ],
+    );
+
+    // One standalone skill plus the two a running plugin ships; the plugin left off keeps its
+    // own skill out, exactly as the Skills tab does.
+    const skillsBadge = screen.getByText("Skills").querySelector(".ctx-tab-count");
+    expect(skillsBadge?.textContent).toBe("3");
+    expect(skillsBadge?.parentElement?.className).toBe("tab-active");
+    expect(skillsBadge?.parentElement?.getAttribute("title")).toBe("3 enabled skills in this chat");
+    expect(skillsBadge?.parentElement?.firstElementChild?.className).toBe("dot");
+
+    const pluginsBadge = screen.getByText("Plugins").querySelector(".ctx-tab-count");
+    expect(pluginsBadge?.textContent).toBe("1");
+    expect(pluginsBadge?.parentElement?.getAttribute("title")).toBe("1 enabled plugins in this chat");
+  });
+
+  it("leaves the Skills and Plugins tabs bare when nothing is on", () => {
+    const { container } = renderInventories([skill("review")], [plugin("notfair")]);
+
+    expect(container.querySelectorAll(".ctx-tab-count")).toHaveLength(0);
+    expect(screen.getByText("Skills").textContent).toBe("Skills");
+    expect(screen.getByText("Plugins").textContent).toBe("Plugins");
+  });
+
+  it("recounts both badges and the Skills summary when a snapshot arrives", () => {
+    const { rerender } = renderInventories([skill("review", { active: true })], []);
+    const badge = (label: string) =>
+      screen.getByText(label).querySelector(".ctx-tab-count")?.textContent;
+    expect(badge("Skills")).toBe("1");
+    expect(badge("Plugins")).toBeUndefined();
+
+    // What opening a chat does: the $skills/$plugins snapshots land after the first paint.
+    rerender(
+      inventoriesElement(
+        [skill("review", { active: true }), skill("deploy", { active: true })],
+        [
+          plugin("notfair", {
+            active: true,
+            skills: [
+              { name: "seo", description: "seo", path: "skills/seo/SKILL.md", root: "skills" },
+            ],
+          }),
+        ],
+        () => {},
+        () => {},
+      ),
+    );
+    expect(badge("Skills")).toBe("3");
+    expect(badge("Plugins")).toBe("1");
+
+    // The badge and the list agree on the same set, not two counts that happen to match.
+    fireEvent.click(screen.getByText("Skills"));
+    expect(screen.getByText("3 on")).toBeTruthy();
+    fireEvent.click(screen.getByText("Plugins"));
+    expect(screen.getByText("1 on")).toBeTruthy();
   });
 });
 
