@@ -874,6 +874,7 @@ describe("mcp-setup", () => {
         renderDialog({ skillList: repositorySkills });
         expect(screen.getByRole("switch", { name: "LLMQuant/skills" })).toBeTruthy();
         expect(screen.queryByRole("switch", { name: "llmquant-credit" })).toBeNull();
+        expect(screen.queryByRole("button", { name: /skills$/ })).toBeNull();
         expect(screen.getByText("2/3 on")).toBeTruthy();
       });
 
@@ -905,13 +906,11 @@ describe("mcp-setup", () => {
         expect(answerOf(onConfirm).skills).toEqual([]);
       });
 
-      it("keeps every member addressable behind the caret", () => {
-        const { onConfirm } = renderDialog({ skillList: repositorySkills });
-        fireEvent.click(screen.getByRole("button", { name: "Show 3 skills" }));
-        fireEvent.click(screen.getByRole("switch", { name: "llmquant-credit" }));
-        expect(screen.getByText("1/3 on")).toBeTruthy();
-        fireEvent.click(screen.getByText("Confirm and start"));
-        expect(answerOf(onConfirm).skills).toEqual(["llmquant-commodities"]);
+      it("has no switch for a skill that belongs to a repository", () => {
+        renderDialog({ skillList: repositorySkills });
+        for (const id of ["llmquant-commodities", "llmquant-credit", "llmquant-crypto"]) {
+          expect(screen.queryByRole("switch", { name: id })).toBeNull();
+        }
       });
     });
 

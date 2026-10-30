@@ -59,7 +59,7 @@ function byId<T extends GroupableSkill>(skills: readonly T[]): T[] {
 }
 
 /** Skills by the install that delivered them, then by the leading id segment, so the inventory
- *  of one repository is one row and its members stay individually addressable. */
+ *  of one repository is one entry and each member stays visible inside it. */
 export function groupSkills<T extends GroupableSkill>(skills: readonly T[]): SkillGroup<T>[] {
   const groups: SkillGroup<T>[] = [];
   const ungrouped: T[] = [];
@@ -116,4 +116,11 @@ export function groupSkills<T extends GroupableSkill>(skills: readonly T[]): Ski
   }
   groups.sort((a, b) => a.label.localeCompare(b.label) || a.key.localeCompare(b.key));
   return groups;
+}
+
+/** Whether a group stands for several skills. Every surface shows such a group as one entry
+ *  that opens (a card, a switch), and a group of one as the skill itself, so this is the one
+ *  definition of that boundary. */
+export function isSkillCollection(group: SkillGroup<GroupableSkill>): boolean {
+  return group.skills.length > 1;
 }

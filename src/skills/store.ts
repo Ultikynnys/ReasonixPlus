@@ -306,43 +306,61 @@ export async function installSkills(
     );
     return { ids: targets.map((target) => target.id) };
   } catch (err) {
-    for (const dir of moved) rmSync(dir, { recursive: true, force: true });
+    // Nothing of a failed install survives: the files, the grants that would expose them and the
+    // record that would group them under a source the store no longer holds. A cleanup that
+    // itself fails still reports the install's own error.
+    try {
+      for (const dir of moved) rmSync(dir, { recursive: true, force: true });
+      for (const dir of moved) removeGlobalPathAllowed(dir, opts.configPath);
+      for (const dir of moved) forgetInstalls([basename(dir)], opts.configPath);
+    } catch {
+      /* keep the install error */
+    }
     throw err;
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 
-/** Record which install delivered each id, in one config write. Settings reads it back to
- *  group a collection, so the eighteen skills of one repository share a single row. */
+/** Edit the provenance map in one config write. `edit` answers whether it touched anything, so
+ *  a removal of ids this store never recorded writes nothing. */
+function editInstalls(
+  configPath: string | undefined,
+  edit: (records: Record<string, SkillRecord>) => boolean,
+): void {
+  const cfg = readConfig(configPath);
+  const records: Record<string, SkillRecord> = { ...(cfg.skills ?? {}) };
+  if (!edit(records)) return;
+  cfg.skills = Object.keys(records).length > 0 ? records : undefined;
+  writeConfig(cfg, configPath);
+}
+
+/** Record which install delivered each id. Settings reads it back to group a collection, so the
+ *  eighteen skills of one repository share a single row. */
 function recordInstalls(
   ids: readonly string[],
   source: string,
   configPath: string | undefined,
 ): void {
   if (ids.length === 0) return;
-  const cfg = readConfig(configPath);
-  const installedAt = Date.now();
-  const records: Record<string, SkillRecord> = { ...(cfg.skills ?? {}) };
-  for (const id of ids) records[id] = { source, installedAt };
-  cfg.skills = records;
-  writeConfig(cfg, configPath);
+  editInstalls(configPath, (records) => {
+    const installedAt = Date.now();
+    for (const id of ids) records[id] = { source, installedAt };
+    return true;
+  });
 }
 
-/** Drop the provenance of removed ids, in one config write. */
+/** Drop the provenance of removed ids. */
 function forgetInstalls(ids: readonly string[], configPath: string | undefined): void {
-  const cfg = readConfig(configPath);
-  const records = cfg.skills;
-  if (!records) return;
-  let changed = false;
-  for (const id of ids) {
-    if (!records[id]) continue;
-    delete records[id];
-    changed = true;
-  }
-  if (!changed) return;
-  cfg.skills = Object.keys(records).length > 0 ? records : undefined;
-  writeConfig(cfg, configPath);
+  editInstalls(configPath, (records) => {
+    let changed = false;
+    for (const id of ids) {
+      if (!records[id]) continue;
+      delete records[id];
+      changed = true;
+    }
+    return changed;
+  });
 }
 
 /** Remove several skills at once: every id is checked before the first file is touched, so a

@@ -4,6 +4,7 @@ import {
   type PlanDetail,
   type PlanHistoryItem,
   type RuleRecord,
+  groupSkills,
   isWorkingPlanStatus,
   ruleRegexError,
 } from "@reasonix/core-utils";
@@ -1771,48 +1772,108 @@ type CapabilityItem = {
   title?: string;
 };
 
-/** The body shared by the MCP, Skills and Plugins tabs: a header pair, an optional source
- *  picker, one line for an empty inventory, then one row per item. */
+/** A fold of an inventory: the skills one install delivered, or one plugin's bundle. Its head
+ *  opens it, so a repository of twenty skills reads as one card instead of twenty rows. */
+type CapabilityGroup = {
+  key: string;
+  label: string;
+  /** Where the rows came from, shown once the fold is open. */
+  meta?: ReactNode;
+  items: CapabilityItem[];
+};
+
+/** One inventory row: the icon, the name, its muted lines, and whatever tags or dot the
+ *  inventory gives it. */
+function CapabilityRow({ item }: { item: CapabilityItem }) {
+  return (
+    <div style={{ marginBottom: 6 }} title={item.title}>
+      <div className="mcp-row" style={{ marginBottom: 6 }}>
+        <span className="ico">{item.icon}</span>
+        <div className="body">
+          <div className="n">{item.name}</div>
+          <div className="m">{item.meta}</div>
+          {item.note ? <div className="m">{item.note}</div> : null}
+        </div>
+        {item.origin ? <OriginTag origin={item.origin} owner={item.owner} /> : null}
+        {item.state ? (
+          <span className="status" data-s={item.state} title={item.stateTitle} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** One folded group of an inventory. A group holding many rows starts closed, so the tab
+ *  lists its groups rather than their contents; a single-row group is not a group at all and
+ *  the caller renders it flat. */
+function CapabilityGroupCard({ group }: { group: CapabilityGroup }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="ctx-group">
+      <button
+        type="button"
+        className="ctx-group-head"
+        aria-expanded={open}
+        aria-label={group.label}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="ctx-group-chev" aria-hidden="true">
+          <I.chevR size={12} style={{ transform: open ? "rotate(90deg)" : "none" }} />
+        </span>
+        <span className="ctx-group-name">{group.label}</span>
+        <span className="ctx-group-count">{group.items.length}</span>
+      </button>
+      {open ? (
+        <div className="ctx-group-body">
+          {group.meta ? <div className="ctx-group-meta">{group.meta}</div> : null}
+          {group.items.map((item) => (
+            <CapabilityRow key={item.key} item={item} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** The body shared by the MCP, Skills and Plugins tabs: a header pair, one line for an empty
+ *  inventory, then the rows — flat, or folded into groups. */
 function CapabilityList({
   title,
   summary,
   empty,
-  filter,
-  items,
+  items = [],
+  groups,
 }: {
   title: string;
   summary: string;
   empty: string;
-  /** Scopes the rows to one source; omitted by inventories that always fit. */
-  filter?: ReactNode;
-  items: CapabilityItem[];
+  /** Flat rows, for an inventory whose entries are not grouped. */
+  items?: CapabilityItem[];
+  /** Folded rows, for an inventory grouped by what shipped them. A group of one renders its
+   *  row plain: one skill is an entry, not a group. */
+  groups?: CapabilityGroup[];
 }) {
+  const count = groups
+    ? groups.reduce((total, group) => total + group.items.length, 0)
+    : items.length;
   return (
     <div className="ctx-block">
       <div className="h">
         <span>{title}</span>
-        <span className="right">{items.length === 0 ? "-" : summary}</span>
+        <span className="right">{count === 0 ? "-" : summary}</span>
       </div>
-      {filter}
-      {items.length === 0 ? (
+      {count === 0 ? (
         <div className="ctx-empty">{empty}</div>
+      ) : groups ? (
+        groups.map((group) =>
+          group.items.length > 1 ? (
+            <CapabilityGroupCard key={group.key} group={group} />
+          ) : (
+            <CapabilityRow key={group.key} item={group.items[0] as CapabilityItem} />
+          ),
+        )
       ) : (
-        items.map((item) => (
-          <div key={item.key} style={{ marginBottom: 6 }} title={item.title}>
-            <div className="mcp-row" style={{ marginBottom: 6 }}>
-              <span className="ico">{item.icon}</span>
-              <div className="body">
-                <div className="n">{item.name}</div>
-                <div className="m">{item.meta}</div>
-                {item.note ? <div className="m">{item.note}</div> : null}
-              </div>
-              {item.origin ? <OriginTag origin={item.origin} owner={item.owner} /> : null}
-              {item.state ? (
-                <span className="status" data-s={item.state} title={item.stateTitle} />
-              ) : null}
-            </div>
-          </div>
-        ))
+        items.map((item) => <CapabilityRow key={item.key} item={item} />)
       )}
     </div>
   );
@@ -1868,122 +1929,64 @@ function CtxMcp({ specs, bridged }: { specs: McpSpecInfo[]; bridged: boolean }) 
   );
 }
 
-/** One skill this chat runs. A plugin's skill always names its plugin; a standalone one never
- *  does, so the source bucket can be read off the origin without a fallback. */
-type SkillRow = {
-  key: string;
-  name: string;
-  description: string;
-  path: string;
-  error?: string;
-} & ({ origin: "standalone" } | { origin: "plugin"; owner: string });
+/** One skill as the tab lists it. `where` is what tells two identically named skills apart and,
+ *  for a plugin's skill, names the plugin when the row is flattened out of its group. */
+function skillItem(
+  skill: { name: string; description: string; error?: string },
+  where: { key: string; title: string; owner?: string },
+): CapabilityItem {
+  return {
+    key: where.key,
+    icon: <I.bookmark size={12} />,
+    name: skill.name,
+    meta: skill.description || t("settings.skillsNoDescription"),
+    note: skill.error ? (
+      <span style={{ color: "var(--danger)" }}>
+        {t("settings.skillsReadError", { error: skill.error })}
+      </span>
+    ) : undefined,
+    ...(where.owner ? { origin: "plugin" as const, owner: where.owner } : {}),
+    title: where.title,
+  };
+}
 
-/** The skills this chat runs: standalone ones frozen at session start, then each running
- *  plugin's bundle. A skill or plugin switched off in this chat stays out, exactly as a
- *  session-disabled MCP server does; Settings owns the full inventory. */
-function skillRows(skills: SkillInfo[], plugins: PluginInfo[]): SkillRow[] {
-  const rows: SkillRow[] = skills
-    .filter((skill) => skill.active)
-    .map((skill) => ({
-      key: `skill:${skill.id}`,
-      name: skill.name,
-      description: skill.description,
-      path: skill.path,
-      origin: "standalone",
-      ...(skill.error ? { error: skill.error } : {}),
-    }));
+/** The skills this chat runs, folded the way they arrived: standalone ones by the install that
+ *  delivered them, then one card per running plugin's bundle. A skill or plugin switched off in
+ *  this chat stays out, exactly as a session-disabled MCP server does; Settings owns the full
+ *  inventory. */
+function skillGroups(skills: SkillInfo[], plugins: PluginInfo[]): CapabilityGroup[] {
+  const groups: CapabilityGroup[] = groupSkills(skills.filter((skill) => skill.active)).map(
+    (group) => ({
+      key: group.key,
+      label: group.skills.length === 1 ? (group.skills[0] as SkillInfo).name : group.label,
+      meta: group.source
+        ? t("settings.skillsGroupSource", { source: group.source })
+        : t("settings.skillsGroupInferred"),
+      items: group.skills.map((skill) =>
+        skillItem(skill, { key: `skill:${skill.id}`, title: skill.path }),
+      ),
+    }),
+  );
   for (const plugin of plugins) {
-    if (!plugin.active) continue;
-    for (const skill of plugin.skills) {
-      rows.push({
-        key: `plugin:${plugin.slug}:${skill.path}`,
-        name: skill.name,
-        description: skill.description,
-        path: `${plugin.slug}/${skill.path}`,
-        origin: "plugin",
-        owner: plugin.slug,
-      });
-    }
+    if (!plugin.active || plugin.skills.length === 0) continue;
+    groups.push({
+      key: `plugin:${plugin.slug}`,
+      label: plugin.displayName,
+      meta: plugin.description || t("settings.pluginsNoDescription"),
+      items: plugin.skills.map((skill) =>
+        skillItem(skill, {
+          key: `plugin:${plugin.slug}:${skill.path}`,
+          title: `${plugin.slug}/${skill.path}`,
+          owner: plugin.slug,
+        }),
+      ),
+    });
   }
-  const rank = (row: SkillRow): number => (row.origin === "standalone" ? 0 : 1);
-  const owner = (row: SkillRow): string => (row.origin === "plugin" ? row.owner : "");
-  return rows.sort(
-    (a, b) => rank(a) - rank(b) || owner(a).localeCompare(owner(b)) || a.name.localeCompare(b.name),
-  );
+  return groups;
 }
 
-/** One source of skills: the user's own installs, or one plugin's bundle. */
-type SkillSource = { id: string; rows: SkillRow[] };
-
-/** Picker values for the two buckets that are not a plugin slug. Safe to keep in the same
- *  value space: `pluginSlug` strips every character outside [a-z0-9-], so no installed plugin
- *  can take one of these names. */
-const SKILL_SOURCE_ALL = "__all";
-const SKILL_SOURCE_STANDALONE = "__standalone";
-
-/** Past this many rows a single mixed list stops being scannable: one plugin alone can ship
- *  hundreds of skills, so above the limit the tab opens scoped to one source. */
-const SKILL_LIST_SCAN_LIMIT = 20;
-
-/** Skill rows bucketed by the source that ships them, keeping the order they arrived in. */
-function skillSources(rows: SkillRow[]): SkillSource[] {
-  const groups = new Map<string, SkillSource>();
-  for (const row of rows) {
-    const id = row.origin === "plugin" ? row.owner : SKILL_SOURCE_STANDALONE;
-    const group = groups.get(id);
-    if (group) group.rows.push(row);
-    else groups.set(id, { id, rows: [row] });
-  }
-  return [...groups.values()];
-}
-
-/** A source's name in the picker: a plugin's display name, or the standalone bucket. */
-function skillSourceLabel(id: string, plugins: PluginInfo[]): string {
-  if (id === SKILL_SOURCE_STANDALONE) return t("contextPanel.skillsSourceStandalone");
-  return plugins.find((plugin) => plugin.slug === id)?.displayName || id;
-}
-
-/** The picker that scopes the Skills tab to one source. */
-function SkillSourcePicker({
-  sources,
-  plugins,
-  total,
-  value,
-  onChange,
-}: {
-  sources: SkillSource[];
-  plugins: PluginInfo[];
-  /** Rows across every source, for the "all sources" option. */
-  total: number;
-  value: string;
-  onChange: (id: string) => void;
-}) {
-  return (
-    <div className="ctx-filter">
-      <select
-        className="ctx-select"
-        aria-label={t("contextPanel.skillsSourceLabel")}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        <option value={SKILL_SOURCE_ALL}>
-          {t("contextPanel.skillsSourceAll", { count: total })}
-        </option>
-        {sources.map((source) => (
-          <option key={source.id} value={source.id}>
-            {t("contextPanel.skillsSourceOption", {
-              name: skillSourceLabel(source.id, plugins),
-              count: source.rows.length,
-            })}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-/** The Skills inventory: what this chat enabled, one source at a time so a plugin shipping
- *  hundreds of skills cannot bury the rest of the list. */
+/** The Skills inventory: what this chat enabled, one fold per install or plugin, so a
+ *  repository of twenty skills cannot bury the rest of the list. */
 function CtxSkills({
   skills,
   plugins,
@@ -1998,59 +2001,14 @@ function CtxSkills({
   // This list spans both snapshots: standalone skills, and the bundle each plugin ships.
   useInventoryRequest(onRequest);
   useInventoryRequest(onRequestPlugins);
-  const rows = skillRows(skills, plugins);
-  const sources = skillSources(rows);
-  // One source needs no picker: there is nothing to scope, so the rows keep their origin tags.
-  const pickable = sources.length > 1;
-  const [picked, setPicked] = useState<string | null>(null);
-  const largest = sources.reduce<SkillSource | undefined>(
-    (best, source) => (!best || source.rows.length > best.rows.length ? source : best),
-    undefined,
-  );
-  const opener = rows.length > SKILL_LIST_SCAN_LIMIT ? largest : undefined;
-  // An explicit pick holds until that source disappears; otherwise a list too long to scan
-  // opens on the source that fills most of it, and a short one opens whole.
-  const scope = pickable
-    ? (sources.find((source) => source.id === picked) ??
-      (picked === SKILL_SOURCE_ALL ? undefined : opener))
-    : undefined;
-  const selected = scope?.id ?? SKILL_SOURCE_ALL;
-  const visible = scope?.rows ?? rows;
-  /** The provenance tag of a row, unless the picker above already names its source. */
-  const originTag = (row: SkillRow): Pick<CapabilityItem, "origin" | "owner"> => {
-    if (scope) return {};
-    return row.origin === "plugin"
-      ? { origin: "plugin", owner: row.owner }
-      : { origin: "standalone" };
-  };
-  const filter = pickable ? (
-    <SkillSourcePicker
-      sources={sources}
-      plugins={plugins}
-      total={rows.length}
-      value={selected}
-      onChange={setPicked}
-    />
-  ) : undefined;
+  const groups = skillGroups(skills, plugins);
+  const total = groups.reduce((sum, group) => sum + group.items.length, 0);
   return (
     <CapabilityList
       title={t("contextPanel.skillsTab")}
-      summary={t("contextPanel.enabledTotal", { count: visible.length })}
+      summary={t("contextPanel.enabledTotal", { count: total })}
       empty={t("contextPanel.skillsEmpty")}
-      filter={filter}
-      items={visible.map((row) => ({
-        key: row.key,
-        icon: <I.bookmark size={12} />,
-        name: row.name,
-        meta: row.description || t("settings.skillsNoDescription"),
-        note: row.error ? (
-          <span style={{ color: "var(--danger)" }}>
-            {t("settings.skillsReadError", { error: row.error })}
-          </span>
-        ) : undefined,
-        ...originTag(row),
-        title: row.path,
-      }))}
+      groups={groups}
     />
   );
 }

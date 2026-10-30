@@ -6,6 +6,7 @@ import {
   type SearchSettingSpec,
   type SkillGroup,
   groupSkills,
+  isSkillCollection,
   messageOf,
   modelDisplayLabel,
   modelWireName,
@@ -4023,7 +4024,7 @@ export function PageSkills({
           </div>
         ) : null}
         {groupSkills(skills).map((group) =>
-          group.skills.length > 1 ? (
+          isSkillCollection(group) ? (
             <SkillGroupCard key={group.key} group={group} onUninstall={onUninstall} />
           ) : (
             <SkillCard
@@ -4062,6 +4063,24 @@ export function PageSkills({
   );
 }
 
+/** What a skill declares and where its SKILL.md sits: the lines every skill surface shows,
+ *  whether the skill is a card of its own or a row inside the card of its install. */
+function SkillFacts({ skill }: { skill: SkillInfo }) {
+  return (
+    <div className="skill-facts">
+      <div className="sub">{skill.description || t("settings.skillsNoDescription")}</div>
+      {skill.error ? (
+        <div className="desc" style={{ color: "var(--danger)" }}>
+          {t("settings.skillsReadError", { error: skill.error })}
+        </div>
+      ) : null}
+      <div className="path" title={skill.path}>
+        <code>{skill.path}</code>
+      </div>
+    </div>
+  );
+}
+
 /** One install that delivered several skills: the source is the card, its skills are the rows
  *  inside it, so a collection of twenty workflows is one card instead of twenty. */
 function SkillGroupCard({
@@ -4073,6 +4092,8 @@ function SkillGroupCard({
 }) {
   const count = group.skills.length;
   const on = group.skills.filter((skill) => skill.active).length;
+  // A card that IS a group opens folded: the page then reads as the installs a user made, and
+  // one click opens the skills of the install they want to inspect.
   return (
     <HeadActionCard
       title={
@@ -4090,6 +4111,7 @@ function SkillGroupCard({
           onRemove={() => onUninstall(group.skills.map((skill) => skill.id))}
         />
       }
+      defaultOpen={false}
     >
       <div className="sub">
         {group.source
@@ -4112,17 +4134,7 @@ function SkillGroupCard({
                 onRemove={() => onUninstall([skill.id])}
               />
             </div>
-            <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
-              {skill.description || t("settings.skillsNoDescription")}
-            </div>
-            {skill.error ? (
-              <div style={{ fontSize: 11, color: "var(--danger)" }}>
-                {t("settings.skillsReadError", { error: skill.error })}
-              </div>
-            ) : null}
-            <div style={{ fontSize: 11, color: "var(--muted)" }} title={skill.path}>
-              <code style={{ fontSize: 11 }}>{skill.path}</code>
-            </div>
+            <SkillFacts skill={skill} />
           </div>
         ))}
       </div>
@@ -4154,15 +4166,7 @@ function SkillCard({
       }
       headActions={headActions}
     >
-      <div className="sub">{skill.description || t("settings.skillsNoDescription")}</div>
-      {skill.error ? (
-        <div className="desc" style={{ color: "var(--danger)" }}>
-          {t("settings.skillsReadError", { error: skill.error })}
-        </div>
-      ) : null}
-      <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }} title={skill.path}>
-        <code style={{ fontSize: 11 }}>{skill.path}</code>
-      </div>
+      <SkillFacts skill={skill} />
     </HeadActionCard>
   );
 }

@@ -10302,8 +10302,13 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       return;
     }
     if (msg.cmd === "skills_uninstall") {
+      // A command arrives as JSON off the bridge, so the list is read defensively: an empty,
+      // malformed or non-string entry removes nothing and reports the refusal below.
+      const names = Array.isArray(msg.names)
+        ? msg.names.filter((name): name is string => typeof name === "string")
+        : [];
       try {
-        const removed = uninstallSkills(msg.names);
+        const removed = uninstallSkills(names);
         if (removed.length === 0) {
           emitToast(tab, "skills_uninstall: no skill named");
           return;
@@ -10315,7 +10320,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         // A skill a plugin ships is not in the standalone store, so the removal above
         // failed: name the plugin rather than reporting the id as simply absent.
         const owner = listPlugins().find((state) =>
-          state.skills.some((skill) => msg.names.includes(skill.name)),
+          state.skills.some((skill) => names.includes(skill.name)),
         )?.slug;
         if (owner) {
           emitToast(
@@ -10326,7 +10331,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         }
         emitDiagnosticError("skill.uninstall.failed", err, {
           tabId: tab.id,
-          details: { names: msg.names },
+          details: { names },
         });
         emitToast(tab, `skills_uninstall: ${messageOf(err)}`);
       }

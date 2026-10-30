@@ -3539,44 +3539,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .ctx-plan-split .clear-all-btn:hover {
   color: var(--danger);
 }
-.ctx-select {
-  width: 100%;
-  margin: 4px 0 10px;
-  padding: 8px 30px 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background-color: var(--panel);
-  color: var(--fg);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b93a7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  background-size: 12px;
-}
-.ctx-select:hover {
-  border-color: var(--border-strong);
-}
-.ctx-select:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent-soft);
-}
-.ctx-select option {
-  background: var(--bg-2);
-  color: var(--fg);
-}
-/* Source picker above an inventory that spans several plugins or the user's own skills. */
-.ctx-filter {
-  display: flex;
-  margin: 0 0 10px;
-}
-.ctx-filter .ctx-select {
-  margin: 0;
-}
+
 .ctx-plan-list {
   list-style: none;
   margin: 0;
@@ -5859,6 +5822,57 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   font-family: inherit;
 }
 
+/* A folded inventory group (the Skills tab): one card per install or plugin, its head opening
+   the rows inside. The body's rail is what shows the rows belong to the card above them. */
+.ctx-group {
+  margin-bottom: 8px;
+}
+.ctx-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+.ctx-group-head:hover {
+  background: var(--panel-2);
+}
+.ctx-group-chev {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+}
+.ctx-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-group-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.ctx-group-body {
+  margin: 4px 0 0 10px;
+  padding: 6px 0 0 8px;
+  border-left: 2px solid var(--border);
+}
+.ctx-group-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
 /* ---- Events tab: one timestamped timeline of turns, plan/choice verdicts and
    folds. Each row carries its own type label; a row jumps to its turn, its
    chevron expands what else was recorded. */
@@ -8024,6 +8038,22 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .skill-root code {
   font-size: 11px;
+}
+/* A skill's facts: its description, any read failure, and the SKILL.md path. The same block
+   sits on a skill's own card and inside the card of the install that delivered it, where it
+   reads smaller because the card, not the row, is the unit. */
+.skill-facts .path {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.skill-facts .path code {
+  font-size: 11px;
+}
+.plugin-subpanel .skill-facts {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
 }
 .provider-models-head {
   display: flex;

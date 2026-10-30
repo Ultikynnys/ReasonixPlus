@@ -1,5 +1,5 @@
-import { groupSkills } from "@reasonix/core-utils";
-import { type CSSProperties, Fragment, useState } from "react";
+import { groupSkills, isSkillCollection } from "@reasonix/core-utils";
+import { type CSSProperties, useState } from "react";
 import { I } from "../icons";
 import type {
   CapabilityChoice,
@@ -18,16 +18,7 @@ function switchedOn<T extends { enabled: boolean }>(
   return new Set(rows.filter((row) => row.enabled).map(key));
 }
 
-/** Flip one name in a switch-set. Server, plugin and skill rows share it so the three
- *  kinds cannot answer a click differently. */
-function flipped(current: Set<string>, name: string): Set<string> {
-  const next = new Set(current);
-  if (next.has(name)) next.delete(name);
-  else next.add(name);
-  return next;
-}
-
-/** Flip a whole group at once: one switch for everything an install delivered, so a
+/** Flip a set of names at once: one switch for everything an install delivered, so a
  *  collection of twenty skills cannot cost twenty clicks. */
 function setMany(current: Set<string>, names: readonly string[], on: boolean): Set<string> {
   const next = new Set(current);
@@ -36,6 +27,12 @@ function setMany(current: Set<string>, names: readonly string[], on: boolean): S
     else next.delete(name);
   }
   return next;
+}
+
+/** Flip one name in a switch-set, for the rows that stand for a single capability. Server,
+ *  plugin and skill rows share this so the three kinds cannot answer a click differently. */
+function flipped(current: Set<string>, name: string): Set<string> {
+  return setMany(current, [name], !current.has(name));
 }
 
 /** The capability question, asked in one dialog wherever it is asked: the session-start
@@ -153,7 +150,6 @@ export function CapabilityDialog({
             subagents={spawn}
             onToggleServer={(name) => setSelected((prev) => flipped(prev, name))}
             onTogglePlugin={(name) => setChosenPlugins((prev) => flipped(prev, name))}
-            onToggleSkill={(name) => setChosenSkills((prev) => flipped(prev, name))}
             onToggleSkills={toggleSkills}
             onToggleSubagents={() => setSpawn((on) => !on)}
             emptyHint={emptyHint}
@@ -207,7 +203,6 @@ function CapabilityPicker({
   subagents,
   onToggleServer,
   onTogglePlugin,
-  onToggleSkill,
   onToggleSkills,
   onToggleSubagents,
   emptyHint = "None configured. Add servers in Settings, then open a new chat.",
@@ -224,7 +219,6 @@ function CapabilityPicker({
   subagents: boolean;
   onToggleServer: (name: string) => void;
   onTogglePlugin: (name: string) => void;
-  onToggleSkill: (name: string) => void;
   onToggleSkills: (ids: readonly string[], on: boolean) => void;
   onToggleSubagents: () => void;
   emptyHint?: string;
@@ -242,12 +236,7 @@ function CapabilityPicker({
         empty="No plugin installed. Install one in Settings, under Plugins, then open a new chat."
       />
       <SectionLabel>Skills</SectionLabel>
-      <SkillRows
-        skills={skills}
-        chosen={chosenSkills}
-        onToggle={onToggleSkill}
-        onToggleMany={onToggleSkills}
-      />
+      <SkillRows skills={skills} chosen={chosenSkills} onToggle={onToggleSkills} />
       <SectionLabel>MCP servers</SectionLabel>
       <SetupList
         rows={servers.map((server) => ({
@@ -274,10 +263,6 @@ const ROW_COLUMNS = `minmax(0, ${NAME_COLUMN}) minmax(0, 1fr) auto`;
 /** A text column of a capability row: it wraps instead of widening past its share. */
 const ROW_TEXT: CSSProperties = { minWidth: 0, overflowWrap: "anywhere" };
 
-/** How far a nested row indents inside the name column. The switch column never moves, so
- *  an expanded group keeps every switch on the picker's one line. */
-const NESTED_INDENT = 14;
-
 /** The list of one capability kind. Every kind shares it, so none of them can indent its
  *  rows away from the switch column. */
 const LIST_STYLE: CSSProperties = { listStyle: "none", margin: 0, padding: 0 };
@@ -298,8 +283,6 @@ type SetupEntry = {
   badge?: string;
   on: boolean;
   onToggle: () => void;
-  /** Present on a row that stands for several capabilities: the caret that lists them. */
-  expander?: { open: boolean; label: string; onToggle: () => void };
 };
 
 /** A kind's heading: the label every capability section of the picker opens with. */
@@ -333,97 +316,58 @@ function SetupList({ rows, empty }: { rows: SetupEntry[]; empty?: string }) {
   );
 }
 
-/** The skills section: one switch per install, with the skills that install delivered behind a
- *  caret. A repository of twenty workflows is one row, and each of them stays addressable. */
+/** The skills section: one switch per install. A repository switches as one capability, so
+ *  its members never appear as switches of their own: the row's badge says how much of the
+ *  group is on, and the settings page lists what it holds. */
 function SkillRows({
   skills,
   chosen,
   onToggle,
-  onToggleMany,
 }: {
   skills: SkillSetupEntry[];
   chosen: ReadonlySet<string>;
-  onToggle: (id: string) => void;
-  onToggleMany: (ids: readonly string[], on: boolean) => void;
+  onToggle: (ids: readonly string[], on: boolean) => void;
 }) {
-  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set());
   if (skills.length === 0) return <EmptyNote>{NO_SKILLS_NOTE}</EmptyNote>;
-  const toggleOpen = (key: string) =>
-    setOpenGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
   return (
     <ul className="mcp-setup-list" style={LIST_STYLE}>
       {groupSkills(skills).map((group, i) => {
         const ids = group.skills.map((skill) => skill.id);
         const on = ids.filter((id) => chosen.has(id)).length;
-        const collection = group.skills.length > 1;
-        const expanded = collection && openGroups.has(group.key);
         const sole = group.skills[0] as SkillSetupEntry;
         return (
-          <Fragment key={group.key}>
-            <SetupRow
-              name={group.label}
-              badge={collection ? `${on}/${ids.length} on` : sole.description || undefined}
-              on={collection ? on === ids.length : chosen.has(sole.id)}
-              // A group turns every member on unless they all already are.
-              onToggle={() =>
-                collection ? onToggleMany(ids, on !== ids.length) : onToggle(sole.id)
-              }
-              {...(collection
-                ? {
-                    expander: {
-                      open: expanded,
-                      label: `${ids.length} skills`,
-                      onToggle: () => toggleOpen(group.key),
-                    },
-                  }
-                : {})}
-              striped={i % 2 === 1}
-            />
-            {expanded ? (
-              <ul style={LIST_STYLE}>
-                {group.skills.map((skill) => (
-                  <SetupRow
-                    key={skill.id}
-                    name={skill.id}
-                    badge={skill.description || undefined}
-                    on={chosen.has(skill.id)}
-                    onToggle={() => onToggle(skill.id)}
-                    indent={NESTED_INDENT}
-                  />
-                ))}
-              </ul>
-            ) : null}
-          </Fragment>
+          <SetupRow
+            key={group.key}
+            name={group.label}
+            // A lone skill keeps its own description; a group reports how much of it is on.
+            badge={
+              isSkillCollection(group) ? `${on}/${ids.length} on` : sole.description || undefined
+            }
+            on={on === ids.length}
+            // One target state for the whole group: off only once every member is on.
+            onToggle={() => onToggle(ids, on !== ids.length)}
+            striped={i % 2 === 1}
+          />
         );
       })}
     </ul>
   );
 }
 
-/** One switchable capability row. The subagent flag, each plugin, each skill and each MCP
- *  server render through the same markup so the picker cannot drift between the kinds. */
+/** One switchable capability row. The subagent flag, each plugin, each skill collection and
+ *  each MCP server render through the same markup so the picker cannot drift between the
+ *  kinds. */
 function SetupRow({
   name,
   badge,
   on,
   onToggle,
-  expander,
-  indent,
   striped,
 }: {
   name: string;
   badge?: string;
   on: boolean;
   onToggle: () => void;
-  expander?: { open: boolean; label: string; onToggle: () => void };
-  /** Left padding of the name column, so a nested row indents without leaving the switch
-   *  column. */
-  indent?: number;
   striped?: boolean;
 }) {
   return (
@@ -438,24 +382,11 @@ function SetupRow({
         background: striped ? "var(--bg)" : "transparent",
       }}
     >
-      <span className="mcp-setup-name" style={{ ...ROW_TEXT, paddingLeft: indent }}>
+      <span className="mcp-setup-name" style={ROW_TEXT}>
         {name}
       </span>
       <span className="mcp-setup-badge" style={{ ...ROW_TEXT, opacity: 0.6, fontSize: "0.85em" }}>
         {badge}
-        {expander ? (
-          <button
-            type="button"
-            className="mini-btn"
-            aria-expanded={expander.open}
-            aria-label={`${expander.open ? "Hide" : "Show"} ${expander.label}`}
-            title={expander.label}
-            onClick={expander.onToggle}
-            style={{ marginLeft: 6, verticalAlign: "middle" }}
-          >
-            <I.chevR size={12} style={{ transform: expander.open ? "rotate(90deg)" : "none" }} />
-          </button>
-        ) : null}
       </span>
       <button
         type="button"

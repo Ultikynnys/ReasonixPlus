@@ -108,12 +108,28 @@ function repositorySkills(): SkillInfo[] {
 }
 
 describe("PageSkills groups", () => {
-  it("reads one repository as one card instead of one card per skill", () => {
+  /** The card's head, which is what opens the skills an install delivered. */
+  function openGroup(label: string): void {
+    fireEvent.click(screen.getByText(label));
+  }
+
+  it("reads one repository as one folded card instead of one card per skill", () => {
     renderPage(repositorySkills());
     expect(screen.getByText("LLMQuant/skills")).toBeTruthy();
     expect(screen.getByText(/3 skills/)).toBeTruthy();
-    expect(screen.getByText(`Installed from ${SOURCE}`)).toBeTruthy();
     expect(screen.getByText("Standalone skills (3)")).toBeTruthy();
+    // Folded, the card names the install and nothing else: no member rows, no source line.
+    expect(screen.queryByText(`Installed from ${SOURCE}`)).toBeNull();
+    expect(screen.queryByText("llmquant-credit")).toBeNull();
+  });
+
+  it("opens the card to the skills that install delivered", () => {
+    renderPage(repositorySkills());
+    openGroup("LLMQuant/skills");
+    expect(screen.getByText(`Installed from ${SOURCE}`)).toBeTruthy();
+    expect(screen.getByText("llmquant-commodities")).toBeTruthy();
+    expect(screen.getByText("llmquant-credit")).toBeTruthy();
+    expect(screen.getByText(/Router skill for credit workflows\./)).toBeTruthy();
   });
 
   it("says how many group members this chat runs", () => {
@@ -133,6 +149,7 @@ describe("PageSkills groups", () => {
 
   it("keeps every member removable on its own", () => {
     const { onUninstall } = renderPage(repositorySkills());
+    openGroup("LLMQuant/skills");
     const removes = screen.getAllByRole("button", { name: "Remove" });
     expect(removes).toHaveLength(3);
     fireEvent.click(removes[1] as HTMLElement);
@@ -146,6 +163,13 @@ describe("PageSkills groups", () => {
       ),
     );
     expect(screen.getByText("llmquant-*")).toBeTruthy();
+    openGroup("llmquant-*");
     expect(screen.getByText(/Grouped by their shared id prefix/)).toBeTruthy();
+  });
+
+  it("leaves a single install unfolded, since one skill is not a group", () => {
+    renderPage([skill({ source: SOURCE })]);
+    expect(screen.getByText("churn-analysis")).toBeTruthy();
+    expect(screen.getByText(/Predicts which accounts are about to leave\./)).toBeTruthy();
   });
 });

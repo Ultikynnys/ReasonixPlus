@@ -654,20 +654,19 @@ describe("ContextPanel skills and plugins tabs", () => {
     expect(onRequestPlugins).toHaveBeenCalledTimes(1);
     const names = Array.from(container.querySelectorAll(".mcp-row .n")).map((n) => n.textContent);
     expect(names).toEqual(["review", "seo"]);
+    // A skill on its own is not a group, so it stays a row; a plugin's skill is tagged with the
+    // plugin that ships it.
     const tags = Array.from(container.querySelectorAll(".mcp-row .ctx-tag")).map((tag) => [
       tag.getAttribute("data-k"),
       tag.textContent,
     ]);
-    expect(tags).toEqual([
-      ["standalone", "standalone"],
-      ["plugin", "notfair"],
-    ]);
+    expect(tags).toEqual([["plugin", "notfair"]]);
     // Every listed row is on, so no status dot competes with the source tag.
     expect(container.querySelectorAll(".mcp-row .status")).toHaveLength(0);
     expect(screen.getByText("2 on")).toBeTruthy();
   });
 
-  it("scopes a large inventory to one source instead of one flat list", () => {
+  it("folds a bundle of many skills into one card instead of one flat list", () => {
     const shipped = Array.from({ length: 25 }, (_, index) => ({
       name: `build-${index}`,
       description: "shipped",
@@ -679,28 +678,35 @@ describe("ContextPanel skills and plugins tabs", () => {
       [plugin("builder-skills", { displayName: "Builder Skills", active: true, skills: shipped })],
     );
     fireEvent.click(screen.getByText("Skills"));
-    const select = screen.getByLabelText("Skill source") as HTMLSelectElement;
-    // 26 rows is past a screenful, so the tab opens on the plugin that dominates the list.
-    expect(select.value).toBe("builder-skills");
-    expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
-      "All sources (26)",
-      "Standalone (1)",
-      "Builder Skills (25)",
-    ]);
-    expect(container.querySelectorAll(".mcp-row")).toHaveLength(25);
-    expect(screen.getByText("25 on")).toBeTruthy();
-    // The picker already names the source, so no row repeats it in a tag.
-    expect(container.querySelectorAll(".mcp-row .ctx-tag")).toHaveLength(0);
-
-    fireEvent.change(select, { target: { value: "__standalone" } });
-    const names = Array.from(container.querySelectorAll(".mcp-row .n")).map((n) => n.textContent);
-    expect(names).toEqual(["review"]);
-    expect(screen.getByText("1 on")).toBeTruthy();
-
-    fireEvent.change(select, { target: { value: "__all" } });
-    expect(container.querySelectorAll(".mcp-row")).toHaveLength(26);
-    expect(container.querySelectorAll(".mcp-row .ctx-tag")).toHaveLength(26);
+    // 26 skills, but the list reads as one row and one card: no picker, no wall of rows.
+    expect(screen.queryByLabelText("Skill source")).toBeNull();
+    expect(container.querySelectorAll(".mcp-row")).toHaveLength(1);
     expect(screen.getByText("26 on")).toBeTruthy();
+
+    const head = screen.getByRole("button", { name: "Builder Skills" });
+    expect(head.getAttribute("aria-expanded")).toBe("false");
+    expect(head.textContent).toContain("25");
+
+    fireEvent.click(head);
+    expect(head.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelectorAll(".mcp-row")).toHaveLength(26);
+    expect(screen.getByText("No description declared")).toBeTruthy();
+  });
+
+  it("folds the skills one install delivered into a card of their own", () => {
+    const source = "https://github.com/LLMQuant/skills";
+    const delivered = ["commodities", "credit", "crypto"].map((topic) =>
+      skill(`llmquant-${topic}`, { name: `llmquant-${topic}`, active: true, source }),
+    );
+    const { container } = renderInventories(delivered, []);
+    fireEvent.click(screen.getByText("Skills"));
+    expect(container.querySelectorAll(".mcp-row")).toHaveLength(0);
+    expect(screen.getByText("3 on")).toBeTruthy();
+
+    const head = screen.getByRole("button", { name: "LLMQuant/skills" });
+    fireEvent.click(head);
+    expect(container.querySelectorAll(".mcp-row")).toHaveLength(3);
+    expect(screen.getByText(`Installed from ${source}`)).toBeTruthy();
   });
 
   it("requests the plugin inventory on open and shows what each running plugin ships", () => {

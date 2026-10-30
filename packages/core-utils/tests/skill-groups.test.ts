@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupSkills, skillSourceLabel } from "../src/skill-groups.js";
+import { groupSkills, isSkillCollection, skillSourceLabel } from "../src/skill-groups.js";
 
 function skill(id: string, source?: string) {
   return source ? { id, source } : { id };
@@ -101,5 +101,31 @@ describe("groupSkills", () => {
 
   it("returns nothing for an empty inventory", () => {
     expect(groupSkills([])).toEqual([]);
+  });
+
+  it("treats a blank source as no source at all", () => {
+    const groups = groupSkills([skill("one", "  "), skill("two", "\t")]);
+    expect(groups.map((group) => [group.label, group.source])).toEqual([
+      ["one", undefined],
+      ["two", undefined],
+    ]);
+  });
+
+  it("lets a lone install join the family its id belongs to", () => {
+    const groups = groupSkills([
+      skill("llmquant-risk"),
+      skill("llmquant-macro"),
+      skill("llmquant-credit", "/home/ana/skills"),
+    ]);
+    expect(groups.map((group) => [group.label, group.skills.length])).toEqual([["llmquant-*", 3]]);
+  });
+});
+
+describe("isSkillCollection", () => {
+  it("separates a group that stands for several skills from a skill on its own", () => {
+    const [collection] = groupSkills([skill("one", "/a/repo"), skill("two", "/a/repo")]);
+    const [single] = groupSkills([skill("solo", "/a/repo")]);
+    expect(isSkillCollection(collection!)).toBe(true);
+    expect(isSkillCollection(single!)).toBe(false);
   });
 });

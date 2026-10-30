@@ -462,5 +462,6 @@ export {
   type GroupableSkill,
   type SkillGroup,
   groupSkills,
+  isSkillCollection,
   skillSourceLabel,
 } from "./skill-groups.js";

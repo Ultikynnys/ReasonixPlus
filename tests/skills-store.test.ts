@@ -247,7 +247,11 @@ describe("installSkills", () => {
     } finally {
       spy.mockRestore();
     }
-    expect(listSkills({ homeDir: home })).toEqual([]);
+    expect(listSkills({ homeDir: home, configPath })).toEqual([]);
+    // The skill that did get its files moved left no grant and no provenance behind either, so
+    // a later install of that id starts clean.
+    expect(loadGlobalPathAllowed(configPath)).toEqual([]);
+    expect(readConfig(configPath).skills).toBeUndefined();
   });
 });
 
@@ -287,6 +291,19 @@ describe("install provenance", () => {
     uninstallSkill("gone", { homeDir: home, configPath });
 
     expect(readConfig(configPath).skills).toBeUndefined();
+  });
+
+  it("keeps the source of the siblings that stay", async () => {
+    const repo = join(work, "repo");
+    writeSkillsTree(repo, ["meta-ads", "seo-analysis"]);
+    await install(repo);
+
+    uninstallSkill("meta-ads", { homeDir: home, configPath });
+
+    expect(readConfig(configPath).skills).toEqual({
+      "seo-analysis": { source: repo, installedAt: expect.any(Number) },
+    });
+    expect(listSkills({ homeDir: home, configPath }).map((skill) => skill.source)).toEqual([repo]);
   });
 });
 
