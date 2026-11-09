@@ -22,7 +22,7 @@
     "lint:fix": "biome check --write src tests",
     "format": "biome format --write src tests",
     "typecheck": "tsc --noEmit",
-    "typecheck:desktop": "npm --prefix desktop run typecheck",
+    "typecheck:desktop": "tsc -p desktop/tsconfig.json",
     "verify": "npm run lint && npm run lint:comments && npm run typecheck && npm run typecheck:desktop && npm run build && npm run build:desktop && npm run test --silent",
     "audit:tests": "node scripts/check-test-shrinkage.mjs",
     "prepare": "simple-git-hooks || true"
