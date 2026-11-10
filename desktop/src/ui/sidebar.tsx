@@ -1,4 +1,3 @@
-import { flattenText } from "@reasonix/core-utils";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type SessionInfo, type SessionMutation, sortSessionsByCreationDescending } from "../App";
@@ -6,6 +5,7 @@ import { recordFrontendFailure } from "../diagnostics";
 import { t, useLang } from "../i18n";
 import { I } from "../icons";
 import type { SessionPlanLabel } from "../plan-labels";
+import { SESSION_TITLE_MAX, sessionTitle } from "../session-title";
 import { clearPartition } from "../sessions-store";
 import { formatTokensPerSecond } from "../stream-rate";
 import { workspaceName } from "../workspace-path";
@@ -94,7 +94,7 @@ export function Sidebar({
   onDeleteSession: (name: string) => void;
   onClearSessions: () => void;
   /** The session-list mutation in flight (delete / clear-all / create), or null.
-   *  Drives the header throbber wording and locks the clear-all control. */
+   *  Locks every control that would send a second mutation, clear-all among them. */
   sessionMutation?: SessionMutation | null;
   onReorderSession?: (name: string) => void;
   onRenameSession?: (name: string, title: string) => void;
@@ -576,7 +576,7 @@ function SessionTitle({
     restoreRef.current = true;
     setEditing(false);
     if (!save) return;
-    const next = flattenText(draft).slice(0, 200);
+    const next = sessionTitle(draft);
     if (next && next !== title) onRename(next);
   };
 
@@ -585,7 +585,7 @@ function SessionTitle({
       ref={inputRef}
       className="title-edit"
       value={draft}
-      maxLength={200}
+      maxLength={SESSION_TITLE_MAX}
       spellCheck={false}
       aria-label={t("sidebarPanel.renameSession")}
       onChange={(event) => setDraft(event.target.value)}

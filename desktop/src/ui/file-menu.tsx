@@ -71,6 +71,8 @@ export function ContextMenu({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  /** Whatever held focus when the menu opened, so Escape can hand it back. */
+  const openerRef = useRef<HTMLElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number }>({
     left: anchor.x,
     top: anchor.y,
@@ -80,6 +82,8 @@ export function ContextMenu({
   // A menu is a keyboard surface: it takes focus on open, so its entries sit one
   // arrow key from the button that opened it instead of a Tab walk behind it.
   useEffect(() => {
+    const opener = document.activeElement;
+    openerRef.current = opener instanceof HTMLElement ? opener : null;
     selectableItems(ref.current)[0]?.focus();
   }, []);
 
@@ -89,7 +93,9 @@ export function ContextMenu({
       if (!target?.closest(dismissSelector)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      onClose();
+      openerRef.current?.focus();
     };
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("keydown", onKey);
@@ -127,6 +133,12 @@ export function ContextMenu({
                   ? last
                   : at - 1;
         entries[next]?.focus();
+      }}
+      onBlur={(e) => {
+        // Tabbing out closes the menu: left open, it would float over a surface
+        // whose focus has moved on, and nothing would dismiss it but a click.
+        const next = e.relatedTarget;
+        if (next instanceof Node && !ref.current?.contains(next)) onClose();
       }}
     >
       {items.map((item) => (

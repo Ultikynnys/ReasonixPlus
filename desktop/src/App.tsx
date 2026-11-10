@@ -7,7 +7,6 @@ import {
   SOUND_PACK_AUDIO_EXTENSIONS,
   compactionCardText,
   extractPathsFromArgs,
-  flattenText,
   isFilePathTool,
   mediaKindForPath,
   messageOf,
@@ -110,6 +109,7 @@ import {
   resolveActiveQuickSend,
   rpcSend,
 } from "./protocol";
+import { sessionTitle } from "./session-title";
 import {
   type SessionIntentRequest,
   type SessionMutationAsk,
@@ -5315,10 +5315,12 @@ const TabRuntime = memo(function TabRuntime({
   // anything else that renames must route through it too.
   const renameSession = useCallback(
     (name: string, title: string) => {
-      onSessionPatch(state.settings?.workspaceDir, name, {
-        summary: flattenText(title).slice(0, 200) || undefined,
-      });
-      sendRpc({ cmd: "session_rename", name, title });
+      // The row hands over what was typed; turning that into a title is this
+      // callback's job, so the list patch and the daemon are told one thing.
+      const next = sessionTitle(title);
+      if (!next) return;
+      onSessionPatch(state.settings?.workspaceDir, name, { summary: next });
+      sendRpc({ cmd: "session_rename", name, title: next });
     },
     [onSessionPatch, state.settings?.workspaceDir, sendRpc],
   );

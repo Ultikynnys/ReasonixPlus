@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../App";
 import { Sidebar } from "./sidebar";
+import { inert, menuItem, openRowMenu, session } from "./sidebar-test-fixtures";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn() }));
 
@@ -11,10 +12,6 @@ afterEach(cleanup);
 
 const RUNNING = "desktop-20260101000000-1";
 const IDLE = "desktop-20260102000000-1";
-
-function session(name: string): SessionInfo {
-  return { name, title: name, summary: name, messageCount: 1, mtime: "2026-01-01T00:00:00.000Z" };
-}
 
 function renderSidebar(
   over: {
@@ -40,35 +37,6 @@ function renderSidebar(
       onOpenAbout={() => {}}
     />,
   );
-}
-
-/** The row for a session, found by the title it carries (a running row appends its
- *  own explanation after the name). */
-function rowOf(container: HTMLElement, name: string): HTMLElement {
-  const row = Array.from(container.querySelectorAll<HTMLElement>(".session-item")).find((el) =>
-    el.getAttribute("title")?.startsWith(name),
-  );
-  if (!row) throw new Error(`no sidebar row for ${name}`);
-  return row;
-}
-
-/** Open a row's 3-dot menu the way the user does: one click on the row's button.
- *  Only one row menu exists at a time, so opening another row replaces it. */
-function openRowMenu(container: HTMLElement, name: string): void {
-  fireEvent.click(within(rowOf(container, name)).getByRole("button", { name: "Session actions" }));
-}
-
-/** One entry of the open row menu, by the wording the user reads. */
-function menuItem(container: HTMLElement, label: string): HTMLButtonElement {
-  const menu = container.querySelector<HTMLElement>(".row-menu");
-  if (!menu) throw new Error("no row menu is open");
-  return within(menu).getByRole("menuitem", { name: label }) as HTMLButtonElement;
-}
-
-/** Inert entries carry aria-disabled rather than `disabled`, so their reason still
- *  reaches the pointer. */
-function inert(item: HTMLButtonElement): boolean {
-  return item.getAttribute("aria-disabled") === "true";
 }
 
 describe("sidebar delete operators", () => {

@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../App";
 import { Sidebar } from "./sidebar";
+import { inert, menuItem, openRowMenu, rowOf, session } from "./sidebar-test-fixtures";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn() }));
 
@@ -11,10 +12,6 @@ afterEach(cleanup);
 
 const ACTIVE = "desktop-20260101000000-1";
 const IDLE = "desktop-20260102000000-1";
-
-function session(name: string, title: string, messageCount = 2): SessionInfo {
-  return { name, title, summary: title, messageCount, mtime: "2026-01-01T00:00:00.000Z" };
-}
 
 function renderSidebar(
   over: {
@@ -44,28 +41,6 @@ function renderSidebar(
       onOpenAbout={() => {}}
     />,
   );
-}
-
-function rowOf(container: HTMLElement, name: string): HTMLElement {
-  const row = container.querySelector<HTMLElement>(`.session-item[title="${name}"]`);
-  if (!row) throw new Error(`no sidebar row for ${name}`);
-  return row;
-}
-
-function openRowMenu(container: HTMLElement, name: string): void {
-  fireEvent.click(within(rowOf(container, name)).getByRole("button", { name: "Session actions" }));
-}
-
-function menuItem(container: HTMLElement, label: string): HTMLButtonElement {
-  const menu = container.querySelector<HTMLElement>(".row-menu");
-  if (!menu) throw new Error("no row menu is open");
-  return within(menu).getByRole("menuitem", { name: label }) as HTMLButtonElement;
-}
-
-/** Inert entries are announced with aria-disabled, not `disabled`, so their hover
- *  reason still opens: a disabled button swallows pointer events. */
-function inert(item: HTMLButtonElement): boolean {
-  return item.getAttribute("aria-disabled") === "true";
 }
 
 describe("sidebar row menu actions", () => {
@@ -186,5 +161,26 @@ describe("sidebar row menu actions", () => {
     expect(document.activeElement).toBe(menuItem(container, "Move to top"));
     fireEvent.keyDown(menuItem(container, "Move to top"), { key: "ArrowDown" });
     expect(document.activeElement).toBe(menuItem(container, "Duplicate"));
+  });
+
+  it("hands focus back to the button that opened it when Escape closes the menu", () => {
+    const { container } = renderSidebar();
+    const trigger = within(rowOf(container, ACTIVE)).getByRole("button", {
+      name: "Session actions",
+    });
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    fireEvent.keyDown(menuItem(container, "Move to top"), { key: "Escape" });
+    expect(container.querySelector(".row-menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("closes itself when focus leaves the menu", () => {
+    const { container } = renderSidebar();
+    openRowMenu(container, ACTIVE);
+    // Tabbing past the last entry is the one dismissal no click or Escape follows.
+    fireEvent.focusOut(menuItem(container, "Delete session"), { relatedTarget: document.body });
+    expect(container.querySelector(".row-menu")).toBeNull();
   });
 });
