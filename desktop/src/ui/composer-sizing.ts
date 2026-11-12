@@ -1,4 +1,6 @@
-export const DEFAULT_COMPOSER_ROWS = 2;
+/** Rows the composer opens at, and the ceiling it grows to before it scrolls. */
+export const DEFAULT_COMPOSER_ROWS = 1;
+export const MAX_COMPOSER_ROWS = 4;
 
 export type ComposerTextareaSizing = {
   heightPx: number;
@@ -6,10 +8,10 @@ export type ComposerTextareaSizing = {
 };
 
 /**
- * The composer textarea keeps a fixed height and never resizes — input taller
- * than {@link DEFAULT_COMPOSER_ROWS} scrolls inside the box instead of growing
- * it. It used to expand past a row threshold, so the box jumped as the user
- * typed across that boundary.
+ * The composer grows with its content between {@link DEFAULT_COMPOSER_ROWS} and
+ * {@link MAX_COMPOSER_ROWS}; past the cap it scrolls inside the box instead of
+ * taking more of the window. The stylesheet expresses the same clamp as
+ * min-height / max-height plus `field-sizing: content`, so both ends stay here.
  */
 export function getComposerTextareaSizing({
   contentRows,
@@ -21,9 +23,10 @@ export function getComposerTextareaSizing({
   verticalPaddingPx: number;
 }): ComposerTextareaSizing {
   const safeRows = Math.max(1, Math.ceil(contentRows));
+  const rows = Math.min(MAX_COMPOSER_ROWS, Math.max(DEFAULT_COMPOSER_ROWS, safeRows));
 
   return {
-    heightPx: DEFAULT_COMPOSER_ROWS * lineHeightPx + verticalPaddingPx,
-    overflowY: safeRows > DEFAULT_COMPOSER_ROWS ? "auto" : "hidden",
+    heightPx: rows * lineHeightPx + verticalPaddingPx,
+    overflowY: safeRows > MAX_COMPOSER_ROWS ? "auto" : "hidden",
   };
 }

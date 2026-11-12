@@ -228,6 +228,8 @@ export function Composer({
   onAbort,
   disabled,
   shortcutsActive = true,
+  expanded = false,
+  onToggleExpanded,
   busy,
   busyLabel,
   stuckLabel,
@@ -293,6 +295,10 @@ export function Composer({
   /** Gate for this composer's own hotkeys (Ctrl+Q, Ctrl+1-9): every tab keeps a
    *  live composer mounted, so an inactive one must stay mute. */
   shortcutsActive?: boolean;
+  /** The composer owns the main area instead of sharing it with the transcript. */
+  expanded?: boolean;
+  /** Toggles that; omitted, the control does not render at all. */
+  onToggleExpanded?: () => void;
   busy?: boolean;
   /** Drives the status row above the hint row while the agent is running — typically "Reasoning" or "Calling tool: <name>". */
   busyLabel?: string;
@@ -1060,6 +1066,22 @@ export function Composer({
         </div>
 
         <div className="composer">
+          {onToggleExpanded ? (
+            <button
+              type="button"
+              className="composer-expand-btn"
+              data-on={expanded}
+              aria-pressed={expanded}
+              title={t(expanded ? "composer.collapse" : "composer.expand")}
+              aria-label={t(expanded ? "composer.collapse" : "composer.expand")}
+              onClick={() => {
+                onToggleExpanded();
+                textareaRef.current?.focus();
+              }}
+            >
+              {expanded ? <I.collapse size={13} /> : <I.expand size={13} />}
+            </button>
+          ) : null}
           <textarea
             ref={textareaRef}
             value={draft}

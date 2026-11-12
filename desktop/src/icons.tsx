@@ -62,6 +62,16 @@ export const I = {
       <path d="m6 9 6 6 6-6" />
     </Ic>
   ),
+  expand: (p: IconProps) => (
+    <Ic {...p}>
+      <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+    </Ic>
+  ),
+  collapse: (p: IconProps) => (
+    <Ic {...p}>
+      <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3" />
+    </Ic>
+  ),
   chevU: (p: IconProps) => (
     <Ic {...p}>
       <path d="m6 15 6-6 6 6" />

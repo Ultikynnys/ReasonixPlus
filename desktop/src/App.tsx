@@ -3892,6 +3892,9 @@ const TabRuntime = memo(function TabRuntime({
   // session-start gate raises; `$mcpSetup` outranks it because a gated chat has no
   // messages, so the two never compete for the screen.
   const [duplicateAsk, setDuplicateAsk] = useState(false);
+  // The composer can take the whole main area instead of sharing it with the
+  // transcript, for long prompts.
+  const [composerExpanded, setComposerExpanded] = useState(false);
   const previousApprovalSnapshotRef = useRef<ApprovalSnapshot>({
     confirms: [],
     pathAccess: [],
@@ -5440,7 +5443,11 @@ const TabRuntime = memo(function TabRuntime({
           />
         ) : null}
 
-        <main className="main" style={{ position: "relative" }}>
+        <main
+          className="main"
+          style={{ position: "relative" }}
+          data-composer-expanded={composerExpanded || undefined}
+        >
           {/* Workspace-scoped, but surfaced once: only the channel the user is
               looking at paints the pill, so a hidden tab adds no second copy. */}
           {active && sessionsMutation !== null ? (
@@ -5478,17 +5485,15 @@ const TabRuntime = memo(function TabRuntime({
             <>
               <div className="thread-wrap">
                 {threadScrollable ? (
-                  <div className="thread-rail">
-                    <button
-                      type="button"
-                      className="thread-scroll-btn"
-                      onClick={() => scrollToTop(true)}
-                      title={t("app.jumpToTop") ?? "Jump to top"}
-                      aria-label={t("app.jumpToTop") ?? "Jump to top"}
-                    >
-                      <I.chevU size={14} />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="thread-scroll-btn top"
+                    onClick={() => scrollToTop(true)}
+                    title={t("app.jumpToTop") ?? "Jump to top"}
+                    aria-label={t("app.jumpToTop") ?? "Jump to top"}
+                  >
+                    <I.chevU size={14} />
+                  </button>
                 ) : null}
                 <div className="thread" ref={threadRef}>
                   <div className="thread-inner" ref={threadInnerRef}>
@@ -5622,17 +5627,15 @@ const TabRuntime = memo(function TabRuntime({
                   </div>
                 </div>
                 {threadScrollable ? (
-                  <div className="thread-rail">
-                    <button
-                      type="button"
-                      className="thread-scroll-btn"
-                      onClick={() => scrollToBottom(true)}
-                      title={t("app.jumpToBottom") ?? "Jump to bottom"}
-                      aria-label={t("app.jumpToBottom") ?? "Jump to bottom"}
-                    >
-                      <I.chev size={14} />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="thread-scroll-btn bottom"
+                    onClick={() => scrollToBottom(true)}
+                    title={t("app.jumpToBottom") ?? "Jump to bottom"}
+                    aria-label={t("app.jumpToBottom") ?? "Jump to bottom"}
+                  >
+                    <I.chev size={14} />
+                  </button>
                 ) : null}
               </div>
 
@@ -5738,6 +5741,8 @@ const TabRuntime = memo(function TabRuntime({
                 onVoiceError={(message) => appendNotice(message, "error")}
                 onVoiceEvent={(event) => dispatch({ t: "voice_event", event })}
                 voiceAvailable={voiceAvailable}
+                expanded={composerExpanded}
+                onToggleExpanded={() => setComposerExpanded((v) => !v)}
               />
             </>
           )}
@@ -6975,13 +6980,6 @@ export function App() {
     document.documentElement.dataset.theme = activeTabTheme.theme;
     document.documentElement.dataset.themeStyle = activeTabTheme.themeStyle;
   }, [activeTabTheme]);
-
-  // Sync --composer-max-width to .app (separate from inline style to avoid React override)
-  const composerRef = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    if (!composerRef.current) composerRef.current = document.querySelector(".app");
-    composerRef.current?.style.setProperty("--composer-max-width", `${threadMaxWidth}px`);
-  }, [threadMaxWidth]);
 
   useEffect(() => {
     let raf = 0;

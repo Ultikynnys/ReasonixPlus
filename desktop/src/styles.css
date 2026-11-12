@@ -573,7 +573,9 @@ button:disabled {
 /* One wide, grabbable scrollbar everywhere the UI scrolls. Individual
    scroll containers must not re-declare the width or thumb; ones that
    deliberately hide their bar opt out with `scrollbar-width: none` plus
-   `::-webkit-scrollbar { display: none }`. */
+   `::-webkit-scrollbar { display: none }`. The composer's textarea is the one
+   exception: it is a few rows tall, where the 16px bar reads as a panel edge
+   rather than a thumb. */
 ::-webkit-scrollbar {
   width: 16px;
   height: 16px;
@@ -604,6 +606,15 @@ button:disabled {
 .app {
   --side-width: 244px;
   --ctx-width: 320px;
+  /* Transcript and composer share one content width. The scroller reserves
+     --thread-gutter for its bar; the composer wrap carries the same gutter in
+     its right padding so both boxes centre on the same axis. */
+  --thread-gutter: 5px;
+  --thread-pad: 32px;
+  --composer-pad: 28px;
+  --composer-inset: calc(2 * var(--thread-pad) - 2 * var(--composer-pad));
+  --composer-btn-size: 28px;
+  --composer-btn-gap: 6px;
   position: relative;
   display: grid;
   grid-template-rows: 36px 1fr 26px;
@@ -630,16 +641,13 @@ html[data-platform="macos"] .app {
 .app[data-ctx-collapsed="true"] {
   --ctx-width: 0px;
   --thread-max-width: 960px;
-  --composer-max-width: 880px;
 }
 .app[data-side-collapsed="true"] {
   --side-width: 0px;
   --thread-max-width: 960px;
-  --composer-max-width: 880px;
 }
 .app[data-ctx-collapsed="true"][data-side-collapsed="true"] {
   --thread-max-width: 1120px;
-  --composer-max-width: 1040px;
 }
 
 /* ---------- RESIZE HANDLES ---------- */
@@ -2101,20 +2109,18 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* The chevrons below are absolute against this box. */
+  position: relative;
 }
 /* Jump-to-top / jump-to-bottom chevrons, rendered only while the transcript
-   actually overflows (see useIsScrollable). The wrap is a flex column of three
-   rows: chevron, scroll container, chevron, so the native scrollbar track
-   physically spans only the middle row and the bare chevron glyphs sit directly
-   above and below the track instead of overlapping it. */
-.thread-rail {
-  flex: 0 0 auto;
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  padding-right: 5px;
-}
+   actually overflows (see useIsScrollable). They float over the native scrollbar
+   column instead of holding rows of their own: the wrap is nothing but the
+   scroller, and the thread gutter lines a 16px button up with the track the
+   `.thread` margin and scrollbar leave at that edge. */
 .thread-scroll-btn {
+  position: absolute;
+  right: var(--thread-gutter);
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2122,29 +2128,50 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   height: 18px;
   padding: 0;
   border: none;
+  border-radius: 4px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
   opacity: 0.8;
-  transition: opacity 150ms, color 150ms;
+  transition: opacity 150ms, color 150ms, background 150ms;
+}
+.thread-scroll-btn.top {
+  top: 4px;
+}
+.thread-scroll-btn.bottom {
+  bottom: 4px;
 }
 .thread-scroll-btn:hover {
   opacity: 1;
   color: var(--fg);
+  /* Painted on hover only: the glyph has to stay readable where the thumb
+     happens to sit under it. */
+  background: var(--panel-2);
 }
 .thread {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  margin-right: 5px;
+  margin-right: var(--thread-gutter);
   padding: 28px 0 40px;
   scroll-padding-bottom: 24px;
   overflow-anchor: none;
 }
+/* The chevrons own the first and last band of the scrollbar column: 4px of inset
+   plus the 18px glyph above. Reserving it as an inert scrollbar button keeps the
+   thumb out of that band, so the visible scrollbar starts below the top arrow and
+   stops above the bottom one instead of travelling under either. Scoped to the
+   transcript, because every other scroller keeps its full track. */
+.thread::-webkit-scrollbar-button:vertical:start:decrement,
+.thread::-webkit-scrollbar-button:vertical:end:increment {
+  display: block;
+  height: 22px;
+  background: transparent;
+}
 .thread-inner {
   max-width: var(--thread-max-width, 740px);
   margin: 0 auto;
-  padding: 0 32px;
+  padding: 0 var(--thread-pad);
   display: flex;
   flex-direction: column;
   gap: 28px;
@@ -4603,7 +4630,9 @@ html[data-platform="macos"] .startup-loading-overlay {
 
 /* ---------- COMPOSER ---------- */
 .composer-wrap {
-  padding: 12px 28px 18px;
+  /* The extra right padding mirrors the transcript's scrollbar gutter so the
+     centred composer and the rows above it share one centre line. */
+  padding: 12px calc(var(--composer-pad) + var(--thread-gutter)) 18px var(--composer-pad);
   background: var(--bg);
   border-top: 1px solid var(--border);
   position: relative;
@@ -4617,7 +4646,14 @@ html[data-platform="macos"] .startup-loading-overlay {
   pointer-events: none;
 }
 .composer-inner {
-  max-width: var(--composer-max-width, 760px);
+  /* The thread's content width: the same cap minus its two row paddings, and
+     never wider than the wrap's content minus the extra gutter. Both terms are
+     derived from the shared shell variables, so the box tracks the cards above
+     it at every width instead of only at the cap. */
+  max-width: min(
+    calc(var(--thread-max-width, 740px) - 2 * var(--thread-pad)),
+    calc(100% - var(--composer-inset))
+  );
   margin: 0 auto;
   position: relative;
   container-type: inline-size;
@@ -4634,6 +4670,72 @@ html[data-platform="macos"] .startup-loading-overlay {
 .composer:focus-within {
   border-color: var(--accent);
   box-shadow: var(--shadow-md), 0 0 0 3px var(--accent-soft);
+}
+/* The expand control sits outside the card, in the margin the centred composer
+   leaves on the right, so the text box itself stays the width of the transcript
+   rows. */
+.composer-expand-btn {
+  position: absolute;
+  top: 8px;
+  /* The offset is the button plus its gap, so the right edge stays inside the
+     wrap's padding even when the card fills the content width. */
+  right: calc(-1 * (var(--composer-btn-size) + var(--composer-btn-gap)));
+  width: var(--composer-btn-size);
+  height: var(--composer-btn-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+.composer-expand-btn:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+  background: var(--panel-2);
+}
+.composer-expand-btn[data-on="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.composer-expand-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+/* Expanded: the composer owns the main area and the transcript steps aside, so
+   the text box grows to the window instead of four rows. */
+.main[data-composer-expanded="true"] .thread-wrap {
+  display: none;
+}
+.main[data-composer-expanded="true"] .composer-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.main[data-composer-expanded="true"] .composer-inner {
+  flex: 1;
+  min-height: 0;
+  /* width, not just flex: the auto margins that centre it would otherwise
+     shrink it to its content in this column. */
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.main[data-composer-expanded="true"] .composer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.main[data-composer-expanded="true"] .composer textarea {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
 }
 .composer-images {
   display: flex;
@@ -4684,13 +4786,21 @@ html[data-platform="macos"] .startup-loading-overlay {
   padding: 12px 14px 6px;
   font-size: 14px;
   line-height: 1.55;
-  height: calc(2 * 1.55em + 18px);
-  min-height: calc(2 * 1.55em + 18px);
+  /* One row at rest, growing with the text up to four rows, then scrolling. The
+     18px is the vertical padding (12px top + 6px bottom). */
+  height: auto;
+  min-height: calc(1.55em + 18px);
+  max-height: calc(4 * 1.55em + 18px);
+  field-sizing: content;
   overflow-y: auto;
   font-family: inherit;
 }
 .composer textarea::placeholder {
   color: var(--muted-2);
+}
+/* Thinner than the shared 16px bar: this box is at most four rows tall. */
+.composer textarea::-webkit-scrollbar {
+  width: 8px;
 }
 
 .composer-foot {

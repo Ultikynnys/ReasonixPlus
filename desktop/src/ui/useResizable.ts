@@ -13,9 +13,9 @@ function appElements(): HTMLElement[] {
   return Array.from(document.querySelectorAll<HTMLElement>(".app"));
 }
 
-// Writes the dragged column width plus the derived thread/composer max-widths
-// straight to the DOM. Kept off the React render path on purpose: a setState on
-// every mousemove re-renders the whole tab tree and makes the drag crawl.
+// Writes the dragged column width plus the derived thread max-width straight to
+// the DOM. Kept off the React render path on purpose: a setState on every
+// mousemove re-renders the whole tab tree and makes the drag crawl.
 function applyColumnWidths(
   els: HTMLElement[],
   cssVar: string,
@@ -33,7 +33,6 @@ function applyColumnWidths(
   for (const el of els) {
     el.style.setProperty(cssVar, `${width}px`);
     el.style.setProperty("--thread-max-width", `${tMax}px`);
-    el.style.setProperty("--composer-max-width", `${tMax}px`);
   }
 }
 
