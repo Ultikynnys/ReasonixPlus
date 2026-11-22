@@ -7063,7 +7063,11 @@ export function App() {
 
   useEffect(() => {
     // Chromium webview supports `zoom`; scales every px-based size without touching CSS rules.
-    document.documentElement.style.setProperty("zoom", String(FONT_SCALE_ZOOM[fontScale]));
+    // `--ui-zoom` publishes the same factor so a surface that must keep a fixed share of the
+    // window can divide it back out: `vw` and `vh` are multiplied by the zoom too.
+    const zoom = FONT_SCALE_ZOOM[fontScale];
+    document.documentElement.style.setProperty("zoom", String(zoom));
+    document.documentElement.style.setProperty("--ui-zoom", String(zoom));
     localStorage.setItem("reasonix.fontScale", fontScale);
   }, [fontScale]);
 

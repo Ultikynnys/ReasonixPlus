@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "../App";
@@ -103,5 +105,26 @@ describe("Settings > General window state", () => {
     fireEvent.click(screen.getByRole("button", { name: /reset window state/i }));
 
     expect(onResetWindowState).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Settings frame", () => {
+  it("keeps one share of the window at every font scale", () => {
+    // The font scale is a `zoom` on the root, which multiplies `vw` and `vh` too. Without
+    // dividing it back out the same window showed three frames: 840x563 at small, 960x643
+    // at medium, 1080x724 at large. jsdom serves `import.meta.url` over http, so the sheet
+    // is located from the test file's own path.
+    const testPath = expect.getState().testPath;
+    expect(testPath, "vitest must report the running test file").toBeTruthy();
+    const css = readFileSync(resolve(dirname(testPath ?? ""), "../styles.css"), "utf8");
+    const rule = /\.settings\s*\{([^}]*)\}/.exec(css);
+    expect(rule, "styles.css has no .settings rule").not.toBeNull();
+    const body = rule?.[1] ?? "";
+
+    expect(body).toMatch(/width:\s*calc\(90vw\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
+    expect(body).toMatch(/height:\s*calc\(90vh\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
+    // A px cap is what made the frame follow the font scale.
+    expect(body).not.toMatch(/(width|height):\s*min\(/);
+    expect(body).not.toMatch(/(width|height):\s*\d+px/);
   });
 });

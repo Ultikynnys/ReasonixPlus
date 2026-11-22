@@ -7120,9 +7120,13 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   }
 }
 
+/* A fixed share of the window, whatever the font scale. The font scale is applied as
+ * `zoom` on the root, which multiplies `vw`/`vh` as well, so the frame divides it back
+ * out through `--ui-zoom` (set beside `zoom` in App.tsx). Without the divisor the same
+ * window showed three frames: 840x563 at small, 960x643 at medium, 1080x724 at large. */
 .settings {
-  width: min(960px, 92vw);
-  height: min(680px, 88vh);
+  width: calc(90vw / var(--ui-zoom, 1));
+  height: calc(90vh / var(--ui-zoom, 1));
   background: var(--bg);
   border: 1px solid var(--border-strong);
   border-radius: 14px;
