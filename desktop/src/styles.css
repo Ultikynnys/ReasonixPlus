@@ -7132,10 +7132,19 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-radius: 14px;
   box-shadow: var(--shadow-lg);
   display: grid;
-  /* The nav keeps a fixed share of the frame, so it holds its proportion at every window size. */
-  grid-template-columns: 18% minmax(0, 1fr);
+  /* The nav is a fixed column, so a narrower window takes the space from the panel, not
+   * from the category names. 224px is the 16% it reads as in a 1413px frame. */
+  grid-template-columns: 224px minmax(0, 1fr);
   overflow: hidden;
   animation: rise 0.22s ease-out;
+}
+/* A window narrower than 70% of the screen gains nothing from the margins: the frame takes
+ * the whole viewport instead. `data-full` comes from `useFullBleed` in settings-frame.ts. */
+.settings[data-full] {
+  width: calc(100vw / var(--ui-zoom, 1));
+  height: calc(100vh / var(--ui-zoom, 1));
+  border: none;
+  border-radius: 0;
 }
 
 .settings-side {

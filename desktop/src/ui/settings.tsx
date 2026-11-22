@@ -106,6 +106,7 @@ import { useInventoryRequest } from "./inventory-request";
 import { activationHandler, escapeHandler } from "./keyboard";
 import { PackWizard, type SoundPackDraft } from "./pack-wizard";
 import { pluginQualifier } from "./plugin-labels";
+import { useFullBleed } from "./settings-frame";
 import { Shortcut, type ShortcutKey, localizeShortcutText } from "./shortcut";
 
 /** Render i18n hint strings that embed `<code>…</code>` tags as styled fragments
@@ -398,6 +399,8 @@ export function SettingsModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   const currentMeta = PAGE_META.find((p) => p.id === page) ?? PAGE_META[0]!;
+  // A window narrower than 70% of the screen gains nothing from the frame's margins.
+  const fullBleed = useFullBleed();
   return (
     <div
       className="settings-mask"
@@ -407,6 +410,7 @@ export function SettingsModal({
     >
       <div
         className="settings"
+        data-full={fullBleed || undefined}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
       >

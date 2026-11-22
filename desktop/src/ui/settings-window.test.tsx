@@ -128,13 +128,27 @@ describe("Settings frame", () => {
     expect(body).not.toMatch(/(width|height):\s*\d+px/);
   });
 
-  it("gives the category nav a fixed share of the frame, not a fixed column", () => {
+  it("gives the category nav a fixed column, not a share of the frame", () => {
     const testPath = expect.getState().testPath;
     expect(testPath, "vitest must report the running test file").toBeTruthy();
     const css = readFileSync(resolve(dirname(testPath ?? ""), "../styles.css"), "utf8");
     const body = /\.settings\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
 
-    expect(body).toMatch(/grid-template-columns:\s*18%\s+minmax\(0,\s*1fr\)/);
-    expect(body).not.toMatch(/grid-template-columns:\s*\d+px/);
+    // A share of the frame would shrink the nav with the window; the panel gives way instead.
+    expect(body).toMatch(/grid-template-columns:\s*224px\s+minmax\(0,\s*1fr\)/);
+    expect(body).not.toMatch(/grid-template-columns:\s*\d+%/);
+  });
+
+  it("drops the margins when the window is narrower than 70% of the screen", () => {
+    const testPath = expect.getState().testPath;
+    expect(testPath, "vitest must report the running test file").toBeTruthy();
+    const css = readFileSync(resolve(dirname(testPath ?? ""), "../styles.css"), "utf8");
+    const rule = /\.settings\[data-full\]\s*\{([^}]*)\}/.exec(css);
+    expect(rule, "styles.css has no full-bleed rule").not.toBeNull();
+    const body = rule?.[1] ?? "";
+
+    expect(body).toMatch(/width:\s*calc\(100vw\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
+    expect(body).toMatch(/height:\s*calc\(100vh\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
+    expect(body).toMatch(/border-radius:\s*0/);
   });
 });
