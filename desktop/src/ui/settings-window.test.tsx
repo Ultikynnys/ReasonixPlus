@@ -121,10 +121,20 @@ describe("Settings frame", () => {
     expect(rule, "styles.css has no .settings rule").not.toBeNull();
     const body = rule?.[1] ?? "";
 
-    expect(body).toMatch(/width:\s*calc\(90vw\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
+    expect(body).toMatch(/width:\s*calc\(92vw\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
     expect(body).toMatch(/height:\s*calc\(90vh\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
     // A px cap is what made the frame follow the font scale.
     expect(body).not.toMatch(/(width|height):\s*min\(/);
     expect(body).not.toMatch(/(width|height):\s*\d+px/);
+  });
+
+  it("gives the category nav a fifth of the frame, not a fixed column", () => {
+    const testPath = expect.getState().testPath;
+    expect(testPath, "vitest must report the running test file").toBeTruthy();
+    const css = readFileSync(resolve(dirname(testPath ?? ""), "../styles.css"), "utf8");
+    const body = /\.settings\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+
+    expect(body).toMatch(/grid-template-columns:\s*20%\s+minmax\(0,\s*1fr\)/);
+    expect(body).not.toMatch(/grid-template-columns:\s*\d+px/);
   });
 });

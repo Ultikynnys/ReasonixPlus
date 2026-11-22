@@ -7125,14 +7125,15 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
  * out through `--ui-zoom` (set beside `zoom` in App.tsx). Without the divisor the same
  * window showed three frames: 840x563 at small, 960x643 at medium, 1080x724 at large. */
 .settings {
-  width: calc(90vw / var(--ui-zoom, 1));
+  width: calc(92vw / var(--ui-zoom, 1));
   height: calc(90vh / var(--ui-zoom, 1));
   background: var(--bg);
   border: 1px solid var(--border-strong);
   border-radius: 14px;
   box-shadow: var(--shadow-lg);
   display: grid;
-  grid-template-columns: 200px 1fr;
+  /* The nav takes a fifth of the frame, so it keeps its proportion at every window size. */
+  grid-template-columns: 20% minmax(0, 1fr);
   overflow: hidden;
   animation: rise 0.22s ease-out;
 }
