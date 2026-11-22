@@ -412,18 +412,22 @@ export function SettingsModal({
       >
         <nav className="settings-side">
           <div className="sg">{t("settings.title")}</div>
-          {PAGE_META.map((p) => (
-            <div
-              key={p.id}
-              className="row"
-              data-active={page === p.id}
-              onClick={() => setPage(p.id)}
-              onKeyDown={activationHandler(() => setPage(p.id))}
-            >
-              <span className="ico">{I[p.icon]({ size: 13 })}</span>
-              <span>{t(`settings.page${p.id[0]!.toUpperCase()}${p.id.slice(1)}Label` as any)}</span>
-            </div>
-          ))}
+          {PAGE_META.map((p) => {
+            const label = t(`settings.page${p.id[0]!.toUpperCase()}${p.id.slice(1)}Label` as any);
+            return (
+              <div
+                key={p.id}
+                className="row"
+                data-active={page === p.id}
+                onClick={() => setPage(p.id)}
+                onKeyDown={activationHandler(() => setPage(p.id))}
+                title={label}
+              >
+                <span className="ico">{I[p.icon]({ size: 16 })}</span>
+                <span>{label}</span>
+              </div>
+            );
+          })}
         </nav>
         <div className="settings-main">
           <div className="settings-head">

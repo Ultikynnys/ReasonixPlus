@@ -7132,8 +7132,8 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-radius: 14px;
   box-shadow: var(--shadow-lg);
   display: grid;
-  /* The nav takes a fifth of the frame, so it keeps its proportion at every window size. */
-  grid-template-columns: 20% minmax(0, 1fr);
+  /* The nav keeps a fixed share of the frame, so it holds its proportion at every window size. */
+  grid-template-columns: 18% minmax(0, 1fr);
   overflow: hidden;
   animation: rise 0.22s ease-out;
 }
@@ -7158,7 +7158,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 10px;
   padding: 7px 10px;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: 15px;
   color: var(--fg-2);
   cursor: pointer;
 }
@@ -7171,9 +7171,17 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--accent);
 }
 .settings-side .row .ico {
-  width: 16px;
+  width: 18px;
   display: inline-flex;
   justify-content: center;
+}
+/* One line per category: a narrow window shortens the label instead of growing the row,
+ * and the row carries the full name as its title. */
+.settings-side .row > span:last-child {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .settings-side .row .kbd {
   margin-left: auto;
