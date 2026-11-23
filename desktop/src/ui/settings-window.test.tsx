@@ -215,7 +215,7 @@ describe("Settings > About", () => {
 
 describe("Settings section index", () => {
   it("shows a page's index only while that page is open", () => {
-    const { unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);
+    const { unmount } = render(<SettingsModal {...baseProps} initialPage="models" />);
     expect(
       document.querySelector(".settings-side .kids"),
       "an index shows off its page",

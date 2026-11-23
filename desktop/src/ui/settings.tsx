@@ -167,8 +167,7 @@ function moveInList<T>(list: readonly T[], from: number, to: number): T[] {
 }
 
 export type PageId =
-  | "general"
-  | "quickSend"
+  | "composer"
   | "models"
   | "search"
   | "fallbacks"
@@ -194,8 +193,16 @@ export interface PageEntry {
 }
 
 export const PAGE_META: ReadonlyArray<PageEntry> = [
-  { id: "general", icon: "cog" },
-  { id: "quickSend", icon: "zap" },
+  // Composer owns what the box under the thread does: the microphone and its models, and the
+  // quick-send list the Ctrl+Q dropdown and Ctrl+1-9 read.
+  {
+    id: "composer",
+    icon: "mic",
+    sections: [
+      { id: "voice", labelKey: "settings.composerVoice" },
+      { id: "quickSend", labelKey: "settings.composerQuickSend" },
+    ],
+  },
   { id: "models", icon: "brain" },
   { id: "search", icon: "search" },
   { id: "fallbacks", icon: "layers" },
@@ -428,7 +435,7 @@ export function SettingsModal({
   changelog: ChangelogState;
   onRefreshChangelog: (force?: boolean) => void;
 }) {
-  const [page, setPage] = useState<PageId>(initialPage ?? "general");
+  const [page, setPage] = useState<PageId>(initialPage ?? "composer");
   // Both the MCP card and the Search page gate on managed-build state, so it is
   // requested for either entry point rather than only when the MCP page opens.
   useEffect(() => {
@@ -526,8 +533,7 @@ export function SettingsModal({
             </button>
           </div>
           <div className="settings-body" ref={setBodyEl}>
-            {page === "general" && <PageGeneral />}
-            {page === "quickSend" && <PageQuickSend settings={settings} onSave={onSave} />}
+            {page === "composer" && <PageComposer settings={settings} onSave={onSave} />}
             {page === "search" && (
               <PageSearch
                 settings={settings}
@@ -1063,17 +1069,44 @@ function FontFamilyPicker({
   );
 }
 
-function PageGeneral() {
+/** Composer: what the box under the thread does. Voice carries the microphone and its models,
+ *  Quick send the list the Ctrl+Q dropdown and the Ctrl+1-9 hotkeys read. */
+function PageComposer({
+  settings,
+  onSave,
+}: {
+  settings: SettingsType;
+  onSave: (patch: SettingsPatch) => void;
+}) {
   return (
-    <div className="page-general">
-      <VoiceInputSettings />
+    <div className="page-composer">
+      <section
+        className="section settings-section"
+        data-section="voice"
+        aria-labelledby="settings-section-voice"
+      >
+        <h3 className="stitle" id="settings-section-voice">
+          {t("settings.composerVoice")}
+        </h3>
+        <VoiceInputSettings />
+      </section>
+      <section
+        className="section settings-section"
+        data-section="quickSend"
+        aria-labelledby="settings-section-quickSend"
+      >
+        <h3 className="stitle" id="settings-section-quickSend">
+          {t("settings.composerQuickSend")}
+        </h3>
+        <QuickSendSettings settings={settings} onSave={onSave} />
+      </section>
     </div>
   );
 }
 
-/** Composer quick actions: the ordered shorthand to message list behind the Ctrl+Q
- *  dropdown and the Ctrl+1-9 hotkeys. */
-function PageQuickSend({
+/** The ordered shorthand to message list behind the Ctrl+Q dropdown and the Ctrl+1-9
+ *  hotkeys. */
+function QuickSendSettings({
   settings,
   onSave,
 }: {

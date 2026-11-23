@@ -3910,7 +3910,7 @@ const TabRuntime = memo(function TabRuntime({
   const threadRef = useRef<HTMLDivElement>(null);
   const threadInnerRef = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsPage, setSettingsPage] = useState<SettingsPageId>("general");
+  const [settingsPage, setSettingsPage] = useState<SettingsPageId>("composer");
   const [voiceAvailable, setVoiceAvailable] = useState(false);
   const [jobsOpen, setJobsOpen] = useState(false);
   // The header's Duplicate button asks this tab's ONE capability dialog, the same one the
@@ -3947,7 +3947,7 @@ const TabRuntime = memo(function TabRuntime({
       text,
     });
   }, []);
-  const openSettingsAt = useCallback((page: SettingsPageId = "general") => {
+  const openSettingsAt = useCallback((page: SettingsPageId = "composer") => {
     setSettingsPage(page);
     setSettingsOpen(true);
   }, []);
@@ -5030,7 +5030,7 @@ const TabRuntime = memo(function TabRuntime({
       } else if (mod && e.key === ",") {
         e.preventDefault();
         if (settingsOpen) setSettingsOpen(false);
-        else openSettingsAt("general");
+        else openSettingsAt("composer");
       } else if (mod && (e.key === "j" || e.key === "J")) {
         e.preventDefault();
         setJobsOpen((v) => !v);
@@ -5371,7 +5371,7 @@ const TabRuntime = memo(function TabRuntime({
     [sessionsMutation],
   );
 
-  const openSettings = useCallback(() => openSettingsAt("general"), [openSettingsAt]);
+  const openSettings = useCallback(() => openSettingsAt("composer"), [openSettingsAt]);
   const toggleJobs = useCallback(() => setJobsOpen((v) => !v), []);
 
   const readMemory = useCallback(

@@ -862,9 +862,7 @@ describe("OpenCode free-tier status placement", () => {
 
   /** Renders the Models page with the OpenCode card expanded. */
   function renderOpencodeCard(props: Record<string, unknown>) {
-    const rendered = render(
-      <SettingsModal {...baseProps} initialPage="models" {...props} />,
-    );
+    const rendered = render(<SettingsModal {...baseProps} initialPage="models" {...props} />);
     fireEvent.click(screen.getByRole("button", { name: t("composer.modelOpencodeGroup") }));
     return rendered;
   }
@@ -875,9 +873,7 @@ describe("OpenCode free-tier status placement", () => {
     const { container } = renderOpencodeCard({ freeTierStatus: freeTier });
     const row = rowWith(container, t("settings.freeTierReady"));
     expect(row).toBeTruthy();
-    expect(row?.closest(".provider-card")?.textContent).toContain(
-      t("composer.modelOpencodeGroup"),
-    );
+    expect(row?.closest(".provider-card")?.textContent).toContain(t("composer.modelOpencodeGroup"));
     expect(within(row as HTMLElement).queryByRole("button")).toBeNull();
     expect(container.textContent).toContain(t("settings.freeTierAppAccount"));
   });
@@ -903,9 +899,11 @@ describe("OpenCode free-tier status placement", () => {
       onInstallBun: vi.fn(),
     });
     expect(
-      (within(installing.container).getByRole("button", {
-        name: t("settings.freeTierInstalling"),
-      }) as HTMLButtonElement).disabled,
+      (
+        within(installing.container).getByRole("button", {
+          name: t("settings.freeTierInstalling"),
+        }) as HTMLButtonElement
+      ).disabled,
     ).toBe(true);
     installing.unmount();
 
@@ -922,9 +920,9 @@ describe("OpenCode free-tier status placement", () => {
     ).toBeTruthy();
   });
 
-  it("keeps the whole block off the General page", () => {
+  it("keeps the whole block off the Composer page", () => {
     const { container } = render(
-      <SettingsModal {...baseProps} initialPage="general" freeTierStatus={freeTier} />,
+      <SettingsModal {...baseProps} initialPage="composer" freeTierStatus={freeTier} />,
     );
     expect(rowWith(container, t("settings.freeTierReady"))).toBeUndefined();
     expect(container.textContent).not.toContain(t("settings.freeTierRuntime"));

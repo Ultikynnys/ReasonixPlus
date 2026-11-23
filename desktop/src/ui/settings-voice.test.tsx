@@ -218,8 +218,8 @@ describe("VoiceInputSettings: models", () => {
     expect(downloadBtns.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("renders voice settings in the general tab and not in models", () => {
-    const { unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);
+  it("renders voice settings in the Composer tab and not in models", () => {
+    const { unmount } = render(<SettingsModal {...baseProps} initialPage="composer" />);
     expect(screen.getByText("Voice processing model")).toBeTruthy();
     expect(screen.getByText("Audio input device")).toBeTruthy();
     unmount();
@@ -239,7 +239,7 @@ describe("VoiceInputSettings: models", () => {
       ],
     };
     render(
-      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="quickSend" />,
+      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="composer" />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Move quick send down: alpha" }));
@@ -261,7 +261,7 @@ describe("VoiceInputSettings: models", () => {
       ],
     };
     render(
-      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="quickSend" />,
+      <SettingsModal {...baseProps} settings={settings} onSave={onSave} initialPage="composer" />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Remove quick send: alpha" }));
@@ -272,7 +272,7 @@ describe("VoiceInputSettings: models", () => {
 
   it("adds a custom quick send from the quick send settings form", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="quickSend" />);
+    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="composer" />);
 
     fireEvent.change(screen.getByPlaceholderText("Shorthand (dropdown label, max 20 chars)"), {
       target: { value: "Deploy" },
@@ -295,7 +295,7 @@ describe("VoiceInputSettings: models", () => {
 
   it("enforces max length on explicit shorthand in custom quick send", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="quickSend" />);
+    render(<SettingsModal {...baseProps} onSave={onSave} initialPage="composer" />);
 
     fireEvent.change(screen.getByPlaceholderText("Shorthand (dropdown label, max 20 chars)"), {
       target: { value: "Deploy to production immediately" },

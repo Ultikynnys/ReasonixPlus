@@ -151,17 +151,17 @@ describe("settings Shortcuts page", () => {
     );
   });
 
-  it("is its own page in the nav", () => {
+  it("lives under Composer, beside the voice settings", () => {
     render(<SettingsModal {...baseProps} />);
 
-    fireEvent.click(screen.getByText("Quick send"));
-
-    expect(screen.getByText("Composer quick actions and their hotkeys")).toBeTruthy();
+    // Both lists are sections of Composer now, and Composer is the page settings opens on.
+    expect(screen.getByRole("heading", { name: "Quick send" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Voice input" })).toBeTruthy();
     expect(screen.getByPlaceholderText("Message sent to the model")).toBeTruthy();
   });
 
   it("shows the configured quick-send order as the Ctrl+1-9 order", () => {
-    render(<SettingsModal {...baseProps} initialPage="quickSend" />);
+    render(<SettingsModal {...baseProps} initialPage="composer" />);
 
     // The ordering the dropdown and the digits share is edited on the Quick send page,
     // so that page has to name the hotkey that consumes it.

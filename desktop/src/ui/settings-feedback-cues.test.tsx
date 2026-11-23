@@ -130,8 +130,8 @@ describe("Sound cues section", () => {
     vi.restoreAllMocks();
   });
 
-  it("lives in Customization, not on the General page", () => {
-    const { unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);
+  it("lives in Customization, not on another page", () => {
+    const { unmount } = render(<SettingsModal {...baseProps} initialPage="composer" />);
     expect(screen.queryByRole("button", { name: /New pack/ })).toBeNull();
     unmount();
 
