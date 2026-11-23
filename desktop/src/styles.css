@@ -2393,22 +2393,29 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .presented-file-audio input[type="range"] {
   display: block;
-  appearance: none;
   width: 100%;
-  height: 4px;
   margin: 6px 0;
+}
+/* One slider recipe for the app: a 4px track in the border tone with an accent thumb, so a
+ * range input reads as part of the theme instead of the platform's blue. */
+.presented-file-audio input[type="range"],
+.text-size-control input[type="range"] {
+  appearance: none;
+  height: 4px;
   border-radius: 2px;
   background: var(--border);
   cursor: pointer;
 }
-.presented-file-audio input[type="range"]::-webkit-slider-thumb {
+.presented-file-audio input[type="range"]::-webkit-slider-thumb,
+.text-size-control input[type="range"]::-webkit-slider-thumb {
   appearance: none;
   width: 10px;
   height: 10px;
   border-radius: 50%;
   background: var(--accent);
 }
-.presented-file-audio input[type="range"]::-moz-range-thumb {
+.presented-file-audio input[type="range"]::-moz-range-thumb,
+.text-size-control input[type="range"]::-moz-range-thumb {
   width: 10px;
   height: 10px;
   border: 0;
@@ -7322,7 +7329,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   min-width: 46px;
   text-align: right;
   font-size: var(--fs-12);
-  color: var(--muted);
+  color: var(--fg);
   font-variant-numeric: tabular-nums;
 }
 /* Scaffold page split into sections: each is tall enough that the page scrolls, and a rule

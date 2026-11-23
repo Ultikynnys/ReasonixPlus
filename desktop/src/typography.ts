@@ -3,7 +3,7 @@
  *  while the chrome's paddings and widths keep their proportions. */
 export const BASE_TEXT_PX = 14;
 
-export const TEXT_SIZE_RANGE = { min: 12, max: 20, step: 1 } as const;
+export const TEXT_SIZE_RANGE = { min: 10, max: 20, step: 1 } as const;
 
 /** A stored value is usable only if it is a whole px inside the slider's range. */
 export function isTextSizePx(value: unknown): value is number {
