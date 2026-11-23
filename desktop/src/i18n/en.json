@@ -1,8 +1,8 @@
 {
   "about": {
-    "tagline": "Multi-provider coding agent",
     "version": "Version",
     "repo": "Repository",
+    "updates": "Updates",
     "checkUpdates": "Check for updates",
     "checking": "Checking…",
     "upToDate": "Up to date ({version})",
@@ -152,7 +152,7 @@
     "pageCustomizationDesc": "Text, themes and sound cues",
     "pageAboutLabel": "About",
     "pageAboutDesc": "Version, shortcuts and changelog",
-    "aboutSection": "About",
+    "aboutVersion": "Version",
     "aboutShortcuts": "Shortcuts",
     "aboutChangelog": "Changelog",
     "customizationThemes": "Themes",

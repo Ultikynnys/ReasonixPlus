@@ -217,7 +217,7 @@ export const PAGE_META: ReadonlyArray<PageEntry> = [
     id: "about",
     icon: "help",
     sections: [
-      { id: "about", labelKey: "settings.aboutSection" },
+      { id: "version", labelKey: "settings.aboutVersion" },
       { id: "shortcuts", labelKey: "settings.aboutShortcuts" },
       { id: "changelog", labelKey: "settings.aboutChangelog" },
     ],
@@ -4213,8 +4213,8 @@ function PageShortcuts() {
   );
 }
 
-/** About: the app's identity and update check, then the two reference lists that used to be
- *  pages of their own. */
+/** About: the version and update check, then the two reference lists that used to be pages of
+ *  their own. */
 function PageAbout({
   changelog,
   onRefreshChangelog,
@@ -4226,11 +4226,11 @@ function PageAbout({
     <div className="page-about">
       <section
         className="section settings-section"
-        data-section="about"
-        aria-labelledby="settings-section-about"
+        data-section="version"
+        aria-labelledby="settings-section-version"
       >
-        <h3 className="stitle" id="settings-section-about">
-          {t("settings.aboutSection")}
+        <h3 className="stitle" id="settings-section-version">
+          {t("settings.aboutVersion")}
         </h3>
         <AboutPanel />
       </section>

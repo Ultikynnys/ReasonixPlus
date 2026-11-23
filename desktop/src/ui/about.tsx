@@ -75,28 +75,29 @@ export function AboutPanel() {
   }, []);
 
   return (
-    <div className="about-panel">
-      <div className="about-brand">
-        <div className="about-name">Reasonix+</div>
-        <div className="about-tagline">{t("about.tagline")}</div>
-      </div>
-      <div className="about-meta">
-        <div className="about-row">
-          <span className="about-label">{t("about.version")}</span>
-          <code className="about-value">{__APP_VERSION__}</code>
+    <>
+      <div className="setting-row">
+        <div className="l">
+          <div className="n">{t("about.version")}</div>
         </div>
-        <div className="about-row">
-          <span className="about-label">{t("about.repo")}</span>
-          <button type="button" className="about-link" onClick={openGitHub}>
-            <I.link size={12} />
-            <span>Ultikynnys/ReasonixPlus</span>
-          </button>
-        </div>
+        <code className="about-value">{__APP_VERSION__}</code>
       </div>
-      <div className="about-actions">
+      <div className="setting-row">
+        <div className="l">
+          <div className="n">{t("about.repo")}</div>
+        </div>
+        <button type="button" className="about-link" onClick={openGitHub}>
+          <I.link size={12} />
+          <span>Ultikynnys/ReasonixPlus</span>
+        </button>
+      </div>
+      <div className="setting-row">
+        <div className="l">
+          <div className="n">{t("about.updates")}</div>
+        </div>
         <button
           type="button"
-          className="about-check"
+          className="btn small"
           onClick={checkForUpdates}
           disabled={
             check.kind === "checking" || check.kind === "downloading" || check.kind === "installing"
@@ -105,9 +106,9 @@ export function AboutPanel() {
           <I.rotate size={12} />
           <span>{check.kind === "checking" ? t("about.checking") : t("about.checkUpdates")}</span>
         </button>
-        <CheckStatus check={check} onOpenReleases={openReleases} onInstall={installUpdate} />
       </div>
-    </div>
+      <CheckStatus check={check} onOpenReleases={openReleases} onInstall={installUpdate} />
+    </>
   );
 }
 

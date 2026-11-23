@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "../App";
 import { MailProvider } from "../protocol";
@@ -167,19 +167,29 @@ describe("Settings > Customization > Themes", () => {
 });
 
 describe("Settings > About", () => {
-  it("holds the identity, the shortcut list and the changelog as one page's sections", () => {
+  it("holds the version, the shortcut list and the changelog as one page's sections", () => {
     render(<SettingsModal {...baseProps} initialPage="about" />);
 
     const sections = Array.from(document.querySelectorAll(".settings-body [data-section]")).map(
       (section) => section.getAttribute("data-section"),
     );
-    expect(sections).toEqual(["about", "shortcuts", "changelog"]);
+    expect(sections).toEqual(["version", "shortcuts", "changelog"]);
 
-    // The identity block: the version this build carries, the repo, and the update check.
-    expect(screen.getByText("Version")).toBeTruthy();
-    expect(screen.getByText("0.0.0-test")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Ultikynnys\/ReasonixPlus/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Check for updates/ })).toBeTruthy();
+    // The version section speaks the settings vocabulary: one row per fact, label left.
+    const version = document.querySelector<HTMLElement>('[data-section="version"]');
+    expect(version).toBeTruthy();
+    expect(
+      Array.from(version?.querySelectorAll(".setting-row .n") ?? []).map((name) =>
+        (name.textContent ?? "").trim(),
+      ),
+    ).toEqual(["Version", "Repository", "Updates"]);
+    expect(within(version as HTMLElement).getByText("0.0.0-test")).toBeTruthy();
+    expect(
+      within(version as HTMLElement).getByRole("button", { name: /Ultikynnys\/ReasonixPlus/ }),
+    ).toBeTruthy();
+    expect(
+      within(version as HTMLElement).getByRole("button", { name: /Check for updates/ }),
+    ).toBeTruthy();
 
     // The other two sections carry the lists that used to be pages of their own.
     expect(screen.getByRole("heading", { name: "Shortcuts" })).toBeTruthy();
@@ -199,7 +209,7 @@ describe("Settings > About", () => {
     const index = Array.from(document.querySelectorAll(".settings-side .row.kid")).map((row) =>
       (row.textContent ?? "").trim(),
     );
-    expect(index).toEqual(["About", "Shortcuts", "Changelog"]);
+    expect(index).toEqual(["Version", "Shortcuts", "Changelog"]);
   });
 });
 

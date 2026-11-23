@@ -10686,9 +10686,15 @@ html[data-platform="macos"] .splash {
   transition: background 0.12s ease, color 0.12s ease;
 }
 
-/* ---- about panel (Settings > About) ---- */
-.about-panel {
-  max-width: 560px;
+/* ---- about panel (Settings > About): the rows above are the settings vocabulary; only the
+ *  version chip and the update status need their own look. ---- */
+.about-value {
+  font-family: "Geist Mono", monospace;
+  font-size: var(--fs-12);
+  color: var(--fg);
+  background: var(--panel);
+  padding: 2px 8px;
+  border-radius: 4px;
 }
 
 /* ---- generic modal (memory export) ---- */
@@ -10724,45 +10730,6 @@ html[data-platform="macos"] .splash {
   font-weight: 600;
   font-size: var(--fs-15);
 }
-.about-brand {
-  margin-bottom: 20px;
-}
-.about-name {
-  font-size: var(--fs-22);
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  margin-bottom: 4px;
-}
-.about-tagline {
-  font-size: var(--fs-12);
-  color: var(--muted);
-}
-.about-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 0;
-  border-top: 1px solid var(--border-strong);
-  border-bottom: 1px solid var(--border-strong);
-}
-.about-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: var(--fs-13);
-}
-.about-row .about-label {
-  color: var(--muted);
-}
-.about-row .about-value {
-  font-family: "Geist Mono", monospace;
-  font-size: var(--fs-12);
-  color: var(--fg);
-  background: var(--panel);
-  padding: 2px 8px;
-  border-radius: 4px;
-}
 .about-link {
   display: inline-flex;
   align-items: center;
@@ -10780,42 +10747,15 @@ html[data-platform="macos"] .splash {
 .about-link:hover {
   background: var(--accent-soft);
 }
-.about-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 18px;
-}
-.about-check {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--fg);
-  font-family: inherit;
-  font-size: var(--fs-13);
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
-}
-.about-check:hover:not(:disabled) {
-  background: var(--card);
-  border-color: var(--accent);
-}
-.about-check:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
 .about-status {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  margin-top: 8px;
   padding: 8px 10px;
   border-radius: 6px;
   font-size: var(--fs-12);
+  max-width: 100%;
 }
 .about-status.ok {
   background: var(--accent-soft);
