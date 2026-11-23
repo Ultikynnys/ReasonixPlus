@@ -356,22 +356,24 @@ describe("VoiceInputSettings: microphone", () => {
     expect(screen.queryByText("Test microphone")).toBeNull();
   });
 
-  it("merges models and microphone into one card, models left and mic right", () => {
+  it("puts the microphone first and the models below it, as cards", () => {
     render(<VoiceInputSettings />);
 
-    expect(screen.getByText("Voice input")).toBeTruthy();
-    const cards = document.querySelectorAll(".provider-card");
-    expect(cards).toHaveLength(1);
-    const cols = Array.from(
-      cards[0]!.querySelectorAll(".provider-body > .provider-col"),
-    ) as HTMLElement[];
-    expect(cols).toHaveLength(2);
-    expect(within(cols[0]!).getByText("Voice processing model")).toBeTruthy();
-    expect(within(cols[0]!).getByText("Whisper Tiny (English)")).toBeTruthy();
-    expect(within(cols[1]!).getByText("Audio input device")).toBeTruthy();
+    const root = document.querySelector(".voice-settings") as HTMLElement;
+    const blocks = Array.from(root.children) as HTMLElement[];
+    expect(blocks).toHaveLength(2);
+
+    // The device comes first, with its consent gate.
+    expect(within(blocks[0]!).getByText("Audio input device")).toBeTruthy();
     expect(
-      within(cols[1]!).getByRole("button", { name: /allow microphone recording/i }),
+      within(blocks[0]!).getByRole("button", { name: /allow microphone recording/i }),
     ).toBeTruthy();
+
+    // The models follow as their own cards, one per model, with no collapsible shell.
+    expect(within(blocks[1]!).getByText("Voice processing model")).toBeTruthy();
+    expect(within(blocks[1]!).getByText("Whisper Tiny (English)")).toBeTruthy();
+    expect(root.querySelector(".provider-card")).toBeNull();
+    expect(root.querySelectorAll(".voice-card").length).toBeGreaterThan(1);
   });
 
   it("reveals the real device list and audio test after granting access", async () => {

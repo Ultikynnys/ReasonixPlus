@@ -1235,27 +1235,20 @@ function QuickSendSettings({
 const AUDIO_TEST_DURATION_MS = 4000;
 
 /**
- * Voice input card: the speech-to-text model picker on the left column, the
- * microphone picker and its record/playback test on the right.
+ * Voice input: the microphone first, then the speech-to-text models as cards. Nothing here is
+ *  collapsible: the section heading is the only title, and the page scrolls.
  */
 export function VoiceInputSettings() {
   return (
-    <ProviderCard
-      title={t("settings.voiceInputSection")}
-      models={<VoiceModelList />}
-      settings={
-        <div className="voice-settings">
-          <div className="voice-col-title">{t("settings.voiceInputDevice")}</div>
-          <AudioInputDevicePicker />
-        </div>
-      }
-    />
+    <div className="voice-settings">
+      <AudioInputDevicePicker />
+      <VoiceModelList />
+    </div>
   );
 }
 
 /**
- * Microphone picker for voice input, the right column of the voice input card.
- * Persists the choice in localStorage.
+ * Microphone picker for voice input. Persists the choice in localStorage.
  *
  * Microphone access is gated behind an explicit consent button: browsers only
  * reveal real device labels once permission is granted, and we never touch media
@@ -1319,6 +1312,7 @@ function AudioInputDevicePicker() {
 
   return (
     <div className="voice-device-settings">
+      <div className="voice-col-title">{t("settings.voiceInputDevice")}</div>
       <div className="voice-section-hint">{t("settings.voiceInputDeviceHint")}</div>
 
       {error && (
@@ -1545,8 +1539,8 @@ const RUNTIME_STAGE_KEY: Record<BarkRuntimePhase, TKey> = {
 };
 
 /**
- * Speech-to-text model picker, the left column of the voice input card: each
- * model downloads on demand into the local cache and is then selectable.
+ * Speech-to-text model picker: each model downloads on demand into the local cache and is then
+ *  selectable.
  */
 function VoiceModelList() {
   const [activeModel, setActiveModel] = useState<VoiceModelId>(() => getActiveVoiceModelId());
@@ -1653,118 +1647,116 @@ function VoiceModelList() {
           </button>
         </div>
       )}
-      <div className="provider-models-scroll">
-        <div className="voice-card-grid">
-          {VOICE_MODELS.map((model) => {
-            const isActive = activeModel === model.modelId;
-            const isDownloaded = Boolean(downloadedMap[model.modelId]);
-            const isDownloading = downloadingModel === model.modelId;
-            const engine = VOICE_ENGINES[model.engine];
+      <div className="voice-card-grid">
+        {VOICE_MODELS.map((model) => {
+          const isActive = activeModel === model.modelId;
+          const isDownloaded = Boolean(downloadedMap[model.modelId]);
+          const isDownloading = downloadingModel === model.modelId;
+          const engine = VOICE_ENGINES[model.engine];
 
-            return (
-              <div
-                key={model.modelId}
-                className={`voice-card ${isActive ? "active" : ""}`}
-                data-active={isActive}
-              >
-                <div className="voice-card-header">
-                  <div className="voice-card-title">{model.name}</div>
-                  <span className="voice-badge">{model.badge ?? "Balanced"}</span>
-                </div>
+          return (
+            <div
+              key={model.modelId}
+              className={`voice-card ${isActive ? "active" : ""}`}
+              data-active={isActive}
+            >
+              <div className="voice-card-header">
+                <div className="voice-card-title">{model.name}</div>
+                <span className="voice-badge">{model.badge ?? "Balanced"}</span>
+              </div>
 
-                <div className="voice-card-meta">
-                  {model.parameters && (
-                    <>
-                      <span>{model.parameters} params</span>
-                      <span>•</span>
-                    </>
-                  )}
-                  <span>{model.size}</span>
-                  {engine.labelKey && (
-                    <>
-                      <span>•</span>
-                      <span>{t(engine.labelKey)}</span>
-                    </>
-                  )}
-                </div>
-
-                <div className="voice-card-desc">{model.description}</div>
-
-                {engine.runtime && (
-                  <div className="voice-card-desc voice-runtime-note">
-                    {t("settings.voiceRuntimeNote", {
-                      size: formatBytes(engine.runtime.estimatedBytes),
-                    })}
-                  </div>
+              <div className="voice-card-meta">
+                {model.parameters && (
+                  <>
+                    <span>{model.parameters} params</span>
+                    <span>•</span>
+                  </>
                 )}
+                <span>{model.size}</span>
+                {engine.labelKey && (
+                  <>
+                    <span>•</span>
+                    <span>{t(engine.labelKey)}</span>
+                  </>
+                )}
+              </div>
 
-                {isDownloading && (
-                  <div className="voice-download-box">
-                    <div className="voice-progress-meta">
-                      <span className="voice-file-name">
-                        {downloadStage
-                          ? t(RUNTIME_STAGE_KEY[downloadStage])
-                          : downloadFile || t("settings.voiceDownloading")}
-                      </span>
-                      {!downloadStage && <span className="voice-pct">{downloadProgress}%</span>}
-                    </div>
+              <div className="voice-card-desc">{model.description}</div>
+
+              {engine.runtime && (
+                <div className="voice-card-desc voice-runtime-note">
+                  {t("settings.voiceRuntimeNote", {
+                    size: formatBytes(engine.runtime.estimatedBytes),
+                  })}
+                </div>
+              )}
+
+              {isDownloading && (
+                <div className="voice-download-box">
+                  <div className="voice-progress-meta">
+                    <span className="voice-file-name">
+                      {downloadStage
+                        ? t(RUNTIME_STAGE_KEY[downloadStage])
+                        : downloadFile || t("settings.voiceDownloading")}
+                    </span>
+                    {!downloadStage && <span className="voice-pct">{downloadProgress}%</span>}
+                  </div>
+                  <div
+                    className={`voice-progress-track${downloadStage ? " indeterminate" : ""}`}
+                    role="progressbar"
+                    aria-busy={Boolean(downloadStage)}
+                  >
                     <div
-                      className={`voice-progress-track${downloadStage ? " indeterminate" : ""}`}
-                      role="progressbar"
-                      aria-busy={Boolean(downloadStage)}
-                    >
-                      <div
-                        className="voice-progress-bar"
-                        style={downloadStage ? undefined : { width: `${downloadProgress}%` }}
-                      />
-                    </div>
+                      className="voice-progress-bar"
+                      style={downloadStage ? undefined : { width: `${downloadProgress}%` }}
+                    />
                   </div>
-                )}
+                </div>
+              )}
 
-                <div className="voice-card-actions">
-                  {engine.requirementKey ? (
-                    <span className="voice-requirement">{t(engine.requirementKey)}</span>
-                  ) : isDownloading ? (
-                    <button type="button" className="btn" disabled>
-                      {t("settings.voiceDownloading")}
-                    </button>
-                  ) : isDownloaded ? (
-                    <>
-                      {isActive ? (
-                        <span className="voice-active-label">✓ {t("settings.voiceActive")}</span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={() => handleSelect(model.modelId)}
-                        >
-                          {t("settings.voiceSelect")}
-                        </button>
-                      )}
+              <div className="voice-card-actions">
+                {engine.requirementKey ? (
+                  <span className="voice-requirement">{t(engine.requirementKey)}</span>
+                ) : isDownloading ? (
+                  <button type="button" className="btn" disabled>
+                    {t("settings.voiceDownloading")}
+                  </button>
+                ) : isDownloaded ? (
+                  <>
+                    {isActive ? (
+                      <span className="voice-active-label">✓ {t("settings.voiceActive")}</span>
+                    ) : (
                       <button
                         type="button"
-                        className="btn btn-subtle"
-                        title="Delete downloaded files to free space"
-                        onClick={() => handleDelete(model.modelId)}
+                        className="btn"
+                        onClick={() => handleSelect(model.modelId)}
                       >
-                        {t("settings.voiceDelete")}
+                        {t("settings.voiceSelect")}
                       </button>
-                    </>
-                  ) : (
+                    )}
                     <button
                       type="button"
-                      className="btn btn-download"
-                      disabled={downloadingModel !== null}
-                      onClick={() => handleDownload(model.modelId)}
+                      className="btn btn-subtle"
+                      title="Delete downloaded files to free space"
+                      onClick={() => handleDelete(model.modelId)}
                     >
-                      {t("settings.voiceDownload")}
+                      {t("settings.voiceDelete")}
                     </button>
-                  )}
-                </div>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-download"
+                    disabled={downloadingModel !== null}
+                    onClick={() => handleDownload(model.modelId)}
+                  >
+                    {t("settings.voiceDownload")}
+                  </button>
+                )}
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

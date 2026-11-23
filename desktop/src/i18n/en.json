@@ -216,7 +216,6 @@
     "packWizardBack": "Back",
     "packWizardNext": "Next",
     "packWizardCreate": "Create pack",
-    "voiceInputSection": "Voice input",
     "voiceSection": "Voice processing model",
     "voiceSectionHint": "Select a speech-to-text recognition model. Models download on demand into the local cache.",
     "voiceInputDevice": "Audio input device",

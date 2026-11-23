@@ -10877,10 +10877,11 @@ html[data-platform="macos"] .splash {
 .voice-settings {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 22px;
 }
 
-/* Voice input card: model picker (left column) beside the mic picker (right). */
+/* The microphone block, then the model cards below it: the page scrolls, so nothing here
+ *  caps its own height. */
 .voice-model-col {
   display: flex;
   flex-direction: column;
