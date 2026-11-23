@@ -201,8 +201,8 @@ export const PAGE_META: ReadonlyArray<PageEntry> = [
       { id: "quickSend", labelKey: "settings.composerQuickSend" },
     ],
   },
-  // Models owns every model the app can call: the default and its providers, the backup list
-  // tried when one runs out of quota, and the web-search engines.
+  // Models owns every model the app can call: the enabled ones and their providers, the backup
+  // list tried when one runs out of quota, and the web-search engines.
   {
     id: "models",
     icon: "brain",

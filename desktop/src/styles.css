@@ -8255,9 +8255,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .provider-models-search input::placeholder {
   color: var(--muted-2);
 }
+/* A provider's models are tiles, not full-width rows: three to a line in a page-wide
+ *  card, fewer when the card is narrow. */
 .provider-models-scroll {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 8px;
   max-height: 260px;
   overflow-y: auto;
