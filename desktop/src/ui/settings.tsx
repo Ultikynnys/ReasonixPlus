@@ -197,7 +197,7 @@ export const PAGE_META: ReadonlyArray<PageEntry> = [
   // quick-send list the Ctrl+Q dropdown and Ctrl+1-9 read.
   {
     id: "composer",
-    icon: "mic",
+    icon: "send",
     sections: [
       { id: "voice", labelKey: "settings.composerVoice" },
       { id: "quickSend", labelKey: "settings.composerQuickSend" },
@@ -1201,7 +1201,7 @@ function QuickSendSettings({
         <div className="rule-composer-row">
           <input
             type="text"
-            className="rule-input"
+            className="rule-input rule-shorthand"
             placeholder={t("settings.quickSendShorthandPlaceholder")}
             value={quickSendShorthand}
             maxLength={QUICK_SEND_SHORTHAND_MAX_LENGTH}
@@ -1312,43 +1312,48 @@ function AudioInputDevicePicker() {
 
   return (
     <div className="voice-device-settings">
-      <div className="voice-col-title">{t("settings.voiceInputDevice")}</div>
-      <div className="voice-section-hint">{t("settings.voiceInputDeviceHint")}</div>
-
       {error && (
         <div className="voice-error-banner" role="alert">
           <span>{error}</span>
         </div>
       )}
 
-      {phase === "consent" ? (
-        <div className="voice-consent">
-          <button type="button" className="btn" onClick={handleAllow} disabled={granting}>
+      <div className="setting-row">
+        <div className="l">
+          <div className="n">{t("settings.voiceInputDevice")}</div>
+          <div className="h">{t("settings.voiceInputDeviceHint")}</div>
+        </div>
+        {phase === "consent" ? (
+          <button type="button" className="btn small" onClick={handleAllow} disabled={granting}>
             <I.mic size={13} />
             <span>{t("settings.voiceInputDeviceAllow")}</span>
           </button>
-          <div className="voice-section-hint">{t("settings.voiceInputDeviceAllowHint")}</div>
-        </div>
+        ) : (
+          <div className="voice-device-controls">
+            <select
+              className="voice-device-select"
+              value={selected}
+              onChange={(e) => handleChange(e.target.value)}
+              aria-label={t("settings.voiceInputDevice")}
+            >
+              <option value="">{t("settings.voiceInputDeviceDefault")}</option>
+              {devices.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="btn small" onClick={() => void refresh()}>
+              {t("settings.voiceInputDeviceRefresh")}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {phase === "consent" ? (
+        <div className="voice-section-hint">{t("settings.voiceInputDeviceAllowHint")}</div>
       ) : (
-        <>
-          <select
-            className="voice-device-select"
-            value={selected}
-            onChange={(e) => handleChange(e.target.value)}
-            aria-label={t("settings.voiceInputDevice")}
-          >
-            <option value="">{t("settings.voiceInputDeviceDefault")}</option>
-            {devices.map((d) => (
-              <option key={d.deviceId} value={d.deviceId}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-          <button type="button" className="btn small" onClick={() => void refresh()}>
-            {t("settings.voiceInputDeviceRefresh")}
-          </button>
-          <AudioInputDeviceTest deviceId={selected} />
-        </>
+        <AudioInputDeviceTest deviceId={selected} />
       )}
     </div>
   );

@@ -6318,6 +6318,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--bg);
   color: var(--fg-1);
 }
+/* The shorthand is a short label, the message beside it is prose: a quarter of the row is
+ *  enough for the label, and the room it gives up goes to the message. */
+.rule-shorthand {
+  flex: 0 1 25%;
+  min-width: 110px;
+}
 .rule-select {
   font-family: inherit;
   font-size: var(--fs-12);
@@ -10919,9 +10925,15 @@ html[data-platform="macos"] .splash {
   gap: 12px;
 }
 
+.voice-device-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .voice-device-select {
-  width: 100%;
-  max-width: 360px;
+  width: 240px;
+  max-width: 100%;
   padding: 8px 10px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -10934,14 +10946,6 @@ html[data-platform="macos"] .splash {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent-soft);
-}
-
-.voice-consent {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  max-width: 360px;
 }
 
 .voice-device-test {
