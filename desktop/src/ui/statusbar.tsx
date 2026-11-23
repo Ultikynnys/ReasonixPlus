@@ -5,13 +5,12 @@ import {
   ratePeriodForSchedule,
 } from "@reasonix/core-utils";
 import type { ProviderUsage, ProviderUsageView, ProviderUsageWindow } from "@reasonix/core-utils";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Balance, Settings, UsageStats } from "../App";
 import { t } from "../i18n";
 import { I } from "../icons";
 import type { JobInfo } from "../protocol";
 import { rateChips } from "../rate-chips";
-import { THEME, THEME_STYLES, type Theme, type ThemeStyle, themeForStyle } from "../theme";
 import { resolveRibbonFunds } from "../usage-ribbon";
 import { workspaceBasename } from "../workspace-path";
 import { hitPercent, tokenLabel } from "./format";
@@ -104,12 +103,9 @@ export function StatusBar({
   usage,
   busy,
   ready,
-  theme,
-  themeStyle,
   jobs,
   jobsOpen,
   onToggleJobs,
-  onSetThemeStyle,
   onOpenWorkdir,
 }: {
   settings: Settings | null;
@@ -128,12 +124,9 @@ export function StatusBar({
   usage: UsageStats;
   busy: boolean;
   ready: boolean;
-  theme: Theme;
-  themeStyle: ThemeStyle;
   jobs: JobInfo[];
   jobsOpen: boolean;
   onToggleJobs: () => void;
-  onSetThemeStyle: (style: ThemeStyle) => void;
   onOpenWorkdir?: (anchor: { bottom: number; left: number }) => void;
 }) {
   const sessionPromptTokens =
@@ -330,21 +323,6 @@ export function StatusBar({
       t(offPeak ? "statusbar.offPeakTitle" : "statusbar.peakTitle", { when });
     return { key: chip.key, offPeak, title };
   });
-  const [themeOpen, setThemeOpen] = useState(false);
-  const themePopRef = useRef<HTMLDivElement | null>(null);
-  const themeButtonRef = useRef<HTMLSpanElement | null>(null);
-
-  useEffect(() => {
-    if (!themeOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (themePopRef.current?.contains(target) || themeButtonRef.current?.contains(target)) return;
-      setThemeOpen(false);
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [themeOpen]);
-
   return (
     <footer className="statusbar">
       <span className="seg" title={apiTitle}>
@@ -472,63 +450,6 @@ export function StatusBar({
               : balanceLabel}
           </span>
         </span>
-      ) : null}
-      <span
-        ref={themeButtonRef}
-        className={`seg theme-trigger ${themeOpen ? "active" : ""}`}
-        title={t("statusbar.switchTheme")}
-        onClick={() => setThemeOpen((open) => !open)}
-        onKeyDown={activationHandler(() => setThemeOpen((open) => !open))}
-      >
-        {theme === THEME.DARK ? <I.moon size={11} /> : <I.sun size={11} />}
-        <span className="v">
-          {t(`statusbar.themeStyle${themeStyle[0]!.toUpperCase()}${themeStyle.slice(1)}` as any)}
-        </span>
-      </span>
-      {themeOpen ? (
-        <div
-          ref={themePopRef}
-          className="theme-pop"
-          role="menu"
-          aria-label={t("settings.themeStyle")}
-        >
-          <div className="theme-pop-head">
-            <div className="tt">{t("settings.themeStyle")}</div>
-            <div className="ss">{t("statusbar.switchTheme")}</div>
-          </div>
-          <div className="theme-pop-list">
-            {THEME_STYLES.map((style) => (
-              <button
-                key={style}
-                type="button"
-                className="theme-pop-item"
-                data-on={themeStyle === style}
-                data-style={style}
-                onClick={() => {
-                  onSetThemeStyle(style);
-                  setThemeOpen(false);
-                }}
-              >
-                <span className="style-swatches" aria-hidden="true">
-                  <span />
-                  <span />
-                  <span />
-                </span>
-                <span className="txt">
-                  <span className="nm">
-                    {t(`statusbar.themeStyle${style[0]!.toUpperCase()}${style.slice(1)}` as any)}
-                  </span>
-                  <span className="md">
-                    {themeForStyle(style) === THEME.DARK
-                      ? t("statusbar.themeDark")
-                      : t("statusbar.themeLight")}
-                  </span>
-                </span>
-                {themeStyle === style ? <I.check size={13} /> : null}
-              </button>
-            ))}
-          </div>
-        </div>
       ) : null}
     </footer>
   );

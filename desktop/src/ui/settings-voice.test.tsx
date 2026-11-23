@@ -37,6 +37,8 @@ describe("VoiceInputSettings: models", () => {
   const baseProps = {
     settings: mockSettings,
     textSizePx: 14,
+    themeStyle: "graphite" as const,
+    onSetThemeStyle: vi.fn(),
     onSetTextSize: vi.fn(),
     fontFamily: "sans" as const,
     onSetFontFamily: vi.fn(),

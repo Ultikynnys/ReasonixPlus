@@ -9,7 +9,6 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Settings, UsageStats } from "../App";
 import type { ModelEndpointInfo, ProviderUsage, SessionEventRecord } from "../protocol";
-import { THEME, THEME_STYLES } from "../theme";
 import { CardHead } from "./card-head";
 import { type ChangelogState, PageChangelog } from "./changelog";
 import { Composer } from "./composer";
@@ -85,12 +84,9 @@ describe("statusbar", () => {
       usage: {} as UsageStats,
       busy: false,
       ready: true,
-      theme: THEME.DARK,
-      themeStyle: THEME_STYLES[0]!,
       jobs: [],
       jobsOpen: false,
       onToggleJobs: () => undefined,
-      onSetThemeStyle: () => undefined,
       ...overrides,
       // The merged settings (with the resolved endpoint) win over the raw
       // override copy so the endpoint injection is never clobbered.

@@ -24,6 +24,8 @@ const settings: Settings = {
 const baseProps = {
   settings,
   textSizePx: 14,
+  themeStyle: "graphite" as const,
+  onSetThemeStyle: vi.fn(),
   onSetTextSize: vi.fn(),
   fontFamily: "sans" as const,
   onSetFontFamily: vi.fn(),
@@ -131,6 +133,33 @@ describe("Settings font family", () => {
     expect(onSetFontFamily).toHaveBeenCalledWith("serif");
     // Picking closes the menu and hands focus back to the control.
     expect(document.querySelector(".font-family-menu")).toBeNull();
+  });
+});
+
+describe("Settings > Customization > Themes", () => {
+  it("lists every style once and marks the one in force", () => {
+    const onSetThemeStyle = vi.fn();
+    render(
+      <SettingsModal
+        {...baseProps}
+        themeStyle="obsidian"
+        onSetThemeStyle={onSetThemeStyle}
+        initialPage="customization"
+      />,
+    );
+
+    const cards = Array.from(document.querySelectorAll(".theme-grid [aria-checked]"));
+    expect(cards).toHaveLength(15);
+    expect(new Set(cards.map((card) => card.getAttribute("data-style"))).size).toBe(15);
+    expect(cards.filter((card) => card.getAttribute("aria-checked") === "true")).toHaveLength(1);
+    expect(
+      cards
+        .find((card) => card.getAttribute("aria-checked") === "true")
+        ?.getAttribute("data-style"),
+    ).toBe("obsidian");
+
+    fireEvent.click(cards[1]!);
+    expect(onSetThemeStyle).toHaveBeenCalledWith("sandstone");
   });
 });
 

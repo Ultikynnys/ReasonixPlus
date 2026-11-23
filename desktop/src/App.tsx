@@ -5843,12 +5843,9 @@ const TabRuntime = memo(function TabRuntime({
           usage={view.usage}
           busy={view.busy}
           ready={view.ready}
-          theme={theme}
-          themeStyle={themeStyle}
           jobs={view.jobs}
           jobsOpen={jobsOpen}
           onToggleJobs={toggleJobs}
-          onSetThemeStyle={onSetThemeStyle}
           onOpenWorkdir={openWorkdir}
         />
 
@@ -5922,6 +5919,8 @@ const TabRuntime = memo(function TabRuntime({
             settings={state.settings}
             textSizePx={textSizePx}
             onSetTextSize={onSetTextSize}
+            themeStyle={themeStyle}
+            onSetThemeStyle={onSetThemeStyle}
             fontFamily={fontFamily}
             onSetFontFamily={onSetFontFamily}
             customFontFamily={customFontFamily}

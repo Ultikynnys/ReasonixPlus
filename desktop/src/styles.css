@@ -6354,10 +6354,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--panel);
   color: var(--fg);
 }
-.statusbar .seg.theme-trigger.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
 .statusbar .seg .v {
   color: var(--fg);
 }
@@ -6405,40 +6401,14 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   font-size: var(--fs-14);
   z-index: 20;
 }
-.theme-pop {
-  position: fixed;
-  right: 10px;
-  bottom: 32px;
-  width: 280px;
-  background: var(--bg);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  box-shadow: var(--shadow-lg);
-  z-index: 30;
-  overflow: hidden;
-  animation: rise 0.16s ease-out;
-}
-.theme-pop-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-}
-.theme-pop-head .tt {
-  font-size: var(--fs-14);
-  font-weight: 600;
-  color: var(--fg);
-}
-.theme-pop-head .ss {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: var(--fs-12);
-}
-.theme-pop-list {
+.theme-grid {
   display: grid;
-  gap: 2px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
   padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
 }
 .theme-pop-item {
   min-width: 0;

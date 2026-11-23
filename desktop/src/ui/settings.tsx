@@ -72,7 +72,15 @@ import {
 } from "../protocol";
 import { useRateClock } from "../rate-clock";
 import { NOTHING_SOUND_PACK_ID, type SoundPackSpec, resolveSoundPackId } from "../sound-packs";
-import { FONT_FAMILY, FONT_FAMILY_STACK, type FontFamily } from "../theme";
+import {
+  FONT_FAMILY,
+  FONT_FAMILY_STACK,
+  type FontFamily,
+  THEME,
+  THEME_STYLES,
+  type ThemeStyle,
+  themeForStyle,
+} from "../theme";
 import { TEXT_SIZE_RANGE, clampTextSizePx } from "../typography";
 import { mergeSoundPacks } from "../user-sound-packs";
 import { AudioRecorder } from "../voice/audio-recorder";
@@ -224,6 +232,8 @@ export function SettingsModal({
   settings,
   textSizePx,
   onSetTextSize,
+  themeStyle,
+  onSetThemeStyle,
   fontFamily,
   onSetFontFamily,
   customFontFamily,
@@ -306,6 +316,8 @@ export function SettingsModal({
   settings: SettingsType;
   textSizePx: number;
   onSetTextSize: (size: number) => void;
+  themeStyle: ThemeStyle;
+  onSetThemeStyle: (style: ThemeStyle) => void;
   fontFamily: FontFamily;
   onSetFontFamily: (family: FontFamily) => void;
   customFontFamily: string;
@@ -638,6 +650,8 @@ export function SettingsModal({
               <PageCustomization
                 textSizePx={textSizePx}
                 onSetTextSize={onSetTextSize}
+                themeStyle={themeStyle}
+                onSetThemeStyle={onSetThemeStyle}
                 fontFamily={fontFamily}
                 onSetFontFamily={onSetFontFamily}
                 customFontFamily={customFontFamily}
@@ -4211,10 +4225,13 @@ function SectionRow({ nm, keys }: { nm: string; keys: ShortcutKey[] }): ReactNod
 }
 
 /** Customization: one page holding the app's look. Appearance carries the controls that used
- *  to sit on the General page; the other two sections are named placeholders. */
+ *  to sit on the General page, Themes the style picker that used to sit in the status bar,
+ *  and Sound packs is a named placeholder. */
 function PageCustomization({
   textSizePx,
   onSetTextSize,
+  themeStyle,
+  onSetThemeStyle,
   fontFamily,
   onSetFontFamily,
   customFontFamily,
@@ -4223,6 +4240,8 @@ function PageCustomization({
 }: {
   textSizePx: number;
   onSetTextSize: (size: number) => void;
+  themeStyle: ThemeStyle;
+  onSetThemeStyle: (style: ThemeStyle) => void;
   fontFamily: FontFamily;
   onSetFontFamily: (family: FontFamily) => void;
   customFontFamily: string;
@@ -4317,25 +4336,60 @@ function PageCustomization({
         </div>
       </section>
 
-      {(["themes", "soundPacks"] as const).map((id) => (
-        <section
-          key={id}
-          className="section settings-section"
-          data-section={id}
-          aria-labelledby={`settings-section-${id}`}
-        >
-          <h3 className="stitle" id={`settings-section-${id}`}>
-            {t(
-              id === "themes" ? "settings.customizationThemes" : "settings.customizationSoundPacks",
-            )}
-          </h3>
-          <div className="setting-row">
-            <div className="l">
-              <div className="h">{t("settings.customizationEmpty")}</div>
-            </div>
+      <section
+        className="section settings-section"
+        data-section="themes"
+        aria-labelledby="settings-section-themes"
+      >
+        <h3 className="stitle" id="settings-section-themes">
+          {t("settings.customizationThemes")}
+        </h3>
+        <div className="theme-grid" role="radiogroup" aria-label={t("statusbar.switchTheme")}>
+          {THEME_STYLES.map((style) => (
+            <button
+              key={style}
+              type="button"
+              aria-checked={themeStyle === style}
+              className="theme-pop-item"
+              data-on={themeStyle === style}
+              data-style={style}
+              onClick={() => onSetThemeStyle(style)}
+            >
+              <span className="style-swatches" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
+              <span className="txt">
+                <span className="nm">
+                  {t(`statusbar.themeStyle${style[0]!.toUpperCase()}${style.slice(1)}` as TKey)}
+                </span>
+                <span className="md">
+                  {themeForStyle(style) === THEME.DARK
+                    ? t("statusbar.themeDark")
+                    : t("statusbar.themeLight")}
+                </span>
+              </span>
+              {themeStyle === style ? <I.check size={13} /> : null}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section
+        className="section settings-section"
+        data-section="soundPacks"
+        aria-labelledby="settings-section-soundPacks"
+      >
+        <h3 className="stitle" id="settings-section-soundPacks">
+          {t("settings.customizationSoundPacks")}
+        </h3>
+        <div className="setting-row">
+          <div className="l">
+            <div className="h">{t("settings.customizationEmpty")}</div>
           </div>
-        </section>
-      ))}
+        </div>
+      </section>
     </div>
   );
 }
