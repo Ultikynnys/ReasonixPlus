@@ -654,7 +654,7 @@ describe("Search tab", () => {
         {...baseProps}
         settings={{ ...baseSettings, webSearchEngine: "tavily" }}
         onSave={onSave}
-        initialPage="search"
+        initialPage="models"
       />,
     );
     expect(screen.getByText("Tavily API key")).toBeTruthy();
@@ -675,7 +675,7 @@ describe("Search tab", () => {
           searchSettings: { tavily: { apiKey: "tv-sec…ret" } },
         }}
         onSave={onSave}
-        initialPage="search"
+        initialPage="models"
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
@@ -691,7 +691,7 @@ describe("Search tab", () => {
           webSearchEngine: "zai",
           providerSettings: { zai: { apiKey: "z•••key" } },
         }}
-        initialPage="search"
+        initialPage="models"
       />,
     );
     // The key is the model provider's: one variable, one input, on the Models tab.
@@ -705,7 +705,7 @@ describe("Search tab", () => {
       <SettingsModal
         {...baseProps}
         settings={{ ...baseSettings, webSearchEngine: "searxng" }}
-        initialPage="search"
+        initialPage="models"
       />,
     );
     expect(screen.getByText("SearXNG endpoint")).toBeTruthy();
@@ -714,7 +714,11 @@ describe("Search tab", () => {
   });
 
   const searchCards = (container: HTMLElement): HTMLElement[] =>
-    Array.from(container.querySelectorAll<HTMLElement>(".provider-card"));
+    Array.from(container.querySelectorAll<HTMLElement>('[data-section="search"] .provider-card'));
+
+  /** The Search section, so a count never picks up the provider cards above it. */
+  const searchSection = (container: HTMLElement): HTMLElement =>
+    container.querySelector<HTMLElement>('[data-section="search"]')!;
 
   const cardFor = (container: HTMLElement, id: string): HTMLElement =>
     searchCards(container)[SEARCH_ENGINE_SPECS.findIndex((spec) => spec.id === id)]!;
@@ -724,17 +728,19 @@ describe("Search tab", () => {
       <SettingsModal
         {...baseProps}
         settings={{ ...baseSettings, webSearchEngine: "tavily" }}
-        initialPage="search"
+        initialPage="models"
       />,
     );
-    const titles = Array.from(container.querySelectorAll(".provider-head .provider-title"));
+    const titles = Array.from(
+      searchSection(container).querySelectorAll(".provider-head .provider-title"),
+    );
     expect(titles.map((title) => title.textContent)).toEqual(
       SEARCH_ENGINE_SPECS.map((spec) => spec.label),
     );
   });
 
   it("marks the active engine in its header and expands only that card", () => {
-    const { container } = render(<SettingsModal {...baseProps} initialPage="search" />);
+    const { container } = render(<SettingsModal {...baseProps} initialPage="models" />);
     const bing = cardFor(container, "bing");
     // bing is the default engine: marked active, switch-to-self offered nowhere, card open.
     expect(within(bing).getByText("✓ Active")).toBeTruthy();
@@ -743,14 +749,14 @@ describe("Search tab", () => {
       within(bing).getByText("No setup needed: this engine works without a key or endpoint."),
     ).toBeTruthy();
     // Every other engine's fields stay collapsed until its card is expanded.
-    expect(screen.getAllByText("✓ Active")).toHaveLength(1);
-    expect(container.querySelectorAll(".provider-body")).toHaveLength(1);
+    expect(within(searchSection(container)).getAllByText("✓ Active")).toHaveLength(1);
+    expect(searchSection(container).querySelectorAll(".provider-body")).toHaveLength(1);
   });
 
   it("switches the active engine from another engine's card", () => {
     const onSave = vi.fn();
     const { container } = render(
-      <SettingsModal {...baseProps} onSave={onSave} initialPage="search" />,
+      <SettingsModal {...baseProps} onSave={onSave} initialPage="models" />,
     );
     const bingIntl = cardFor(container, "bing-intl");
     fireEvent.click(within(bingIntl).getByRole("button", { name: "Use this engine" }));
@@ -758,7 +764,7 @@ describe("Search tab", () => {
   });
 
   it("keeps a keyed engine unselectable until its key is set", () => {
-    const { container } = render(<SettingsModal {...baseProps} initialPage="search" />);
+    const { container } = render(<SettingsModal {...baseProps} initialPage="models" />);
     const tavily = cardFor(container, "tavily");
     const use = within(tavily).getByRole("button", { name: "Use this engine" });
     expect((use as HTMLButtonElement).disabled).toBe(true);
@@ -769,7 +775,7 @@ describe("Search tab", () => {
       <SettingsModal
         {...baseProps}
         settings={{ ...baseSettings, searchSettings: { tavily: { apiKey: "tv-secret" } } }}
-        initialPage="search"
+        initialPage="models"
       />,
     );
     const ready = within(cardFor(keyed.container, "tavily")).getByRole("button", {
@@ -783,7 +789,7 @@ describe("Search tab", () => {
       <SettingsModal
         {...baseProps}
         mcpExtensionStatus={extensionStatusWith("webkit", "missing")}
-        initialPage="search"
+        initialPage="models"
       />,
     );
     const blocked = within(cardFor(missing.container, "playwright-webkit")).getByRole("button", {
@@ -797,7 +803,7 @@ describe("Search tab", () => {
       <SettingsModal
         {...baseProps}
         mcpExtensionStatus={extensionStatusWith("webkit", "installed")}
-        initialPage="search"
+        initialPage="models"
       />,
     );
     const ready = within(cardFor(installed.container, "playwright-webkit")).getByRole("button", {
@@ -816,7 +822,7 @@ describe("Search tab", () => {
           // A patch only carries keys it changes, so the merge is the state type;
           // asserted here because an empty declaration set widens the patch maps.
           onSave={(patch) => setSettings((current) => ({ ...current, ...patch }) as Settings)}
-          initialPage="search"
+          initialPage="models"
         />
       );
     }
@@ -834,7 +840,7 @@ describe("Search tab", () => {
   it("expands an engine card without switching the active engine", () => {
     const onSave = vi.fn();
     const { container } = render(
-      <SettingsModal {...baseProps} onSave={onSave} initialPage="search" />,
+      <SettingsModal {...baseProps} onSave={onSave} initialPage="models" />,
     );
     const tavily = cardFor(container, "tavily");
     fireEvent.click(within(tavily).getByRole("button", { name: "Tavily" }));
@@ -956,19 +962,20 @@ describe("declared-empty settings surfaces", () => {
   }
 
   /** Renders the modal against empty barrels: a tree with no declarations at all. */
-  async function renderWithNoDeclarations(page: "models" | "search") {
+  async function renderWithNoDeclarations() {
     mockEmptyDeclarations();
     const { SettingsModal: EmptyDeclarationsSettings } = await import("./settings");
-    return render(<EmptyDeclarationsSettings {...baseProps} initialPage={page} />);
+    return render(<EmptyDeclarationsSettings {...baseProps} initialPage="models" />);
   }
 
   it("tells the user where to add a provider when none is declared", async () => {
-    const { container } = await renderWithNoDeclarations("models");
+    const { container } = await renderWithNoDeclarations();
     expect(container.textContent).toContain(t("settings.noProvidersDeclared"));
   });
 
   it("tells the user where to add an engine when none is declared", async () => {
-    const { container } = await renderWithNoDeclarations("search");
+    // Both lists are sections of Models now, so one render carries both messages.
+    const { container } = await renderWithNoDeclarations();
     expect(container.textContent).toContain(t("settings.noSearchEnginesDeclared"));
   });
 

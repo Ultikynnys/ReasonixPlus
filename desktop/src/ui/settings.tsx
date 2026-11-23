@@ -169,8 +169,6 @@ function moveInList<T>(list: readonly T[], from: number, to: number): T[] {
 export type PageId =
   | "composer"
   | "models"
-  | "search"
-  | "fallbacks"
   | "mcp"
   | "plugins"
   | "skills"
@@ -203,9 +201,17 @@ export const PAGE_META: ReadonlyArray<PageEntry> = [
       { id: "quickSend", labelKey: "settings.composerQuickSend" },
     ],
   },
-  { id: "models", icon: "brain" },
-  { id: "search", icon: "search" },
-  { id: "fallbacks", icon: "layers" },
+  // Models owns every model the app can call: the default and its providers, the backup list
+  // tried when one runs out of quota, and the web-search engines.
+  {
+    id: "models",
+    icon: "brain",
+    sections: [
+      { id: "models", labelKey: "settings.modelsSection" },
+      { id: "fallbacks", labelKey: "settings.fallbacksSection" },
+      { id: "search", labelKey: "settings.searchSection" },
+    ],
+  },
   { id: "mcp", icon: "wrench" },
   { id: "plugins", icon: "plug" },
   { id: "skills", icon: "bookmark" },
@@ -534,65 +540,90 @@ export function SettingsModal({
           </div>
           <div className="settings-body" ref={setBodyEl}>
             {page === "composer" && <PageComposer settings={settings} onSave={onSave} />}
-            {page === "search" && (
-              <PageSearch
-                settings={settings}
-                onSave={onSave}
-                browserInstalls={mcpExtensionStatus?.installs ?? null}
-              />
-            )}
             {page === "models" && (
-              <PageModels
-                settings={settings}
-                onSave={onSave}
-                ollamaModels={ollamaModels}
-                ollamaModelsError={ollamaModelsError}
-                ollamaPlan={ollamaPlan}
-                ollamaHiddenCount={ollamaHiddenCount}
-                ollamaVisionModels={ollamaVisionModels}
-                opencodeModels={opencodeModels}
-                opencodeModelsError={opencodeModelsError}
-                opencodeVisionModels={opencodeVisionModels}
-                oauthSignedIn={settings.openaiOAuth?.signedIn ?? false}
-                oauthAccount={settings.openaiOAuth?.account}
-                oauthFlowError={settings.openaiOAuth?.flowError}
-                oauthWaiting={oauthWaiting}
-                onOAuthBegin={onOAuthBegin}
-                onOAuthCancel={onOAuthCancel}
-                onOAuthSignOut={onOAuthSignOut}
-                antigravitySignedIn={settings.antigravityOAuth?.signedIn ?? false}
-                antigravityAccount={settings.antigravityOAuth?.account}
-                antigravityFlowError={settings.antigravityOAuth?.flowError}
-                antigravityWaiting={antigravityOAuthWaiting}
-                onAntigravityBegin={onAntigravityOAuthBegin}
-                onAntigravityCancel={onAntigravityOAuthCancel}
-                onAntigravitySignOut={onAntigravityOAuthSignOut}
-                opencodeSignedIn={settings.opencodeOAuth?.signedIn ?? false}
-                opencodeAccount={settings.opencodeOAuth?.account}
-                opencodeOrgName={settings.opencodeOAuth?.orgName}
-                opencodeFlowError={settings.opencodeOAuth?.flowError}
-                opencodeWaiting={opencodeOAuthWaiting}
-                onOpencodeBegin={onOpencodeOAuthBegin}
-                onOpencodeCancel={onOpencodeOAuthCancel}
-                onOpencodeSignOut={onOpencodeOAuthSignOut}
-                freeTierStatus={freeTierStatus}
-                bunInstall={bunInstall}
-                onInstallBun={onInstallBun}
-                mimoOAuthWaiting={mimoOAuthWaiting}
-                onMiMoOAuthBegin={onMiMoOAuthBegin}
-                onMiMoOAuthCancel={onMiMoOAuthCancel}
-                onMiMoOAuthSignOut={onMiMoOAuthSignOut}
-              />
-            )}
-            {page === "fallbacks" && (
-              <PageFallbacks
-                settings={settings}
-                onSave={onSave}
-                ollamaModels={ollamaModels}
-                opencodeModels={opencodeModels}
-                ollamaVisionModels={ollamaVisionModels}
-                opencodeVisionModels={opencodeVisionModels}
-              />
+              <div className="page-models">
+                <section
+                  className="section settings-section"
+                  data-section="models"
+                  aria-labelledby="settings-section-models"
+                >
+                  <h3 className="stitle" id="settings-section-models">
+                    {t("settings.modelsSection")}
+                  </h3>
+                  <PageModels
+                    settings={settings}
+                    onSave={onSave}
+                    ollamaModels={ollamaModels}
+                    ollamaModelsError={ollamaModelsError}
+                    ollamaPlan={ollamaPlan}
+                    ollamaHiddenCount={ollamaHiddenCount}
+                    ollamaVisionModels={ollamaVisionModels}
+                    opencodeModels={opencodeModels}
+                    opencodeModelsError={opencodeModelsError}
+                    opencodeVisionModels={opencodeVisionModels}
+                    oauthSignedIn={settings.openaiOAuth?.signedIn ?? false}
+                    oauthAccount={settings.openaiOAuth?.account}
+                    oauthFlowError={settings.openaiOAuth?.flowError}
+                    oauthWaiting={oauthWaiting}
+                    onOAuthBegin={onOAuthBegin}
+                    onOAuthCancel={onOAuthCancel}
+                    onOAuthSignOut={onOAuthSignOut}
+                    antigravitySignedIn={settings.antigravityOAuth?.signedIn ?? false}
+                    antigravityAccount={settings.antigravityOAuth?.account}
+                    antigravityFlowError={settings.antigravityOAuth?.flowError}
+                    antigravityWaiting={antigravityOAuthWaiting}
+                    onAntigravityBegin={onAntigravityOAuthBegin}
+                    onAntigravityCancel={onAntigravityOAuthCancel}
+                    onAntigravitySignOut={onAntigravityOAuthSignOut}
+                    opencodeSignedIn={settings.opencodeOAuth?.signedIn ?? false}
+                    opencodeAccount={settings.opencodeOAuth?.account}
+                    opencodeOrgName={settings.opencodeOAuth?.orgName}
+                    opencodeFlowError={settings.opencodeOAuth?.flowError}
+                    opencodeWaiting={opencodeOAuthWaiting}
+                    onOpencodeBegin={onOpencodeOAuthBegin}
+                    onOpencodeCancel={onOpencodeOAuthCancel}
+                    onOpencodeSignOut={onOpencodeOAuthSignOut}
+                    freeTierStatus={freeTierStatus}
+                    bunInstall={bunInstall}
+                    onInstallBun={onInstallBun}
+                    mimoOAuthWaiting={mimoOAuthWaiting}
+                    onMiMoOAuthBegin={onMiMoOAuthBegin}
+                    onMiMoOAuthCancel={onMiMoOAuthCancel}
+                    onMiMoOAuthSignOut={onMiMoOAuthSignOut}
+                  />
+                </section>
+                <section
+                  className="section settings-section"
+                  data-section="fallbacks"
+                  aria-labelledby="settings-section-fallbacks"
+                >
+                  <h3 className="stitle" id="settings-section-fallbacks">
+                    {t("settings.fallbacksSection")}
+                  </h3>
+                  <PageFallbacks
+                    settings={settings}
+                    onSave={onSave}
+                    ollamaModels={ollamaModels}
+                    opencodeModels={opencodeModels}
+                    ollamaVisionModels={ollamaVisionModels}
+                    opencodeVisionModels={opencodeVisionModels}
+                  />
+                </section>
+                <section
+                  className="section settings-section"
+                  data-section="search"
+                  aria-labelledby="settings-section-search"
+                >
+                  <h3 className="stitle" id="settings-section-search">
+                    {t("settings.searchSection")}
+                  </h3>
+                  <PageSearch
+                    settings={settings}
+                    onSave={onSave}
+                    browserInstalls={mcpExtensionStatus?.installs ?? null}
+                  />
+                </section>
+              </div>
             )}
             {page === "mcp" && (
               <PageMCP
@@ -962,7 +993,6 @@ function PageSearch({
   const activeId = settings.webSearchEngine ?? "bing";
   return (
     <section className="section">
-      <div className="stitle">{t("settings.searchSection")}</div>
       {SEARCH_ENGINE_SPECS.length === 0 ? (
         <div className="section-hint">{t("settings.noSearchEnginesDeclared")}</div>
       ) : (
@@ -2974,7 +3004,6 @@ function PageFallbacks({
 
   return (
     <section className="section">
-      <div className="stitle">{t("settings.fallbacksSection")}</div>
       <div className="h" style={{ marginBottom: 12 }}>
         {t("settings.fallbacksHint")}
       </div>
