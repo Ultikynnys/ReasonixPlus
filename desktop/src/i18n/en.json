@@ -103,7 +103,6 @@
     "close": "close",
     "cnyDesc": "matches DeepSeek dashboard",
     "usdDesc": "matches per-token reference rates",
-    "themeStyle": "Style",
     "textSize": "Text size",
     "textSizeHint": "The thread's text. Every other size in the app is a share of it.",
     "fontFamily": "Font family",
