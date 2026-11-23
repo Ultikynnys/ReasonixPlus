@@ -7320,8 +7320,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
  * column of its own. */
 .text-size-control {
   position: relative;
-  flex: none;
-  width: 150px;
   display: flex;
   align-items: center;
 }
@@ -7358,8 +7356,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
  * platform paints in its own colour. Each row previews its own face. */
 .setting-row .font-family-picker {
   position: relative;
-  flex: none;
-  width: 150px;
 }
 .font-family-select {
   width: 100%;
@@ -7476,6 +7472,17 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .page-general .stitle {
   display: none;
 }
+/* One width for the page's controls, in rem so it follows the root type size whatever each
+ * control's own font-size is: the slider, the font-family picker and the reset button all
+ * line up, and the button's label still fits. This is the one layout length in rem, on
+ * purpose: it exists to match a control whose width is its text. */
+.page-general {
+  --settings-control-width: 12.75rem;
+}
+.window-reset {
+  width: var(--settings-control-width);
+  justify-content: center;
+}
 .setting-row .l {
   flex: 1 1 auto;
   min-width: 0;
@@ -7517,6 +7524,14 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .setting-row button {
   flex-shrink: 0;
+}
+/* The general page's three controls share one width and never shrink; the label column takes
+ * the leftover space instead. Three classes, because the row's own rule sets flex on every
+ * non-label child. */
+.page-general .setting-row .text-size-control,
+.page-general .setting-row .font-family-picker {
+  flex: 0 0 var(--settings-control-width);
+  width: var(--settings-control-width);
 }
 /* A provider card's settings column is only half a card wide, so a description
  * and a button can never share one row: side by side the button overflows the

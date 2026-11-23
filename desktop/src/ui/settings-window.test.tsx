@@ -225,7 +225,6 @@ describe("Settings frame", () => {
     expect(testPath, "vitest must report the running test file").toBeTruthy();
     const css = readFileSync(resolve(dirname(testPath ?? ""), "../styles.css"), "utf8");
     const readout = /\.text-size-value\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-    const control = /\.text-size-control\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
 
     // Absolute, anchored to the knob's share of the track, and hidden until the row is used.
     expect(readout).toMatch(/position:\s*absolute/);
@@ -236,7 +235,11 @@ describe("Settings frame", () => {
     // the pointer left. Keyboard focus still reveals it through `:focus-visible`.
     expect(css).not.toMatch(/:focus-within \.text-size-value/);
     expect(css).toMatch(/input:focus-visible ~ \.text-size-value/);
-    // Both controls sit in the same 150px column, so the slider lines up with the picker.
-    expect(control).toMatch(/width:\s*150px/);
+    // One width token drives the slider, the picker and the reset button, so the three line up.
+    expect(css).toMatch(/--settings-control-width:\s*12\.75rem/);
+    expect(css).toMatch(
+      /\.page-general \.setting-row \.text-size-control,\s*\n\.page-general \.setting-row \.font-family-picker \{[\s\S]{0,120}flex:\s*0 0 var\(--settings-control-width\)/,
+    );
+    expect(css).toMatch(/\.window-reset \{[\s\S]{0,80}width:\s*var\(--settings-control-width\)/);
   });
 });

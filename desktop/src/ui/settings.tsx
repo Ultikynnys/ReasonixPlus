@@ -1145,7 +1145,7 @@ function PageGeneral({
             <div className="n">{t("settings.windowState")}</div>
             <div className="h">{t("settings.windowStateHint")}</div>
           </div>
-          <button type="button" className="btn small" onClick={onResetWindowState}>
+          <button type="button" className="btn small window-reset" onClick={onResetWindowState}>
             <I.refresh size={13} />
             <span>{t("settings.windowStateReset")}</span>
           </button>
