@@ -219,4 +219,20 @@ describe("Settings frame", () => {
     expect(body).not.toMatch(/--ui-zoom/);
     expect(body).toMatch(/border-radius:\s*0/);
   });
+
+  it("rides the text size readout above the knob, out of the row's flow", () => {
+    const testPath = expect.getState().testPath;
+    expect(testPath, "vitest must report the running test file").toBeTruthy();
+    const css = readFileSync(resolve(dirname(testPath ?? ""), "../styles.css"), "utf8");
+    const readout = /\.text-size-value\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    const control = /\.text-size-control\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+
+    // Absolute, anchored to the knob's share of the track, and hidden until the row is used.
+    expect(readout).toMatch(/position:\s*absolute/);
+    expect(readout).toMatch(/left:\s*clamp\([^)]*var\(--knob/);
+    expect(readout).toMatch(/opacity:\s*0/);
+    expect(css).toMatch(/\.text-size-control:hover \.text-size-value[\s\S]{0,240}opacity:\s*1/);
+    // Both controls sit in the same 150px column, so the slider lines up with the picker.
+    expect(control).toMatch(/width:\s*150px/);
+  });
 });

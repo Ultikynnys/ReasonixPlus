@@ -1084,7 +1084,16 @@ function PageGeneral({
             <div className="n">{t("settings.textSize")}</div>
             <div className="h">{t("settings.textSizeHint")}</div>
           </div>
-          <div className="text-size-control">
+          <div
+            className="text-size-control"
+            // The readout rides above the knob, so it needs the knob's share of the track.
+            style={
+              {
+                "--knob": `${((textSizePx - TEXT_SIZE_RANGE.min) / (TEXT_SIZE_RANGE.max - TEXT_SIZE_RANGE.min)) * 100}%`,
+              } as React.CSSProperties
+            }
+          >
+            <span className="text-size-value">{textSizePx} px</span>
             <input
               type="range"
               min={TEXT_SIZE_RANGE.min}
@@ -1094,7 +1103,6 @@ function PageGeneral({
               aria-label={t("settings.textSize")}
               onChange={(e) => onSetTextSize(clampTextSizePx(Number(e.target.value)))}
             />
-            <span className="text-size-value">{textSizePx} px</span>
           </div>
         </div>
         <div className="setting-row">

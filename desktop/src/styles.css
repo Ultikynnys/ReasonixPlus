@@ -7315,22 +7315,41 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .section {
   margin-bottom: 22px;
 }
-/* The text size slider: the value keeps a fixed slot so the row does not twitch while the
- * handle moves. */
+/* The text size slider matches the font-family picker's width so the two controls line up,
+ * and its readout rides above the knob, appearing on hover or focus instead of taking a
+ * column of its own. */
 .text-size-control {
+  position: relative;
+  flex: none;
+  width: 150px;
   display: flex;
   align-items: center;
-  gap: 10px;
 }
 .text-size-control input[type="range"] {
-  width: 160px;
+  width: 100%;
 }
 .text-size-value {
-  min-width: 46px;
-  text-align: right;
-  font-size: var(--fs-12);
+  position: absolute;
+  bottom: calc(100% + 5px);
+  /* Clamped at both ends so the readout stays inside the row at either extreme. */
+  left: clamp(16px, var(--knob, 0%), calc(100% - 16px));
+  transform: translateX(-50%);
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  font-size: var(--fs-11);
   color: var(--fg);
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.text-size-control:hover .text-size-value,
+.text-size-control:focus-within .text-size-value,
+.text-size-control:active .text-size-value {
+  opacity: 1;
 }
 /* The font-family picker: a themed menu rather than a native select, whose highlight the
  * platform paints in its own colour. Each row previews its own face. */
