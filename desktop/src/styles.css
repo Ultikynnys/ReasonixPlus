@@ -10999,6 +10999,12 @@ html[data-platform="macos"] .splash {
   margin-top: 4px;
 }
 
+/* Three search providers to a line rather than four: each tile carries a field and a
+ *  button, so it needs more room than a voice model tile. */
+.search-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
 .tile {
   display: flex;
   flex-direction: column;

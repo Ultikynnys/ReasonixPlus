@@ -997,7 +997,7 @@ function PageSearch({
       ) : (
         <div className="section-hint">{t("settings.searchEnginesHint")}</div>
       )}
-      <div className="tile-grid">
+      <div className="tile-grid search-grid">
         {SEARCH_ENGINE_SPECS.map((spec) => (
           <SearchEngineCard
             key={spec.id}
