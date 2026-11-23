@@ -893,10 +893,11 @@ function isBuildMissing(
   return buildStateOf(installs, browser) === "missing";
 }
 
-/** One engine card on the Search page: the engine's own declared fields live inside,
- *  and its header carries the Active marker or the button that makes it the engine
- *  `web_search` uses. A shared engine names the Models-tab field that owns the key
- *  instead of rendering a second input for the same value. */
+/** One engine tile on the Search section: its own declared fields sit inside, and its
+ *  action slot carries the Active marker or the button that makes it the engine
+ *  `web_search` uses. A tile rather than a collapsible card, because expanding one revealed
+ *  a single field; the grid fits three engines in the space two cards took. A shared engine
+ *  names the Models field that owns the key instead of rendering a second input for it. */
 function SearchEngineCard({
   spec,
   active,
@@ -917,12 +918,31 @@ function SearchEngineCard({
   const ready = engineReady(spec, settings) && buildPresent(buildState);
   const owner = shared ? (providerSpec(shared.provider)?.label ?? shared.provider) : null;
   return (
-    <HeadActionCard
-      title={spec.label}
-      defaultOpen={active}
-      headActions={
-        active ? (
-          <span className="card-active-pill">✓ {t("settings.activePill")}</span>
+    <div className="tile" data-active={active}>
+      <div className="tile-head">
+        <div className="tile-title">{spec.label}</div>
+      </div>
+      {spec.description ? <div className="tile-desc">{spec.description}</div> : null}
+      {shared ? (
+        <div className="tile-desc">
+          {t("settings.searchSharedKeyNote", { provider: owner ?? "" })}
+        </div>
+      ) : spec.settings.length === 0 ? (
+        <div className="tile-desc">{t("settings.searchEngineNoSetup")}</div>
+      ) : (
+        spec.settings.map((setting) => (
+          <SearchEngineSettingRow
+            key={setting.key}
+            engineId={spec.id}
+            setting={setting}
+            value={settings.searchSettings?.[spec.id]?.[setting.key]}
+            onSave={onSave}
+          />
+        ))
+      )}
+      <div className="tile-actions">
+        {active ? (
+          <span className="tile-active">✓ {t("settings.activePill")}</span>
         ) : (
           <button
             type="button"
@@ -941,30 +961,9 @@ function SearchEngineCard({
           >
             {t("settings.searchEngineUse")}
           </button>
-        )
-      }
-    >
-      {spec.description ? <div className="card-hint">{spec.description}</div> : null}
-      {shared ? (
-        <div className="setting-row">
-          <div className="l">
-            <div className="h">{t("settings.searchSharedKeyNote", { provider: owner ?? "" })}</div>
-          </div>
-        </div>
-      ) : spec.settings.length === 0 ? (
-        <div className="card-hint">{t("settings.searchEngineNoSetup")}</div>
-      ) : (
-        spec.settings.map((setting) => (
-          <SearchEngineSettingRow
-            key={setting.key}
-            engineId={spec.id}
-            setting={setting}
-            value={settings.searchSettings?.[spec.id]?.[setting.key]}
-            onSave={onSave}
-          />
-        ))
-      )}
-    </HeadActionCard>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -979,8 +978,8 @@ function engineReady(spec: SearchEngineSpec, settings: SettingsType): boolean {
   );
 }
 
-/** Search configuration, generated from search-engines/*.json: one collapsible card per
- *  declared engine, mirroring the Models page's provider cards. */
+/** Search configuration, generated from search-engines/*.json: one tile per declared
+ *  engine, in the same grid the voice models use. */
 function PageSearch({
   settings,
   onSave,
@@ -998,19 +997,21 @@ function PageSearch({
       ) : (
         <div className="section-hint">{t("settings.searchEnginesHint")}</div>
       )}
-      {SEARCH_ENGINE_SPECS.map((spec) => (
-        <SearchEngineCard
-          key={spec.id}
-          spec={spec}
-          active={spec.id === activeId}
-          onSelect={() =>
-            onSave({ webSearchEngine: spec.id as NonNullable<SettingsPatch["webSearchEngine"]> })
-          }
-          settings={settings}
-          onSave={onSave}
-          browserInstalls={browserInstalls}
-        />
-      ))}
+      <div className="tile-grid">
+        {SEARCH_ENGINE_SPECS.map((spec) => (
+          <SearchEngineCard
+            key={spec.id}
+            spec={spec}
+            active={spec.id === activeId}
+            onSelect={() =>
+              onSave({ webSearchEngine: spec.id as NonNullable<SettingsPatch["webSearchEngine"]> })
+            }
+            settings={settings}
+            onSave={onSave}
+            browserInstalls={browserInstalls}
+          />
+        ))}
+      </div>
     </section>
   );
 }
@@ -1682,7 +1683,7 @@ function VoiceModelList() {
           </button>
         </div>
       )}
-      <div className="voice-card-grid">
+      <div className="tile-grid">
         {VOICE_MODELS.map((model) => {
           const isActive = activeModel === model.modelId;
           const isDownloaded = Boolean(downloadedMap[model.modelId]);
@@ -1692,15 +1693,15 @@ function VoiceModelList() {
           return (
             <div
               key={model.modelId}
-              className={`voice-card ${isActive ? "active" : ""}`}
+              className={`tile ${isActive ? "active" : ""}`}
               data-active={isActive}
             >
-              <div className="voice-card-header">
-                <div className="voice-card-title">{model.name}</div>
-                <span className="voice-badge">{model.badge ?? "Balanced"}</span>
+              <div className="tile-head">
+                <div className="tile-title">{model.name}</div>
+                <span className="tile-badge">{model.badge ?? "Balanced"}</span>
               </div>
 
-              <div className="voice-card-meta">
+              <div className="tile-meta">
                 {model.parameters && (
                   <>
                     <span>{model.parameters} params</span>
@@ -1716,10 +1717,10 @@ function VoiceModelList() {
                 )}
               </div>
 
-              <div className="voice-card-desc">{model.description}</div>
+              <div className="tile-desc">{model.description}</div>
 
               {engine.runtime && (
-                <div className="voice-card-desc voice-runtime-note">
+                <div className="tile-desc voice-runtime-note">
                   {t("settings.voiceRuntimeNote", {
                     size: formatBytes(engine.runtime.estimatedBytes),
                   })}
@@ -1749,7 +1750,7 @@ function VoiceModelList() {
                 </div>
               )}
 
-              <div className="voice-card-actions">
+              <div className="tile-actions">
                 {engine.requirementKey ? (
                   <span className="voice-requirement">{t(engine.requirementKey)}</span>
                 ) : isDownloading ? (
@@ -1759,7 +1760,7 @@ function VoiceModelList() {
                 ) : isDownloaded ? (
                   <>
                     {isActive ? (
-                      <span className="voice-active-label">✓ {t("settings.voiceActive")}</span>
+                      <span className="tile-active">✓ {t("settings.voiceActive")}</span>
                     ) : (
                       <button
                         type="button"

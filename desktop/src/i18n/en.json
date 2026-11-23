@@ -112,7 +112,7 @@
     "customFontFamily": "Custom font stack",
     "customFontFamilyHint": "CSS font-family value for the whole desktop UI.",
     "searchSection": "Search",
-    "searchEnginesHint": "web_search uses the engine marked Active. Expand a card to set its key or endpoint.",
+    "searchEnginesHint": "web_search uses the engine marked Active. Set a key or an endpoint on its own card.",
     "activePill": "Active",
     "searchEngineUse": "Use this engine",
     "searchEngineNeedsKey": "Set this engine's key first",

@@ -7473,14 +7473,24 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   flex: 0 1 200px;
   width: auto;
 }
-.setting-row-entry {
-  flex-direction: column;
-  align-items: stretch;
-}
+/* A declared field reads like every other row: label and hint on the left, its input and
+ * buttons on the right. The entry takes a control column's width and the label keeps the
+ * rest, so the two never argue over the middle of the row. */
 .setting-row-entry > .settings-entry {
   display: flex;
   flex-wrap: nowrap;
   gap: 6px;
+  flex: 0 1 420px;
+  min-width: 0;
+}
+/* Inside a tile the card is a third of the page wide, so the field stacks under its label
+ * instead of squeezing both into one line. */
+.tile .setting-row-entry {
+  flex-direction: column;
+  align-items: stretch;
+}
+.tile .setting-row-entry > .settings-entry {
+  flex: 1 1 auto;
   width: 100%;
 }
 .setting-row-entry > .settings-entry .field {
@@ -10982,14 +10992,14 @@ html[data-platform="macos"] .splash {
   font-size: var(--fs-12);
 }
 
-.voice-card-grid {
+.tile-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
   margin-top: 4px;
 }
 
-.voice-card {
+.tile {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
@@ -11000,26 +11010,26 @@ html[data-platform="macos"] .splash {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.voice-card[data-active="true"] {
+.tile[data-active="true"] {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent-soft);
   background: var(--card);
 }
 
-.voice-card-header {
+.tile-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
 }
 
-.voice-card-title {
+.tile-title {
   font-size: var(--fs-13);
   font-weight: 600;
   color: var(--fg);
 }
 
-.voice-badge {
+.tile-badge {
   font-size: var(--fs-10);
   font-weight: 500;
   padding: 2px 6px;
@@ -11030,7 +11040,7 @@ html[data-platform="macos"] .splash {
   letter-spacing: 0.02em;
 }
 
-.voice-card-meta {
+.tile-meta {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -11039,7 +11049,7 @@ html[data-platform="macos"] .splash {
   color: var(--muted);
 }
 
-.voice-card-desc {
+.tile-desc {
   font-size: var(--fs-12);
   color: var(--muted);
   line-height: 1.4;
@@ -11198,14 +11208,14 @@ html[data-platform="macos"] .splash {
   }
 }
 
-.voice-card-actions {
+.tile-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 6px;
 }
 
-.voice-active-label {
+.tile-active {
   font-size: var(--fs-12);
   font-weight: 600;
   color: var(--accent);

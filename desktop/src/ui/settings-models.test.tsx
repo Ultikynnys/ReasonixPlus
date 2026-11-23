@@ -136,14 +136,18 @@ describe("PageModels default-model enum", () => {
     container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
       if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
     });
-    expect(container.querySelectorAll(".setting-row-base-url")).toHaveLength(0);
+    expect(container.querySelectorAll(".provider-settings-col .setting-row-base-url")).toHaveLength(
+      0,
+    );
     const declaredKeys = PROVIDER_SPECS.reduce(
       (count, spec) =>
         count +
         spec.settings.filter((setting) => setting.kind === "secret" || setting.editable).length,
       0,
     );
-    expect(container.querySelectorAll(".setting-row-entry")).toHaveLength(declaredKeys);
+    expect(container.querySelectorAll(".provider-settings-col .setting-row-entry")).toHaveLength(
+      declaredKeys,
+    );
   });
 
   it("saves the local server URL and lists qualified server aliases", () => {
@@ -191,7 +195,9 @@ describe("PageModels default-model enum", () => {
     container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
       if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
     });
-    const inputs = container.querySelectorAll<HTMLInputElement>('input[type="password"]');
+    const inputs = container.querySelectorAll<HTMLInputElement>(
+      '.provider-settings-col input[type="password"]',
+    );
     expect(inputs.length).toBeGreaterThan(2);
     for (const input of inputs) {
       const row = input.closest(".setting-row-entry") as HTMLElement;
@@ -646,7 +652,7 @@ describe("Search tab", () => {
 
   it("renders the selected engine's declared fields", () => {
     const onSave = vi.fn();
-    render(
+    const { container } = render(
       <SettingsModal
         {...baseProps}
         settings={{ ...baseSettings, webSearchEngine: "tavily" }}
@@ -654,16 +660,17 @@ describe("Search tab", () => {
         initialPage="models"
       />,
     );
-    expect(screen.getByText("Tavily API key")).toBeTruthy();
-    const input = document.querySelector('input[type="password"]') as HTMLInputElement;
+    const tavily = cardFor(container, "tavily");
+    expect(within(tavily).getByText("Tavily API key")).toBeTruthy();
+    const input = tavily.querySelector('input[type="password"]') as HTMLInputElement;
     fireEvent.change(input, { target: { value: "  tv-secret  " } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(tavily).getByRole("button", { name: "Save" }));
     expect(onSave).toHaveBeenCalledWith({ searchSettings: { tavily: { apiKey: "tv-secret" } } });
   });
 
   it("clears a saved search engine key", () => {
     const onSave = vi.fn();
-    render(
+    const { container } = render(
       <SettingsModal
         {...baseProps}
         settings={{
@@ -675,12 +682,12 @@ describe("Search tab", () => {
         initialPage="models"
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    fireEvent.click(within(cardFor(container, "tavily")).getByRole("button", { name: "Clear" }));
     expect(onSave).toHaveBeenCalledWith({ searchSettings: { tavily: { apiKey: "" } } });
   });
 
   it("shows a pointer note and no key input for an engine that reuses a provider key", () => {
-    render(
+    const { container } = render(
       <SettingsModal
         {...baseProps}
         settings={{
@@ -692,26 +699,28 @@ describe("Search tab", () => {
       />,
     );
     // The key is the model provider's: one variable, one input, on the Models tab.
-    expect(document.querySelector('input[type="password"]')).toBeNull();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-    expect(screen.getByText(/Models tab/)).toBeTruthy();
+    const zai = cardFor(container, "zai");
+    expect(zai.querySelector('input[type="password"]')).toBeNull();
+    expect(within(zai).queryByRole("button", { name: "Save" })).toBeNull();
+    expect(within(zai).getByText(/Models tab/)).toBeTruthy();
   });
 
   it("renders the SearXNG endpoint from the declaration", () => {
-    render(
+    const { container } = render(
       <SettingsModal
         {...baseProps}
         settings={{ ...baseSettings, webSearchEngine: "searxng" }}
         initialPage="models"
       />,
     );
-    expect(screen.getByText("SearXNG endpoint")).toBeTruthy();
-    const input = document.querySelector(".setting-row-base-url input") as HTMLInputElement;
+    const searx = cardFor(container, "searxng");
+    expect(within(searx).getByText("SearXNG endpoint")).toBeTruthy();
+    const input = searx.querySelector(".setting-row-base-url input") as HTMLInputElement;
     expect(input.placeholder).toBe("http://localhost:8080");
   });
 
   const searchCards = (container: HTMLElement): HTMLElement[] =>
-    Array.from(container.querySelectorAll<HTMLElement>('[data-section="search"] .provider-card'));
+    Array.from(container.querySelectorAll<HTMLElement>('[data-section="search"] .tile'));
 
   /** The Search section, so a count never picks up the provider cards above it. */
   const searchSection = (container: HTMLElement): HTMLElement =>
@@ -720,7 +729,7 @@ describe("Search tab", () => {
   const cardFor = (container: HTMLElement, id: string): HTMLElement =>
     searchCards(container)[SEARCH_ENGINE_SPECS.findIndex((spec) => spec.id === id)]!;
 
-  it("renders one card per declared engine, titled from the declarations", () => {
+  it("renders one tile per declared engine, titled from the declarations", () => {
     const { container } = render(
       <SettingsModal
         {...baseProps}
@@ -728,26 +737,26 @@ describe("Search tab", () => {
         initialPage="models"
       />,
     );
-    const titles = Array.from(
-      searchSection(container).querySelectorAll(".provider-head .provider-title"),
-    );
+    const titles = Array.from(searchSection(container).querySelectorAll(".tile-title"));
     expect(titles.map((title) => title.textContent)).toEqual(
       SEARCH_ENGINE_SPECS.map((spec) => spec.label),
     );
   });
 
-  it("marks the active engine in its header and expands only that card", () => {
+  it("marks the active engine in its action slot and offers the switch nowhere else", () => {
     const { container } = render(<SettingsModal {...baseProps} initialPage="models" />);
     const bing = cardFor(container, "bing");
-    // bing is the default engine: marked active, switch-to-self offered nowhere, card open.
+    // bing is the default engine: marked active, switch-to-self offered nowhere.
+    expect(bing.getAttribute("data-active")).toBe("true");
     expect(within(bing).getByText("✓ Active")).toBeTruthy();
     expect(within(bing).queryByRole("button", { name: "Use this engine" })).toBeNull();
     expect(
       within(bing).getByText("No setup needed: this engine works without a key or endpoint."),
     ).toBeTruthy();
-    // Every other engine's fields stay collapsed until its card is expanded.
+    // Exactly one engine is active, and no tile collapses: every engine shows its own fields.
     expect(within(searchSection(container)).getAllByText("✓ Active")).toHaveLength(1);
-    expect(searchSection(container).querySelectorAll(".provider-body")).toHaveLength(1);
+    expect(searchSection(container).querySelectorAll(".provider-body")).toHaveLength(0);
+    expect(within(cardFor(container, "tavily")).getByText("Tavily API key")).toBeTruthy();
   });
 
   it("switches the active engine from another engine's card", () => {
@@ -809,7 +818,7 @@ describe("Search tab", () => {
     expect((ready as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("opens the engine card that becomes active", () => {
+  it("moves the active marker to the engine that is picked", () => {
     function StatefulSearch() {
       const [settings, setSettings] = useState<Settings>(baseSettings);
       return (
@@ -825,23 +834,26 @@ describe("Search tab", () => {
     }
 
     const { container } = render(<StatefulSearch />);
-    // Collapsed until it is chosen, then opened onto its own fields.
-    expect(within(cardFor(container, "bing-intl")).queryByText(/No setup needed/)).toBeNull();
+    expect(within(cardFor(container, "bing")).getByText("✓ Active")).toBeTruthy();
     fireEvent.click(
       within(cardFor(container, "bing-intl")).getByRole("button", { name: "Use this engine" }),
     );
+    expect(cardFor(container, "bing-intl").getAttribute("data-active")).toBe("true");
     expect(within(cardFor(container, "bing-intl")).getByText("✓ Active")).toBeTruthy();
-    expect(within(cardFor(container, "bing-intl")).getByText(/No setup needed/)).toBeTruthy();
+    expect(
+      within(cardFor(container, "bing")).getByRole("button", { name: "Use this engine" }),
+    ).toBeTruthy();
   });
 
-  it("expands an engine card without switching the active engine", () => {
+  it("shows every engine's own fields without a switch, and a switch only on the action", () => {
     const onSave = vi.fn();
     const { container } = render(
       <SettingsModal {...baseProps} onSave={onSave} initialPage="models" />,
     );
+    // Nothing collapses, so a field is reachable without choosing the engine first.
     const tavily = cardFor(container, "tavily");
-    fireEvent.click(within(tavily).getByRole("button", { name: "Tavily" }));
     expect(within(tavily).getByText("Tavily API key")).toBeTruthy();
+    expect(tavily.querySelector('input[type="password"]')).toBeTruthy();
     expect(onSave).not.toHaveBeenCalled();
   });
 });

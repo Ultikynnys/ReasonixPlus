@@ -127,7 +127,7 @@ describe("VoiceInputSettings: models", () => {
     expect(cactus).toBeTruthy();
     render(<VoiceInputSettings />);
 
-    const card = screen.getByText(cactus!.name).closest(".voice-card") as HTMLElement;
+    const card = screen.getByText(cactus!.name).closest(".tile") as HTMLElement;
     expect(within(card).getByText(cactus!.size)).toBeTruthy();
     if (cactus!.badge) expect(within(card).getByText(cactus!.badge)).toBeTruthy();
     expect(within(card).getByText("Cactus engine")).toBeTruthy();
@@ -141,7 +141,7 @@ describe("VoiceInputSettings: models", () => {
     expect(isVoiceModelAvailable(bark!)).toBe(true);
     render(<VoiceInputSettings />);
 
-    const card = screen.getByText(bark!.name).closest(".voice-card") as HTMLElement;
+    const card = screen.getByText(bark!.name).closest(".tile") as HTMLElement;
     expect(within(card).getByRole("button", { name: "Download" })).toBeTruthy();
     // The card states the one-time runtime cost before the user commits.
     expect(within(card).getByText("Python runtime")).toBeTruthy();
@@ -161,9 +161,7 @@ describe("VoiceInputSettings: models", () => {
 
     render(<VoiceInputSettings />);
 
-    const baseCard = screen
-      .getByText("Whisper Base (English)")
-      .closest(".voice-card") as HTMLElement;
+    const baseCard = screen.getByText("Whisper Base (English)").closest(".tile") as HTMLElement;
     const baseDownloadBtn = within(baseCard).getByRole("button", { name: "Download" });
 
     await act(async () => {
@@ -184,9 +182,7 @@ describe("VoiceInputSettings: models", () => {
 
     render(<VoiceInputSettings />);
 
-    const baseCard = screen
-      .getByText("Whisper Base (English)")
-      .closest(".voice-card") as HTMLElement;
+    const baseCard = screen.getByText("Whisper Base (English)").closest(".tile") as HTMLElement;
     const baseDownloadBtn = within(baseCard).getByRole("button", { name: "Download" });
 
     await act(async () => {
@@ -373,7 +369,7 @@ describe("VoiceInputSettings: microphone", () => {
     expect(within(blocks[1]!).getByText("Voice processing model")).toBeTruthy();
     expect(within(blocks[1]!).getByText("Whisper Tiny (English)")).toBeTruthy();
     expect(root.querySelector(".provider-card")).toBeNull();
-    expect(root.querySelectorAll(".voice-card").length).toBeGreaterThan(1);
+    expect(root.querySelectorAll(".tile").length).toBeGreaterThan(1);
   });
 
   it("reveals the real device list and audio test after granting access", async () => {

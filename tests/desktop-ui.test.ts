@@ -1304,23 +1304,23 @@ describe("desktop-mcp-settings-layout", () => {
 });
 
 describe("desktop-models-settings-layout", () => {
-  // A provider card's settings column is only half a card wide, so a description
-  // and a button sharing one row overflow it — the OpenCode "Sign in" button was
-  // clipped at the card edge. Any row with a button in that column must stack:
-  // description full width, controls on their own line below. jsdom has no layout
-  // engine, so pin the CSS contract the way the MCP-settings and composer layout
-  // tests do — deleting or un-stacking the rule fails here.
+  // A declared field used to stack under its label, because the settings column was half a
+  // card wide. That column is the card's full width now, so the field sits beside the label
+  // like every other row; inside a tile, which is a third of the page, it still stacks.
+  // jsdom has no layout engine, so the contract is pinned in the CSS the way the
+  // MCP-settings and composer layout tests pin theirs.
   describe("desktop models settings layout", () => {
-    const row = ".provider-col .setting-row:has(button)";
+    const entry = ".setting-row-entry > .settings-entry";
 
-    it("stacks a description and a button so a button row never overflows the column", () => {
-      expect(cssRule(row)).toContain("flex-direction: column");
-      expect(cssRule(row)).toContain("align-items: stretch");
+    it("puts a declared field's input beside its label, never under it", () => {
+      expect(cssRule(entry)).toContain("flex: 0 1 420px");
+      expect(cssRule(entry)).toContain("flex-wrap: nowrap");
+      expect(cssRule(entry)).not.toContain("flex-direction: column");
     });
 
-    it("gives the description full width and drops the controls to their own line", () => {
-      expect(cssRule(`${row} > .l`)).toContain("width: 100%");
-      expect(cssRule(`${row} > :not(.l)`)).toContain("align-self: flex-start");
+    it("stacks the field under its label inside a tile, which is a third of the page", () => {
+      expect(cssRule(".tile .setting-row-entry")).toContain("flex-direction: column");
+      expect(cssRule(".tile .setting-row-entry > .settings-entry")).toContain("width: 100%");
     });
   });
 });
