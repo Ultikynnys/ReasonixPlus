@@ -29,7 +29,10 @@ describe("model list CSS", () => {
     const header = cssRules(".popup .ph").join("\n");
     const tabs = cssRules(".model-menu-tabs").join("\n");
     const tab = cssRules(".model-menu-tab").join("\n");
-    expect(tab).toContain("font-size: 14px");
+    // The type scale is one ladder now, so the shared size is pinned as the token both
+    // rules read, not as the px it used to spell.
+    expect(tab).toContain("font-size: var(--fs-14)");
+    expect(header).toContain("font-size: var(--fs-14)");
     expect(tab).toContain("padding: 8px 0");
     expect(tabs).toContain("padding: 0 12px");
     expect(header).toContain("padding: 8px 12px");
