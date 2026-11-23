@@ -215,13 +215,6 @@ describe("Settings > About", () => {
 
 describe("Settings section index", () => {
   it("shows a page's index only while that page is open", () => {
-    const { unmount } = render(<SettingsModal {...baseProps} initialPage="skills" />);
-    expect(
-      document.querySelector(".settings-side .kids"),
-      "an index shows off its page",
-    ).toBeNull();
-    unmount();
-
     render(<SettingsModal {...baseProps} initialPage="customization" />);
     const parent = screen.getByTitle("Customization");
     const kids = parent.parentElement?.querySelector(".kids");
@@ -229,6 +222,8 @@ describe("Settings section index", () => {
     expect(
       Array.from(kids?.querySelectorAll(".row.kid") ?? []).map((row) => row.textContent),
     ).toEqual(["Appearance", "Themes", "Sound cues"]);
+    // No other page shows one: the index belongs to the page it lists.
+    expect(document.querySelectorAll(".settings-side .kids")).toHaveLength(1);
     // The page is the page: its title is the page's, not a section's.
     expect(screen.getByRole("heading", { name: "Customization" })).toBeTruthy();
   });

@@ -166,14 +166,7 @@ function moveInList<T>(list: readonly T[], from: number, to: number): T[] {
   return next;
 }
 
-export type PageId =
-  | "composer"
-  | "models"
-  | "mcp"
-  | "plugins"
-  | "skills"
-  | "customization"
-  | "about";
+export type PageId = "composer" | "models" | "integrations" | "customization" | "about";
 
 /** One section of a page, listed in that page's index while it is open. `id` is the anchor
  *  the row scrolls to and the marker the reader's position is read from. */
@@ -212,9 +205,17 @@ export const PAGE_META: ReadonlyArray<PageEntry> = [
       { id: "search", labelKey: "settings.searchSection" },
     ],
   },
-  { id: "mcp", icon: "wrench" },
-  { id: "plugins", icon: "plug" },
-  { id: "skills", icon: "bookmark" },
+  // Integrations owns everything the agent can reach outside the chat: the MCP tool servers,
+  // the plugins that ship skills and servers together, and the standalone skills.
+  {
+    id: "integrations",
+    icon: "plug",
+    sections: [
+      { id: "mcp", labelKey: "settings.integrationsMcp" },
+      { id: "plugins", labelKey: "settings.integrationsPlugins" },
+      { id: "skills", labelKey: "settings.integrationsSkills" },
+    ],
+  },
   // Customization owns the look of the app: the appearance controls, the theme cards and the
   // sound packs. Its sections are parts of one page, listed in the page's own index.
   {
@@ -625,55 +626,80 @@ export function SettingsModal({
                 </section>
               </div>
             )}
-            {page === "mcp" && (
-              <PageMCP
-                specs={mcpSpecs}
-                bridged={mcpBridged}
-                onAdd={onAddMcpSpec}
-                onRemove={onRemoveMcpSpec}
-                onToggleServer={onToggleMcpServer}
-                extensionStatus={mcpExtensionStatus}
-                extensionCheck={mcpExtensionCheck}
-                browserInstall={playwrightBrowserInstall}
-                onRequestExtensionStatus={onRequestMcpExtensionStatus}
-                onConfigureExtension={onConfigureMcpExtension}
-                onCheckExtension={onCheckMcpExtension}
-                onInstallBrowser={onInstallPlaywrightBrowser}
-                onCancelBrowserInstall={onCancelPlaywrightBrowserInstall}
-                mailProvider={mailProvider}
-                mailAuth={mailAuth}
-                onSetMailProvider={onSetMailProvider}
-                onRequestMailStatus={onRequestMailStatus}
-                onConfigureMail={onConfigureMail}
-                onConnectMail={onConnectMail}
-                onCancelMail={onCancelMail}
-                onSignOutMail={onSignOutMail}
-                mcpAuth={mcpAuth}
-                onConnectServer={onConnectServer}
-                onCancelServerSignIn={onCancelServerSignIn}
-                onDisconnectServer={onDisconnectServer}
-              />
-            )}
-            {page === "plugins" && (
-              <PagePlugins
-                plugins={plugins}
-                onInstall={onInstallPlugin}
-                onUninstall={onUninstallPlugin}
-                onToggle={onTogglePlugin}
-                onRequest={onRequestPlugins}
-                mcpAuth={mcpAuth}
-                onConnectServer={onConnectServer}
-                onCancelServerSignIn={onCancelServerSignIn}
-                onDisconnectServer={onDisconnectServer}
-              />
-            )}
-            {page === "skills" && (
-              <PageSkills
-                skills={skills}
-                onInstall={onInstallSkill}
-                onUninstall={onUninstallSkill}
-                onRequest={onRequestSkills}
-              />
+            {page === "integrations" && (
+              <div className="page-integrations">
+                <section
+                  className="section settings-section"
+                  data-section="mcp"
+                  aria-labelledby="settings-section-mcp"
+                >
+                  <h3 className="stitle" id="settings-section-mcp">
+                    {t("settings.integrationsMcp")}
+                  </h3>
+                  <PageMCP
+                    specs={mcpSpecs}
+                    bridged={mcpBridged}
+                    onAdd={onAddMcpSpec}
+                    onRemove={onRemoveMcpSpec}
+                    onToggleServer={onToggleMcpServer}
+                    extensionStatus={mcpExtensionStatus}
+                    extensionCheck={mcpExtensionCheck}
+                    browserInstall={playwrightBrowserInstall}
+                    onRequestExtensionStatus={onRequestMcpExtensionStatus}
+                    onConfigureExtension={onConfigureMcpExtension}
+                    onCheckExtension={onCheckMcpExtension}
+                    onInstallBrowser={onInstallPlaywrightBrowser}
+                    onCancelBrowserInstall={onCancelPlaywrightBrowserInstall}
+                    mailProvider={mailProvider}
+                    mailAuth={mailAuth}
+                    onSetMailProvider={onSetMailProvider}
+                    onRequestMailStatus={onRequestMailStatus}
+                    onConfigureMail={onConfigureMail}
+                    onConnectMail={onConnectMail}
+                    onCancelMail={onCancelMail}
+                    onSignOutMail={onSignOutMail}
+                    mcpAuth={mcpAuth}
+                    onConnectServer={onConnectServer}
+                    onCancelServerSignIn={onCancelServerSignIn}
+                    onDisconnectServer={onDisconnectServer}
+                  />
+                </section>
+                <section
+                  className="section settings-section"
+                  data-section="plugins"
+                  aria-labelledby="settings-section-plugins"
+                >
+                  <h3 className="stitle" id="settings-section-plugins">
+                    {t("settings.integrationsPlugins")}
+                  </h3>
+                  <PagePlugins
+                    plugins={plugins}
+                    onInstall={onInstallPlugin}
+                    onUninstall={onUninstallPlugin}
+                    onToggle={onTogglePlugin}
+                    onRequest={onRequestPlugins}
+                    mcpAuth={mcpAuth}
+                    onConnectServer={onConnectServer}
+                    onCancelServerSignIn={onCancelServerSignIn}
+                    onDisconnectServer={onDisconnectServer}
+                  />
+                </section>
+                <section
+                  className="section settings-section"
+                  data-section="skills"
+                  aria-labelledby="settings-section-skills"
+                >
+                  <h3 className="stitle" id="settings-section-skills">
+                    {t("settings.integrationsSkills")}
+                  </h3>
+                  <PageSkills
+                    skills={skills}
+                    onInstall={onInstallSkill}
+                    onUninstall={onUninstallSkill}
+                    onRequest={onRequestSkills}
+                  />
+                </section>
+              </div>
             )}
             {page === "about" && (
               <PageAbout changelog={changelog} onRefreshChangelog={onRefreshChangelog} />
