@@ -108,6 +108,28 @@ describe("Settings > General window state", () => {
   });
 });
 
+describe("Settings font family", () => {
+  it("offers the four faces, system first, and picks one from the menu", () => {
+    const onSetFontFamily = vi.fn();
+    render(
+      <SettingsModal {...baseProps} onSetFontFamily={onSetFontFamily} initialPage="general" />,
+    );
+
+    const button = screen.getByRole("button", { name: "Font family" });
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(button);
+    const rows = Array.from(document.querySelectorAll(".font-family-menu [role='menuitemradio']"));
+    expect(rows.map((row) => row.textContent)).toEqual(["System", "Sans", "Serif", "Custom"]);
+
+    fireEvent.click(rows[2]!);
+
+    expect(onSetFontFamily).toHaveBeenCalledWith("serif");
+    // Picking closes the menu and hands focus back to the control.
+    expect(document.querySelector(".font-family-menu")).toBeNull();
+  });
+});
+
 describe("Settings section index", () => {
   it("shows a page's index only while that page is open", () => {
     const { unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);

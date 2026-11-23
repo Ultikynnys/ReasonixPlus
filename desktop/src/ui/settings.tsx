@@ -966,13 +966,88 @@ function PageSearch({
 }
 
 /** The font-family picker, system first: it is the one that matches the OS. Each row in the
- *  menu previews its own face; custom has no known stack, so it previews the one in force. */
+ *  menu previews its own face; custom has no known stack, so it previews the one in force.
+ *  A menu of our own rather than a native select, because the platform draws its highlight
+ *  in its own colour and no theme token reaches it. */
 const FONT_FAMILY_CHOICES: ReadonlyArray<{ value: FontFamily; labelKey: TKey }> = [
   { value: FONT_FAMILY.SYSTEM, labelKey: "settings.fontFamilySystem" },
   { value: FONT_FAMILY.SANS, labelKey: "settings.fontFamilySans" },
   { value: FONT_FAMILY.SERIF, labelKey: "settings.fontFamilySerif" },
   { value: FONT_FAMILY.CUSTOM, labelKey: "settings.fontFamilyCustom" },
 ];
+
+function FontFamilyPicker({
+  value,
+  onSelect,
+}: {
+  value: FontFamily;
+  onSelect: (next: FontFamily) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const current = FONT_FAMILY_CHOICES.find((choice) => choice.value === value);
+  const label = t(current?.labelKey ?? "settings.fontFamilySans");
+  const faceOf = (family: FontFamily): string | undefined =>
+    family === FONT_FAMILY.CUSTOM ? undefined : FONT_FAMILY_STACK[family];
+
+  useEffect(() => {
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      buttonRef.current?.focus();
+    };
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="font-family-picker" ref={wrapRef}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="font-family-select"
+        style={{ fontFamily: faceOf(value) }}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={t("settings.fontFamily")}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <span>{label}</span>
+        <I.chev size={10} />
+      </button>
+      {open ? (
+        <div className="font-family-menu" role="menu" aria-label={t("settings.fontFamily")}>
+          {FONT_FAMILY_CHOICES.map((choice) => (
+            <button
+              key={choice.value}
+              type="button"
+              role="menuitemradio"
+              aria-checked={choice.value === value}
+              data-on={choice.value === value}
+              style={{ fontFamily: faceOf(choice.value) }}
+              onClick={() => {
+                onSelect(choice.value);
+                setOpen(false);
+                buttonRef.current?.focus();
+              }}
+            >
+              {t(choice.labelKey)}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function PageGeneral({
   textSizePx,
@@ -1027,29 +1102,7 @@ function PageGeneral({
             <div className="n">{t("settings.fontFamily")}</div>
             <div className="h">{t("settings.fontFamilyHint")}</div>
           </div>
-          <select
-            className="field font-family-select"
-            aria-label={t("settings.fontFamily")}
-            value={fontFamily}
-            onChange={(e) => onSetFontFamily(e.target.value as FontFamily)}
-          >
-            {FONT_FAMILY_CHOICES.map((choice) => (
-              <option
-                key={choice.value}
-                value={choice.value}
-                // Each row previews its own face. Custom has no known stack, so it keeps the
-                // one in force, which is what picking it will leave you with.
-                style={{
-                  fontFamily:
-                    choice.value === FONT_FAMILY.CUSTOM
-                      ? undefined
-                      : FONT_FAMILY_STACK[choice.value],
-                }}
-              >
-                {t(choice.labelKey)}
-              </option>
-            ))}
-          </select>
+          <FontFamilyPicker value={fontFamily} onSelect={onSetFontFamily} />
         </div>
         {fontFamily === FONT_FAMILY.CUSTOM && (
           <div className="setting-row">
