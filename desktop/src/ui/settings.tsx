@@ -2048,11 +2048,10 @@ export function OpencodeFreeTierSection({
   );
 }
 
-/** One collapsible card on the Models page.
- *  The header toggles a two-column
- *  body: the left `models` column (a scrollable per-provider model list) and the
- *  right `settings` column (that provider's keys, base URLs and auth). Cards
- *  without a model list (audio input) render one full-width column. */
+/** One collapsible card on the Models page. The header toggles a body that reads top to
+ *  bottom: the provider's own settings and sign-in first, its model list below, so the
+ *  list gets the card's full width. Cards without a model list (the search engines)
+ *  render the settings block alone. */
 function ProviderCard({
   title,
   defaultOpen = true,
@@ -2079,9 +2078,9 @@ function ProviderCard({
         <span className="provider-title">{title}</span>
       </button>
       {open ? (
-        <div className="provider-body" data-has-models={models ? "true" : "false"}>
-          {models ? <div className="provider-col">{models}</div> : null}
-          <div className="provider-col">{settings}</div>
+        <div className="provider-body">
+          <div className="provider-col provider-settings-col">{settings}</div>
+          {models ? <div className="provider-col provider-models-col">{models}</div> : null}
         </div>
       ) : null}
     </section>
@@ -2138,7 +2137,7 @@ function HeadActionCard({
         {headActions ? <div className="provider-head-actions">{headActions}</div> : null}
       </div>
       {open ? (
-        <div className="provider-body" data-has-models="false">
+        <div className="provider-body">
           <div className="provider-col">{children}</div>
         </div>
       ) : null}

@@ -7500,22 +7500,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   flex: 0 0 var(--settings-control-width);
   width: var(--settings-control-width);
 }
-/* A provider card's settings column is only half a card wide, so a description
- * and a button can never share one row: side by side the button overflows the
- * column and clips at the card edge. Any row in that column holding a button
- * stacks instead — the description spans the full width and its controls drop
- * to their own line below, where they always fit. */
-.provider-col .setting-row:has(button) {
-  flex-direction: column;
-  align-items: stretch;
-}
-.provider-col .setting-row:has(button) > .l {
-  flex: 0 0 auto;
-  width: 100%;
-}
-.provider-col .setting-row:has(button) > :not(.l) {
-  align-self: flex-start;
-}
 .setting-row .l .n {
   font-size: var(--fs-14);
   font-weight: 500;
@@ -7926,8 +7910,8 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--fg-2);
 }
 
-/* models page — one collapsible card per provider, each a two-column body:
- * left = scrollable per-provider model list, right = settings + auth. */
+/* models page — one collapsible card per provider. Its body reads top to bottom: the
+ *  provider's settings and sign-in, then its model list at the card's full width. */
 .provider-default-line {
   margin-bottom: 12px;
 }
@@ -8164,14 +8148,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   font-size: var(--fs-14);
 }
 .provider-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 16px;
   padding: 14px;
   border-top: 1px solid var(--border);
-}
-.provider-body[data-has-models="false"] {
-  grid-template-columns: minmax(0, 1fr);
 }
 .provider-col {
   min-width: 0;
@@ -8297,11 +8278,6 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--muted);
   font-size: var(--fs-12);
   padding: 8px 0;
-}
-@media (max-width: 860px) {
-  .provider-body {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 .mcard {

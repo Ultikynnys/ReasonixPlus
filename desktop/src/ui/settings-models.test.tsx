@@ -304,21 +304,18 @@ describe("PageModels default-model enum", () => {
     expect(cleared).toBeGreaterThan(0);
   });
 
-  it("keeps provider-column button rows where the stacking rule applies", () => {
+  it("keeps provider settings rows in the page's own row vocabulary", () => {
     const { container } = render(<SettingsModal {...baseProps} initialPage="models" />);
-    container.querySelectorAll<HTMLButtonElement>(".provider-head").forEach((button) => {
+    for (const button of container.querySelectorAll<HTMLButtonElement>(".provider-head")) {
       if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
-    });
-    // The OpenCode/OpenAI "Sign in" and "Refresh" rows sit in the half-width
-    // settings column, so `.provider-col .setting-row:has(button)` must match
-    // them (and stack them) rather than the rule going stale against markup.
-    const buttonRows = Array.from(
-      container.querySelectorAll(".provider-col .setting-row:has(button)"),
-    );
-    expect(buttonRows.length).toBeGreaterThan(0);
-    buttonRows.forEach((row) => {
+    }
+    // The settings block now sits above the model list at the card's full width, so its
+    // rows are the same label-left / control-right rows a page uses.
+    const rows = Array.from(container.querySelectorAll(".provider-settings-col .setting-row"));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
       expect(row.firstElementChild?.className).toBe("l");
-    });
+    }
   });
 
   it("lists the enabled models and switching sets both main and subagent model", () => {
@@ -389,13 +386,13 @@ describe("PageModels default-model enum", () => {
     });
     const searches = screen.getAllByPlaceholderText("Search models") as HTMLInputElement[];
     const search = searches.find(
-      (input) => (input.closest(".provider-col")?.querySelector(".mcard") ?? null) !== null,
+      (input) => (input.closest(".provider-models-col")?.querySelector(".mcard") ?? null) !== null,
     );
     expect(search).toBeTruthy();
     // The search box sits on its own row, never inside the count / enable-all row.
     expect(search?.closest(".provider-models-search")).toBeTruthy();
     expect(search?.closest(".provider-models-head")).toBeNull();
-    const col = search?.closest(".provider-col") as HTMLElement;
+    const col = search?.closest(".provider-models-col") as HTMLElement;
     expect(col.querySelectorAll(".mcard").length).toBeGreaterThan(0);
     fireEvent.change(search as HTMLInputElement, { target: { value: "zzz-no-such-model" } });
     expect(col.querySelectorAll(".mcard")).toHaveLength(0);
@@ -423,7 +420,7 @@ describe("PageModels default-model enum", () => {
       (button) => button.textContent?.includes("Experiential Labs"),
     );
     fireEvent.click(head!);
-    const column = head?.closest(".provider-card")?.querySelector(".provider-col");
+    const column = head?.closest(".provider-card")?.querySelector(".provider-models-col");
     // The card also keeps the provider's declared ids, so the live list is a floor.
     expect(column?.querySelectorAll(".mcard").length).toBeGreaterThanOrEqual(catalog.length);
     for (const id of ["gateway-model-0", "gateway-model-299"]) {
