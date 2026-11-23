@@ -4224,6 +4224,12 @@ function SectionRow({ nm, keys }: { nm: string; keys: ShortcutKey[] }): ReactNod
   );
 }
 
+/** The picker's order: light styles first, then dark, each group keeping the palette's own
+ *  order. Sorting is stable, so the palette decides within a group. */
+const THEME_STYLE_ORDER: ReadonlyArray<ThemeStyle> = [...THEME_STYLES].sort(
+  (a, b) => Number(themeForStyle(a) === THEME.DARK) - Number(themeForStyle(b) === THEME.DARK),
+);
+
 /** Customization: one page holding the app's look. Appearance carries the controls that used
  *  to sit on the General page, Themes the style picker that used to sit in the status bar,
  *  and Sound packs is a named placeholder. */
@@ -4345,7 +4351,7 @@ function PageCustomization({
           {t("settings.customizationThemes")}
         </h3>
         <div className="theme-grid" role="radiogroup" aria-label={t("statusbar.switchTheme")}>
-          {THEME_STYLES.map((style) => (
+          {THEME_STYLE_ORDER.map((style) => (
             <button
               key={style}
               type="button"

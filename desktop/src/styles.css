@@ -6401,14 +6401,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   font-size: var(--fs-14);
   z-index: 20;
 }
+/* One card per style: the grid only lays them out, so each style reads as its own button. */
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--card);
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 8px;
 }
 .theme-pop-item {
   min-width: 0;
@@ -6416,16 +6413,21 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   grid-template-columns: 52px 1fr 16px;
   align-items: center;
   gap: 10px;
-  padding: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
   border-radius: 8px;
+  background: var(--card);
+  cursor: pointer;
   color: var(--fg);
   text-align: left;
 }
-.theme-pop-item:hover,
-.theme-pop-item[data-on="true"] {
-  background: var(--panel);
+.theme-pop-item:hover {
+  background: var(--card-hover);
+  border-color: var(--border-strong);
 }
 .theme-pop-item[data-on="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 .theme-pop-item .style-swatches {
@@ -7378,14 +7380,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--accent-soft);
   color: var(--accent);
 }
-/* Scaffold page split into sections: each is tall enough that the page scrolls, and a rule
- * separates the parts so they read as one page rather than three. */
-.settings-section {
-  min-height: 260px;
-}
+/* A page split into sections: a rule separates the parts so they read as one page rather
+ * than several, and the spacing stays tight enough that a short section leaves no void. */
 .settings-section + .settings-section {
   border-top: 1px solid var(--border);
-  padding-top: 18px;
+  padding-top: 12px;
 }
 .section .stitle {
   font-size: var(--fs-14);

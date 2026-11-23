@@ -151,6 +151,9 @@ describe("Settings > Customization > Themes", () => {
     const cards = Array.from(document.querySelectorAll(".theme-grid [aria-checked]"));
     expect(cards).toHaveLength(15);
     expect(new Set(cards.map((card) => card.getAttribute("data-style"))).size).toBe(15);
+    // Light styles come first, then dark: the label each card carries is the split.
+    const groups = cards.map((card) => card.querySelector(".md")?.textContent);
+    expect(groups).toEqual([...Array(8).fill("light"), ...Array(7).fill("dark")]);
     expect(cards.filter((card) => card.getAttribute("aria-checked") === "true")).toHaveLength(1);
     expect(
       cards
@@ -158,7 +161,7 @@ describe("Settings > Customization > Themes", () => {
         ?.getAttribute("data-style"),
     ).toBe("obsidian");
 
-    fireEvent.click(cards[1]!);
+    fireEvent.click(cards.find((card) => card.getAttribute("data-style") === "sandstone")!);
     expect(onSetThemeStyle).toHaveBeenCalledWith("sandstone");
   });
 });
