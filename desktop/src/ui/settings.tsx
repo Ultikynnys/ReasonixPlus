@@ -167,7 +167,6 @@ function moveInList<T>(list: readonly T[], from: number, to: number): T[] {
 
 export type PageId =
   | "general"
-  | "sound"
   | "quickSend"
   | "models"
   | "search"
@@ -196,7 +195,6 @@ export interface PageEntry {
 
 export const PAGE_META: ReadonlyArray<PageEntry> = [
   { id: "general", icon: "cog" },
-  { id: "sound", icon: "volume" },
   { id: "quickSend", icon: "zap" },
   { id: "models", icon: "brain" },
   { id: "search", icon: "search" },
@@ -214,7 +212,7 @@ export const PAGE_META: ReadonlyArray<PageEntry> = [
     sections: [
       { id: "appearance", labelKey: "settings.appearanceSection" },
       { id: "themes", labelKey: "settings.customizationThemes" },
-      { id: "soundPacks", labelKey: "settings.customizationSoundPacks" },
+      { id: "soundCues", labelKey: "settings.customizationSoundCues" },
     ],
   },
 ];
@@ -523,15 +521,6 @@ export function SettingsModal({
           <div className="settings-body" ref={setBodyEl}>
             {page === "general" && <PageGeneral />}
             {page === "quickSend" && <PageQuickSend settings={settings} onSave={onSave} />}
-            {page === "sound" && (
-              <PageSound
-                settings={settings}
-                onSave={onSave}
-                onPickSound={onPickSound}
-                onCreatePack={onCreateSoundPack}
-                onRemovePack={onRemoveSoundPack}
-              />
-            )}
             {page === "search" && (
               <PageSearch
                 settings={settings}
@@ -657,6 +646,11 @@ export function SettingsModal({
                 customFontFamily={customFontFamily}
                 onSetCustomFontFamily={onSetCustomFontFamily}
                 onResetWindowState={onResetWindowState}
+                settings={settings}
+                onSave={onSave}
+                onPickSound={onPickSound}
+                onCreatePack={onCreateSoundPack}
+                onRemovePack={onRemoveSoundPack}
               />
             )}
           </div>
@@ -4230,9 +4224,9 @@ const THEME_STYLE_ORDER: ReadonlyArray<ThemeStyle> = [...THEME_STYLES].sort(
   (a, b) => Number(themeForStyle(a) === THEME.DARK) - Number(themeForStyle(b) === THEME.DARK),
 );
 
-/** Customization: one page holding the app's look. Appearance carries the controls that used
- *  to sit on the General page, Themes the style picker that used to sit in the status bar,
- *  and Sound packs is a named placeholder. */
+/** Customization: one page holding the app's look and its sound. Appearance carries the
+ *  controls that used to sit on the General page, Themes the style picker that used to sit in
+ *  the status bar, and Sound cues the pack cards that used to be a page of their own. */
 function PageCustomization({
   textSizePx,
   onSetTextSize,
@@ -4243,6 +4237,11 @@ function PageCustomization({
   customFontFamily,
   onSetCustomFontFamily,
   onResetWindowState,
+  settings,
+  onSave,
+  onPickSound,
+  onCreatePack,
+  onRemovePack,
 }: {
   textSizePx: number;
   onSetTextSize: (size: number) => void;
@@ -4253,6 +4252,12 @@ function PageCustomization({
   customFontFamily: string;
   onSetCustomFontFamily: (family: string) => void;
   onResetWindowState: () => void;
+  settings: SettingsType;
+  onSave: (patch: SettingsPatch) => void;
+  /** Opens the desktop file dialog for one cue's audio. */
+  onPickSound: () => Promise<string | null>;
+  onCreatePack: (draft: SoundPackDraft) => void;
+  onRemovePack: (id: string) => void;
 }) {
   const [customFontDraft, setCustomFontDraft] = useState(customFontFamily);
   useEffect(() => {
@@ -4263,6 +4268,14 @@ function PageCustomization({
     setCustomFontDraft(next);
     onSetCustomFontFamily(next);
   };
+  const packs = useMemo(() => mergeSoundPacks(settings.soundPacks), [settings.soundPacks]);
+  const activeId = resolveSoundPackId(settings.soundPackId, packs);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  // Every card tests its own cues, so warm all packs on open: a test then plays on the
+  // first click instead of only decoding the audio after it.
+  useEffect(() => {
+    for (const pack of packs) preloadSoundPack(pack.id);
+  }, [packs]);
   return (
     <div className="page-customization">
       <section
@@ -4384,18 +4397,43 @@ function PageCustomization({
 
       <section
         className="section settings-section"
-        data-section="soundPacks"
-        aria-labelledby="settings-section-soundPacks"
+        data-section="soundCues"
+        aria-labelledby="settings-section-soundCues"
       >
-        <h3 className="stitle" id="settings-section-soundPacks">
-          {t("settings.customizationSoundPacks")}
+        <h3 className="stitle" id="settings-section-soundCues">
+          {t("settings.customizationSoundCues")}
         </h3>
         <div className="setting-row">
           <div className="l">
-            <div className="h">{t("settings.customizationEmpty")}</div>
+            <div className="h">{t("settings.soundSectionHint")}</div>
           </div>
+          <button type="button" className="btn small" onClick={() => setWizardOpen(true)}>
+            <I.plus size={12} /> {t("settings.soundPackNew")}
+          </button>
         </div>
+        {packs.map((pack) => (
+          <SoundPackCard
+            key={pack.id}
+            pack={pack}
+            active={pack.id === activeId}
+            settings={settings}
+            onSave={onSave}
+            onSelect={() => onSave({ soundPackId: pack.id })}
+            onRemove={() => {
+              onRemovePack(pack.id);
+              // The silent pack is the fallback the daemon resolves a dead selection to, so
+              // make the UI show that immediately instead of on the next echo.
+              if (pack.id === activeId) onSave({ soundPackId: NOTHING_SOUND_PACK_ID });
+            }}
+          />
+        ))}
       </section>
+      <PackWizard
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        onPickSound={onPickSound}
+        onCreate={onCreatePack}
+      />
     </div>
   );
 }
@@ -4574,71 +4612,5 @@ function PackCueTable({
         })}
       </tbody>
     </table>
-  );
-}
-
-/** The desktop-notification switches. One list for the whole app: notifications are not
- *  audio, so choosing another sound pack can never silence them. *//** Settings > Sound: the pack cues play through, each card holding that pack's own cue
- *  audio. Packs render from the shipped folders, the implicit silent pack and the ones this
- *  user created, so a new pack adds a card. That switch is also the notification gate: one
- *  Off/On per pack per cue, no second matrix above it. */
-function PageSound({
-  settings,
-  onSave,
-  onPickSound,
-  onCreatePack,
-  onRemovePack,
-}: {
-  settings: SettingsType;
-  onSave: (patch: SettingsPatch) => void;
-  /** Opens the desktop file dialog for one cue's audio. */
-  onPickSound: () => Promise<string | null>;
-  onCreatePack: (draft: SoundPackDraft) => void;
-  onRemovePack: (id: string) => void;
-}) {
-  const packs = useMemo(() => mergeSoundPacks(settings.soundPacks), [settings.soundPacks]);
-  const activeId = resolveSoundPackId(settings.soundPackId, packs);
-  const [wizardOpen, setWizardOpen] = useState(false);
-  // Every card tests its own cues, so warm all packs on open: a test then plays on the
-  // first click instead of only decoding the audio after it.
-  useEffect(() => {
-    for (const pack of packs) preloadSoundPack(pack.id);
-  }, [packs]);
-  return (
-    <>
-      <section className="section">
-        <div className="stitle">{t("settings.soundSection")}</div>
-        <div className="setting-row">
-          <div className="l">
-            <div className="h">{t("settings.soundSectionHint")}</div>
-          </div>
-          <button type="button" className="btn small" onClick={() => setWizardOpen(true)}>
-            <I.plus size={12} /> {t("settings.soundPackNew")}
-          </button>
-        </div>
-        {packs.map((pack) => (
-          <SoundPackCard
-            key={pack.id}
-            pack={pack}
-            active={pack.id === activeId}
-            settings={settings}
-            onSave={onSave}
-            onSelect={() => onSave({ soundPackId: pack.id })}
-            onRemove={() => {
-              onRemovePack(pack.id);
-              // The silent pack is the fallback the daemon resolves a dead selection to, so
-              // make the UI show that immediately instead of on the next echo.
-              if (pack.id === activeId) onSave({ soundPackId: NOTHING_SOUND_PACK_ID });
-            }}
-          />
-        ))}
-      </section>
-      <PackWizard
-        open={wizardOpen}
-        onClose={() => setWizardOpen(false)}
-        onPickSound={onPickSound}
-        onCreate={onCreatePack}
-      />
-    </>
   );
 }

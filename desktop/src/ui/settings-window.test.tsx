@@ -181,7 +181,7 @@ describe("Settings section index", () => {
     expect(kids, "the open page renders no index").toBeTruthy();
     expect(
       Array.from(kids?.querySelectorAll(".row.kid") ?? []).map((row) => row.textContent),
-    ).toEqual(["Appearance", "Themes", "Sound packs"]);
+    ).toEqual(["Appearance", "Themes", "Sound cues"]);
     // The page is the page: its title is the page's, not a section's.
     expect(screen.getByRole("heading", { name: "Customization" })).toBeTruthy();
   });
