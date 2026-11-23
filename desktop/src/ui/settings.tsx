@@ -72,7 +72,7 @@ import {
 } from "../protocol";
 import { useRateClock } from "../rate-clock";
 import { NOTHING_SOUND_PACK_ID, type SoundPackSpec, resolveSoundPackId } from "../sound-packs";
-import { FONT_FAMILY, type FontFamily } from "../theme";
+import { FONT_FAMILY, FONT_FAMILY_STACK, type FontFamily } from "../theme";
 import { TEXT_SIZE_RANGE, clampTextSizePx } from "../typography";
 import { mergeSoundPacks } from "../user-sound-packs";
 import { AudioRecorder } from "../voice/audio-recorder";
@@ -965,41 +965,14 @@ function PageSearch({
   );
 }
 
-/** One segmented setting row: a label, a hint, and the options that set the value. */
-function SegmentedSetting<T extends string>({
-  label,
-  hint,
-  value,
-  options,
-  onSelect,
-}: {
-  label: string;
-  hint?: string;
-  value: T;
-  options: ReadonlyArray<{ value: T; label: string }>;
-  onSelect: (next: T) => void;
-}) {
-  return (
-    <div className="setting-row">
-      <div className="l">
-        <div className="n">{label}</div>
-        <div className="h">{hint}</div>
-      </div>
-      <div className="seg-ctrl">
-        {options.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            data-on={value === option.value}
-            onClick={() => onSelect(option.value)}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
+/** The font-family picker, system first: it is the one that matches the OS. Each row in the
+ *  menu previews its own face; custom has no known stack, so it previews the one in force. */
+const FONT_FAMILY_CHOICES: ReadonlyArray<{ value: FontFamily; labelKey: TKey }> = [
+  { value: FONT_FAMILY.SYSTEM, labelKey: "settings.fontFamilySystem" },
+  { value: FONT_FAMILY.SANS, labelKey: "settings.fontFamilySans" },
+  { value: FONT_FAMILY.SERIF, labelKey: "settings.fontFamilySerif" },
+  { value: FONT_FAMILY.CUSTOM, labelKey: "settings.fontFamilyCustom" },
+];
 
 function PageGeneral({
   textSizePx,
@@ -1049,18 +1022,35 @@ function PageGeneral({
             <span className="text-size-value">{textSizePx} px</span>
           </div>
         </div>
-        <SegmentedSetting
-          label={t("settings.fontFamily")}
-          hint={t("settings.fontFamilyHint")}
-          value={fontFamily}
-          onSelect={onSetFontFamily}
-          options={[
-            { value: FONT_FAMILY.SANS, label: t("settings.fontFamilySans") },
-            { value: FONT_FAMILY.SYSTEM, label: t("settings.fontFamilySystem") },
-            { value: FONT_FAMILY.SERIF, label: t("settings.fontFamilySerif") },
-            { value: FONT_FAMILY.CUSTOM, label: t("settings.fontFamilyCustom") },
-          ]}
-        />
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.fontFamily")}</div>
+            <div className="h">{t("settings.fontFamilyHint")}</div>
+          </div>
+          <select
+            className="field font-family-select"
+            aria-label={t("settings.fontFamily")}
+            value={fontFamily}
+            onChange={(e) => onSetFontFamily(e.target.value as FontFamily)}
+          >
+            {FONT_FAMILY_CHOICES.map((choice) => (
+              <option
+                key={choice.value}
+                value={choice.value}
+                // Each row previews its own face. Custom has no known stack, so it keeps the
+                // one in force, which is what picking it will leave you with.
+                style={{
+                  fontFamily:
+                    choice.value === FONT_FAMILY.CUSTOM
+                      ? undefined
+                      : FONT_FAMILY_STACK[choice.value],
+                }}
+              >
+                {t(choice.labelKey)}
+              </option>
+            ))}
+          </select>
+        </div>
         {fontFamily === FONT_FAMILY.CUSTOM && (
           <div className="setting-row">
             <div className="l">

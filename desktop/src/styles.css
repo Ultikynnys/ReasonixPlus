@@ -7332,6 +7332,10 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--fg);
   font-variant-numeric: tabular-nums;
 }
+/* The font-family picker previews each face, so it needs the room to show one. */
+.font-family-select {
+  min-width: 200px;
+}
 /* Scaffold page split into sections: each is tall enough that the page scrolls, and a rule
  * separates the parts so they read as one page rather than three. */
 .settings-section {
