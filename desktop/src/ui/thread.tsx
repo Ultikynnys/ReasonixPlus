@@ -971,7 +971,7 @@ export function CheckpointApprovalCard({
         <>
           <Markdown source={c.result} />
           {c.notes ? (
-            <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--muted)" }}>
+            <div style={{ marginTop: 8, fontSize: "var(--fs-11-5)", color: "var(--muted)" }}>
               <Markdown source={c.notes} />
             </div>
           ) : null}
@@ -1152,7 +1152,7 @@ export function RevisionApprovalCard({
             <Markdown source={r.reason} />
           </div>
           {r.summary ? (
-            <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
+            <div style={{ fontSize: "var(--fs-11-5)", color: "var(--muted)", marginBottom: 8 }}>
               <Markdown source={r.summary} />
             </div>
           ) : null}
@@ -1330,7 +1330,7 @@ function QuestionTimerRow({
         alignItems: "center",
         justifyContent: "space-between",
         marginBottom: 2,
-        fontSize: 11.5,
+        fontSize: "var(--fs-11-5)",
         color: active ? "var(--tone-warn)" : "var(--muted)",
       }}
     >
@@ -1342,7 +1342,7 @@ function QuestionTimerRow({
       <button
         type="button"
         className="mini-btn"
-        style={{ fontSize: 11, cursor: "pointer", padding: "1px 6px" }}
+        style={{ fontSize: "var(--fs-11)", cursor: "pointer", padding: "1px 6px" }}
         onClick={() => {
           const next = !timerDisabled;
           setTimerDisabled(next);
@@ -1369,7 +1369,9 @@ function ChoiceOptionText({
         {chosen ? " ✓" : ""}
       </div>
       {option.summary ? (
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{option.summary}</div>
+        <div style={{ fontSize: "var(--fs-11)", color: "var(--muted)", marginTop: 2 }}>
+          {option.summary}
+        </div>
       ) : null}
     </div>
   );

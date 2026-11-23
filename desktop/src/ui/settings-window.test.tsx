@@ -23,8 +23,8 @@ const settings: Settings = {
 
 const baseProps = {
   settings,
-  fontScale: "medium" as const,
-  onSetFontScale: vi.fn(),
+  textSizePx: 14,
+  onSetTextSize: vi.fn(),
   fontFamily: "sans" as const,
   onSetFontFamily: vi.fn(),
   customFontFamily: "",
@@ -153,11 +153,10 @@ describe("Settings section index", () => {
 });
 
 describe("Settings frame", () => {
-  it("keeps one share of the window at every font scale", () => {
-    // The font scale is a `zoom` on the root, which multiplies `vw` and `vh` too. Without
-    // dividing it back out the same window showed three frames: 840x563 at small, 960x643
-    // at medium, 1080x724 at large. jsdom serves `import.meta.url` over http, so the sheet
-    // is located from the test file's own path.
+  it("keeps one share of the window, with nothing multiplying it", () => {
+    // The type scale is a root font size now, so the frame needs no divisor: it was a `zoom`
+    // that made `vw`/`vh` grow with the text. jsdom serves `import.meta.url` over http, so
+    // the sheet is located from the test file's own path.
     const testPath = expect.getState().testPath;
     expect(testPath, "vitest must report the running test file").toBeTruthy();
     const css = readFileSync(resolve(dirname(testPath ?? ""), "../styles.css"), "utf8");
@@ -165,11 +164,13 @@ describe("Settings frame", () => {
     expect(rule, "styles.css has no .settings rule").not.toBeNull();
     const body = rule?.[1] ?? "";
 
-    expect(body).toMatch(/width:\s*calc\(92vw\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
-    expect(body).toMatch(/height:\s*calc\(90vh\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
-    // A px cap is what made the frame follow the font scale.
+    expect(body).toMatch(/width:\s*92vw/);
+    expect(body).toMatch(/height:\s*90vh/);
+    expect(body).not.toMatch(/--ui-zoom/);
+    // A px cap or a calc would let something other than the window decide the frame.
     expect(body).not.toMatch(/(width|height):\s*min\(/);
     expect(body).not.toMatch(/(width|height):\s*\d+px/);
+    expect(body).not.toMatch(/(width|height):\s*calc\(/);
   });
 
   it("gives the category nav a fixed column, not a share of the frame", () => {
@@ -191,8 +192,9 @@ describe("Settings frame", () => {
     expect(rule, "styles.css has no full-bleed rule").not.toBeNull();
     const body = rule?.[1] ?? "";
 
-    expect(body).toMatch(/width:\s*calc\(100vw\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
-    expect(body).toMatch(/height:\s*calc\(100vh\s*\/\s*var\(--ui-zoom,\s*1\)\)/);
+    expect(body).toMatch(/width:\s*100vw/);
+    expect(body).toMatch(/height:\s*100vh/);
+    expect(body).not.toMatch(/--ui-zoom/);
     expect(body).toMatch(/border-radius:\s*0/);
   });
 });

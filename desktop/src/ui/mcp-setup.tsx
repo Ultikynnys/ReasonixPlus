@@ -249,7 +249,7 @@ const HEADER_STYLE: CSSProperties = {
   flexShrink: 0,
 };
 
-const TITLE_STYLE: CSSProperties = { margin: "0 0 6px", fontSize: 13, fontWeight: 600 };
+const TITLE_STYLE: CSSProperties = { margin: "0 0 6px", fontSize: "var(--fs-13)", fontWeight: 600 };
 
 /** The footer: the subagent flag on the left, the confirm on the right, outside the columns
  *  so neither the flag nor the confirm can be scrolled away. */

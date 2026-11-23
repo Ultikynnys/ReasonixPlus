@@ -1486,7 +1486,7 @@ function CtxToggleRow({
       <div className="h">
         <span>{label}</span>
         <span className="right">
-          <div className="seg-ctrl" style={{ fontSize: "10.5px" }}>
+          <div className="seg-ctrl" style={{ fontSize: "var(--fs-10-5)" }}>
             <button
               type="button"
               aria-label={onAriaLabel}
@@ -1508,7 +1508,9 @@ function CtxToggleRow({
           </div>
         </span>
       </div>
-      <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+      <div
+        style={{ fontSize: "var(--fs-11)", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}
+      >
         {desc}
       </div>
     </div>
@@ -1703,7 +1705,14 @@ function CtxParameters({
           ) : null
         }
         desc={
-          <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>
+          <div
+            style={{
+              fontSize: "var(--fs-11)",
+              color: "var(--muted)",
+              marginTop: 6,
+              lineHeight: 1.4,
+            }}
+          >
             {t("contextPanel.duplicateSessionLimitDesc")}
           </div>
         }
@@ -2545,7 +2554,7 @@ function CtxRules({
                 </div>
               ))}
               {section.rules.length === 0 && !adding && (
-                <div style={{ color: "var(--muted)", fontSize: 12, padding: "4px 0" }}>
+                <div style={{ color: "var(--muted)", fontSize: "var(--fs-12)", padding: "4px 0" }}>
                   {t(section.emptyKey)}
                 </div>
               )}

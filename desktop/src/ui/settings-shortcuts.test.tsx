@@ -25,8 +25,8 @@ const settings: Settings = {
 
 const baseProps = {
   settings,
-  fontScale: "medium" as const,
-  onSetFontScale: vi.fn(),
+  textSizePx: 14,
+  onSetTextSize: vi.fn(),
   fontFamily: "sans" as const,
   onSetFontFamily: vi.fn(),
   customFontFamily: "",

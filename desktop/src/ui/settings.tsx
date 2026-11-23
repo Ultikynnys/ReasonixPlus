@@ -72,7 +72,8 @@ import {
 } from "../protocol";
 import { useRateClock } from "../rate-clock";
 import { NOTHING_SOUND_PACK_ID, type SoundPackSpec, resolveSoundPackId } from "../sound-packs";
-import { FONT_FAMILY, FONT_SCALE, type FontFamily, type FontScale } from "../theme";
+import { FONT_FAMILY, type FontFamily } from "../theme";
+import { TEXT_SIZE_RANGE, clampTextSizePx } from "../typography";
 import { mergeSoundPacks } from "../user-sound-packs";
 import { AudioRecorder } from "../voice/audio-recorder";
 import {
@@ -221,8 +222,8 @@ function pageDescKey(id: PageId): TKey {
 
 export function SettingsModal({
   settings,
-  fontScale,
-  onSetFontScale,
+  textSizePx,
+  onSetTextSize,
   fontFamily,
   onSetFontFamily,
   customFontFamily,
@@ -303,8 +304,8 @@ export function SettingsModal({
   onRefreshChangelog,
 }: {
   settings: SettingsType;
-  fontScale: FontScale;
-  onSetFontScale: (scale: FontScale) => void;
+  textSizePx: number;
+  onSetTextSize: (size: number) => void;
   fontFamily: FontFamily;
   onSetFontFamily: (family: FontFamily) => void;
   customFontFamily: string;
@@ -510,8 +511,8 @@ export function SettingsModal({
           <div className="settings-body" ref={setBodyEl}>
             {page === "general" && (
               <PageGeneral
-                fontScale={fontScale}
-                onSetFontScale={onSetFontScale}
+                textSizePx={textSizePx}
+                onSetTextSize={onSetTextSize}
                 fontFamily={fontFamily}
                 onSetFontFamily={onSetFontFamily}
                 customFontFamily={customFontFamily}
@@ -1001,16 +1002,16 @@ function SegmentedSetting<T extends string>({
 }
 
 function PageGeneral({
-  fontScale,
-  onSetFontScale,
+  textSizePx,
+  onSetTextSize,
   fontFamily,
   onSetFontFamily,
   customFontFamily,
   onSetCustomFontFamily,
   onResetWindowState,
 }: {
-  fontScale: FontScale;
-  onSetFontScale: (scale: FontScale) => void;
+  textSizePx: number;
+  onSetTextSize: (size: number) => void;
   fontFamily: FontFamily;
   onSetFontFamily: (family: FontFamily) => void;
   customFontFamily: string;
@@ -1030,17 +1031,24 @@ function PageGeneral({
     <div className="page-general">
       <section className="section">
         <div className="stitle">{t("settings.appearanceSection")}</div>
-        <SegmentedSetting
-          label={t("settings.fontScale")}
-          hint={t("settings.fontScaleHint")}
-          value={fontScale}
-          onSelect={onSetFontScale}
-          options={[
-            { value: FONT_SCALE.SMALL, label: t("settings.fontScaleSmall") },
-            { value: FONT_SCALE.MEDIUM, label: t("settings.fontScaleMedium") },
-            { value: FONT_SCALE.LARGE, label: t("settings.fontScaleLarge") },
-          ]}
-        />
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.textSize")}</div>
+            <div className="h">{t("settings.textSizeHint")}</div>
+          </div>
+          <div className="text-size-control">
+            <input
+              type="range"
+              min={TEXT_SIZE_RANGE.min}
+              max={TEXT_SIZE_RANGE.max}
+              step={TEXT_SIZE_RANGE.step}
+              value={textSizePx}
+              aria-label={t("settings.textSize")}
+              onChange={(e) => onSetTextSize(clampTextSizePx(Number(e.target.value)))}
+            />
+            <span className="text-size-value">{textSizePx} px</span>
+          </div>
+        </div>
         <SegmentedSetting
           label={t("settings.fontFamily")}
           hint={t("settings.fontFamilyHint")}
@@ -1168,7 +1176,7 @@ function PageQuickSend({
       )}
 
       {(settings.quickSends ?? []).length === 0 && (
-        <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
+        <div style={{ color: "var(--muted)", fontSize: "var(--fs-12)", marginBottom: 12 }}>
           {t("settings.quickSendNoCustom")}
         </div>
       )}
@@ -2119,7 +2127,7 @@ function TitleNote({ tone, children }: { tone?: "accent"; children: ReactNode })
       style={{
         color: tone === "accent" ? "var(--accent)" : "var(--muted)",
         marginLeft: 6,
-        fontSize: 11,
+        fontSize: "var(--fs-11)",
       }}
     >
       {children}
@@ -2884,7 +2892,7 @@ function MailStatusLine({
     <div
       style={{
         marginTop: 8,
-        fontSize: 11,
+        fontSize: "var(--fs-11)",
         color:
           mail?.phase === "error"
             ? "var(--danger)"
@@ -2975,7 +2983,7 @@ function PageFallbacks({
       </div>
 
       {list.length === 0 && (
-        <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
+        <div style={{ color: "var(--muted)", fontSize: "var(--fs-12)", marginBottom: 12 }}>
           {enabled.size === 0
             ? t("settings.fallbacksNeedsEnabledModels")
             : t("settings.fallbacksEmpty")}
@@ -3106,7 +3114,7 @@ function ServerAuthRow({
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span
           style={{
-            fontSize: 11,
+            fontSize: "var(--fs-11)",
             color: signedIn ? "var(--accent)" : "var(--muted)",
           }}
         >
@@ -3146,7 +3154,7 @@ function McpToolList({ tools }: { tools: string[] }) {
       <button
         type="button"
         className="btn ghost"
-        style={{ fontSize: 11, paddingLeft: 0 }}
+        style={{ fontSize: "var(--fs-11)", paddingLeft: 0 }}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
@@ -3155,7 +3163,7 @@ function McpToolList({ tools }: { tools: string[] }) {
       </button>
       {open ? (
         names.length === 0 ? (
-          <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+          <div style={{ marginTop: 4, fontSize: "var(--fs-11)", color: "var(--muted)" }}>
             {t("settings.mcpToolsEmpty")}
           </div>
         ) : (
@@ -3174,7 +3182,7 @@ function McpToolList({ tools }: { tools: string[] }) {
                 style={{
                   maxWidth: "100%",
                   overflowWrap: "anywhere",
-                  fontSize: 11,
+                  fontSize: "var(--fs-11)",
                   background: "var(--panel)",
                   border: "1px solid var(--border)",
                   borderRadius: 4,
@@ -3385,7 +3393,7 @@ export function PageMCP({
           </button>
         ) : null}
       </div>
-      <div style={{ marginTop: 8, fontSize: 11, color: "var(--muted)" }}>
+      <div style={{ marginTop: 8, fontSize: "var(--fs-11)", color: "var(--muted)" }}>
         {extensionStatus
           ? extensionStatus.server.configured
             ? `✓ ${t("settings.mcpConfiguredMode", { mode: configuredMode ? modeLabel(configuredMode) : "…" })}${
@@ -3429,7 +3437,7 @@ export function PageMCP({
         })}
       </div>
       {connection ? (
-        <div style={{ marginTop: 4, fontSize: 11, color: connection.color }}>
+        <div style={{ marginTop: 4, fontSize: "var(--fs-11)", color: connection.color }}>
           {connection.text}
           {playwrightSpec?.status === "failed" &&
           /Node\.js is outdated/i.test(playwrightSpec.statusReason ?? "") ? (
@@ -3447,7 +3455,7 @@ export function PageMCP({
       ) : null}
       {installRunning ? (
         <div className="playwright-download-box">
-          <output style={{ marginBottom: 4, fontSize: 11, color: "var(--muted)" }}>
+          <output style={{ marginBottom: 4, fontSize: "var(--fs-11)", color: "var(--muted)" }}>
             {t("settings.mcpBrowserInstalling", { browser: modeLabel(browserInstall.browser) })} ·{" "}
             <span>
               {browserInstall.source === "backup"
@@ -3500,7 +3508,7 @@ export function PageMCP({
         <div
           style={{
             marginTop: 4,
-            fontSize: 11,
+            fontSize: "var(--fs-11)",
             color: browserInstall.ok ? "var(--accent)" : "var(--danger)",
           }}
         >
@@ -3510,14 +3518,14 @@ export function PageMCP({
         </div>
       ) : null}
       {extensionMode && extensionCheck?.phase === "running" ? (
-        <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+        <div style={{ marginTop: 4, fontSize: "var(--fs-11)", color: "var(--muted)" }}>
           {t("settings.mcpTestRunning")}
         </div>
       ) : extensionCheck?.phase === "done" ? (
         <div
           style={{
             marginTop: 4,
-            fontSize: 11,
+            fontSize: "var(--fs-11)",
             color: extensionCheck.ok ? "var(--accent)" : "var(--danger)",
           }}
         >
@@ -3527,7 +3535,7 @@ export function PageMCP({
         </div>
       ) : null}
       {extensionMode || mode === "cdp" ? (
-        <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+        <div style={{ marginTop: 4, fontSize: "var(--fs-11)", color: "var(--muted)" }}>
           {t(extensionMode ? "settings.mcpTokenHint" : "settings.mcpCdpHint")}
         </div>
       ) : null}
@@ -3560,7 +3568,7 @@ export function PageMCP({
             {t("settings.gmailMailDesc")}
           </div>
           <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
-            <label style={{ fontSize: 11, color: "var(--muted)" }}>
+            <label style={{ fontSize: "var(--fs-11)", color: "var(--muted)" }}>
               {t("settings.gmailClientIdLabel")}
               <input
                 type="text"
@@ -3573,7 +3581,7 @@ export function PageMCP({
                 onChange={(event) => setGmailClientId(event.target.value)}
               />
             </label>
-            <label style={{ fontSize: 11, color: "var(--muted)" }}>
+            <label style={{ fontSize: "var(--fs-11)", color: "var(--muted)" }}>
               {t("settings.gmailClientSecretLabel")}
               <input
                 type="password"
@@ -3608,7 +3616,7 @@ export function PageMCP({
             }
           />
           <MailStatusLine provider={MailProvider.Gmail} mail={mail} />
-          <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+          <div style={{ marginTop: 4, fontSize: "var(--fs-11)", color: "var(--muted)" }}>
             {t("settings.gmailCallbackHint", { url: mail?.callbackUrl ?? "" })}
           </div>
         </div>
@@ -3625,14 +3633,14 @@ export function PageMCP({
           />
           {mail?.userCode ? (
             <div style={{ marginTop: 10 }}>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
+              <div style={{ fontSize: "var(--fs-11)", color: "var(--muted)", marginBottom: 4 }}>
                 {t("settings.outlookMailCodeLabel")}
               </div>
-              <code style={{ fontSize: 18, userSelect: "all" }}>{mail.userCode}</code>
+              <code style={{ fontSize: "var(--fs-18)", userSelect: "all" }}>{mail.userCode}</code>
             </div>
           ) : null}
           <MailStatusLine provider={MailProvider.Outlook} mail={mail} />
-          <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+          <div style={{ marginTop: 4, fontSize: "var(--fs-11)", color: "var(--muted)" }}>
             {t("settings.outlookMailPrivacy")}
           </div>
         </div>
@@ -3645,11 +3653,11 @@ export function PageMCP({
         <div className="stitle">
           {t("settings.mcpConfigured", { count: ownSpecs.length })}
           {bridged ? (
-            <span style={{ color: "var(--accent)", marginLeft: 8, fontSize: 11 }}>
+            <span style={{ color: "var(--accent)", marginLeft: 8, fontSize: "var(--fs-11)" }}>
               {t("settings.mcpBridged")}
             </span>
           ) : (
-            <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: 11 }}>
+            <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: "var(--fs-11)" }}>
               {t("settings.mcpNotBridged")}
             </span>
           )}
@@ -3661,7 +3669,7 @@ export function PageMCP({
               background: "var(--card)",
               border: "1px solid var(--border)",
               borderRadius: 10,
-              fontSize: 12,
+              fontSize: "var(--fs-12)",
               color: "var(--muted)",
             }}
           >
@@ -3719,7 +3727,7 @@ export function PageMCP({
               {s.tools ? (
                 <McpToolList tools={s.tools} />
               ) : (
-                <div style={{ marginTop: 8, fontSize: 11, color: "var(--muted)" }}>
+                <div style={{ marginTop: 8, fontSize: "var(--fs-11)", color: "var(--muted)" }}>
                   {t("settings.mcpToolsUnavailable")}
                 </div>
               )}
@@ -3814,7 +3822,7 @@ export function PagePlugins({
               background: "var(--card)",
               border: "1px solid var(--border)",
               borderRadius: 10,
-              fontSize: 12,
+              fontSize: "var(--fs-12)",
               color: "var(--muted)",
             }}
           >
@@ -3912,7 +3920,9 @@ function PluginCard({
         </div>
       ) : null}
       {byline ? (
-        <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>{byline}</div>
+        <div style={{ marginTop: 4, fontSize: "var(--fs-11)", color: "var(--muted)" }}>
+          {byline}
+        </div>
       ) : null}
       {plugin.capabilities.length > 0 ? (
         <div className="tools-list">
@@ -3941,10 +3951,14 @@ function PluginCard({
             return (
               <div key={server.name}>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <code style={{ fontSize: 11 }}>{mcpServerLabel(server)}</code>
-                  <span style={{ fontSize: 11, color: "var(--muted)" }}>{server.transport}</span>
+                  <code style={{ fontSize: "var(--fs-11)" }}>{mcpServerLabel(server)}</code>
+                  <span style={{ fontSize: "var(--fs-11)", color: "var(--muted)" }}>
+                    {server.transport}
+                  </span>
                   <span className="grow" />
-                  <span style={{ fontSize: 11, color: status.color }}>{status.text}</span>
+                  <span style={{ fontSize: "var(--fs-11)", color: status.color }}>
+                    {status.text}
+                  </span>
                 </div>
                 <ServerAuthRow
                   name={server.name}
@@ -3998,10 +4012,10 @@ function PluginSkillList({ skills }: { skills: PluginSkillInfo[] }) {
             </div>
             {group.map((skill) => (
               <div key={skill.name} style={{ marginBottom: 8 }}>
-                <code style={{ fontSize: 11 }} title={skill.path}>
+                <code style={{ fontSize: "var(--fs-11)" }} title={skill.path}>
                   {skill.name}
                 </code>
-                <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
+                <div style={{ fontSize: "var(--fs-11)", color: "var(--muted)", lineHeight: 1.5 }}>
                   {skill.description}
                 </div>
               </div>
@@ -4051,7 +4065,7 @@ export function PageSkills({
               background: "var(--card)",
               border: "1px solid var(--border)",
               borderRadius: 10,
-              fontSize: 12,
+              fontSize: "var(--fs-12)",
               color: "var(--muted)",
             }}
           >
@@ -4157,9 +4171,9 @@ function SkillGroupCard({
         {group.skills.map((skill) => (
           <div key={skill.id} style={{ marginBottom: 10 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <code style={{ fontSize: 11 }}>{skill.name}</code>
+              <code style={{ fontSize: "var(--fs-11)" }}>{skill.name}</code>
               {skill.active ? (
-                <span style={{ fontSize: 11, color: "var(--accent)" }}>
+                <span style={{ fontSize: "var(--fs-11)", color: "var(--accent)" }}>
                   {t("settings.skillsActiveHere")}
                 </span>
               ) : null}

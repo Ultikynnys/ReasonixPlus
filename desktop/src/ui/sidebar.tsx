@@ -255,7 +255,7 @@ export function Sidebar({
             <div
               style={{
                 padding: "12px 8px",
-                fontSize: 11,
+                fontSize: "var(--fs-11)",
                 color: "var(--muted-2)",
                 fontFamily: "Geist Mono, monospace",
               }}
@@ -266,7 +266,7 @@ export function Sidebar({
             <div
               style={{
                 padding: "12px 8px",
-                fontSize: 11,
+                fontSize: "var(--fs-11)",
                 color: "var(--muted-2)",
                 fontFamily: "Geist Mono, monospace",
               }}

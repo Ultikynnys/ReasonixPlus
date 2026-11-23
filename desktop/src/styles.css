@@ -2,6 +2,30 @@
    Reasonix+ — multi-provider desktop UI
    ============================================================ */
 
+/* Type ladder. Every text size in this file is a share of the thread's text, which is
+ * `html`'s font size (14px at rest, moved by the Settings slider). Sizes stay in one table
+ * so the relation between them cannot drift, and no other length uses `rem`, so the
+ * chrome's paddings and widths keep their proportions while the type grows. */
+:root {
+  --fs-8: 0.5714rem; /* 8px */
+  --fs-9: 0.6429rem; /* 9px */
+  --fs-10: 0.7143rem; /* 10px */
+  --fs-10-5: 0.75rem; /* 10.5px */
+  --fs-11: 0.7857rem; /* 11px */
+  --fs-11-5: 0.8214rem; /* 11.5px */
+  --fs-12: 0.8571rem; /* 12px */
+  --fs-12-5: 0.8929rem; /* 12.5px */
+  --fs-13: 0.9286rem; /* 13px */
+  --fs-13-5: 0.9643rem; /* 13.5px */
+  --fs-14: 1rem; /* 14px, the thread's own text */
+  --fs-15: 1.0714rem; /* 15px */
+  --fs-17: 1.2143rem; /* 17px */
+  --fs-18: 1.2857rem; /* 18px */
+  --fs-22: 1.5714rem; /* 22px */
+  --fs-27: 1.9286rem; /* 27px */
+  --fs-30: 2.1429rem; /* 30px */
+}
+
 *,
 *::before,
 *::after {
@@ -17,9 +41,15 @@ body,
   overflow: hidden;
 }
 
+html {
+  /* The slider in Settings > General writes this value. It is the only px text size left,
+   * because every other one is a share of it. */
+  font-size: 14px;
+}
+
 body {
   font-family: var(--font-sans, "Geist", system-ui, sans-serif);
-  font-size: 14px;
+  font-size: var(--fs-14);
   line-height: 1.5;
   color: var(--fg);
   background: var(--bg);
@@ -48,7 +78,7 @@ body[data-drag-over="1"]::after {
   place-items: center;
   background: oklch(20% 0.006 255 / 0.6);
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
   border: 2px dashed var(--accent);
   z-index: 9999;
@@ -727,7 +757,7 @@ html[data-platform="macos"] .app {
   min-width: 0;
   max-width: 240px;
   flex: 0 0 auto;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
   border-right: 1px solid transparent;
   border-left: 1px solid transparent;
@@ -793,7 +823,7 @@ html[data-platform="macos"] .app {
   gap: 3px;
 }
 .ctx-tab-count {
-  font-size: 10px;
+  font-size: var(--fs-10);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--accent);
@@ -877,7 +907,7 @@ html[data-platform="macos"] .app {
 }
 
 .setup-title {
-  font-size: 30px;
+  font-size: var(--fs-30);
   line-height: 1.1;
   font-weight: 700;
   letter-spacing: -0.03em;
@@ -886,7 +916,7 @@ html[data-platform="macos"] .app {
 
 .setup-description {
   max-width: 520px;
-  font-size: 15px;
+  font-size: var(--fs-15);
   line-height: 1.7;
   color: var(--muted);
   text-wrap: balance;
@@ -936,7 +966,7 @@ html[data-platform="macos"] .app {
 }
 
 .setup-info-label {
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -945,7 +975,7 @@ html[data-platform="macos"] .app {
 
 .setup-info-value {
   margin-top: 4px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   line-height: 1.6;
   color: var(--fg);
   word-break: break-word;
@@ -962,7 +992,7 @@ html[data-platform="macos"] .app {
 }
 
 .setup-field-label {
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--fg-2);
 }
@@ -1050,7 +1080,7 @@ html[data-platform="macos"] .app {
   background: var(--bg-2);
   border-bottom: 1px solid var(--border);
   user-select: none;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 
 /* left cluster: sidebar toggle + brand + crumb */
@@ -1109,7 +1139,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   flex-shrink: 0;
 }
 .titlebar .brand .brand-name {
-  font-size: 13.5px;
+  font-size: var(--fs-13-5);
 }
 
 /* icon buttons inside titlebar */
@@ -1267,7 +1297,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   align-items: center;
   gap: 8px;
   padding: 0 10px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
   white-space: nowrap;
   border-radius: 6px;
@@ -1285,7 +1315,7 @@ html[data-platform="macos"] .titlebar .tb-left {
 }
 .side-head .new-btn kbd {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   background: oklch(100% 0 0 / 0.18);
   padding: 1px 5px;
   border-radius: 3px;
@@ -1296,7 +1326,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   flex-shrink: 0;
 }
 .side-head .new-btn .shortcut kbd {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
   line-height: inherit;
   color: inherit;
@@ -1372,7 +1402,7 @@ html[data-platform="macos"] .titlebar .tb-left {
 }
 .side-workspace .workspace-btn .label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
   flex: 0 0 auto;
 }
 .side-workspace .workspace-btn .name {
@@ -1380,7 +1410,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 500;
 }
 .side-workspace .workspace-btn > svg {
@@ -1400,7 +1430,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   background: var(--card);
   border: 1px solid var(--border);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-12);
   min-width: 0;
 }
 .side-workspace .open-workdir-btn svg {
@@ -1438,7 +1468,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   border-radius: 5px;
   color: var(--fg-2);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   text-align: left;
   cursor: pointer;
 }
@@ -1488,14 +1518,14 @@ html[data-platform="macos"] .titlebar .tb-left {
   border: none;
   outline: none;
   width: 100%;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .search-row input::placeholder {
   color: var(--muted-2);
 }
 .search-row .input kbd {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted-2);
   background: var(--panel-2);
   padding: 1px 4px;
@@ -1513,7 +1543,7 @@ html[data-platform="macos"] .titlebar .tb-left {
 
 .tree-empty {
   padding: 16px 10px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted-2);
 }
 
@@ -1549,11 +1579,11 @@ html[data-platform="macos"] .titlebar .tb-left {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
 }
 .tree-folder-head .tw-count {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   background: var(--panel-2);
   border-radius: 4px;
@@ -1625,7 +1655,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
 }
 .tree-session .ts-pin-ico {
@@ -1636,7 +1666,7 @@ html[data-platform="macos"] .titlebar .tb-left {
 }
 .tree-session .ts-rename-input {
   width: 100%;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
   font-family: inherit;
   background: var(--panel);
@@ -1651,7 +1681,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   display: flex;
   gap: 6px;
   align-items: center;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 1px;
 }
@@ -1672,14 +1702,14 @@ html[data-platform="macos"] .titlebar .tb-left {
   align-items: center;
   gap: 6px;
   padding: 10px 8px 4px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--muted);
 }
 .list-head .count {
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
@@ -1777,7 +1807,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
 }
 .list-row .body .title-row {
@@ -1798,7 +1828,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   border-radius: 4px;
   color: var(--muted);
   font-family: "Geist Mono", monospace;
-  font-size: 10px;
+  font-size: var(--fs-10);
   line-height: 1.4;
   white-space: nowrap;
 }
@@ -1815,7 +1845,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   align-items: center;
   gap: 6px;
   margin-top: 1px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
   /* One line, always: a wrapped strip is what made the row two rows tall and the
    *  list jump while a session streamed. The parts ellipsize; nothing wraps. */
@@ -1956,7 +1986,7 @@ html[data-platform="macos"] .titlebar .tb-left {
 }
 /* A column is half the panel, so a plan row is set one step denser than a session row. */
 .ctx-plan-row .body .title {
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 
 /* ---- session delete confirmation popover (right-click) ---- */
@@ -1970,7 +2000,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   padding: 12px;
   min-width: 220px;
   max-width: 280px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg);
   animation: rise 0.16s ease-out;
 }
@@ -1985,12 +2015,12 @@ html[data-platform="macos"] .titlebar .tb-left {
 .session-delete-popover .msg .name {
   color: var(--fg);
   font-weight: 500;
-  font-size: 13px;
+  font-size: var(--fs-13);
   word-break: break-all;
 }
 .session-delete-popover .msg .note {
   color: var(--muted-2);
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 .session-delete-popover .actions {
   display: flex;
@@ -2004,7 +2034,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   gap: 4px;
   padding: 6px 0;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
@@ -2049,7 +2079,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   gap: 8px;
   padding: 6px 8px;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   cursor: pointer;
 }
@@ -2063,7 +2093,7 @@ html[data-platform="macos"] .titlebar .tb-left {
 .side-foot .row .right {
   margin-left: auto;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 
@@ -2080,7 +2110,7 @@ html[data-platform="macos"] .titlebar .tb-left {
   line-height: 1.25;
   font-variant-numeric: tabular-nums;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--fg-2);
   background: linear-gradient(180deg, var(--card), var(--panel));
   border: 1px solid var(--border);
@@ -2192,7 +2222,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 10px;
   margin: 6px 0 2px;
   color: var(--muted-2);
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-family: inherit;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -2211,7 +2241,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 8px;
   margin: 4px 0;
   color: var(--muted-2);
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-family: inherit;
   opacity: 0.7;
 }
@@ -2352,7 +2382,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   justify-content: space-between;
   margin-top: 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-variant-numeric: tabular-nums;
 }
 .presented-audio-volume {
@@ -2485,7 +2515,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .presented-file-size,
 .presented-file-status {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 .presented-file-status {
   grid-column: 1 / -1;
@@ -2553,7 +2583,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .msg-text {
   position: relative;
-  font-size: 14px;
+  font-size: var(--fs-14);
   line-height: 1.72;
   color: var(--fg);
   text-wrap: pretty;
@@ -2715,7 +2745,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   width: max-content;
   min-width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 .markdown-table-wrap th {
   text-align: left;
@@ -2724,7 +2754,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   background: var(--panel-2);
   padding: 7px 12px;
   border: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-12);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -2759,7 +2789,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 4px;
   padding: 3px 7px;
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
   background: var(--card);
   border: 1px solid var(--border);
@@ -2794,7 +2824,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 4px;
   padding: 3px 7px;
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
   background: var(--card);
   border: 1px solid var(--border);
@@ -2838,7 +2868,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 
 .diff-stats {
   padding: 2px 18px 2px 0;
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-family: Geist Mono, monospace;
 }
 .diff-stats-head {
@@ -2904,7 +2934,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   font-family: "Geist Mono", monospace;
   font-variant-ligatures: none;
   font-feature-settings: "liga" 0, "calt" 0;
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 1.62;
   overflow-x: auto;
   white-space: pre;
@@ -2931,7 +2961,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   padding: 2px 8px;
   background: transparent;
   font-family: "Geist Mono", monospace;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
 }
 .markdown .codeblock-head .codeblock-copy-wrap {
@@ -2950,7 +2980,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   width: 22px;
   height: 22px;
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
   background: transparent;
   border: none;
@@ -2971,7 +3001,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   font-family: "Geist Mono", monospace;
   font-variant-ligatures: none;
   font-feature-settings: "liga" 0, "calt" 0;
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 1.62;
   overflow-x: auto;
   white-space: pre;
@@ -2988,7 +3018,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   text-align: right;
   color: var(--muted-2);
   user-select: none;
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 .markdown .codeview-line-content {
   flex: 1 1 auto;
@@ -3061,7 +3091,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .file-pill-matches-label {
   padding: 2px 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 .file-pill-matches button {
   overflow: hidden;
@@ -3096,7 +3126,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   background: var(--card);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  font-size: 14px;
+  font-size: var(--fs-14);
   box-shadow: var(--shadow-sm);
 }
 
@@ -3109,7 +3139,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   row-gap: 3px;
   padding: 10px 14px;
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: var(--fs-13-5);
   color: var(--fg-2);
   cursor: pointer;
   user-select: none;
@@ -3137,14 +3167,14 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   text-transform: lowercase;
   color: var(--muted);
   letter-spacing: 0.02em;
-  font-size: 12px;
+  font-size: var(--fs-12);
   flex-shrink: 0;
   white-space: nowrap;
 }
 .card-head .name {
   color: var(--fg);
   font-weight: 500;
-  font-size: 13px;
+  font-size: var(--fs-13);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3166,7 +3196,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   padding-left: calc(var(--head-icon) + var(--head-gap));
   min-width: 0;
   color: var(--fg-2);
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 .card-head .grow {
   flex: 1;
@@ -3177,7 +3207,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 6px;
   align-items: center;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
   /* Shrinkable: a long chip (a command line, a path) trims itself instead of
      shoving the title and the chevron off the card. */
   min-width: 0;
@@ -3203,13 +3233,13 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   --head-icon: 16px;
   --head-gap: 7px;
   padding: 5px 12px;
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 .card.is-compact .card-head .ico {
   border-radius: 5px;
 }
 .card.is-compact .card-head .name {
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 
 /* ---- Process group (thinking + tool calls folded after the conclusion) ---- */
@@ -3248,7 +3278,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 5px;
   padding: 5px 13px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--fg-2);
   background: var(--card);
   border: 1px solid var(--border);
@@ -3343,7 +3373,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   /* A column is half the panel: the head shrinks to keep the count and trash beside the
      label instead of wrapping. */
   padding: 0 0 2px;
-  font-size: 11px;
+  font-size: var(--fs-11);
   letter-spacing: 0.02em;
 }
 .ctx-plan-col .list-head > span:first-child {
@@ -3354,7 +3384,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .ctx-plan-col .list-head .count {
   padding: 0 4px;
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 .ctx-plan-rows {
   display: flex;
@@ -3375,7 +3405,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .ctx-plan-progress {
   color: var(--muted);
   font-family: "Geist Mono", monospace;
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 /* The header trash removes every plan, so it hovers danger like the rows' X. */
 .ctx-plan-split .clear-all-btn:hover {
@@ -3416,7 +3446,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 .ctx-plan-step[data-state="done"] .ctx-plan-check {
   color: var(--success);
@@ -3429,16 +3459,16 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .ctx-plan-title {
   color: var(--fg);
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 .ctx-plan-action {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-11);
   margin-top: 2px;
 }
 .ctx-plan-result {
   color: var(--fg-2);
-  font-size: 11px;
+  font-size: var(--fs-11);
   margin-top: 4px;
   white-space: pre-wrap;
 }
@@ -3506,7 +3536,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 
 .plan-item .text {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg);
 }
 .plan-item[data-status="done"] .text {
@@ -3516,7 +3546,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .plan-item .sub {
   margin-top: 3px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   font-family: inherit;
   display: flex;
@@ -3531,7 +3561,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   color: var(--fg-2);
 }
 .plan-item .stat {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-family: inherit;
   color: var(--muted);
   margin-top: 4px;
@@ -3566,7 +3596,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   --scroll-line: 1.7;
   font-family: var(--font-sans, "Geist", system-ui, sans-serif);
   font-style: italic;
-  font-size: 13.5px;
+  font-size: var(--fs-13-5);
   color: var(--fg-2);
   position: relative;
   padding-left: 14px;
@@ -3591,7 +3621,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   margin-top: 10px;
   display: flex;
   gap: 10px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-family: inherit;
   color: var(--muted);
 }
@@ -3603,7 +3633,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 
 .shell {
   font-family: "Geist Mono", monospace;
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 .shell .cmd {
   padding: 11px 14px;
@@ -3625,7 +3655,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   line-height: 1.55;
 }
 .shell .cmd .tag {
-  font-size: 11px;
+  font-size: var(--fs-11);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   padding: 2px 6px;
@@ -3645,7 +3675,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   color: var(--fg-2);
   white-space: pre-wrap;
   border-top: 1px solid var(--border);
-  font-size: 13px;
+  font-size: var(--fs-13);
   /* Match the code-view: no programming ligatures, so `===` / `!==` / `=>`
      render as literal glyphs in captured command output instead of joined
      shapes that read as corrupted syntax. */
@@ -3668,7 +3698,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border-top: 1px solid var(--border);
 }
 .approve-row .why {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   flex: 1;
   font-family: var(--font-sans, "Geist", system-ui, sans-serif);
@@ -3695,7 +3725,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border-radius: 6px;
   background: none;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-family: var(--font-sans, "Geist", system-ui, sans-serif);
   white-space: nowrap;
   cursor: pointer;
@@ -3722,7 +3752,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .btn {
   padding: 5px 12px;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
   font-family: var(--font-sans, "Geist", system-ui, sans-serif);
   border: 1px solid var(--border-strong);
@@ -3778,7 +3808,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .btn kbd {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   opacity: 0.7;
   background: oklch(100% 0 0 / 0.15);
   border-radius: 3px;
@@ -3793,7 +3823,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 
 .diff {
   font-family: "Geist Mono", monospace;
-  font-size: 14px;
+  font-size: var(--fs-14);
   line-height: 1.55;
 }
 .diff .filename {
@@ -3835,7 +3865,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   padding: 0 6px;
   text-align: right;
   color: var(--muted-2);
-  font-size: 14px;
+  font-size: var(--fs-14);
   user-select: none;
 }
 .diff .ln .code {
@@ -3859,7 +3889,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .diff .ln.hunk {
   background: var(--panel);
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-14);
   padding: 2px 8px;
   grid-template-columns: 1fr;
 }
@@ -3873,7 +3903,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .tool-call {
   padding: 10px 14px 12px;
   font-family: "Geist Mono", monospace;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
 }
 /* Rendered-page screenshot a web tool reported, above the args/result rows. */
 .card-preview {
@@ -3907,7 +3937,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   display: flex;
   gap: 8px;
   font-family: "Geist Mono", monospace;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
 }
 .tool-preview-host {
@@ -3971,7 +4001,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   align-items: center;
   justify-content: center;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   flex-shrink: 0;
 }
@@ -3981,14 +4011,14 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .attach-card .info .n {
   font-weight: 500;
-  font-size: 14px;
+  font-size: var(--fs-14);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .attach-card .info .m {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 2px;
 }
@@ -4018,18 +4048,18 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   flex-wrap: wrap;
 }
 .sub-section-title {
-  font-size: 10px;
+  font-size: var(--fs-10);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
 }
 .sub-section-note {
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
 }
 .sub-instruction {
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -4042,7 +4072,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   flex-wrap: wrap;
 }
 .sub-tools-list {
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--fg-2);
   overflow-wrap: anywhere;
 }
@@ -4063,7 +4093,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   min-width: 0;
 }
 .sub-run-state {
-  font-size: 10px;
+  font-size: var(--fs-10);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -4079,7 +4109,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   color: var(--danger);
 }
 .sub-run-stats {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -4094,14 +4124,14 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   align-items: center;
   justify-content: center;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
   flex-shrink: 0;
 }
 .sub-row .prog {
   margin-left: auto;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 
@@ -4115,7 +4145,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border-bottom: 1px solid var(--border);
 }
 .sub-result-state {
-  font-size: 10px;
+  font-size: var(--fs-10);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -4143,7 +4173,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   min-width: 0;
 }
 .sub-did-value {
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.45;
   color: var(--fg-2);
   overflow-wrap: anywhere;
@@ -4154,14 +4184,14 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .sub-result-error {
   font-family: "Geist Mono", monospace;
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.45;
   color: var(--danger);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .sub-result-note {
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.45;
   color: var(--muted);
 }
@@ -4176,7 +4206,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   flex-direction: column;
   gap: 4px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 .sub-activity-row {
   display: flex;
@@ -4214,7 +4244,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   background: var(--danger);
 }
 .sub-activity-tag {
-  font-size: 10px;
+  font-size: var(--fs-10);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--muted);
@@ -4226,7 +4256,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   white-space: nowrap;
   color: var(--fg-2);
   font-family: "Geist Mono", monospace;
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 
 /* ---- Cache / token card (inline strip) ---- */
@@ -4239,7 +4269,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border-bottom: 1px dashed var(--border);
   margin: 4px 0;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 .metric-strip .item {
@@ -4289,7 +4319,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .mem-row .scope {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--violet);
   background: var(--violet-soft);
   padding: 1px 5px;
@@ -4298,14 +4328,14 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   flex-shrink: 0;
 }
 .mem-row .txt {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   line-height: 1.5;
 }
 .mem-detail,
 .mem-textarea {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.5;
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -4329,7 +4359,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .mem-action {
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-11);
   line-height: 1;
   padding: 3px 6px;
   border: 1px solid var(--border);
@@ -4354,7 +4384,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-11);
   cursor: pointer;
 }
 .mem-del:hover {
@@ -4368,7 +4398,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   gap: 8px;
   margin: 0 12px 8px;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   border-radius: 6px;
   background: var(--ok-soft, rgba(34, 197, 94, 0.12));
   color: var(--ok, #22c55e);
@@ -4382,7 +4412,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   background: transparent;
   color: inherit;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 .mem-new {
   display: block;
@@ -4394,7 +4424,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   background: transparent;
   color: var(--fg-2);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-12);
   cursor: pointer;
   text-align: left;
 }
@@ -4421,7 +4451,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-12);
   padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -4430,7 +4460,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 }
 .mem-scope {
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-12);
   padding: 4px 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -4458,7 +4488,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   max-height: 50vh;
   resize: vertical;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-12);
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -4482,7 +4512,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
   border: 1px dashed var(--border-strong);
   border-radius: 999px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   align-self: center;
   background: var(--bg-2);
@@ -4501,7 +4531,7 @@ html:not([data-platform="macos"]) .shortcut kbd[data-key="mod"] {
 .notice-body {
   padding: 10px 12px;
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -4559,14 +4589,14 @@ html[data-platform="macos"] .startup-loading-overlay {
 }
 
 .startup-loading-title {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
   color: var(--fg);
   line-height: 1.3;
 }
 
 .startup-loading-sub {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
   line-height: 1.3;
 }
@@ -4590,13 +4620,13 @@ html[data-platform="macos"] .startup-loading-overlay {
 .startup-failure-kicker {
   margin: 0 0 8px;
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 700;
   text-transform: uppercase;
 }
 .startup-failure h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: var(--fs-22);
   line-height: 1.2;
 }
 .startup-failure p {
@@ -4613,7 +4643,7 @@ html[data-platform="macos"] .startup-loading-overlay {
   color: var(--danger);
   padding: 12px;
   font-family: "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.5;
 }
 .startup-failure button {
@@ -4784,7 +4814,7 @@ html[data-platform="macos"] .startup-loading-overlay {
   border: none;
   outline: none;
   padding: 12px 14px 6px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   line-height: 1.55;
   /* One row at rest, growing with the text up to four rows, then scrolling. The
      18px is the vertical padding (12px top + 6px bottom). */
@@ -4816,7 +4846,7 @@ html[data-platform="macos"] .startup-loading-overlay {
 .composer-foot .cf-btn {
   padding: 5px 8px;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   display: inline-flex;
   align-items: center;
@@ -4840,7 +4870,7 @@ html[data-platform="macos"] .startup-loading-overlay {
 .composer-foot .model-pill {
   padding: 4px 8px;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -4881,7 +4911,7 @@ html[data-platform="macos"] .startup-loading-overlay {
   width: 18px;
   height: 13px;
   padding: 1px 1px 0 0;
-  font-size: 8px;
+  font-size: var(--fs-8);
   font-weight: 700;
   line-height: 1;
   color: var(--fg-2);
@@ -5042,7 +5072,7 @@ html[data-platform="macos"] .startup-loading-overlay {
   color: #fff;
   padding: 4px 8px;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: var(--fs-11);
   white-space: nowrap;
   pointer-events: none;
   z-index: 100;
@@ -5062,7 +5092,7 @@ html[data-platform="macos"] .startup-loading-overlay {
   align-items: baseline;
   gap: 8px;
   min-width: 0;
-  font-size: 11px;
+  font-size: var(--fs-11);
   line-height: 1.3;
   color: var(--fg-2);
   font-variant-numeric: tabular-nums;
@@ -5135,7 +5165,7 @@ html[data-platform="macos"] .startup-loading-overlay {
 .popup .ph {
   padding: 8px 12px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   border-bottom: 1px solid var(--border);
 }
@@ -5158,7 +5188,7 @@ html[data-platform="macos"] .startup-loading-overlay {
   background: none;
   color: var(--muted);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   cursor: pointer;
   transition: color 120ms;
 }
@@ -5204,20 +5234,20 @@ html[data-platform="macos"] .startup-loading-overlay {
   align-items: center;
   gap: 6px;
   padding: 6px 8px 2px;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .model-menu-error {
   padding: 2px 8px 6px;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--danger);
 }
 .model-menu-note {
   margin-left: auto;
   padding: 2px 0 0;
-  font-size: 10px;
+  font-size: var(--fs-10);
   color: var(--muted);
   text-transform: none;
   letter-spacing: 0;
@@ -5247,7 +5277,7 @@ html[data-platform="macos"] .startup-loading-overlay {
   padding: 7px 8px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .popup-item:hover,
 .popup-item[data-active="true"] {
@@ -5285,7 +5315,7 @@ html[data-platform="macos"] .startup-loading-overlay {
   flex: none;
   align-self: center;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   padding: 1px 5px;
   border-radius: 3px;
   background: var(--violet-soft);
@@ -5305,7 +5335,7 @@ html[data-platform="macos"] .startup-loading-overlay {
 }
 .popup-item .desc {
   display: block;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5313,7 +5343,7 @@ html[data-platform="macos"] .startup-loading-overlay {
 }
 .popup-item .kb {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted-2);
   background: var(--panel-2);
   padding: 1px 5px;
@@ -5350,7 +5380,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .ctx-tab {
   position: relative;
   padding: 5px 8px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--muted);
   border-radius: 5px 5px 0 0;
   font-family: inherit;
@@ -5368,7 +5398,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   flex-direction: column;
   vertical-align: middle;
   margin-left: 5px;
-  font-size: 9px;
+  font-size: var(--fs-9);
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
@@ -5396,7 +5426,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .ctx-block .h {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted-2);
@@ -5439,7 +5469,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .ctx .git-kind {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: var(--fs-10);
   font-weight: 700;
   letter-spacing: 0.03em;
   padding: 0 5px;
@@ -5456,7 +5486,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .ctx .git-branch {
   flex: 0 0 auto;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-10);
   font-weight: 600;
   letter-spacing: 0.02em;
   padding: 0 5px;
@@ -5504,7 +5534,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   margin-top: 8px;
   flex-wrap: wrap;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .legend .l {
   display: inline-flex;
@@ -5535,7 +5565,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 /* Second legend row: what the reserved bucket is made of (skills, tools, memory scopes, prompt). */
 .legend.legend-sub {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   gap: 10px;
 }
 .legend.legend-sub .v {
@@ -5592,7 +5622,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .ctx-slider-bounds {
   display: flex;
   justify-content: space-between;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   padding: 0 1px;
@@ -5606,7 +5636,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .ollama-help {
   margin: -2px 0 10px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.4;
 }
 .ollama-presets {
@@ -5620,7 +5650,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-radius: 5px;
   background: var(--panel-2);
   color: var(--fg-2);
-  font-size: 11px;
+  font-size: var(--fs-11);
   padding: 3px 8px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -5647,7 +5677,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   justify-content: space-between;
   gap: 10px;
   color: var(--fg-2);
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 .ollama-field-control {
   display: flex;
@@ -5677,7 +5707,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .ollama-advanced summary {
   color: var(--muted-2);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-12);
   margin-bottom: 8px;
   user-select: none;
 }
@@ -5685,7 +5715,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 /* file tree */
 .tree {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .tree .node {
   display: flex;
@@ -5729,7 +5759,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
 }
 .tree .node .dot {
@@ -5762,7 +5792,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 
 .ctx-empty {
   padding: 8px 4px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   font-family: inherit;
 }
@@ -5782,7 +5812,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-radius: 6px;
   background: var(--card);
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg);
   cursor: pointer;
   text-align: left;
@@ -5804,7 +5834,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .ctx-group-count {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
 }
 .ctx-group-body {
@@ -5813,7 +5843,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-left: 2px solid var(--border);
 }
 .ctx-group-meta {
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
   margin-bottom: 6px;
 }
@@ -5871,7 +5901,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .ctx-evt-time {
   flex-shrink: 0;
   font-family: "Geist Mono", monospace;
-  font-size: 10px;
+  font-size: var(--fs-10);
   color: var(--muted-2);
   font-variant-numeric: tabular-nums;
 }
@@ -5905,7 +5935,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   padding: 1px 7px;
   border: 1px solid currentColor;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--fs-10);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -5916,7 +5946,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .ctx-evt-label {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--fg-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5943,7 +5973,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .ctx-evt-line {
   display: flex;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--fg-2);
 }
 .ctx-evt-key {
@@ -5953,7 +5983,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .ctx-evt-detail {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--fg-2);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -5964,7 +5994,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   display: flex;
   gap: 8px;
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--fg-2);
 }
 .ctx-evt-result .ctx-evt-detail {
@@ -5979,7 +6009,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--fg-2);
 }
 .ctx-evt-options {
@@ -6044,12 +6074,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   min-width: 0;
 }
 .mcp-row .body .n {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
 }
 .mcp-row .body .m {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 1px;
 }
@@ -6074,7 +6104,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--panel-2);
   color: var(--muted);
   font-family: inherit;
-  font-size: 10px;
+  font-size: var(--fs-10);
   line-height: 1.2;
   text-transform: uppercase;
   overflow: hidden;
@@ -6099,7 +6129,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--card);
   border: 1px solid var(--border);
   margin-bottom: 6px;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .rule .top {
   display: flex;
@@ -6108,7 +6138,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .rule .pat {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--success);
 }
 .rule .pat.deny {
@@ -6143,7 +6173,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .rule .sw,
 .rule-composer .sw {
-  font-size: 14px;
+  font-size: var(--fs-14);
   padding: 1px 6px;
   border-radius: 999px;
   background: var(--success-soft);
@@ -6200,7 +6230,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .rules-copy-pop .note {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-11);
   padding: 2px 6px 6px;
 }
 .rules-copy-pop .item {
@@ -6212,7 +6242,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: transparent;
   color: var(--fg);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-12);
   text-align: left;
   cursor: pointer;
 }
@@ -6231,7 +6261,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: transparent;
   color: var(--fg);
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-11);
   text-transform: none;
   letter-spacing: normal;
   cursor: pointer;
@@ -6250,14 +6280,14 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 /* Mode rules: patterns wrap in a compact mono face instead of overflowing. */
 .mode-rules .desc.pattern {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   line-height: 1.45;
   word-break: break-word;
 }
 .rule .desc {
   margin-top: 4px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .rule-composer {
   margin-top: 10px;
@@ -6274,7 +6304,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-12);
   padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -6283,7 +6313,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .rule-select {
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-12);
   padding: 4px 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -6300,7 +6330,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--bg-2);
   border-top: 1px solid var(--border);
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   padding: 0 10px;
   gap: 2px;
@@ -6331,7 +6361,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .statusbar .seg .v .conv {
   opacity: 0.6;
   margin-left: 5px;
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 .statusbar .seg .v.warn {
   color: var(--warning);
@@ -6365,7 +6395,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   width: 280px;
   font-family: var(--font-sans, "Geist", system-ui, sans-serif);
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--fs-14);
   z-index: 20;
 }
 .theme-pop {
@@ -6389,14 +6419,14 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-bottom: 1px solid var(--border);
 }
 .theme-pop-head .tt {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
   color: var(--fg);
 }
 .theme-pop-head .ss {
   margin-left: auto;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 .theme-pop-list {
   display: grid;
@@ -6430,12 +6460,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 1px;
 }
 .theme-pop-item .nm {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
   color: var(--fg);
 }
 .theme-pop-item .md {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
   text-transform: uppercase;
 }
@@ -6461,7 +6491,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 
 /* approval pill (e.g. running, complete) */
 .pill-tag {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-family: inherit;
   padding: 1px 6px;
   border-radius: 999px;
@@ -6500,7 +6530,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 
 .meta-label {
-  font-size: 10px;
+  font-size: var(--fs-10);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   line-height: 1;
@@ -6508,14 +6538,14 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 
 .meta-dur {
-  font-size: 10px;
+  font-size: var(--fs-10);
   color: var(--muted-2);
   font-variant-numeric: tabular-nums;
 }
 
 /* how a card was dispatched — one shared wave of work, or a call that ran on its own */
 .meta-dispatch {
-  font-size: 10px;
+  font-size: var(--fs-10);
   letter-spacing: 0.03em;
   color: var(--muted-2);
   border: 1px solid var(--border);
@@ -6547,7 +6577,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border: 1px solid var(--border-strong);
   box-shadow: 0 6px 18px oklch(0% 0 0 / 0.35);
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 500;
   pointer-events: none;
 }
@@ -6633,7 +6663,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--panel);
   border: 1px solid var(--border);
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   align-self: flex-start;
 }
@@ -6706,7 +6736,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-radius: 0 8px 8px 0;
   font-family: "Geist", "Inter", serif;
   font-style: italic;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   line-height: 1.65;
   position: relative;
@@ -6718,7 +6748,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .live-reason .head {
   font-family: inherit;
   font-style: normal;
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--violet);
@@ -6749,7 +6779,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 8px;
   padding: 9px 12px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
 }
 .skel-card .h .ico {
@@ -6771,7 +6801,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .skel-card .h .timer {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 .skel-card .body {
   padding: 10px 12px 12px;
@@ -6839,7 +6869,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   min-width: 0;
   padding: 0 6px 6px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted-2);
 }
 .composer-busy-pip {
@@ -6887,7 +6917,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .band-hints kbd {
   min-width: 0;
   padding: 0 4px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   border: 1px solid var(--border);
   border-radius: 3px;
   background: var(--panel);
@@ -6897,7 +6927,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   display: flex;
   align-items: center;
   padding: 0 6px 6px;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 
 .composer-queued {
@@ -6907,7 +6937,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   flex-wrap: wrap;
   padding: 4px 6px 6px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .composer-queued-label {
   color: var(--muted-2);
@@ -6984,7 +7014,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--panel);
   border: 1px solid var(--border);
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
 }
 .queue-strip .pip {
@@ -7006,7 +7036,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   align-items: center;
   gap: 6px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   padding: 1px 8px;
   border-radius: 999px;
@@ -7083,7 +7113,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   align-items: center;
   gap: 6px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 4px;
 }
@@ -7120,13 +7150,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   }
 }
 
-/* A fixed share of the window, whatever the font scale. The font scale is applied as
- * `zoom` on the root, which multiplies `vw`/`vh` as well, so the frame divides it back
- * out through `--ui-zoom` (set beside `zoom` in App.tsx). Without the divisor the same
- * window showed three frames: 840x563 at small, 960x643 at medium, 1080x724 at large. */
+/* A fixed share of the window. The type scale is a root font size, so nothing multiplies
+ * `vw`/`vh` here: 92% of the window stays 92% at every text size. */
 .settings {
-  width: calc(92vw / var(--ui-zoom, 1));
-  height: calc(90vh / var(--ui-zoom, 1));
+  width: 92vw;
+  height: 90vh;
   background: var(--bg);
   border: 1px solid var(--border-strong);
   border-radius: 14px;
@@ -7141,8 +7169,8 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 /* A window narrower than 70% of the screen gains nothing from the margins: the frame takes
  * the whole viewport instead. `data-full` comes from `useFullBleed` in settings-frame.ts. */
 .settings[data-full] {
-  width: calc(100vw / var(--ui-zoom, 1));
-  height: calc(100vh / var(--ui-zoom, 1));
+  width: 100vw;
+  height: 100vh;
   border: none;
   border-radius: 0;
 }
@@ -7155,7 +7183,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .settings-side .sg {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted-2);
@@ -7167,7 +7195,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 10px;
   padding: 7px 10px;
   border-radius: 6px;
-  font-size: 15px;
+  font-size: var(--fs-15);
   color: var(--fg-2);
   cursor: pointer;
 }
@@ -7195,7 +7223,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .settings-side .row .kbd {
   margin-left: auto;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted-2);
 }
 /* Subcategories hang off their parent behind a guide line, so they read as one group rather
@@ -7208,7 +7236,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .settings-side .row.kid {
   position: relative;
   padding: 6px 8px;
-  font-size: 15px;
+  font-size: var(--fs-15);
   color: var(--muted);
 }
 .settings-side .row.kid:hover {
@@ -7244,14 +7272,14 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-bottom: 1px solid var(--border);
 }
 .settings-head h2 {
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 600;
   margin: 0;
   letter-spacing: -0.01em;
 }
 .settings-head .desc {
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-14);
   margin-top: 2px;
 }
 .settings-head .grow {
@@ -7280,6 +7308,23 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .section {
   margin-bottom: 22px;
 }
+/* The text size slider: the value keeps a fixed slot so the row does not twitch while the
+ * handle moves. */
+.text-size-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.text-size-control input[type="range"] {
+  width: 160px;
+}
+.text-size-value {
+  min-width: 46px;
+  text-align: right;
+  font-size: var(--fs-12);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 /* Scaffold page split into sections: each is tall enough that the page scrolls, and a rule
  * separates the parts so they read as one page rather than three. */
 .settings-section {
@@ -7290,7 +7335,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   padding-top: 18px;
 }
 .section .stitle {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -7310,7 +7355,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--fg-2);
   padding: 8px 10px;
   border-radius: 8px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-family: inherit;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
@@ -7403,11 +7448,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   align-self: flex-start;
 }
 .setting-row .l .n {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
 }
 .setting-row .l .h {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 2px;
   line-height: 1.5;
@@ -7448,7 +7493,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 2px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-family: inherit;
 }
 .seg-ctrl button {
@@ -7493,12 +7538,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 8px;
 }
 .style-name {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
 }
 .style-mode {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
   text-transform: uppercase;
 }
@@ -7514,7 +7559,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .style-desc {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.35;
 }
 .style-card[data-style="graphite"] .style-swatches span:nth-child(1),
@@ -7716,7 +7761,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border: 1px solid var(--border);
   background: var(--card);
   outline: none;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .field:focus {
   border-color: var(--accent);
@@ -7760,11 +7805,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .scard .nm {
   font-weight: 500;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .scard .sub {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 2px;
 }
@@ -7784,7 +7829,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   word-break: break-word;
 }
 .scard .desc {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   margin-top: 10px;
   line-height: 1.55;
@@ -7804,7 +7849,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .scard .tools-list span {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   background: var(--panel);
   border: 1px solid var(--border);
   padding: 1px 6px;
@@ -7870,20 +7915,20 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   cursor: default;
 }
 .provider-head-actions .seg-ctrl {
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 .provider-head-actions .seg-ctrl button {
   padding: 3px 8px;
 }
 /* Header marker for the card that is already the selected one (search engines). */
 .card-active-pill {
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 600;
   color: var(--accent);
 }
 .card-hint,
 .section-hint {
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--muted);
   line-height: 1.5;
 }
@@ -7906,7 +7951,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .feedback-cues-table th {
   text-align: left;
   padding: 4px 12px 8px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 500;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -7925,18 +7970,18 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   min-width: 220px;
 }
 .feedback-cues-table .feedback-cue-name .n {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
 }
 .feedback-cues-table .feedback-cue-name .h {
   margin-top: 2px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 1.45;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 .feedback-cues-table .seg-ctrl {
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 .feedback-cues-table .feedback-cue-volume {
   white-space: nowrap;
@@ -7952,7 +7997,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   margin-left: 8px;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 /* Create-a-pack wizard: a dialog over the Settings modal, so it stacks above it. */
 .pack-wizard-mask {
@@ -7973,19 +8018,19 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-radius: 12px;
   background: var(--card);
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .pack-wizard-head {
   margin-bottom: 12px;
 }
 .pack-wizard-head .n {
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 600;
 }
 .pack-wizard-head .h,
 .pack-wizard-field .h {
   margin-top: 2px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--muted);
   line-height: 1.45;
 }
@@ -8009,12 +8054,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   min-width: 0;
 }
 .pack-wizard-row .l .n {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
 }
 .pack-wizard-row .l .h {
   margin-top: 2px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--muted);
   line-height: 1.45;
   overflow-wrap: anywhere;
@@ -8030,7 +8075,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
 }
 .pack-wizard-foot {
@@ -8047,7 +8092,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .provider-title {
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .provider-body {
   display: grid;
@@ -8077,26 +8122,26 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 /* Plugin card skill list: one heading per directory a plugin's skills live in. */
 .skill-root {
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
   margin: 2px 0 4px;
 }
 .skill-root code {
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 /* A skill's facts: its description, any read failure, and the SKILL.md path. The same block
    sits on a skill's own card and inside the card of the install that delivered it, where it
    reads smaller because the card, not the row, is the unit. */
 .skill-facts .path {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
 }
 .skill-facts .path code {
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 .plugin-subpanel .skill-facts {
-  font-size: 11px;
+  font-size: var(--fs-11);
   line-height: 1.5;
   color: var(--muted);
 }
@@ -8108,7 +8153,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .provider-models-count {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
   margin-right: auto;
 }
 .provider-models-search {
@@ -8131,7 +8176,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   outline: none;
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: inherit;
 }
 /* Browser-native search clear is unthemed (bluish in Edge) — swap in the
@@ -8181,7 +8226,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .provider-models-empty {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
   padding: 8px 0;
 }
 @media (max-width: 860px) {
@@ -8214,7 +8259,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .mcard .nm {
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--fs-14);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -8230,14 +8275,14 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .mcard .nm .badge {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   background: var(--violet-soft);
   color: var(--violet);
   padding: 1px 5px;
   border-radius: 3px;
 }
 .mcard .desc {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin: 6px 0 10px;
   line-height: 1.5;
@@ -8247,7 +8292,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   grid-template-columns: 1fr 1fr;
   gap: 6px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .mcard .spec .k {
   color: var(--muted);
@@ -8263,16 +8308,16 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   grid-template-columns: 1fr 1fr 1fr;
   gap: 6px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .mcard .price .l {
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
 }
 .mcard .price .v {
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--fs-14);
   margin-top: 2px;
 }
 .mcard .price .v.disc {
@@ -8290,7 +8335,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   flex: 1;
 }
 .changelog-stale {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--warn, var(--muted));
 }
 .changelog-retry {
@@ -8303,7 +8348,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--bg);
   color: var(--fg-2);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-13);
   cursor: pointer;
 }
 .changelog-retry:hover:not(:disabled) {
@@ -8318,7 +8363,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   padding: 10px 0;
 }
@@ -8338,7 +8383,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 8px;
   padding: 9px 11px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .changelog-head:hover {
   background: var(--panel);
@@ -8355,7 +8400,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   font-family: var(--mono, monospace);
 }
 .changelog-badge {
-  font-size: 11px;
+  font-size: var(--fs-11);
   padding: 1px 6px;
   border-radius: 999px;
   background: var(--accent-soft);
@@ -8363,7 +8408,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .changelog-date,
 .changelog-count {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
 }
 .changelog-body {
@@ -8373,7 +8418,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   margin-top: 8px;
 }
 .changelog-section-title {
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -8390,13 +8435,13 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   align-items: baseline;
   gap: 7px;
   padding: 3px 0;
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--fg-2);
   line-height: 1.45;
 }
 .changelog-scope {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-family: var(--mono, monospace);
   color: var(--muted-2);
   background: var(--panel);
@@ -8409,18 +8454,18 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .changelog-breaking {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--danger, var(--warn, red));
 }
 .changelog-hash {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted-2);
   background: none;
   padding: 0;
 }
 .changelog-empty {
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--muted-2);
   padding: 6px 0 2px;
 }
@@ -8430,7 +8475,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px 16px;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .kbd-grid .nm {
   padding: 4px 0;
@@ -8441,7 +8486,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .kbd-grid .keys kbd {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   background: var(--panel);
   border: 1px solid var(--border);
   border-bottom-width: 2px;
@@ -8470,13 +8515,13 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .usage-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .usage-table thead th {
   text-align: left;
   padding: 6px 10px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   text-transform: uppercase;
   border-bottom: 1px solid var(--border);
@@ -8486,7 +8531,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   padding: 8px 10px;
   border-bottom: 1px dashed var(--border);
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .usage-table tbody tr:last-child td {
   border-bottom: none;
@@ -8511,7 +8556,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--accent-soft);
   border: 1px solid var(--accent);
   border-radius: 10px;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .plan-banner .ico {
   width: 26px;
@@ -8529,7 +8574,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .plan-banner .body .s {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--accent);
   margin-top: 2px;
 }
@@ -8555,7 +8600,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .plan-banner button {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--accent);
   padding: 4px 8px;
   border-radius: 6px;
@@ -8657,7 +8702,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .approval .ap-collapsed-meta {
   padding: 0 14px 10px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 /* Approval headers reuse the shared `.card-head` markup (see CardHead); the
    icon picks up the card's tone here since the root is `.approval`, not `.card`. */
@@ -8691,7 +8736,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .approval .ap-body {
   --scroll-line: 1.6;
   padding: 0 14px 10px 14px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   line-height: var(--scroll-line);
 }
@@ -8708,7 +8753,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--panel);
   padding: 1px 5px;
   border-radius: 3px;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .approval .ap-preview {
   margin: 0 14px 10px;
@@ -8716,7 +8761,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--panel);
   border-radius: 7px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   border: 1px solid var(--border);
   color: var(--fg-2);
 }
@@ -8733,7 +8778,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .approval .ap-foot .meta {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 
@@ -8764,12 +8809,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: var(--accent);
 }
 .task-card .th .tt {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
 }
 .task-card .th .ss {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 1px;
 }
@@ -8818,7 +8863,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .task-step .nx {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   padding-top: 1px;
 }
@@ -8844,7 +8889,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   position: absolute;
   inset: 0;
   color: #fff;
-  font-size: 14px;
+  font-size: var(--fs-14);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -8857,7 +8902,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   position: absolute;
   inset: 0;
   color: #fff;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -8871,7 +8916,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   position: absolute;
   inset: 0;
   color: #fff;
-  font-size: 14px;
+  font-size: var(--fs-14);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -8884,24 +8929,24 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   position: absolute;
   inset: 0;
   color: #fff;
-  font-size: 14px;
+  font-size: var(--fs-14);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .task-step .l {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg);
 }
 .task-step .l .h {
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-14);
   margin-top: 2px;
   font-family: inherit;
 }
 .task-step .t {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 
@@ -8921,18 +8966,18 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .plan-row[data-state="failed"] .check::after {
   content: "!";
   color: #fff;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 700;
 }
 .plan-row[data-state="blocked"] .check::after {
   content: "\f7";
   color: #fff;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .plan-row[data-state="skipped"] .check::after {
   content: "\2014";
   color: #fff;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .plan-row[data-state="failed"] > .body > .l {
   color: var(--st-failed);
@@ -8962,12 +9007,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   margin-top: 1px;
 }
 .warn-card .tt {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
   color: var(--fg);
 }
 .warn-card .ds {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   margin-top: 4px;
   line-height: 1.55;
@@ -8976,7 +9021,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--panel);
   padding: 1px 5px;
   border-radius: 3px;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 
 /* ============================================================
@@ -9005,7 +9050,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   color: oklch(99% 0 0);
 }
 .tip-card .head .topic {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
 }
 .tip-card .head .grow {
@@ -9013,7 +9058,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .tip-card .head .pill {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   background: var(--card);
   padding: 1px 6px;
   border-radius: 4px;
@@ -9024,14 +9069,14 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .tip-card .sec .stt {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--tone-info);
   margin-bottom: 4px;
 }
 .tip-card .sec .row {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   padding: 2px 0;
 }
@@ -9040,11 +9085,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border: 1px solid var(--border);
   padding: 1px 5px;
   border-radius: 3px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   margin-right: 8px;
 }
 .tip-card .foot {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   font-style: italic;
   padding-top: 6px;
@@ -9078,7 +9123,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   justify-content: center;
 }
 .doctor-card .dh .tt {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
 }
 .doctor-card .dh .grow {
@@ -9086,7 +9131,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .doctor-card .dh .summary {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   display: inline-flex;
   gap: 8px;
 }
@@ -9121,7 +9166,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   align-items: center;
   justify-content: center;
   color: oklch(99% 0 0);
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 700;
 }
 .doctor-row[data-s="ok"] .ic {
@@ -9137,17 +9182,17 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   content: attr(data-mark);
 }
 .doctor-row .body .nm {
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .doctor-row .body .sub {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 2px;
 }
 .doctor-row .v {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
 }
 
@@ -9171,12 +9216,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   flex: 1;
 }
 .usage-full .uh .tt {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
 }
 .usage-full .uh .ss {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 1px;
 }
@@ -9193,13 +9238,13 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .usage-full .ucol .l {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
 }
 .usage-full .ucol .v {
-  font-size: 17px;
+  font-size: var(--fs-17);
   font-weight: 600;
   margin-top: 4px;
   letter-spacing: -0.02em;
@@ -9215,7 +9260,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .usage-full .ucol .pct {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 2px;
 }
@@ -9248,7 +9293,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-top: 1px solid var(--border);
   background: var(--bg-2);
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 .usage-full .uf .x {
@@ -9278,7 +9323,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   padding: 9px 12px;
   border-bottom: 1px solid var(--border);
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
@@ -9317,7 +9362,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 10px;
   padding: 8px 14px;
   border-bottom: 1px dashed var(--border);
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   align-items: start;
 }
@@ -9332,7 +9377,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .mem-groups .mrow .meta {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 
@@ -9363,12 +9408,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   justify-content: center;
 }
 .subagent-nested .sh .nm {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
 }
 .subagent-nested .sh .ss {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 .subagent-nested .sh .grow {
@@ -9385,11 +9430,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   padding: 8px 10px;
   background: var(--bg-2);
   border: 1px solid var(--border);
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .subagent-nested .nest .lab {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
@@ -9426,17 +9471,17 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   background: var(--panel);
   padding: 1px 5px;
   border-radius: 3px;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .subagent-nested .nest .mono {
   font-family: "Geist Mono", monospace;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   white-space: pre;
 }
 .subagent-nested .nest .diffbox {
   font-family: "Geist Mono", monospace;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .subagent-nested .nest .diffbox .add {
   color: var(--tone-ok);
@@ -9469,7 +9514,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .code-search .ch .pat {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--accent);
 }
 .code-search .ch .grow {
@@ -9477,7 +9522,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .code-search .ch .stat {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 .code-search .file-block {
@@ -9490,7 +9535,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   padding: 6px 12px;
   background: var(--bg-2);
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
   display: flex;
   gap: 8px;
@@ -9504,7 +9549,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   grid-template-columns: 44px 1fr;
   gap: 8px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   padding: 3px 12px;
   align-items: center;
 }
@@ -9544,7 +9589,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   margin-bottom: 8px;
 }
 .ctx-card .h .tt {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
 }
 .ctx-card .h .grow {
@@ -9552,7 +9597,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .ctx-card .h .v {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg);
 }
 .ctx-card .h .v .mut {
@@ -9587,7 +9632,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 8px;
   margin-top: 9px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .ctx-card .legend > div {
   display: flex;
@@ -9613,7 +9658,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .ctx-card .ttop .stt {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
@@ -9625,7 +9670,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 8px;
   padding: 3px 0;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   align-items: center;
 }
 .ctx-card .ttop .row .n {
@@ -9662,7 +9707,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-radius: 10px;
   padding: 12px 14px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 .fallback-card .hd {
@@ -9691,7 +9736,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   padding: 6px 10px;
   border-radius: 999px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   border: 1px solid var(--lc-color, var(--border));
   background: var(--lc-soft, var(--bg-2));
   color: var(--lc-color, var(--fg-2));
@@ -9707,7 +9752,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .live-card .lc-body {
   color: var(--fg-2);
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 .live-card .lc-body .b {
   color: var(--lc-color);
@@ -9793,7 +9838,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   align-items: end;
   padding: 4px 6px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: oklch(99% 0 0);
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -9909,7 +9954,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg-2);
 }
 .wd-search {
@@ -9919,7 +9964,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-bottom: 1px solid var(--border);
   background: transparent;
   outline: none;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--fg);
   font-family: inherit;
 }
@@ -9947,7 +9992,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   min-width: 0;
 }
 .wd-row .b .p {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-family: inherit;
   color: var(--fg);
   white-space: nowrap;
@@ -9956,7 +10001,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 }
 .wd-row .b .br {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -10010,7 +10055,7 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   gap: 5px;
   padding: 5px 10px;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-family: inherit;
   color: var(--fg-2);
   border: 1px solid var(--border);
@@ -10048,14 +10093,14 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   align-items: center;
   gap: 8px;
   padding: 14px 16px 4px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--fg);
 }
 .pw-sub {
   margin: 0;
   padding: 0 16px 12px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.5;
   color: var(--muted);
 }
@@ -10131,14 +10176,14 @@ html[data-platform="macos"] .splash {
 }
 
 .splash-name {
-  font-size: 27px;
+  font-size: var(--fs-27);
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--fg);
 }
 .splash-sub {
   margin-top: 7px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   letter-spacing: 0.05em;
   color: var(--muted);
 }
@@ -10184,7 +10229,7 @@ html[data-platform="macos"] .splash {
 .suggestion-pill {
   border-color: transparent;
   background: var(--panel-2);
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--fg-2);
 }
 .suggestion-pill:hover {
@@ -10228,7 +10273,7 @@ html[data-platform="macos"] .splash {
 .jobs-empty {
   padding: 28px 14px;
   text-align: center;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 .jobs-head {
@@ -10249,13 +10294,13 @@ html[data-platform="macos"] .splash {
   justify-content: center;
 }
 .jobs-head .tt {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
   color: var(--fg);
 }
 .jobs-head .ss {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 2px;
 }
@@ -10274,13 +10319,13 @@ html[data-platform="macos"] .splash {
 
 .btn.sm {
   padding: 3px 8px;
-  font-size: 14px;
+  font-size: var(--fs-14);
 }
 
 .jobs-grp {
   padding: 8px 14px 2px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted-2);
@@ -10318,7 +10363,7 @@ html[data-platform="macos"] .splash {
   align-items: center;
   gap: 4px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
@@ -10331,7 +10376,7 @@ html[data-platform="macos"] .splash {
   margin-left: 4px;
   padding: 0 4px;
   border-radius: 3px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   letter-spacing: 0.04em;
   color: var(--fg-2);
   background: var(--bg-2);
@@ -10341,7 +10386,7 @@ html[data-platform="macos"] .splash {
   min-width: 0;
 }
 .jr-body .nm {
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 500;
   color: var(--fg);
   white-space: pre-wrap;
@@ -10351,7 +10396,7 @@ html[data-platform="macos"] .splash {
 .jr-body .jr-out {
   margin: 4px 0 0;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   line-height: 1.45;
   color: var(--muted);
   white-space: pre-wrap;
@@ -10360,7 +10405,7 @@ html[data-platform="macos"] .splash {
   overflow: hidden;
 }
 .jr-body .sub {
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   margin-top: 2px;
   overflow: hidden;
@@ -10373,7 +10418,7 @@ html[data-platform="macos"] .splash {
 }
 .jr-time {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted-2);
   text-align: right;
 }
@@ -10384,7 +10429,7 @@ html[data-platform="macos"] .splash {
 }
 .jr-exit {
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
   padding: 3px 8px;
 }
@@ -10405,7 +10450,7 @@ html[data-platform="macos"] .splash {
   grid-template-columns: repeat(3, 1fr);
   gap: 4px 14px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   padding: 4px 0 8px;
 }
 .kv-grid > div {
@@ -10426,7 +10471,7 @@ html[data-platform="macos"] .splash {
   color: var(--fg-2);
   border-radius: 6px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   white-space: pre;
   overflow-x: auto;
   max-height: 120px;
@@ -10442,7 +10487,7 @@ html[data-platform="macos"] .splash {
   border-top: 1px solid var(--border);
   background: var(--bg-2);
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--muted);
 }
 .jobs-foot .row {
@@ -10486,7 +10531,7 @@ html[data-platform="macos"] .splash {
   border-radius: 8px;
   color: var(--fg);
   font-family: "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 1.55;
   resize: vertical;
   tab-size: 2;
@@ -10596,7 +10641,7 @@ html[data-platform="macos"] .splash {
   box-shadow: var(--shadow-lg);
   padding: 18px 20px 20px;
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--fs-14);
   animation: rise 0.18s ease-out;
 }
 .modal-head {
@@ -10608,7 +10653,7 @@ html[data-platform="macos"] .splash {
 }
 .modal-title {
   font-weight: 600;
-  font-size: 15px;
+  font-size: var(--fs-15);
 }
 .about-modal {
   position: relative;
@@ -10620,7 +10665,7 @@ html[data-platform="macos"] .splash {
   min-width: 380px;
   max-width: 480px;
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--fs-14);
   animation: rise 0.18s ease-out;
 }
 .about-close {
@@ -10648,13 +10693,13 @@ html[data-platform="macos"] .splash {
   margin-bottom: 20px;
 }
 .about-name {
-  font-size: 22px;
+  font-size: var(--fs-22);
   font-weight: 600;
   letter-spacing: 0.2px;
   margin-bottom: 4px;
 }
 .about-tagline {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
 }
 .about-meta {
@@ -10670,14 +10715,14 @@ html[data-platform="macos"] .splash {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 .about-row .about-label {
   color: var(--muted);
 }
 .about-row .about-value {
   font-family: "Geist Mono", monospace;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--fg);
   background: var(--panel);
   padding: 2px 8px;
@@ -10691,7 +10736,7 @@ html[data-platform="macos"] .splash {
   background: transparent;
   color: var(--accent);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-13);
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 4px;
@@ -10717,7 +10762,7 @@ html[data-platform="macos"] .splash {
   background: var(--panel);
   color: var(--fg);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-13);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
 }
@@ -10735,7 +10780,7 @@ html[data-platform="macos"] .splash {
   gap: 8px;
   padding: 8px 10px;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 .about-status.ok {
   background: var(--accent-soft);
@@ -10765,7 +10810,7 @@ html[data-platform="macos"] .splash {
   background: var(--accent);
   color: oklch(99% 0 0);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-13);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
 }
@@ -10796,7 +10841,7 @@ html[data-platform="macos"] .splash {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
 }
 
@@ -10842,12 +10887,12 @@ html[data-platform="macos"] .splash {
 .memory-kind,
 .memory-path {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-10);
   color: var(--muted);
 }
 
 .memory-name {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--text);
 }
 
@@ -10856,7 +10901,7 @@ html[data-platform="macos"] .splash {
   padding: 12px;
   white-space: pre-wrap;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-11);
   line-height: 1.5;
   color: var(--text);
 }
@@ -10881,14 +10926,14 @@ html[data-platform="macos"] .splash {
 }
 
 .voice-col-title {
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--fg);
 }
 
 .voice-section-hint {
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--muted);
   line-height: 1.4;
 }
@@ -10919,7 +10964,7 @@ html[data-platform="macos"] .splash {
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 
 .voice-device-select:focus {
@@ -10944,7 +10989,7 @@ html[data-platform="macos"] .splash {
 }
 
 .voice-device-test-hint {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
   line-height: 1.4;
 }
@@ -10957,7 +11002,7 @@ html[data-platform="macos"] .splash {
 }
 
 .voice-device-test-status {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
 }
 
@@ -10989,7 +11034,7 @@ html[data-platform="macos"] .splash {
   background: var(--error-soft, rgba(239, 68, 68, 0.1));
   border: 1px solid var(--error, #ef4444);
   color: var(--error, #ef4444);
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 
 .voice-card-grid {
@@ -11024,13 +11069,13 @@ html[data-platform="macos"] .splash {
 }
 
 .voice-card-title {
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--fg);
 }
 
 .voice-badge {
-  font-size: 10px;
+  font-size: var(--fs-10);
   font-weight: 500;
   padding: 2px 6px;
   border-radius: 4px;
@@ -11044,20 +11089,20 @@ html[data-platform="macos"] .splash {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-family: var(--mono, monospace);
   color: var(--muted);
 }
 
 .voice-card-desc {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--muted);
   line-height: 1.4;
   flex: 1;
 }
 
 .voice-requirement {
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
   line-height: 1.4;
 }
@@ -11078,7 +11123,7 @@ html[data-platform="macos"] .splash {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
 }
 
@@ -11120,7 +11165,7 @@ html[data-platform="macos"] .splash {
 
 .mcp-builds-head {
   padding: 5px 10px;
-  font-size: 10px;
+  font-size: var(--fs-10);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -11141,7 +11186,7 @@ html[data-platform="macos"] .splash {
 }
 
 .mcp-build-name {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--fg);
 }
 
@@ -11152,7 +11197,7 @@ html[data-platform="macos"] .splash {
 }
 
 .mcp-build-state {
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--accent);
   white-space: nowrap;
 }
@@ -11163,13 +11208,13 @@ html[data-platform="macos"] .splash {
 
 .mcp-build-row .btn {
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 
 .voice-progress-meta {
   display: flex;
   justify-content: space-between;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
 }
 
@@ -11216,7 +11261,7 @@ html[data-platform="macos"] .splash {
 }
 
 .voice-active-label {
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 600;
   color: var(--accent);
 }
@@ -11269,7 +11314,7 @@ html[data-platform="macos"] .splash {
   border-left: 3px solid var(--accent);
   background: var(--card);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.5;
   color: var(--text);
 }
@@ -11320,7 +11365,7 @@ html[data-platform="macos"] .splash {
 .plan-rewrite-summary {
   margin-bottom: 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 .plan-rewrite-grid {
   display: grid;
@@ -11340,7 +11385,7 @@ html[data-platform="macos"] .splash {
   gap: 8px;
   margin-bottom: 4px;
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 600;
 }
 .plan-rewrite-count {
@@ -11351,7 +11396,7 @@ html[data-platform="macos"] .splash {
 .plan-rewrite-empty {
   padding: 6px 0;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
 }
 .plan-rewrite-list {
   list-style: none;
@@ -11371,7 +11416,7 @@ html[data-platform="macos"] .splash {
 .plan-diff-mark {
   color: var(--muted);
   font-family: monospace;
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 .plan-diff-content {
   min-width: 0;
@@ -11382,13 +11427,13 @@ html[data-platform="macos"] .splash {
 }
 .plan-diff-title {
   color: var(--fg-2);
-  font-size: 12px;
+  font-size: var(--fs-12);
   font-weight: 600;
 }
 .plan-diff-action {
   margin-top: 1px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
 }
 .plan-diff-meta {
   display: flex;
@@ -11397,13 +11442,13 @@ html[data-platform="macos"] .splash {
   margin-top: 3px;
 }
 .plan-diff-kind {
-  font-size: 10px;
+  font-size: var(--fs-10);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 .plan-diff-risk {
-  font-size: 10px;
+  font-size: var(--fs-10);
 }
 .plan-diff-risk-high {
   color: var(--tone-err);
@@ -11441,7 +11486,7 @@ html[data-platform="macos"] .splash {
   margin: 4px 0 0;
   padding: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-11);
   overflow-wrap: anywhere;
 }
 .plan-diff-field {

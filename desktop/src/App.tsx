@@ -146,16 +146,13 @@ import {
 import {
   FONT_FAMILY,
   FONT_FAMILY_STACK,
-  FONT_SCALE,
-  FONT_SCALE_ZOOM,
   type FontFamily,
-  type FontScale,
   type Theme,
   type ThemeStyle,
   isFontFamily,
-  isFontScale,
   themeForStyle,
 } from "./theme";
+import { readStoredTextSize, storeTextSize } from "./typography";
 import { AboutModal } from "./ui/about";
 import {
   type StatusWait,
@@ -3705,8 +3702,8 @@ interface TabRuntimeProps {
   theme: Theme;
   themeStyle: ThemeStyle;
   onSetThemeStyle: (style: ThemeStyle) => void;
-  fontScale: FontScale;
-  onSetFontScale: (scale: FontScale) => void;
+  textSizePx: number;
+  onSetTextSize: (size: number) => void;
   fontFamily: FontFamily;
   onSetFontFamily: (family: FontFamily) => void;
   customFontFamily: string;
@@ -3790,8 +3787,8 @@ const TabRuntime = memo(function TabRuntime({
   theme,
   themeStyle,
   onSetThemeStyle,
-  fontScale,
-  onSetFontScale,
+  textSizePx,
+  onSetTextSize,
   fontFamily,
   onSetFontFamily,
   customFontFamily,
@@ -5652,7 +5649,7 @@ const TabRuntime = memo(function TabRuntime({
                               padding: 12,
                               color: "var(--muted)",
                               fontFamily: "Geist Mono, monospace",
-                              fontSize: 11,
+                              fontSize: "var(--fs-11)",
                             }}
                           >
                             {t("app.connecting")}
@@ -5923,8 +5920,8 @@ const TabRuntime = memo(function TabRuntime({
         {settingsOpen && state.settings ? (
           <SettingsModal
             settings={state.settings}
-            fontScale={fontScale}
-            onSetFontScale={onSetFontScale}
+            textSizePx={textSizePx}
+            onSetTextSize={onSetTextSize}
             fontFamily={fontFamily}
             onSetFontFamily={onSetFontFamily}
             customFontFamily={customFontFamily}
@@ -6557,10 +6554,12 @@ function EmptyPanel({
       }}
     >
       <div className="empty-mark" />
-      <div style={{ fontSize: 18, fontWeight: 600, color: "var(--fg)", marginBottom: 4 }}>
+      <div
+        style={{ fontSize: "var(--fs-18)", fontWeight: 600, color: "var(--fg)", marginBottom: 4 }}
+      >
         {title}
       </div>
-      <div style={{ fontSize: 12, marginBottom: 18 }}>{hint}</div>
+      <div style={{ fontSize: "var(--fs-12)", marginBottom: 18 }}>{hint}</div>
       {children}
     </div>
   );
@@ -6610,7 +6609,7 @@ function EmptyState({
             key={s}
             type="button"
             className="btn"
-            style={{ fontSize: 11.5 }}
+            style={{ fontSize: "var(--fs-11-5)" }}
             onClick={() => onPick(s)}
           >
             {s}
@@ -6645,15 +6644,22 @@ function NeedsSetupView({
         gap: 18,
       }}
     >
-      <div style={{ fontSize: 18, fontWeight: 600 }}>{t("app.setup.welcome")}</div>
-      <div style={{ fontSize: 12.5, color: "var(--muted)", maxWidth: 460, textAlign: "center" }}>
+      <div style={{ fontSize: "var(--fs-18)", fontWeight: 600 }}>{t("app.setup.welcome")}</div>
+      <div
+        style={{
+          fontSize: "var(--fs-12-5)",
+          color: "var(--muted)",
+          maxWidth: 460,
+          textAlign: "center",
+        }}
+      >
         {t("app.setup.description")}
       </div>
       {message ? (
         <div
           role="alert"
           style={{
-            fontSize: 12.5,
+            fontSize: "var(--fs-12-5)",
             color: "var(--danger)",
             maxWidth: 460,
             textAlign: "center",
@@ -6979,10 +6985,8 @@ export function App() {
   // never mixes them up. Entries are seeded on $tab_opened and dropped on
   // $tab_closed; the active tab's entry drives document.documentElement.
   const [tabThemes, setTabThemes] = useState<Record<string, TabTheme>>({});
-  const [fontScale, setFontScale] = useState<FontScale>(() => {
-    const v = localStorage.getItem("reasonix.fontScale");
-    return isFontScale(v) ? v : FONT_SCALE.MEDIUM;
-  });
+  // The thread's text size in px: the whole type ladder is relative to it.
+  const [textSizePx, setTextSizePx] = useState<number>(readStoredTextSize);
   const [fontFamily, setFontFamily] = useState<FontFamily>(() => {
     const v = localStorage.getItem("reasonix.fontFamily");
     return isFontFamily(v) ? v : FONT_FAMILY.SANS;
@@ -7062,14 +7066,13 @@ export function App() {
   }, [requireCtxCollapsed, releaseCtxCollapsed, requireSideCollapsed, releaseSideCollapsed]);
 
   useEffect(() => {
-    // Chromium webview supports `zoom`; scales every px-based size without touching CSS rules.
-    // `--ui-zoom` publishes the same factor so a surface that must keep a fixed share of the
-    // window can divide it back out: `vw` and `vh` are multiplied by the zoom too.
-    const zoom = FONT_SCALE_ZOOM[fontScale];
-    document.documentElement.style.setProperty("zoom", String(zoom));
-    document.documentElement.style.setProperty("--ui-zoom", String(zoom));
-    localStorage.setItem("reasonix.fontScale", fontScale);
-  }, [fontScale]);
+    // The root font size is the whole type scale: every text size in the app is a share of
+    // it, so this one value moves the thread's text and the chrome's type together without
+    // touching a CSS rule. It replaces the root `zoom` this app used to carry, which scaled
+    // paddings, widths and `vw` along with the type.
+    document.documentElement.style.fontSize = `${textSizePx}px`;
+    storeTextSize(textSizePx);
+  }, [textSizePx]);
 
   useEffect(() => {
     const custom = customFontFamily.trim();
@@ -8007,8 +8010,8 @@ export function App() {
           theme={tabThemes[t.id]?.theme ?? DEFAULT_TAB_THEME.theme}
           themeStyle={tabThemes[t.id]?.themeStyle ?? DEFAULT_TAB_THEME.themeStyle}
           onSetThemeStyle={onSetThemeStyle}
-          fontScale={fontScale}
-          onSetFontScale={setFontScale}
+          textSizePx={textSizePx}
+          onSetTextSize={setTextSizePx}
           fontFamily={fontFamily}
           onSetFontFamily={setFontFamily}
           customFontFamily={customFontFamily}

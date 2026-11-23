@@ -29,7 +29,7 @@ export class PanelErrorBoundary extends Component<Props, State> {
         style={{
           color: "var(--danger, #e25555)",
           padding: 12,
-          fontSize: 12,
+          fontSize: "var(--fs-12)",
         }}
       >
         {t("panel.renderError", { panel: this.props.label })}

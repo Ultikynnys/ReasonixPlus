@@ -80,7 +80,7 @@ export function WorkdirPop({
             style={{
               marginLeft: "auto",
               fontFamily: "Geist Mono, monospace",
-              fontSize: 10,
+              fontSize: "var(--fs-10)",
               color: "var(--muted)",
             }}
           >
@@ -119,7 +119,7 @@ export function WorkdirPop({
             <div
               style={{
                 padding: "16px 12px",
-                fontSize: 11.5,
+                fontSize: "var(--fs-11-5)",
                 color: "var(--muted)",
                 fontFamily: "Geist Mono, monospace",
               }}
