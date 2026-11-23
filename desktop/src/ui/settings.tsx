@@ -166,9 +166,21 @@ export type PageId =
   | "plugins"
   | "skills"
   | "changelog"
-  | "shortcuts";
+  | "shortcuts"
+  | "testGroup"
+  | "testOne"
+  | "testTwo"
+  | "testThree";
 
-export const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
+/** One nav entry. `children` are the subcategories listed under it, indented behind a
+ *  guide line; they are pages in their own right, never top-level rows. */
+export interface PageEntry {
+  id: PageId;
+  icon: keyof typeof I;
+  children?: PageId[];
+}
+
+export const PAGE_META: ReadonlyArray<PageEntry> = [
   { id: "general", icon: "cog" },
   { id: "sound", icon: "volume" },
   { id: "quickSend", icon: "zap" },
@@ -180,7 +192,27 @@ export const PAGE_META: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = [
   { id: "skills", icon: "bookmark" },
   { id: "changelog", icon: "history" },
   { id: "shortcuts", icon: "cpu" },
+  // Scaffold for the subcategory treatment: one parent, three children. Remove with the
+  // three placeholder pages and their six i18n keys before this branch becomes a PR.
+  { id: "testGroup", icon: "layers", children: ["testOne", "testTwo", "testThree"] },
 ];
+
+/** Every page in the nav, parents and children alike, for lookups by id. */
+export const PAGE_ENTRIES: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = PAGE_META.flatMap(
+  (entry) => [
+    { id: entry.id, icon: entry.icon },
+    ...(entry.children ?? []).map((id) => ({ id, icon: entry.icon })),
+  ],
+);
+
+/** Label and description keys are built from the id, so a page cannot have one and not the other. */
+function pageLabelKey(id: PageId): TKey {
+  return `settings.page${id[0]!.toUpperCase()}${id.slice(1)}Label` as TKey;
+}
+
+function pageDescKey(id: PageId): TKey {
+  return `settings.page${id[0]!.toUpperCase()}${id.slice(1)}Desc` as TKey;
+}
 
 export function SettingsModal({
   settings,
@@ -398,7 +430,7 @@ export function SettingsModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-  const currentMeta = PAGE_META.find((p) => p.id === page) ?? PAGE_META[0]!;
+  const currentMeta = PAGE_ENTRIES.find((p) => p.id === page) ?? PAGE_ENTRIES[0]!;
   // A window narrower than 70% of the screen gains nothing from the frame's margins.
   const fullBleed = useFullBleed();
   return (
@@ -416,19 +448,39 @@ export function SettingsModal({
       >
         <nav className="settings-side">
           <div className="sg">{t("settings.title")}</div>
-          {PAGE_META.map((p) => {
-            const label = t(`settings.page${p.id[0]!.toUpperCase()}${p.id.slice(1)}Label` as any);
+          {PAGE_META.map((entry) => {
+            const label = t(pageLabelKey(entry.id));
             return (
-              <div
-                key={p.id}
-                className="row"
-                data-active={page === p.id}
-                onClick={() => setPage(p.id)}
-                onKeyDown={activationHandler(() => setPage(p.id))}
-                title={label}
-              >
-                <span className="ico">{I[p.icon]({ size: 16 })}</span>
-                <span>{label}</span>
+              <div key={entry.id}>
+                <div
+                  className="row"
+                  data-active={page === entry.id}
+                  onClick={() => setPage(entry.id)}
+                  onKeyDown={activationHandler(() => setPage(entry.id))}
+                  title={label}
+                >
+                  <span className="ico">{I[entry.icon]({ size: 16 })}</span>
+                  <span>{label}</span>
+                </div>
+                {entry.children ? (
+                  <div className="kids">
+                    {entry.children.map((id) => {
+                      const childLabel = t(pageLabelKey(id));
+                      return (
+                        <div
+                          key={id}
+                          className="row kid"
+                          data-active={page === id}
+                          onClick={() => setPage(id)}
+                          onKeyDown={activationHandler(() => setPage(id))}
+                          title={childLabel}
+                        >
+                          <span>{childLabel}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -436,16 +488,8 @@ export function SettingsModal({
         <div className="settings-main">
           <div className="settings-head">
             <div>
-              <h2>
-                {t(
-                  `settings.page${currentMeta.id[0]!.toUpperCase()}${currentMeta.id.slice(1)}Label` as any,
-                )}
-              </h2>
-              <div className="desc">
-                {t(
-                  `settings.page${currentMeta.id[0]!.toUpperCase()}${currentMeta.id.slice(1)}Desc` as any,
-                )}
-              </div>
+              <h2>{t(pageLabelKey(currentMeta.id))}</h2>
+              <div className="desc">{t(pageDescKey(currentMeta.id))}</div>
             </div>
             <span className="grow" />
             <button type="button" className="close-btn" onClick={onClose}>
@@ -588,6 +632,10 @@ export function SettingsModal({
               <PageChangelog changelog={changelog} onRefresh={onRefreshChangelog} />
             )}
             {page === "shortcuts" && <PageShortcuts />}
+            {page === "testGroup" && <PageTestScaffold page="testGroup" />}
+            {page === "testOne" && <PageTestScaffold page="testOne" />}
+            {page === "testTwo" && <PageTestScaffold page="testTwo" />}
+            {page === "testThree" && <PageTestScaffold page="testThree" />}
           </div>
         </div>
       </div>
@@ -4184,6 +4232,21 @@ function SectionRow({ nm, keys }: { nm: string; keys: ShortcutKey[] }): ReactNod
         <Shortcut keys={keys} />
       </div>
     </>
+  );
+}
+
+/** Placeholder body for the subcategory scaffold: names the page it is showing so the nav
+ *  treatment can be inspected. Remove with the Test group in PAGE_META. */
+function PageTestScaffold({ page }: { page: PageId }) {
+  return (
+    <section className="section">
+      <div className="stitle">{t(pageLabelKey(page))}</div>
+      <div className="setting-row">
+        <div className="l">
+          <div className="n">{t(pageDescKey(page))}</div>
+        </div>
+      </div>
+    </section>
   );
 }
 

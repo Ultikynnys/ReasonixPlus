@@ -108,6 +108,26 @@ describe("Settings > General window state", () => {
   });
 });
 
+describe("Settings nav groups", () => {
+  it("lists a group's subcategories under it and marks the open one", () => {
+    render(<SettingsModal {...baseProps} initialPage="testTwo" />);
+
+    const parent = screen.getByTitle("Test group");
+    const kids = parent.parentElement?.querySelector(".kids");
+    expect(kids, "the group renders no children block").toBeTruthy();
+
+    const rows = Array.from(kids?.querySelectorAll(".row.kid") ?? []);
+    expect(rows.map((row) => row.textContent)).toEqual(["Test one", "Test two", "Test three"]);
+    expect(
+      rows
+        .filter((row) => row.getAttribute("data-active") === "true")
+        .map((row) => row.textContent),
+    ).toEqual(["Test two"]);
+    // The header follows the open child, not the group it hangs off.
+    expect(screen.getByRole("heading", { name: "Test two" })).toBeTruthy();
+  });
+});
+
 describe("Settings frame", () => {
   it("keeps one share of the window at every font scale", () => {
     // The font scale is a `zoom` on the root, which multiplies `vw` and `vh` too. Without
