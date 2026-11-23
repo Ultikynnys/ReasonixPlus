@@ -1,6 +1,5 @@
 {
   "about": {
-    "sidebarLabel": "About",
     "tagline": "Multi-provider coding agent",
     "version": "Version",
     "repo": "Repository",
@@ -14,8 +13,7 @@
     "downloadingUnknown": "Downloading… {downloaded}",
     "installing": "Installing…",
     "updateFailed": "Update failed: {message}",
-    "checkFailed": "Check failed: {message}",
-    "close": "Close"
+    "checkFailed": "Check failed: {message}"
   },
   "workdir": {
     "title": "Switch workspace",
@@ -150,12 +148,13 @@
     "pagePluginsDesc": "Agent plugins: skills and MCP servers from a Codex-layout manifest",
     "pageSkillsLabel": "Skills",
     "pageSkillsDesc": "Standalone SKILL.md workflows",
-    "pageShortcutsLabel": "Shortcuts",
-    "pageShortcutsDesc": "Keyboard shortcuts overview",
-    "pageChangelogLabel": "Changelog",
-    "pageChangelogDesc": "What changed in each version",
     "pageCustomizationLabel": "Customization",
     "pageCustomizationDesc": "Text, themes and sound cues",
+    "pageAboutLabel": "About",
+    "pageAboutDesc": "Version, shortcuts and changelog",
+    "aboutSection": "About",
+    "aboutShortcuts": "Shortcuts",
+    "aboutChangelog": "Changelog",
     "customizationThemes": "Themes",
     "customizationSoundCues": "Sound cues",
     "appearanceSection": "Appearance",

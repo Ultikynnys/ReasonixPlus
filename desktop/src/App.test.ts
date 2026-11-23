@@ -6,8 +6,6 @@ vi.mock("./Markdown", () => ({
 vi.mock("./theme", () => ({
   FONT_FAMILY: "sans-serif",
   FONT_FAMILY_STACK: "sans-serif",
-  FONT_SCALE: 1,
-  FONT_SCALE_ZOOM: 1,
   THEME: "dark",
   THEME_STYLE: {
     GRAPHITE: "graphite",
@@ -15,6 +13,7 @@ vi.mock("./theme", () => ({
     PORCELAIN: "porcelain",
     MIDNIGHT: "midnight",
   },
+  THEME_STYLES: ["graphite", "sandstone", "porcelain", "midnight"],
   defaultStyleForTheme: vi.fn(() => ({
     bg: "#000",
     surface: "#111",
@@ -28,7 +27,6 @@ vi.mock("./theme", () => ({
     brand: "#0af",
   })),
   isFontFamily: vi.fn(() => true),
-  isFontScale: vi.fn(() => true),
   isTheme: vi.fn(() => true),
   isThemeStyle: vi.fn(() => true),
   themeForStyle: vi.fn(() => "dark"),

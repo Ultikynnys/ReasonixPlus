@@ -38,7 +38,6 @@ function renderSidebar(
       activeSessionHasMessages={over.activeSessionHasMessages}
       onOpenWorkdir={() => {}}
       onOpenSettings={() => {}}
-      onOpenAbout={() => {}}
     />,
   );
 }

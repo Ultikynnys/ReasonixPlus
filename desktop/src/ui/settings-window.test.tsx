@@ -166,6 +166,43 @@ describe("Settings > Customization > Themes", () => {
   });
 });
 
+describe("Settings > About", () => {
+  it("holds the identity, the shortcut list and the changelog as one page's sections", () => {
+    render(<SettingsModal {...baseProps} initialPage="about" />);
+
+    const sections = Array.from(document.querySelectorAll(".settings-body [data-section]")).map(
+      (section) => section.getAttribute("data-section"),
+    );
+    expect(sections).toEqual(["about", "shortcuts", "changelog"]);
+
+    // The identity block: the version this build carries, the repo, and the update check.
+    expect(screen.getByText("Version")).toBeTruthy();
+    expect(screen.getByText("0.0.0-test")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Ultikynnys\/ReasonixPlus/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Check for updates/ })).toBeTruthy();
+
+    // The other two sections carry the lists that used to be pages of their own.
+    expect(screen.getByRole("heading", { name: "Shortcuts" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Changelog" })).toBeTruthy();
+  });
+
+  it("is the only place the nav reaches them, since About replaced both pages", () => {
+    render(<SettingsModal {...baseProps} initialPage="about" />);
+
+    const nav = Array.from(document.querySelectorAll(".settings-side .row:not(.kid)")).map((row) =>
+      (row.textContent ?? "").trim(),
+    );
+    expect(nav).toContain("About");
+    expect(nav).not.toContain("Shortcuts");
+    expect(nav).not.toContain("Changelog");
+
+    const index = Array.from(document.querySelectorAll(".settings-side .row.kid")).map((row) =>
+      (row.textContent ?? "").trim(),
+    );
+    expect(index).toEqual(["About", "Shortcuts", "Changelog"]);
+  });
+});
+
 describe("Settings section index", () => {
   it("shows a page's index only while that page is open", () => {
     const { unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);

@@ -9,6 +9,11 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 const maxWorkers = process.env.CI ? 4 : Math.max(8, Math.min(10, availableParallelism() - 2));
 
 export default defineConfig({
+  // `desktop/src/ui/about.tsx` renders the version Vite injects at build time; without this
+  // the About page throws a ReferenceError under jsdom.
+  define: {
+    __APP_VERSION__: JSON.stringify("0.0.0-test"),
+  },
   resolve: {
     alias: {
       "@": resolve(here, "src"),

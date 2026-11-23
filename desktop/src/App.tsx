@@ -153,7 +153,6 @@ import {
   themeForStyle,
 } from "./theme";
 import { readStoredTextSize, storeTextSize } from "./typography";
-import { AboutModal } from "./ui/about";
 import {
   type StatusWait,
   type TurnStatus,
@@ -3914,7 +3913,6 @@ const TabRuntime = memo(function TabRuntime({
   const [settingsPage, setSettingsPage] = useState<SettingsPageId>("general");
   const [voiceAvailable, setVoiceAvailable] = useState(false);
   const [jobsOpen, setJobsOpen] = useState(false);
-  const [aboutOpen, setAboutOpen] = useState(false);
   // The header's Duplicate button asks this tab's ONE capability dialog, the same one the
   // session-start gate raises; `$mcpSetup` outranks it because a gated chat has no
   // messages, so the two never compete for the screen.
@@ -5040,7 +5038,7 @@ const TabRuntime = memo(function TabRuntime({
         const target = e.target as HTMLElement | null;
         if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
         // A modal is open — let its own Esc handler close it (#1670).
-        if (settingsOpen || aboutOpen || jobsOpen || wdOpen) return;
+        if (settingsOpen || jobsOpen || wdOpen) return;
         e.preventDefault();
         abort();
       }
@@ -5054,7 +5052,6 @@ const TabRuntime = memo(function TabRuntime({
     abort,
     newChat,
     settingsOpen,
-    aboutOpen,
     jobsOpen,
     wdOpen,
     openSettingsAt,
@@ -5375,7 +5372,6 @@ const TabRuntime = memo(function TabRuntime({
   );
 
   const openSettings = useCallback(() => openSettingsAt("general"), [openSettingsAt]);
-  const openAbout = useCallback(() => setAboutOpen(true), []);
   const toggleJobs = useCallback(() => setJobsOpen((v) => !v), []);
 
   const readMemory = useCallback(
@@ -5464,7 +5460,6 @@ const TabRuntime = memo(function TabRuntime({
           activeSessionHasMessages={state.messages.length > 0}
           onOpenWorkdir={openWorkdir}
           onOpenSettings={openSettings}
-          onOpenAbout={openAbout}
         />
 
         {!sideCollapsed ? (
@@ -5869,8 +5864,6 @@ const TabRuntime = memo(function TabRuntime({
           onRemove={onRemoveWorkspace}
           onBrowse={pickWorkspace}
         />
-
-        {aboutOpen ? <AboutModal onClose={() => setAboutOpen(false)} /> : null}
 
         {state.mcpSetup || duplicateAsk ? (
           <CapabilityDialog

@@ -7386,6 +7386,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   border-top: 1px solid var(--border);
   padding-top: 12px;
 }
+/* A section can host a block that brings its own `.section` wrapper (the shortcuts grid, the
+ *  changelog list); the outer section owns the spacing, so the inner one adds none. */
+.settings-section > .section {
+  margin-bottom: 0;
+}
 .section .stitle {
   font-size: var(--fs-14);
   font-weight: 600;
@@ -10681,16 +10686,9 @@ html[data-platform="macos"] .splash {
   transition: background 0.12s ease, color 0.12s ease;
 }
 
-/* ---- about modal ---- */
-.about-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  animation: fade 0.16s ease-out;
+/* ---- about panel (Settings > About) ---- */
+.about-panel {
+  max-width: 560px;
 }
 
 /* ---- generic modal (memory export) ---- */
@@ -10726,41 +10724,7 @@ html[data-platform="macos"] .splash {
   font-weight: 600;
   font-size: var(--fs-15);
 }
-.about-modal {
-  position: relative;
-  background: var(--card);
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  box-shadow: var(--shadow-lg);
-  padding: 28px 32px 24px;
-  min-width: 380px;
-  max-width: 480px;
-  color: var(--fg);
-  font-size: var(--fs-14);
-  animation: rise 0.18s ease-out;
-}
-.about-close {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  width: 26px;
-  height: 26px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-.about-close:hover {
-  background: var(--panel);
-  color: var(--fg);
-}
 .about-brand {
-  text-align: center;
   margin-bottom: 20px;
 }
 .about-name {

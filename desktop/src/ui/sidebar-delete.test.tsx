@@ -34,7 +34,6 @@ function renderSidebar(
       onReorderSession={over.onReorderSession}
       onOpenWorkdir={() => {}}
       onOpenSettings={() => {}}
-      onOpenAbout={() => {}}
     />,
   );
 }

@@ -115,9 +115,10 @@ describe("settings Shortcuts page", () => {
   it("is reachable from the nav and lists the quick-send hotkeys there", () => {
     const { container } = render(<SettingsModal {...baseProps} />);
 
-    fireEvent.click(screen.getByText("Shortcuts"));
+    fireEvent.click(screen.getByText("About"));
 
-    expect(screen.getByText("Keyboard shortcuts overview")).toBeTruthy();
+    // The list is a section of About now, not a page of its own.
+    expect(screen.getByRole("heading", { name: "Shortcuts" })).toBeTruthy();
     expect(bindings(container)).toEqual(
       expect.arrayContaining([
         { label: "Quick send menu", keys: ["Ctrl", "Q"] },
@@ -127,7 +128,7 @@ describe("settings Shortcuts page", () => {
   });
 
   it("still lists the shell bindings next to them", () => {
-    const { container } = render(<SettingsModal {...baseProps} initialPage="shortcuts" />);
+    const { container } = render(<SettingsModal {...baseProps} initialPage="about" />);
 
     expect(bindings(container)).toEqual(
       expect.arrayContaining([
@@ -140,7 +141,7 @@ describe("settings Shortcuts page", () => {
 
   it("names the composer's own send and newline keys", () => {
     // These used to sit under the composer; this page is now their only home.
-    const { container } = render(<SettingsModal {...baseProps} initialPage="shortcuts" />);
+    const { container } = render(<SettingsModal {...baseProps} initialPage="about" />);
 
     expect(bindings(container)).toEqual(
       expect.arrayContaining([

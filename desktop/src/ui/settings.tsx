@@ -107,6 +107,7 @@ import {
 } from "../voice/model-cache";
 import { VOICE_ENGINES, VOICE_MODELS, type VoiceModelId } from "../voice/model-registry";
 import { speechTranscriber } from "../voice/transcriber";
+import { AboutPanel } from "./about";
 import { type ChangelogState, PageChangelog } from "./changelog";
 import { CostBadge } from "./cost-badge";
 import { FEEDBACK_CUES } from "./feedback-cue-copy";
@@ -174,9 +175,8 @@ export type PageId =
   | "mcp"
   | "plugins"
   | "skills"
-  | "changelog"
-  | "shortcuts"
-  | "customization";
+  | "customization"
+  | "about";
 
 /** One section of a page, listed in that page's index while it is open. `id` is the anchor
  *  the row scrolls to and the marker the reader's position is read from. */
@@ -202,10 +202,8 @@ export const PAGE_META: ReadonlyArray<PageEntry> = [
   { id: "mcp", icon: "wrench" },
   { id: "plugins", icon: "plug" },
   { id: "skills", icon: "bookmark" },
-  { id: "changelog", icon: "history" },
-  { id: "shortcuts", icon: "cpu" },
-  // Customization owns the look of the app. Its sections are parts of one page: the
-  // appearance controls, and two placeholders waiting for their contents.
+  // Customization owns the look of the app: the appearance controls, the theme cards and the
+  // sound packs. Its sections are parts of one page, listed in the page's own index.
   {
     id: "customization",
     icon: "layers",
@@ -213,6 +211,15 @@ export const PAGE_META: ReadonlyArray<PageEntry> = [
       { id: "appearance", labelKey: "settings.appearanceSection" },
       { id: "themes", labelKey: "settings.customizationThemes" },
       { id: "soundCues", labelKey: "settings.customizationSoundCues" },
+    ],
+  },
+  {
+    id: "about",
+    icon: "help",
+    sections: [
+      { id: "about", labelKey: "settings.aboutSection" },
+      { id: "shortcuts", labelKey: "settings.aboutShortcuts" },
+      { id: "changelog", labelKey: "settings.aboutChangelog" },
     ],
   },
 ];
@@ -631,10 +638,9 @@ export function SettingsModal({
                 onRequest={onRequestSkills}
               />
             )}
-            {page === "changelog" && (
-              <PageChangelog changelog={changelog} onRefresh={onRefreshChangelog} />
+            {page === "about" && (
+              <PageAbout changelog={changelog} onRefreshChangelog={onRefreshChangelog} />
             )}
-            {page === "shortcuts" && <PageShortcuts />}
             {page === "customization" && (
               <PageCustomization
                 textSizePx={textSizePx}
@@ -4204,6 +4210,51 @@ function PageShortcuts() {
         ))}
       </div>
     </section>
+  );
+}
+
+/** About: the app's identity and update check, then the two reference lists that used to be
+ *  pages of their own. */
+function PageAbout({
+  changelog,
+  onRefreshChangelog,
+}: {
+  changelog: ChangelogState;
+  onRefreshChangelog: (force?: boolean) => void;
+}) {
+  return (
+    <div className="page-about">
+      <section
+        className="section settings-section"
+        data-section="about"
+        aria-labelledby="settings-section-about"
+      >
+        <h3 className="stitle" id="settings-section-about">
+          {t("settings.aboutSection")}
+        </h3>
+        <AboutPanel />
+      </section>
+      <section
+        className="section settings-section"
+        data-section="shortcuts"
+        aria-labelledby="settings-section-shortcuts"
+      >
+        <h3 className="stitle" id="settings-section-shortcuts">
+          {t("settings.aboutShortcuts")}
+        </h3>
+        <PageShortcuts />
+      </section>
+      <section
+        className="section settings-section"
+        data-section="changelog"
+        aria-labelledby="settings-section-changelog"
+      >
+        <h3 className="stitle" id="settings-section-changelog">
+          {t("settings.aboutChangelog")}
+        </h3>
+        <PageChangelog changelog={changelog} onRefresh={onRefreshChangelog} />
+      </section>
+    </div>
   );
 }
 

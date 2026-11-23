@@ -35,7 +35,6 @@ function renderSidebar(rates?: Map<string, number>) {
       onClearSessions={() => {}}
       onOpenWorkdir={() => {}}
       onOpenSettings={() => {}}
-      onOpenAbout={() => {}}
     />,
   );
 }

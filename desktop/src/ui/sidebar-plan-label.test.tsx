@@ -44,7 +44,6 @@ function renderSidebar(
       onClearSessions={() => {}}
       onOpenWorkdir={() => {}}
       onOpenSettings={() => {}}
-      onOpenAbout={() => {}}
     />,
   );
 }
