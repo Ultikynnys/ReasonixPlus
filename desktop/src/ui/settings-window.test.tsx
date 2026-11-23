@@ -91,14 +91,14 @@ const baseProps = {
 
 afterEach(cleanup);
 
-describe("Settings > General window state", () => {
+describe("Settings > Customization > Appearance", () => {
   it("resets the window state from the button", () => {
     const onResetWindowState = vi.fn();
     render(
       <SettingsModal
         {...baseProps}
         onResetWindowState={onResetWindowState}
-        initialPage="general"
+        initialPage="customization"
       />,
     );
 
@@ -112,7 +112,11 @@ describe("Settings font family", () => {
   it("offers the four faces, system first, and picks one from the menu", () => {
     const onSetFontFamily = vi.fn();
     render(
-      <SettingsModal {...baseProps} onSetFontFamily={onSetFontFamily} initialPage="general" />,
+      <SettingsModal
+        {...baseProps}
+        onSetFontFamily={onSetFontFamily}
+        initialPage="customization"
+      />,
     );
 
     const button = screen.getByRole("button", { name: "Font family" });
@@ -139,15 +143,15 @@ describe("Settings section index", () => {
     ).toBeNull();
     unmount();
 
-    render(<SettingsModal {...baseProps} initialPage="testGroup" />);
-    const parent = screen.getByTitle("Test group");
+    render(<SettingsModal {...baseProps} initialPage="customization" />);
+    const parent = screen.getByTitle("Customization");
     const kids = parent.parentElement?.querySelector(".kids");
     expect(kids, "the open page renders no index").toBeTruthy();
     expect(
       Array.from(kids?.querySelectorAll(".row.kid") ?? []).map((row) => row.textContent),
-    ).toEqual(["Test one", "Test two", "Test three"]);
+    ).toEqual(["Appearance", "Themes", "Sound packs"]);
     // The page is the page: its title is the page's, not a section's.
-    expect(screen.getByRole("heading", { name: "Test group" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Customization" })).toBeTruthy();
   });
 
   it("lands each index row on a section of the same page", () => {
@@ -155,7 +159,7 @@ describe("Settings section index", () => {
     const original = Element.prototype.scrollTo;
     Element.prototype.scrollTo = scrollTo as unknown as Element["scrollTo"];
     try {
-      render(<SettingsModal {...baseProps} initialPage="testGroup" />);
+      render(<SettingsModal {...baseProps} initialPage="customization" />);
       const rows = Array.from(document.querySelectorAll<HTMLElement>(".settings-side .row.kid"));
       expect(rows).toHaveLength(3);
 
@@ -238,7 +242,7 @@ describe("Settings frame", () => {
     // One width token drives the slider, the picker and the reset button, so the three line up.
     expect(css).toMatch(/--settings-control-width:\s*12\.75rem/);
     expect(css).toMatch(
-      /\.page-general \.setting-row \.text-size-control,\s*\n\.page-general \.setting-row \.font-family-picker \{[\s\S]{0,120}flex:\s*0 0 var\(--settings-control-width\)/,
+      /\.page-customization \.setting-row \.text-size-control,\s*\n\.page-customization \.setting-row \.font-family-picker \{[\s\S]{0,120}flex:\s*0 0 var\(--settings-control-width\)/,
     );
     expect(css).toMatch(/\.window-reset \{[\s\S]{0,80}width:\s*var\(--settings-control-width\)/);
   });

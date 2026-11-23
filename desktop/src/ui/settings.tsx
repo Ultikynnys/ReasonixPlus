@@ -169,7 +169,7 @@ export type PageId =
   | "skills"
   | "changelog"
   | "shortcuts"
-  | "testGroup";
+  | "customization";
 
 /** One section of a page, listed in that page's index while it is open. `id` is the anchor
  *  the row scrolls to and the marker the reader's position is read from. */
@@ -198,15 +198,15 @@ export const PAGE_META: ReadonlyArray<PageEntry> = [
   { id: "skills", icon: "bookmark" },
   { id: "changelog", icon: "history" },
   { id: "shortcuts", icon: "cpu" },
-  // Scaffold for the section index: one page, three sections. Remove with PageTestScaffold
-  // and its five i18n keys before this branch becomes a PR.
+  // Customization owns the look of the app. Its sections are parts of one page: the
+  // appearance controls, and two placeholders waiting for their contents.
   {
-    id: "testGroup",
+    id: "customization",
     icon: "layers",
     sections: [
-      { id: "one", labelKey: "settings.testSectionOne" },
-      { id: "two", labelKey: "settings.testSectionTwo" },
-      { id: "three", labelKey: "settings.testSectionThree" },
+      { id: "appearance", labelKey: "settings.appearanceSection" },
+      { id: "themes", labelKey: "settings.customizationThemes" },
+      { id: "soundPacks", labelKey: "settings.customizationSoundPacks" },
     ],
   },
 ];
@@ -509,17 +509,7 @@ export function SettingsModal({
             </button>
           </div>
           <div className="settings-body" ref={setBodyEl}>
-            {page === "general" && (
-              <PageGeneral
-                textSizePx={textSizePx}
-                onSetTextSize={onSetTextSize}
-                fontFamily={fontFamily}
-                onSetFontFamily={onSetFontFamily}
-                customFontFamily={customFontFamily}
-                onSetCustomFontFamily={onSetCustomFontFamily}
-                onResetWindowState={onResetWindowState}
-              />
-            )}
+            {page === "general" && <PageGeneral />}
             {page === "quickSend" && <PageQuickSend settings={settings} onSave={onSave} />}
             {page === "sound" && (
               <PageSound
@@ -644,7 +634,17 @@ export function SettingsModal({
               <PageChangelog changelog={changelog} onRefresh={onRefreshChangelog} />
             )}
             {page === "shortcuts" && <PageShortcuts />}
-            {page === "testGroup" && <PageTestScaffold />}
+            {page === "customization" && (
+              <PageCustomization
+                textSizePx={textSizePx}
+                onSetTextSize={onSetTextSize}
+                fontFamily={fontFamily}
+                onSetFontFamily={onSetFontFamily}
+                customFontFamily={customFontFamily}
+                onSetCustomFontFamily={onSetCustomFontFamily}
+                onResetWindowState={onResetWindowState}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -1049,108 +1049,9 @@ function FontFamilyPicker({
   );
 }
 
-function PageGeneral({
-  textSizePx,
-  onSetTextSize,
-  fontFamily,
-  onSetFontFamily,
-  customFontFamily,
-  onSetCustomFontFamily,
-  onResetWindowState,
-}: {
-  textSizePx: number;
-  onSetTextSize: (size: number) => void;
-  fontFamily: FontFamily;
-  onSetFontFamily: (family: FontFamily) => void;
-  customFontFamily: string;
-  onSetCustomFontFamily: (family: string) => void;
-  onResetWindowState: () => void;
-}) {
-  const [customFontDraft, setCustomFontDraft] = useState(customFontFamily);
-  useEffect(() => {
-    setCustomFontDraft(customFontFamily);
-  }, [customFontFamily]);
-  const commitCustomFont = (value: string) => {
-    const next = value.trim();
-    setCustomFontDraft(next);
-    onSetCustomFontFamily(next);
-  };
+function PageGeneral() {
   return (
     <div className="page-general">
-      <section className="section">
-        <div className="stitle">{t("settings.appearanceSection")}</div>
-        <div className="setting-row">
-          <div className="l">
-            <div className="n">{t("settings.textSize")}</div>
-            <div className="h">{t("settings.textSizeHint")}</div>
-          </div>
-          <div
-            className="text-size-control"
-            // The readout rides above the knob, so it needs the knob's share of the track.
-            style={
-              {
-                "--knob": `${((textSizePx - TEXT_SIZE_RANGE.min) / (TEXT_SIZE_RANGE.max - TEXT_SIZE_RANGE.min)) * 100}%`,
-              } as React.CSSProperties
-            }
-          >
-            <input
-              type="range"
-              min={TEXT_SIZE_RANGE.min}
-              max={TEXT_SIZE_RANGE.max}
-              step={TEXT_SIZE_RANGE.step}
-              value={textSizePx}
-              aria-label={t("settings.textSize")}
-              onChange={(e) => onSetTextSize(clampTextSizePx(Number(e.target.value)))}
-            />
-            {/* After the input, so the readout can follow the slider's own state. */}
-            <span className="text-size-value">{textSizePx} px</span>
-          </div>
-        </div>
-        <div className="setting-row">
-          <div className="l">
-            <div className="n">{t("settings.fontFamily")}</div>
-            <div className="h">{t("settings.fontFamilyHint")}</div>
-          </div>
-          <FontFamilyPicker value={fontFamily} onSelect={onSetFontFamily} />
-        </div>
-        {fontFamily === FONT_FAMILY.CUSTOM && (
-          <div className="setting-row">
-            <div className="l">
-              <div className="n">{t("settings.customFontFamily")}</div>
-              <div className="h">{t("settings.customFontFamilyHint")}</div>
-            </div>
-            <input
-              className="field font-family-field"
-              value={customFontDraft}
-              placeholder={`"Microsoft YaHei", "PingFang SC", sans-serif`}
-              onChange={(e) => {
-                setCustomFontDraft(e.target.value);
-                onSetCustomFontFamily(e.target.value);
-              }}
-              onBlur={(e) => commitCustomFont(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.currentTarget.blur();
-                }
-              }}
-            />
-          </div>
-        )}
-      </section>
-
-      <section className="section">
-        <div className="stitle">{t("settings.windowSection")}</div>
-        <div className="setting-row">
-          <div className="l">
-            <div className="n">{t("settings.windowState")}</div>
-            <div className="h">{t("settings.windowStateHint")}</div>
-          </div>
-          <button type="button" className="btn small window-reset" onClick={onResetWindowState}>
-            <I.refresh size={13} />
-            <span>{t("settings.windowStateReset")}</span>
-          </button>
-        </div>
-      </section>
       <VoiceInputSettings />
     </div>
   );
@@ -4309,35 +4210,133 @@ function SectionRow({ nm, keys }: { nm: string; keys: ShortcutKey[] }): ReactNod
   );
 }
 
-/** Scaffold body for the section index: one page, three anchored sections. Remove with the
- *  Test group in PAGE_META. */
-function PageTestScaffold() {
+/** Customization: one page holding the app's look. Appearance carries the controls that used
+ *  to sit on the General page; the other two sections are named placeholders. */
+function PageCustomization({
+  textSizePx,
+  onSetTextSize,
+  fontFamily,
+  onSetFontFamily,
+  customFontFamily,
+  onSetCustomFontFamily,
+  onResetWindowState,
+}: {
+  textSizePx: number;
+  onSetTextSize: (size: number) => void;
+  fontFamily: FontFamily;
+  onSetFontFamily: (family: FontFamily) => void;
+  customFontFamily: string;
+  onSetCustomFontFamily: (family: string) => void;
+  onResetWindowState: () => void;
+}) {
+  const [customFontDraft, setCustomFontDraft] = useState(customFontFamily);
+  useEffect(() => {
+    setCustomFontDraft(customFontFamily);
+  }, [customFontFamily]);
+  const commitCustomFont = (value: string) => {
+    const next = value.trim();
+    setCustomFontDraft(next);
+    onSetCustomFontFamily(next);
+  };
   return (
-    <>
-      {(
-        [
-          { id: "one", labelKey: "settings.testSectionOne" },
-          { id: "two", labelKey: "settings.testSectionTwo" },
-          { id: "three", labelKey: "settings.testSectionThree" },
-        ] as const
-      ).map((section) => (
+    <div className="page-customization">
+      <section
+        className="section settings-section"
+        data-section="appearance"
+        aria-labelledby="settings-section-appearance"
+      >
+        <h3 className="stitle" id="settings-section-appearance">
+          {t("settings.appearanceSection")}
+        </h3>
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.textSize")}</div>
+            <div className="h">{t("settings.textSizeHint")}</div>
+          </div>
+          <div
+            className="text-size-control"
+            // The readout rides above the knob, so it needs the knob's share of the track.
+            style={
+              {
+                "--knob": `${((textSizePx - TEXT_SIZE_RANGE.min) / (TEXT_SIZE_RANGE.max - TEXT_SIZE_RANGE.min)) * 100}%`,
+              } as React.CSSProperties
+            }
+          >
+            <input
+              type="range"
+              min={TEXT_SIZE_RANGE.min}
+              max={TEXT_SIZE_RANGE.max}
+              step={TEXT_SIZE_RANGE.step}
+              value={textSizePx}
+              aria-label={t("settings.textSize")}
+              onChange={(e) => onSetTextSize(clampTextSizePx(Number(e.target.value)))}
+            />
+            {/* After the input, so the readout can follow the slider's own state. */}
+            <span className="text-size-value">{textSizePx} px</span>
+          </div>
+        </div>
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.fontFamily")}</div>
+            <div className="h">{t("settings.fontFamilyHint")}</div>
+          </div>
+          <FontFamilyPicker value={fontFamily} onSelect={onSetFontFamily} />
+        </div>
+        {fontFamily === FONT_FAMILY.CUSTOM && (
+          <div className="setting-row">
+            <div className="l">
+              <div className="n">{t("settings.customFontFamily")}</div>
+              <div className="h">{t("settings.customFontFamilyHint")}</div>
+            </div>
+            <input
+              className="field font-family-field"
+              value={customFontDraft}
+              placeholder={`"Microsoft YaHei", "PingFang SC", sans-serif`}
+              onChange={(e) => {
+                setCustomFontDraft(e.target.value);
+                onSetCustomFontFamily(e.target.value);
+              }}
+              onBlur={(e) => commitCustomFont(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                }
+              }}
+            />
+          </div>
+        )}
+        <div className="setting-row">
+          <div className="l">
+            <div className="n">{t("settings.windowState")}</div>
+            <div className="h">{t("settings.windowStateHint")}</div>
+          </div>
+          <button type="button" className="btn small window-reset" onClick={onResetWindowState}>
+            <I.refresh size={13} />
+            <span>{t("settings.windowStateReset")}</span>
+          </button>
+        </div>
+      </section>
+
+      {(["themes", "soundPacks"] as const).map((id) => (
         <section
-          key={section.id}
+          key={id}
           className="section settings-section"
-          data-section={section.id}
-          aria-labelledby={`settings-section-${section.id}`}
+          data-section={id}
+          aria-labelledby={`settings-section-${id}`}
         >
-          <h3 className="stitle" id={`settings-section-${section.id}`}>
-            {t(section.labelKey)}
+          <h3 className="stitle" id={`settings-section-${id}`}>
+            {t(
+              id === "themes" ? "settings.customizationThemes" : "settings.customizationSoundPacks",
+            )}
           </h3>
           <div className="setting-row">
             <div className="l">
-              <div className="n">{t("settings.testSectionBody")}</div>
+              <div className="h">{t("settings.customizationEmpty")}</div>
             </div>
           </div>
         </section>
       ))}
-    </>
+    </div>
   );
 }
 

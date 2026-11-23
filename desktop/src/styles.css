@@ -7472,11 +7472,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .page-general .stitle {
   display: none;
 }
-/* One width for the page's controls, in rem so it follows the root type size whatever each
- * control's own font-size is: the slider, the font-family picker and the reset button all
- * line up, and the button's label still fits. This is the one layout length in rem, on
- * purpose: it exists to match a control whose width is its text. */
-.page-general {
+/* One width for a page's controls, in rem so it follows the root type size whatever each
+ * control's own font-size is: the text-size slider, the font-family picker and the reset
+ * button all line up, and the button's label still fits. This is the one layout length in
+ * rem, on purpose: it exists to match a control whose width is its text. */
+.settings {
   --settings-control-width: 12.75rem;
 }
 .window-reset {
@@ -7525,11 +7525,11 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .setting-row button {
   flex-shrink: 0;
 }
-/* The general page's three controls share one width and never shrink; the label column takes
- * the leftover space instead. Three classes, because the row's own rule sets flex on every
- * non-label child. */
-.page-general .setting-row .text-size-control,
-.page-general .setting-row .font-family-picker {
+/* A page's controls share one width and never shrink; the label column takes the leftover
+ * space instead. Three classes, because the row's own rule sets flex on every non-label
+ * child. */
+.page-customization .setting-row .text-size-control,
+.page-customization .setting-row .font-family-picker {
   flex: 0 0 var(--settings-control-width);
   width: var(--settings-control-width);
 }
