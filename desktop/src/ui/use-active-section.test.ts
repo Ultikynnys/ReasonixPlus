@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeSectionAt } from "./use-active-section";
+import { activeSectionAt, isScrollEnd } from "./use-active-section";
 
 const OFFSETS = [
   { id: "one", top: 0 },
@@ -31,5 +31,19 @@ describe("activeSectionAt", () => {
 
   it("has nothing to report for an empty index", () => {
     expect(activeSectionAt([], 0)).toBeNull();
+  });
+});
+
+describe("isScrollEnd", () => {
+  it("is false when the content fits, even at the last pixel", () => {
+    expect(isScrollEnd(0, 500, 500)).toBe(false);
+    expect(isScrollEnd(0, 500, 501)).toBe(false);
+  });
+
+  it("is true only within two pixels of a real scroll end", () => {
+    expect(isScrollEnd(0, 500, 900)).toBe(false);
+    expect(isScrollEnd(397, 500, 900)).toBe(false);
+    expect(isScrollEnd(398, 500, 900)).toBe(true);
+    expect(isScrollEnd(400, 500, 900)).toBe(true);
   });
 });

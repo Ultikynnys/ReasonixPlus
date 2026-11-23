@@ -30,6 +30,18 @@ export function activeSectionAt(
 }
 
 /**
+ * True only when the container actually scrolls and the reader is at its end. A page shorter
+ * than the viewport has no end to speak of, so it must not claim its last section.
+ */
+export function isScrollEnd(
+  scrollTop: number,
+  clientHeight: number,
+  scrollHeight: number,
+): boolean {
+  return scrollHeight > clientHeight + 2 && scrollTop + clientHeight >= scrollHeight - 2;
+}
+
+/**
  * Tracks which of `ids` the reader is looking at inside `el`, re-reading on scroll and on
  * resize. Takes the element rather than a ref: a reopened settings window mounts a new body,
  * and a ref object would keep the detached one. One listener, coalesced per frame, so a fast
@@ -50,16 +62,18 @@ export function useActiveSection(
     }
     const read = () => {
       const box = el.getBoundingClientRect();
-      const offsets = list.map((id) => {
+      const offsets: SectionOffset[] = [];
+      for (const id of list) {
         const target = el.querySelector(`[data-section="${id}"]`);
-        return {
+        // A missing section is skipped rather than ranked at Infinity: the Infinity would
+        // stop the walk and leave every section after it unreachable.
+        if (!target) continue;
+        offsets.push({
           id,
-          top: target
-            ? target.getBoundingClientRect().top - box.top + el.scrollTop
-            : Number.POSITIVE_INFINITY,
-        };
-      });
-      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+          top: target.getBoundingClientRect().top - box.top + el.scrollTop,
+        });
+      }
+      const atBottom = isScrollEnd(el.scrollTop, el.clientHeight, el.scrollHeight);
       setActive((prev) => {
         const next = activeSectionAt(offsets, el.scrollTop, { atBottom });
         return prev === next ? prev : next;

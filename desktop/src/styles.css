@@ -42,8 +42,8 @@ body,
 }
 
 html {
-  /* The slider in Settings > General writes this value. It is the only px text size left,
-   * because every other one is a share of it. */
+  /* The slider in Settings > Customization > Appearance writes this value. It is the only px
+   * text size left, because every other one is a share of it. */
   font-size: 14px;
 }
 

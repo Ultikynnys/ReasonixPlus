@@ -19,6 +19,7 @@ import {
 } from "@reasonix/core-utils";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  type CSSProperties,
   type ComponentProps,
   type ReactNode,
   useCallback,
@@ -247,6 +248,33 @@ function pageDescKey(id: PageId): TKey {
   return `settings.page${id[0]!.toUpperCase()}${id.slice(1)}Desc` as TKey;
 }
 
+/** The heading id a section's `aria-labelledby` and the page index both read. */
+function sectionHeadingId(id: string): string {
+  return `settings-section-${id}`;
+}
+
+/** One page section: wrapper, heading and anchor id travel together, so a section cannot
+ *  render a heading whose id its index row does not scroll to. */
+function SettingsSection({
+  id,
+  labelKey,
+  children,
+}: {
+  id: string;
+  labelKey: TKey;
+  children: ReactNode;
+}) {
+  const headingId = sectionHeadingId(id);
+  return (
+    <section className="section settings-section" data-section={id} aria-labelledby={headingId}>
+      <h3 className="stitle" id={headingId}>
+        {t(labelKey)}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
 export function SettingsModal({
   settings,
   textSizePx,
@@ -401,12 +429,12 @@ export function SettingsModal({
   onUninstallPlugin: (name: string) => void;
   /** Edit one plugin's Settings default: what a new chat's picker starts from. */
   onTogglePlugin: (slug: string, disabled: boolean) => void;
-  /** Re-request the plugin inventory (the page calls this when it opens). */
+  /** Re-request the plugin inventory (the section calls this when it opens). */
   onRequestPlugins: () => void;
   onInstallSkill: (source: string) => void;
   /** Remove these skills in one pass: a Settings group drops whole. */
   onUninstallSkill: (names: string[]) => void;
-  /** Re-request the skill inventory (the Skills page calls this when it opens). */
+  /** Re-request the skill inventory (the Skills section calls this when it opens). */
   onRequestSkills: () => void;
   /** Opens the desktop file dialog for one cue's audio, for the pack wizard. */
   onPickSound: () => Promise<string | null>;
@@ -443,8 +471,8 @@ export function SettingsModal({
   onRefreshChangelog: (force?: boolean) => void;
 }) {
   const [page, setPage] = useState<PageId>(initialPage ?? "composer");
-  // Both the MCP card and the Search page gate on managed-build state, so it is
-  // requested for either entry point rather than only when the MCP page opens.
+  // Both the MCP section and the Search section gate on managed-build state, so it is
+  // requested for either entry point rather than only when the MCP section opens.
   useEffect(() => {
     onRequestMcpExtensionStatus();
   }, [onRequestMcpExtensionStatus]);
@@ -499,6 +527,9 @@ export function SettingsModal({
               <div key={entry.id}>
                 <div
                   className="row"
+                  role="button"
+                  tabIndex={0}
+                  aria-current={page === entry.id ? "page" : undefined}
                   data-active={page === entry.id}
                   onClick={() => setPage(entry.id)}
                   onKeyDown={activationHandler(() => setPage(entry.id))}
@@ -513,6 +544,8 @@ export function SettingsModal({
                       <div
                         key={section.id}
                         className="row kid"
+                        role="button"
+                        tabIndex={0}
                         data-active={activeSection === section.id}
                         aria-current={activeSection === section.id ? "location" : undefined}
                         onClick={() => scrollToSection(bodyEl, section.id)}
@@ -543,14 +576,7 @@ export function SettingsModal({
             {page === "composer" && <PageComposer settings={settings} onSave={onSave} />}
             {page === "models" && (
               <div className="page-models">
-                <section
-                  className="section settings-section"
-                  data-section="models"
-                  aria-labelledby="settings-section-models"
-                >
-                  <h3 className="stitle" id="settings-section-models">
-                    {t("settings.modelsSection")}
-                  </h3>
+                <SettingsSection id="models" labelKey="settings.modelsSection">
                   <PageModels
                     settings={settings}
                     onSave={onSave}
@@ -592,15 +618,8 @@ export function SettingsModal({
                     onMiMoOAuthCancel={onMiMoOAuthCancel}
                     onMiMoOAuthSignOut={onMiMoOAuthSignOut}
                   />
-                </section>
-                <section
-                  className="section settings-section"
-                  data-section="fallbacks"
-                  aria-labelledby="settings-section-fallbacks"
-                >
-                  <h3 className="stitle" id="settings-section-fallbacks">
-                    {t("settings.fallbacksSection")}
-                  </h3>
+                </SettingsSection>
+                <SettingsSection id="fallbacks" labelKey="settings.fallbacksSection">
                   <PageFallbacks
                     settings={settings}
                     onSave={onSave}
@@ -609,33 +628,19 @@ export function SettingsModal({
                     ollamaVisionModels={ollamaVisionModels}
                     opencodeVisionModels={opencodeVisionModels}
                   />
-                </section>
-                <section
-                  className="section settings-section"
-                  data-section="search"
-                  aria-labelledby="settings-section-search"
-                >
-                  <h3 className="stitle" id="settings-section-search">
-                    {t("settings.searchSection")}
-                  </h3>
+                </SettingsSection>
+                <SettingsSection id="search" labelKey="settings.searchSection">
                   <PageSearch
                     settings={settings}
                     onSave={onSave}
                     browserInstalls={mcpExtensionStatus?.installs ?? null}
                   />
-                </section>
+                </SettingsSection>
               </div>
             )}
             {page === "integrations" && (
               <div className="page-integrations">
-                <section
-                  className="section settings-section"
-                  data-section="mcp"
-                  aria-labelledby="settings-section-mcp"
-                >
-                  <h3 className="stitle" id="settings-section-mcp">
-                    {t("settings.integrationsMcp")}
-                  </h3>
+                <SettingsSection id="mcp" labelKey="settings.integrationsMcp">
                   <PageMCP
                     specs={mcpSpecs}
                     bridged={mcpBridged}
@@ -663,15 +668,8 @@ export function SettingsModal({
                     onCancelServerSignIn={onCancelServerSignIn}
                     onDisconnectServer={onDisconnectServer}
                   />
-                </section>
-                <section
-                  className="section settings-section"
-                  data-section="plugins"
-                  aria-labelledby="settings-section-plugins"
-                >
-                  <h3 className="stitle" id="settings-section-plugins">
-                    {t("settings.integrationsPlugins")}
-                  </h3>
+                </SettingsSection>
+                <SettingsSection id="plugins" labelKey="settings.integrationsPlugins">
                   <PagePlugins
                     plugins={plugins}
                     onInstall={onInstallPlugin}
@@ -683,22 +681,15 @@ export function SettingsModal({
                     onCancelServerSignIn={onCancelServerSignIn}
                     onDisconnectServer={onDisconnectServer}
                   />
-                </section>
-                <section
-                  className="section settings-section"
-                  data-section="skills"
-                  aria-labelledby="settings-section-skills"
-                >
-                  <h3 className="stitle" id="settings-section-skills">
-                    {t("settings.integrationsSkills")}
-                  </h3>
+                </SettingsSection>
+                <SettingsSection id="skills" labelKey="settings.integrationsSkills">
                   <PageSkills
                     skills={skills}
                     onInstall={onInstallSkill}
                     onUninstall={onUninstallSkill}
                     onRequest={onRequestSkills}
                   />
-                </section>
+                </SettingsSection>
               </div>
             )}
             {page === "about" && (
@@ -760,7 +751,7 @@ interface DeclaredSettingView {
   signupUrl?: string | null;
 }
 
-/** One declared setting, rendered the same way on the Search page and a provider card:
+/** One declared setting, rendered the same way on the Search section and a provider card:
  *  a masked row for secrets, a labelled input row otherwise. */
 function DeclaredSettingRow({
   setting,
@@ -830,7 +821,7 @@ function SearchEngineSettingRow({
   );
 }
 
-/** Picker copy for every connection mode, shared by the MCP card and the Search page. */
+/** Picker copy for every connection mode, shared by the MCP card and the Search section. */
 const MODE_LABEL_KEYS: Record<PlaywrightMcpConnectionMode, TKey> = {
   chromium: "settings.mcpModeChrome",
   firefox: "settings.mcpModeFirefox",
@@ -1137,26 +1128,12 @@ function PageComposer({
 }) {
   return (
     <div className="page-composer">
-      <section
-        className="section settings-section"
-        data-section="voice"
-        aria-labelledby="settings-section-voice"
-      >
-        <h3 className="stitle" id="settings-section-voice">
-          {t("settings.composerVoice")}
-        </h3>
+      <SettingsSection id="voice" labelKey="settings.composerVoice">
         <VoiceInputSettings />
-      </section>
-      <section
-        className="section settings-section"
-        data-section="quickSend"
-        aria-labelledby="settings-section-quickSend"
-      >
-        <h3 className="stitle" id="settings-section-quickSend">
-          {t("settings.composerQuickSend")}
-        </h3>
+      </SettingsSection>
+      <SettingsSection id="quickSend" labelKey="settings.composerQuickSend">
         <QuickSendSettings settings={settings} onSave={onSave} />
-      </section>
+      </SettingsSection>
     </div>
   );
 }
@@ -4309,36 +4286,15 @@ function PageAbout({
 }) {
   return (
     <div className="page-about">
-      <section
-        className="section settings-section"
-        data-section="version"
-        aria-labelledby="settings-section-version"
-      >
-        <h3 className="stitle" id="settings-section-version">
-          {t("settings.aboutVersion")}
-        </h3>
+      <SettingsSection id="version" labelKey="settings.aboutVersion">
         <AboutPanel />
-      </section>
-      <section
-        className="section settings-section"
-        data-section="shortcuts"
-        aria-labelledby="settings-section-shortcuts"
-      >
-        <h3 className="stitle" id="settings-section-shortcuts">
-          {t("settings.aboutShortcuts")}
-        </h3>
+      </SettingsSection>
+      <SettingsSection id="shortcuts" labelKey="settings.aboutShortcuts">
         <PageShortcuts />
-      </section>
-      <section
-        className="section settings-section"
-        data-section="changelog"
-        aria-labelledby="settings-section-changelog"
-      >
-        <h3 className="stitle" id="settings-section-changelog">
-          {t("settings.aboutChangelog")}
-        </h3>
+      </SettingsSection>
+      <SettingsSection id="changelog" labelKey="settings.aboutChangelog">
         <PageChangelog changelog={changelog} onRefresh={onRefreshChangelog} />
-      </section>
+      </SettingsSection>
     </div>
   );
 }
@@ -4414,14 +4370,7 @@ function PageCustomization({
   }, [packs]);
   return (
     <div className="page-customization">
-      <section
-        className="section settings-section"
-        data-section="appearance"
-        aria-labelledby="settings-section-appearance"
-      >
-        <h3 className="stitle" id="settings-section-appearance">
-          {t("settings.appearanceSection")}
-        </h3>
+      <SettingsSection id="appearance" labelKey="settings.appearanceSection">
         <div className="setting-row">
           <div className="l">
             <div className="n">{t("settings.textSize")}</div>
@@ -4433,7 +4382,7 @@ function PageCustomization({
             style={
               {
                 "--knob": `${((textSizePx - TEXT_SIZE_RANGE.min) / (TEXT_SIZE_RANGE.max - TEXT_SIZE_RANGE.min)) * 100}%`,
-              } as React.CSSProperties
+              } as CSSProperties
             }
           >
             <input
@@ -4489,21 +4438,19 @@ function PageCustomization({
             <span>{t("settings.windowStateReset")}</span>
           </button>
         </div>
-      </section>
+      </SettingsSection>
 
-      <section
-        className="section settings-section"
-        data-section="themes"
-        aria-labelledby="settings-section-themes"
-      >
-        <h3 className="stitle" id="settings-section-themes">
-          {t("settings.customizationThemes")}
-        </h3>
-        <div className="theme-grid" role="radiogroup" aria-label={t("statusbar.switchTheme")}>
+      <SettingsSection id="themes" labelKey="settings.customizationThemes">
+        <div
+          className="theme-grid"
+          role="radiogroup"
+          aria-labelledby={sectionHeadingId("themes")}
+        >
           {THEME_STYLE_ORDER.map((style) => (
             <button
               key={style}
               type="button"
+              role="radio"
               aria-checked={themeStyle === style}
               className="theme-pop-item"
               data-on={themeStyle === style}
@@ -4517,28 +4464,21 @@ function PageCustomization({
               </span>
               <span className="txt">
                 <span className="nm">
-                  {t(`statusbar.themeStyle${style[0]!.toUpperCase()}${style.slice(1)}` as TKey)}
+                  {t(`settings.themeStyle${style[0]!.toUpperCase()}${style.slice(1)}` as TKey)}
                 </span>
                 <span className="md">
                   {themeForStyle(style) === THEME.DARK
-                    ? t("statusbar.themeDark")
-                    : t("statusbar.themeLight")}
+                    ? t("settings.themeDark")
+                    : t("settings.themeLight")}
                 </span>
               </span>
               {themeStyle === style ? <I.check size={13} /> : null}
             </button>
           ))}
         </div>
-      </section>
+      </SettingsSection>
 
-      <section
-        className="section settings-section"
-        data-section="soundCues"
-        aria-labelledby="settings-section-soundCues"
-      >
-        <h3 className="stitle" id="settings-section-soundCues">
-          {t("settings.customizationSoundCues")}
-        </h3>
+      <SettingsSection id="soundCues" labelKey="settings.customizationSoundCues">
         <div className="setting-row">
           <div className="l">
             <div className="h">{t("settings.soundSectionHint")}</div>
@@ -4563,7 +4503,7 @@ function PageCustomization({
             }}
           />
         ))}
-      </section>
+      </SettingsSection>
       <PackWizard
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}

@@ -15,7 +15,7 @@ export function isTextSizePx(value: unknown): value is number {
   );
 }
 
-/** Clamps anything, so a hand-edited stored value cannot push the type off the ladder. */
+/** Clamps a slider value, or a hand-edited one, into range so the type stays on the ladder. */
 export function clampTextSizePx(value: number): number {
   const { min, max } = TEXT_SIZE_RANGE;
   if (!Number.isFinite(value)) return BASE_TEXT_PX;
@@ -25,7 +25,11 @@ export function clampTextSizePx(value: number): number {
 const STORE_KEY = "reasonix.fontSize";
 /** The retired three-step scale, read once so an existing install keeps its size. */
 const LEGACY_KEY = "reasonix.fontScale";
-const LEGACY_PX: Record<string, number> = { small: 12, medium: 14, large: 16 };
+const LEGACY_PX = new Map<string, number>([
+  ["small", 12],
+  ["medium", 14],
+  ["large", 16],
+]);
 
 /** The stored size, or the legacy step it was set to, or the base. */
 export function readStoredTextSize(): number {
@@ -35,10 +39,11 @@ export function readStoredTextSize(): number {
     if (isTextSizePx(value)) return value;
   }
   const legacy = localStorage.getItem(LEGACY_KEY);
-  const migrated = legacy ? LEGACY_PX[legacy] : undefined;
+  const migrated = legacy === null ? undefined : LEGACY_PX.get(legacy);
   return migrated ?? BASE_TEXT_PX;
 }
 
+/** Stores an on-ladder size; a bad caller cannot persist a value the reader would discard. */
 export function storeTextSize(value: number): void {
-  localStorage.setItem(STORE_KEY, String(value));
+  localStorage.setItem(STORE_KEY, String(clampTextSizePx(value)));
 }

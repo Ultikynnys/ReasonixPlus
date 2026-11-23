@@ -150,6 +150,7 @@ describe("Settings > Customization > Themes", () => {
 
     const cards = Array.from(document.querySelectorAll(".theme-grid [aria-checked]"));
     expect(cards).toHaveLength(15);
+    expect(cards.every((card) => card.getAttribute("role") === "radio")).toBe(true);
     expect(new Set(cards.map((card) => card.getAttribute("data-style"))).size).toBe(15);
     // Light styles come first, then dark: the label each card carries is the split.
     const groups = cards.map((card) => card.querySelector(".md")?.textContent);
@@ -182,7 +183,7 @@ describe("Settings > About", () => {
       Array.from(version?.querySelectorAll(".setting-row .n") ?? []).map((name) =>
         (name.textContent ?? "").trim(),
       ),
-    ).toEqual(["Version", "Repository", "Updates"]);
+    ).toEqual(["Installed version", "Repository", "Updates"]);
     expect(within(version as HTMLElement).getByText("0.0.0-test")).toBeTruthy();
     expect(
       within(version as HTMLElement).getByRole("button", { name: /Ultikynnys\/ReasonixPlus/ }),
@@ -222,6 +223,9 @@ describe("Settings section index", () => {
     expect(
       Array.from(kids?.querySelectorAll(".row.kid") ?? []).map((row) => row.textContent),
     ).toEqual(["Appearance", "Themes", "Sound cues"]);
+    // The category row is reachable and activatable from the keyboard.
+    expect(parent.getAttribute("role")).toBe("button");
+    expect(parent.getAttribute("tabindex")).toBe("0");
     // No other page shows one: the index belongs to the page it lists.
     expect(document.querySelectorAll(".settings-side .kids")).toHaveLength(1);
     // The page is the page: its title is the page's, not a section's.
