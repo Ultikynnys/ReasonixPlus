@@ -7280,6 +7280,15 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
 .section {
   margin-bottom: 22px;
 }
+/* Scaffold page split into sections: each is tall enough that the page scrolls, and a rule
+ * separates the parts so they read as one page rather than three. */
+.settings-section {
+  min-height: 260px;
+}
+.settings-section + .settings-section {
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+}
 .section .stitle {
   font-size: 14px;
   font-weight: 600;

@@ -108,23 +108,47 @@ describe("Settings > General window state", () => {
   });
 });
 
-describe("Settings nav groups", () => {
-  it("lists a group's subcategories under it and marks the open one", () => {
-    render(<SettingsModal {...baseProps} initialPage="testTwo" />);
+describe("Settings section index", () => {
+  it("shows a page's index only while that page is open", () => {
+    const { unmount } = render(<SettingsModal {...baseProps} initialPage="general" />);
+    expect(
+      document.querySelector(".settings-side .kids"),
+      "an index shows off its page",
+    ).toBeNull();
+    unmount();
 
+    render(<SettingsModal {...baseProps} initialPage="testGroup" />);
     const parent = screen.getByTitle("Test group");
     const kids = parent.parentElement?.querySelector(".kids");
-    expect(kids, "the group renders no children block").toBeTruthy();
-
-    const rows = Array.from(kids?.querySelectorAll(".row.kid") ?? []);
-    expect(rows.map((row) => row.textContent)).toEqual(["Test one", "Test two", "Test three"]);
+    expect(kids, "the open page renders no index").toBeTruthy();
     expect(
-      rows
-        .filter((row) => row.getAttribute("data-active") === "true")
-        .map((row) => row.textContent),
-    ).toEqual(["Test two"]);
-    // The header follows the open child, not the group it hangs off.
-    expect(screen.getByRole("heading", { name: "Test two" })).toBeTruthy();
+      Array.from(kids?.querySelectorAll(".row.kid") ?? []).map((row) => row.textContent),
+    ).toEqual(["Test one", "Test two", "Test three"]);
+    // The page is the page: its title is the page's, not a section's.
+    expect(screen.getByRole("heading", { name: "Test group" })).toBeTruthy();
+  });
+
+  it("lands each index row on a section of the same page", () => {
+    const scrollTo = vi.fn();
+    const original = Element.prototype.scrollTo;
+    Element.prototype.scrollTo = scrollTo as unknown as Element["scrollTo"];
+    try {
+      render(<SettingsModal {...baseProps} initialPage="testGroup" />);
+      const rows = Array.from(document.querySelectorAll<HTMLElement>(".settings-side .row.kid"));
+      expect(rows).toHaveLength(3);
+
+      for (const row of rows) {
+        // Every row must have a section to land on, or the index has a dead entry.
+        expect(document.querySelectorAll(".settings-body [data-section]").length).toBe(3);
+        fireEvent.click(row);
+      }
+      expect(scrollTo).toHaveBeenCalledTimes(3);
+      expect(scrollTo.mock.calls.map((call) => (call[0] as ScrollToOptions).top)).toEqual([
+        0, 0, 0,
+      ]);
+    } finally {
+      Element.prototype.scrollTo = original;
+    }
   });
 });
 

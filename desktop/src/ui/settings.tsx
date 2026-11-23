@@ -108,6 +108,7 @@ import { PackWizard, type SoundPackDraft } from "./pack-wizard";
 import { pluginQualifier } from "./plugin-labels";
 import { useFullBleed } from "./settings-frame";
 import { Shortcut, type ShortcutKey, localizeShortcutText } from "./shortcut";
+import { scrollToSection, useActiveSection } from "./use-active-section";
 
 /** Render i18n hint strings that embed `<code>…</code>` tags as styled fragments
  *  (no dangerouslySetInnerHTML — the markup is translator-authored, but React nodes keep it static). */
@@ -167,17 +168,21 @@ export type PageId =
   | "skills"
   | "changelog"
   | "shortcuts"
-  | "testGroup"
-  | "testOne"
-  | "testTwo"
-  | "testThree";
+  | "testGroup";
 
-/** One nav entry. `children` are the subcategories listed under it, indented behind a
- *  guide line; they are pages in their own right, never top-level rows. */
+/** One section of a page, listed in that page's index while it is open. `id` is the anchor
+ *  the row scrolls to and the marker the reader's position is read from. */
+export interface PageSection {
+  id: string;
+  labelKey: TKey;
+}
+
+/** One nav entry. `sections` are the parts of this page, not separate pages: the index they
+ *  form only exists while the page is open, and it doubles as a position indicator. */
 export interface PageEntry {
   id: PageId;
   icon: keyof typeof I;
-  children?: PageId[];
+  sections?: PageSection[];
 }
 
 export const PAGE_META: ReadonlyArray<PageEntry> = [
@@ -192,18 +197,18 @@ export const PAGE_META: ReadonlyArray<PageEntry> = [
   { id: "skills", icon: "bookmark" },
   { id: "changelog", icon: "history" },
   { id: "shortcuts", icon: "cpu" },
-  // Scaffold for the subcategory treatment: one parent, three children. Remove with the
-  // three placeholder pages and their six i18n keys before this branch becomes a PR.
-  { id: "testGroup", icon: "layers", children: ["testOne", "testTwo", "testThree"] },
+  // Scaffold for the section index: one page, three sections. Remove with PageTestScaffold
+  // and its five i18n keys before this branch becomes a PR.
+  {
+    id: "testGroup",
+    icon: "layers",
+    sections: [
+      { id: "one", labelKey: "settings.testSectionOne" },
+      { id: "two", labelKey: "settings.testSectionTwo" },
+      { id: "three", labelKey: "settings.testSectionThree" },
+    ],
+  },
 ];
-
-/** Every page in the nav, parents and children alike, for lookups by id. */
-export const PAGE_ENTRIES: ReadonlyArray<{ id: PageId; icon: keyof typeof I }> = PAGE_META.flatMap(
-  (entry) => [
-    { id: entry.id, icon: entry.icon },
-    ...(entry.children ?? []).map((id) => ({ id, icon: entry.icon })),
-  ],
-);
 
 /** Label and description keys are built from the id, so a page cannot have one and not the other. */
 function pageLabelKey(id: PageId): TKey {
@@ -430,7 +435,15 @@ export function SettingsModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-  const currentMeta = PAGE_ENTRIES.find((p) => p.id === page) ?? PAGE_ENTRIES[0]!;
+  const currentMeta = PAGE_META.find((p) => p.id === page) ?? PAGE_META[0]!;
+  // The page body is the scroller the section index reads and moves. Held as state, not a
+  // ref, so reopening the window rebinds the index to the body that is actually mounted.
+  const [bodyEl, setBodyEl] = useState<HTMLDivElement | null>(null);
+  const sectionIds = useMemo(
+    () => (currentMeta.sections ?? []).map((section) => section.id),
+    [currentMeta],
+  );
+  const activeSection = useActiveSection(bodyEl, sectionIds);
   // A window narrower than 70% of the screen gains nothing from the frame's margins.
   const fullBleed = useFullBleed();
   return (
@@ -462,23 +475,21 @@ export function SettingsModal({
                   <span className="ico">{I[entry.icon]({ size: 16 })}</span>
                   <span>{label}</span>
                 </div>
-                {entry.children ? (
+                {page === entry.id && entry.sections ? (
                   <div className="kids">
-                    {entry.children.map((id) => {
-                      const childLabel = t(pageLabelKey(id));
-                      return (
-                        <div
-                          key={id}
-                          className="row kid"
-                          data-active={page === id}
-                          onClick={() => setPage(id)}
-                          onKeyDown={activationHandler(() => setPage(id))}
-                          title={childLabel}
-                        >
-                          <span>{childLabel}</span>
-                        </div>
-                      );
-                    })}
+                    {entry.sections.map((section) => (
+                      <div
+                        key={section.id}
+                        className="row kid"
+                        data-active={activeSection === section.id}
+                        aria-current={activeSection === section.id ? "location" : undefined}
+                        onClick={() => scrollToSection(bodyEl, section.id)}
+                        onKeyDown={activationHandler(() => scrollToSection(bodyEl, section.id))}
+                        title={t(section.labelKey)}
+                      >
+                        <span>{t(section.labelKey)}</span>
+                      </div>
+                    ))}
                   </div>
                 ) : null}
               </div>
@@ -496,7 +507,7 @@ export function SettingsModal({
               <I.x size={14} />
             </button>
           </div>
-          <div className="settings-body">
+          <div className="settings-body" ref={setBodyEl}>
             {page === "general" && (
               <PageGeneral
                 fontScale={fontScale}
@@ -632,10 +643,7 @@ export function SettingsModal({
               <PageChangelog changelog={changelog} onRefresh={onRefreshChangelog} />
             )}
             {page === "shortcuts" && <PageShortcuts />}
-            {page === "testGroup" && <PageTestScaffold page="testGroup" />}
-            {page === "testOne" && <PageTestScaffold page="testOne" />}
-            {page === "testTwo" && <PageTestScaffold page="testTwo" />}
-            {page === "testThree" && <PageTestScaffold page="testThree" />}
+            {page === "testGroup" && <PageTestScaffold />}
           </div>
         </div>
       </div>
@@ -4235,18 +4243,35 @@ function SectionRow({ nm, keys }: { nm: string; keys: ShortcutKey[] }): ReactNod
   );
 }
 
-/** Placeholder body for the subcategory scaffold: names the page it is showing so the nav
- *  treatment can be inspected. Remove with the Test group in PAGE_META. */
-function PageTestScaffold({ page }: { page: PageId }) {
+/** Scaffold body for the section index: one page, three anchored sections. Remove with the
+ *  Test group in PAGE_META. */
+function PageTestScaffold() {
   return (
-    <section className="section">
-      <div className="stitle">{t(pageLabelKey(page))}</div>
-      <div className="setting-row">
-        <div className="l">
-          <div className="n">{t(pageDescKey(page))}</div>
-        </div>
-      </div>
-    </section>
+    <>
+      {(
+        [
+          { id: "one", labelKey: "settings.testSectionOne" },
+          { id: "two", labelKey: "settings.testSectionTwo" },
+          { id: "three", labelKey: "settings.testSectionThree" },
+        ] as const
+      ).map((section) => (
+        <section
+          key={section.id}
+          className="section settings-section"
+          data-section={section.id}
+          aria-labelledby={`settings-section-${section.id}`}
+        >
+          <h3 className="stitle" id={`settings-section-${section.id}`}>
+            {t(section.labelKey)}
+          </h3>
+          <div className="setting-row">
+            <div className="l">
+              <div className="n">{t("settings.testSectionBody")}</div>
+            </div>
+          </div>
+        </section>
+      ))}
+    </>
   );
 }
 
