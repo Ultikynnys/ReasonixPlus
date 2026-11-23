@@ -1093,7 +1093,6 @@ function PageGeneral({
               } as React.CSSProperties
             }
           >
-            <span className="text-size-value">{textSizePx} px</span>
             <input
               type="range"
               min={TEXT_SIZE_RANGE.min}
@@ -1103,6 +1102,8 @@ function PageGeneral({
               aria-label={t("settings.textSize")}
               onChange={(e) => onSetTextSize(clampTextSizePx(Number(e.target.value)))}
             />
+            {/* After the input, so the readout can follow the slider's own state. */}
+            <span className="text-size-value">{textSizePx} px</span>
           </div>
         </div>
         <div className="setting-row">

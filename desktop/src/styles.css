@@ -7346,9 +7346,12 @@ html:not([data-platform="macos"]) .popup-item .kb .shortcut kbd[data-key="mod"] 
   opacity: 0;
   transition: opacity 0.12s ease;
 }
+/* Hover, a drag in progress, or keyboard focus reveals it. Not plain focus: a click or a
+ * drag leaves the slider focused, and `:focus-within` kept the chip up after the pointer
+ * had left, which read as stuck. */
 .text-size-control:hover .text-size-value,
-.text-size-control:focus-within .text-size-value,
-.text-size-control:active .text-size-value {
+.text-size-control input:active ~ .text-size-value,
+.text-size-control input:focus-visible ~ .text-size-value {
   opacity: 1;
 }
 /* The font-family picker: a themed menu rather than a native select, whose highlight the

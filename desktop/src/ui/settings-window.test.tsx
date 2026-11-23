@@ -232,6 +232,10 @@ describe("Settings frame", () => {
     expect(readout).toMatch(/left:\s*clamp\([^)]*var\(--knob/);
     expect(readout).toMatch(/opacity:\s*0/);
     expect(css).toMatch(/\.text-size-control:hover \.text-size-value[\s\S]{0,240}opacity:\s*1/);
+    // Not plain focus: a click leaves the slider focused, and the chip would stay up after
+    // the pointer left. Keyboard focus still reveals it through `:focus-visible`.
+    expect(css).not.toMatch(/:focus-within \.text-size-value/);
+    expect(css).toMatch(/input:focus-visible ~ \.text-size-value/);
     // Both controls sit in the same 150px column, so the slider lines up with the picker.
     expect(control).toMatch(/width:\s*150px/);
   });
