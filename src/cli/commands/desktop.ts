@@ -424,6 +424,7 @@ import {
 } from "../../mcp/outlook-mail.js";
 import { SharedClientRegistry } from "../../mcp/shared-browser.js";
 import { type McpServerSpec, parseMcpSpec, specToRaw } from "../../mcp/spec.js";
+import { quarantineOrphanSessions } from "../../memory/session-maintenance.js";
 import {
   type ModelPrefs,
   type SessionInfo,
@@ -7105,15 +7106,6 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     process.stderr.write(`reasonix: session layout migration failed — ${messageOf(err)}\n`);
   }
 
-  // Fresh chats that were never configured (force-exited with the MCP picker
-  // open) are not real sessions — drop them before any list is served.
-  try {
-    const pruned = await prunePendingMcpSessions();
-    if (pruned.length > 0) log.info(`pruned ${pruned.length} never-configured session(s)`);
-  } catch (err) {
-    process.stderr.write(`reasonix: pending-MCP session prune failed — ${messageOf(err)}\n`);
-  }
-
   // The bundled desktop-control server (computer use + screen capture) exists from the
   // first boot but stays off until a chat enables it.
   try {
@@ -10044,6 +10036,28 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   const rl = createInterface({ input: stdin });
   emit({ type: "$connected" });
   markPhase("rpc_stdin_listening");
+  // Housekeeping runs after the UI is up: the sweep is never on the splash path, and both
+  // steps are bounded so a polluted store cannot turn cleanup into a startup-wide read.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const pruned = await prunePendingMcpSessions({ maxCandidates: 128, maxMs: 2_000 });
+        if (pruned.length > 0) log.info(`pruned ${pruned.length} never-configured session(s)`);
+      } catch (err) {
+        log.warn(`pending-MCP session prune failed: ${messageOf(err)}`);
+      }
+      try {
+        const result = await quarantineOrphanSessions();
+        if (result.moved.length > 0) {
+          log.info(
+            `quarantined ${result.moved.length} unreachable session(s) to ${result.directory}`,
+          );
+        }
+      } catch (err) {
+        log.warn(`session quarantine failed: ${messageOf(err)}`);
+      }
+    })();
+  }, 10_000).unref();
   rl.on("line", (line) => {
     lastUserActivityAt = Date.now();
     const trimmed = line.trim();

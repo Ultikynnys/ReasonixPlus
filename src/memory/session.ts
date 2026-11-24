@@ -989,6 +989,36 @@ export async function listSessionsForWorkspaceLastKnown(
   );
 }
 
+export interface SessionIndexEntry {
+  name: string;
+  workspace?: string;
+}
+
+/** What the persisted index knows without walking the store: the names and workspace
+ *  stamps maintenance needs. Null means no cache exists, so a cold boot must not pay
+ *  for a full read just to answer it. */
+export async function sessionIndexEntries(): Promise<SessionIndexEntry[] | null> {
+  const records = await sessionDirectoryIndex.snapshot();
+  if (records === null) return null;
+  return records.map((record) => ({
+    name: record.name,
+    ...(typeof record.meta.workspace === "string" ? { workspace: record.meta.workspace } : {}),
+  }));
+}
+
+/** Drop moved sessions from the in-memory index and make the next load revalidate. */
+export function dropSessionIndexEntries(names: readonly string[]): void {
+  if (names.length === 0) return;
+  sessionDirectoryIndex.removeMany(names);
+  sessionDirectoryIndex.invalidate();
+}
+
+/** Rebuild the index from the remaining folders, so the cache no longer names moved
+ *  sessions and a capped sweep can continue from a fresh snapshot next boot. */
+export function refreshSessionIndex(): Promise<void> {
+  return sessionDirectoryIndex.forceLoad().then(() => undefined);
+}
+
 export function legacySessionPrefixForWorkspace(workspace: string): string {
   const resolved = workspace
     ? process.platform === "win32"
@@ -1161,24 +1191,35 @@ export function pruneStaleSessions(daysOld = 90): string[] {
   return deleted;
 }
 
-/** Delete sessions minted for a gated fresh chat whose MCP set was never
- *  confirmed (the daemon died with the picker open). Only a session still marked
- *  `mcpPending` is removed; a confirmed or legacy one never carries it. */
-export async function prunePendingMcpSessions(): Promise<string[]> {
+export interface PendingMcpPruneOptions {
+  maxCandidates?: number;
+  maxMs?: number;
+}
+
+/** Delete sessions minted for an unconfirmed fresh chat. The scan is bounded so a cold
+ *  or polluted store cannot turn it into a startup-wide read. */
+export async function prunePendingMcpSessions(
+  options: PendingMcpPruneOptions = {},
+): Promise<string[]> {
+  const maxCandidates = options.maxCandidates ?? 64;
+  const maxMs = options.maxMs ?? 1_000;
+  const started = Date.now();
   const deleted: string[] = [];
-  for (const name of await pendingMcpCandidateNames()) {
+  let scanned = 0;
+  for (const name of await pendingMcpCandidateNames(maxCandidates)) {
+    if (scanned >= maxCandidates || Date.now() - started > maxMs) break;
+    scanned += 1;
     if (loadSessionMeta(name).mcpPending === true && deleteSession(name)) deleted.push(name);
   }
   return deleted;
 }
 
-/** Every name that could still carry `mcpPending`. The directory index already holds
- *  each session's meta, so the sweep reads a handful of files instead of all of them;
- *  folders the cache has never seen (minted after it was written) are re-read. */
-async function pendingMcpCandidateNames(): Promise<string[]> {
+/** Names that could still carry `mcpPending`: indexed records plus folders the cache
+ *  has not seen, capped so a cold store stays cheap. */
+async function pendingMcpCandidateNames(limit: number): Promise<string[]> {
   const dirs = listSessionDirs();
   const indexed = await sessionDirectoryIndex.snapshot();
-  if (indexed === null) return dirs.map(({ name }) => name);
+  if (indexed === null) return dirs.slice(0, limit).map(({ name }) => name);
   const candidates: string[] = [];
   const known = new Set<string>();
   for (const record of indexed) {
@@ -1186,6 +1227,7 @@ async function pendingMcpCandidateNames(): Promise<string[]> {
     if ((record.meta as SessionMeta).mcpPending === true) candidates.push(record.name);
   }
   for (const { name } of dirs) {
+    if (candidates.length >= limit) break;
     if (!known.has(name)) candidates.push(name);
   }
   return candidates;

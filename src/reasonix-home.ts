@@ -1,12 +1,26 @@
 /** Canonical path to the Reasonix+ state directory: `~/.reasonix`. */
 
-import { homedir } from "node:os";
+import * as os from "node:os";
 import { join, parse, resolve } from "node:path";
 import { relativeDisplayPath, toPosixPath } from "@reasonix/core-utils/path-utils";
 
-/** Returns `~/.reasonix` — the single source of truth for the Reasonix+ state directory. */
+/** The user's home directory, read from the environment first so tests and portable
+ *  installs can re-home the store without fighting `os.homedir()`'s per-process cache. */
+function currentHomeDir(): string {
+  const env =
+    process.platform === "win32"
+      ? process.env.USERPROFILE?.trim() || process.env.HOME?.trim()
+      : process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
+  return env || os.homedir();
+}
+
+/** Canonical `~/.reasonix` state dir. `REASONIX_HOME` overrides the state directory
+ *  itself; an explicit `homeDirOverride` stays a home directory. */
 export function reasonixHome(homeDirOverride?: string): string {
-  return join(homeDirOverride ?? homedir(), ".reasonix");
+  if (homeDirOverride) return join(homeDirOverride, ".reasonix");
+  const configured = process.env.REASONIX_HOME?.trim();
+  if (configured) return resolve(configured);
+  return join(currentHomeDir(), ".reasonix");
 }
 
 /** True when `rootDir` can't anchor project state (empty, or a filesystem/drive

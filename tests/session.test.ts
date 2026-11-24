@@ -650,6 +650,21 @@ describe("session persistence", () => {
     expect(existsSync(session.sessionPath("indexed-keep"))).toBe(true);
   });
 
+  it("bounds the pending-MCP scan to the requested candidate count", async () => {
+    for (let i = 0; i < 3; i += 1) {
+      appendSessionMessage(`budget-${i}`, { role: "user", content: "x" });
+      patchSessionMeta(`budget-${i}`, { mcpPending: true, workspace: "/proj/budget" });
+    }
+    vi.resetModules();
+    const session = await import("../src/memory/session.js");
+    const pruned = await session.prunePendingMcpSessions({ maxCandidates: 2, maxMs: 10_000 });
+    expect(pruned).toHaveLength(2);
+    const remaining = ["budget-0", "budget-1", "budget-2"].filter((name) =>
+      existsSync(session.sessionPath(name)),
+    );
+    expect(remaining).toHaveLength(1);
+  });
+
   it("still prunes when the cached index predates the mcpPending projection", async () => {
     appendSessionMessage("stale-cache", { role: "user", content: "x" });
     patchSessionMeta("stale-cache", { mcpPending: true, workspace: "/proj/d" });
